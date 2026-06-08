@@ -15,6 +15,7 @@ notes/
 patches/
 plans/
 runs/
+scratch/
 
 # Xcode/editor user state
 *.xcuserstate
