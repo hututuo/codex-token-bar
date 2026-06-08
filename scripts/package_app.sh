@@ -8,6 +8,7 @@ CONFIGURATION="${1:-debug}"
 APP_VERSION="${APP_VERSION:-0.1.3}"
 
 cd "$ROOT_DIR"
+"$ROOT_DIR/scripts/prepare_tiktoken_lfs.sh"
 swift build ${CONFIGURATION:+-c "$CONFIGURATION"}
 
 BUILD_DIR="$ROOT_DIR/.build/$CONFIGURATION"

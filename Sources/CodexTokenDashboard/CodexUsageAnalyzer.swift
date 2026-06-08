@@ -1,9 +1,45 @@
 import Foundation
 
 final class CodexUsageAnalyzer {
+    private struct SessionCacheKey: Equatable {
+        let path: String
+        let size: UInt64
+        let modifiedAt: TimeInterval
+    }
+
+    private final class SessionEventCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [String: (key: SessionCacheKey, events: [TokenEvent])] = [:]
+
+        func events(for path: String, key: SessionCacheKey) -> [TokenEvent]? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard storage[path]?.key == key else { return nil }
+            return storage[path]?.events
+        }
+
+        func store(_ events: [TokenEvent], for path: String, key: SessionCacheKey) {
+            lock.lock()
+            storage[path] = (key, events)
+            lock.unlock()
+        }
+    }
+
+    private static let sessionEventCache = SessionEventCache()
+
     private let fileManager = FileManager.default
     private let calendar = Calendar.current
     private let dataSource: CodexDataSource
+    private let fractionalDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private let plainDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
 
     init(dataSource: CodexDataSource) {
         self.dataSource = dataSource
@@ -280,12 +316,19 @@ final class CodexUsageAnalyzer {
     }
 
     private func parseSession(file: URL, sessionID: String) -> [TokenEvent] {
+        let cacheKey = sessionCacheKey(for: file)
+        if let cacheKey {
+            if let events = Self.sessionEventCache.events(for: file.path, key: cacheKey) {
+                return events
+            }
+        }
+
         var events: [TokenEvent] = []
         var previousTotal: Int?
         streamTokenCountLines(from: file) { lineString in
             guard lineString.contains("\"total_token_usage\""),
                   let timestampString = extractString(after: "\"timestamp\":\"", in: lineString),
-                  let timestamp = Self.parseDate(timestampString) else {
+                  let timestamp = parseDate(timestampString) else {
                 return
             }
 
@@ -316,7 +359,19 @@ final class CodexUsageAnalyzer {
                 reasoningOutputTokens: extractInt(after: "\"last_token_usage\":", marker: "\"reasoning_output_tokens\":", in: lineString) ?? 0
             ))
         }
+
+        if let cacheKey {
+            Self.sessionEventCache.store(events, for: file.path, key: cacheKey)
+        }
+
         return events
+    }
+
+    private func sessionCacheKey(for file: URL) -> SessionCacheKey? {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: file.path) else { return nil }
+        let size = attributes[.size] as? UInt64 ?? 0
+        let modifiedAt = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return SessionCacheKey(path: file.path, size: size, modifiedAt: modifiedAt)
     }
 
     private func extractString(after marker: String, in text: String) -> String? {
@@ -480,13 +535,10 @@ final class CodexUsageAnalyzer {
             .max() ?? 0
     }
 
-    private static func parseDate(_ value: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: value) {
+    private func parseDate(_ value: String) -> Date? {
+        if let date = fractionalDateFormatter.date(from: value) {
             return date
         }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: value)
+        return plainDateFormatter.date(from: value)
     }
 }

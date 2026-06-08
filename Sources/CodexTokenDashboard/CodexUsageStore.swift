@@ -14,16 +14,13 @@ final class CodexUsageStore: ObservableObject {
     private let resolver = CodexDataSourceResolver()
     private var dataSource: CodexDataSource?
     private var timer: Timer?
+    private var refreshInterval: TimeInterval = 60
 
     init() {
         dataSource = resolver.resolve()
         updateDataSourceLabels()
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.refresh()
-            }
-        }
+        scheduleTimer()
     }
 
     func refresh() {
@@ -43,7 +40,7 @@ final class CodexUsageStore: ObservableObject {
         Task {
             do {
                 let source = dataSource
-                let loaded = try await Task.detached(priority: .userInitiated) {
+                let loaded = try await Task.detached(priority: .utility) {
                     try CodexUsageAnalyzer(dataSource: source).load()
                 }.value
                 snapshot = loaded
@@ -71,6 +68,21 @@ final class CodexUsageStore: ObservableObject {
         dataSource = resolver.saveSelectedDirectory(url)
         updateDataSourceLabels()
         refresh()
+    }
+
+    func setRefreshInterval(_ interval: TimeInterval) {
+        guard abs(refreshInterval - interval) > 0.5 else { return }
+        refreshInterval = interval
+        scheduleTimer()
+    }
+
+    private func scheduleTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.refresh()
+            }
+        }
     }
 
     private func updateDataSourceLabels() {

@@ -54,12 +54,19 @@ state_5.sqlite
 For contributors who want to run from source:
 
 ```bash
+brew install git-lfs
+git lfs install
+scripts/prepare_tiktoken_lfs.sh
 swift run CodexTokenDashboard
 ```
+
+`git-lfs` is needed because the exact `o200k_base` tokenizer uses a binary Swift FFI package. The prepare script fetches only the macOS binary slice needed for this app. If the tokenizer cannot load at runtime, the app falls back to a lightweight calibrated estimator.
 
 ## Package A Local App
 
 ```bash
+brew install git-lfs
+git lfs install
 chmod +x scripts/package_app.sh
 scripts/package_app.sh debug
 open "dist/Codex Token Dashboard.app"
