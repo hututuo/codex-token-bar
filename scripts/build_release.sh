@@ -74,13 +74,29 @@ ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "$RELEASE_DIR/$VERSIONED_ZIP
 cp "$RELEASE_DIR/$VERSIONED_ZIP" "$RELEASE_DIR/$LEGACY_ZIP"
 
 DMG_STAGING="$(mktemp -d "$RELEASE_DIR/dmg-staging.XXXXXX")"
-DMG_MOUNT="$(mktemp -d "$RELEASE_DIR/dmg-mount.XXXXXX")"
+DMG_DEVICE=""
+DMG_MOUNT=""
 cleanup() {
-  hdiutil detach "$DMG_MOUNT" >/dev/null 2>&1 || true
+  if [[ -n "$DMG_MOUNT" ]]; then
+    hdiutil detach "$DMG_MOUNT" >/dev/null 2>&1 || true
+  elif [[ -n "$DMG_DEVICE" ]]; then
+    hdiutil detach "$DMG_DEVICE" >/dev/null 2>&1 || true
+  fi
   rm -rf "$DMG_STAGING"
-  rmdir "$DMG_MOUNT" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+detach_existing_volume() {
+  local volume_name="$1"
+  hdiutil info | awk -v exact="/Volumes/$volume_name" '
+    /^\/dev\// { device=$1 }
+    index($0, exact) {
+      print device
+    }
+  ' | while read -r device; do
+    [[ -n "$device" ]] && hdiutil detach "$device" >/dev/null 2>&1 || true
+  done
+}
 
 ditto "$APP_DIR" "$DMG_STAGING/$APP_NAME.app"
 ln -s /Applications "$DMG_STAGING/Applications"
@@ -92,7 +108,7 @@ import Foundation
 
 let outputURL = URL(fileURLWithPath: CommandLine.arguments[1])
 let appName = CommandLine.arguments[2]
-let size = NSSize(width: 720, height: 460)
+let size = NSSize(width: 760, height: 500)
 let image = NSImage(size: size)
 
 image.lockFocus()
@@ -113,16 +129,16 @@ func roundedPanel(_ rect: NSRect, alpha: CGFloat) {
     path.stroke()
 }
 
-roundedPanel(NSRect(x: 70, y: 154, width: 170, height: 170), alpha: 0.52)
-roundedPanel(NSRect(x: 480, y: 154, width: 170, height: 170), alpha: 0.52)
-roundedPanel(NSRect(x: 74, y: 38, width: 572, height: 92), alpha: 0.48)
+roundedPanel(NSRect(x: 80, y: 170, width: 170, height: 170), alpha: 0.52)
+roundedPanel(NSRect(x: 510, y: 170, width: 170, height: 170), alpha: 0.52)
+roundedPanel(NSRect(x: 74, y: 42, width: 612, height: 102), alpha: 0.48)
 
 let arrowPath = NSBezierPath()
-arrowPath.move(to: NSPoint(x: 286, y: 239))
-arrowPath.line(to: NSPoint(x: 408, y: 239))
-arrowPath.move(to: NSPoint(x: 378, y: 268))
-arrowPath.line(to: NSPoint(x: 410, y: 239))
-arrowPath.line(to: NSPoint(x: 378, y: 210))
+arrowPath.move(to: NSPoint(x: 306, y: 255))
+arrowPath.line(to: NSPoint(x: 448, y: 255))
+arrowPath.move(to: NSPoint(x: 418, y: 284))
+arrowPath.line(to: NSPoint(x: 450, y: 255))
+arrowPath.line(to: NSPoint(x: 418, y: 226))
 NSColor(calibratedRed: 0.03, green: 0.50, blue: 0.95, alpha: 0.80).setStroke()
 arrowPath.lineWidth = 8
 arrowPath.lineCapStyle = .round
@@ -148,25 +164,25 @@ let warningStyle: [NSAttributedString.Key: Any] = [
 
 let title = "安装 \(appName)"
 title.draw(
-    in: NSRect(x: 0, y: 370, width: size.width, height: 34),
+    in: NSRect(x: 0, y: 410, width: size.width, height: 34),
     withAttributes: titleStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 
 "拖动左侧 App 到右侧 Applications 文件夹".draw(
-    in: NSRect(x: 0, y: 338, width: size.width, height: 24),
+    in: NSRect(x: 0, y: 378, width: size.width, height: 24),
     withAttributes: bodyStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 
 "提示“未知开发者”时不要删除 App".draw(
-    in: NSRect(x: 98, y: 96, width: 524, height: 22),
+    in: NSRect(x: 98, y: 110, width: 564, height: 22),
     withAttributes: warningStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 "系统设置 -> 隐私与安全 -> 滑到最底下找到 \(appName)".draw(
-    in: NSRect(x: 96, y: 72, width: 528, height: 22),
+    in: NSRect(x: 96, y: 82, width: 568, height: 22),
     withAttributes: smallStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 "点“仍要打开”，再确认“打开”".draw(
-    in: NSRect(x: 96, y: 50, width: 528, height: 22),
+    in: NSRect(x: 96, y: 58, width: 568, height: 22),
     withAttributes: smallStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 
@@ -197,18 +213,28 @@ hdiutil create \
   -format UDRW \
   -ov "$RW_DMG" >/dev/null
 
-hdiutil attach \
+detach_existing_volume "$APP_NAME"
+
+ATTACH_OUTPUT="$(hdiutil attach \
   -readwrite \
   -noverify \
   -noautoopen \
-  -mountpoint "$DMG_MOUNT" \
-  "$RW_DMG" >/dev/null
+  "$RW_DMG")"
+DMG_DEVICE="$(printf '%s\n' "$ATTACH_OUTPUT" | awk -F '\t' '$3 ~ /^\/Volumes\// {print $1; exit}')"
+DMG_MOUNT="$(printf '%s\n' "$ATTACH_OUTPUT" | awk -F '\t' '$3 ~ /^\/Volumes\// {print $3; exit}')"
+
+if [[ -z "$DMG_DEVICE" || -z "$DMG_MOUNT" ]]; then
+  echo "Failed to attach writable DMG at a Finder-visible /Volumes mount." >&2
+  echo "$ATTACH_OUTPUT" >&2
+  exit 1
+fi
 
 /usr/bin/osascript <<APPLESCRIPT >/dev/null
 set bgFile to POSIX file "$DMG_MOUNT/.background/dmg-background.png" as alias
 set dmgFolder to POSIX file "$DMG_MOUNT" as alias
 tell application "Finder"
   open dmgFolder
+  delay 0.5
   set dmgWindow to container window of dmgFolder
   set current view of dmgWindow to icon view
   try
@@ -217,15 +243,15 @@ tell application "Finder"
   try
     set statusbar visible of dmgWindow to false
   end try
-  set bounds of dmgWindow to {120, 120, 840, 580}
+  set bounds of dmgWindow to {120, 120, 920, 680}
   set viewOptions to icon view options of dmgWindow
   set arrangement of viewOptions to not arranged
   set icon size of viewOptions to 96
   set background picture of viewOptions to bgFile
-  set position of item "$APP_NAME.app" of dmgFolder to {155, 235}
-  set position of item "Applications" of dmgFolder to {565, 235}
+  set position of item "$APP_NAME.app" of dmgFolder to {165, 255}
+  set position of item "Applications" of dmgFolder to {595, 255}
   update dmgFolder without registering applications
-  delay 1
+  delay 2
   try
     close dmgWindow
   end try
@@ -237,9 +263,14 @@ if [[ ! -f "$DMG_MOUNT/.DS_Store" ]]; then
   echo "Finder DMG styling did not create .DS_Store; refusing to ship an unstyled DMG." >&2
   exit 1
 fi
+if ! strings -a "$DMG_MOUNT/.DS_Store" | grep -q "backgroundImageAlias"; then
+  echo "Finder DMG styling did not persist a background image; refusing to ship an unstyled DMG." >&2
+  exit 1
+fi
 rm -rf "$DMG_MOUNT/.fseventsd" "$DMG_MOUNT/.Trashes" "$DMG_MOUNT/.TemporaryItems"
 hdiutil detach "$DMG_MOUNT" >/dev/null
-rmdir "$DMG_MOUNT" 2>/dev/null || true
+DMG_DEVICE=""
+DMG_MOUNT=""
 
 hdiutil convert \
   "$RW_DMG" \
