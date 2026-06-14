@@ -1,11 +1,12 @@
 import Foundation
+import SQLite3
 
 @MainActor
 final class TaskCompletionMonitor: ObservableObject {
     @Published private(set) var statusText = "未读监听准备中"
-    @Published private(set) var detailText = "任务完成后在悬浮窗显示小红点"
+    @Published private(set) var detailText = "Codex 有未读会话时在悬浮窗显示小红点"
     @Published private(set) var lastCompletedTitle = ""
-    @Published private(set) var unreadCompletedTaskCount = 0
+    @Published private(set) var unreadThreadCount = 0
 
     private let pollInterval: TimeInterval = 2.0
     private let liveSeedWindow: TimeInterval = 30.0
@@ -14,6 +15,7 @@ final class TaskCompletionMonitor: ObservableObject {
     private var completedEventIDs: Set<String> = []
     private var completedTaskThreadIDs: [String: String] = [:]
     private var unreadThreadState = CodexUnreadThreadState()
+    private var hasCodexUnreadState = false
     private var timer: Timer?
     private var isPolling = false
     private var seeded = false
@@ -35,18 +37,29 @@ final class TaskCompletionMonitor: ObservableObject {
             completedEventIDs.removeAll()
             completedTaskThreadIDs.removeAll()
             unreadThreadState = CodexUnreadThreadState()
-            unreadCompletedTaskCount = 0
+            hasCodexUnreadState = false
+            unreadThreadCount = 0
         }
 
         updateStatusText()
         configureTimer()
     }
 
-    func markCompletedTasksSeen() {
-        guard !completedTaskThreadIDs.isEmpty || unreadCompletedTaskCount > 0 else { return }
-        completedTaskThreadIDs.removeAll()
+    func refreshUnreadThreadStatus() {
+        guard dataSource != nil else { return }
+        if let codexHome = dataSource?.codexHome {
+            applyCodexUnreadRead(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome))
+        }
+
+        if hasCodexUnreadState {
+            completedTaskThreadIDs = completedTaskThreadIDs.filter { _, threadID in
+                unreadThreadState.threadIDs.contains(threadID)
+            }
+        } else {
+            completedTaskThreadIDs.removeAll()
+        }
+        recomputeUnreadThreadCount()
         updateStatusText(fileCount: fileStates.count)
-        recomputeUnreadCompletedTaskCount()
     }
 
     private func configureTimer() {
@@ -83,23 +96,21 @@ final class TaskCompletionMonitor: ObservableObject {
                     seedCutoff: seedCutoff
                 )
             }.value
-            let unreadThreadIDs = await Task.detached(priority: .utility) {
+            let unreadThreadRead = await Task.detached(priority: .utility) {
                 CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)
             }.value
 
             await MainActor.run {
-                self?.apply(result, unreadThreadIDs: unreadThreadIDs)
+                self?.apply(result, unreadThreadRead: unreadThreadRead)
             }
         }
     }
 
-    private func apply(_ result: TaskCompletionScanResult, unreadThreadIDs: Set<String>?) {
+    private func apply(_ result: TaskCompletionScanResult, unreadThreadRead: CodexUnreadThreadReadResult) {
         fileStates = result.states
         seeded = true
         isPolling = false
-        if let unreadThreadIDs {
-            unreadThreadState = CodexUnreadThreadState(threadIDs: unreadThreadIDs)
-        }
+        applyCodexUnreadRead(unreadThreadRead)
 
         if result.fileCount == 0 {
             statusText = "未发现会话日志"
@@ -116,25 +127,38 @@ final class TaskCompletionMonitor: ObservableObject {
             didAddUnread = true
         }
 
-        recomputeUnreadCompletedTaskCount()
-        if didAddUnread, unreadCompletedTaskCount > 0 {
+        recomputeUnreadThreadCount()
+        if didAddUnread, !hasCodexUnreadState, unreadThreadCount > 0 {
             statusText = "有任务完成"
             detailText = lastCompletedTitle
+        } else {
+            updateStatusText(fileCount: result.fileCount)
         }
     }
 
-    private func recomputeUnreadCompletedTaskCount() {
-        let unreadCompletedThreads = Set(completedTaskThreadIDs.values).intersection(unreadThreadState.threadIDs)
-        unreadCompletedTaskCount = unreadCompletedThreads.count
-        if unreadCompletedTaskCount == 0 {
-            updateStatusText(fileCount: fileStates.count)
+    private func recomputeUnreadThreadCount() {
+        if hasCodexUnreadState {
+            unreadThreadCount = unreadThreadState.threadIDs.count
+        } else {
+            unreadThreadCount = Set(completedTaskThreadIDs.values).count
         }
+    }
+
+    private func applyCodexUnreadRead(_ result: CodexUnreadThreadReadResult) {
+        guard case let .available(threadIDs) = result else { return }
+        unreadThreadState = CodexUnreadThreadState(threadIDs: threadIDs)
+        hasCodexUnreadState = true
     }
 
     private func updateStatusText(fileCount: Int? = nil) {
-        if unreadCompletedTaskCount > 0 {
-            statusText = "有任务完成"
-            detailText = lastCompletedTitle
+        if unreadThreadCount > 0 {
+            if hasCodexUnreadState {
+                statusText = "有未读会话"
+                detailText = "Codex 有 \(unreadThreadCount) 个未读会话"
+            } else {
+                statusText = "有任务完成"
+                detailText = lastCompletedTitle.isEmpty ? "等待 Codex 未读状态同步" : lastCompletedTitle
+            }
             return
         }
 
@@ -148,7 +172,7 @@ final class TaskCompletionMonitor: ObservableObject {
         if let fileCount {
             detailText = "已跟踪 \(fileCount) 个会话文件"
         } else {
-            detailText = "任务完成后会跟随 Codex 未读状态亮点"
+            detailText = "Codex 有未读会话时会亮点"
         }
     }
 }
@@ -184,18 +208,115 @@ private struct CodexUnreadThreadState: Sendable {
     var threadIDs: Set<String> = []
 }
 
+private enum CodexUnreadThreadReadResult: Sendable {
+    case available(Set<String>)
+    case unavailable
+}
+
 private enum CodexUnreadThreadReader {
-    static func readUnreadThreadIDs(codexHome: URL) -> Set<String>? {
+    private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+    static func readUnreadThreadIDs(codexHome: URL) -> CodexUnreadThreadReadResult {
         let url = codexHome.appendingPathComponent(".codex-global-state.json")
         guard let data = try? Data(contentsOf: url),
-              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let persistedState = object["electron-persisted-atom-state"] as? [String: Any],
-              let unreadByHost = persistedState["unread-thread-ids-by-host-v1"] as? [String: Any] else {
-            return nil
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return .unavailable
+        }
+        guard let unreadState = unreadStateValue(in: object) else {
+            return .available([])
+        }
+        let threadIDs = collectThreadIDs(from: unreadState)
+        return .available(visibleUserThreadIDs(from: threadIDs, codexHome: codexHome))
+    }
+
+    private static func unreadStateValue(in object: [String: Any]) -> Any? {
+        if let persistedState = object["electron-persisted-atom-state"] as? [String: Any],
+           let value = persistedState["unread-thread-ids-by-host-v1"] {
+            return value
+        }
+        return object["unread-thread-ids-by-host-v1"]
+    }
+
+    private static func collectThreadIDs(from value: Any) -> Set<String> {
+        var threadIDs = Set<String>()
+        if let string = value as? String {
+            if looksLikeThreadID(string) {
+                threadIDs.insert(string)
+            }
+            return threadIDs
+        }
+        if let strings = value as? [String] {
+            threadIDs.formUnion(strings.filter(looksLikeThreadID))
+            return threadIDs
+        }
+        if let array = value as? [Any] {
+            for item in array {
+                threadIDs.formUnion(collectThreadIDs(from: item))
+            }
+            return threadIDs
+        }
+        if let dictionary = value as? [String: Any] {
+            for item in dictionary.values {
+                threadIDs.formUnion(collectThreadIDs(from: item))
+            }
+        }
+        return threadIDs
+    }
+
+    private static func looksLikeThreadID(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.count >= 24 && trimmed.contains("-")
+    }
+
+    private static func visibleUserThreadIDs(from threadIDs: Set<String>, codexHome: URL) -> Set<String> {
+        guard !threadIDs.isEmpty else { return [] }
+        let databaseURL = codexHome.appendingPathComponent("state_5.sqlite")
+        guard FileManager.default.fileExists(atPath: databaseURL.path) else {
+            return threadIDs
         }
 
-        let localUnread = unreadByHost["local"] as? [String] ?? []
-        return Set(localUnread.filter { !$0.isEmpty })
+        var database: OpaquePointer?
+        let openStatus = sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil)
+        guard openStatus == SQLITE_OK, let database else {
+            if let database {
+                sqlite3_close(database)
+            }
+            return threadIDs
+        }
+        defer { sqlite3_close(database) }
+        sqlite3_busy_timeout(database, 100)
+
+        let placeholders = Array(repeating: "?", count: threadIDs.count).joined(separator: ",")
+        let sql = """
+        SELECT id
+        FROM threads
+        WHERE id IN (\(placeholders))
+          AND archived = 0
+          AND has_user_event = 1
+          AND COALESCE(thread_source, 'user') != 'subagent'
+        """
+
+        var statement: OpaquePointer?
+        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+        guard prepareStatus == SQLITE_OK, let statement else {
+            if let statement {
+                sqlite3_finalize(statement)
+            }
+            return threadIDs
+        }
+        defer { sqlite3_finalize(statement) }
+
+        for (index, id) in threadIDs.sorted().enumerated() {
+            sqlite3_bind_text(statement, Int32(index + 1), id, -1, sqliteTransient)
+        }
+
+        var visibleIDs = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let text = sqlite3_column_text(statement, 0) {
+                visibleIDs.insert(String(cString: text))
+            }
+        }
+        return visibleIDs
     }
 }
 

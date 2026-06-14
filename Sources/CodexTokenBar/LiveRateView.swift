@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private enum LiveRatePanelLayout {
@@ -386,8 +387,8 @@ private struct FloatingAppearanceMiniButtonLabel: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(Rectangle())
+        .frame(maxWidth: .infinity, minHeight: 20, maxHeight: .infinity)
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .foregroundStyle(isAccent ? AppTheme.accentBlue : .primary)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -403,6 +404,8 @@ private struct FloatingAppearanceMiniButtonLabel: View {
 private struct FloatingUnreadEffectPicker: View {
     @Binding var selection: String
     @State private var isPresented = false
+    @State private var localClickMonitor: Any?
+    @State private var globalClickMonitor: Any?
 
     var body: some View {
         Button {
@@ -417,6 +420,7 @@ private struct FloatingUnreadEffectPicker: View {
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(alignment: .topLeading) {
             if isPresented {
                 unreadEffectPanel
@@ -427,6 +431,12 @@ private struct FloatingUnreadEffectPicker: View {
         }
         .zIndex(isPresented ? 20 : 0)
         .help("选择未读时悬浮窗背景动效")
+        .onChange(of: isPresented) { _, presented in
+            presented ? installDismissMonitors() : removeDismissMonitors()
+        }
+        .onDisappear {
+            removeDismissMonitors()
+        }
     }
 
     private var unreadEffectPanel: some View {
@@ -435,7 +445,7 @@ private struct FloatingUnreadEffectPicker: View {
                 Text("消息提醒")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.primary)
-                Text("未读时显示涟漪")
+                Text("未读时选择涟漪或扫光")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
             }
@@ -443,10 +453,11 @@ private struct FloatingUnreadEffectPicker: View {
             HStack(spacing: 4) {
                 unreadEffectOption(.off)
                 unreadEffectOption(.ripple)
+                unreadEffectOption(.shimmer)
             }
         }
         .padding(8)
-        .frame(width: 126, alignment: .leading)
+        .frame(width: 156, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.white)
@@ -461,6 +472,7 @@ private struct FloatingUnreadEffectPicker: View {
     private func unreadEffectOption(_ effect: FloatingPanelUnreadEffect) -> some View {
         Button {
             selection = effect.rawValue
+            triggerUnreadEffectPreview(effect)
             isPresented = false
         } label: {
             Text(effect.label)
@@ -480,6 +492,48 @@ private struct FloatingUnreadEffectPicker: View {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .stroke(selection == effect.rawValue ? AppTheme.accentBlue.opacity(0.22) : AppTheme.border.opacity(0.45), lineWidth: 1)
         )
+    }
+
+    private func triggerUnreadEffectPreview(_ effect: FloatingPanelUnreadEffect) {
+        guard effect != .off else {
+            UserDefaults.standard.set(0.0, forKey: FloatingPanelAppearance.unreadPreviewUntilKey)
+            return
+        }
+        let duration: TimeInterval = 3.2
+        let previewUntil = Date.timeIntervalSinceReferenceDate + duration
+        UserDefaults.standard.set(previewUntil, forKey: FloatingPanelAppearance.unreadPreviewUntilKey)
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.15) {
+            let currentPreviewUntil = UserDefaults.standard.double(forKey: FloatingPanelAppearance.unreadPreviewUntilKey)
+            if currentPreviewUntil <= previewUntil {
+                UserDefaults.standard.set(0.0, forKey: FloatingPanelAppearance.unreadPreviewUntilKey)
+            }
+        }
+    }
+
+    private func installDismissMonitors() {
+        guard localClickMonitor == nil, globalClickMonitor == nil else { return }
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                isPresented = false
+            }
+            return event
+        }
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                isPresented = false
+            }
+        }
+    }
+
+    private func removeDismissMonitors() {
+        if let localClickMonitor {
+            NSEvent.removeMonitor(localClickMonitor)
+            self.localClickMonitor = nil
+        }
+        if let globalClickMonitor {
+            NSEvent.removeMonitor(globalClickMonitor)
+            self.globalClickMonitor = nil
+        }
     }
 }
 
@@ -526,6 +580,9 @@ struct FloatingPanelPaletteControl: View {
     @Binding var styleRaw: String
     var isVertical = false
     @State private var isPresented = false
+    @State private var localClickMonitor: Any?
+    @State private var globalClickMonitor: Any?
+    @State private var scheduledClose: DispatchWorkItem?
 
     var body: some View {
         Button {
@@ -537,10 +594,18 @@ struct FloatingPanelPaletteControl: View {
             )
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             palettePopover
         }
         .help("调整悬浮窗背景渐变")
+        .onChange(of: isPresented) { _, presented in
+            presented ? installDismissMonitors() : removeDismissMonitors(closeColorPanel: true)
+        }
+        .onDisappear {
+            removeDismissMonitors(closeColorPanel: true)
+        }
     }
 
     private var palettePopover: some View {
@@ -578,6 +643,7 @@ struct FloatingPanelPaletteControl: View {
                 endHex = FloatingPanelAppearance.defaultEndHex
                 directionRaw = FloatingPanelAppearance.defaultDirection
                 styleRaw = FloatingPanelAppearance.defaultStyle
+                closePaletteSoon()
             } label: {
                 Label("恢复默认", systemImage: "arrow.counterclockwise")
                     .font(.system(size: 11, weight: .semibold))
@@ -587,6 +653,18 @@ struct FloatingPanelPaletteControl: View {
         }
         .padding(14)
         .frame(width: 260, alignment: .leading)
+        .onChange(of: startHex) { _, _ in
+            schedulePaletteClose(after: 0.85)
+        }
+        .onChange(of: endHex) { _, _ in
+            schedulePaletteClose(after: 0.85)
+        }
+        .onChange(of: directionRaw) { _, _ in
+            closePaletteSoon()
+        }
+        .onChange(of: styleRaw) { _, _ in
+            closePaletteSoon()
+        }
     }
 
     private var normalizedDirectionBinding: Binding<String> {
@@ -623,6 +701,68 @@ struct FloatingPanelPaletteControl: View {
             }
         )
     }
+
+    private func installDismissMonitors() {
+        guard localClickMonitor == nil, globalClickMonitor == nil else { return }
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
+            if shouldDismissPalette(for: event) {
+                DispatchQueue.main.async {
+                    closePaletteNow()
+                }
+            }
+            return event
+        }
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
+            DispatchQueue.main.async {
+                closePaletteNow()
+            }
+        }
+    }
+
+    private func removeDismissMonitors(closeColorPanel: Bool) {
+        scheduledClose?.cancel()
+        scheduledClose = nil
+        if let localClickMonitor {
+            NSEvent.removeMonitor(localClickMonitor)
+            self.localClickMonitor = nil
+        }
+        if let globalClickMonitor {
+            NSEvent.removeMonitor(globalClickMonitor)
+            self.globalClickMonitor = nil
+        }
+        if closeColorPanel {
+            NSColorPanel.shared.close()
+        }
+    }
+
+    private func shouldDismissPalette(for event: NSEvent) -> Bool {
+        guard let window = event.window else { return true }
+        if window is NSColorPanel {
+            return false
+        }
+        if window is NSPanel {
+            return false
+        }
+        return true
+    }
+
+    private func schedulePaletteClose(after delay: TimeInterval) {
+        scheduledClose?.cancel()
+        let work = DispatchWorkItem {
+            closePaletteNow()
+        }
+        scheduledClose = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func closePaletteSoon() {
+        schedulePaletteClose(after: 0.12)
+    }
+
+    private func closePaletteNow() {
+        isPresented = false
+        removeDismissMonitors(closeColorPanel: true)
+    }
 }
 
 struct DisplaySurfaceToggleButton: View {
@@ -634,25 +774,27 @@ struct DisplaySurfaceToggleButton: View {
         Button {
             isOn.toggle()
         } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isOn ? AppTheme.accentBlue.opacity(0.14) : AppTheme.raisedBackground.opacity(0.72))
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(isOn ? AppTheme.accentBlue.opacity(0.24) : AppTheme.border.opacity(0.82), lineWidth: 1)
+
                 Label(title, systemImage: isOn ? "checkmark.circle.fill" : systemImage)
                     .font(.system(size: 10, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.78)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 5)
                     .frame(maxWidth: .infinity)
+            }
+            .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 5)
-        .contentShape(Rectangle())
+        .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .foregroundStyle(isOn ? AppTheme.accentBlue : .secondary)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(isOn ? AppTheme.accentBlue.opacity(0.14) : AppTheme.raisedBackground.opacity(0.72))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(isOn ? AppTheme.accentBlue.opacity(0.24) : AppTheme.border.opacity(0.82), lineWidth: 1)
-        )
         .help(isOn ? "关闭\(title)" : "开启\(title)")
     }
 }

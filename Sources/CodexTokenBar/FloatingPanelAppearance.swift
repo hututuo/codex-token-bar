@@ -71,6 +71,7 @@ enum FloatingPanelGradientStyle: String, CaseIterable, Identifiable {
 enum FloatingPanelUnreadEffect: String, CaseIterable, Identifiable {
     case off
     case ripple
+    case shimmer
 
     var id: String { rawValue }
 
@@ -80,6 +81,8 @@ enum FloatingPanelUnreadEffect: String, CaseIterable, Identifiable {
             return "关"
         case .ripple:
             return "涟漪"
+        case .shimmer:
+            return "扫光"
         }
     }
 
@@ -89,6 +92,8 @@ enum FloatingPanelUnreadEffect: String, CaseIterable, Identifiable {
             return "关闭消息提醒背景效果"
         case .ripple:
             return "未读时显示边框回弹涟漪"
+        case .shimmer:
+            return "未读时显示柔和扫光"
         }
     }
 }
@@ -99,6 +104,7 @@ struct FloatingPanelAppearance: Equatable {
     static let directionKey = "floatingPanelGradientDirection"
     static let styleKey = "floatingPanelGradientStyle"
     static let unreadEffectKey = "floatingPanelUnreadEffect"
+    static let unreadPreviewUntilKey = "floatingPanelUnreadPreviewUntil"
 
     static let defaultStartHex = "#E6F4FF"
     static let defaultEndHex = "#D4E8FF"

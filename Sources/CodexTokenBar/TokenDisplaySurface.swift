@@ -124,6 +124,7 @@ struct TokenDisplaySnapshot {
     }
 
     var compactUsageStatus: String {
+        let cardSuffix = quota.compactLimitCardSuffix
         guard quota.isAvailable else {
             if quota.status.contains("失败") {
                 return "读取失败"
@@ -132,16 +133,16 @@ struct TokenDisplaySnapshot {
         }
 
         if let pace = quota.sevenDayPaceStatus {
-            return "\(pace.compactTitle)(\(pace.compactDetail))"
+            return "\(pace.compactTitle)(\(pace.compactDetail)\(cardSuffix))"
         }
 
         if let sevenDay = quota.sevenDay {
-            return "7d剩\(sevenDay.remainingPercent)%"
+            return "7d剩\(sevenDay.remainingPercent)%\(cardSuffix)"
         }
         if let fiveHour = quota.fiveHour {
-            return "5h剩\(fiveHour.remainingPercent)%"
+            return "5h剩\(fiveHour.remainingPercent)%\(cardSuffix)"
         }
-        return "额度已读"
+        return "额度已读\(cardSuffix)"
     }
 }
 
@@ -154,43 +155,114 @@ struct TokenDisplayCard: View {
     @Environment(\.tokenDisplayScale) private var displayScale
 
     var body: some View {
-        VStack(alignment: .center, spacing: 3.scaled(by: displayScale)) {
-            HStack(alignment: .center, spacing: 8.scaled(by: displayScale)) {
-                HStack(alignment: .lastTextBaseline, spacing: 4.scaled(by: displayScale)) {
-                    Text(String(format: "%.1f", snapshot.rate))
-                        .font(.system(size: 18.scaled(by: displayScale), weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                        .frame(width: 56.scaled(by: displayScale), alignment: .leading)
-                    Text("tok/s")
-                        .font(.system(size: 7.scaled(by: displayScale), weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
+        GeometryReader { proxy in
+            let rowSpacing = 4.scaled(by: displayScale)
+            let rateRowHeight = 30.scaled(by: displayScale)
+            let metricRowHeight = 13.scaled(by: displayScale)
+            let quotaRowHeight = 16.5.scaled(by: displayScale)
+            let fixedContentHeight = rateRowHeight + metricRowHeight + quotaRowHeight + rowSpacing * 2
+            let topInset = max(0, (proxy.size.height - fixedContentHeight) / 2)
 
-                TokenDisplayRateBar(
-                    rate: snapshot.rate,
-                    usageStatus: snapshot.compactUsageStatus,
-                    lockState: lockState,
-                    lockTargetDescription: lockTargetDescription,
-                    onToggleLock: onToggleLock,
-                    onClose: onClose
-                )
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+            VStack(alignment: .center, spacing: rowSpacing) {
+                rateRow
+                    .frame(height: rateRowHeight, alignment: .center)
+
+                metricRow
+                    .frame(height: metricRowHeight, alignment: .center)
+
+                TokenQuotaMiniStrip(snapshot: snapshot.quota)
+                    .frame(height: quotaRowHeight, alignment: .center)
             }
-            .frame(maxWidth: .infinity, alignment: .center)
-
-            HStack(spacing: 6.scaled(by: displayScale)) {
-                TokenDisplayMetric(label: "总", value: snapshot.consumedTokens.abbreviatedTokens)
-                    .offset(x: -TokenDisplayLayout.metricOutset.scaled(by: displayScale))
-                TokenDisplayMetric(label: "今", value: snapshot.todayTokens.abbreviatedTokens)
-                TokenDisplayMetric(label: "次", value: "\(snapshot.todayRequests)")
-                    .offset(x: TokenDisplayLayout.metricOutset.scaled(by: displayScale))
+            .padding(.top, topInset)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+            .overlay(alignment: .topLeading) {
+                cardLockButton
             }
-            .frame(maxWidth: .infinity, alignment: .center)
+            .overlay(alignment: .topTrailing) {
+                cardCloseButton
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
 
-            TokenQuotaMiniStrip(snapshot: snapshot.quota)
-                .frame(maxWidth: .infinity, alignment: .center)
+    private var rateRow: some View {
+        HStack(alignment: .center, spacing: 9.scaled(by: displayScale)) {
+            HStack(alignment: .lastTextBaseline, spacing: 4.scaled(by: displayScale)) {
+                Text(String(format: "%.1f", snapshot.rate))
+                    .font(.system(size: 20.scaled(by: displayScale), weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .frame(width: 64.scaled(by: displayScale), alignment: .leading)
+                    .offset(y: 1.scaled(by: displayScale))
+                Text("tok/s")
+                    .font(.system(size: 8.6.scaled(by: displayScale), weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .offset(y: 3.5.scaled(by: displayScale))
+            }
+            .frame(height: 30.scaled(by: displayScale), alignment: .center)
+
+            TokenDisplayRateBar(
+                rate: snapshot.rate,
+                usageStatus: snapshot.compactUsageStatus,
+                lockState: nil,
+                lockTargetDescription: nil,
+                onToggleLock: nil,
+                onClose: nil
+            )
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    @ViewBuilder
+    private var cardLockButton: some View {
+        if let lockState, let onToggleLock {
+            Button(action: onToggleLock) {
+                Image(systemName: lockState.systemImage)
+                    .font(.system(size: 7.8.scaled(by: displayScale), weight: .bold))
+                    .foregroundStyle(.primary.opacity(0.9))
+                    .frame(width: 22.scaled(by: displayScale), height: 20.scaled(by: displayScale), alignment: .center)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(cardLockHelpText)
+            .offset(x: -7.scaled(by: displayScale), y: -5.scaled(by: displayScale))
+        }
+    }
+
+    @ViewBuilder
+    private var cardCloseButton: some View {
+        if let onClose {
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 7.8.scaled(by: displayScale), weight: .bold))
+                    .foregroundStyle(.secondary.opacity(0.78))
+                    .frame(width: 22.scaled(by: displayScale), height: 20.scaled(by: displayScale), alignment: .center)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .offset(x: 7.scaled(by: displayScale), y: -5.scaled(by: displayScale))
+        }
+    }
+
+    private var cardLockHelpText: String {
+        guard lockState == .locked else {
+            return TokenDisplayLockState.unlocked.helpText
+        }
+        if let lockTargetDescription, !lockTargetDescription.isEmpty {
+            return "已锁定到 \(lockTargetDescription)"
+        }
+        return TokenDisplayLockState.locked.helpText
+    }
+
+    private var metricRow: some View {
+        HStack(spacing: 6.scaled(by: displayScale)) {
+            TokenDisplayMetric(label: "总", value: snapshot.consumedTokens.abbreviatedTokens)
+                .offset(x: -TokenDisplayLayout.metricOutset.scaled(by: displayScale))
+            TokenDisplayMetric(label: "今", value: snapshot.todayTokens.abbreviatedTokens)
+            TokenDisplayMetric(label: "次", value: "\(snapshot.todayRequests)")
+                .offset(x: TokenDisplayLayout.metricOutset.scaled(by: displayScale))
         }
         .frame(maxWidth: .infinity, alignment: .center)
     }
@@ -204,8 +276,8 @@ struct TokenQuotaMiniStrip: View {
         GeometryReader { proxy in
             let windows = [snapshot.fiveHour, snapshot.sevenDay].compactMap { $0 }
             let spacing = 4.scaled(by: displayScale)
-            let height = 13.scaled(by: displayScale)
-            let segmentWidth = max(44.scaled(by: displayScale), (proxy.size.width - spacing * CGFloat(max(windows.count - 1, 0))) / CGFloat(max(windows.count, 1)))
+            let height = 16.5.scaled(by: displayScale)
+            let segmentWidth = max(56.scaled(by: displayScale), (proxy.size.width - spacing * CGFloat(max(windows.count - 1, 0))) / CGFloat(max(windows.count, 1)))
 
             HStack(spacing: spacing) {
                 ForEach(windows, id: \.label) { window in
@@ -214,7 +286,7 @@ struct TokenQuotaMiniStrip: View {
                 }
                 if !snapshot.isAvailable {
                     Text("额度 --")
-                        .font(.system(size: 8.scaled(by: displayScale), weight: .semibold))
+                        .font(.system(size: 9.2.scaled(by: displayScale), weight: .semibold))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -222,7 +294,7 @@ struct TokenQuotaMiniStrip: View {
             }
             .frame(width: proxy.size.width, height: height, alignment: .center)
         }
-        .frame(height: 13.scaled(by: displayScale))
+        .frame(height: 16.5.scaled(by: displayScale))
         .help(quotaHelpText)
     }
 
@@ -254,7 +326,7 @@ struct TokenQuotaMiniSegment: View {
                     .fill(AppTheme.accentBlue.opacity(0.78))
                     .frame(width: max(2, proxy.size.width * fillFraction))
                 Text("\(window.compactDisplayLabel) \(window.remainingPercent)% \(window.compactResetText)")
-                    .font(.system(size: 8.scaled(by: displayScale), weight: .bold))
+                    .font(.system(size: 9.4.scaled(by: displayScale), weight: .bold))
                     .foregroundStyle(.primary.opacity(0.82))
                     .monospacedDigit()
                     .lineLimit(1)
@@ -262,7 +334,7 @@ struct TokenQuotaMiniSegment: View {
                     .padding(.horizontal, 3.scaled(by: displayScale))
             }
         }
-        .frame(height: 13.scaled(by: displayScale))
+        .frame(height: 16.5.scaled(by: displayScale))
     }
 
     private var floatingTrackColor: Color {
@@ -298,11 +370,15 @@ struct TokenDisplayRateBar: View {
     }
 
     private var controlHitSize: CGFloat {
-        max(26, 20.scaled(by: displayScale))
+        max(30, 24.scaled(by: displayScale))
     }
 
-    private var rateCaption: String {
-        lockState == .locked ? "锁定" : "总速"
+    private var leadingControlInset: CGFloat {
+        lockState != nil && onToggleLock != nil ? 13.scaled(by: displayScale) : 0
+    }
+
+    private var trailingControlInset: CGFloat {
+        onClose != nil ? 11.scaled(by: displayScale) : 0
     }
 
     private var lockHelpText: String {
@@ -316,49 +392,28 @@ struct TokenDisplayRateBar: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2.scaled(by: displayScale)) {
-            HStack(spacing: 1.scaled(by: displayScale)) {
+        GeometryReader { proxy in
+            let height = 30.scaled(by: displayScale)
+            let statusHeight = 13.scaled(by: displayScale)
+            let barHeight = 5.scaled(by: displayScale)
+            let contentDrop = 3.5.scaled(by: displayScale)
+            let barTop = 18.scaled(by: displayScale) + contentDrop
+            let leadingInset = leadingControlInset
+            let trailingInset = trailingControlInset
+            let contentWidth = max(1, proxy.size.width - leadingInset - trailingInset)
+            let barWidth = max(1, proxy.size.width - trailingInset)
+            let fillWidth = max(3.scaled(by: displayScale), barWidth * fillFraction)
+
+            ZStack(alignment: .topLeading) {
                 Text(usageStatus)
-                    .font(.system(size: 7.scaled(by: displayScale), weight: .semibold))
-                    .foregroundStyle(.secondary.opacity(0.86))
+                    .font(.system(size: 10.2.scaled(by: displayScale), weight: .semibold))
+                    .foregroundStyle(.secondary.opacity(0.92))
                     .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                    .minimumScaleFactor(0.86)
+                    .truncationMode(.tail)
+                    .frame(width: contentWidth, height: statusHeight, alignment: .leading)
+                    .position(x: leadingInset + contentWidth / 2, y: statusHeight / 2 + contentDrop)
 
-                Spacer(minLength: 3.scaled(by: displayScale))
-
-                Text(rateCaption)
-                    .font(.system(size: 7.scaled(by: displayScale), weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-
-                if let lockState, let onToggleLock {
-                    Button(action: onToggleLock) {
-                        Image(systemName: lockState.systemImage)
-                            .font(.system(size: 7.scaled(by: displayScale), weight: .bold))
-                            .foregroundStyle(lockState == .locked ? AppTheme.accentBlue : .secondary.opacity(0.72))
-                            .frame(width: controlHitSize, height: controlHitSize)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(lockHelpText)
-                }
-
-                if let onClose {
-                    Button(action: onClose) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 7.scaled(by: displayScale), weight: .bold))
-                            .foregroundStyle(.secondary.opacity(0.72))
-                            .frame(width: controlHitSize, height: controlHitSize)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-
-            GeometryReader { proxy in
-                let width = max(3.scaled(by: displayScale), proxy.size.width * fillFraction)
                 ZStack(alignment: .leading) {
                     Capsule()
                         .fill(floatingTrackColor)
@@ -371,12 +426,48 @@ struct TokenDisplayRateBar: View {
                                 endPoint: .top
                             )
                         )
-                        .frame(width: width)
+                        .frame(width: fillWidth)
                 }
+                .frame(width: barWidth, height: barHeight, alignment: .leading)
+                .position(x: barWidth / 2, y: barTop + barHeight / 2)
+
+                controls
+                    .frame(width: proxy.size.width, height: height, alignment: .topLeading)
             }
-            .frame(height: 4.scaled(by: displayScale))
+            .frame(width: proxy.size.width, height: height, alignment: .topLeading)
         }
-        .frame(height: max(26, 22.scaled(by: displayScale)))
+        .frame(height: 30.scaled(by: displayScale), alignment: .top)
+    }
+
+    @ViewBuilder
+    private var controls: some View {
+        ZStack(alignment: .topLeading) {
+            if let lockState, let onToggleLock {
+                Button(action: onToggleLock) {
+                    Image(systemName: lockState.systemImage)
+                        .font(.system(size: 7.8.scaled(by: displayScale), weight: .bold))
+                        .foregroundStyle(.primary.opacity(0.88))
+                        .frame(width: controlHitSize, height: controlHitSize, alignment: .center)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(lockHelpText)
+                .position(x: 4.5.scaled(by: displayScale), y: 3.5.scaled(by: displayScale))
+            }
+
+            if let onClose {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 7.8.scaled(by: displayScale), weight: .bold))
+                        .foregroundStyle(.secondary.opacity(0.76))
+                        .frame(width: controlHitSize, height: controlHitSize, alignment: .center)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .offset(x: 7.scaled(by: displayScale), y: -5.scaled(by: displayScale))
+            }
+        }
     }
 
     private var floatingTrackColor: Color {
@@ -404,11 +495,11 @@ struct TokenDisplayMetric: View {
     var body: some View {
         HStack(spacing: 3.scaled(by: displayScale)) {
             Text(label)
-                .font(.system(size: 7.scaled(by: displayScale), weight: .medium))
+                .font(.system(size: 9.4.scaled(by: displayScale), weight: .medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Text(value)
-                .font(.system(size: 7.scaled(by: displayScale), weight: .semibold))
+                .font(.system(size: 9.4.scaled(by: displayScale), weight: .semibold))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)

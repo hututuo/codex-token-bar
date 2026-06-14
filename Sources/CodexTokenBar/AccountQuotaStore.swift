@@ -84,6 +84,25 @@ struct AccountQuotaWindow: Equatable {
     }
 }
 
+struct AccountQuotaLimitCard: Equatable {
+    let id: String
+    let limitName: String?
+    let planType: String?
+    let fiveHour: AccountQuotaWindow?
+    let sevenDay: AccountQuotaWindow?
+
+    var displayName: String {
+        if let limitName, !limitName.isEmpty {
+            return limitName
+        }
+        return id
+    }
+
+    var hasQuotaWindows: Bool {
+        fiveHour != nil || sevenDay != nil
+    }
+}
+
 enum AccountQuotaPaceSeverity: Equatable {
     case urgent
     case fast
@@ -110,6 +129,7 @@ struct AccountQuotaSnapshot: Equatable {
     var planType: String?
     var limitName: String?
     var accountName: String?
+    var limitCards: [AccountQuotaLimitCard] = []
     var status: String = "额度未读取"
     var updatedAt: Date?
 
@@ -136,6 +156,11 @@ struct AccountQuotaSnapshot: Equatable {
         return accountName
     }
 
+    var compactLimitCardSuffix: String {
+        guard limitCards.count > 1 else { return "" }
+        return " · \(limitCards.count)卡"
+    }
+
     var sevenDayPaceStatus: AccountQuotaPaceStatus? {
         guard let sevenDay,
               sevenDay.resetsAt != nil,
@@ -153,9 +178,9 @@ struct AccountQuotaSnapshot: Equatable {
         let isEvening = hour >= 18 || hour < 2
         let deltaText: String
         if delta < 0 {
-            deltaText = "少 \(abs(delta))%"
+            deltaText = "余量低 \(abs(delta))%"
         } else if delta > 0 {
-            deltaText = "多 \(delta)%"
+            deltaText = "余量高 \(delta)%"
         } else {
             deltaText = "正好贴线"
         }
@@ -234,9 +259,9 @@ struct AccountQuotaSnapshot: Equatable {
         case ...(-20):
             return AccountQuotaPaceStatus(
                 severity: .urgent,
-                iconName: "figure.outdoor.cycle",
-                title: "差得有点多，使劲蹬",
-                compactTitle: "使劲蹬",
+                iconName: "exclamationmark.triangle",
+                title: "余量低不少，先省着",
+                compactTitle: "先省着",
                 detail: detail,
                 compactDetail: deltaText,
                 remainingPercent: remaining,
@@ -246,9 +271,9 @@ struct AccountQuotaSnapshot: Equatable {
         case ...(-8):
             return AccountQuotaPaceStatus(
                 severity: .fast,
-                iconName: "figure.outdoor.cycle",
-                title: "7天用快了，加油蹬",
-                compactTitle: "加油蹬",
+                iconName: "speedometer",
+                title: "7天用快了，慢一点",
+                compactTitle: "慢一点",
                 detail: detail,
                 compactDetail: deltaText,
                 remainingPercent: remaining,
@@ -492,11 +517,14 @@ private enum AccountQuotaReader {
 
     private static func parse(_ result: [String: Any]) -> AccountQuotaSnapshot {
         let byLimit = result["rateLimitsByLimitId"] as? [String: Any]
-        let codex = (byLimit?["codex"] as? [String: Any]) ?? (result["rateLimits"] as? [String: Any]) ?? [:]
-        let primary = parseWindow(codex["primary"] as? [String: Any], label: "5h")
-        let secondary = parseWindow(codex["secondary"] as? [String: Any], label: "7d")
-        let planType = codex["planType"] as? String
-        let limitName = codex["limitName"] as? String
+        let fallbackLimit = result["rateLimits"] as? [String: Any]
+        let limitCards = parseLimitCards(byLimit: byLimit, fallbackLimit: fallbackLimit)
+        let codex = (byLimit?["codex"] as? [String: Any]) ?? fallbackLimit ?? [:]
+        let primaryCard = limitCards.first
+        let primary = parseWindow(codex["primary"] as? [String: Any], label: "5h") ?? primaryCard?.fiveHour
+        let secondary = parseWindow(codex["secondary"] as? [String: Any], label: "7d") ?? primaryCard?.sevenDay
+        let planType = (codex["planType"] as? String) ?? primaryCard?.planType
+        let limitName = (codex["limitName"] as? String) ?? primaryCard?.limitName
         let accountName = readLocalAccountName()
 
         var snapshot = AccountQuotaSnapshot(
@@ -505,6 +533,7 @@ private enum AccountQuotaReader {
             planType: planType,
             limitName: limitName,
             accountName: accountName,
+            limitCards: limitCards,
             status: "额度已更新",
             updatedAt: Date()
         )
@@ -512,6 +541,46 @@ private enum AccountQuotaReader {
             snapshot.status = "额度暂无数据"
         }
         return snapshot
+    }
+
+    private static func parseLimitCards(byLimit: [String: Any]?, fallbackLimit: [String: Any]?) -> [AccountQuotaLimitCard] {
+        var cards: [AccountQuotaLimitCard] = []
+        if let byLimit {
+            for (id, value) in byLimit {
+                guard let raw = value as? [String: Any],
+                      let card = parseLimitCard(raw, fallbackID: id)
+                else {
+                    continue
+                }
+                cards.append(card)
+            }
+        } else if let fallbackLimit,
+                  let card = parseLimitCard(fallbackLimit, fallbackID: "codex") {
+            cards.append(card)
+        }
+
+        return cards
+            .filter(\.hasQuotaWindows)
+            .sorted { lhs, rhs in
+                if lhs.id == "codex" { return true }
+                if rhs.id == "codex" { return false }
+                return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+            }
+    }
+
+    private static func parseLimitCard(_ raw: [String: Any], fallbackID: String) -> AccountQuotaLimitCard? {
+        let id = (raw["limitId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let limitID = id?.isEmpty == false ? id! : fallbackID
+        let fiveHour = parseWindow(raw["primary"] as? [String: Any], label: "5h")
+        let sevenDay = parseWindow(raw["secondary"] as? [String: Any], label: "7d")
+        guard fiveHour != nil || sevenDay != nil else { return nil }
+        return AccountQuotaLimitCard(
+            id: limitID,
+            limitName: raw["limitName"] as? String,
+            planType: raw["planType"] as? String,
+            fiveHour: fiveHour,
+            sevenDay: sevenDay
+        )
     }
 
     private static func readLocalAccountName() -> String? {

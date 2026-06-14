@@ -1,9 +1,11 @@
 import AppKit
 import CoreGraphics
+import CoreVideo
+import QuartzCore
 import SwiftUI
 
 enum FloatingTokenPanelMetrics {
-    static let baseSize = NSSize(width: 201, height: 72)
+    static let baseSize = NSSize(width: 258, height: 88)
     static let baseCornerRadius: CGFloat = 14
     static let horizontalPadding: CGFloat = 10
     static let verticalPadding: CGFloat = 7
@@ -24,6 +26,68 @@ enum FloatingTokenPanelMetrics {
     }
 }
 
+private final class FloatingUnreadDisplayClock: ObservableObject, @unchecked Sendable {
+    @Published private(set) var time: TimeInterval = Date.timeIntervalSinceReferenceDate
+
+    private var displayLink: CVDisplayLink?
+    private var isRunning = false
+    private let timeLock = NSLock()
+    private var latestTime = Date.timeIntervalSinceReferenceDate
+    private var hasPendingMainUpdate = false
+
+    init() {
+        var link: CVDisplayLink?
+        if CVDisplayLinkCreateWithActiveCGDisplays(&link) == kCVReturnSuccess, let link {
+            let context = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+            CVDisplayLinkSetOutputCallback(link, { _, _, _, _, _, context in
+                guard let context else { return kCVReturnSuccess }
+                let clock = Unmanaged<FloatingUnreadDisplayClock>.fromOpaque(context).takeUnretainedValue()
+                clock.tick()
+                return kCVReturnSuccess
+            }, context)
+            displayLink = link
+        }
+    }
+
+    deinit {
+        stop()
+    }
+
+    func start() {
+        guard let displayLink, !isRunning else { return }
+        CVDisplayLinkStart(displayLink)
+        isRunning = true
+    }
+
+    func stop() {
+        guard let displayLink, isRunning else { return }
+        CVDisplayLinkStop(displayLink)
+        isRunning = false
+    }
+
+    private func tick() {
+        let nextTime = Date.timeIntervalSinceReferenceDate
+        var shouldDispatch = false
+        timeLock.lock()
+        latestTime = nextTime
+        if !hasPendingMainUpdate {
+            hasPendingMainUpdate = true
+            shouldDispatch = true
+        }
+        timeLock.unlock()
+
+        guard shouldDispatch else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.timeLock.lock()
+            let currentTime = self.latestTime
+            self.hasPendingMainUpdate = false
+            self.timeLock.unlock()
+            self.time = currentTime
+        }
+    }
+}
+
 @MainActor
 final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDelegate {
     @Published private(set) var isPresented = false
@@ -35,6 +99,8 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     private var lastExternalActivePID: pid_t?
     private var lastExternalClickLocation: NSPoint?
     private var lastExternalClickAt: Date?
+    private var lastExternalClickWindowNumber: Int?
+    private var lastExternalClickOwnerPID: pid_t?
     private var lockedAnchor: FloatingPanelWindowAnchor?
     private var followTimer: Timer?
     nonisolated(unsafe) private var globalMouseMonitor: Any?
@@ -42,6 +108,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     private var appliedLockState = false
     private let recentExternalClickTargetInterval: TimeInterval = 45
     private let screenPositionLockDescription = "屏幕位置"
+    private let lockTargetDescriptionKey = "floatingPanelLockTargetDescription"
     private let lockedOriginXKey = "floatingPanelLockedOriginX"
     private let lockedOriginYKey = "floatingPanelLockedOriginY"
 
@@ -191,8 +258,19 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     private func recordExternalMouseClick(at location: NSPoint) {
+        if let panel, panel.frame.contains(location) {
+            return
+        }
         lastExternalClickLocation = location
         lastExternalClickAt = Date()
+        if let clickedWindow = visibleWindows().first(where: { windowContainsClick(location, window: $0) }) {
+            lastExternalClickWindowNumber = clickedWindow.windowNumber
+            lastExternalClickOwnerPID = clickedWindow.ownerPID
+            lastExternalActivePID = clickedWindow.ownerPID
+        } else {
+            lastExternalClickWindowNumber = nil
+            lastExternalClickOwnerPID = nil
+        }
     }
 
     private func position(_ panel: NSPanel) {
@@ -332,7 +410,17 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             return nil
         }
 
-        return visibleWindows().first { window in
+        let windows = visibleWindows()
+        if let lastExternalClickWindowNumber,
+           let clickedWindow = windows.first(where: { $0.windowNumber == lastExternalClickWindowNumber }) {
+            return clickedWindow
+        }
+        if let lastExternalClickOwnerPID,
+           let clickedWindow = windows.first(where: { $0.ownerPID == lastExternalClickOwnerPID && windowContainsClick(location, window: $0) }) {
+            return clickedWindow
+        }
+
+        return windows.first { window in
             windowContainsClick(location, window: window)
         }
     }
@@ -400,6 +488,11 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     private func refreshFloatingPanelLockStatus() {
+        if let lockTargetDescription, !lockTargetDescription.isEmpty {
+            UserDefaults.standard.set(lockTargetDescription, forKey: lockTargetDescriptionKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: lockTargetDescriptionKey)
+        }
         guard let hostingController = panel?.contentViewController as? NSHostingController<FloatingTokenPanelView> else {
             return
         }
@@ -454,6 +547,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         }
         let blockedBundles: Set<String> = [
             "com.apple.controlcenter",
+            "com.apple.dock",
             "com.apple.loginwindow",
             "com.apple.notificationcenterui",
             "com.surteesstudios.Bartender"
@@ -462,8 +556,10 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             return false
         }
         let blockedNames: Set<String> = [
+            "Dock",
             "Window Server",
-            "Menubar"
+            "Menubar",
+            "程序坞"
         ]
         return !blockedNames.contains(ownerName)
     }
@@ -499,11 +595,16 @@ struct FloatingTokenPanelView: View {
     @AppStorage(FloatingPanelAppearance.directionKey) private var floatingPanelGradientDirection = FloatingPanelAppearance.defaultDirection
     @AppStorage(FloatingPanelAppearance.styleKey) private var floatingPanelGradientStyle = FloatingPanelAppearance.defaultStyle
     @AppStorage(FloatingPanelAppearance.unreadEffectKey) private var floatingPanelUnreadEffect = FloatingPanelAppearance.defaultUnreadEffect
+    @AppStorage(FloatingPanelAppearance.unreadPreviewUntilKey) private var floatingPanelUnreadPreviewUntil = 0.0
     let onClose: () -> Void
 
     var body: some View {
-        let unreadCount = taskCompletionMonitor.unreadCompletedTaskCount
+        let unreadCount = taskCompletionMonitor.unreadThreadCount
         let unreadEffect = FloatingPanelUnreadEffect(rawValue: floatingPanelUnreadEffect) ?? .ripple
+        let isPreviewingUnreadEffect = unreadCount == 0
+            && unreadEffect != .off
+            && floatingPanelUnreadPreviewUntil > Date.timeIntervalSinceReferenceDate
+        let shouldShowUnreadEffect = unreadEffect != .off && (unreadCount > 0 || isPreviewingUnreadEffect)
         let scale = FloatingTokenPanelMetrics.clampedScale(floatingPanelScale)
         let size = FloatingTokenPanelMetrics.size(scale: floatingPanelScale)
         let cornerRadius = FloatingTokenPanelMetrics.cornerRadius(scale: floatingPanelScale)
@@ -520,7 +621,7 @@ struct FloatingTokenPanelView: View {
                 cornerRadius: cornerRadius,
                 appearance: appearance
             )
-            if unreadCount > 0, unreadEffect != .off {
+            if shouldShowUnreadEffect {
                 FloatingUnreadEffectOverlay(
                     effect: unreadEffect,
                     color: appearance.unreadIndicatorColor,
@@ -547,14 +648,14 @@ struct FloatingTokenPanelView: View {
                 color: appearance.unreadIndicatorColor,
                 strokeColor: appearance.unreadIndicatorStrokeColor,
                 scale: scale,
-                onClear: taskCompletionMonitor.markCompletedTasksSeen
+                onClear: taskCompletionMonitor.refreshUnreadThreadStatus
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .onTapGesture {
-            taskCompletionMonitor.markCompletedTasksSeen()
+            taskCompletionMonitor.refreshUnreadThreadStatus()
         }
         .animation(.easeInOut(duration: 0.18), value: unreadCount > 0)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -579,7 +680,190 @@ private struct FloatingUnreadEffectOverlay: View {
             EmptyView()
         case .ripple:
             FloatingUnreadRippleOverlay(color: color, cornerRadius: cornerRadius, scale: scale)
+        case .shimmer:
+            FloatingUnreadShimmerOverlay(color: color, cornerRadius: cornerRadius, scale: scale)
         }
+    }
+}
+
+private struct FloatingUnreadShimmerOverlay: NSViewRepresentable {
+    let color: Color
+    let cornerRadius: CGFloat
+    let scale: CGFloat
+
+    func makeNSView(context: Context) -> FloatingUnreadShimmerView {
+        let view = FloatingUnreadShimmerView()
+        view.configure(color: nsColor, cornerRadius: cornerRadius, scale: scale)
+        return view
+    }
+
+    func updateNSView(_ nsView: FloatingUnreadShimmerView, context: Context) {
+        nsView.configure(color: nsColor, cornerRadius: cornerRadius, scale: scale)
+    }
+
+    private var nsColor: NSColor {
+        (NSColor(color).usingColorSpace(.deviceRGB) ?? .systemBlue)
+    }
+}
+
+private final class FloatingUnreadShimmerView: NSView {
+    private let tintLayer = CALayer()
+    private let sweepLayer = CAGradientLayer()
+    private let highlightLayer = CAGradientLayer()
+    private var currentColor = NSColor.systemBlue
+    private var currentCornerRadius: CGFloat = 14
+    private var currentScale: CGFloat = 1
+    private var lastBounds: CGRect = .zero
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        setupLayers()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        setupLayers()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            stopAnimations()
+        } else {
+            updateLayoutIfNeeded(force: true)
+            startAnimations()
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        updateLayoutIfNeeded(force: false)
+    }
+
+    func configure(color: NSColor, cornerRadius: CGFloat, scale: CGFloat) {
+        let nextScale = max(scale, 0.1)
+        let needsLayout = abs(currentScale - nextScale) > 0.001
+            || abs(currentCornerRadius - cornerRadius) > 0.001
+        currentColor = color.usingColorSpace(.deviceRGB) ?? .systemBlue
+        currentCornerRadius = cornerRadius
+        currentScale = nextScale
+        layer?.cornerRadius = cornerRadius
+        layer?.cornerCurve = .continuous
+        updateColors()
+        updateLayoutIfNeeded(force: needsLayout)
+    }
+
+    private func setupLayers() {
+        guard let layer else { return }
+        tintLayer.opacity = 0.0
+        layer.addSublayer(tintLayer)
+
+        sweepLayer.startPoint = CGPoint(x: 0, y: 0.5)
+        sweepLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        sweepLayer.locations = [0.0, 0.30, 0.50, 0.70, 1.0]
+        sweepLayer.compositingFilter = "screenBlendMode"
+        layer.addSublayer(sweepLayer)
+
+        highlightLayer.startPoint = CGPoint(x: 0, y: 0.5)
+        highlightLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        highlightLayer.locations = [0.0, 0.45, 0.55, 1.0]
+        highlightLayer.compositingFilter = "screenBlendMode"
+        layer.addSublayer(highlightLayer)
+        updateColors()
+    }
+
+    private func updateColors() {
+        let accent = currentColor
+        tintLayer.backgroundColor = accent.withAlphaComponent(0.050).cgColor
+        sweepLayer.colors = [
+            NSColor.clear.cgColor,
+            accent.withAlphaComponent(0.30).cgColor,
+            NSColor.white.withAlphaComponent(0.45).cgColor,
+            accent.withAlphaComponent(0.24).cgColor,
+            NSColor.clear.cgColor
+        ]
+        highlightLayer.colors = [
+            NSColor.clear.cgColor,
+            NSColor.white.withAlphaComponent(0.00).cgColor,
+            NSColor.white.withAlphaComponent(0.26).cgColor,
+            NSColor.clear.cgColor
+        ]
+    }
+
+    private func updateLayoutIfNeeded(force: Bool) {
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        guard force || bounds != lastBounds else { return }
+        lastBounds = bounds
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        tintLayer.frame = bounds
+
+        let bandWidth = max(bounds.width * 0.62, 76 * currentScale)
+        let bandHeight = bounds.height * 2.0
+        let bandFrame = CGRect(x: 0, y: 0, width: bandWidth, height: bandHeight)
+        sweepLayer.bounds = bandFrame
+        sweepLayer.position = CGPoint(x: -bandWidth, y: bounds.midY)
+        sweepLayer.setAffineTransform(CGAffineTransform(rotationAngle: -0.20))
+
+        let highlightWidth = max(12 * currentScale, bandWidth * 0.16)
+        highlightLayer.bounds = CGRect(x: 0, y: 0, width: highlightWidth, height: bandHeight)
+        highlightLayer.position = CGPoint(x: -bandWidth, y: bounds.midY)
+        highlightLayer.setAffineTransform(CGAffineTransform(rotationAngle: -0.20))
+        CATransaction.commit()
+        startAnimations()
+    }
+
+    private func startAnimations() {
+        guard window != nil, bounds.width > 0, bounds.height > 0 else { return }
+        let bandWidth = max(bounds.width * 0.62, 76 * currentScale)
+        let fromX = -bandWidth * 0.8
+        let toX = bounds.width + bandWidth * 1.15
+        addSweepAnimation(to: sweepLayer, fromX: fromX, toX: toX, duration: 2.1)
+        addSweepAnimation(to: highlightLayer, fromX: fromX + bandWidth * 0.18, toX: toX + bandWidth * 0.18, duration: 2.1)
+
+        if tintLayer.animation(forKey: "floatingUnreadTintPulse") == nil {
+            let pulse = CABasicAnimation(keyPath: "opacity")
+            pulse.fromValue = 0.22
+            pulse.toValue = 0.58
+            pulse.duration = 1.05
+            pulse.autoreverses = true
+            pulse.repeatCount = .infinity
+            pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            tintLayer.add(pulse, forKey: "floatingUnreadTintPulse")
+        }
+    }
+
+    private func addSweepAnimation(to layer: CALayer, fromX: CGFloat, toX: CGFloat, duration: TimeInterval) {
+        let animationKey = "floatingUnreadSweep"
+        let currentAnimation = layer.animation(forKey: animationKey) as? CABasicAnimation
+        let currentFrom = (currentAnimation?.fromValue as? NSNumber)?.doubleValue
+        let currentTo = (currentAnimation?.toValue as? NSNumber)?.doubleValue
+        if currentAnimation != nil,
+           abs((currentFrom ?? .nan) - Double(fromX)) < 0.5,
+           abs((currentTo ?? .nan) - Double(toX)) < 0.5 {
+            return
+        }
+        let sweep = CABasicAnimation(keyPath: "position.x")
+        sweep.fromValue = fromX
+        sweep.toValue = toX
+        sweep.duration = duration
+        sweep.repeatCount = .infinity
+        sweep.timingFunction = CAMediaTimingFunction(name: .linear)
+        sweep.isRemovedOnCompletion = false
+        layer.add(sweep, forKey: animationKey)
+    }
+
+    private func stopAnimations() {
+        sweepLayer.removeAnimation(forKey: "floatingUnreadSweep")
+        highlightLayer.removeAnimation(forKey: "floatingUnreadSweep")
+        tintLayer.removeAnimation(forKey: "floatingUnreadTintPulse")
     }
 }
 
@@ -587,15 +871,20 @@ private struct FloatingUnreadRippleOverlay: View {
     let color: Color
     let cornerRadius: CGFloat
     let scale: CGFloat
+    @StateObject private var clock = FloatingUnreadDisplayClock()
 
     var body: some View {
-        TimelineView(.animation) { timeline in
-            Canvas { context, size in
-                drawPanelTint(in: &context, size: size, time: timeline.date.timeIntervalSinceReferenceDate)
-                drawCircularRippleReflections(in: &context, size: size, time: timeline.date.timeIntervalSinceReferenceDate)
-            }
+        Canvas(opaque: false, rendersAsynchronously: false) { context, size in
+            drawPanelTint(in: &context, size: size, time: clock.time)
+            drawCircularRippleReflections(in: &context, size: size, time: clock.time)
         }
         .mask(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .onAppear {
+            clock.start()
+        }
+        .onDisappear {
+            clock.stop()
+        }
     }
 
     private func drawPanelTint(in context: inout GraphicsContext, size: CGSize, time: TimeInterval) {
@@ -621,13 +910,15 @@ private struct FloatingUnreadRippleOverlay: View {
         let fadeOut = smoothPulseFade(phase)
 
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
-        let maxRadius = max(size.width, size.height) * 0.78
+        let maxRadius = max(max(size.width, size.height) * 0.82, size.height * 2.25)
         let baseRadius = maxRadius * CGFloat(easeOutSine(phase))
         let waveAlpha = fadeOut * (1.04 - 0.26 * phase)
         let rings: [(offset: CGFloat, alpha: Double, thickness: CGFloat)] = [
             (0, 1.00, 2.40),
-            (-8.0 * scale, 0.55, 1.75),
-            (-16.0 * scale, 0.28, 1.30)
+            (-6.2 * scale, 0.66, 2.08),
+            (-12.4 * scale, 0.46, 1.82),
+            (-18.6 * scale, 0.34, 1.58),
+            (-24.8 * scale, 0.24, 1.36)
         ]
         let sources = rippleSources(size: size, center: center)
 
@@ -677,7 +968,16 @@ private struct FloatingUnreadRippleOverlay: View {
     }
 
     private func rippleSources(size: CGSize, center: CGPoint) -> [RippleSource] {
-        [
+        let topFirst = center.y
+        let bottomFirst = size.height - center.y
+        let topSecond = 2 * size.height - center.y
+        let bottomSecond = size.height + center.y
+        let leftFirst = center.x
+        let rightFirst = size.width - center.x
+        let leftSecond = 2 * size.width - center.x
+        let rightSecond = size.width + center.x
+
+        var sources = [
             RippleSource(
                 point: center,
                 arrivalDistance: 0,
@@ -686,26 +986,50 @@ private struct FloatingUnreadRippleOverlay: View {
             ),
             RippleSource(
                 point: CGPoint(x: center.x, y: -center.y),
-                arrivalDistance: center.y,
+                arrivalDistance: topFirst,
                 strength: 0.84,
                 kind: .reflection
             ),
             RippleSource(
                 point: CGPoint(x: center.x, y: size.height + (size.height - center.y)),
-                arrivalDistance: size.height - center.y,
+                arrivalDistance: bottomFirst,
                 strength: 0.84,
                 kind: .reflection
             ),
             RippleSource(
+                point: CGPoint(x: center.x, y: center.y - 2 * size.height),
+                arrivalDistance: topSecond,
+                strength: 0.52,
+                kind: .reflection
+            ),
+            RippleSource(
+                point: CGPoint(x: center.x, y: center.y + 2 * size.height),
+                arrivalDistance: bottomSecond,
+                strength: 0.52,
+                kind: .reflection
+            ),
+            RippleSource(
                 point: CGPoint(x: -center.x, y: center.y),
-                arrivalDistance: center.x,
+                arrivalDistance: leftFirst,
                 strength: 0.66,
                 kind: .reflection
             ),
             RippleSource(
                 point: CGPoint(x: size.width + (size.width - center.x), y: center.y),
-                arrivalDistance: size.width - center.x,
+                arrivalDistance: rightFirst,
                 strength: 0.66,
+                kind: .reflection
+            ),
+            RippleSource(
+                point: CGPoint(x: center.x - 2 * size.width, y: center.y),
+                arrivalDistance: leftSecond,
+                strength: 0.28,
+                kind: .reflection
+            ),
+            RippleSource(
+                point: CGPoint(x: center.x + 2 * size.width, y: center.y),
+                arrivalDistance: rightSecond,
+                strength: 0.28,
                 kind: .reflection
             ),
             RippleSource(
@@ -733,6 +1057,8 @@ private struct FloatingUnreadRippleOverlay: View {
                 kind: .cornerReflection
             )
         ]
+        sources.sort { $0.arrivalDistance < $1.arrivalDistance }
+        return sources
     }
 
     private func drawCircularRing(
@@ -784,10 +1110,14 @@ private struct FloatingUnreadRippleOverlay: View {
         let bottom = gaussian(Double(radius), center: Double(size.height - center.y), width: Double(6.4 * scale))
         let left = gaussian(Double(radius), center: Double(center.x), width: Double(9.0 * scale))
         let right = gaussian(Double(radius), center: Double(size.width - center.x), width: Double(9.0 * scale))
+        let topSecond = gaussian(Double(radius), center: Double(2 * size.height - center.y), width: Double(10.5 * scale))
+        let bottomSecond = gaussian(Double(radius), center: Double(size.height + center.y), width: Double(10.5 * scale))
         drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: 0, width: size.width, height: 2.35 * scale), amount: top * Double(intensity))
         drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: size.height - 2.35 * scale, width: size.width, height: 2.35 * scale), amount: bottom * Double(intensity))
         drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: 0, width: 2.35 * scale, height: size.height), amount: left * Double(intensity))
         drawEdgeGlow(in: &context, rect: CGRect(x: size.width - 2.35 * scale, y: 0, width: 2.35 * scale, height: size.height), amount: right * Double(intensity))
+        drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: 0, width: size.width, height: 2.05 * scale), amount: topSecond * Double(intensity) * 0.68)
+        drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: size.height - 2.05 * scale, width: size.width, height: 2.05 * scale), amount: bottomSecond * Double(intensity) * 0.68)
     }
 
     private func drawEdgeGlow(in context: inout GraphicsContext, rect: CGRect, amount: Double) {
