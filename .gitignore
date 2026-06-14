@@ -3,6 +3,7 @@
 # Swift Package Manager
 .build/
 .swiftpm/
+.codegraph/
 
 # Local app packaging output
 dist/

@@ -5,6 +5,29 @@ private enum TokenDisplayLayout {
     static let metricOutset: CGFloat = 9
 }
 
+enum TokenDisplayLockState {
+    case unlocked
+    case locked
+
+    var systemImage: String {
+        switch self {
+        case .unlocked:
+            return "lock.open"
+        case .locked:
+            return "lock.fill"
+        }
+    }
+
+    var helpText: String {
+        switch self {
+        case .unlocked:
+            return "锁定悬浮窗到当前窗口位置"
+        case .locked:
+            return "解除悬浮窗锁定"
+        }
+    }
+}
+
 private struct TokenDisplayScaleKey: EnvironmentKey {
     static let defaultValue: CGFloat = 1
 }
@@ -125,6 +148,9 @@ struct TokenDisplaySnapshot {
 struct TokenDisplayCard: View {
     let snapshot: TokenDisplaySnapshot
     let onClose: (() -> Void)?
+    var lockState: TokenDisplayLockState? = nil
+    var lockTargetDescription: String? = nil
+    var onToggleLock: (() -> Void)? = nil
     @Environment(\.tokenDisplayScale) private var displayScale
 
     var body: some View {
@@ -142,7 +168,14 @@ struct TokenDisplayCard: View {
                         .foregroundStyle(.secondary)
                 }
 
-                TokenDisplayRateBar(rate: snapshot.rate, usageStatus: snapshot.compactUsageStatus, onClose: onClose)
+                TokenDisplayRateBar(
+                    rate: snapshot.rate,
+                    usageStatus: snapshot.compactUsageStatus,
+                    lockState: lockState,
+                    lockTargetDescription: lockTargetDescription,
+                    onToggleLock: onToggleLock,
+                    onClose: onClose
+                )
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .frame(maxWidth: .infinity, alignment: .center)
@@ -215,9 +248,10 @@ struct TokenQuotaMiniSegment: View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.white.opacity(0.10))
+                    .fill(floatingTrackColor)
+                    .overlay(Capsule().stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
                 Capsule()
-                    .fill(AppTheme.accentBlue.opacity(0.72))
+                    .fill(AppTheme.accentBlue.opacity(0.78))
                     .frame(width: max(2, proxy.size.width * fillFraction))
                 Text("\(window.compactDisplayLabel) \(window.remainingPercent)% \(window.compactResetText)")
                     .font(.system(size: 8.scaled(by: displayScale), weight: .bold))
@@ -230,17 +264,55 @@ struct TokenQuotaMiniSegment: View {
         }
         .frame(height: 13.scaled(by: displayScale))
     }
+
+    private var floatingTrackColor: Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                ? NSColor.white.withAlphaComponent(0.16)
+                : NSColor.white.withAlphaComponent(0.78)
+        })
+    }
+
+    private var floatingTrackBorder: Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                ? NSColor.white.withAlphaComponent(0.12)
+                : NSColor.black.withAlphaComponent(0.055)
+        })
+    }
 }
 
 struct TokenDisplayRateBar: View {
     let rate: Double
     let usageStatus: String
+    let lockState: TokenDisplayLockState?
+    let lockTargetDescription: String?
+    let onToggleLock: (() -> Void)?
     let onClose: (() -> Void)?
     @Environment(\.tokenDisplayScale) private var displayScale
-    private let fullScale = 250.0
+    @AppStorage(TokenRateScaleSettings.key) private var tokenRateFullScale = TokenRateScaleSettings.defaultValue
 
     private var fillFraction: CGFloat {
-        CGFloat(min(max(rate, 0), fullScale) / fullScale)
+        let scale = TokenRateScaleSettings.clamped(tokenRateFullScale)
+        return CGFloat(min(max(rate, 0), scale) / scale)
+    }
+
+    private var controlHitSize: CGFloat {
+        max(26, 20.scaled(by: displayScale))
+    }
+
+    private var rateCaption: String {
+        lockState == .locked ? "锁定" : "总速"
+    }
+
+    private var lockHelpText: String {
+        guard lockState == .locked else {
+            return TokenDisplayLockState.unlocked.helpText
+        }
+        if let lockTargetDescription, !lockTargetDescription.isEmpty {
+            return "已锁定到 \(lockTargetDescription)"
+        }
+        return TokenDisplayLockState.locked.helpText
     }
 
     var body: some View {
@@ -254,18 +326,31 @@ struct TokenDisplayRateBar: View {
 
                 Spacer(minLength: 3.scaled(by: displayScale))
 
-                Text("总速")
+                Text(rateCaption)
                     .font(.system(size: 7.scaled(by: displayScale), weight: .bold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
 
+                if let lockState, let onToggleLock {
+                    Button(action: onToggleLock) {
+                        Image(systemName: lockState.systemImage)
+                            .font(.system(size: 7.scaled(by: displayScale), weight: .bold))
+                            .foregroundStyle(lockState == .locked ? AppTheme.accentBlue : .secondary.opacity(0.72))
+                            .frame(width: controlHitSize, height: controlHitSize)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(lockHelpText)
+                }
+
                 if let onClose {
                     Button(action: onClose) {
                         Image(systemName: "xmark")
-                            .font(.system(size: 6.scaled(by: displayScale), weight: .bold))
+                            .font(.system(size: 7.scaled(by: displayScale), weight: .bold))
                             .foregroundStyle(.secondary.opacity(0.72))
-                            .frame(width: 9.scaled(by: displayScale), height: 9.scaled(by: displayScale))
+                            .frame(width: controlHitSize, height: controlHitSize)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -276,7 +361,8 @@ struct TokenDisplayRateBar: View {
                 let width = max(3.scaled(by: displayScale), proxy.size.width * fillFraction)
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(Color.white.opacity(0.12))
+                        .fill(floatingTrackColor)
+                        .overlay(Capsule().stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
                     Capsule()
                         .fill(
                             LinearGradient(
@@ -290,7 +376,23 @@ struct TokenDisplayRateBar: View {
             }
             .frame(height: 4.scaled(by: displayScale))
         }
-        .frame(height: 18.scaled(by: displayScale))
+        .frame(height: max(26, 22.scaled(by: displayScale)))
+    }
+
+    private var floatingTrackColor: Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                ? NSColor.white.withAlphaComponent(0.17)
+                : NSColor.white.withAlphaComponent(0.82)
+        })
+    }
+
+    private var floatingTrackBorder: Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                ? NSColor.white.withAlphaComponent(0.13)
+                : NSColor.black.withAlphaComponent(0.055)
+        })
     }
 }
 
@@ -318,19 +420,21 @@ struct TokenDisplayMetric: View {
 struct TokenGlassBackground: View {
     var opacity = 0.88
     var cornerRadius: CGFloat = 14
+    var appearance = FloatingPanelAppearance.default
 
     var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(AppTheme.panelBackground.opacity(opacity))
+            .fill(appearance.endColor.opacity(opacity))
+            .overlay(
+                gradientOverlay
+                    .opacity(min(0.96, max(0.62, opacity + 0.04)))
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            )
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(
                         LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.06),
-                                AppTheme.accentCyan.opacity(0.10),
-                                AppTheme.accentBlue.opacity(0.08)
-                            ],
+                            colors: [Color.white.opacity(0.16), Color.white.opacity(0.02)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -347,5 +451,28 @@ struct TokenGlassBackground: View {
                     lineWidth: 1
                 )
         )
+    }
+
+    @ViewBuilder
+    private var gradientOverlay: some View {
+        let direction = appearance.direction
+        let colors = [appearance.startColor, appearance.endColor]
+        switch appearance.style {
+        case .linear:
+            LinearGradient(colors: colors, startPoint: direction.startPoint, endPoint: direction.endPoint)
+        case .radial:
+            RadialGradient(
+                colors: colors,
+                center: direction.startPoint,
+                startRadius: 4,
+                endRadius: 240
+            )
+        case .angular:
+            AngularGradient(
+                colors: [appearance.startColor, appearance.endColor, appearance.startColor],
+                center: .center,
+                angle: .degrees(direction == .bottomLeadingToTopTrailing ? 45 : 0)
+            )
+        }
     }
 }

@@ -10,8 +10,12 @@ struct DashboardView: View {
     @StateObject private var providerSyncStore = ProviderSyncStore()
     @StateObject private var floatingPanel = FloatingTokenPanelController()
     @StateObject private var statusBarPanel = StatusBarTokenController()
+    @StateObject private var taskCompletionMonitor = TaskCompletionMonitor()
     @State private var liveMonitor = LiveRateMonitor()
     @AppStorage("tokenDisplayMode") private var tokenDisplayModeRaw = TokenDisplayMode.floating.rawValue
+    @AppStorage("floatingPanelEnabled") private var floatingPanelEnabled = true
+    @AppStorage("statusBarPanelEnabled") private var statusBarPanelEnabled = false
+    @AppStorage("displaySurfacePairMigrationV01") private var displaySurfacePairMigrationApplied = false
     @AppStorage("tokenDisplayModeDefaultedToFloatingV021") private var tokenDisplayModeDefaultedToFloating = false
     @AppStorage("tokenDisplayModeDefaultedToFloatingQuotaV01") private var tokenDisplayModeDefaultedToFloatingQuota = false
     @AppStorage("tokenDisplayModeDefaultedToFloatingQuotaV02") private var tokenDisplayModeDefaultedToFloatingQuotaV02 = false
@@ -21,6 +25,13 @@ struct DashboardView: View {
     @AppStorage("preciseTokenCountingEnabled") private var preciseTokenCountingEnabled = false
     @AppStorage("floatingPanelOpacity") private var floatingPanelOpacity = 0.88
     @AppStorage("floatingPanelScale") private var floatingPanelScale = FloatingTokenPanelMetrics.defaultScale
+    @AppStorage(TokenRateScaleSettings.key) private var tokenRateFullScale = TokenRateScaleSettings.defaultValue
+    @AppStorage("floatingPanelLocked") private var floatingPanelLocked = false
+    @AppStorage(FloatingPanelAppearance.startHexKey) private var floatingPanelGradientStartHex = FloatingPanelAppearance.defaultStartHex
+    @AppStorage(FloatingPanelAppearance.endHexKey) private var floatingPanelGradientEndHex = FloatingPanelAppearance.defaultEndHex
+    @AppStorage(FloatingPanelAppearance.directionKey) private var floatingPanelGradientDirection = FloatingPanelAppearance.defaultDirection
+    @AppStorage(FloatingPanelAppearance.styleKey) private var floatingPanelGradientStyle = FloatingPanelAppearance.defaultStyle
+    @AppStorage(FloatingPanelAppearance.unreadEffectKey) private var floatingPanelUnreadEffect = FloatingPanelAppearance.defaultUnreadEffect
     @AppStorage("setupGuideCompletedV01") private var setupGuideCompleted = false
     @State private var showingProviderSync = false
     @State private var showingSetupGuide = false
@@ -29,15 +40,6 @@ struct DashboardView: View {
         self.loginItemStore = loginItemStore
         self.updateSettingsStore = updateSettingsStore
         Self.applyStartupDisplayModeRepairIfNeeded()
-    }
-
-    private var tokenDisplayMode: Binding<TokenDisplayMode> {
-        Binding {
-            TokenDisplayMode(rawValue: tokenDisplayModeRaw) ?? .floating
-        } set: { mode in
-            tokenDisplayModeUserSelected = true
-            tokenDisplayModeRaw = mode.rawValue
-        }
     }
 
     var body: some View {
@@ -70,10 +72,17 @@ struct DashboardView: View {
 
                         LiveRateView(
                             monitor: liveMonitor,
-                            tokenDisplayMode: tokenDisplayMode,
+                            floatingPanelEnabled: $floatingPanelEnabled,
+                            statusBarPanelEnabled: $statusBarPanelEnabled,
                             preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
                             floatingPanelOpacity: $floatingPanelOpacity,
-                            floatingPanelScale: $floatingPanelScale
+                            floatingPanelScale: $floatingPanelScale,
+                            tokenRateFullScale: $tokenRateFullScale,
+                            floatingPanelGradientStartHex: $floatingPanelGradientStartHex,
+                            floatingPanelGradientEndHex: $floatingPanelGradientEndHex,
+                            floatingPanelGradientDirection: $floatingPanelGradientDirection,
+                            floatingPanelGradientStyle: $floatingPanelGradientStyle,
+                            floatingPanelUnreadEffect: $floatingPanelUnreadEffect
                         )
 
                         ActivitySection(
@@ -114,11 +123,12 @@ struct DashboardView: View {
         }
         .animation(.easeInOut(duration: 0.18), value: store.isInitialLoading)
         .onAppear {
-            applyFloatingModeDefaultIfNeeded()
+            applyDisplaySurfaceDefaultsIfNeeded()
             liveMonitor.setPreciseTokenCountingEnabled(preciseTokenCountingEnabled)
             quotaStore.setHistoryStore(quotaHistoryStore)
             quotaHistoryStore.start()
             quotaStore.start()
+            taskCompletionMonitor.start(dataSource: store.currentDataSource)
             updateTokenDisplaySurface()
             updateUsageRefreshCadence()
             if !setupGuideCompleted {
@@ -127,12 +137,22 @@ struct DashboardView: View {
                 StartupPresentation.hideDashboardIfNeeded()
             }
         }
-        .onChange(of: tokenDisplayModeRaw) {
+        .onChange(of: floatingPanelEnabled) {
+            updateTokenDisplaySurface()
+            updateUsageRefreshCadence()
+        }
+        .onChange(of: statusBarPanelEnabled) {
             updateTokenDisplaySurface()
             updateUsageRefreshCadence()
         }
         .onChange(of: floatingPanelScale) {
             updateTokenDisplaySurface()
+        }
+        .onChange(of: floatingPanelLocked) {
+            updateTokenDisplaySurface()
+        }
+        .onChange(of: store.dataSourceLabel) {
+            taskCompletionMonitor.start(dataSource: store.currentDataSource)
         }
         .onChange(of: preciseTokenCountingEnabled) {
             liveMonitor.setPreciseTokenCountingEnabled(preciseTokenCountingEnabled)
@@ -204,7 +224,7 @@ struct DashboardView: View {
         }
     }
 
-    private func applyFloatingModeDefaultIfNeeded() {
+    private func applyDisplaySurfaceDefaultsIfNeeded() {
         tokenDisplayModeDefaultedToFloating = true
         tokenDisplayModeDefaultedToFloatingQuota = true
         tokenDisplayModeDefaultedToFloatingQuotaV02 = true
@@ -222,6 +242,19 @@ struct DashboardView: View {
             tokenDisplayModeUserSelected = false
         }
         tokenDisplayModePanelCloseRepairApplied = true
+
+        guard !displaySurfacePairMigrationApplied else { return }
+        let mode = TokenDisplayMode(rawValue: tokenDisplayModeRaw)
+        if mode == .statusBar {
+            floatingPanelEnabled = false
+            statusBarPanelEnabled = true
+        } else if mode == .off {
+            floatingPanelEnabled = false
+            statusBarPanelEnabled = false
+        } else {
+            floatingPanelEnabled = true
+        }
+        displaySurfacePairMigrationApplied = true
     }
 
     private static func applyStartupDisplayModeRepairIfNeeded() {
@@ -249,28 +282,36 @@ struct DashboardView: View {
     }
 
     private func updateTokenDisplaySurface() {
-        switch TokenDisplayMode(rawValue: tokenDisplayModeRaw) ?? .floating {
-        case .off:
+        if floatingPanelEnabled {
+            floatingPanel.show(
+                store: store,
+                monitor: liveMonitor,
+                quota: quotaStore,
+                taskCompletionMonitor: taskCompletionMonitor,
+                scale: floatingPanelScale,
+                isLocked: floatingPanelLocked,
+                onToggleLock: {
+                    floatingPanelLocked.toggle()
+                },
+                onClose: {
+                    floatingPanelEnabled = false
+                }
+            )
+        } else {
             floatingPanel.close()
-            statusBarPanel.close()
-        case .floating:
-            statusBarPanel.close()
-            floatingPanel.show(store: store, monitor: liveMonitor, quota: quotaStore, scale: floatingPanelScale) {
-                tokenDisplayModeUserSelected = true
-                tokenDisplayModeRaw = TokenDisplayMode.off.rawValue
-            }
-        case .statusBar:
-            floatingPanel.close()
+        }
+
+        if statusBarPanelEnabled {
             statusBarPanel.show(store: store, monitor: liveMonitor, quota: quotaStore) {
-                tokenDisplayModeUserSelected = true
-                tokenDisplayModeRaw = TokenDisplayMode.off.rawValue
+                statusBarPanelEnabled = false
             }
+        } else {
+            statusBarPanel.close()
         }
     }
 
     private func updateUsageRefreshCadence() {
-        let displayMode = TokenDisplayMode(rawValue: tokenDisplayModeRaw) ?? .floating
-        let onlyCompactSurfaceVisible = displayMode != .off && !hasVisibleDashboardWindow()
+        let onlyCompactSurfaceVisible = (floatingPanelEnabled || statusBarPanelEnabled) && !hasVisibleDashboardWindow()
         store.setRefreshInterval(onlyCompactSurfaceVisible ? 180 : 300)
     }
 

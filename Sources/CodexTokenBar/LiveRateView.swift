@@ -1,11 +1,23 @@
 import SwiftUI
 
+private enum LiveRatePanelLayout {
+    static let contentHeight: CGFloat = 106
+    static let contentSpacing: CGFloat = 12
+}
+
 struct LiveRateView: View {
     @ObservedObject var monitor: LiveRateMonitor
-    @Binding var tokenDisplayMode: TokenDisplayMode
+    @Binding var floatingPanelEnabled: Bool
+    @Binding var statusBarPanelEnabled: Bool
     @Binding var preciseTokenCountingEnabled: Bool
     @Binding var floatingPanelOpacity: Double
     @Binding var floatingPanelScale: Double
+    @Binding var tokenRateFullScale: Double
+    @Binding var floatingPanelGradientStartHex: String
+    @Binding var floatingPanelGradientEndHex: String
+    @Binding var floatingPanelGradientDirection: String
+    @Binding var floatingPanelGradientStyle: String
+    @Binding var floatingPanelUnreadEffect: String
 
     private var primarySnapshot: LiveRateSnapshot {
         monitor.totalSnapshot
@@ -13,56 +25,48 @@ struct LiveRateView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            LiveRateHeader(
-                snapshot: primarySnapshot,
-                onReset: monitor.reset
-            )
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("全会话实时速度")
+                    .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(1)
 
-            HStack(alignment: .top, spacing: 10) {
-                LiveRateGauge(value: primarySnapshot.rollingTokensPerSecond)
-                    .frame(width: 132, height: 82)
+                Text(primarySnapshot.status)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
 
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack(spacing: 6) {
-                            LiveMetricCell(
-                                value: String(format: "%.1f", primarySnapshot.rollingTokensPerSecond),
-                                label: "全会话 tok/s"
-                            )
-                            LiveMetricCell(
-                                value: "\(primarySnapshot.breakdown.modelGenerated)",
-                                label: "模型生成"
-                            )
-                            LiveMetricCell(
-                                value: "\(primarySnapshot.outputTokens)",
-                                label: "综合 token"
-                            )
-                        }
+                Spacer(minLength: 8)
 
-                        HStack(spacing: 5) {
-                            LivePill(systemImage: "sum", text: primarySnapshot.scopeLabel)
-                            LivePill(systemImage: "point.3.connected.trianglepath.dotted", text: primarySnapshot.interfaceLabel)
-                            LivePill(systemImage: tokenDisplayMode.systemImage, text: tokenDisplayMode.label)
-                            Spacer(minLength: 0)
-                        }
-
-                        LiveBreakdownRow(breakdown: primarySnapshot.breakdown)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    LiveRateControls(
-                        tokenDisplayMode: $tokenDisplayMode,
-                        preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
-                        floatingPanelOpacity: $floatingPanelOpacity,
-                        floatingPanelScale: $floatingPanelScale
-                    )
-                }
+                LiveRateResetButton(action: monitor.reset)
             }
 
-            LiveSelectedThreadRow(monitor: monitor)
-                .frame(maxWidth: .infinity)
+            GeometryReader { proxy in
+                let columnWidth = max(0, (proxy.size.width - LiveRatePanelLayout.contentSpacing) / 2)
+
+                HStack(alignment: .top, spacing: LiveRatePanelLayout.contentSpacing) {
+                    LiveRateInstrument(snapshot: primarySnapshot, fullScale: $tokenRateFullScale)
+                        .frame(width: columnWidth, height: LiveRatePanelLayout.contentHeight)
+
+                    LiveRateControls(
+                        floatingPanelEnabled: $floatingPanelEnabled,
+                        statusBarPanelEnabled: $statusBarPanelEnabled,
+                        preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
+                        floatingPanelOpacity: $floatingPanelOpacity,
+                        floatingPanelScale: $floatingPanelScale,
+                        floatingPanelGradientStartHex: $floatingPanelGradientStartHex,
+                        floatingPanelGradientEndHex: $floatingPanelGradientEndHex,
+                        floatingPanelGradientDirection: $floatingPanelGradientDirection,
+                        floatingPanelGradientStyle: $floatingPanelGradientStyle,
+                        floatingPanelUnreadEffect: $floatingPanelUnreadEffect
+                    )
+                    .frame(width: columnWidth, height: LiveRatePanelLayout.contentHeight)
+                }
+            }
+            .frame(height: LiveRatePanelLayout.contentHeight)
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .frame(maxWidth: 980)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -75,365 +79,611 @@ struct LiveRateView: View {
     }
 }
 
-struct LiveRateHeader: View {
+struct LiveRateInstrument: View {
     let snapshot: LiveRateSnapshot
-    let onReset: () -> Void
+    @Binding var fullScale: Double
+
+    private var fillFraction: CGFloat {
+        let scale = TokenRateScaleSettings.clamped(fullScale)
+        return CGFloat(min(max(snapshot.rollingTokensPerSecond, 0), scale) / scale)
+    }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            Text("全会话实时速度")
-                .font(.system(size: 16, weight: .semibold))
-                .lineLimit(1)
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(alignment: .lastTextBaseline, spacing: 7) {
+                        Text(String(format: "%.1f", snapshot.rollingTokensPerSecond))
+                            .font(.system(size: 23, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.primary)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                        Text("tok/s")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
 
-            Text("\(snapshot.status) · \(snapshot.sourceLabel)")
-                .font(.system(size: 10))
+                    Text("全会话输出")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(width: 116, alignment: .leading)
+
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(spacing: 8) {
+                        Text("实时速率")
+                        Spacer(minLength: 0)
+                        Text("量程 \(Int(TokenRateScaleSettings.clamped(fullScale).rounded())) tok/s")
+                            .monospacedDigit()
+                    }
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary.opacity(0.82))
+
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(AppTheme.insetBackground.opacity(0.82))
+                            Capsule()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [AppTheme.accentCyan, AppTheme.accentBlue],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .frame(width: max(8, proxy.size.width * fillFraction))
+                        }
+                    }
+                    .frame(height: 9)
+                }
+            }
+
+            RateFullScaleSlider(value: $fullScale)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, minHeight: LiveRatePanelLayout.contentHeight, maxHeight: LiveRatePanelLayout.contentHeight, alignment: .center)
+        .background(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .fill(AppTheme.raisedBackground.opacity(0.34))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(AppTheme.border.opacity(0.55), lineWidth: 1)
+        )
+    }
+}
+
+private struct RateFullScaleSlider: View {
+    @Binding var value: Double
+
+    var body: some View {
+        AlignedSettingSliderRow(
+            title: "满格",
+            systemImage: "speedometer",
+            value: $value,
+            range: TokenRateScaleSettings.range,
+            step: 10,
+            displayValue: TokenRateScaleSettings.displayValue(value)
+        )
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(AppTheme.insetBackground.opacity(0.58))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(AppTheme.border.opacity(0.48), lineWidth: 1)
+        )
+    }
+}
+
+private struct AlignedSettingSliderRow: View {
+    let title: String
+    let systemImage: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    var step: Double = 0.01
+    let displayValue: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 12)
+
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .truncationMode(.middle)
+                .frame(width: 42, alignment: .leading)
 
-            Spacer(minLength: 6)
+            Slider(value: $value, in: range, step: step)
+                .frame(maxWidth: .infinity)
 
-            Button(action: onReset) {
-                Label("重置整体速率", systemImage: "arrow.triangle.2.circlepath")
-                    .font(.system(size: 11, weight: .medium))
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .help("重置全会话实时速率窗口")
+            Text(displayValue)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .frame(width: 44, alignment: .trailing)
         }
+        .frame(height: 22)
     }
 }
 
 struct LiveRateControls: View {
-    @Binding var tokenDisplayMode: TokenDisplayMode
+    @Binding var floatingPanelEnabled: Bool
+    @Binding var statusBarPanelEnabled: Bool
     @Binding var preciseTokenCountingEnabled: Bool
     @Binding var floatingPanelOpacity: Double
     @Binding var floatingPanelScale: Double
-
-    private let contentWidth: CGFloat = 286
-    private let controlWidth: CGFloat = 139
+    @Binding var floatingPanelGradientStartHex: String
+    @Binding var floatingPanelGradientEndHex: String
+    @Binding var floatingPanelGradientDirection: String
+    @Binding var floatingPanelGradientStyle: String
+    @Binding var floatingPanelUnreadEffect: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                Menu {
-                    ForEach(TokenDisplayMode.allCases) { mode in
-                        Button {
-                            tokenDisplayMode = mode
-                        } label: {
-                            if mode == tokenDisplayMode {
-                                Label(mode.controlLabel, systemImage: "checkmark")
-                            } else {
-                                Label(mode.controlLabel, systemImage: mode.systemImage)
-                            }
-                        }
-                    }
-                } label: {
-                    Label("显示：\(tokenDisplayMode.controlLabel)", systemImage: tokenDisplayMode.systemImage)
-                }
-                .buttonStyle(.bordered)
-                .frame(width: controlWidth)
-                .help("显示模式")
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                DisplaySurfaceToggleButton(
+                    title: "悬浮窗",
+                    systemImage: "rectangle.on.rectangle",
+                    isOn: $floatingPanelEnabled
+                )
+                .frame(maxWidth: .infinity, minHeight: 24)
 
-                Toggle(isOn: $preciseTokenCountingEnabled) {
-                    Label("精准 token 统计", systemImage: "number")
-                }
-                .toggleStyle(.button)
-                .buttonStyle(.bordered)
-                .frame(width: controlWidth)
-                .help("开启后使用 o200k_base 精确统计流式输出 token；关闭后使用轻量估算。")
+                DisplaySurfaceToggleButton(
+                    title: "状态栏",
+                    systemImage: "menubar.rectangle",
+                    isOn: $statusBarPanelEnabled
+                )
+                .frame(maxWidth: .infinity, minHeight: 24)
+
+                DisplaySurfaceToggleButton(
+                    title: "精确 token 统计",
+                    systemImage: "number",
+                    isOn: $preciseTokenCountingEnabled
+                )
+                .frame(maxWidth: .infinity, minHeight: 24)
             }
-            .frame(width: contentWidth, alignment: .leading)
 
-            FloatingOpacityControl(opacity: $floatingPanelOpacity)
-                .frame(width: contentWidth, alignment: .leading)
-
-            FloatingSizeControl(scale: $floatingPanelScale)
-                .frame(width: contentWidth, alignment: .leading)
+            FloatingPanelAppearanceSettings(
+                floatingPanelOpacity: $floatingPanelOpacity,
+                floatingPanelScale: $floatingPanelScale,
+                startHex: $floatingPanelGradientStartHex,
+                endHex: $floatingPanelGradientEndHex,
+                directionRaw: $floatingPanelGradientDirection,
+                styleRaw: $floatingPanelGradientStyle,
+                unreadEffectRaw: $floatingPanelUnreadEffect
+            )
         }
         .controlSize(.small)
         .font(.system(size: 11, weight: .medium))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(width: 306, alignment: .topLeading)
+        .padding(7)
+        .frame(maxWidth: .infinity, minHeight: LiveRatePanelLayout.contentHeight, maxHeight: LiveRatePanelLayout.contentHeight, alignment: .center)
         .background(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(AppTheme.insetBackground)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(AppTheme.raisedBackground.opacity(0.26))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(AppTheme.border.opacity(0.48), lineWidth: 1)
         )
     }
 }
 
-struct FloatingOpacityControl: View {
-    @Binding var opacity: Double
+struct FloatingPanelAppearanceSettings: View {
+    @Binding var floatingPanelOpacity: Double
+    @Binding var floatingPanelScale: Double
+    @Binding var startHex: String
+    @Binding var endHex: String
+    @Binding var directionRaw: String
+    @Binding var styleRaw: String
+    @Binding var unreadEffectRaw: String
 
     var body: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 5) {
-                Image(systemName: "circle.lefthalf.filled")
-                    .font(.system(size: 10, weight: .medium))
-                    .frame(width: 12, height: 18, alignment: .center)
-                Text("悬浮窗透明度")
-                    .font(.system(size: 10, weight: .medium))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(.secondary)
-            .frame(width: 82, height: 18, alignment: .leading)
+        HStack(alignment: .center, spacing: 9) {
+            VStack(spacing: 4) {
+                FloatingPanelPaletteControl(
+                    startHex: $startHex,
+                    endHex: $endHex,
+                    directionRaw: $directionRaw,
+                    styleRaw: $styleRaw
+                )
+                .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
 
-            Slider(value: $opacity, in: 0.45...0.98, step: 0.01)
-                .frame(width: 138)
-            Text("\(Int((opacity * 100).rounded()))%")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-                .frame(width: 34, alignment: .trailing)
+                FloatingUnreadEffectPicker(selection: normalizedUnreadEffectBinding)
+                    .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
+            }
+            .frame(width: 76, alignment: .leading)
+            .zIndex(2)
+
+            VStack(spacing: 0) {
+                CompactFloatingSlider(
+                    title: "透明度",
+                    systemImage: "circle.lefthalf.filled",
+                    value: $floatingPanelOpacity,
+                    range: 0.45...0.98,
+                    displayValue: "\(Int((floatingPanelOpacity * 100).rounded()))%",
+                    showsBackground: false
+                )
+
+                AppearanceSliderDivider()
+
+                CompactFloatingSlider(
+                    title: "大小",
+                    systemImage: "arrow.up.left.and.arrow.down.right",
+                    value: $floatingPanelScale,
+                    range: FloatingTokenPanelMetrics.scaleRange,
+                    displayValue: "\(Int((floatingPanelScale * 100).rounded()))%",
+                    showsBackground: false
+                )
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .zIndex(1)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(
-            Capsule()
-                .fill(AppTheme.raisedBackground.opacity(0.72))
-        )
-        .help("悬浮窗透明度")
-    }
-}
-
-struct FloatingSizeControl: View {
-    @Binding var scale: Double
-
-    var body: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 5) {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 10, weight: .medium))
-                    .frame(width: 12, height: 18, alignment: .center)
-                Text("悬浮窗大小")
-                    .font(.system(size: 10, weight: .medium))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(.secondary)
-            .frame(width: 82, height: 18, alignment: .leading)
-
-            Slider(value: $scale, in: FloatingTokenPanelMetrics.scaleRange, step: 0.01)
-                .frame(width: 138)
-            Text("\(Int((scale * 100).rounded()))%")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-                .frame(width: 34, alignment: .trailing)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(
-            Capsule()
-                .fill(AppTheme.raisedBackground.opacity(0.72))
-        )
-        .help("等比调整悬浮窗大小")
-    }
-}
-
-struct LiveSelectedThreadRow: View {
-    @ObservedObject var monitor: LiveRateMonitor
-
-    private var snapshot: LiveRateSnapshot {
-        monitor.snapshot
-    }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Menu {
-                ForEach(monitor.threadOptions) { option in
-                    Button {
-                        monitor.selectThread(option.id)
-                    } label: {
-                        if option.id == monitor.selectedThreadID {
-                            Label(option.displayTitle, systemImage: "checkmark")
-                        } else {
-                            Text(option.displayTitle)
-                        }
-                    }
-                }
-            } label: {
-                Label("选中会话", systemImage: "sidebar.leading")
-                    .font(.system(size: 10, weight: .semibold))
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .frame(width: 96, alignment: .leading)
-            .help("选择要查看的单会话")
-
-            HStack(spacing: 4) {
-                Image(systemName: "text.bubble")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text(snapshot.threadTitle)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(AppTheme.raisedBackground)
-            )
-            .help(snapshot.threadTitle)
-
-            Text(String(format: "%.1f tok/s", snapshot.rollingTokensPerSecond))
-                .font(.system(size: 11, weight: .semibold))
-                .monospacedDigit()
-                .frame(width: 64, alignment: .trailing)
-
-            Text("\(snapshot.outputTokens) 综合")
-                .font(.system(size: 11, weight: .medium))
-                .monospacedDigit()
-                .frame(width: 54, alignment: .trailing)
-
-            Text("\(snapshot.breakdown.modelGenerated) 模型")
-                .font(.system(size: 11, weight: .medium))
-                .monospacedDigit()
-                .frame(width: 48, alignment: .trailing)
-
-            Text(snapshot.status)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(width: 44, alignment: .trailing)
-        }
-        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 56)
+        .padding(.horizontal, 7)
         .padding(.vertical, 4)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(AppTheme.insetBackground)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(AppTheme.raisedBackground.opacity(0.42))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(AppTheme.border.opacity(0.56), lineWidth: 1)
+        )
+    }
+
+    private var normalizedUnreadEffectBinding: Binding<String> {
+        Binding(
+            get: {
+                FloatingPanelUnreadEffect(rawValue: unreadEffectRaw)?.rawValue
+                    ?? FloatingPanelAppearance.defaultUnreadEffect
+            },
+            set: { unreadEffectRaw = $0 }
         )
     }
 }
 
-struct LiveBreakdownRow: View {
-    let breakdown: LiveTokenBreakdown
-
-    var body: some View {
-        HStack(spacing: 5) {
-            LiveBreakdownChip(label: "可见", value: breakdown.visibleText)
-            LiveBreakdownChip(label: "工具参数", value: breakdown.toolArguments)
-            LiveBreakdownChip(label: "编辑输入", value: breakdown.patchInput)
-            LiveBreakdownChip(label: "实际改动", value: breakdown.patchApplied)
-            LiveBreakdownChip(label: "工具输出", value: breakdown.toolOutput)
-            LiveBreakdownChip(label: "reasoning", value: breakdown.reasoning)
-            if breakdown.exactModelOutput > 0 {
-                LiveBreakdownChip(label: "精确输出", value: breakdown.exactModelOutput)
-            }
-        }
-    }
-}
-
-struct LiveBreakdownChip: View {
-    let label: String
-    let value: Int
+private struct FloatingAppearanceMiniButtonLabel: View {
+    let title: String
+    let systemImage: String
+    var showsChevron = false
+    var isAccent = true
 
     var body: some View {
         HStack(spacing: 4) {
-            Text(label)
-                .foregroundStyle(.secondary)
-            Text("\(value)")
-                .fontWeight(.semibold)
-                .monospacedDigit()
-                .foregroundStyle(.primary)
-        }
-        .font(.system(size: 9))
-        .lineLimit(1)
-        .minimumScaleFactor(0.72)
-        .padding(.horizontal, 5)
-        .padding(.vertical, 2)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(AppTheme.raisedBackground)
-        )
-    }
-}
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .semibold))
 
-struct LiveRateGauge: View {
-    let value: Double
-    private let fullScale = 250.0
-
-    var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(AppTheme.insetBackground)
-
-            GeometryReader { proxy in
-                let capped = min(max(value, 0), fullScale)
-                let width = max(5, proxy.size.width * capped / fullScale)
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [AppTheme.accentCyan, AppTheme.accentBlue],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: width)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(String(format: "%.1f", value))
-                    .font(.system(size: 24, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.primary)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                Text("tokens / second")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(8)
-        }
-    }
-}
-
-struct LiveMetricCell: View {
-    let value: String
-    let label: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(value)
-                .font(.system(size: 15, weight: .semibold))
-                .monospacedDigit()
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
-            Text(label)
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Group {
+                if showsChevron {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.secondary.opacity(0.72))
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(width: 8, alignment: .trailing)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .foregroundStyle(isAccent ? AppTheme.accentBlue : .primary)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(AppTheme.raisedBackground)
+                .fill(AppTheme.raisedBackground.opacity(0.56))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(isAccent ? AppTheme.accentBlue.opacity(0.18) : AppTheme.border.opacity(0.74), lineWidth: 1)
         )
     }
 }
 
-struct LivePill: View {
-    let systemImage: String
-    let text: String
+private struct FloatingUnreadEffectPicker: View {
+    @Binding var selection: String
+    @State private var isPresented = false
 
     var body: some View {
-        Label(text, systemImage: systemImage)
-            .font(.system(size: 9, weight: .medium))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(
-                Capsule()
-                    .fill(AppTheme.raisedBackground)
+        Button {
+            isPresented.toggle()
+        } label: {
+            FloatingAppearanceMiniButtonLabel(
+                title: "提醒",
+                systemImage: "bell.badge",
+                showsChevron: true,
+                isAccent: false
             )
-            .lineLimit(1)
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .topLeading) {
+            if isPresented {
+                unreadEffectPanel
+                    .offset(y: 24)
+                    .zIndex(20)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .topLeading)))
+            }
+        }
+        .zIndex(isPresented ? 20 : 0)
+        .help("选择未读时悬浮窗背景动效")
+    }
+
+    private var unreadEffectPanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("消息提醒")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text("未读时显示涟漪")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 4) {
+                unreadEffectOption(.off)
+                unreadEffectOption(.ripple)
+            }
+        }
+        .padding(8)
+        .frame(width: 126, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(AppTheme.border.opacity(0.75), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.10), radius: 10, x: 0, y: 5)
+    }
+
+    private func unreadEffectOption(_ effect: FloatingPanelUnreadEffect) -> some View {
+        Button {
+            selection = effect.rawValue
+            isPresented = false
+        } label: {
+            Text(effect.label)
+                .font(.system(size: 10, weight: .semibold))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(selection == effect.rawValue ? AppTheme.accentBlue : .secondary)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(selection == effect.rawValue ? AppTheme.accentBlue.opacity(0.13) : AppTheme.raisedBackground.opacity(0.48))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(selection == effect.rawValue ? AppTheme.accentBlue.opacity(0.22) : AppTheme.border.opacity(0.45), lineWidth: 1)
+        )
+    }
+}
+
+private struct LiveRateResetButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label("重置整体速率", systemImage: "arrow.triangle.2.circlepath")
+                .font(.system(size: 10, weight: .semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(AppTheme.raisedBackground.opacity(0.72))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(AppTheme.border.opacity(0.72), lineWidth: 1)
+        )
+        .help("重置全会话实时速率窗口")
+    }
+}
+
+private struct AppearanceSliderDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(AppTheme.border.opacity(0.45))
+            .frame(height: 1)
+            .padding(.leading, 52)
+            .padding(.trailing, 40)
+    }
+}
+
+struct FloatingPanelPaletteControl: View {
+    @Binding var startHex: String
+    @Binding var endHex: String
+    @Binding var directionRaw: String
+    @Binding var styleRaw: String
+    var isVertical = false
+    @State private var isPresented = false
+
+    var body: some View {
+        Button {
+            isPresented.toggle()
+        } label: {
+            FloatingAppearanceMiniButtonLabel(
+                title: isVertical ? "调色" : "调色盘",
+                systemImage: "paintpalette"
+            )
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            palettePopover
+        }
+        .help("调整悬浮窗背景渐变")
+    }
+
+    private var palettePopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("悬浮窗背景")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("自定义渐变颜色、方向和类型")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                ColorPicker("起始色", selection: colorBinding($startHex), supportsOpacity: false)
+                ColorPicker("结束色", selection: colorBinding($endHex), supportsOpacity: false)
+            }
+            .font(.system(size: 11, weight: .medium))
+
+            Picker("方向", selection: normalizedDirectionBinding) {
+                ForEach(FloatingPanelGradientDirection.allCases) { direction in
+                    Text(direction.label).tag(direction.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Picker("类型", selection: normalizedStyleBinding) {
+                ForEach(FloatingPanelGradientStyle.allCases) { style in
+                    Text(style.label).tag(style.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Button {
+                startHex = FloatingPanelAppearance.defaultStartHex
+                endHex = FloatingPanelAppearance.defaultEndHex
+                directionRaw = FloatingPanelAppearance.defaultDirection
+                styleRaw = FloatingPanelAppearance.defaultStyle
+            } label: {
+                Label("恢复默认", systemImage: "arrow.counterclockwise")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .frame(width: 260, alignment: .leading)
+    }
+
+    private var normalizedDirectionBinding: Binding<String> {
+        Binding(
+            get: {
+                FloatingPanelGradientDirection(rawValue: directionRaw)?.rawValue
+                    ?? FloatingPanelAppearance.defaultDirection
+            },
+            set: { directionRaw = $0 }
+        )
+    }
+
+    private var normalizedStyleBinding: Binding<String> {
+        Binding(
+            get: {
+                FloatingPanelGradientStyle(rawValue: styleRaw)?.rawValue
+                    ?? FloatingPanelAppearance.defaultStyle
+            },
+            set: { styleRaw = $0 }
+        )
+    }
+
+    private func colorBinding(_ hex: Binding<String>) -> Binding<Color> {
+        Binding(
+            get: {
+                Color(floatingPanelHex: hex.wrappedValue)
+                    ?? Color(floatingPanelHex: FloatingPanelAppearance.defaultStartHex)
+                    ?? AppTheme.panelBackgroundAlt
+            },
+            set: { newValue in
+                if let nextHex = newValue.floatingPanelHexString() {
+                    hex.wrappedValue = nextHex
+                }
+            }
+        )
+    }
+}
+
+struct DisplaySurfaceToggleButton: View {
+    let title: String
+    let systemImage: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+                Label(title, systemImage: isOn ? "checkmark.circle.fill" : systemImage)
+                    .font(.system(size: 10, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+                    .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
+        .foregroundStyle(isOn ? AppTheme.accentBlue : .secondary)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isOn ? AppTheme.accentBlue.opacity(0.14) : AppTheme.raisedBackground.opacity(0.72))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(isOn ? AppTheme.accentBlue.opacity(0.24) : AppTheme.border.opacity(0.82), lineWidth: 1)
+        )
+        .help(isOn ? "关闭\(title)" : "开启\(title)")
+    }
+}
+
+struct CompactFloatingSlider: View {
+    let title: String
+    let systemImage: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    var step: Double = 0.01
+    let displayValue: String
+    var showsBackground = true
+
+    var body: some View {
+        AlignedSettingSliderRow(
+            title: title,
+            systemImage: systemImage,
+            value: $value,
+            range: range,
+            step: step,
+            displayValue: displayValue
+        )
+        .padding(.horizontal, showsBackground ? 6 : 2)
+        .padding(.vertical, showsBackground ? 4 : 0)
+        .background(
+            Group {
+                if showsBackground {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(AppTheme.raisedBackground.opacity(0.56))
+                }
+            }
+        )
     }
 }
