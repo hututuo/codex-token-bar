@@ -440,58 +440,95 @@ private struct FloatingUnreadEffectPicker: View {
     }
 
     private var unreadEffectPanel: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("消息提醒")
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Image(systemName: "bell.badge")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.primary)
-                Text("未读时选择涟漪或扫光")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AppTheme.accentBlue)
+                    .frame(width: 14)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("消息提醒")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text("选择未读时的悬浮窗效果")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            HStack(spacing: 4) {
+            VStack(spacing: 4) {
                 unreadEffectOption(.off)
                 unreadEffectOption(.ripple)
                 unreadEffectOption(.shimmer)
             }
         }
-        .padding(8)
-        .frame(width: 156, alignment: .leading)
+        .padding(9)
+        .frame(width: 184, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.white)
+                .fill(AppTheme.hoverBubble)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(AppTheme.border.opacity(0.75), lineWidth: 1)
+                .stroke(AppTheme.borderStrong.opacity(0.72), lineWidth: 1)
         )
-        .shadow(color: Color.black.opacity(0.10), radius: 10, x: 0, y: 5)
+        .shadow(color: AppTheme.shadow, radius: 12, x: 0, y: 6)
     }
 
     private func unreadEffectOption(_ effect: FloatingPanelUnreadEffect) -> some View {
-        Button {
+        let isSelected = selection == effect.rawValue
+        return Button {
             selection = effect.rawValue
             triggerUnreadEffectPreview(effect)
             isPresented = false
         } label: {
-            Text(effect.label)
-                .font(.system(size: 10, weight: .semibold))
-                .lineLimit(1)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
-                .contentShape(Rectangle())
+            HStack(spacing: 7) {
+                Image(systemName: unreadEffectIcon(effect))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(isSelected ? AppTheme.accentBlue : .secondary)
+                    .frame(width: 14)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(effect.label)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(isSelected ? .primary : .secondary)
+                    Text(effect.helpText)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary.opacity(0.86))
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 4)
+
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(isSelected ? AppTheme.accentBlue : .secondary.opacity(0.45))
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
-        .foregroundStyle(selection == effect.rawValue ? AppTheme.accentBlue : .secondary)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(selection == effect.rawValue ? AppTheme.accentBlue.opacity(0.13) : AppTheme.raisedBackground.opacity(0.48))
+                .fill(isSelected ? AppTheme.accentBlue.opacity(0.13) : AppTheme.raisedBackground.opacity(0.48))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(selection == effect.rawValue ? AppTheme.accentBlue.opacity(0.22) : AppTheme.border.opacity(0.45), lineWidth: 1)
+                .stroke(isSelected ? AppTheme.accentBlue.opacity(0.30) : AppTheme.border.opacity(0.50), lineWidth: 1)
         )
+    }
+
+    private func unreadEffectIcon(_ effect: FloatingPanelUnreadEffect) -> String {
+        switch effect {
+        case .off:
+            return "bell.slash"
+        case .ripple:
+            return "dot.radiowaves.left.and.right"
+        case .shimmer:
+            return "sparkles"
+        }
     }
 
     private func triggerUnreadEffectPreview(_ effect: FloatingPanelUnreadEffect) {

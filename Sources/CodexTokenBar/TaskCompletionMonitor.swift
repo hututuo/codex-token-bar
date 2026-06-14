@@ -288,12 +288,9 @@ private enum CodexUnreadThreadReader {
 
         let placeholders = Array(repeating: "?", count: threadIDs.count).joined(separator: ",")
         let sql = """
-        SELECT id
+        SELECT id, archived, COALESCE(thread_source, 'user')
         FROM threads
         WHERE id IN (\(placeholders))
-          AND archived = 0
-          AND has_user_event = 1
-          AND COALESCE(thread_source, 'user') != 'subagent'
         """
 
         var statement: OpaquePointer?
@@ -311,12 +308,123 @@ private enum CodexUnreadThreadReader {
         }
 
         var visibleIDs = Set<String>()
+        var matchedIDs = Set<String>()
         while sqlite3_step(statement) == SQLITE_ROW {
             if let text = sqlite3_column_text(statement, 0) {
-                visibleIDs.insert(String(cString: text))
+                let id = String(cString: text)
+                matchedIDs.insert(id)
+                let archived = sqlite3_column_int(statement, 1) != 0
+                let source = sqlite3_column_text(statement, 2).map { String(cString: $0) } ?? "user"
+                if !archived && !source.localizedCaseInsensitiveContains("subagent") {
+                    visibleIDs.insert(id)
+                }
             }
         }
+
+        let unresolvedIDs = threadIDs.subtracting(matchedIDs)
+        if !unresolvedIDs.isEmpty {
+            let sessionVisibility = sessionVisibleThreadIDs(from: unresolvedIDs, codexHome: codexHome)
+            visibleIDs.formUnion(sessionVisibility.visibleIDs)
+            visibleIDs.formUnion(unresolvedIDs.subtracting(sessionVisibility.foundIDs))
+        }
         return visibleIDs
+    }
+
+    private struct SessionVisibility {
+        var visibleIDs = Set<String>()
+        var foundIDs = Set<String>()
+    }
+
+    private static func sessionVisibleThreadIDs(from threadIDs: Set<String>, codexHome: URL) -> SessionVisibility {
+        var visibility = SessionVisibility()
+        guard !threadIDs.isEmpty else { return visibility }
+
+        let liveSessions = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        scanSessionMetas(under: liveSessions, archived: false, threadIDs: threadIDs, visibility: &visibility)
+
+        let archivedSessions = codexHome.appendingPathComponent("archived_sessions", isDirectory: true)
+        scanSessionMetas(under: archivedSessions, archived: true, threadIDs: threadIDs, visibility: &visibility)
+        return visibility
+    }
+
+    private static func scanSessionMetas(
+        under root: URL,
+        archived: Bool,
+        threadIDs: Set<String>,
+        visibility: inout SessionVisibility
+    ) {
+        guard visibility.foundIDs.count < threadIDs.count,
+              let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+              ) else {
+            return
+        }
+
+        for item in enumerator {
+            guard visibility.foundIDs.count < threadIDs.count,
+                  let file = item as? URL,
+                  file.pathExtension == "jsonl",
+                  let payload = sessionMetaPayload(in: file),
+                  let id = payload["id"] as? String,
+                  threadIDs.contains(id) else {
+                continue
+            }
+
+            visibility.foundIDs.insert(id)
+            let threadSource = payload["thread_source"] as? String ?? ""
+            let isSubagent = threadSource.localizedCaseInsensitiveContains("subagent")
+                || valueContainsSubagent(payload["source"])
+            if !archived && !isSubagent {
+                visibility.visibleIDs.insert(id)
+            }
+        }
+    }
+
+    private static func sessionMetaPayload(in file: URL) -> [String: Any]? {
+        guard let firstLine = firstLine(in: file),
+              let data = firstLine.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              object["type"] as? String == "session_meta" else {
+            return nil
+        }
+        return object["payload"] as? [String: Any]
+    }
+
+    private static func firstLine(in file: URL, maxBytes: Int = 262_144) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { try? handle.close() }
+
+        var data = Data()
+        let newline = UInt8(ascii: "\n")
+        while data.count < maxBytes {
+            let chunk = handle.readData(ofLength: min(16_384, maxBytes - data.count))
+            if chunk.isEmpty { break }
+            if let newlineIndex = chunk.firstIndex(of: newline) {
+                data.append(chunk[..<newlineIndex])
+                break
+            }
+            data.append(chunk)
+        }
+        guard !data.isEmpty else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func valueContainsSubagent(_ value: Any?) -> Bool {
+        if let string = value as? String {
+            return string.localizedCaseInsensitiveContains("subagent")
+        }
+        if let array = value as? [Any] {
+            return array.contains(where: valueContainsSubagent)
+        }
+        if let dictionary = value as? [String: Any] {
+            if dictionary.keys.contains(where: { $0.localizedCaseInsensitiveContains("subagent") }) {
+                return true
+            }
+            return dictionary.values.contains(where: valueContainsSubagent)
+        }
+        return false
     }
 }
 

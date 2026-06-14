@@ -1,6 +1,5 @@
 import AppKit
 import CoreGraphics
-import CoreVideo
 import QuartzCore
 import SwiftUI
 
@@ -23,68 +22,6 @@ enum FloatingTokenPanelMetrics {
 
     static func cornerRadius(scale: Double) -> CGFloat {
         baseCornerRadius * clampedScale(scale)
-    }
-}
-
-private final class FloatingUnreadDisplayClock: ObservableObject, @unchecked Sendable {
-    @Published private(set) var time: TimeInterval = Date.timeIntervalSinceReferenceDate
-
-    private var displayLink: CVDisplayLink?
-    private var isRunning = false
-    private let timeLock = NSLock()
-    private var latestTime = Date.timeIntervalSinceReferenceDate
-    private var hasPendingMainUpdate = false
-
-    init() {
-        var link: CVDisplayLink?
-        if CVDisplayLinkCreateWithActiveCGDisplays(&link) == kCVReturnSuccess, let link {
-            let context = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-            CVDisplayLinkSetOutputCallback(link, { _, _, _, _, _, context in
-                guard let context else { return kCVReturnSuccess }
-                let clock = Unmanaged<FloatingUnreadDisplayClock>.fromOpaque(context).takeUnretainedValue()
-                clock.tick()
-                return kCVReturnSuccess
-            }, context)
-            displayLink = link
-        }
-    }
-
-    deinit {
-        stop()
-    }
-
-    func start() {
-        guard let displayLink, !isRunning else { return }
-        CVDisplayLinkStart(displayLink)
-        isRunning = true
-    }
-
-    func stop() {
-        guard let displayLink, isRunning else { return }
-        CVDisplayLinkStop(displayLink)
-        isRunning = false
-    }
-
-    private func tick() {
-        let nextTime = Date.timeIntervalSinceReferenceDate
-        var shouldDispatch = false
-        timeLock.lock()
-        latestTime = nextTime
-        if !hasPendingMainUpdate {
-            hasPendingMainUpdate = true
-            shouldDispatch = true
-        }
-        timeLock.unlock()
-
-        guard shouldDispatch else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.timeLock.lock()
-            let currentTime = self.latestTime
-            self.hasPendingMainUpdate = false
-            self.timeLock.unlock()
-            self.time = currentTime
-        }
     }
 }
 
@@ -707,28 +644,500 @@ private struct FloatingUnreadShimmerOverlay: NSViewRepresentable {
 }
 
 private final class FloatingUnreadShimmerView: NSView {
-    private let tintLayer = CALayer()
-    private let sweepLayer = CAGradientLayer()
-    private let highlightLayer = CAGradientLayer()
+    private struct RenderRequest {
+        let size: CGSize
+        let backingScale: CGFloat
+        let color: NSColor
+        let cornerRadius: CGFloat
+        let scale: CGFloat
+    }
+
+    private static let animationKey = "floatingUnreadShimmerFrames"
+
+    private let imageLayer = CALayer()
+    private let renderQueue = DispatchQueue(label: "local.codex-token-bar.unread-shimmer-render", qos: .userInitiated)
+    private var cachedFrames: [CGImage] = []
+    private var pendingRenderWorkItem: DispatchWorkItem?
+    private var renderGeneration: UInt64 = 0
+    private var animationStartLayerTime: CFTimeInterval?
     private var currentColor = NSColor.systemBlue
     private var currentCornerRadius: CGFloat = 14
     private var currentScale: CGFloat = 1
     private var lastBounds: CGRect = .zero
+    private var lastBackingScale: CGFloat = 0
+    private let cycleDuration: CFTimeInterval = 2.1
+    private let targetFramesPerSecond = 60
+    private let resizeRenderDebounce: TimeInterval = 0.14
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.masksToBounds = true
-        layer?.backgroundColor = NSColor.clear.cgColor
-        setupLayers()
+        setupRootLayer()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        setupRootLayer()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            cancelPendingRender()
+            stopAnimations()
+            clearFrameCache()
+        } else {
+            updateLayoutIfNeeded(force: true)
+            startAnimations()
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        updateLayoutIfNeeded(force: false)
+    }
+
+    func configure(color: NSColor, cornerRadius: CGFloat, scale: CGFloat) {
+        let nextColor = color.usingColorSpace(.deviceRGB) ?? .systemBlue
+        let nextScale = max(scale, 0.1)
+        let needsLayout = !sameColor(nextColor, currentColor)
+            || abs(currentScale - nextScale) > 0.001
+            || abs(currentCornerRadius - cornerRadius) > 0.001
+        currentColor = nextColor
+        currentCornerRadius = cornerRadius
+        currentScale = nextScale
+        layer?.cornerRadius = cornerRadius
+        layer?.cornerCurve = .continuous
+        updateLayoutIfNeeded(force: needsLayout)
+    }
+
+    private func setupRootLayer() {
         wantsLayer = true
         layer?.masksToBounds = true
         layer?.backgroundColor = NSColor.clear.cgColor
-        setupLayers()
+        layer?.cornerCurve = .continuous
+        imageLayer.contentsGravity = .resize
+        layer?.addSublayer(imageLayer)
+    }
+
+    private func updateLayoutIfNeeded(force: Bool) {
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let rawBackingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let backingScale = min(max(rawBackingScale, 1), 2)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.cornerRadius = currentCornerRadius
+        layer?.cornerCurve = .continuous
+        imageLayer.frame = bounds
+        imageLayer.contentsScale = backingScale
+        CATransaction.commit()
+
+        guard isReasonableRenderableSize(bounds.size) else {
+            cancelPendingRender()
+            stopAnimations()
+            clearFrameCache()
+            return
+        }
+
+        guard force || bounds != lastBounds || abs(backingScale - lastBackingScale) > 0.01 else {
+            return
+        }
+
+        let request = RenderRequest(
+            size: bounds.size,
+            backingScale: backingScale,
+            color: currentColor,
+            cornerRadius: currentCornerRadius,
+            scale: currentScale
+        )
+        requestFrameRender(request, immediate: cachedFrames.isEmpty)
+    }
+
+    private func isReasonableRenderableSize(_ size: CGSize) -> Bool {
+        let maxSize = FloatingTokenPanelMetrics.size(scale: FloatingTokenPanelMetrics.scaleRange.upperBound)
+        return size.width <= maxSize.width + 32
+            && size.height <= maxSize.height + 32
+    }
+
+    private func requestFrameRender(_ request: RenderRequest, immediate: Bool) {
+        renderGeneration &+= 1
+        let generation = renderGeneration
+        cancelPendingRender(advanceGeneration: false)
+        let cycleDuration = cycleDuration
+        let targetFramesPerSecond = targetFramesPerSecond
+
+        if immediate {
+            let frames = renderFrames(
+                request: request,
+                cycleDuration: cycleDuration,
+                targetFramesPerSecond: targetFramesPerSecond
+            )
+            applyRenderedFrames(frames, request: request, generation: generation)
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let frames = self.renderFrames(
+                request: request,
+                cycleDuration: cycleDuration,
+                targetFramesPerSecond: targetFramesPerSecond
+            )
+            DispatchQueue.main.async { [weak self] in
+                self?.applyRenderedFrames(frames, request: request, generation: generation)
+            }
+        }
+        pendingRenderWorkItem = workItem
+        renderQueue.asyncAfter(deadline: .now() + resizeRenderDebounce, execute: workItem)
+    }
+
+    private func applyRenderedFrames(_ frames: [CGImage], request: RenderRequest, generation: UInt64) {
+        guard generation == renderGeneration, window != nil, !frames.isEmpty else { return }
+        let phaseOffset = currentAnimationPhaseOffset()
+        stopAnimations()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        lastBounds = CGRect(origin: .zero, size: request.size)
+        lastBackingScale = request.backingScale
+        imageLayer.frame = CGRect(origin: .zero, size: request.size)
+        imageLayer.contentsScale = request.backingScale
+        cachedFrames = frames
+        imageLayer.contents = frames.first
+        CATransaction.commit()
+        startAnimations(phaseOffset: phaseOffset)
+    }
+
+    private nonisolated func renderFrames(
+        request: RenderRequest,
+        cycleDuration: CFTimeInterval,
+        targetFramesPerSecond: Int
+    ) -> [CGImage] {
+        let pixelWidth = max(1, Int((request.size.width * request.backingScale).rounded(.up)))
+        let pixelHeight = max(1, Int((request.size.height * request.backingScale).rounded(.up)))
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let frameCount = max(1, Int((cycleDuration * Double(targetFramesPerSecond)).rounded(.up)))
+
+        return (0..<frameCount).compactMap { index in
+            guard let context = CGContext(
+                data: nil,
+                width: pixelWidth,
+                height: pixelHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                return nil
+            }
+            context.scaleBy(x: request.backingScale, y: request.backingScale)
+            drawShimmerFrame(in: context, request: request, phase: Double(index) / Double(frameCount))
+            return context.makeImage()
+        }
+    }
+
+    private nonisolated func drawShimmerFrame(in context: CGContext, request: RenderRequest, phase: Double) {
+        let size = request.size
+        let rect = CGRect(origin: .zero, size: size)
+        context.saveGState()
+        context.addPath(CGPath(
+            roundedRect: rect,
+            cornerWidth: request.cornerRadius,
+            cornerHeight: request.cornerRadius,
+            transform: nil
+        ))
+        context.clip()
+
+        let pulse = (sin(phase * .pi * 4) + 1) / 2
+        context.setFillColor(request.color.withAlphaComponent(0.026 + 0.020 * pulse).cgColor)
+        context.fill(rect)
+        context.setBlendMode(.screen)
+
+        let bandWidth = max(size.width * 0.62, 76 * request.scale)
+        let bandHeight = size.height * 2.0
+        let fromX = -bandWidth * 0.8
+        let toX = size.width + bandWidth * 1.15
+        let centerX = fromX + (toX - fromX) * CGFloat(phase)
+        let centerY = size.height / 2
+
+        drawSweepBand(
+            in: context,
+            center: CGPoint(x: centerX, y: centerY),
+            width: bandWidth,
+            height: bandHeight,
+            angle: -0.20,
+            colors: [
+                NSColor.clear,
+                request.color.withAlphaComponent(0.28),
+                NSColor.white.withAlphaComponent(0.46),
+                request.color.withAlphaComponent(0.22),
+                NSColor.clear
+            ],
+            locations: [0.0, 0.30, 0.50, 0.70, 1.0]
+        )
+
+        drawSweepBand(
+            in: context,
+            center: CGPoint(x: centerX + bandWidth * 0.18, y: centerY),
+            width: max(12 * request.scale, bandWidth * 0.16),
+            height: bandHeight,
+            angle: -0.20,
+            colors: [
+                NSColor.clear,
+                NSColor.white.withAlphaComponent(0.00),
+                NSColor.white.withAlphaComponent(0.28),
+                NSColor.clear
+            ],
+            locations: [0.0, 0.45, 0.55, 1.0]
+        )
+        context.restoreGState()
+    }
+
+    private nonisolated func drawSweepBand(
+        in context: CGContext,
+        center: CGPoint,
+        width: CGFloat,
+        height: CGFloat,
+        angle: CGFloat,
+        colors: [NSColor],
+        locations: [CGFloat]
+    ) {
+        let cgColors = colors.map { $0.cgColor } as CFArray
+        guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: cgColors, locations: locations) else {
+            return
+        }
+        context.saveGState()
+        context.translateBy(x: center.x, y: center.y)
+        context.rotate(by: angle)
+        let rect = CGRect(x: -width / 2, y: -height / 2, width: width, height: height)
+        context.clip(to: rect)
+        context.drawLinearGradient(
+            gradient,
+            start: CGPoint(x: rect.minX, y: rect.midY),
+            end: CGPoint(x: rect.maxX, y: rect.midY),
+            options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
+        )
+        context.restoreGState()
+    }
+
+    private func startAnimations(phaseOffset: CFTimeInterval = 0) {
+        guard window != nil, cachedFrames.count > 1 else { return }
+        guard imageLayer.animation(forKey: Self.animationKey) == nil else { return }
+        let loopFrames = cachedFrames + [cachedFrames[0]]
+        let lastIndex = max(loopFrames.count - 1, 1)
+        let layerTime = imageLayer.convertTime(CACurrentMediaTime(), from: nil)
+        let offset = min(max(phaseOffset, 0), cycleDuration)
+        let animation = CAKeyframeAnimation(keyPath: "contents")
+        animation.values = loopFrames
+        animation.keyTimes = (0..<loopFrames.count).map { NSNumber(value: Double($0) / Double(lastIndex)) }
+        animation.duration = cycleDuration
+        animation.beginTime = layerTime - offset
+        animation.repeatCount = .infinity
+        animation.calculationMode = .discrete
+        animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        animation.isRemovedOnCompletion = false
+        animationStartLayerTime = layerTime - offset
+        imageLayer.add(animation, forKey: Self.animationKey)
+    }
+
+    private func stopAnimations() {
+        imageLayer.removeAnimation(forKey: Self.animationKey)
+        animationStartLayerTime = nil
+    }
+
+    private func currentAnimationPhaseOffset() -> CFTimeInterval {
+        guard let animationStartLayerTime else { return 0 }
+        let layerTime = imageLayer.convertTime(CACurrentMediaTime(), from: nil)
+        let elapsed = max(0, layerTime - animationStartLayerTime)
+        return elapsed.truncatingRemainder(dividingBy: cycleDuration)
+    }
+
+    private func clearFrameCache() {
+        cachedFrames.removeAll()
+        imageLayer.contents = nil
+        lastBounds = .zero
+        lastBackingScale = 0
+    }
+
+    private func cancelPendingRender(advanceGeneration: Bool = true) {
+        if advanceGeneration {
+            renderGeneration &+= 1
+        }
+        pendingRenderWorkItem?.cancel()
+        pendingRenderWorkItem = nil
+    }
+
+    private func sameColor(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
+        guard let lhs = lhs.usingColorSpace(.deviceRGB),
+              let rhs = rhs.usingColorSpace(.deviceRGB) else {
+            return false
+        }
+        return abs(lhs.redComponent - rhs.redComponent) < 0.001
+            && abs(lhs.greenComponent - rhs.greenComponent) < 0.001
+            && abs(lhs.blueComponent - rhs.blueComponent) < 0.001
+            && abs(lhs.alphaComponent - rhs.alphaComponent) < 0.001
+    }
+}
+
+private struct FloatingUnreadRippleOverlay: NSViewRepresentable {
+    let color: Color
+    let cornerRadius: CGFloat
+    let scale: CGFloat
+
+    func makeNSView(context: Context) -> FloatingUnreadSpriteRippleView {
+        let view = FloatingUnreadSpriteRippleView()
+        view.configure(color: nsColor, cornerRadius: cornerRadius, scale: scale)
+        return view
+    }
+
+    func updateNSView(_ nsView: FloatingUnreadSpriteRippleView, context: Context) {
+        nsView.configure(color: nsColor, cornerRadius: cornerRadius, scale: scale)
+    }
+
+    private var nsColor: NSColor {
+        NSColor(color).usingColorSpace(.deviceRGB) ?? .systemBlue
+    }
+}
+
+private final class FloatingUnreadLayerRippleView: NSView {
+    private enum RippleSourceKind: CaseIterable {
+        case center
+        case top
+        case bottom
+        case topSecond
+        case bottomSecond
+        case left
+        case right
+
+        var strength: CGFloat {
+            switch self {
+            case .center:
+                return 1.00
+            case .top, .bottom:
+                return 0.82
+            case .topSecond, .bottomSecond:
+                return 0.50
+            case .left, .right:
+                return 0.58
+            }
+        }
+
+        func point(in bounds: CGRect) -> CGPoint {
+            let center = CGPoint(x: bounds.midX, y: bounds.midY)
+            switch self {
+            case .center:
+                return center
+            case .top:
+                return CGPoint(x: center.x, y: -center.y)
+            case .bottom:
+                return CGPoint(x: center.x, y: bounds.height + (bounds.height - center.y))
+            case .topSecond:
+                return CGPoint(x: center.x, y: center.y - 2 * bounds.height)
+            case .bottomSecond:
+                return CGPoint(x: center.x, y: center.y + 2 * bounds.height)
+            case .left:
+                return CGPoint(x: -center.x, y: center.y)
+            case .right:
+                return CGPoint(x: bounds.width + (bounds.width - center.x), y: center.y)
+            }
+        }
+    }
+
+    private enum EdgeGlowKind: CaseIterable {
+        case top
+        case bottom
+        case left
+        case right
+        case topSecond
+        case bottomSecond
+
+        var peakOpacity: Float {
+            switch self {
+            case .top, .bottom:
+                return 0.42
+            case .left, .right:
+                return 0.30
+            case .topSecond, .bottomSecond:
+                return 0.24
+            }
+        }
+
+        var isSecondary: Bool {
+            switch self {
+            case .topSecond, .bottomSecond:
+                return true
+            case .top, .bottom, .left, .right:
+                return false
+            }
+        }
+
+        func arrivalDistance(in bounds: CGRect) -> CGFloat {
+            let center = CGPoint(x: bounds.midX, y: bounds.midY)
+            switch self {
+            case .top:
+                return center.y
+            case .bottom:
+                return bounds.height - center.y
+            case .left:
+                return center.x
+            case .right:
+                return bounds.width - center.x
+            case .topSecond:
+                return 2 * bounds.height - center.y
+            case .bottomSecond:
+                return bounds.height + center.y
+            }
+        }
+
+        func frame(in bounds: CGRect, scale: CGFloat) -> CGRect {
+            let primaryThickness = max(1.3, 2.35 * scale)
+            let secondaryThickness = max(1.1, 2.05 * scale)
+            let sideThickness = max(1.2, 2.2 * scale)
+            switch self {
+            case .top:
+                return CGRect(x: 0, y: 0, width: bounds.width, height: primaryThickness)
+            case .bottom:
+                return CGRect(x: 0, y: bounds.height - primaryThickness, width: bounds.width, height: primaryThickness)
+            case .left:
+                return CGRect(x: 0, y: 0, width: sideThickness, height: bounds.height)
+            case .right:
+                return CGRect(x: bounds.width - sideThickness, y: 0, width: sideThickness, height: bounds.height)
+            case .topSecond:
+                return CGRect(x: 0, y: 0, width: bounds.width, height: secondaryThickness)
+            case .bottomSecond:
+                return CGRect(x: 0, y: bounds.height - secondaryThickness, width: bounds.width, height: secondaryThickness)
+            }
+        }
+    }
+
+    private struct RippleLayer {
+        let source: RippleSourceKind
+        let ringIndex: Int
+        let layer: CAShapeLayer
+    }
+
+    private struct EdgeGlowLayer {
+        let kind: EdgeGlowKind
+        let layer: CALayer
+    }
+
+    private let tintLayer = CALayer()
+    private let borderLayer = CAShapeLayer()
+    private var rippleLayers: [RippleLayer] = []
+    private var edgeGlowLayers: [EdgeGlowLayer] = []
+    private var currentColor = NSColor.systemBlue
+    private var currentCornerRadius: CGFloat = 14
+    private var currentScale: CGFloat = 1
+    private var lastBounds: CGRect = .zero
+    private var currentMaxRadius: CGFloat = 1
+    private let cycleDuration: CFTimeInterval = 3.25
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupRootLayer()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupRootLayer()
     }
 
     override func viewDidMoveToWindow() {
@@ -747,53 +1156,57 @@ private final class FloatingUnreadShimmerView: NSView {
     }
 
     func configure(color: NSColor, cornerRadius: CGFloat, scale: CGFloat) {
-        let nextScale = max(scale, 0.1)
-        let needsLayout = abs(currentScale - nextScale) > 0.001
-            || abs(currentCornerRadius - cornerRadius) > 0.001
         currentColor = color.usingColorSpace(.deviceRGB) ?? .systemBlue
         currentCornerRadius = cornerRadius
-        currentScale = nextScale
-        layer?.cornerRadius = cornerRadius
-        layer?.cornerCurve = .continuous
+        currentScale = max(scale, 0.1)
         updateColors()
-        updateLayoutIfNeeded(force: needsLayout)
+        updateLayoutIfNeeded(force: true)
     }
 
-    private func setupLayers() {
-        guard let layer else { return }
-        tintLayer.opacity = 0.0
-        layer.addSublayer(tintLayer)
+    private func setupRootLayer() {
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.cornerCurve = .continuous
+        layer?.addSublayer(tintLayer)
+        layer?.addSublayer(borderLayer)
 
-        sweepLayer.startPoint = CGPoint(x: 0, y: 0.5)
-        sweepLayer.endPoint = CGPoint(x: 1, y: 0.5)
-        sweepLayer.locations = [0.0, 0.30, 0.50, 0.70, 1.0]
-        sweepLayer.compositingFilter = "screenBlendMode"
-        layer.addSublayer(sweepLayer)
+        rippleLayers = RippleSourceKind.allCases.flatMap { source in
+            (0..<5).map { ringIndex in
+                let ring = CAShapeLayer()
+                ring.fillColor = NSColor.clear.cgColor
+                ring.lineJoin = .round
+                ring.lineCap = .round
+                ring.opacity = 0
+                layer?.addSublayer(ring)
+                return RippleLayer(source: source, ringIndex: ringIndex, layer: ring)
+            }
+        }
 
-        highlightLayer.startPoint = CGPoint(x: 0, y: 0.5)
-        highlightLayer.endPoint = CGPoint(x: 1, y: 0.5)
-        highlightLayer.locations = [0.0, 0.45, 0.55, 1.0]
-        highlightLayer.compositingFilter = "screenBlendMode"
-        layer.addSublayer(highlightLayer)
+        edgeGlowLayers = EdgeGlowKind.allCases.map { kind in
+            let glow = CALayer()
+            glow.opacity = 0
+            glow.cornerRadius = 1.4
+            glow.cornerCurve = .continuous
+            layer?.addSublayer(glow)
+            return EdgeGlowLayer(kind: kind, layer: glow)
+        }
         updateColors()
     }
 
     private func updateColors() {
-        let accent = currentColor
-        tintLayer.backgroundColor = accent.withAlphaComponent(0.050).cgColor
-        sweepLayer.colors = [
-            NSColor.clear.cgColor,
-            accent.withAlphaComponent(0.30).cgColor,
-            NSColor.white.withAlphaComponent(0.45).cgColor,
-            accent.withAlphaComponent(0.24).cgColor,
-            NSColor.clear.cgColor
-        ]
-        highlightLayer.colors = [
-            NSColor.clear.cgColor,
-            NSColor.white.withAlphaComponent(0.00).cgColor,
-            NSColor.white.withAlphaComponent(0.26).cgColor,
-            NSColor.clear.cgColor
-        ]
+        tintLayer.backgroundColor = currentColor.withAlphaComponent(0.045).cgColor
+        borderLayer.strokeColor = NSColor.white.withAlphaComponent(0.28).cgColor
+        borderLayer.fillColor = NSColor.clear.cgColor
+        for ripple in rippleLayers {
+            let alpha = max(0.11, 0.50 - CGFloat(ripple.ringIndex) * 0.065) * ripple.source.strength
+            ripple.layer.strokeColor = currentColor.withAlphaComponent(alpha).cgColor
+            ripple.layer.lineWidth = max(0.82, (2.35 - CGFloat(ripple.ringIndex) * 0.19) * currentScale)
+        }
+        for edge in edgeGlowLayers {
+            let alpha: CGFloat = edge.kind.isSecondary ? 0.24 : 0.30
+            edge.layer.backgroundColor = NSColor.white.withAlphaComponent(alpha).cgColor
+        }
     }
 
     private func updateLayoutIfNeeded(force: Bool) {
@@ -803,117 +1216,389 @@ private final class FloatingUnreadShimmerView: NSView {
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        layer?.cornerRadius = currentCornerRadius
         tintLayer.frame = bounds
+        borderLayer.frame = bounds
+        borderLayer.path = CGPath(
+            roundedRect: bounds.insetBy(dx: 1.2 * currentScale, dy: 1.2 * currentScale),
+            cornerWidth: max(1, currentCornerRadius - 1.2 * currentScale),
+            cornerHeight: max(1, currentCornerRadius - 1.2 * currentScale),
+            transform: nil
+        )
+        borderLayer.lineWidth = max(0.5, 0.75 * currentScale)
 
-        let bandWidth = max(bounds.width * 0.62, 76 * currentScale)
-        let bandHeight = bounds.height * 2.0
-        let bandFrame = CGRect(x: 0, y: 0, width: bandWidth, height: bandHeight)
-        sweepLayer.bounds = bandFrame
-        sweepLayer.position = CGPoint(x: -bandWidth, y: bounds.midY)
-        sweepLayer.setAffineTransform(CGAffineTransform(rotationAngle: -0.20))
-
-        let highlightWidth = max(12 * currentScale, bandWidth * 0.16)
-        highlightLayer.bounds = CGRect(x: 0, y: 0, width: highlightWidth, height: bandHeight)
-        highlightLayer.position = CGPoint(x: -bandWidth, y: bounds.midY)
-        highlightLayer.setAffineTransform(CGAffineTransform(rotationAngle: -0.20))
+        let maxRadius = max(max(bounds.width, bounds.height) * 0.82, bounds.height * 2.25)
+        currentMaxRadius = max(maxRadius, 1)
+        let diameter = maxRadius * 2
+        let ringBounds = CGRect(x: 0, y: 0, width: diameter, height: diameter)
+        let path = CGPath(ellipseIn: ringBounds, transform: nil)
+        for ripple in rippleLayers {
+            ripple.layer.bounds = ringBounds
+            ripple.layer.position = ripple.source.point(in: bounds)
+            ripple.layer.path = path
+            ripple.layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        }
+        for edge in edgeGlowLayers {
+            edge.layer.frame = edge.kind.frame(in: bounds, scale: currentScale)
+            edge.layer.cornerRadius = 1.4 * currentScale
+        }
         CATransaction.commit()
         startAnimations()
     }
 
     private func startAnimations() {
         guard window != nil, bounds.width > 0, bounds.height > 0 else { return }
-        let bandWidth = max(bounds.width * 0.62, 76 * currentScale)
-        let fromX = -bandWidth * 0.8
-        let toX = bounds.width + bandWidth * 1.15
-        addSweepAnimation(to: sweepLayer, fromX: fromX, toX: toX, duration: 2.1)
-        addSweepAnimation(to: highlightLayer, fromX: fromX + bandWidth * 0.18, toX: toX + bandWidth * 0.18, duration: 2.1)
-
-        if tintLayer.animation(forKey: "floatingUnreadTintPulse") == nil {
-            let pulse = CABasicAnimation(keyPath: "opacity")
-            pulse.fromValue = 0.22
-            pulse.toValue = 0.58
-            pulse.duration = 1.05
-            pulse.autoreverses = true
-            pulse.repeatCount = .infinity
-            pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            tintLayer.add(pulse, forKey: "floatingUnreadTintPulse")
+        startTintAnimation()
+        startBorderAnimation()
+        for ripple in rippleLayers {
+            startRippleAnimation(ripple)
+        }
+        for edge in edgeGlowLayers {
+            startEdgeAnimation(edge)
         }
     }
 
-    private func addSweepAnimation(to layer: CALayer, fromX: CGFloat, toX: CGFloat, duration: TimeInterval) {
-        let animationKey = "floatingUnreadSweep"
-        let currentAnimation = layer.animation(forKey: animationKey) as? CABasicAnimation
-        let currentFrom = (currentAnimation?.fromValue as? NSNumber)?.doubleValue
-        let currentTo = (currentAnimation?.toValue as? NSNumber)?.doubleValue
-        if currentAnimation != nil,
-           abs((currentFrom ?? .nan) - Double(fromX)) < 0.5,
-           abs((currentTo ?? .nan) - Double(toX)) < 0.5 {
-            return
-        }
-        let sweep = CABasicAnimation(keyPath: "position.x")
-        sweep.fromValue = fromX
-        sweep.toValue = toX
-        sweep.duration = duration
-        sweep.repeatCount = .infinity
-        sweep.timingFunction = CAMediaTimingFunction(name: .linear)
-        sweep.isRemovedOnCompletion = false
-        layer.add(sweep, forKey: animationKey)
+    private func startTintAnimation() {
+        guard tintLayer.animation(forKey: "floatingUnreadTintPulse") == nil else { return }
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 0.16
+        pulse.toValue = 0.34
+        pulse.duration = 1.35
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        tintLayer.add(pulse, forKey: "floatingUnreadTintPulse")
+    }
+
+    private func startBorderAnimation() {
+        guard borderLayer.animation(forKey: "floatingUnreadBorderPulse") == nil else { return }
+        let pulse = CAKeyframeAnimation(keyPath: "opacity")
+        pulse.values = [0, 0.28, 0.18, 0, 0]
+        pulse.keyTimes = [0, 0.26, 0.45, 0.70, 1]
+        pulse.duration = cycleDuration
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        pulse.isRemovedOnCompletion = false
+        borderLayer.add(pulse, forKey: "floatingUnreadBorderPulse")
+    }
+
+    private func startRippleAnimation(_ ripple: RippleLayer) {
+        guard ripple.layer.animation(forKey: "floatingUnreadRipple") == nil else { return }
+        let delay = Double(ripple.ringIndex) * 0.15
+        let scale = CAKeyframeAnimation(keyPath: "transform.scale")
+        scale.values = [0.02, 0.34, 0.76, 1.0, 1.0]
+        scale.keyTimes = [0, 0.18, 0.62, 0.86, 1]
+        scale.timingFunction = CAMediaTimingFunction(name: .easeOut)
+
+        let opacity = CAKeyframeAnimation(keyPath: "opacity")
+        let peak = max(0.08, (0.48 - CGFloat(ripple.ringIndex) * 0.060) * ripple.source.strength)
+        opacity.values = [0, peak, peak * 0.75, 0, 0]
+        opacity.keyTimes = [0, 0.10, 0.58, 0.86, 1]
+        opacity.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+
+        let group = CAAnimationGroup()
+        group.animations = [scale, opacity]
+        group.duration = cycleDuration
+        group.beginTime = CACurrentMediaTime() + delay
+        group.repeatCount = .infinity
+        group.isRemovedOnCompletion = false
+        group.fillMode = .both
+        ripple.layer.add(group, forKey: "floatingUnreadRipple")
+    }
+
+    private func startEdgeAnimation(_ edge: EdgeGlowLayer) {
+        guard edge.layer.animation(forKey: "floatingUnreadEdgeGlow") == nil else { return }
+        let distance = edge.kind.arrivalDistance(in: bounds)
+        let phase = phaseForRadiusFraction(distance / currentMaxRadius)
+        let spread: CGFloat = edge.kind.isSecondary ? 0.070 : 0.052
+        let times = edgeKeyTimes(around: phase, spread: spread)
+        let pulse = CAKeyframeAnimation(keyPath: "opacity")
+        pulse.values = [0, 0, edge.kind.peakOpacity, 0, 0]
+        pulse.keyTimes = times.map { NSNumber(value: Double($0)) }
+        pulse.duration = cycleDuration
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        pulse.isRemovedOnCompletion = false
+        edge.layer.add(pulse, forKey: "floatingUnreadEdgeGlow")
     }
 
     private func stopAnimations() {
-        sweepLayer.removeAnimation(forKey: "floatingUnreadSweep")
-        highlightLayer.removeAnimation(forKey: "floatingUnreadSweep")
         tintLayer.removeAnimation(forKey: "floatingUnreadTintPulse")
+        borderLayer.removeAnimation(forKey: "floatingUnreadBorderPulse")
+        rippleLayers.forEach { $0.layer.removeAnimation(forKey: "floatingUnreadRipple") }
+        edgeGlowLayers.forEach { $0.layer.removeAnimation(forKey: "floatingUnreadEdgeGlow") }
+    }
+
+    private func phaseForRadiusFraction(_ fraction: CGFloat) -> CGFloat {
+        let clamped = min(max(fraction, 0.02), 1.0)
+        let points: [(time: CGFloat, radius: CGFloat)] = [
+            (0.00, 0.02),
+            (0.18, 0.34),
+            (0.62, 0.76),
+            (0.86, 1.00),
+            (1.00, 1.00)
+        ]
+        for index in 1..<points.count {
+            let previous = points[index - 1]
+            let next = points[index]
+            guard clamped <= next.radius || index == points.count - 1 else { continue }
+            let span = max(next.radius - previous.radius, 0.001)
+            let progress = (clamped - previous.radius) / span
+            return previous.time + (next.time - previous.time) * min(max(progress, 0), 1)
+        }
+        return 0.86
+    }
+
+    private func edgeKeyTimes(around phase: CGFloat, spread: CGFloat) -> [CGFloat] {
+        let start = max(0.001, phase - spread)
+        let peak = min(max(phase, start + 0.001), 0.998)
+        let end = min(0.999, max(peak + 0.001, phase + spread))
+        return [0, start, peak, end, 1]
     }
 }
 
-private struct FloatingUnreadRippleOverlay: View {
-    let color: Color
-    let cornerRadius: CGFloat
-    let scale: CGFloat
-    @StateObject private var clock = FloatingUnreadDisplayClock()
+private final class FloatingUnreadSpriteRippleView: NSView {
+    private struct RippleSource {
+        let point: CGPoint
+        let arrivalDistance: CGFloat
+        let strength: CGFloat
+        let isDirect: Bool
+    }
 
-    var body: some View {
-        Canvas(opaque: false, rendersAsynchronously: false) { context, size in
-            drawPanelTint(in: &context, size: size, time: clock.time)
-            drawCircularRippleReflections(in: &context, size: size, time: clock.time)
-        }
-        .mask(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .onAppear {
-            clock.start()
-        }
-        .onDisappear {
-            clock.stop()
+    private struct RenderRequest {
+        let size: CGSize
+        let backingScale: CGFloat
+        let color: NSColor
+        let cornerRadius: CGFloat
+        let scale: CGFloat
+    }
+
+    private static let animationKey = "floatingUnreadRippleFrames"
+
+    private let imageLayer = CALayer()
+    private let renderQueue = DispatchQueue(label: "local.codex-token-bar.unread-ripple-render", qos: .userInitiated)
+    private var cachedFrames: [CGImage] = []
+    private var pendingRenderWorkItem: DispatchWorkItem?
+    private var renderGeneration: UInt64 = 0
+    private var animationStartLayerTime: CFTimeInterval?
+    private var currentColor = NSColor.systemBlue
+    private var currentCornerRadius: CGFloat = 14
+    private var currentScale: CGFloat = 1
+    private var lastBounds: CGRect = .zero
+    private var lastBackingScale: CGFloat = 0
+    private let cycleDuration: CFTimeInterval = 3.25
+    private let activeFraction = 0.92
+    private let targetFramesPerSecond = 60
+    private let resizeRenderDebounce: TimeInterval = 0.14
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupRootLayer()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupRootLayer()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            cancelPendingRender()
+            stopAnimations()
+            clearFrameCache()
+        } else {
+            updateLayoutIfNeeded(force: true)
+            startAnimations()
         }
     }
 
-    private func drawPanelTint(in context: inout GraphicsContext, size: CGSize, time: TimeInterval) {
-        let pulse = (sin(time * 1.1) + 1) / 2
-        let background = Path(
-            roundedRect: CGRect(origin: .zero, size: size),
-            cornerSize: CGSize(width: cornerRadius, height: cornerRadius)
+    override func layout() {
+        super.layout()
+        updateLayoutIfNeeded(force: false)
+    }
+
+    func configure(color: NSColor, cornerRadius: CGFloat, scale: CGFloat) {
+        let nextColor = color.usingColorSpace(.deviceRGB) ?? .systemBlue
+        let nextScale = max(scale, 0.1)
+        let needsLayout = !sameColor(nextColor, currentColor)
+            || abs(currentScale - nextScale) > 0.001
+            || abs(currentCornerRadius - cornerRadius) > 0.001
+        currentColor = nextColor
+        currentCornerRadius = cornerRadius
+        currentScale = nextScale
+        layer?.cornerRadius = cornerRadius
+        layer?.cornerCurve = .continuous
+        updateLayoutIfNeeded(force: needsLayout)
+    }
+
+    private func setupRootLayer() {
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.cornerCurve = .continuous
+        imageLayer.contentsGravity = .resize
+        layer?.addSublayer(imageLayer)
+    }
+
+    private func updateLayoutIfNeeded(force: Bool) {
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let rawBackingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let backingScale = min(max(rawBackingScale, 1), 2)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.cornerRadius = currentCornerRadius
+        layer?.cornerCurve = .continuous
+        imageLayer.frame = bounds
+        imageLayer.contentsScale = backingScale
+        CATransaction.commit()
+
+        guard isReasonableRenderableSize(bounds.size) else {
+            cancelPendingRender()
+            stopAnimations()
+            clearFrameCache()
+            return
+        }
+        guard force || bounds != lastBounds || abs(backingScale - lastBackingScale) > 0.01 else {
+            return
+        }
+
+        let request = RenderRequest(
+            size: bounds.size,
+            backingScale: backingScale,
+            color: currentColor,
+            cornerRadius: currentCornerRadius,
+            scale: currentScale
         )
-        context.fill(background, with: .color(color.opacity(0.020 + 0.014 * pulse)))
+        requestFrameRender(request, immediate: cachedFrames.isEmpty)
     }
 
-    private func drawCircularRippleReflections(in context: inout GraphicsContext, size: CGSize, time: TimeInterval) {
-        guard size.width > 0, size.height > 0 else { return }
-        let cycle: TimeInterval = 3.25
-        let activeWindow = 0.92
+    private func isReasonableRenderableSize(_ size: CGSize) -> Bool {
+        let maxSize = FloatingTokenPanelMetrics.size(scale: FloatingTokenPanelMetrics.scaleRange.upperBound)
+        return size.width <= maxSize.width + 32
+            && size.height <= maxSize.height + 32
+    }
 
-        var softContext = context
-        softContext.addFilter(.blur(radius: max(0.9, 1.18 * scale)))
+    private func requestFrameRender(_ request: RenderRequest, immediate: Bool) {
+        renderGeneration &+= 1
+        let generation = renderGeneration
+        cancelPendingRender(advanceGeneration: false)
+        let cycleDuration = cycleDuration
+        let activeFraction = activeFraction
+        let targetFramesPerSecond = targetFramesPerSecond
 
-        let cyclePhase = (time / cycle).truncatingRemainder(dividingBy: 1)
-        guard cyclePhase < activeWindow else { return }
-        let phase = cyclePhase / activeWindow
+        if immediate {
+            let frames = renderFrames(
+                request: request,
+                cycleDuration: cycleDuration,
+                activeFraction: activeFraction,
+                targetFramesPerSecond: targetFramesPerSecond
+            )
+            applyRenderedFrames(frames, request: request, generation: generation)
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let frames = self.renderFrames(
+                request: request,
+                cycleDuration: cycleDuration,
+                activeFraction: activeFraction,
+                targetFramesPerSecond: targetFramesPerSecond
+            )
+            DispatchQueue.main.async { [weak self] in
+                self?.applyRenderedFrames(frames, request: request, generation: generation)
+            }
+        }
+        pendingRenderWorkItem = workItem
+        renderQueue.asyncAfter(deadline: .now() + resizeRenderDebounce, execute: workItem)
+    }
+
+    private func applyRenderedFrames(_ frames: [CGImage], request: RenderRequest, generation: UInt64) {
+        guard generation == renderGeneration, window != nil, !frames.isEmpty else { return }
+        let phaseOffset = currentAnimationPhaseOffset()
+        stopAnimations()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        lastBounds = CGRect(origin: .zero, size: request.size)
+        lastBackingScale = request.backingScale
+        imageLayer.frame = CGRect(origin: .zero, size: request.size)
+        imageLayer.contentsScale = request.backingScale
+        cachedFrames = frames
+        imageLayer.contents = frames.first
+        CATransaction.commit()
+        startAnimations(phaseOffset: phaseOffset)
+    }
+
+    private nonisolated func renderFrames(
+        request: RenderRequest,
+        cycleDuration: CFTimeInterval,
+        activeFraction: Double,
+        targetFramesPerSecond: Int
+    ) -> [CGImage] {
+        let pixelWidth = max(1, Int((request.size.width * request.backingScale).rounded(.up)))
+        let pixelHeight = max(1, Int((request.size.height * request.backingScale).rounded(.up)))
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let frameCount = frameCount(cycleDuration: cycleDuration, targetFramesPerSecond: targetFramesPerSecond)
+
+        return (0..<frameCount).compactMap { index in
+            guard let context = CGContext(
+                data: nil,
+                width: pixelWidth,
+                height: pixelHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                return nil
+            }
+            context.scaleBy(x: request.backingScale, y: request.backingScale)
+            drawRippleFrame(
+                in: context,
+                request: request,
+                phase: Double(index) / Double(frameCount),
+                activeFraction: activeFraction
+            )
+            return context.makeImage()
+        }
+    }
+
+    private nonisolated func frameCount(cycleDuration: CFTimeInterval, targetFramesPerSecond: Int) -> Int {
+        max(1, Int((cycleDuration * Double(targetFramesPerSecond)).rounded(.up)))
+    }
+
+    private nonisolated func drawRippleFrame(
+        in context: CGContext,
+        request: RenderRequest,
+        phase: Double,
+        activeFraction: Double
+    ) {
+        let size = request.size
+        let rect = CGRect(origin: .zero, size: size)
+        context.saveGState()
+        context.addPath(CGPath(roundedRect: rect, cornerWidth: request.cornerRadius, cornerHeight: request.cornerRadius, transform: nil))
+        context.clip()
+
+        let pulse = (sin(phase * .pi * 2) + 1) / 2
+        context.setFillColor(request.color.withAlphaComponent(0.020 + 0.014 * pulse).cgColor)
+        context.fill(rect)
+
+        if phase < activeFraction {
+            drawCircularRippleReflections(in: context, request: request, phase: phase / activeFraction)
+        }
+        context.restoreGState()
+    }
+
+    private nonisolated func drawCircularRippleReflections(in context: CGContext, request: RenderRequest, phase: Double) {
+        let size = request.size
         let fadeOut = smoothPulseFade(phase)
-
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
         let maxRadius = max(max(size.width, size.height) * 0.82, size.height * 2.25)
         let baseRadius = maxRadius * CGFloat(easeOutSine(phase))
-        let waveAlpha = fadeOut * (1.04 - 0.26 * phase)
-        let rings: [(offset: CGFloat, alpha: Double, thickness: CGFloat)] = [
+        let waveAlpha = CGFloat(fadeOut) * (1.04 - 0.26 * CGFloat(phase))
+        let scale = request.scale
+        let rings: [(offset: CGFloat, alpha: CGFloat, thickness: CGFloat)] = [
             (0, 1.00, 2.40),
             (-6.2 * scale, 0.66, 2.08),
             (-12.4 * scale, 0.46, 1.82),
@@ -928,15 +1613,15 @@ private struct FloatingUnreadRippleOverlay: View {
             let thickness = ring.thickness * scale
 
             for source in sources {
-                let arrival = source.arrivalDistance
-                let reflectionFade = source.kind == .direct
+                let reflectionFade = source.isDirect
                     ? 1
-                    : Double(smoothStep((radius - arrival) / max(12 * scale, 1)))
+                    : smoothStep((radius - source.arrivalDistance) / max(12 * scale, 1))
                 guard reflectionFade > 0.01 else { continue }
                 let alpha = waveAlpha * ring.alpha * source.strength * reflectionFade
                 drawCircularRing(
-                    in: &context,
-                    softContext: &softContext,
+                    in: context,
+                    color: request.color,
+                    scale: scale,
                     center: source.point,
                     radius: radius,
                     thickness: thickness,
@@ -945,209 +1630,166 @@ private struct FloatingUnreadRippleOverlay: View {
             }
         }
 
-        drawEdgeContact(
-            in: &context,
-            size: size,
-            center: center,
-            radius: baseRadius,
-            intensity: CGFloat(waveAlpha)
-        )
+        drawEdgeContact(in: context, request: request, center: center, radius: baseRadius, intensity: waveAlpha)
     }
 
-    private enum RippleSourceKind {
-        case direct
-        case reflection
-        case cornerReflection
-    }
-
-    private struct RippleSource {
-        let point: CGPoint
-        let arrivalDistance: CGFloat
-        let strength: Double
-        let kind: RippleSourceKind
-    }
-
-    private func rippleSources(size: CGSize, center: CGPoint) -> [RippleSource] {
-        let topFirst = center.y
-        let bottomFirst = size.height - center.y
-        let topSecond = 2 * size.height - center.y
-        let bottomSecond = size.height + center.y
-        let leftFirst = center.x
-        let rightFirst = size.width - center.x
-        let leftSecond = 2 * size.width - center.x
-        let rightSecond = size.width + center.x
-
-        var sources = [
-            RippleSource(
-                point: center,
-                arrivalDistance: 0,
-                strength: 1.0,
-                kind: .direct
-            ),
-            RippleSource(
-                point: CGPoint(x: center.x, y: -center.y),
-                arrivalDistance: topFirst,
-                strength: 0.84,
-                kind: .reflection
-            ),
-            RippleSource(
-                point: CGPoint(x: center.x, y: size.height + (size.height - center.y)),
-                arrivalDistance: bottomFirst,
-                strength: 0.84,
-                kind: .reflection
-            ),
-            RippleSource(
-                point: CGPoint(x: center.x, y: center.y - 2 * size.height),
-                arrivalDistance: topSecond,
-                strength: 0.52,
-                kind: .reflection
-            ),
-            RippleSource(
-                point: CGPoint(x: center.x, y: center.y + 2 * size.height),
-                arrivalDistance: bottomSecond,
-                strength: 0.52,
-                kind: .reflection
-            ),
-            RippleSource(
-                point: CGPoint(x: -center.x, y: center.y),
-                arrivalDistance: leftFirst,
-                strength: 0.66,
-                kind: .reflection
-            ),
-            RippleSource(
-                point: CGPoint(x: size.width + (size.width - center.x), y: center.y),
-                arrivalDistance: rightFirst,
-                strength: 0.66,
-                kind: .reflection
-            ),
-            RippleSource(
-                point: CGPoint(x: center.x - 2 * size.width, y: center.y),
-                arrivalDistance: leftSecond,
-                strength: 0.28,
-                kind: .reflection
-            ),
-            RippleSource(
-                point: CGPoint(x: center.x + 2 * size.width, y: center.y),
-                arrivalDistance: rightSecond,
-                strength: 0.28,
-                kind: .reflection
-            ),
-            RippleSource(
-                point: CGPoint(x: -center.x, y: -center.y),
-                arrivalDistance: hypot(center.x, center.y),
-                strength: 0.36,
-                kind: .cornerReflection
-            ),
-            RippleSource(
-                point: CGPoint(x: size.width + (size.width - center.x), y: -center.y),
-                arrivalDistance: hypot(size.width - center.x, center.y),
-                strength: 0.36,
-                kind: .cornerReflection
-            ),
-            RippleSource(
-                point: CGPoint(x: -center.x, y: size.height + (size.height - center.y)),
-                arrivalDistance: hypot(center.x, size.height - center.y),
-                strength: 0.36,
-                kind: .cornerReflection
-            ),
-            RippleSource(
-                point: CGPoint(x: size.width + (size.width - center.x), y: size.height + (size.height - center.y)),
-                arrivalDistance: hypot(size.width - center.x, size.height - center.y),
-                strength: 0.36,
-                kind: .cornerReflection
-            )
-        ]
-        sources.sort { $0.arrivalDistance < $1.arrivalDistance }
-        return sources
-    }
-
-    private func drawCircularRing(
-        in context: inout GraphicsContext,
-        softContext: inout GraphicsContext,
+    private nonisolated func drawCircularRing(
+        in context: CGContext,
+        color: NSColor,
+        scale: CGFloat,
         center: CGPoint,
         radius: CGFloat,
         thickness: CGFloat,
-        alpha: Double
+        alpha: CGFloat
     ) {
-        let band = circularRingBandPath(center: center, radius: radius, thickness: thickness)
-        softContext.fill(
-            band,
-            with: .color(color.opacity(alpha * 0.54)),
-            style: FillStyle(eoFill: true)
-        )
-        context.stroke(
-            circlePath(center: center, radius: radius),
-            with: .color(Color.white.opacity(alpha * 0.17)),
-            lineWidth: max(0.18, 0.24 * scale)
-        )
-    }
-
-    private func circularRingBandPath(center: CGPoint, radius: CGFloat, thickness: CGFloat) -> Path {
+        guard alpha > 0.006 else { return }
         let outerRadius = max(radius + thickness / 2, 0.2)
         let innerRadius = max(radius - thickness / 2, 0.1)
-        var path = circlePath(center: center, radius: outerRadius)
-        path.addPath(circlePath(center: center, radius: innerRadius))
-        return path
+
+        context.saveGState()
+        context.setFillColor(color.withAlphaComponent(alpha * 0.54).cgColor)
+        context.addEllipse(in: circleRect(center: center, radius: outerRadius))
+        context.addEllipse(in: circleRect(center: center, radius: innerRadius))
+        context.drawPath(using: .eoFill)
+
+        context.setStrokeColor(NSColor.white.withAlphaComponent(alpha * 0.17).cgColor)
+        context.setLineWidth(max(0.18, 0.24 * scale))
+        context.addEllipse(in: circleRect(center: center, radius: radius))
+        context.strokePath()
+        context.restoreGState()
     }
 
-    private func circlePath(center: CGPoint, radius: CGFloat) -> Path {
-        Path(ellipseIn: CGRect(
-            x: center.x - radius,
-            y: center.y - radius,
-            width: radius * 2,
-            height: radius * 2
-        ))
-    }
-
-    private func drawEdgeContact(
-        in context: inout GraphicsContext,
-        size: CGSize,
+    private nonisolated func drawEdgeContact(
+        in context: CGContext,
+        request: RenderRequest,
         center: CGPoint,
         radius: CGFloat,
         intensity: CGFloat
     ) {
+        let size = request.size
+        let scale = request.scale
         let top = gaussian(Double(radius), center: Double(center.y), width: Double(6.4 * scale))
         let bottom = gaussian(Double(radius), center: Double(size.height - center.y), width: Double(6.4 * scale))
         let left = gaussian(Double(radius), center: Double(center.x), width: Double(9.0 * scale))
         let right = gaussian(Double(radius), center: Double(size.width - center.x), width: Double(9.0 * scale))
         let topSecond = gaussian(Double(radius), center: Double(2 * size.height - center.y), width: Double(10.5 * scale))
         let bottomSecond = gaussian(Double(radius), center: Double(size.height + center.y), width: Double(10.5 * scale))
-        drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: 0, width: size.width, height: 2.35 * scale), amount: top * Double(intensity))
-        drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: size.height - 2.35 * scale, width: size.width, height: 2.35 * scale), amount: bottom * Double(intensity))
-        drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: 0, width: 2.35 * scale, height: size.height), amount: left * Double(intensity))
-        drawEdgeGlow(in: &context, rect: CGRect(x: size.width - 2.35 * scale, y: 0, width: 2.35 * scale, height: size.height), amount: right * Double(intensity))
-        drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: 0, width: size.width, height: 2.05 * scale), amount: topSecond * Double(intensity) * 0.68)
-        drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: size.height - 2.05 * scale, width: size.width, height: 2.05 * scale), amount: bottomSecond * Double(intensity) * 0.68)
+        drawEdgeGlow(in: context, rect: CGRect(x: 0, y: 0, width: size.width, height: 2.35 * scale), amount: CGFloat(top) * intensity, scale: scale)
+        drawEdgeGlow(in: context, rect: CGRect(x: 0, y: size.height - 2.35 * scale, width: size.width, height: 2.35 * scale), amount: CGFloat(bottom) * intensity, scale: scale)
+        drawEdgeGlow(in: context, rect: CGRect(x: 0, y: 0, width: 2.35 * scale, height: size.height), amount: CGFloat(left) * intensity, scale: scale)
+        drawEdgeGlow(in: context, rect: CGRect(x: size.width - 2.35 * scale, y: 0, width: 2.35 * scale, height: size.height), amount: CGFloat(right) * intensity, scale: scale)
+        drawEdgeGlow(in: context, rect: CGRect(x: 0, y: 0, width: size.width, height: 2.05 * scale), amount: CGFloat(topSecond) * intensity * 0.68, scale: scale)
+        drawEdgeGlow(in: context, rect: CGRect(x: 0, y: size.height - 2.05 * scale, width: size.width, height: 2.05 * scale), amount: CGFloat(bottomSecond) * intensity * 0.68, scale: scale)
     }
 
-    private func drawEdgeGlow(in context: inout GraphicsContext, rect: CGRect, amount: Double) {
+    private nonisolated func drawEdgeGlow(in context: CGContext, rect: CGRect, amount: CGFloat, scale: CGFloat) {
         guard amount > 0.02 else { return }
-        context.fill(
-            Path(roundedRect: rect, cornerSize: CGSize(width: 1.4 * scale, height: 1.4 * scale)),
-            with: .color(Color.white.opacity(amount * 0.27))
-        )
+        context.saveGState()
+        context.setFillColor(NSColor.white.withAlphaComponent(amount * 0.27).cgColor)
+        context.addPath(CGPath(
+            roundedRect: rect,
+            cornerWidth: 1.4 * scale,
+            cornerHeight: 1.4 * scale,
+            transform: nil
+        ))
+        context.fillPath()
+        context.restoreGState()
     }
 
-    private func easeOutSine(_ value: Double) -> Double {
+    private func startAnimations(phaseOffset: CFTimeInterval = 0) {
+        guard window != nil, cachedFrames.count > 1 else { return }
+        guard imageLayer.animation(forKey: Self.animationKey) == nil else { return }
+        let loopFrames = cachedFrames + [cachedFrames[0]]
+        let lastIndex = max(loopFrames.count - 1, 1)
+        let layerTime = imageLayer.convertTime(CACurrentMediaTime(), from: nil)
+        let offset = min(max(phaseOffset, 0), cycleDuration)
+        let animation = CAKeyframeAnimation(keyPath: "contents")
+        animation.values = loopFrames
+        animation.keyTimes = (0..<loopFrames.count).map { NSNumber(value: Double($0) / Double(lastIndex)) }
+        animation.duration = cycleDuration
+        animation.beginTime = layerTime - offset
+        animation.repeatCount = .infinity
+        animation.calculationMode = .discrete
+        animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        animation.isRemovedOnCompletion = false
+        animationStartLayerTime = layerTime - offset
+        imageLayer.add(animation, forKey: Self.animationKey)
+    }
+
+    private func stopAnimations() {
+        imageLayer.removeAnimation(forKey: Self.animationKey)
+        animationStartLayerTime = nil
+    }
+
+    private func currentAnimationPhaseOffset() -> CFTimeInterval {
+        guard let animationStartLayerTime else { return 0 }
+        let layerTime = imageLayer.convertTime(CACurrentMediaTime(), from: nil)
+        let elapsed = max(0, layerTime - animationStartLayerTime)
+        return elapsed.truncatingRemainder(dividingBy: cycleDuration)
+    }
+
+    private func clearFrameCache() {
+        cachedFrames.removeAll()
+        imageLayer.contents = nil
+        lastBounds = .zero
+        lastBackingScale = 0
+    }
+
+    private func cancelPendingRender(advanceGeneration: Bool = true) {
+        if advanceGeneration {
+            renderGeneration &+= 1
+        }
+        pendingRenderWorkItem?.cancel()
+        pendingRenderWorkItem = nil
+    }
+
+    private nonisolated func rippleSources(size: CGSize, center: CGPoint) -> [RippleSource] {
+        [
+            RippleSource(point: center, arrivalDistance: 0, strength: 1.00, isDirect: true),
+            RippleSource(point: CGPoint(x: center.x, y: -center.y), arrivalDistance: center.y, strength: 0.84, isDirect: false),
+            RippleSource(point: CGPoint(x: center.x, y: size.height + (size.height - center.y)), arrivalDistance: size.height - center.y, strength: 0.84, isDirect: false),
+            RippleSource(point: CGPoint(x: center.x, y: center.y - 2 * size.height), arrivalDistance: 2 * size.height - center.y, strength: 0.52, isDirect: false),
+            RippleSource(point: CGPoint(x: center.x, y: center.y + 2 * size.height), arrivalDistance: size.height + center.y, strength: 0.52, isDirect: false),
+            RippleSource(point: CGPoint(x: -center.x, y: center.y), arrivalDistance: center.x, strength: 0.66, isDirect: false),
+            RippleSource(point: CGPoint(x: size.width + (size.width - center.x), y: center.y), arrivalDistance: size.width - center.x, strength: 0.66, isDirect: false)
+        ]
+    }
+
+    private nonisolated func circleRect(center: CGPoint, radius: CGFloat) -> CGRect {
+        CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+    }
+
+    private nonisolated func easeOutSine(_ value: Double) -> Double {
         let clamped = min(max(value, 0), 1)
         return sin(clamped * .pi / 2)
     }
 
-    private func smoothStep(_ value: CGFloat) -> CGFloat {
+    private nonisolated func smoothStep(_ value: CGFloat) -> CGFloat {
         let clamped = min(max(value, 0), 1)
         return clamped * clamped * (3 - 2 * clamped)
     }
 
-    private func smoothPulseFade(_ value: Double) -> Double {
+    private nonisolated func smoothPulseFade(_ value: Double) -> Double {
         let fadeStart = 0.80
         guard value > fadeStart else { return 1 }
         let t = min(max((value - fadeStart) / (1 - fadeStart), 0), 1)
         return Double(1 - smoothStep(CGFloat(t)))
     }
 
-    private func gaussian(_ value: Double, center: Double, width: Double) -> Double {
+    private nonisolated func gaussian(_ value: Double, center: Double, width: Double) -> Double {
         let distance = (value - center) / max(width, 0.0001)
         return exp(-(distance * distance))
+    }
+
+    private func sameColor(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
+        guard let lhs = lhs.usingColorSpace(.deviceRGB),
+              let rhs = rhs.usingColorSpace(.deviceRGB) else {
+            return false
+        }
+        return abs(lhs.redComponent - rhs.redComponent) < 0.001
+            && abs(lhs.greenComponent - rhs.greenComponent) < 0.001
+            && abs(lhs.blueComponent - rhs.blueComponent) < 0.001
+            && abs(lhs.alphaComponent - rhs.alphaComponent) < 0.001
     }
 }
 
