@@ -604,16 +604,16 @@ private struct FloatingUnreadRippleOverlay: View {
             roundedRect: CGRect(origin: .zero, size: size),
             cornerSize: CGSize(width: cornerRadius, height: cornerRadius)
         )
-        context.fill(background, with: .color(color.opacity(0.014 + 0.010 * pulse)))
+        context.fill(background, with: .color(color.opacity(0.020 + 0.014 * pulse)))
     }
 
     private func drawCircularRippleReflections(in context: inout GraphicsContext, size: CGSize, time: TimeInterval) {
         guard size.width > 0, size.height > 0 else { return }
-        let cycle: TimeInterval = 3.45
-        let activeWindow = 0.88
+        let cycle: TimeInterval = 3.25
+        let activeWindow = 0.92
 
         var softContext = context
-        softContext.addFilter(.blur(radius: max(0.8, 1.10 * scale)))
+        softContext.addFilter(.blur(radius: max(0.9, 1.18 * scale)))
 
         let cyclePhase = (time / cycle).truncatingRemainder(dividingBy: 1)
         guard cyclePhase < activeWindow else { return }
@@ -621,13 +621,13 @@ private struct FloatingUnreadRippleOverlay: View {
         let fadeOut = smoothPulseFade(phase)
 
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
-        let maxRadius = max(size.width, size.height) * 0.72
+        let maxRadius = max(size.width, size.height) * 0.78
         let baseRadius = maxRadius * CGFloat(easeOutSine(phase))
-        let waveAlpha = fadeOut * (0.92 - 0.22 * phase)
+        let waveAlpha = fadeOut * (1.04 - 0.26 * phase)
         let rings: [(offset: CGFloat, alpha: Double, thickness: CGFloat)] = [
-            (0, 1.00, 2.25),
-            (-8.5 * scale, 0.50, 1.75),
-            (-17.0 * scale, 0.24, 1.35)
+            (0, 1.00, 2.40),
+            (-8.0 * scale, 0.55, 1.75),
+            (-16.0 * scale, 0.28, 1.30)
         ]
         let sources = rippleSources(size: size, center: center)
 
@@ -640,7 +640,7 @@ private struct FloatingUnreadRippleOverlay: View {
                 let arrival = source.arrivalDistance
                 let reflectionFade = source.kind == .direct
                     ? 1
-                    : Double(smoothStep((radius - arrival) / max(8 * scale, 1)))
+                    : Double(smoothStep((radius - arrival) / max(12 * scale, 1)))
                 guard reflectionFade > 0.01 else { continue }
                 let alpha = waveAlpha * ring.alpha * source.strength * reflectionFade
                 drawCircularRing(
@@ -687,49 +687,49 @@ private struct FloatingUnreadRippleOverlay: View {
             RippleSource(
                 point: CGPoint(x: center.x, y: -center.y),
                 arrivalDistance: center.y,
-                strength: 0.74,
+                strength: 0.84,
                 kind: .reflection
             ),
             RippleSource(
                 point: CGPoint(x: center.x, y: size.height + (size.height - center.y)),
                 arrivalDistance: size.height - center.y,
-                strength: 0.74,
+                strength: 0.84,
                 kind: .reflection
             ),
             RippleSource(
                 point: CGPoint(x: -center.x, y: center.y),
                 arrivalDistance: center.x,
-                strength: 0.58,
+                strength: 0.66,
                 kind: .reflection
             ),
             RippleSource(
                 point: CGPoint(x: size.width + (size.width - center.x), y: center.y),
                 arrivalDistance: size.width - center.x,
-                strength: 0.58,
+                strength: 0.66,
                 kind: .reflection
             ),
             RippleSource(
                 point: CGPoint(x: -center.x, y: -center.y),
                 arrivalDistance: hypot(center.x, center.y),
-                strength: 0.30,
+                strength: 0.36,
                 kind: .cornerReflection
             ),
             RippleSource(
                 point: CGPoint(x: size.width + (size.width - center.x), y: -center.y),
                 arrivalDistance: hypot(size.width - center.x, center.y),
-                strength: 0.30,
+                strength: 0.36,
                 kind: .cornerReflection
             ),
             RippleSource(
                 point: CGPoint(x: -center.x, y: size.height + (size.height - center.y)),
                 arrivalDistance: hypot(center.x, size.height - center.y),
-                strength: 0.30,
+                strength: 0.36,
                 kind: .cornerReflection
             ),
             RippleSource(
                 point: CGPoint(x: size.width + (size.width - center.x), y: size.height + (size.height - center.y)),
                 arrivalDistance: hypot(size.width - center.x, size.height - center.y),
-                strength: 0.30,
+                strength: 0.36,
                 kind: .cornerReflection
             )
         ]
@@ -746,13 +746,13 @@ private struct FloatingUnreadRippleOverlay: View {
         let band = circularRingBandPath(center: center, radius: radius, thickness: thickness)
         softContext.fill(
             band,
-            with: .color(color.opacity(alpha * 0.43)),
+            with: .color(color.opacity(alpha * 0.54)),
             style: FillStyle(eoFill: true)
         )
         context.stroke(
             circlePath(center: center, radius: radius),
-            with: .color(Color.white.opacity(alpha * 0.13)),
-            lineWidth: max(0.16, 0.22 * scale)
+            with: .color(Color.white.opacity(alpha * 0.17)),
+            lineWidth: max(0.18, 0.24 * scale)
         )
     }
 
@@ -780,21 +780,21 @@ private struct FloatingUnreadRippleOverlay: View {
         radius: CGFloat,
         intensity: CGFloat
     ) {
-        let top = gaussian(Double(radius), center: Double(center.y), width: Double(5.2 * scale))
-        let bottom = gaussian(Double(radius), center: Double(size.height - center.y), width: Double(5.2 * scale))
-        let left = gaussian(Double(radius), center: Double(center.x), width: Double(7.5 * scale))
-        let right = gaussian(Double(radius), center: Double(size.width - center.x), width: Double(7.5 * scale))
-        drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: 0, width: size.width, height: 2.0 * scale), amount: top * Double(intensity))
-        drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: size.height - 2.0 * scale, width: size.width, height: 2.0 * scale), amount: bottom * Double(intensity))
-        drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: 0, width: 2.0 * scale, height: size.height), amount: left * Double(intensity))
-        drawEdgeGlow(in: &context, rect: CGRect(x: size.width - 2.0 * scale, y: 0, width: 2.0 * scale, height: size.height), amount: right * Double(intensity))
+        let top = gaussian(Double(radius), center: Double(center.y), width: Double(6.4 * scale))
+        let bottom = gaussian(Double(radius), center: Double(size.height - center.y), width: Double(6.4 * scale))
+        let left = gaussian(Double(radius), center: Double(center.x), width: Double(9.0 * scale))
+        let right = gaussian(Double(radius), center: Double(size.width - center.x), width: Double(9.0 * scale))
+        drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: 0, width: size.width, height: 2.35 * scale), amount: top * Double(intensity))
+        drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: size.height - 2.35 * scale, width: size.width, height: 2.35 * scale), amount: bottom * Double(intensity))
+        drawEdgeGlow(in: &context, rect: CGRect(x: 0, y: 0, width: 2.35 * scale, height: size.height), amount: left * Double(intensity))
+        drawEdgeGlow(in: &context, rect: CGRect(x: size.width - 2.35 * scale, y: 0, width: 2.35 * scale, height: size.height), amount: right * Double(intensity))
     }
 
     private func drawEdgeGlow(in context: inout GraphicsContext, rect: CGRect, amount: Double) {
         guard amount > 0.02 else { return }
         context.fill(
             Path(roundedRect: rect, cornerSize: CGSize(width: 1.4 * scale, height: 1.4 * scale)),
-            with: .color(Color.white.opacity(amount * 0.20))
+            with: .color(Color.white.opacity(amount * 0.27))
         )
     }
 
@@ -809,7 +809,7 @@ private struct FloatingUnreadRippleOverlay: View {
     }
 
     private func smoothPulseFade(_ value: Double) -> Double {
-        let fadeStart = 0.76
+        let fadeStart = 0.80
         guard value > fadeStart else { return 1 }
         let t = min(max((value - fadeStart) / (1 - fadeStart), 0), 1)
         return Double(1 - smoothStep(CGFloat(t)))

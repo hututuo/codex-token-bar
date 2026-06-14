@@ -199,14 +199,14 @@ private struct FloatingPanelRGB {
     var deepenedGlassAccent: FloatingPanelRGB {
         let hsb = hsb
         let hue = hsb.saturation < 0.04 ? 0.58 : hsb.hue
-        let saturation = min(0.90, max(0.50, hsb.saturation * 1.65 + 0.14))
+        let saturation = min(0.92, max(0.54, hsb.saturation * 1.55 + 0.18))
         let brightness: Double
         if luminance > 0.78 {
-            brightness = 0.62
+            brightness = 0.76
         } else if luminance > 0.48 {
-            brightness = min(0.74, max(0.48, hsb.brightness * 0.72))
+            brightness = min(0.84, max(0.62, hsb.brightness * 0.86))
         } else {
-            brightness = min(0.92, max(0.58, hsb.brightness * 1.08))
+            brightness = min(0.96, max(0.68, hsb.brightness * 1.14))
         }
         return FloatingPanelRGB(hue: hue, saturation: saturation, brightness: brightness)
     }
