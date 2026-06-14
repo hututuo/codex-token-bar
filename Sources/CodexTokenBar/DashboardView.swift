@@ -94,8 +94,11 @@ struct DashboardView: View {
 
                         RecentUsageChart(
                             bins: store.snapshot.recentBins,
+                            hourlyBins: store.snapshot.hourlyUsage,
                             cacheRecentBins: store.snapshot.cacheUsage.recentBins,
-                            quotaRecentBins: quotaHistoryStore.snapshot.recentBins
+                            cacheHourlyBins: store.snapshot.cacheUsage.hourly,
+                            quotaRecentBins: quotaHistoryStore.snapshot.recentBins,
+                            quotaHourlyBins: quotaHistoryStore.snapshot.hourlyBins
                         )
 
                         CacheHitRankingSection(cacheUsage: store.snapshot.cacheUsage)
@@ -1622,7 +1625,50 @@ private struct CacheHitMeter: View {
     }
 }
 
+private enum RecentChartRange: String, CaseIterable, Identifiable {
+    case twentyFourHours = "24h"
+    case sevenDays = "7d"
+    case thirtyDays = "30d"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .twentyFourHours: "最近 24 小时"
+        case .sevenDays: "最近 7 天"
+        case .thirtyDays: "最近 30 天"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .twentyFourHours: "24h"
+        case .sevenDays: "7d"
+        case .thirtyDays: "30d"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .twentyFourHours: "5 分钟粒度 · 5 分钟自动刷新"
+        case .sevenDays: "1 小时粒度 · 5 分钟自动刷新"
+        case .thirtyDays: "6 小时粒度 · 5 分钟自动刷新"
+        }
+    }
+
+    var bucketInterval: TimeInterval {
+        switch self {
+        case .twentyFourHours: 5 * 60
+        case .sevenDays: 60 * 60
+        case .thirtyDays: 6 * 60 * 60
+        }
+    }
+}
+
 private struct RecentChartPreparedData {
+    let range: RecentChartRange
+    let bins: [BinUsage]
+    let bucketInterval: TimeInterval
     let maxTokens: Int
     let maxCalls: Int
     let tokenTotal: Int
@@ -1640,6 +1686,9 @@ private struct RecentChartPreparedData {
     let markerIndices: [Int]
 
     static let empty = RecentChartPreparedData(
+        range: .twentyFourHours,
+        bins: [],
+        bucketInterval: RecentChartRange.twentyFourHours.bucketInterval,
         maxTokens: 1,
         maxCalls: 1,
         tokenTotal: 0,
@@ -1703,10 +1752,14 @@ private let recentChartHoverBubbleVerticalOffset: CGFloat = 50
 
 struct RecentUsageChart: View {
     let bins: [BinUsage]
+    let hourlyBins: [BinUsage]
     let cacheRecentBins: [TokenCacheBucket]
+    let cacheHourlyBins: [TokenCacheBucket]
     let quotaRecentBins: [QuotaHistoryRecentBucket]
+    let quotaHourlyBins: [QuotaHistoryRecentBucket]
     private static let dataLineWidth: CGFloat = 1.55
     private static let hoverRingLineWidth: CGFloat = 1.55
+    @AppStorage("recentChartRange") private var selectedRangeRaw = RecentChartRange.twentyFourHours.rawValue
     @AppStorage("recentChartShowTokens") private var showTokens = true
     @AppStorage("recentChartShowCalls") private var showCalls = true
     @AppStorage("recentChartShowCacheHitRate") private var showCacheHitRate = true
@@ -1715,20 +1768,44 @@ struct RecentUsageChart: View {
     @State private var hoveredIndex: Int?
     @State private var preparedData: RecentChartPreparedData
 
-    init(bins: [BinUsage], cacheRecentBins: [TokenCacheBucket], quotaRecentBins: [QuotaHistoryRecentBucket]) {
+    init(
+        bins: [BinUsage],
+        hourlyBins: [BinUsage],
+        cacheRecentBins: [TokenCacheBucket],
+        cacheHourlyBins: [TokenCacheBucket],
+        quotaRecentBins: [QuotaHistoryRecentBucket],
+        quotaHourlyBins: [QuotaHistoryRecentBucket]
+    ) {
         self.bins = bins
+        self.hourlyBins = hourlyBins
         self.cacheRecentBins = cacheRecentBins
+        self.cacheHourlyBins = cacheHourlyBins
         self.quotaRecentBins = quotaRecentBins
+        self.quotaHourlyBins = quotaHourlyBins
         _preparedData = State(initialValue: .empty)
+    }
+
+    private var selectedRange: RecentChartRange {
+        RecentChartRange(rawValue: selectedRangeRaw) ?? .twentyFourHours
+    }
+
+    private var selectedRangeBinding: Binding<RecentChartRange> {
+        Binding(
+            get: { selectedRange },
+            set: { range in
+                selectedRangeRaw = range.rawValue
+                hoveredIndex = nil
+            }
+        )
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("最近 24 小时")
+                    Text(selectedRange.title)
                         .font(.system(size: 19, weight: .semibold))
-                    Text("5 分钟粒度 · 5 分钟自动刷新")
+                    Text(selectedRange.subtitle)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -1736,6 +1813,8 @@ struct RecentUsageChart: View {
                 Spacer()
 
                 VStack(alignment: .trailing, spacing: 7) {
+                    RecentChartRangeSelector(selection: selectedRangeBinding)
+
                     HStack(spacing: 14) {
                         ChartLegend(color: .blue, label: "Token", value: preparedData.tokenTotal.abbreviatedTokens)
                         ChartLegend(color: .orange, label: "调用", value: "\(preparedData.callTotal)")
@@ -1756,9 +1835,10 @@ struct RecentUsageChart: View {
 
             GeometryReader { proxy in
                 let plot = CGRect(x: 0, y: 18, width: proxy.size.width, height: proxy.size.height - 42)
-                let step = plot.width / CGFloat(max(bins.count - 1, 1))
-                let activeIndex = hoveredIndex.flatMap { bins.indices.contains($0) ? $0 : nil }
-                let plotData = RecentChartPlotData(bins: bins, prepared: preparedData, plot: plot, step: step)
+                let chartBins = preparedData.bins
+                let step = plot.width / CGFloat(max(chartBins.count - 1, 1))
+                let activeIndex = hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
+                let plotData = RecentChartPlotData(bins: chartBins, prepared: preparedData, plot: plot, step: step)
 
                 ZStack(alignment: .topLeading) {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -1869,10 +1949,11 @@ struct RecentUsageChart: View {
                         }
 
                         ChartHoverBubble(
-                            bin: bins[activeIndex],
+                            bin: chartBins[activeIndex],
                             cacheBreakdown: preparedData.cacheBreakdowns[safe: activeIndex],
                             fiveHourRemaining: preparedData.fiveHourRemainingPercents[safe: activeIndex] ?? nil,
                             sevenDayRemaining: preparedData.sevenDayRemainingPercents[safe: activeIndex] ?? nil,
+                            bucketInterval: preparedData.bucketInterval,
                             isHovering: true
                         )
                             .chartBubblePlacement(tokenX: tokenPoint.x, plot: plot)
@@ -1894,7 +1975,12 @@ struct RecentUsageChart: View {
                     .frame(width: plot.width, height: plot.height)
                     .position(x: plot.midX, y: plot.midY)
 
-                    ChartTimeMarkers(bins: bins, markerIndices: preparedData.markerIndices, plot: plot)
+                    ChartTimeMarkers(
+                        bins: chartBins,
+                        markerIndices: preparedData.markerIndices,
+                        range: preparedData.range,
+                        plot: plot
+                    )
                 }
             }
             .frame(height: 185)
@@ -1904,10 +1990,23 @@ struct RecentUsageChart: View {
         .onChange(of: bins) { _, _ in
             refreshPreparedData()
         }
+        .onChange(of: hourlyBins) { _, _ in
+            refreshPreparedData()
+        }
         .onChange(of: cacheRecentBins) { _, _ in
             refreshPreparedData()
         }
+        .onChange(of: cacheHourlyBins) { _, _ in
+            refreshPreparedData()
+        }
         .onChange(of: quotaRecentBins) { _, _ in
+            refreshPreparedData()
+        }
+        .onChange(of: quotaHourlyBins) { _, _ in
+            refreshPreparedData()
+        }
+        .onChange(of: selectedRangeRaw) { _, _ in
+            hoveredIndex = nil
             refreshPreparedData()
         }
     }
@@ -1949,45 +2048,72 @@ struct RecentUsageChart: View {
             return
         }
 
-        for index in 1..<points.count {
-            let previous = points[index - 1]
-            let current = points[index]
-            let midpoint = CGPoint(
-                x: (previous.x + current.x) / 2,
-                y: (previous.y + current.y) / 2
-            )
-            path.addQuadCurve(to: midpoint, control: previous)
-        }
+        // Hover markers use the raw data points, so the smoothed curve must
+        // interpolate each point instead of only passing through midpoints.
+        let tension: CGFloat = 0.18
+        for index in 0..<(points.count - 1) {
+            let p0 = index > 0 ? points[index - 1] : points[index]
+            let p1 = points[index]
+            let p2 = points[index + 1]
+            let p3 = index + 2 < points.count ? points[index + 2] : p2
 
-        if let last = points.last {
-            path.addLine(to: last)
+            let control1 = CGPoint(
+                x: p1.x + (p2.x - p0.x) * tension,
+                y: p1.y + (p2.y - p0.y) * tension
+            )
+            let control2 = CGPoint(
+                x: p2.x - (p3.x - p1.x) * tension,
+                y: p2.y - (p3.y - p1.y) * tension
+            )
+            path.addCurve(to: p2, control1: control1, control2: control2)
         }
     }
 
     private func hoverIndex(at location: CGPoint, in plot: CGRect, step: CGFloat) -> Int? {
-        guard plot.contains(location), !bins.isEmpty else { return nil }
+        guard plot.contains(location), !preparedData.bins.isEmpty else { return nil }
         let rawIndex = Int(round((location.x - plot.minX) / max(step, 1)))
-        return min(max(rawIndex, bins.startIndex), bins.index(before: bins.endIndex))
+        return min(max(rawIndex, preparedData.bins.startIndex), preparedData.bins.index(before: preparedData.bins.endIndex))
     }
 
     private func refreshPreparedData() {
-        preparedData = Self.prepare(bins: bins, cacheRecentBins: cacheRecentBins, quotaRecentBins: quotaRecentBins)
+        refreshPreparedData(range: selectedRange)
     }
 
-    private static func prepare(bins: [BinUsage], cacheRecentBins: [TokenCacheBucket], quotaRecentBins: [QuotaHistoryRecentBucket]) -> RecentChartPreparedData {
-        let cacheByStart = Dictionary(uniqueKeysWithValues: cacheRecentBins.map { bucket in
-            (bucket.start, bucket.breakdown)
-        })
-        let quotaByBin = Dictionary(uniqueKeysWithValues: quotaRecentBins.map { bucket in
-            (timeBinKey(bucket.start), bucket)
-        })
-        let cacheBreakdowns = bins.map { bin in
-            cacheByStart[bin.start] ?? .empty
-        }
+    private func refreshPreparedData(range: RecentChartRange) {
+        preparedData = Self.prepare(
+            range: range,
+            recentBins: bins,
+            hourlyBins: hourlyBins,
+            cacheRecentBins: cacheRecentBins,
+            cacheHourlyBins: cacheHourlyBins,
+            quotaRecentBins: quotaRecentBins,
+            quotaHourlyBins: quotaHourlyBins
+        )
+    }
+
+    private static func prepare(
+        range: RecentChartRange,
+        recentBins: [BinUsage],
+        hourlyBins: [BinUsage],
+        cacheRecentBins: [TokenCacheBucket],
+        cacheHourlyBins: [TokenCacheBucket],
+        quotaRecentBins: [QuotaHistoryRecentBucket],
+        quotaHourlyBins: [QuotaHistoryRecentBucket]
+    ) -> RecentChartPreparedData {
+        let bins = usageBins(for: range, recentBins: recentBins, hourlyBins: hourlyBins)
+        let cacheBreakdowns = cacheBreakdowns(
+            for: range,
+            bins: bins,
+            cacheRecentBins: cacheRecentBins,
+            cacheHourlyBins: cacheHourlyBins
+        )
         let carriedRates = carriedCacheHitRates(cacheBreakdowns: cacheBreakdowns)
-        let quotaBuckets = bins.map { bin in
-            quotaByBin[timeBinKey(bin.start)]
-        }
+        let quotaBuckets = quotaBuckets(
+            for: range,
+            bins: bins,
+            quotaRecentBins: quotaRecentBins,
+            quotaHourlyBins: quotaHourlyBins
+        )
         let fiveHourRemaining = quotaBuckets.map { $0?.fiveHourRemainingPercent }
         let sevenDayRemaining = quotaBuckets.map { $0?.sevenDayRemainingPercent }
         let last = bins.count - 1
@@ -2000,6 +2126,9 @@ struct RecentUsageChart: View {
             : []
 
         return RecentChartPreparedData(
+            range: range,
+            bins: bins,
+            bucketInterval: range.bucketInterval,
             maxTokens: max(bins.map(\.tokens).max() ?? 1, 1),
             maxCalls: max(bins.map(\.calls).max() ?? 1, 1),
             tokenTotal: bins.reduce(0) { $0 + $1.tokens },
@@ -2018,8 +2147,124 @@ struct RecentUsageChart: View {
         )
     }
 
-    private static func timeBinKey(_ date: Date) -> Int {
-        Int(floor(date.timeIntervalSince1970 / 300.0))
+    private static func usageBins(for range: RecentChartRange, recentBins: [BinUsage], hourlyBins: [BinUsage]) -> [BinUsage] {
+        switch range {
+        case .twentyFourHours:
+            return recentBins
+        case .sevenDays:
+            return Array(hourlyBins.suffix(7 * 24))
+        case .thirtyDays:
+            return aggregateUsage(Array(hourlyBins.suffix(30 * 24)), groupSize: 6)
+        }
+    }
+
+    private static func aggregateUsage(_ bins: [BinUsage], groupSize: Int) -> [BinUsage] {
+        guard groupSize > 1 else { return bins }
+        var result: [BinUsage] = []
+        var index = 0
+        while index < bins.count {
+            let end = min(index + groupSize, bins.count)
+            let group = bins[index..<end]
+            if let start = group.first?.start {
+                result.append(
+                    BinUsage(
+                        start: start,
+                        tokens: group.reduce(0) { $0 + $1.tokens },
+                        calls: group.reduce(0) { $0 + $1.calls }
+                    )
+                )
+            }
+            index = end
+        }
+        return result
+    }
+
+    private static func cacheBreakdowns(
+        for range: RecentChartRange,
+        bins: [BinUsage],
+        cacheRecentBins: [TokenCacheBucket],
+        cacheHourlyBins: [TokenCacheBucket]
+    ) -> [TokenCacheBreakdown] {
+        switch range {
+        case .twentyFourHours:
+            let cacheByBin = cacheMap(cacheRecentBins, interval: 5 * 60)
+            return bins.map { bin in cacheByBin[timeBinKey(bin.start, interval: 5 * 60)] ?? .empty }
+        case .sevenDays:
+            let cacheByHour = cacheMap(cacheHourlyBins, interval: 60 * 60)
+            return bins.map { bin in cacheByHour[timeBinKey(bin.start, interval: 60 * 60)] ?? .empty }
+        case .thirtyDays:
+            let cacheByHour = cacheMap(cacheHourlyBins, interval: 60 * 60)
+            return bins.map { bin in
+                (0..<6).map { offset in
+                    let date = bin.start.addingTimeInterval(Double(offset) * 60 * 60)
+                    return cacheByHour[timeBinKey(date, interval: 60 * 60)] ?? .empty
+                }.combined
+            }
+        }
+    }
+
+    private static func cacheMap(_ buckets: [TokenCacheBucket], interval: TimeInterval) -> [Int: TokenCacheBreakdown] {
+        buckets.reduce(into: [Int: TokenCacheBreakdown]()) { result, bucket in
+            let key = timeBinKey(bucket.start, interval: interval)
+            if let current = result[key] {
+                result[key] = [current, bucket.breakdown].combined
+            } else {
+                result[key] = bucket.breakdown
+            }
+        }
+    }
+
+    private static func quotaBuckets(
+        for range: RecentChartRange,
+        bins: [BinUsage],
+        quotaRecentBins: [QuotaHistoryRecentBucket],
+        quotaHourlyBins: [QuotaHistoryRecentBucket]
+    ) -> [QuotaHistoryRecentBucket?] {
+        switch range {
+        case .twentyFourHours:
+            let quotaByBin = quotaMap(quotaRecentBins, interval: 5 * 60)
+            return bins.map { bin in quotaByBin[timeBinKey(bin.start, interval: 5 * 60)] }
+        case .sevenDays:
+            let quotaByHour = quotaMap(quotaHourlyBins, interval: 60 * 60)
+            return bins.map { bin in quotaByHour[timeBinKey(bin.start, interval: 60 * 60)] }
+        case .thirtyDays:
+            let quotaByHour = quotaMap(quotaHourlyBins, interval: 60 * 60)
+            return bins.map { bin in
+                let buckets = (0..<6).compactMap { offset in
+                    let date = bin.start.addingTimeInterval(Double(offset) * 60 * 60)
+                    return quotaByHour[timeBinKey(date, interval: 60 * 60)]
+                }
+                return averagedQuotaBucket(start: bin.start, buckets: buckets)
+            }
+        }
+    }
+
+    private static func quotaMap(_ buckets: [QuotaHistoryRecentBucket], interval: TimeInterval) -> [Int: QuotaHistoryRecentBucket] {
+        Dictionary(uniqueKeysWithValues: buckets.map { bucket in
+            (timeBinKey(bucket.start, interval: interval), bucket)
+        })
+    }
+
+    private static func averagedQuotaBucket(start: Date, buckets: [QuotaHistoryRecentBucket]) -> QuotaHistoryRecentBucket? {
+        let fiveHourValues = buckets.compactMap(\.fiveHourRemainingPercent)
+        let sevenDayValues = buckets.compactMap(\.sevenDayRemainingPercent)
+        let fiveHour = average(fiveHourValues)
+        let sevenDay = average(sevenDayValues)
+        guard fiveHour != nil || sevenDay != nil else { return nil }
+        return QuotaHistoryRecentBucket(
+            start: start,
+            fiveHourRemainingPercent: fiveHour,
+            sevenDayRemainingPercent: sevenDay
+        )
+    }
+
+    private static func average(_ values: [Double]) -> Double? {
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
+    }
+
+    private static func timeBinKey(_ date: Date, interval: TimeInterval) -> Int {
+        Int(floor(date.timeIntervalSince1970 / interval))
     }
 
     private static func percentText(_ value: Double?) -> String {
@@ -2036,6 +2281,36 @@ struct RecentUsageChart: View {
             }
             return carriedRate
         }
+    }
+}
+
+private struct RecentChartRangeSelector: View {
+    @Binding var selection: RecentChartRange
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(RecentChartRange.allCases) { range in
+                Button {
+                    selection = range
+                } label: {
+                    Text(range.label)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(selection == range ? AppTheme.accentBlue : .secondary)
+                        .frame(width: 34, height: 22)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(selection == range ? AppTheme.accentBlue.opacity(0.12) : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(AppTheme.raisedBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(AppTheme.border, lineWidth: 1)
+        )
     }
 }
 
@@ -2125,6 +2400,7 @@ struct ChartHoverBubble: View {
     let cacheBreakdown: TokenCacheBreakdown?
     let fiveHourRemaining: Double?
     let sevenDayRemaining: Double?
+    let bucketInterval: TimeInterval
     let isHovering: Bool
 
     var body: some View {
@@ -2169,8 +2445,12 @@ struct ChartHoverBubble: View {
     }
 
     private var timeRange: String {
-        let end = bin.start.addingTimeInterval(5 * 60)
-        return "\(DateFormatter.hourMinute.string(from: bin.start)) - \(DateFormatter.hourMinute.string(from: end))"
+        let end = bin.start.addingTimeInterval(bucketInterval)
+        if bucketInterval <= 60 * 60,
+           Calendar.current.isDate(bin.start, inSameDayAs: end) {
+            return "\(DateFormatter.hourMinute.string(from: bin.start)) - \(DateFormatter.hourMinute.string(from: end))"
+        }
+        return "\(DateFormatter.monthDayHourMinute.string(from: bin.start)) - \(DateFormatter.monthDayHourMinute.string(from: end))"
     }
 
     private func percentText(_ value: Double?) -> String {
@@ -2179,15 +2459,16 @@ struct ChartHoverBubble: View {
     }
 }
 
-struct ChartTimeMarkers: View {
+private struct ChartTimeMarkers: View {
     let bins: [BinUsage]
     let markerIndices: [Int]
+    let range: RecentChartRange
     let plot: CGRect
 
     var body: some View {
         ForEach(markerIndices, id: \.self) { index in
             if let bin = bins[safe: index] {
-                Text(DateFormatter.hourMinute.string(from: bin.start))
+                Text(label(for: bin.start))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .position(x: xPosition(for: index), y: plot.maxY + 20)
@@ -2197,6 +2478,15 @@ struct ChartTimeMarkers: View {
 
     private func xPosition(for index: Int) -> CGFloat {
         plot.minX + CGFloat(index) * plot.width / CGFloat(max(bins.count - 1, 1))
+    }
+
+    private func label(for date: Date) -> String {
+        switch range {
+        case .twentyFourHours:
+            return DateFormatter.hourMinute.string(from: date)
+        case .sevenDays, .thirtyDays:
+            return DateFormatter.monthDay.string(from: date)
+        }
     }
 }
 

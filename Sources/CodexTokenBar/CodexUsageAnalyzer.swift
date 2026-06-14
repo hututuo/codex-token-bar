@@ -8,6 +8,8 @@ final class CodexUsageAnalyzer {
     }
 
     private final class SessionEventCache: @unchecked Sendable {
+        private static let persistentCacheVersion = 3
+
         private struct PersistentCache: Codable {
             let version: Int
             let entries: [PersistentEntry]
@@ -88,7 +90,7 @@ final class CodexUsageAnalyzer {
                     at: cacheURL.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                let cache = PersistentCache(version: 2, entries: entries)
+                let cache = PersistentCache(version: Self.persistentCacheVersion, entries: entries)
                 let data = try JSONEncoder().encode(cache)
                 try data.write(to: cacheURL, options: [.atomic])
             } catch {
@@ -108,7 +110,7 @@ final class CodexUsageAnalyzer {
             guard let cacheURL = Self.cacheURL,
                   let data = try? Data(contentsOf: cacheURL),
                   let cache = try? JSONDecoder().decode(PersistentCache.self, from: data),
-                  cache.version == 2 else {
+                  cache.version == Self.persistentCacheVersion else {
                 return
             }
 
@@ -143,7 +145,7 @@ final class CodexUsageAnalyzer {
         private static var cacheURL: URL? {
             FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
                 .appendingPathComponent("CodexTokenBar", isDirectory: true)
-                .appendingPathComponent("session-token-events-v1.json")
+                .appendingPathComponent("session-token-events-v2.json")
         }
     }
 
@@ -215,7 +217,7 @@ final class CodexUsageAnalyzer {
     }
 
     func loadFastSnapshot() throws -> DashboardSnapshot {
-        try loadFromStateSQLite()
+        try loadFromStateSQLite(includeRecentBins: false)
     }
 
     private func loadFromTokenCountJSONL() throws -> DashboardSnapshot {
@@ -244,6 +246,7 @@ final class CodexUsageAnalyzer {
 
         let daily = dailyUsage(from: events)
         let recentBins = recentBins(from: events)
+        let hourlyUsage = hourlyUsage(from: events)
         let officialSummary = loadOfficialThreadSummary()
         let cacheUsage = cacheUsage(from: events, recentBins: recentBins, threadInfo: loadThreadInfo())
         let stats = DashboardStats(
@@ -264,13 +267,14 @@ final class CodexUsageAnalyzer {
             stats: stats,
             dailyUsage: daily,
             recentBins: recentBins,
+            hourlyUsage: hourlyUsage,
             pluginUsage: metadata.plugins,
             cacheUsage: cacheUsage,
             generatedAt: Date()
         )
     }
 
-    private func loadFromStateSQLite() throws -> DashboardSnapshot {
+    private func loadFromStateSQLite(includeRecentBins: Bool = true) throws -> DashboardSnapshot {
         let db = dataSource.stateDatabase.path
         guard fileManager.fileExists(atPath: db) else {
             throw NSError(domain: "CodexTokenBar", code: 1, userInfo: [NSLocalizedDescriptionKey: "\(dataSource.displayPath)/state_5.sqlite not found"])
@@ -288,18 +292,35 @@ final class CodexUsageAnalyzer {
             """
         )
 
-        let binRows = try sqliteRows(
-            db: db,
-            sql: """
-            SELECT CAST((COALESCE(updated_at_ms, updated_at)/1000) / 300 AS INTEGER) * 300 AS bin_epoch,
-                   SUM(tokens_used) AS tokens,
-                   COUNT(*) AS threads
-            FROM threads
-            WHERE COALESCE(updated_at_ms, updated_at)/1000 >= strftime('%s','now','-24 hours')
-            GROUP BY bin_epoch
-            ORDER BY bin_epoch;
-            """
-        )
+        let binRows = includeRecentBins
+            ? try sqliteRows(
+                db: db,
+                sql: """
+                SELECT CAST((COALESCE(updated_at_ms, updated_at)/1000) / 300 AS INTEGER) * 300 AS bin_epoch,
+                       SUM(tokens_used) AS tokens,
+                       COUNT(*) AS threads
+                FROM threads
+                WHERE COALESCE(updated_at_ms, updated_at)/1000 >= strftime('%s','now','-24 hours')
+                GROUP BY bin_epoch
+                ORDER BY bin_epoch;
+                """
+            )
+            : []
+
+        let hourlyRows = includeRecentBins
+            ? try sqliteRows(
+                db: db,
+                sql: """
+                SELECT CAST((COALESCE(updated_at_ms, updated_at)/1000) / 3600 AS INTEGER) * 3600 AS hour_epoch,
+                       SUM(tokens_used) AS tokens,
+                       COUNT(*) AS threads
+                FROM threads
+                WHERE COALESCE(updated_at_ms, updated_at)/1000 >= strftime('%s','now','-30 days')
+                GROUP BY hour_epoch
+                ORDER BY hour_epoch;
+                """
+            )
+            : []
 
         let summaryRows = try sqliteRows(
             db: db,
@@ -366,6 +387,23 @@ final class CodexUsageAnalyzer {
             return BinUsage(start: date, tokens: usage.tokens, calls: usage.calls)
         }
 
+        let currentHour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
+        let hourlyStart = calendar.date(byAdding: .hour, value: -719, to: currentHour) ?? currentHour
+        var hourlyMap: [Int: (tokens: Int, calls: Int)] = [:]
+        for row in hourlyRows {
+            guard let epoch = Int(row[safe: 0] ?? "") else { continue }
+            hourlyMap[epoch] = (
+                Int(row[safe: 1] ?? "0") ?? 0,
+                Int(row[safe: 2] ?? "0") ?? 0
+            )
+        }
+        let hourlyUsage = (0..<720).map { index -> BinUsage in
+            let date = hourlyStart.addingTimeInterval(Double(index) * 3600)
+            let epoch = Int(floor(date.timeIntervalSince1970 / 3600) * 3600)
+            let usage = hourlyMap[epoch] ?? (0, 0)
+            return BinUsage(start: date, tokens: usage.tokens, calls: usage.calls)
+        }
+
         var pluginCounts: [String: Int] = [:]
         var reasoningCounts: [String: Int] = [:]
         for row in titleRows {
@@ -403,6 +441,7 @@ final class CodexUsageAnalyzer {
             stats: stats,
             dailyUsage: daily,
             recentBins: recentBins,
+            hourlyUsage: hourlyUsage,
             pluginUsage: Array(plugins),
             cacheUsage: .empty,
             generatedAt: Date()
@@ -556,6 +595,7 @@ final class CodexUsageAnalyzer {
         var previousTotal: Int?
         var currentUserPrompt = ""
         var assistantFragments: [String] = []
+        let forkReplayCutoff = forkedSessionReplayCutoff(for: file)
         streamSessionLines(from: file) { lineString in
             if let message = extractPayloadMessage(from: lineString, expectedType: "user_message") {
                 currentUserPrompt = message
@@ -571,6 +611,10 @@ final class CodexUsageAnalyzer {
             guard lineString.contains("\"total_token_usage\""),
                   let timestampString = extractString(after: "\"timestamp\":\"", in: lineString),
                   let timestamp = parseDate(timestampString) else {
+                return
+            }
+
+            if let forkReplayCutoff, timestamp <= forkReplayCutoff {
                 return
             }
 
@@ -610,6 +654,17 @@ final class CodexUsageAnalyzer {
         }
 
         return events
+    }
+
+    private func forkedSessionReplayCutoff(for file: URL) -> Date? {
+        guard let firstLine = readFirstLinePrefix(from: file),
+              firstLine.contains("\"type\":\"session_meta\""),
+              firstLine.contains("\"forked_from_id\":\""),
+              let timestampString = extractString(after: "\"timestamp\":\"", in: firstLine),
+              let timestamp = parseDate(timestampString) else {
+            return nil
+        }
+        return timestamp.addingTimeInterval(30)
     }
 
     private func extractPayloadMessage(from line: String, expectedType: String) -> String? {
@@ -666,6 +721,25 @@ final class CodexUsageAnalyzer {
             }
         }
         return Int(digits)
+    }
+
+    private func readFirstLinePrefix(from file: URL, maxBytes: Int = 262_144) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { try? handle.close() }
+
+        var data = Data()
+        let newline = UInt8(ascii: "\n")
+        while data.count < maxBytes {
+            let chunk = handle.readData(ofLength: min(16_384, maxBytes - data.count))
+            if chunk.isEmpty { break }
+            if let newlineIndex = chunk.firstIndex(of: newline) {
+                data.append(chunk[..<newlineIndex])
+                break
+            }
+            data.append(chunk)
+        }
+        guard !data.isEmpty else { return nil }
+        return String(decoding: data, as: UTF8.self)
     }
 
     private func streamSessionLines(from file: URL, handleLine: (String) -> Void) {
@@ -762,6 +836,25 @@ final class CodexUsageAnalyzer {
             let bin = start.addingTimeInterval(Double(index) * interval)
             let usage = grouped[bin] ?? (0, 0)
             return BinUsage(start: bin, tokens: usage.tokens, calls: usage.calls)
+        }
+    }
+
+    private func hourlyUsage(from events: [TokenEvent]) -> [BinUsage] {
+        let now = Date()
+        let currentHour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
+        guard let start = calendar.date(byAdding: .hour, value: -719, to: currentHour) else { return [] }
+        var grouped: [Date: (tokens: Int, calls: Int)] = [:]
+
+        for event in events where event.timestamp >= start && event.timestamp <= now {
+            guard let hour = calendar.dateInterval(of: .hour, for: event.timestamp)?.start else { continue }
+            let current = grouped[hour] ?? (0, 0)
+            grouped[hour] = (current.tokens + event.tokens, current.calls + 1)
+        }
+
+        return (0..<720).compactMap { index -> BinUsage? in
+            guard let hour = calendar.date(byAdding: .hour, value: index, to: start) else { return nil }
+            let usage = grouped[hour] ?? (0, 0)
+            return BinUsage(start: hour, tokens: usage.tokens, calls: usage.calls)
         }
     }
 
