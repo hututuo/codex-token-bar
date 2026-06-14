@@ -152,6 +152,7 @@ extension DashboardSnapshot {
         ),
         dailyUsage: [],
         recentBins: [],
+        hourlyUsage: [],
         pluginUsage: [],
         cacheUsage: .empty,
         generatedAt: Date()
@@ -173,7 +174,15 @@ extension DashboardSnapshot {
             let tokens = index % 36 == 0 ? 9_800_000 : Int.random(in: 20_000...900_000)
             return BinUsage(start: date, tokens: tokens, calls: max(1, tokens / 110_000))
         }
-        let cacheUsage = sampleCacheUsage(days: days, bins: bins)
+        let currentHour = calendar.dateInterval(of: .hour, for: Date())?.start ?? Date()
+        let hourlyBins = (0..<720).compactMap { index -> BinUsage? in
+            guard let date = calendar.date(byAdding: .hour, value: -719 + index, to: currentHour) else { return nil }
+            let dayWave = max(0, sin(Double(index) / 21.0))
+            let recentLift = index > 650 ? Double(index - 650) / 70.0 : 0
+            let tokens = Int(dayWave * 1_200_000 + recentLift * 2_400_000)
+            return BinUsage(start: date, tokens: tokens, calls: tokens == 0 ? 0 : max(1, tokens / 115_000))
+        }
+        let cacheUsage = sampleCacheUsage(days: days, bins: bins, hourlyBins: hourlyBins)
 
         return DashboardSnapshot(
             stats: DashboardStats(
@@ -191,6 +200,7 @@ extension DashboardSnapshot {
             ),
             dailyUsage: days,
             recentBins: bins,
+            hourlyUsage: hourlyBins,
             pluginUsage: [
                 PluginUsage(name: "@documents", runs: 6),
                 PluginUsage(name: "@spreadsheets", runs: 5),
@@ -203,7 +213,7 @@ extension DashboardSnapshot {
         )
     }()
 
-    private static func sampleCacheUsage(days: [DayUsage], bins: [BinUsage]) -> TokenCacheUsage {
+    private static func sampleCacheUsage(days: [DayUsage], bins: [BinUsage], hourlyBins: [BinUsage]) -> TokenCacheUsage {
         func breakdown(totalTokens: Int, calls: Int, cacheRate: Double) -> TokenCacheBreakdown {
             let inputTokens = Int(Double(totalTokens) * 0.94)
             let outputTokens = max(totalTokens - inputTokens, 0)
@@ -227,7 +237,7 @@ extension DashboardSnapshot {
                 )
             }
 
-        let hourly = bins
+        let hourly = hourlyBins
             .filter { $0.tokens > 0 }
             .map { bin in
                 TokenCacheBucket(

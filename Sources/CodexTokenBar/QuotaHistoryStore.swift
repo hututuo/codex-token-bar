@@ -117,18 +117,23 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
 
         let intervalCount = 288
         let sorted = rows.sorted { $0.createdAt < $1.createdAt }
-        let recentBins = (0..<intervalCount).map { index -> QuotaHistoryRecentBucket in
-            let start = recentStart.addingTimeInterval(Double(index) * recentInterval)
-            let end = start.addingTimeInterval(recentInterval)
-            let row = sorted.last { candidate in
-                candidate.createdAt <= end && end.timeIntervalSince(candidate.createdAt) <= maxCarryGap
-            }
-            return QuotaHistoryRecentBucket(
-                start: start,
-                fiveHourRemainingPercent: row?.fiveHourRemainingPercent,
-                sevenDayRemainingPercent: row?.sevenDayRemainingPercent
-            )
-        }
+        let recentBins = makeCarriedBins(
+            rows: sorted,
+            start: recentStart,
+            count: intervalCount,
+            interval: recentInterval,
+            maxCarryGap: maxCarryGap
+        )
+
+        let currentHour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
+        let hourlyStart = calendar.date(byAdding: .hour, value: -719, to: currentHour) ?? currentHour
+        let hourlyBins = makeCarriedBins(
+            rows: sorted,
+            start: hourlyStart,
+            count: 720,
+            interval: 60 * 60,
+            maxCarryGap: maxCarryGap
+        )
 
         let startDay = calendar.startOfDay(for: calendar.date(byAdding: .day, value: -29, to: now) ?? now)
         var grouped: [Date: [QuotaHistoryRow]] = [:]
@@ -148,7 +153,28 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
             )
         }
 
-        return QuotaHistorySnapshot(daily: daily, recentBins: recentBins, latest: sorted.last?.createdAt)
+        return QuotaHistorySnapshot(daily: daily, recentBins: recentBins, hourlyBins: hourlyBins, latest: sorted.last?.createdAt)
+    }
+
+    private static func makeCarriedBins(
+        rows: [QuotaHistoryRow],
+        start: Date,
+        count: Int,
+        interval: TimeInterval,
+        maxCarryGap: TimeInterval
+    ) -> [QuotaHistoryRecentBucket] {
+        (0..<count).map { index -> QuotaHistoryRecentBucket in
+            let binStart = start.addingTimeInterval(Double(index) * interval)
+            let end = binStart.addingTimeInterval(interval)
+            let row = rows.last { candidate in
+                candidate.createdAt <= end && end.timeIntervalSince(candidate.createdAt) <= maxCarryGap
+            }
+            return QuotaHistoryRecentBucket(
+                start: binStart,
+                fiveHourRemainingPercent: row?.fiveHourRemainingPercent,
+                sevenDayRemainingPercent: row?.sevenDayRemainingPercent
+            )
+        }
     }
 
     private static func average(_ values: [Double]) -> Double? {

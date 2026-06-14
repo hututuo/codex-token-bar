@@ -72,8 +72,11 @@ struct ExportSnapshotView: View {
                 )
                 RecentUsageChart(
                     bins: snapshot.recentBins,
+                    hourlyBins: snapshot.hourlyUsage,
                     cacheRecentBins: snapshot.cacheUsage.recentBins,
-                    quotaRecentBins: []
+                    cacheHourlyBins: snapshot.cacheUsage.hourly,
+                    quotaRecentBins: [],
+                    quotaHourlyBins: []
                 )
             }
             .padding(54)

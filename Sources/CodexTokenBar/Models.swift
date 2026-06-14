@@ -124,9 +124,10 @@ struct QuotaHistoryRecentBucket: Identifiable, Equatable {
 struct QuotaHistorySnapshot: Equatable {
     let daily: [QuotaHistoryDailyBucket]
     let recentBins: [QuotaHistoryRecentBucket]
+    let hourlyBins: [QuotaHistoryRecentBucket]
     let latest: Date?
 
-    static let empty = QuotaHistorySnapshot(daily: [], recentBins: [], latest: nil)
+    static let empty = QuotaHistorySnapshot(daily: [], recentBins: [], hourlyBins: [], latest: nil)
 }
 
 extension Sequence where Element == TokenCacheBreakdown {
@@ -169,6 +170,7 @@ struct DashboardSnapshot {
     let stats: DashboardStats
     let dailyUsage: [DayUsage]
     let recentBins: [BinUsage]
+    let hourlyUsage: [BinUsage]
     let pluginUsage: [PluginUsage]
     let cacheUsage: TokenCacheUsage
     let generatedAt: Date
