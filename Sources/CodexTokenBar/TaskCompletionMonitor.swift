@@ -286,9 +286,14 @@ private enum CodexUnreadThreadReader {
         defer { sqlite3_close(database) }
         sqlite3_busy_timeout(database, 100)
 
+        let columns = threadTableColumns(database)
+        let archivedExpression = columns.contains("archived") ? "COALESCE(archived, 0)" : "0"
+        let hasUserEventExpression = columns.contains("has_user_event") ? "COALESCE(has_user_event, 0)" : "1"
+        let threadSourceExpression = columns.contains("thread_source") ? "COALESCE(thread_source, 'user')" : "'user'"
+        let previewExpression = columns.contains("preview") ? "COALESCE(preview, '')" : "'legacy'"
         let placeholders = Array(repeating: "?", count: threadIDs.count).joined(separator: ",")
         let sql = """
-        SELECT id, archived, COALESCE(thread_source, 'user')
+        SELECT id, \(archivedExpression), \(hasUserEventExpression), \(threadSourceExpression), \(previewExpression)
         FROM threads
         WHERE id IN (\(placeholders))
         """
@@ -314,8 +319,13 @@ private enum CodexUnreadThreadReader {
                 let id = String(cString: text)
                 matchedIDs.insert(id)
                 let archived = sqlite3_column_int(statement, 1) != 0
-                let source = sqlite3_column_text(statement, 2).map { String(cString: $0) } ?? "user"
-                if !archived && !source.localizedCaseInsensitiveContains("subagent") {
+                let hasUserEvent = sqlite3_column_int(statement, 2) != 0
+                let source = sqlite3_column_text(statement, 3).map { String(cString: $0) } ?? "user"
+                let preview = sqlite3_column_text(statement, 4).map { String(cString: $0) } ?? ""
+                if !archived,
+                   hasUserEvent,
+                   !preview.isEmpty,
+                   !source.localizedCaseInsensitiveContains("subagent") {
                     visibleIDs.insert(id)
                 }
             }
@@ -325,9 +335,28 @@ private enum CodexUnreadThreadReader {
         if !unresolvedIDs.isEmpty {
             let sessionVisibility = sessionVisibleThreadIDs(from: unresolvedIDs, codexHome: codexHome)
             visibleIDs.formUnion(sessionVisibility.visibleIDs)
-            visibleIDs.formUnion(unresolvedIDs.subtracting(sessionVisibility.foundIDs))
         }
         return visibleIDs
+    }
+
+    private static func threadTableColumns(_ database: OpaquePointer) -> Set<String> {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA table_info(threads)", -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            if let statement {
+                sqlite3_finalize(statement)
+            }
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var columns = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let text = sqlite3_column_text(statement, 1) {
+                columns.insert(String(cString: text))
+            }
+        }
+        return columns
     }
 
     private struct SessionVisibility {
