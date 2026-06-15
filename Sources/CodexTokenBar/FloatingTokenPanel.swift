@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import CoreGraphics
 import QuartzCore
 import SwiftUI
@@ -38,16 +39,32 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     private var lastExternalClickAt: Date?
     private var lastExternalClickWindowNumber: Int?
     private var lastExternalClickOwnerPID: pid_t?
+    private var lastExternalClickAXWindow: AXUIElement?
     private var lockedAnchor: FloatingPanelWindowAnchor?
     private var followTimer: Timer?
+    private var followTimerInterval: TimeInterval?
+    private var fastFollowUntil: Date?
+    private var accessibilityObserver: AXObserver?
+    private var observedAccessibilityWindow: AXUIElement?
     nonisolated(unsafe) private var globalMouseMonitor: Any?
     private var isProgrammaticPanelMove = false
     private var appliedLockState = false
-    private let recentExternalClickTargetInterval: TimeInterval = 45
+    private let recentExternalClickTargetInterval: TimeInterval = 5 * 60
+    private let fastFollowInterval: TimeInterval = 1.0 / 60.0
+    private let idleFollowInterval: TimeInterval = 0.18
+    private let fastFollowGracePeriod: TimeInterval = 0.35
     private let screenPositionLockDescription = "屏幕位置"
     private let lockTargetDescriptionKey = "floatingPanelLockTargetDescription"
     private let lockedOriginXKey = "floatingPanelLockedOriginX"
     private let lockedOriginYKey = "floatingPanelLockedOriginY"
+
+    nonisolated private static let accessibilityObserverCallback: AXObserverCallback = { _, _, _, refcon in
+        guard let refcon else { return }
+        let controller = Unmanaged<FloatingTokenPanelController>.fromOpaque(refcon).takeUnretainedValue()
+        Task { @MainActor in
+            controller.handleAccessibilityWindowEvent()
+        }
+    }
 
     override init() {
         super.init()
@@ -200,13 +217,22 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         }
         lastExternalClickLocation = location
         lastExternalClickAt = Date()
-        if let clickedWindow = visibleWindows().first(where: { windowContainsClick(location, window: $0) }) {
+        if let clickedAXTarget = accessibilityTarget(at: location) {
+            lastExternalClickAXWindow = clickedAXTarget.window
+            lastExternalClickOwnerPID = clickedAXTarget.ownerPID
+            lastExternalActivePID = clickedAXTarget.ownerPID
+        } else {
+            lastExternalClickAXWindow = nil
+        }
+        if let clickedWindow = visibleWindows(relaxed: true).first(where: { windowContainsClick(location, window: $0) }) {
             lastExternalClickWindowNumber = clickedWindow.windowNumber
             lastExternalClickOwnerPID = clickedWindow.ownerPID
             lastExternalActivePID = clickedWindow.ownerPID
         } else {
             lastExternalClickWindowNumber = nil
-            lastExternalClickOwnerPID = nil
+            if lastExternalClickAXWindow == nil {
+                lastExternalClickOwnerPID = nil
+            }
         }
     }
 
@@ -267,6 +293,21 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     private func currentAnchor(for panel: NSPanel) -> FloatingPanelWindowAnchor? {
+        if let target = targetAccessibilityWindowAtRecentExternalClick() {
+            let offset = NSPoint(
+                x: panel.frame.minX - target.frame.minX,
+                y: panel.frame.minY - target.frame.minY
+            )
+            return FloatingPanelWindowAnchor(
+                windowNumber: lastExternalClickWindowNumber,
+                ownerPID: target.ownerPID,
+                ownerBundleID: target.ownerBundleID,
+                windowTitle: target.title,
+                targetDescription: target.displayName,
+                offset: offset,
+                accessibilityWindow: target.window
+            )
+        }
         guard let targetWindow = findTargetWindow(near: panel.frame) else { return nil }
         let offset = NSPoint(
             x: panel.frame.minX - targetWindow.frame.minX,
@@ -278,16 +319,26 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             ownerBundleID: targetWindow.ownerBundleID,
             windowTitle: targetWindow.title,
             targetDescription: targetWindow.displayName,
-            offset: offset
+            offset: offset,
+            accessibilityWindow: accessibilityTarget(matching: targetWindow)?.window
         )
     }
 
     private func startFollowingAnchor() {
-        followTimer?.invalidate()
         guard lockedAnchor != nil else { return }
-        let timer = Timer(timeInterval: 0.35, repeats: true) { [weak self] _ in
+        installAccessibilityObserverForLockedAnchor()
+        fastFollowUntil = Date().addingTimeInterval(fastFollowGracePeriod)
+        scheduleFollowTimer(interval: fastFollowInterval)
+        followAnchorIfNeeded()
+    }
+
+    private func scheduleFollowTimer(interval: TimeInterval) {
+        guard followTimer == nil || abs((followTimerInterval ?? 0) - interval) > 0.001 else { return }
+        followTimer?.invalidate()
+        followTimerInterval = interval
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.followAnchorIfNeeded()
+                self?.tickFollowTimer()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -297,14 +348,80 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     private func stopFollowingAnchor() {
         followTimer?.invalidate()
         followTimer = nil
+        followTimerInterval = nil
+        fastFollowUntil = nil
+        uninstallAccessibilityObserver()
     }
 
-    private func followAnchorIfNeeded() {
-        guard let panel, let anchor = lockedAnchor else { return }
-        guard let targetWindow = findWindow(matching: anchor) else { return }
+    private func tickFollowTimer() {
+        guard lockedAnchor != nil else {
+            stopFollowingAnchor()
+            return
+        }
+        let moved = followAnchorIfNeeded()
+        if moved {
+            fastFollowUntil = Date().addingTimeInterval(fastFollowGracePeriod)
+            scheduleFollowTimer(interval: fastFollowInterval)
+            return
+        }
+        if let fastFollowUntil, Date() < fastFollowUntil {
+            scheduleFollowTimer(interval: fastFollowInterval)
+        } else {
+            scheduleFollowTimer(interval: idleFollowInterval)
+        }
+    }
+
+    private func installAccessibilityObserverForLockedAnchor() {
+        uninstallAccessibilityObserver()
+        guard let anchor = lockedAnchor,
+              let accessibilityWindow = anchor.accessibilityWindow,
+              AXIsProcessTrusted()
+        else {
+            return
+        }
+
+        var observer: AXObserver?
+        guard AXObserverCreate(anchor.ownerPID, Self.accessibilityObserverCallback, &observer) == .success,
+              let observer
+        else {
+            return
+        }
+
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        let moved = AXObserverAddNotification(observer, accessibilityWindow, kAXMovedNotification as CFString, refcon)
+        let resized = AXObserverAddNotification(observer, accessibilityWindow, kAXResizedNotification as CFString, refcon)
+        guard moved == .success || resized == .success else {
+            return
+        }
+
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        accessibilityObserver = observer
+        observedAccessibilityWindow = accessibilityWindow
+    }
+
+    private func uninstallAccessibilityObserver() {
+        if let observer = accessibilityObserver, let observedAccessibilityWindow {
+            AXObserverRemoveNotification(observer, observedAccessibilityWindow, kAXMovedNotification as CFString)
+            AXObserverRemoveNotification(observer, observedAccessibilityWindow, kAXResizedNotification as CFString)
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        }
+        accessibilityObserver = nil
+        observedAccessibilityWindow = nil
+    }
+
+    private func handleAccessibilityWindowEvent() {
+        fastFollowUntil = Date().addingTimeInterval(fastFollowGracePeriod)
+        scheduleFollowTimer(interval: fastFollowInterval)
+        followAnchorIfNeeded()
+    }
+
+    @discardableResult
+    private func followAnchorIfNeeded() -> Bool {
+        guard let panel, let anchor = lockedAnchor else { return false }
+        guard let targetFrame = targetFrame(matching: anchor) else { return false }
         let origin = NSPoint(
-            x: targetWindow.frame.minX + anchor.offset.x,
-            y: targetWindow.frame.minY + anchor.offset.y
+            x: targetFrame.frame.minX + anchor.offset.x,
+            y: targetFrame.frame.minY + anchor.offset.y
         )
         let frame = anchoredPanelFrame(for: panel, size: panel.frame.size, topLeft: NSPoint(x: origin.x, y: origin.y + panel.frame.height))
         if abs(frame.origin.x - panel.frame.origin.x) > 0.5 || abs(frame.origin.y - panel.frame.origin.y) > 0.5 {
@@ -314,7 +431,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 self?.isProgrammaticPanelMove = false
             }
             saveLockedOrigin(frame.origin)
+            return true
         }
+        return false
     }
 
     private func findTargetWindow(near panelFrame: NSRect) -> FloatingPanelTargetWindow? {
@@ -323,11 +442,15 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         }
 
         let windows = visibleWindows()
-        let nearestWindow = windows.max { lhs, rhs in
-            targetScore(lhs, near: panelFrame) < targetScore(rhs, near: panelFrame)
+        let panelCenter = NSPoint(x: panelFrame.midX, y: panelFrame.midY)
+        if let topmostContainingCenter = windows.first(where: { $0.frame.contains(panelCenter) }) {
+            return topmostContainingCenter
         }
-        if let nearestWindow, overlapArea(nearestWindow.frame, panelFrame) > 0 {
-            return nearestWindow
+        if let topmostOverlapping = windows.first(where: { overlapArea($0.frame, panelFrame) > 0 }) {
+            return topmostOverlapping
+        }
+        let nearestWindow = windows.max { lhs, rhs in
+            targetDistanceScore(lhs, near: panelFrame) < targetDistanceScore(rhs, near: panelFrame)
         }
 
         let targetPID = lastExternalActivePID
@@ -347,7 +470,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             return nil
         }
 
-        let windows = visibleWindows()
+        let windows = visibleWindows(relaxed: true)
         if let lastExternalClickWindowNumber,
            let clickedWindow = windows.first(where: { $0.windowNumber == lastExternalClickWindowNumber }) {
             return clickedWindow
@@ -362,6 +485,17 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         }
     }
 
+    private func targetAccessibilityWindowAtRecentExternalClick() -> FloatingPanelAccessibilityTarget? {
+        guard let clickAt = lastExternalClickAt,
+              Date().timeIntervalSince(clickAt) <= recentExternalClickTargetInterval,
+              let lastExternalClickAXWindow,
+              let target = accessibilityTarget(from: lastExternalClickAXWindow)
+        else {
+            return nil
+        }
+        return target
+    }
+
     private func windowContainsClick(_ location: NSPoint, window: FloatingPanelTargetWindow) -> Bool {
         if window.frame.contains(location) {
             return true
@@ -371,11 +505,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         return window.rawFrame.contains(quartzLocation)
     }
 
-    private func targetScore(_ window: FloatingPanelTargetWindow, near panelFrame: NSRect) -> CGFloat {
-        let overlap = overlapArea(window.frame, panelFrame)
-        if overlap > 0 {
-            return 1_000_000 + overlap
-        }
+    private func targetDistanceScore(_ window: FloatingPanelTargetWindow, near panelFrame: NSRect) -> CGFloat {
         let dx = window.frame.midX - panelFrame.midX
         let dy = window.frame.midY - panelFrame.midY
         return -((dx * dx) + (dy * dy))
@@ -386,9 +516,22 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         return intersection.isNull ? 0 : intersection.width * intersection.height
     }
 
+    private func targetFrame(matching anchor: FloatingPanelWindowAnchor) -> FloatingPanelFollowTarget? {
+        if let accessibilityWindow = anchor.accessibilityWindow,
+           let target = accessibilityTarget(from: accessibilityWindow),
+           target.ownerPID == anchor.ownerPID {
+            return FloatingPanelFollowTarget(frame: target.frame, targetDescription: target.displayName)
+        }
+        if let targetWindow = findWindow(matching: anchor) {
+            return FloatingPanelFollowTarget(frame: targetWindow.frame, targetDescription: targetWindow.displayName)
+        }
+        return nil
+    }
+
     private func findWindow(matching anchor: FloatingPanelWindowAnchor) -> FloatingPanelTargetWindow? {
-        let windows = visibleWindows()
-        if let byNumber = windows.first(where: { $0.windowNumber == anchor.windowNumber }) {
+        let windows = visibleWindows(relaxed: true)
+        if let windowNumber = anchor.windowNumber,
+           let byNumber = windows.first(where: { $0.windowNumber == windowNumber }) {
             return byNumber
         }
         if let byPID = windows.first(where: { $0.ownerPID == anchor.ownerPID && $0.title == anchor.windowTitle }) {
@@ -406,7 +549,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     private func refreshLockedAnchorOffsetForCurrentFrame() {
-        guard let panel, let anchor = lockedAnchor, let targetWindow = findWindow(matching: anchor) else {
+        guard let panel, let anchor = lockedAnchor, let targetFrame = targetFrame(matching: anchor) else {
             return
         }
         lockedAnchor = FloatingPanelWindowAnchor(
@@ -416,9 +559,10 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             windowTitle: anchor.windowTitle,
             targetDescription: anchor.targetDescription,
             offset: NSPoint(
-                x: panel.frame.minX - targetWindow.frame.minX,
-                y: panel.frame.minY - targetWindow.frame.minY
-            )
+                x: panel.frame.minX - targetFrame.frame.minX,
+                y: panel.frame.minY - targetFrame.frame.minY
+            ),
+            accessibilityWindow: anchor.accessibilityWindow
         )
         lockTargetDescription = anchor.targetDescription
         refreshFloatingPanelLockStatus()
@@ -436,10 +580,12 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         hostingController.rootView = hostingController.rootView.withLockTarget(lockTargetDescription)
     }
 
-    private func visibleWindows() -> [FloatingPanelTargetWindow] {
+    private func visibleWindows(relaxed: Bool = false) -> [FloatingPanelTargetWindow] {
         guard let rawWindows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return []
         }
+        let minimumWidth: CGFloat = relaxed ? 20 : 60
+        let minimumHeight: CGFloat = relaxed ? 16 : 40
         let currentPID = ProcessInfo.processInfo.processIdentifier
         return rawWindows.compactMap { info in
             guard let ownerPID = info[kCGWindowOwnerPID as String] as? pid_t,
@@ -451,8 +597,8 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                   let y = bounds["Y"] as? CGFloat,
                   let width = bounds["Width"] as? CGFloat,
                   let height = bounds["Height"] as? CGFloat,
-                  width > 60,
-                  height > 40
+                  width > minimumWidth,
+                  height > minimumHeight
             else {
                 return nil
             }
@@ -460,7 +606,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             let displayMaxY = FloatingPanelScreenGeometry.displayMaxY
             let app = NSRunningApplication(processIdentifier: ownerPID)
             let ownerName = info[kCGWindowOwnerName as String] as? String ?? ""
-            guard isLockCandidateWindow(layer: layer, ownerName: ownerName, bundleID: app?.bundleIdentifier) else {
+            guard isLockCandidateWindow(layer: layer, ownerName: ownerName, bundleID: app?.bundleIdentifier, relaxed: relaxed) else {
                 return nil
             }
             let title = info[kCGWindowName as String] as? String ?? ""
@@ -478,27 +624,163 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         }
     }
 
-    private func isLockCandidateWindow(layer: Int, ownerName: String, bundleID: String?) -> Bool {
-        guard layer >= 0, layer <= 25 else {
+    private func isLockCandidateWindow(layer: Int, ownerName: String, bundleID: String?, relaxed: Bool) -> Bool {
+        let maximumLayer = relaxed ? 2_000 : 25
+        guard layer >= 0, layer <= maximumLayer else {
             return false
         }
+        return !isBlockedWindowOwner(ownerName: ownerName, bundleID: bundleID)
+    }
+
+    private func isBlockedWindowOwner(ownerName: String, bundleID: String?) -> Bool {
         let blockedBundles: Set<String> = [
             "com.apple.controlcenter",
             "com.apple.dock",
             "com.apple.loginwindow",
             "com.apple.notificationcenterui",
+            "com.apple.screencaptureui",
+            "com.apple.Spotlight",
+            "com.apple.systemuiserver",
             "com.surteesstudios.Bartender"
         ]
         if let bundleID, blockedBundles.contains(bundleID) {
-            return false
+            return true
         }
         let blockedNames: Set<String> = [
             "Dock",
+            "Control Center",
+            "Screenshot",
+            "Spotlight",
+            "SystemUIServer",
             "Window Server",
             "Menubar",
+            "截屏",
             "程序坞"
         ]
-        return !blockedNames.contains(ownerName)
+        return blockedNames.contains(ownerName)
+    }
+
+    private func accessibilityTarget(at location: NSPoint) -> FloatingPanelAccessibilityTarget? {
+        guard AXIsProcessTrusted() else { return nil }
+        let systemWide = AXUIElementCreateSystemWide()
+        var element: AXUIElement?
+        let quartzLocation = NSPoint(x: location.x, y: FloatingPanelScreenGeometry.displayMaxY - location.y)
+        guard AXUIElementCopyElementAtPosition(
+            systemWide,
+            Float(quartzLocation.x),
+            Float(quartzLocation.y),
+            &element
+        ) == .success,
+              let element,
+              let window = accessibilityWindow(from: element)
+        else {
+            return nil
+        }
+        return accessibilityTarget(from: window)
+    }
+
+    private func accessibilityTarget(matching window: FloatingPanelTargetWindow) -> FloatingPanelAccessibilityTarget? {
+        guard AXIsProcessTrusted() else { return nil }
+        let appElement = AXUIElementCreateApplication(window.ownerPID)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &value) == .success,
+              let windows = value as? [AXUIElement]
+        else {
+            return nil
+        }
+
+        let candidates = windows.compactMap { accessibilityTarget(from: $0) }
+            .filter { $0.ownerPID == window.ownerPID }
+        let scored = candidates.map { target -> (FloatingPanelAccessibilityTarget, CGFloat) in
+            let frameDelta = abs(target.frame.minX - window.frame.minX)
+                + abs(target.frame.minY - window.frame.minY)
+                + abs(target.frame.width - window.frame.width)
+                + abs(target.frame.height - window.frame.height)
+            let titleBonus: CGFloat = (!window.title.isEmpty && target.title == window.title) ? 2_000 : 0
+            return (target, titleBonus - frameDelta)
+        }
+        guard let best = scored.max(by: { $0.1 < $1.1 }) else { return nil }
+        let titleMatches = !window.title.isEmpty && best.0.title == window.title
+        let frameLooksClose = best.1 > -90
+        return titleMatches || frameLooksClose ? best.0 : nil
+    }
+
+    private func accessibilityTarget(from window: AXUIElement) -> FloatingPanelAccessibilityTarget? {
+        guard AXIsProcessTrusted() else { return nil }
+        var ownerPID: pid_t = 0
+        guard AXUIElementGetPid(window, &ownerPID) == .success,
+              ownerPID != ProcessInfo.processInfo.processIdentifier,
+              let frame = accessibilityFrame(of: window)
+        else {
+            return nil
+        }
+        let app = NSRunningApplication(processIdentifier: ownerPID)
+        let ownerName = app?.localizedName ?? ""
+        guard !isBlockedWindowOwner(ownerName: ownerName, bundleID: app?.bundleIdentifier) else {
+            return nil
+        }
+        let title = accessibilityStringAttribute(window, kAXTitleAttribute as CFString) ?? ""
+        return FloatingPanelAccessibilityTarget(
+            window: window,
+            ownerPID: ownerPID,
+            ownerBundleID: app?.bundleIdentifier,
+            ownerName: ownerName,
+            title: title,
+            frame: frame
+        )
+    }
+
+    private func accessibilityWindow(from element: AXUIElement) -> AXUIElement? {
+        if accessibilityStringAttribute(element, kAXRoleAttribute as CFString) == (kAXWindowRole as String) {
+            return element
+        }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &value) == .success,
+              let value,
+              CFGetTypeID(value) == AXUIElementGetTypeID()
+        else {
+            return nil
+        }
+        return (value as! AXUIElement)
+    }
+
+    private func accessibilityFrame(of window: AXUIElement) -> NSRect? {
+        var positionValue: CFTypeRef?
+        var sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionValue) == .success,
+              AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeValue) == .success,
+              let positionValue,
+              let sizeValue,
+              CFGetTypeID(positionValue) == AXValueGetTypeID(),
+              CFGetTypeID(sizeValue) == AXValueGetTypeID()
+        else {
+            return nil
+        }
+        let positionAXValue = positionValue as! AXValue
+        let sizeAXValue = sizeValue as! AXValue
+        var topLeft = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(positionAXValue, .cgPoint, &topLeft),
+              AXValueGetValue(sizeAXValue, .cgSize, &size),
+              size.width > 1,
+              size.height > 1
+        else {
+            return nil
+        }
+        return NSRect(
+            x: topLeft.x,
+            y: FloatingPanelScreenGeometry.displayMaxY - topLeft.y - size.height,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    private func accessibilityStringAttribute(_ element: AXUIElement, _ attribute: CFString) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
+            return nil
+        }
+        return value as? String
     }
 
     private func saveLockedOrigin(_ origin: NSPoint) {
@@ -1860,13 +2142,35 @@ private struct FloatingPanelTargetWindow {
     }
 }
 
+private struct FloatingPanelAccessibilityTarget {
+    let window: AXUIElement
+    let ownerPID: pid_t
+    let ownerBundleID: String?
+    let ownerName: String
+    let title: String
+    let frame: NSRect
+
+    var displayName: String {
+        if !title.isEmpty, title != ownerName {
+            return "\(ownerName) · \(title)"
+        }
+        return ownerName.isEmpty ? "目标窗口" : ownerName
+    }
+}
+
+private struct FloatingPanelFollowTarget {
+    let frame: NSRect
+    let targetDescription: String
+}
+
 private struct FloatingPanelWindowAnchor {
-    let windowNumber: Int
+    let windowNumber: Int?
     let ownerPID: pid_t
     let ownerBundleID: String?
     let windowTitle: String
     let targetDescription: String
     let offset: NSPoint
+    let accessibilityWindow: AXUIElement?
 }
 
 private enum FloatingPanelScreenGeometry {
