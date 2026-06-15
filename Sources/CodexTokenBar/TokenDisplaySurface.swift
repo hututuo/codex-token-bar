@@ -222,12 +222,14 @@ struct TokenDisplayCard: View {
                 Image(systemName: lockState.systemImage)
                     .font(.system(size: 7.8.scaled(by: displayScale), weight: .bold))
                     .foregroundStyle(.primary.opacity(0.9))
-                    .frame(width: 22.scaled(by: displayScale), height: 20.scaled(by: displayScale), alignment: .center)
+                    .frame(width: 26.scaled(by: displayScale), height: 22.scaled(by: displayScale), alignment: .center)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help(cardLockHelpText)
-            .offset(x: -7.scaled(by: displayScale), y: -5.scaled(by: displayScale))
+            .padding(.leading, 1.scaled(by: displayScale))
+            .padding(.top, 1.scaled(by: displayScale))
+            .zIndex(10)
         }
     }
 
@@ -242,7 +244,9 @@ struct TokenDisplayCard: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .offset(x: 7.scaled(by: displayScale), y: -5.scaled(by: displayScale))
+            .padding(.trailing, 1.scaled(by: displayScale))
+            .padding(.top, 1.scaled(by: displayScale))
+            .zIndex(10)
         }
     }
 

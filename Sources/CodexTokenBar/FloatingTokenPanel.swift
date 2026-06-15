@@ -364,6 +364,10 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             scheduleFollowTimer(interval: fastFollowInterval)
             return
         }
+        guard accessibilityObserver != nil else {
+            scheduleFollowTimer(interval: fastFollowInterval)
+            return
+        }
         if let fastFollowUntil, Date() < fastFollowUntil {
             scheduleFollowTimer(interval: fastFollowInterval)
         } else {
@@ -861,6 +865,7 @@ struct FloatingTokenPanelView: View {
                 .padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * scale)
                 .padding(.vertical, FloatingTokenPanelMetrics.verticalPadding * scale)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .zIndex(2)
 
             FloatingUnreadCompletionDot(
                 count: unreadCount,
@@ -870,12 +875,10 @@ struct FloatingTokenPanelView: View {
                 onClear: taskCompletionMonitor.refreshUnreadThreadStatus
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .zIndex(1)
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .onTapGesture {
-            taskCompletionMonitor.refreshUnreadThreadStatus()
-        }
         .animation(.easeInOut(duration: 0.18), value: unreadCount > 0)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
@@ -937,7 +940,6 @@ private final class FloatingUnreadShimmerView: NSView {
     private static let animationKey = "floatingUnreadShimmerFrames"
 
     private let imageLayer = CALayer()
-    private let renderQueue = DispatchQueue(label: "local.codex-token-bar.unread-shimmer-render", qos: .userInitiated)
     private var cachedFrames: [CGImage] = []
     private var pendingRenderWorkItem: DispatchWorkItem?
     private var renderGeneration: UInt64 = 0
@@ -1048,7 +1050,7 @@ private final class FloatingUnreadShimmerView: NSView {
         let targetFramesPerSecond = targetFramesPerSecond
 
         if immediate {
-            let frames = renderFrames(
+            let frames = Self.renderFrames(
                 request: request,
                 cycleDuration: cycleDuration,
                 targetFramesPerSecond: targetFramesPerSecond
@@ -1059,17 +1061,15 @@ private final class FloatingUnreadShimmerView: NSView {
 
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            let frames = self.renderFrames(
+            let frames = Self.renderFrames(
                 request: request,
                 cycleDuration: cycleDuration,
                 targetFramesPerSecond: targetFramesPerSecond
             )
-            DispatchQueue.main.async { [weak self] in
-                self?.applyRenderedFrames(frames, request: request, generation: generation)
-            }
+            self.applyRenderedFrames(frames, request: request, generation: generation)
         }
         pendingRenderWorkItem = workItem
-        renderQueue.asyncAfter(deadline: .now() + resizeRenderDebounce, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + resizeRenderDebounce, execute: workItem)
     }
 
     private func applyRenderedFrames(_ frames: [CGImage], request: RenderRequest, generation: UInt64) {
@@ -1088,7 +1088,7 @@ private final class FloatingUnreadShimmerView: NSView {
         startAnimations(phaseOffset: phaseOffset)
     }
 
-    private nonisolated func renderFrames(
+    private static nonisolated func renderFrames(
         request: RenderRequest,
         cycleDuration: CFTimeInterval,
         targetFramesPerSecond: Int
@@ -1111,12 +1111,12 @@ private final class FloatingUnreadShimmerView: NSView {
                 return nil
             }
             context.scaleBy(x: request.backingScale, y: request.backingScale)
-            drawShimmerFrame(in: context, request: request, phase: Double(index) / Double(frameCount))
+            Self.drawShimmerFrame(in: context, request: request, phase: Double(index) / Double(frameCount))
             return context.makeImage()
         }
     }
 
-    private nonisolated func drawShimmerFrame(in context: CGContext, request: RenderRequest, phase: Double) {
+    private static nonisolated func drawShimmerFrame(in context: CGContext, request: RenderRequest, phase: Double) {
         let size = request.size
         let rect = CGRect(origin: .zero, size: size)
         context.saveGState()
@@ -1140,7 +1140,7 @@ private final class FloatingUnreadShimmerView: NSView {
         let centerX = fromX + (toX - fromX) * CGFloat(phase)
         let centerY = size.height / 2
 
-        drawSweepBand(
+        Self.drawSweepBand(
             in: context,
             center: CGPoint(x: centerX, y: centerY),
             width: bandWidth,
@@ -1156,7 +1156,7 @@ private final class FloatingUnreadShimmerView: NSView {
             locations: [0.0, 0.30, 0.50, 0.70, 1.0]
         )
 
-        drawSweepBand(
+        Self.drawSweepBand(
             in: context,
             center: CGPoint(x: centerX + bandWidth * 0.18, y: centerY),
             width: max(12 * request.scale, bandWidth * 0.16),
@@ -1173,7 +1173,7 @@ private final class FloatingUnreadShimmerView: NSView {
         context.restoreGState()
     }
 
-    private nonisolated func drawSweepBand(
+    private static nonisolated func drawSweepBand(
         in context: CGContext,
         center: CGPoint,
         width: CGFloat,
@@ -1658,7 +1658,6 @@ private final class FloatingUnreadSpriteRippleView: NSView {
     private static let animationKey = "floatingUnreadRippleFrames"
 
     private let imageLayer = CALayer()
-    private let renderQueue = DispatchQueue(label: "local.codex-token-bar.unread-ripple-render", qos: .userInitiated)
     private var cachedFrames: [CGImage] = []
     private var pendingRenderWorkItem: DispatchWorkItem?
     private var renderGeneration: UInt64 = 0
@@ -1769,31 +1768,22 @@ private final class FloatingUnreadSpriteRippleView: NSView {
         let activeFraction = activeFraction
         let targetFramesPerSecond = targetFramesPerSecond
 
-        if immediate {
-            let frames = renderFrames(
-                request: request,
-                cycleDuration: cycleDuration,
-                activeFraction: activeFraction,
-                targetFramesPerSecond: targetFramesPerSecond
-            )
-            applyRenderedFrames(frames, request: request, generation: generation)
-            return
-        }
-
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            let frames = self.renderFrames(
+            let frames = Self.renderFrames(
                 request: request,
                 cycleDuration: cycleDuration,
                 activeFraction: activeFraction,
                 targetFramesPerSecond: targetFramesPerSecond
             )
-            DispatchQueue.main.async { [weak self] in
-                self?.applyRenderedFrames(frames, request: request, generation: generation)
-            }
+            self.applyRenderedFrames(frames, request: request, generation: generation)
         }
         pendingRenderWorkItem = workItem
-        renderQueue.asyncAfter(deadline: .now() + resizeRenderDebounce, execute: workItem)
+        if immediate {
+            workItem.perform()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + resizeRenderDebounce, execute: workItem)
+        }
     }
 
     private func applyRenderedFrames(_ frames: [CGImage], request: RenderRequest, generation: UInt64) {
@@ -1812,7 +1802,7 @@ private final class FloatingUnreadSpriteRippleView: NSView {
         startAnimations(phaseOffset: phaseOffset)
     }
 
-    private nonisolated func renderFrames(
+    private static nonisolated func renderFrames(
         request: RenderRequest,
         cycleDuration: CFTimeInterval,
         activeFraction: Double,
@@ -1821,7 +1811,7 @@ private final class FloatingUnreadSpriteRippleView: NSView {
         let pixelWidth = max(1, Int((request.size.width * request.backingScale).rounded(.up)))
         let pixelHeight = max(1, Int((request.size.height * request.backingScale).rounded(.up)))
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let frameCount = frameCount(cycleDuration: cycleDuration, targetFramesPerSecond: targetFramesPerSecond)
+        let frameCount = Self.frameCount(cycleDuration: cycleDuration, targetFramesPerSecond: targetFramesPerSecond)
 
         return (0..<frameCount).compactMap { index in
             guard let context = CGContext(
@@ -1836,7 +1826,7 @@ private final class FloatingUnreadSpriteRippleView: NSView {
                 return nil
             }
             context.scaleBy(x: request.backingScale, y: request.backingScale)
-            drawRippleFrame(
+            Self.drawRippleFrame(
                 in: context,
                 request: request,
                 phase: Double(index) / Double(frameCount),
@@ -1846,11 +1836,11 @@ private final class FloatingUnreadSpriteRippleView: NSView {
         }
     }
 
-    private nonisolated func frameCount(cycleDuration: CFTimeInterval, targetFramesPerSecond: Int) -> Int {
+    private static nonisolated func frameCount(cycleDuration: CFTimeInterval, targetFramesPerSecond: Int) -> Int {
         max(1, Int((cycleDuration * Double(targetFramesPerSecond)).rounded(.up)))
     }
 
-    private nonisolated func drawRippleFrame(
+    private static nonisolated func drawRippleFrame(
         in context: CGContext,
         request: RenderRequest,
         phase: Double,
@@ -1867,17 +1857,17 @@ private final class FloatingUnreadSpriteRippleView: NSView {
         context.fill(rect)
 
         if phase < activeFraction {
-            drawCircularRippleReflections(in: context, request: request, phase: phase / activeFraction)
+            Self.drawCircularRippleReflections(in: context, request: request, phase: phase / activeFraction)
         }
         context.restoreGState()
     }
 
-    private nonisolated func drawCircularRippleReflections(in context: CGContext, request: RenderRequest, phase: Double) {
+    private static nonisolated func drawCircularRippleReflections(in context: CGContext, request: RenderRequest, phase: Double) {
         let size = request.size
-        let fadeOut = smoothPulseFade(phase)
+        let fadeOut = Self.smoothPulseFade(phase)
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
         let maxRadius = max(max(size.width, size.height) * 0.82, size.height * 2.25)
-        let baseRadius = maxRadius * CGFloat(easeOutSine(phase))
+        let baseRadius = maxRadius * CGFloat(Self.easeOutSine(phase))
         let waveAlpha = CGFloat(fadeOut) * (1.04 - 0.26 * CGFloat(phase))
         let scale = request.scale
         let rings: [(offset: CGFloat, alpha: CGFloat, thickness: CGFloat)] = [
@@ -1887,7 +1877,7 @@ private final class FloatingUnreadSpriteRippleView: NSView {
             (-18.6 * scale, 0.34, 1.58),
             (-24.8 * scale, 0.24, 1.36)
         ]
-        let sources = rippleSources(size: size, center: center)
+        let sources = Self.rippleSources(size: size, center: center)
 
         for ring in rings {
             let radius = baseRadius + ring.offset
@@ -1897,10 +1887,10 @@ private final class FloatingUnreadSpriteRippleView: NSView {
             for source in sources {
                 let reflectionFade = source.isDirect
                     ? 1
-                    : smoothStep((radius - source.arrivalDistance) / max(12 * scale, 1))
+                    : Self.smoothStep((radius - source.arrivalDistance) / max(12 * scale, 1))
                 guard reflectionFade > 0.01 else { continue }
                 let alpha = waveAlpha * ring.alpha * source.strength * reflectionFade
-                drawCircularRing(
+                Self.drawCircularRing(
                     in: context,
                     color: request.color,
                     scale: scale,
@@ -1912,10 +1902,10 @@ private final class FloatingUnreadSpriteRippleView: NSView {
             }
         }
 
-        drawEdgeContact(in: context, request: request, center: center, radius: baseRadius, intensity: waveAlpha)
+        Self.drawEdgeContact(in: context, request: request, center: center, radius: baseRadius, intensity: waveAlpha)
     }
 
-    private nonisolated func drawCircularRing(
+    private static nonisolated func drawCircularRing(
         in context: CGContext,
         color: NSColor,
         scale: CGFloat,
@@ -1930,18 +1920,18 @@ private final class FloatingUnreadSpriteRippleView: NSView {
 
         context.saveGState()
         context.setFillColor(color.withAlphaComponent(alpha * 0.54).cgColor)
-        context.addEllipse(in: circleRect(center: center, radius: outerRadius))
-        context.addEllipse(in: circleRect(center: center, radius: innerRadius))
+        context.addEllipse(in: Self.circleRect(center: center, radius: outerRadius))
+        context.addEllipse(in: Self.circleRect(center: center, radius: innerRadius))
         context.drawPath(using: .eoFill)
 
         context.setStrokeColor(NSColor.white.withAlphaComponent(alpha * 0.17).cgColor)
         context.setLineWidth(max(0.18, 0.24 * scale))
-        context.addEllipse(in: circleRect(center: center, radius: radius))
+        context.addEllipse(in: Self.circleRect(center: center, radius: radius))
         context.strokePath()
         context.restoreGState()
     }
 
-    private nonisolated func drawEdgeContact(
+    private static nonisolated func drawEdgeContact(
         in context: CGContext,
         request: RenderRequest,
         center: CGPoint,
@@ -1950,21 +1940,21 @@ private final class FloatingUnreadSpriteRippleView: NSView {
     ) {
         let size = request.size
         let scale = request.scale
-        let top = gaussian(Double(radius), center: Double(center.y), width: Double(6.4 * scale))
-        let bottom = gaussian(Double(radius), center: Double(size.height - center.y), width: Double(6.4 * scale))
-        let left = gaussian(Double(radius), center: Double(center.x), width: Double(9.0 * scale))
-        let right = gaussian(Double(radius), center: Double(size.width - center.x), width: Double(9.0 * scale))
-        let topSecond = gaussian(Double(radius), center: Double(2 * size.height - center.y), width: Double(10.5 * scale))
-        let bottomSecond = gaussian(Double(radius), center: Double(size.height + center.y), width: Double(10.5 * scale))
-        drawEdgeGlow(in: context, rect: CGRect(x: 0, y: 0, width: size.width, height: 2.35 * scale), amount: CGFloat(top) * intensity, scale: scale)
-        drawEdgeGlow(in: context, rect: CGRect(x: 0, y: size.height - 2.35 * scale, width: size.width, height: 2.35 * scale), amount: CGFloat(bottom) * intensity, scale: scale)
-        drawEdgeGlow(in: context, rect: CGRect(x: 0, y: 0, width: 2.35 * scale, height: size.height), amount: CGFloat(left) * intensity, scale: scale)
-        drawEdgeGlow(in: context, rect: CGRect(x: size.width - 2.35 * scale, y: 0, width: 2.35 * scale, height: size.height), amount: CGFloat(right) * intensity, scale: scale)
-        drawEdgeGlow(in: context, rect: CGRect(x: 0, y: 0, width: size.width, height: 2.05 * scale), amount: CGFloat(topSecond) * intensity * 0.68, scale: scale)
-        drawEdgeGlow(in: context, rect: CGRect(x: 0, y: size.height - 2.05 * scale, width: size.width, height: 2.05 * scale), amount: CGFloat(bottomSecond) * intensity * 0.68, scale: scale)
+        let top = Self.gaussian(Double(radius), center: Double(center.y), width: Double(6.4 * scale))
+        let bottom = Self.gaussian(Double(radius), center: Double(size.height - center.y), width: Double(6.4 * scale))
+        let left = Self.gaussian(Double(radius), center: Double(center.x), width: Double(9.0 * scale))
+        let right = Self.gaussian(Double(radius), center: Double(size.width - center.x), width: Double(9.0 * scale))
+        let topSecond = Self.gaussian(Double(radius), center: Double(2 * size.height - center.y), width: Double(10.5 * scale))
+        let bottomSecond = Self.gaussian(Double(radius), center: Double(size.height + center.y), width: Double(10.5 * scale))
+        Self.drawEdgeGlow(in: context, rect: CGRect(x: 0, y: 0, width: size.width, height: 2.35 * scale), amount: CGFloat(top) * intensity, scale: scale)
+        Self.drawEdgeGlow(in: context, rect: CGRect(x: 0, y: size.height - 2.35 * scale, width: size.width, height: 2.35 * scale), amount: CGFloat(bottom) * intensity, scale: scale)
+        Self.drawEdgeGlow(in: context, rect: CGRect(x: 0, y: 0, width: 2.35 * scale, height: size.height), amount: CGFloat(left) * intensity, scale: scale)
+        Self.drawEdgeGlow(in: context, rect: CGRect(x: size.width - 2.35 * scale, y: 0, width: 2.35 * scale, height: size.height), amount: CGFloat(right) * intensity, scale: scale)
+        Self.drawEdgeGlow(in: context, rect: CGRect(x: 0, y: 0, width: size.width, height: 2.05 * scale), amount: CGFloat(topSecond) * intensity * 0.68, scale: scale)
+        Self.drawEdgeGlow(in: context, rect: CGRect(x: 0, y: size.height - 2.05 * scale, width: size.width, height: 2.05 * scale), amount: CGFloat(bottomSecond) * intensity * 0.68, scale: scale)
     }
 
-    private nonisolated func drawEdgeGlow(in context: CGContext, rect: CGRect, amount: CGFloat, scale: CGFloat) {
+    private static nonisolated func drawEdgeGlow(in context: CGContext, rect: CGRect, amount: CGFloat, scale: CGFloat) {
         guard amount > 0.02 else { return }
         context.saveGState()
         context.setFillColor(NSColor.white.withAlphaComponent(amount * 0.27).cgColor)
@@ -2025,7 +2015,7 @@ private final class FloatingUnreadSpriteRippleView: NSView {
         pendingRenderWorkItem = nil
     }
 
-    private nonisolated func rippleSources(size: CGSize, center: CGPoint) -> [RippleSource] {
+    private static nonisolated func rippleSources(size: CGSize, center: CGPoint) -> [RippleSource] {
         [
             RippleSource(point: center, arrivalDistance: 0, strength: 1.00, isDirect: true),
             RippleSource(point: CGPoint(x: center.x, y: -center.y), arrivalDistance: center.y, strength: 0.84, isDirect: false),
@@ -2037,28 +2027,28 @@ private final class FloatingUnreadSpriteRippleView: NSView {
         ]
     }
 
-    private nonisolated func circleRect(center: CGPoint, radius: CGFloat) -> CGRect {
+    private static nonisolated func circleRect(center: CGPoint, radius: CGFloat) -> CGRect {
         CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
     }
 
-    private nonisolated func easeOutSine(_ value: Double) -> Double {
+    private static nonisolated func easeOutSine(_ value: Double) -> Double {
         let clamped = min(max(value, 0), 1)
         return sin(clamped * .pi / 2)
     }
 
-    private nonisolated func smoothStep(_ value: CGFloat) -> CGFloat {
+    private static nonisolated func smoothStep(_ value: CGFloat) -> CGFloat {
         let clamped = min(max(value, 0), 1)
         return clamped * clamped * (3 - 2 * clamped)
     }
 
-    private nonisolated func smoothPulseFade(_ value: Double) -> Double {
+    private static nonisolated func smoothPulseFade(_ value: Double) -> Double {
         let fadeStart = 0.80
         guard value > fadeStart else { return 1 }
         let t = min(max((value - fadeStart) / (1 - fadeStart), 0), 1)
-        return Double(1 - smoothStep(CGFloat(t)))
+        return Double(1 - Self.smoothStep(CGFloat(t)))
     }
 
-    private nonisolated func gaussian(_ value: Double, center: Double, width: Double) -> Double {
+    private static nonisolated func gaussian(_ value: Double, center: Double, width: Double) -> Double {
         let distance = (value - center) / max(width, 0.0001)
         return exp(-(distance * distance))
     }
