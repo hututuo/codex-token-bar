@@ -856,16 +856,32 @@ struct FloatingTokenPanelView: View {
             }
             TokenDisplayCard(
                 snapshot: TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota),
-                onClose: onClose,
-                lockState: isLocked ? .locked : .unlocked,
-                lockTargetDescription: lockTargetDescription,
-                onToggleLock: onToggleLock
+                onClose: nil,
+                lockState: nil,
+                lockTargetDescription: nil,
+                onToggleLock: nil
             )
                 .environment(\.tokenDisplayScale, scale)
                 .padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * scale)
                 .padding(.vertical, FloatingTokenPanelMetrics.verticalPadding * scale)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .zIndex(2)
+
+            FloatingPanelLockButton(
+                state: isLocked ? .locked : .unlocked,
+                targetDescription: lockTargetDescription,
+                scale: scale,
+                action: onToggleLock
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .zIndex(4)
+
+            FloatingPanelCloseButton(
+                scale: scale,
+                action: onClose
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .zIndex(4)
 
             FloatingUnreadCompletionDot(
                 count: unreadCount,
@@ -2062,6 +2078,64 @@ private final class FloatingUnreadSpriteRippleView: NSView {
             && abs(lhs.greenComponent - rhs.greenComponent) < 0.001
             && abs(lhs.blueComponent - rhs.blueComponent) < 0.001
             && abs(lhs.alphaComponent - rhs.alphaComponent) < 0.001
+    }
+}
+
+private struct FloatingPanelCloseButton: View {
+    let scale: CGFloat
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .topTrailing) {
+                Color.clear
+                    .frame(width: 24 * scale, height: 24 * scale)
+                Image(systemName: "xmark")
+                    .font(.system(size: 7.8 * scale, weight: .bold))
+                    .foregroundStyle(Color.black.opacity(0.88))
+                    .frame(width: 10 * scale, height: 10 * scale, alignment: .center)
+                    .padding(.trailing, 5.5 * scale)
+                    .padding(.top, 4.5 * scale)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("关闭悬浮窗")
+    }
+}
+
+private struct FloatingPanelLockButton: View {
+    let state: TokenDisplayLockState
+    let targetDescription: String?
+    let scale: CGFloat
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                    .frame(width: 24 * scale, height: 24 * scale)
+                Image(systemName: state.systemImage)
+                    .font(.system(size: 7.8 * scale, weight: .bold))
+                    .foregroundStyle(Color.black.opacity(0.88))
+                    .frame(width: 10 * scale, height: 10 * scale, alignment: .center)
+                    .padding(.leading, 5.5 * scale)
+                    .padding(.top, 4.5 * scale)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(helpText)
+    }
+
+    private var helpText: String {
+        guard state == .locked else {
+            return TokenDisplayLockState.unlocked.helpText
+        }
+        if let targetDescription, !targetDescription.isEmpty {
+            return "已锁定到 \(targetDescription)"
+        }
+        return TokenDisplayLockState.locked.helpText
     }
 }
 

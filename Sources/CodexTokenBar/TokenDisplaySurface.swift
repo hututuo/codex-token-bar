@@ -194,7 +194,7 @@ struct TokenDisplayCard: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                     .frame(width: 64.scaled(by: displayScale), alignment: .leading)
-                    .offset(y: 1.scaled(by: displayScale))
+                    .offset(x: 3.scaled(by: displayScale), y: 3.scaled(by: displayScale))
                 Text("tok/s")
                     .font(.system(size: 8.6.scaled(by: displayScale), weight: .semibold))
                     .foregroundStyle(.secondary)
@@ -401,6 +401,7 @@ struct TokenDisplayRateBar: View {
             let statusHeight = 13.scaled(by: displayScale)
             let barHeight = 5.scaled(by: displayScale)
             let contentDrop = 3.5.scaled(by: displayScale)
+            let statusTextDrop = contentDrop + 2.scaled(by: displayScale)
             let barTop = 18.scaled(by: displayScale) + contentDrop
             let leadingInset = leadingControlInset
             let trailingInset = trailingControlInset
@@ -416,7 +417,7 @@ struct TokenDisplayRateBar: View {
                     .minimumScaleFactor(0.86)
                     .truncationMode(.tail)
                     .frame(width: contentWidth, height: statusHeight, alignment: .leading)
-                    .position(x: leadingInset + contentWidth / 2, y: statusHeight / 2 + contentDrop)
+                    .position(x: leadingInset + contentWidth / 2, y: statusHeight / 2 + statusTextDrop)
 
                 ZStack(alignment: .leading) {
                     Capsule()
