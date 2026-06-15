@@ -46,13 +46,17 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     private var fastFollowUntil: Date?
     private var accessibilityObserver: AXObserver?
     private var observedAccessibilityWindow: AXUIElement?
+    private var pendingLockedOriginToPersist: NSPoint?
+    private var lockedOriginPersistTimer: Timer?
+    private var lastLockedOriginPersistAt = Date.distantPast
     nonisolated(unsafe) private var globalMouseMonitor: Any?
     private var isProgrammaticPanelMove = false
     private var appliedLockState = false
     private let recentExternalClickTargetInterval: TimeInterval = 5 * 60
     private let fastFollowInterval: TimeInterval = 1.0 / 60.0
-    private let idleFollowInterval: TimeInterval = 0.18
-    private let fastFollowGracePeriod: TimeInterval = 0.35
+    private let idleFollowInterval: TimeInterval = 1.0 / 30.0
+    private let fastFollowGracePeriod: TimeInterval = 1.2
+    private let lockedOriginPersistInterval: TimeInterval = 0.45
     private let screenPositionLockDescription = "屏幕位置"
     private let lockTargetDescriptionKey = "floatingPanelLockTargetDescription"
     private let lockedOriginXKey = "floatingPanelLockedOriginX"
@@ -350,6 +354,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         followTimer = nil
         followTimerInterval = nil
         fastFollowUntil = nil
+        flushPendingLockedOriginSave()
         uninstallAccessibilityObserver()
     }
 
@@ -361,10 +366,6 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         let moved = followAnchorIfNeeded()
         if moved {
             fastFollowUntil = Date().addingTimeInterval(fastFollowGracePeriod)
-            scheduleFollowTimer(interval: fastFollowInterval)
-            return
-        }
-        guard accessibilityObserver != nil else {
             scheduleFollowTimer(interval: fastFollowInterval)
             return
         }
@@ -434,7 +435,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             DispatchQueue.main.async { [weak self] in
                 self?.isProgrammaticPanelMove = false
             }
-            saveLockedOrigin(frame.origin)
+            saveLockedOrigin(frame.origin, throttled: true)
             return true
         }
         return false
@@ -522,9 +523,13 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
 
     private func targetFrame(matching anchor: FloatingPanelWindowAnchor) -> FloatingPanelFollowTarget? {
         if let accessibilityWindow = anchor.accessibilityWindow,
-           let target = accessibilityTarget(from: accessibilityWindow),
-           target.ownerPID == anchor.ownerPID {
-            return FloatingPanelFollowTarget(frame: target.frame, targetDescription: target.displayName)
+           AXIsProcessTrusted() {
+            var ownerPID: pid_t = 0
+            if AXUIElementGetPid(accessibilityWindow, &ownerPID) == .success,
+               ownerPID == anchor.ownerPID,
+               let frame = accessibilityFrame(of: accessibilityWindow) {
+                return FloatingPanelFollowTarget(frame: frame, targetDescription: anchor.targetDescription)
+            }
         }
         if let targetWindow = findWindow(matching: anchor) {
             return FloatingPanelFollowTarget(frame: targetWindow.frame, targetDescription: targetWindow.displayName)
@@ -533,6 +538,11 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     private func findWindow(matching anchor: FloatingPanelWindowAnchor) -> FloatingPanelTargetWindow? {
+        if let windowNumber = anchor.windowNumber,
+           let byNumber = windowDescription(for: windowNumber, relaxed: true) {
+            return byNumber
+        }
+
         let windows = visibleWindows(relaxed: true)
         if let windowNumber = anchor.windowNumber,
            let byNumber = windows.first(where: { $0.windowNumber == windowNumber }) {
@@ -588,44 +598,54 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         guard let rawWindows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return []
         }
+        return rawWindows.compactMap { targetWindow(from: $0, relaxed: relaxed) }
+    }
+
+    private func windowDescription(for windowNumber: Int, relaxed: Bool) -> FloatingPanelTargetWindow? {
+        let windowIDs = [CGWindowID(windowNumber)] as CFArray
+        guard let rawWindows = CGWindowListCreateDescriptionFromArray(windowIDs) as? [[String: Any]] else {
+            return nil
+        }
+        return rawWindows.compactMap { targetWindow(from: $0, relaxed: relaxed) }.first
+    }
+
+    private func targetWindow(from info: [String: Any], relaxed: Bool) -> FloatingPanelTargetWindow? {
         let minimumWidth: CGFloat = relaxed ? 20 : 60
         let minimumHeight: CGFloat = relaxed ? 16 : 40
         let currentPID = ProcessInfo.processInfo.processIdentifier
-        return rawWindows.compactMap { info in
-            guard let ownerPID = info[kCGWindowOwnerPID as String] as? pid_t,
-                  ownerPID != currentPID,
-                  let windowNumber = info[kCGWindowNumber as String] as? Int,
-                  let layer = info[kCGWindowLayer as String] as? Int,
-                  let bounds = info[kCGWindowBounds as String] as? [String: Any],
-                  let x = bounds["X"] as? CGFloat,
-                  let y = bounds["Y"] as? CGFloat,
-                  let width = bounds["Width"] as? CGFloat,
-                  let height = bounds["Height"] as? CGFloat,
-                  width > minimumWidth,
-                  height > minimumHeight
-            else {
-                return nil
-            }
-
-            let displayMaxY = FloatingPanelScreenGeometry.displayMaxY
-            let app = NSRunningApplication(processIdentifier: ownerPID)
-            let ownerName = info[kCGWindowOwnerName as String] as? String ?? ""
-            guard isLockCandidateWindow(layer: layer, ownerName: ownerName, bundleID: app?.bundleIdentifier, relaxed: relaxed) else {
-                return nil
-            }
-            let title = info[kCGWindowName as String] as? String ?? ""
-            let frame = NSRect(x: x, y: displayMaxY - y - height, width: width, height: height)
-            let rawFrame = NSRect(x: x, y: y, width: width, height: height)
-            return FloatingPanelTargetWindow(
-                windowNumber: windowNumber,
-                ownerPID: ownerPID,
-                ownerBundleID: app?.bundleIdentifier,
-                ownerName: ownerName,
-                title: title,
-                frame: frame,
-                rawFrame: rawFrame
-            )
+        guard let ownerPID = info[kCGWindowOwnerPID as String] as? pid_t,
+              ownerPID != currentPID,
+              let windowNumber = info[kCGWindowNumber as String] as? Int,
+              let layer = info[kCGWindowLayer as String] as? Int,
+              let bounds = info[kCGWindowBounds as String] as? [String: Any],
+              let x = bounds["X"] as? CGFloat,
+              let y = bounds["Y"] as? CGFloat,
+              let width = bounds["Width"] as? CGFloat,
+              let height = bounds["Height"] as? CGFloat,
+              width > minimumWidth,
+              height > minimumHeight
+        else {
+            return nil
         }
+
+        let displayMaxY = FloatingPanelScreenGeometry.displayMaxY
+        let app = NSRunningApplication(processIdentifier: ownerPID)
+        let ownerName = info[kCGWindowOwnerName as String] as? String ?? ""
+        guard isLockCandidateWindow(layer: layer, ownerName: ownerName, bundleID: app?.bundleIdentifier, relaxed: relaxed) else {
+            return nil
+        }
+        let title = info[kCGWindowName as String] as? String ?? ""
+        let frame = NSRect(x: x, y: displayMaxY - y - height, width: width, height: height)
+        let rawFrame = NSRect(x: x, y: y, width: width, height: height)
+        return FloatingPanelTargetWindow(
+            windowNumber: windowNumber,
+            ownerPID: ownerPID,
+            ownerBundleID: app?.bundleIdentifier,
+            ownerName: ownerName,
+            title: title,
+            frame: frame,
+            rawFrame: rawFrame
+        )
     }
 
     private func isLockCandidateWindow(layer: Int, ownerName: String, bundleID: String?, relaxed: Bool) -> Bool {
@@ -787,10 +807,42 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         return value as? String
     }
 
-    private func saveLockedOrigin(_ origin: NSPoint) {
+    private func saveLockedOrigin(_ origin: NSPoint, throttled: Bool = false) {
+        guard throttled else {
+            persistLockedOrigin(origin)
+            return
+        }
+
+        pendingLockedOriginToPersist = origin
+        let elapsed = Date().timeIntervalSince(lastLockedOriginPersistAt)
+        if elapsed >= lockedOriginPersistInterval {
+            flushPendingLockedOriginSave()
+            return
+        }
+
+        guard lockedOriginPersistTimer == nil else { return }
+        let timer = Timer(timeInterval: max(0.05, lockedOriginPersistInterval - elapsed), repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.flushPendingLockedOriginSave()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        lockedOriginPersistTimer = timer
+    }
+
+    private func flushPendingLockedOriginSave() {
+        lockedOriginPersistTimer?.invalidate()
+        lockedOriginPersistTimer = nil
+        guard let origin = pendingLockedOriginToPersist else { return }
+        pendingLockedOriginToPersist = nil
+        persistLockedOrigin(origin)
+    }
+
+    private func persistLockedOrigin(_ origin: NSPoint) {
         let defaults = UserDefaults.standard
         defaults.set(Double(origin.x), forKey: lockedOriginXKey)
         defaults.set(Double(origin.y), forKey: lockedOriginYKey)
+        lastLockedOriginPersistAt = Date()
     }
 
     private func savedLockedOrigin() -> NSPoint? {
