@@ -272,7 +272,7 @@ private enum CodexUnreadThreadReader {
         guard !threadIDs.isEmpty else { return [] }
         let databaseURL = codexHome.appendingPathComponent("state_5.sqlite")
         guard FileManager.default.fileExists(atPath: databaseURL.path) else {
-            return threadIDs
+            return sessionVisibleThreadIDs(from: threadIDs, codexHome: codexHome).visibleIDs
         }
 
         var database: OpaquePointer?
@@ -281,7 +281,7 @@ private enum CodexUnreadThreadReader {
             if let database {
                 sqlite3_close(database)
             }
-            return threadIDs
+            return sessionVisibleThreadIDs(from: threadIDs, codexHome: codexHome).visibleIDs
         }
         defer { sqlite3_close(database) }
         sqlite3_busy_timeout(database, 100)
@@ -290,10 +290,11 @@ private enum CodexUnreadThreadReader {
         let archivedExpression = columns.contains("archived") ? "COALESCE(archived, 0)" : "0"
         let hasUserEventExpression = columns.contains("has_user_event") ? "COALESCE(has_user_event, 0)" : "1"
         let threadSourceExpression = columns.contains("thread_source") ? "COALESCE(thread_source, 'user')" : "'user'"
+        let sourceExpression = columns.contains("source") ? "COALESCE(source, '')" : "''"
         let previewExpression = columns.contains("preview") ? "COALESCE(preview, '')" : "'legacy'"
         let placeholders = Array(repeating: "?", count: threadIDs.count).joined(separator: ",")
         let sql = """
-        SELECT id, \(archivedExpression), \(hasUserEventExpression), \(threadSourceExpression), \(previewExpression)
+        SELECT id, \(archivedExpression), \(hasUserEventExpression), \(threadSourceExpression), \(sourceExpression), \(previewExpression)
         FROM threads
         WHERE id IN (\(placeholders))
         """
@@ -304,7 +305,7 @@ private enum CodexUnreadThreadReader {
             if let statement {
                 sqlite3_finalize(statement)
             }
-            return threadIDs
+            return sessionVisibleThreadIDs(from: threadIDs, codexHome: codexHome).visibleIDs
         }
         defer { sqlite3_finalize(statement) }
 
@@ -320,11 +321,13 @@ private enum CodexUnreadThreadReader {
                 matchedIDs.insert(id)
                 let archived = sqlite3_column_int(statement, 1) != 0
                 let hasUserEvent = sqlite3_column_int(statement, 2) != 0
-                let source = sqlite3_column_text(statement, 3).map { String(cString: $0) } ?? "user"
-                let preview = sqlite3_column_text(statement, 4).map { String(cString: $0) } ?? ""
+                let threadSource = sqlite3_column_text(statement, 3).map { String(cString: $0) } ?? "user"
+                let source = sqlite3_column_text(statement, 4).map { String(cString: $0) } ?? ""
+                let preview = sqlite3_column_text(statement, 5).map { String(cString: $0) } ?? ""
                 if !archived,
                    hasUserEvent,
                    !preview.isEmpty,
+                   !threadSource.localizedCaseInsensitiveContains("subagent"),
                    !source.localizedCaseInsensitiveContains("subagent") {
                     visibleIDs.insert(id)
                 }
@@ -565,9 +568,8 @@ private enum TaskCompletionScanner {
             state.sessionID = payload["id"] as? String ?? ""
             state.cwd = payload["cwd"] as? String ?? state.cwd
             let threadSource = payload["thread_source"] as? String ?? ""
-            let source = payload["source"] as? String ?? ""
             state.isSubagent = threadSource.localizedCaseInsensitiveContains("subagent")
-                || source.localizedCaseInsensitiveContains("subagent")
+                || valueContainsSubagent(payload["source"])
         }
         return state
     }
@@ -670,6 +672,22 @@ private enum TaskCompletionScanner {
     private static func jsonObject(_ line: String) -> [String: Any]? {
         guard let data = line.data(using: .utf8) else { return nil }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    private static func valueContainsSubagent(_ value: Any?) -> Bool {
+        if let string = value as? String {
+            return string.localizedCaseInsensitiveContains("subagent")
+        }
+        if let array = value as? [Any] {
+            return array.contains(where: valueContainsSubagent)
+        }
+        if let dictionary = value as? [String: Any] {
+            if dictionary.keys.contains(where: { $0.localizedCaseInsensitiveContains("subagent") }) {
+                return true
+            }
+            return dictionary.values.contains(where: valueContainsSubagent)
+        }
+        return false
     }
 
     private static func number(_ value: Any?) -> TimeInterval? {
