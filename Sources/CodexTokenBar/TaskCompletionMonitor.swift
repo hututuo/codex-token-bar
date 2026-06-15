@@ -450,6 +450,8 @@ private final class TaskCompletionDateParsers {
 }
 
 private enum TaskCompletionScanner {
+    private static let seedTailByteLimit: UInt64 = 4 * 1024 * 1024
+
     static func scan(
         sessionsRoot: URL,
         previousStates: [String: TaskCompletionFileState],
@@ -469,18 +471,21 @@ private enum TaskCompletionScanner {
             }
 
             let size = fileSize.uint64Value
-            var state = states[path] ?? initialState(for: file, offset: 0)
+            let hadState = states[path] != nil
+            var state = states[path] ?? baseState(for: file, offset: 0)
             if state.offset > size {
-                state.offset = 0
+                state = initialState(for: file, offset: 0)
             }
 
-            if states[path] == nil, seedMode {
+            if !hadState, seedMode {
                 let modifiedAt = attributes[.modificationDate] as? Date ?? .distantPast
                 if modifiedAt < seedCutoff {
                     state.offset = size
                     states[path] = state
                     continue
                 }
+                let startOffset = seedStartOffset(forSize: size)
+                state = initialState(for: file, offset: startOffset)
             }
 
             guard size > state.offset else {
@@ -488,12 +493,17 @@ private enum TaskCompletionScanner {
                 continue
             }
 
+            if state.sessionID.isEmpty {
+                state = initialState(for: file, offset: state.offset)
+            }
+
             let parsed = parseNewLines(
                 in: file,
                 from: state.offset,
                 size: size,
                 state: state,
-                dateParsers: dateParsers
+                dateParsers: dateParsers,
+                eventCutoff: seedMode ? seedCutoff.timeIntervalSince1970 : nil
             )
             states[path] = parsed.state
             events.append(contentsOf: parsed.events)
@@ -519,8 +529,8 @@ private enum TaskCompletionScanner {
         }
     }
 
-    private static func initialState(for file: URL, offset: UInt64) -> TaskCompletionFileState {
-        var state = TaskCompletionFileState(
+    private static func baseState(for file: URL, offset: UInt64) -> TaskCompletionFileState {
+        TaskCompletionFileState(
             offset: offset,
             sessionID: "",
             cwd: file.deletingLastPathComponent().path,
@@ -528,6 +538,15 @@ private enum TaskCompletionScanner {
             lastUserText: "",
             activeTurns: [:]
         )
+    }
+
+    private static func seedStartOffset(forSize size: UInt64) -> UInt64 {
+        guard size > seedTailByteLimit else { return 0 }
+        return size - seedTailByteLimit
+    }
+
+    private static func initialState(for file: URL, offset: UInt64) -> TaskCompletionFileState {
+        var state = baseState(for: file, offset: offset)
 
         if let firstLine = firstLine(in: file),
            let object = jsonObject(firstLine),
@@ -548,7 +567,8 @@ private enum TaskCompletionScanner {
         from offset: UInt64,
         size: UInt64,
         state: TaskCompletionFileState,
-        dateParsers: TaskCompletionDateParsers
+        dateParsers: TaskCompletionDateParsers,
+        eventCutoff: TimeInterval?
     ) -> (state: TaskCompletionFileState, events: [TaskCompletionEvent]) {
         var state = state
         var events: [TaskCompletionEvent] = []
@@ -566,14 +586,16 @@ private enum TaskCompletionScanner {
             return (state, events)
         }
 
-        let data = handle.readDataToEndOfFile()
-        guard let chunk = String(data: data, encoding: .utf8) else {
-            state.offset = size
-            return (state, events)
-        }
+        let chunk = String(decoding: handle.readDataToEndOfFile(), as: UTF8.self)
 
         for line in chunk.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let object = jsonObject(String(line)),
+            let lineString = String(line)
+            guard lineString.contains("event_msg"),
+                  lineString.contains("task_started") || lineString.contains("user_message") || lineString.contains("task_complete") else {
+                continue
+            }
+
+            guard let object = jsonObject(lineString),
                   object["type"] as? String == "event_msg",
                   let payload = object["payload"] as? [String: Any],
                   let payloadType = payload["type"] as? String else {
@@ -603,6 +625,9 @@ private enum TaskCompletionScanner {
                 guard !state.isSubagent else {
                     break
                 }
+                if let eventCutoff, completedAt < eventCutoff {
+                    break
+                }
 
                 events.append(
                     TaskCompletionEvent(
@@ -628,13 +653,19 @@ private enum TaskCompletionScanner {
         }
 
         var data = Data()
-        while true {
-            let byte = handle.readData(ofLength: 1)
-            if byte.isEmpty || byte.first == 10 {
+        let maxBytes = 262_144
+        while data.count < maxBytes {
+            let chunk = handle.readData(ofLength: min(16_384, maxBytes - data.count))
+            if chunk.isEmpty {
                 break
             }
-            data.append(byte)
+            if let newlineIndex = chunk.firstIndex(of: 10) {
+                data.append(chunk[..<newlineIndex])
+                break
+            }
+            data.append(chunk)
         }
+        guard !data.isEmpty else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
