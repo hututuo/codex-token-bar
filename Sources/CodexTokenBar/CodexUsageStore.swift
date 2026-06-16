@@ -43,6 +43,11 @@ final class CodexUsageStore: ObservableObject {
         }
 
         let isFirstLoad = !didFinishInitialLoad
+        let hasExistingSnapshot = didFinishInitialLoad
+            || snapshot.stats.totalTokens > 0
+            || !snapshot.dailyUsage.isEmpty
+            || !snapshot.recentBins.isEmpty
+            || !snapshot.hourlyUsage.isEmpty
         isRefreshing = true
         if isFirstLoad {
             isInitialLoading = true
@@ -68,7 +73,9 @@ final class CodexUsageStore: ObservableObject {
                 snapshot = loaded
                 status = "\(source.originLabel) · token_count · Updated \(DateFormatter.status.string(from: loaded.generatedAt))"
             } catch {
-                snapshot = .empty
+                if !hasExistingSnapshot {
+                    snapshot = .empty
+                }
                 status = "读取失败：\(error.localizedDescription)"
             }
             isRefreshing = false

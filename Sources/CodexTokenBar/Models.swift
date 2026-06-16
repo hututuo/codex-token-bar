@@ -14,14 +14,14 @@ struct TokenEvent: Identifiable {
 }
 
 struct DayUsage: Identifiable, Equatable {
-    let id = UUID()
+    var id: Date { date }
     let date: Date
     let tokens: Int
     let calls: Int
 }
 
 struct BinUsage: Identifiable, Equatable {
-    let id = UUID()
+    var id: Date { start }
     let start: Date
     let tokens: Int
     let calls: Int
@@ -65,7 +65,7 @@ struct TokenCacheBreakdown: Equatable {
 }
 
 struct TokenCacheBucket: Identifiable, Equatable {
-    let id = UUID()
+    var id: Date { start }
     let start: Date
     let breakdown: TokenCacheBreakdown
 }

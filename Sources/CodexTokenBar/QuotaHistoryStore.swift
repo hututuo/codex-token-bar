@@ -1,5 +1,4 @@
 import Foundation
-import SQLite3
 
 @MainActor
 final class QuotaHistoryStore: ObservableObject {
@@ -79,7 +78,7 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
             status: quota.status
         )
 
-        try withDatabase(flags: SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX) { database in
+        try withDatabase { database in
             try ensureSchema(database)
             if let latest = try latestRow(database: database, accountKey: row.accountKey),
                !shouldInsert(row, after: latest, now: now) {
@@ -91,7 +90,7 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
     }
 
     func loadSnapshot() throws -> QuotaHistorySnapshot {
-        try withDatabase(flags: SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX) { database in
+        try withDatabase { database in
             try ensureSchema(database)
             let rows = try recentRows(database: database)
             return Self.makeSnapshot(rows: rows, recentInterval: recentInterval, maxCarryGap: maxCarryGap)
@@ -222,8 +221,8 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
         return values.reduce(0, +) / Double(values.count)
     }
 
-    private func ensureSchema(_ database: OpaquePointer) throws {
-        try execute(
+    private func ensureSchema(_ database: SQLiteDatabaseConnection) throws {
+        try database.execute(
             """
             CREATE TABLE IF NOT EXISTS quota_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,16 +237,15 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
                 seven_day_resets_at REAL,
                 status TEXT NOT NULL
             );
-            """,
-            database: database
+            """
         )
         try ensureColumn("five_hour_resets_at", definition: "REAL", database: database)
         try ensureColumn("seven_day_resets_at", definition: "REAL", database: database)
-        try execute("CREATE INDEX IF NOT EXISTS idx_quota_snapshots_created_at ON quota_snapshots(created_at);", database: database)
-        try execute("CREATE INDEX IF NOT EXISTS idx_quota_snapshots_account_created ON quota_snapshots(account_key, created_at);", database: database)
+        try database.execute("CREATE INDEX IF NOT EXISTS idx_quota_snapshots_created_at ON quota_snapshots(created_at);")
+        try database.execute("CREATE INDEX IF NOT EXISTS idx_quota_snapshots_account_created ON quota_snapshots(account_key, created_at);")
     }
 
-    private func insert(_ row: QuotaHistoryRow, database: OpaquePointer) throws {
+    private func insert(_ row: QuotaHistoryRow, database: SQLiteDatabaseConnection) throws {
         let sql = """
         INSERT INTO quota_snapshots (
             created_at, account_key, plan_type, limit_name, account_name,
@@ -255,30 +253,21 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
             seven_day_used_percent, seven_day_resets_at, status
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
-        var statement: OpaquePointer?
-        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-        guard prepareStatus == SQLITE_OK else {
-            throw sqliteError(database)
-        }
-        defer { sqlite3_finalize(statement) }
-
-        bindDouble(row.createdAt.timeIntervalSince1970, statement: statement, index: 1)
-        bindText(row.accountKey, statement: statement, index: 2)
-        bindText(row.planType, statement: statement, index: 3)
-        bindText(row.limitName, statement: statement, index: 4)
-        bindText(row.accountName, statement: statement, index: 5)
-        bindInt(row.fiveHourUsedPercent, statement: statement, index: 6)
-        bindDate(row.fiveHourResetsAt, statement: statement, index: 7)
-        bindInt(row.sevenDayUsedPercent, statement: statement, index: 8)
-        bindDate(row.sevenDayResetsAt, statement: statement, index: 9)
-        bindText(row.status, statement: statement, index: 10)
-
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw sqliteError(database)
-        }
+        try database.execute(sql, bindings: [
+            .date(row.createdAt),
+            .text(row.accountKey),
+            .optionalText(row.planType),
+            .optionalText(row.limitName),
+            .optionalText(row.accountName),
+            .optionalInt(row.fiveHourUsedPercent),
+            .optionalDate(row.fiveHourResetsAt),
+            .optionalInt(row.sevenDayUsedPercent),
+            .optionalDate(row.sevenDayResetsAt),
+            .text(row.status)
+        ])
     }
 
-    private func latestRow(database: OpaquePointer, accountKey: String) throws -> QuotaHistoryRow? {
+    private func latestRow(database: SQLiteDatabaseConnection, accountKey: String) throws -> QuotaHistoryRow? {
         try rows(
             database: database,
             sql: """
@@ -290,11 +279,11 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
             ORDER BY created_at DESC
             LIMIT 1;
             """,
-            bindings: [accountKey]
+            bindings: [.text(accountKey)]
         ).first
     }
 
-    private func recentRows(database: OpaquePointer) throws -> [QuotaHistoryRow] {
+    private func recentRows(database: SQLiteDatabaseConnection) throws -> [QuotaHistoryRow] {
         guard let accountKey = try latestAccountKey(database: database) else { return [] }
         let cutoff = Date().addingTimeInterval(-31 * 24 * 60 * 60).timeIntervalSince1970
         return try rows(
@@ -307,168 +296,62 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
             WHERE account_key = ? AND created_at >= ?
             ORDER BY created_at ASC;
             """,
-            bindings: [accountKey, String(cutoff)]
+            bindings: [.text(accountKey), .double(cutoff)]
         )
     }
 
-    private func latestAccountKey(database: OpaquePointer) throws -> String? {
-        var statement: OpaquePointer?
+    private func latestAccountKey(database: SQLiteDatabaseConnection) throws -> String? {
         let sql = "SELECT account_key FROM quota_snapshots ORDER BY created_at DESC LIMIT 1;"
-        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-        guard prepareStatus == SQLITE_OK else {
-            throw sqliteError(database)
+        return try database.readRows(sql) { statement in
+            statement.text(0)
         }
-        defer { sqlite3_finalize(statement) }
-        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
-        return text(statement, 0)
+        .compactMap { $0 }
+        .first
     }
 
-    private func rows(database: OpaquePointer, sql: String, bindings: [String]) throws -> [QuotaHistoryRow] {
-        var statement: OpaquePointer?
-        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-        guard prepareStatus == SQLITE_OK else {
-            throw sqliteError(database)
+    private func rows(database: SQLiteDatabaseConnection, sql: String, bindings: [SQLiteBinding]) throws -> [QuotaHistoryRow] {
+        try database.readRows(sql, bindings: bindings) { statement in
+            QuotaHistoryRow(
+                createdAt: statement.date(0) ?? Date(timeIntervalSince1970: 0),
+                accountKey: statement.text(1) ?? "default",
+                planType: statement.text(2),
+                limitName: statement.text(3),
+                accountName: statement.text(4),
+                fiveHourUsedPercent: statement.int(5),
+                fiveHourResetsAt: statement.date(6),
+                sevenDayUsedPercent: statement.int(7),
+                sevenDayResetsAt: statement.date(8),
+                status: statement.text(9) ?? ""
+            )
         }
-        defer { sqlite3_finalize(statement) }
-
-        for (index, value) in bindings.enumerated() {
-            sqlite3_bind_text(statement, Int32(index + 1), value, -1, sqliteTransient)
-        }
-
-        var result: [QuotaHistoryRow] = []
-        while true {
-            let stepStatus = sqlite3_step(statement)
-            if stepStatus == SQLITE_ROW {
-                result.append(QuotaHistoryRow(
-                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 0)),
-                    accountKey: text(statement, 1) ?? "default",
-                    planType: text(statement, 2),
-                    limitName: text(statement, 3),
-                    accountName: text(statement, 4),
-                    fiveHourUsedPercent: nullableInt(statement, 5),
-                    fiveHourResetsAt: nullableDate(statement, 6),
-                    sevenDayUsedPercent: nullableInt(statement, 7),
-                    sevenDayResetsAt: nullableDate(statement, 8),
-                    status: text(statement, 9) ?? ""
-                ))
-            } else if stepStatus == SQLITE_DONE {
-                break
-            } else {
-                throw sqliteError(database)
-            }
-        }
-        return result
     }
 
-    private func prune(database: OpaquePointer, now: Date) throws {
+    private func prune(database: SQLiteDatabaseConnection, now: Date) throws {
         let cutoff = now.addingTimeInterval(TimeInterval(-retentionDays * 24 * 60 * 60)).timeIntervalSince1970
-        var statement: OpaquePointer?
         let sql = "DELETE FROM quota_snapshots WHERE created_at < ?;"
-        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-        guard prepareStatus == SQLITE_OK else {
-            throw sqliteError(database)
-        }
-        defer { sqlite3_finalize(statement) }
-        sqlite3_bind_double(statement, 1, cutoff)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw sqliteError(database)
-        }
+        try database.execute(sql, bindings: [.double(cutoff)])
     }
 
-    private func withDatabase<T>(flags: Int32, _ work: (OpaquePointer) throws -> T) throws -> T {
+    private func withDatabase<T>(_ work: (SQLiteDatabaseConnection) throws -> T) throws -> T {
         guard let url = Self.databaseURL else {
             throw NSError(domain: "CodexTokenBar", code: 1001, userInfo: [NSLocalizedDescriptionKey: "Unable to locate Application Support"])
         }
-        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        var database: OpaquePointer?
-        let status = sqlite3_open_v2(url.path, &database, flags, nil)
-        guard status == SQLITE_OK, let database else {
-            let message = database.map { String(cString: sqlite3_errmsg($0)) } ?? "Unable to open quota history database"
-            if let database {
-                sqlite3_close(database)
-            }
-            throw NSError(domain: "CodexTokenBar", code: Int(status), userInfo: [NSLocalizedDescriptionKey: message])
+        let driver = SQLiteDatabaseDriver(
+            url: url,
+            readOnly: false,
+            busyTimeoutMilliseconds: 3_000,
+            enableWAL: true,
+            fileManager: fileManager
+        )
+        return try driver.transaction(work)
+    }
+
+    private func ensureColumn(_ name: String, definition: String, database: SQLiteDatabaseConnection) throws {
+        let columns = try database.readRows("PRAGMA table_info(quota_snapshots);") { statement in
+            statement.text(1) ?? ""
         }
-        defer { sqlite3_close(database) }
-        sqlite3_busy_timeout(database, 250)
-        return try work(database)
-    }
-
-    private func execute(_ sql: String, database: OpaquePointer) throws {
-        var error: UnsafeMutablePointer<Int8>?
-        let status = sqlite3_exec(database, sql, nil, nil, &error)
-        guard status == SQLITE_OK else {
-            let message = error.map { String(cString: $0) } ?? String(cString: sqlite3_errmsg(database))
-            sqlite3_free(error)
-            throw NSError(domain: "CodexTokenBar", code: Int(status), userInfo: [NSLocalizedDescriptionKey: message])
-        }
-    }
-
-    private func ensureColumn(_ name: String, definition: String, database: OpaquePointer) throws {
-        var statement: OpaquePointer?
-        let prepareStatus = sqlite3_prepare_v2(database, "PRAGMA table_info(quota_snapshots);", -1, &statement, nil)
-        guard prepareStatus == SQLITE_OK else {
-            throw sqliteError(database)
-        }
-        defer { sqlite3_finalize(statement) }
-
-        while sqlite3_step(statement) == SQLITE_ROW {
-            if text(statement, 1) == name {
-                return
-            }
-        }
-
-        try execute("ALTER TABLE quota_snapshots ADD COLUMN \(name) \(definition);", database: database)
-    }
-
-    private func sqliteError(_ database: OpaquePointer) -> NSError {
-        NSError(domain: "CodexTokenBar", code: Int(sqlite3_errcode(database)), userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(database))])
-    }
-
-    private func bindText(_ value: String?, statement: OpaquePointer?, index: Int32) {
-        guard let value else {
-            sqlite3_bind_null(statement, index)
-            return
-        }
-        sqlite3_bind_text(statement, index, value, -1, sqliteTransient)
-    }
-
-    private func bindInt(_ value: Int?, statement: OpaquePointer?, index: Int32) {
-        guard let value else {
-            sqlite3_bind_null(statement, index)
-            return
-        }
-        sqlite3_bind_int64(statement, index, sqlite3_int64(value))
-    }
-
-    private func bindDate(_ value: Date?, statement: OpaquePointer?, index: Int32) {
-        guard let value else {
-            sqlite3_bind_null(statement, index)
-            return
-        }
-        sqlite3_bind_double(statement, index, value.timeIntervalSince1970)
-    }
-
-    private func bindDouble(_ value: Double, statement: OpaquePointer?, index: Int32) {
-        sqlite3_bind_double(statement, index, value)
-    }
-
-    private func text(_ statement: OpaquePointer?, _ column: Int32) -> String? {
-        guard sqlite3_column_type(statement, column) != SQLITE_NULL,
-              let value = sqlite3_column_text(statement, column) else {
-            return nil
-        }
-        return String(cString: value)
-    }
-
-    private func nullableInt(_ statement: OpaquePointer?, _ column: Int32) -> Int? {
-        guard sqlite3_column_type(statement, column) != SQLITE_NULL else { return nil }
-        return Int(sqlite3_column_int64(statement, column))
-    }
-
-    private func nullableDate(_ statement: OpaquePointer?, _ column: Int32) -> Date? {
-        guard sqlite3_column_type(statement, column) != SQLITE_NULL else { return nil }
-        return Date(timeIntervalSince1970: sqlite3_column_double(statement, column))
+        guard !columns.contains(name) else { return }
+        try database.execute("ALTER TABLE quota_snapshots ADD COLUMN \(name) \(definition);")
     }
 
     private static var databaseURL: URL? {
@@ -486,5 +369,3 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
         return parts.isEmpty ? "default" : parts.joined(separator: "|")
     }
 }
-
-private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
