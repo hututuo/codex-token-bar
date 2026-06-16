@@ -163,18 +163,58 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
         interval: TimeInterval,
         maxCarryGap: TimeInterval
     ) -> [QuotaHistoryRecentBucket] {
-        (0..<count).map { index -> QuotaHistoryRecentBucket in
+        var rowIndex = 0
+        var latestRow: QuotaHistoryRow?
+
+        return (0..<count).map { index -> QuotaHistoryRecentBucket in
             let binStart = start.addingTimeInterval(Double(index) * interval)
             let end = binStart.addingTimeInterval(interval)
-            let row = rows.last { candidate in
-                candidate.createdAt <= end && end.timeIntervalSince(candidate.createdAt) <= maxCarryGap
+
+            while rowIndex < rows.count, rows[rowIndex].createdAt <= end {
+                latestRow = rows[rowIndex]
+                rowIndex += 1
             }
+
             return QuotaHistoryRecentBucket(
                 start: binStart,
-                fiveHourRemainingPercent: row?.fiveHourRemainingPercent,
-                sevenDayRemainingPercent: row?.sevenDayRemainingPercent
+                fiveHourRemainingPercent: quotaRemaining(
+                    from: latestRow,
+                    at: end,
+                    maxCarryGap: maxCarryGap,
+                    remaining: \.fiveHourRemainingPercent,
+                    resetsAt: \.fiveHourResetsAt
+                ),
+                sevenDayRemainingPercent: quotaRemaining(
+                    from: latestRow,
+                    at: end,
+                    maxCarryGap: maxCarryGap,
+                    remaining: \.sevenDayRemainingPercent,
+                    resetsAt: \.sevenDayResetsAt
+                )
             )
         }
+    }
+
+    private static func quotaRemaining(
+        from row: QuotaHistoryRow?,
+        at date: Date,
+        maxCarryGap: TimeInterval,
+        remaining: KeyPath<QuotaHistoryRow, Double?>,
+        resetsAt: KeyPath<QuotaHistoryRow, Date?>
+    ) -> Double? {
+        guard let row, let value = row[keyPath: remaining] else { return nil }
+
+        if let resetDate = row[keyPath: resetsAt] {
+            if date >= resetDate {
+                return 100
+            }
+            return value
+        }
+
+        guard date.timeIntervalSince(row.createdAt) <= maxCarryGap else {
+            return nil
+        }
+        return value
     }
 
     private static func average(_ values: [Double]) -> Double? {
@@ -201,6 +241,8 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
             """,
             database: database
         )
+        try ensureColumn("five_hour_resets_at", definition: "REAL", database: database)
+        try ensureColumn("seven_day_resets_at", definition: "REAL", database: database)
         try execute("CREATE INDEX IF NOT EXISTS idx_quota_snapshots_created_at ON quota_snapshots(created_at);", database: database)
         try execute("CREATE INDEX IF NOT EXISTS idx_quota_snapshots_account_created ON quota_snapshots(account_key, created_at);", database: database)
     }
@@ -360,6 +402,23 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
             sqlite3_free(error)
             throw NSError(domain: "CodexTokenBar", code: Int(status), userInfo: [NSLocalizedDescriptionKey: message])
         }
+    }
+
+    private func ensureColumn(_ name: String, definition: String, database: OpaquePointer) throws {
+        var statement: OpaquePointer?
+        let prepareStatus = sqlite3_prepare_v2(database, "PRAGMA table_info(quota_snapshots);", -1, &statement, nil)
+        guard prepareStatus == SQLITE_OK else {
+            throw sqliteError(database)
+        }
+        defer { sqlite3_finalize(statement) }
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if text(statement, 1) == name {
+                return
+            }
+        }
+
+        try execute("ALTER TABLE quota_snapshots ADD COLUMN \(name) \(definition);", database: database)
     }
 
     private func sqliteError(_ database: OpaquePointer) -> NSError {
