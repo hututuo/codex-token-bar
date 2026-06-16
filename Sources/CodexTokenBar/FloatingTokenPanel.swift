@@ -33,7 +33,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     private var appliedLockState = false
     private let recentExternalClickTargetInterval: TimeInterval = 5 * 60
     private let fastFollowInterval: TimeInterval = 1.0 / 60.0
-    private let idleFollowInterval: TimeInterval = 1.0 / 30.0
+    private let idleFollowInterval: TimeInterval = 0.5
     private let fastFollowGracePeriod: TimeInterval = 1.2
     private let lockedOriginPersistInterval: TimeInterval = 0.45
     private let screenPositionLockDescription = "屏幕位置"
