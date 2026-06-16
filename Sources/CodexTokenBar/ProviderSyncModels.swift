@@ -1,13 +1,13 @@
 import Foundation
 
 struct ProviderSyncProviderCount: Identifiable, Equatable {
-    let id = UUID()
+    var id: String { provider }
     let provider: String
     let count: Int
 }
 
 struct ProviderSyncSQLiteCount: Identifiable, Equatable {
-    let id = UUID()
+    var id: String { "\(provider)-\(archived)" }
     let provider: String
     let archived: Int
     let count: Int

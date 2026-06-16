@@ -28,7 +28,7 @@ struct BinUsage: Identifiable, Equatable {
 }
 
 struct PluginUsage: Identifiable {
-    let id = UUID()
+    var id: String { name }
     let name: String
     let runs: Int
 }
