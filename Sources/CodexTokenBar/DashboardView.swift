@@ -35,6 +35,9 @@ struct DashboardView: View {
     @AppStorage("setupGuideCompletedV01") private var setupGuideCompleted = false
     @State private var showingProviderSync = false
     @State private var showingSetupGuide = false
+    @State private var showingResetCreditDetails = false
+    @State private var showingPaletteMenu = false
+    @State private var showingUnreadEffectMenu = false
 
     init(loginItemStore: LoginItemStore, updateSettingsStore: AppUpdateSettingsStore) {
         self.loginItemStore = loginItemStore
@@ -65,7 +68,8 @@ struct DashboardView: View {
                             onOpenProviderSync: {
                                 showingProviderSync = true
                                 providerSyncStore.scan(dataSource: store.currentDataSource)
-                            }
+                            },
+                            showingResetCreditDetails: $showingResetCreditDetails
                         )
 
                         StatStrip(stats: store.snapshot.stats)
@@ -82,7 +86,9 @@ struct DashboardView: View {
                             floatingPanelGradientEndHex: $floatingPanelGradientEndHex,
                             floatingPanelGradientDirection: $floatingPanelGradientDirection,
                             floatingPanelGradientStyle: $floatingPanelGradientStyle,
-                            floatingPanelUnreadEffect: $floatingPanelUnreadEffect
+                            floatingPanelUnreadEffect: $floatingPanelUnreadEffect,
+                            showingPaletteMenu: $showingPaletteMenu,
+                            showingUnreadEffectMenu: $showingUnreadEffectMenu
                         )
 
                         ActivitySection(
@@ -123,8 +129,86 @@ struct DashboardView: View {
                     .transition(.opacity)
                     .zIndex(10)
             }
+
+            if showingResetCreditDetails {
+                GeometryReader { proxy in
+                    ZStack(alignment: .top) {
+                        AppTheme.pageBackground.opacity(0.32)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                showingResetCreditDetails = false
+                            }
+
+                        AccountQuotaResetCreditDetailView(
+                            snapshot: quotaStore.snapshot,
+                            onClose: { showingResetCreditDetails = false }
+                        )
+                        .frame(width: min(560, max(460, proxy.size.width - 108)))
+                        .frame(maxHeight: max(360, proxy.size.height - 90))
+                        .padding(.top, 78)
+                    }
+                }
+                .zIndex(9)
+            }
+
+        }
+        .overlayPreferenceValue(FloatingPanelPaletteButtonBoundsKey.self) { anchor in
+            GeometryReader { proxy in
+                if showingPaletteMenu {
+                    let cardFrame = floatingSettingsCardFrame(in: proxy, anchor: anchor, width: 338, estimatedHeight: 338)
+
+                    ZStack(alignment: .topLeading) {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                closePaletteMenu()
+                            }
+
+                        FloatingPanelPaletteMenu(
+                            startHex: $floatingPanelGradientStartHex,
+                            endHex: $floatingPanelGradientEndHex,
+                            directionRaw: $floatingPanelGradientDirection,
+                            styleRaw: $floatingPanelGradientStyle,
+                            closeAction: closePaletteMenu
+                        )
+                        .frame(width: cardFrame.width)
+                        .offset(x: cardFrame.minX, y: cardFrame.minY)
+                    }
+                    .zIndex(10)
+                    .transition(.identity)
+                }
+            }
+        }
+        .overlayPreferenceValue(FloatingUnreadEffectButtonBoundsKey.self) { anchor in
+            GeometryReader { proxy in
+                if showingUnreadEffectMenu {
+                    let cardFrame = floatingSettingsCardFrame(in: proxy, anchor: anchor, width: 332, estimatedHeight: 260)
+
+                    ZStack(alignment: .topLeading) {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                showingUnreadEffectMenu = false
+                            }
+
+                        FloatingUnreadEffectMenu(
+                            selection: $floatingPanelUnreadEffect,
+                            closeAction: { showingUnreadEffectMenu = false }
+                        )
+                        .frame(width: cardFrame.width)
+                        .offset(x: cardFrame.minX, y: cardFrame.minY)
+                    }
+                    .zIndex(10)
+                    .transition(.identity)
+                }
+            }
         }
         .animation(.easeInOut(duration: 0.18), value: store.isInitialLoading)
+        .onExitCommand {
+            showingResetCreditDetails = false
+            closePaletteMenu()
+            showingUnreadEffectMenu = false
+        }
         .onAppear {
             applyDisplaySurfaceDefaultsIfNeeded()
             liveMonitor.setPreciseTokenCountingEnabled(preciseTokenCountingEnabled)
@@ -168,6 +252,15 @@ struct DashboardView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             updateUsageRefreshCadence()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in
+            showingResetCreditDetails = false
+            closePaletteMenu()
+            showingUnreadEffectMenu = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            closePaletteMenu()
+            showingUnreadEffectMenu = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMiniaturizeNotification)) { _ in
             updateUsageRefreshCadence()
@@ -225,6 +318,35 @@ struct DashboardView: View {
         if showingProviderSync {
             providerSyncStore.scan(dataSource: store.currentDataSource)
         }
+    }
+
+    private func floatingSettingsCardFrame(
+        in proxy: GeometryProxy,
+        anchor: Anchor<CGRect>?,
+        width: CGFloat,
+        estimatedHeight: CGFloat
+    ) -> CGRect {
+        let cardWidth = min(width, max(292, proxy.size.width - 108))
+        let horizontalMargin: CGFloat = 54
+        guard let anchor else {
+            return CGRect(
+                x: max(horizontalMargin, (proxy.size.width - cardWidth) / 2),
+                y: 142,
+                width: cardWidth,
+                height: 0
+            )
+        }
+
+        let buttonFrame = proxy[anchor]
+        let maxX = max(horizontalMargin, proxy.size.width - cardWidth - horizontalMargin)
+        let x = min(max(buttonFrame.minX - 4, horizontalMargin), maxX)
+        let y = min(max(buttonFrame.maxY + 8, 88), max(88, proxy.size.height - estimatedHeight))
+        return CGRect(x: x, y: y, width: cardWidth, height: 0)
+    }
+
+    private func closePaletteMenu() {
+        showingPaletteMenu = false
+        NSColorPanel.shared.close()
     }
 
     private func applyDisplaySurfaceDefaultsIfNeeded() {
@@ -384,6 +506,7 @@ struct HeaderView: View {
     let onRefresh: () -> Void
     let onChangeDirectory: () -> Void
     let onOpenProviderSync: () -> Void
+    @Binding var showingResetCreditDetails: Bool
 
     @AppStorage("customAccountDisplayName") private var customAccountDisplayName = ""
     @State private var isEditingDisplayName = false
@@ -503,12 +626,18 @@ struct HeaderView: View {
                 .padding(.leading, 12)
                 .frame(maxWidth: 980)
 
-                AccountQuotaStrip(snapshot: quotaSnapshot)
+                AccountQuotaStrip(
+                    snapshot: quotaSnapshot,
+                    showingResetCreditDetails: $showingResetCreditDetails
+                )
             }
         }
+        .zIndex(showingResetCreditDetails ? 10_000 : 0)
         .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in
-            guard isEditingDisplayName else { return }
-            saveDisplayNameDraft()
+            if isEditingDisplayName {
+                saveDisplayNameDraft()
+            }
+            showingResetCreditDetails = false
         }
     }
 

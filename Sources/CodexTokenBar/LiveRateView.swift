@@ -1,6 +1,22 @@
 import AppKit
 import SwiftUI
 
+struct FloatingUnreadEffectButtonBoundsKey: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
+struct FloatingPanelPaletteButtonBoundsKey: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
 private enum LiveRatePanelLayout {
     static let contentHeight: CGFloat = 106
     static let contentSpacing: CGFloat = 12
@@ -19,6 +35,8 @@ struct LiveRateView: View {
     @Binding var floatingPanelGradientDirection: String
     @Binding var floatingPanelGradientStyle: String
     @Binding var floatingPanelUnreadEffect: String
+    @Binding var showingPaletteMenu: Bool
+    @Binding var showingUnreadEffectMenu: Bool
 
     private var primarySnapshot: LiveRateSnapshot {
         monitor.totalSnapshot
@@ -59,7 +77,9 @@ struct LiveRateView: View {
                         floatingPanelGradientEndHex: $floatingPanelGradientEndHex,
                         floatingPanelGradientDirection: $floatingPanelGradientDirection,
                         floatingPanelGradientStyle: $floatingPanelGradientStyle,
-                        floatingPanelUnreadEffect: $floatingPanelUnreadEffect
+                        floatingPanelUnreadEffect: $floatingPanelUnreadEffect,
+                        showingPaletteMenu: $showingPaletteMenu,
+                        showingUnreadEffectMenu: $showingUnreadEffectMenu
                     )
                     .frame(width: columnWidth, height: LiveRatePanelLayout.contentHeight)
                 }
@@ -148,7 +168,7 @@ struct LiveRateInstrument: View {
         .frame(maxWidth: .infinity, minHeight: LiveRatePanelLayout.contentHeight, maxHeight: LiveRatePanelLayout.contentHeight, alignment: .center)
         .background(
             RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .fill(AppTheme.raisedBackground.opacity(0.34))
+                .fill(AppTheme.solidControlBackground)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 13, style: .continuous)
@@ -173,7 +193,7 @@ private struct RateFullScaleSlider: View {
         .padding(.vertical, 4)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(AppTheme.insetBackground.opacity(0.58))
+                .fill(AppTheme.calloutOptionBackground)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -229,6 +249,8 @@ struct LiveRateControls: View {
     @Binding var floatingPanelGradientDirection: String
     @Binding var floatingPanelGradientStyle: String
     @Binding var floatingPanelUnreadEffect: String
+    @Binding var showingPaletteMenu: Bool
+    @Binding var showingUnreadEffectMenu: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -262,7 +284,9 @@ struct LiveRateControls: View {
                 endHex: $floatingPanelGradientEndHex,
                 directionRaw: $floatingPanelGradientDirection,
                 styleRaw: $floatingPanelGradientStyle,
-                unreadEffectRaw: $floatingPanelUnreadEffect
+                unreadEffectRaw: $floatingPanelUnreadEffect,
+                isPaletteMenuPresented: $showingPaletteMenu,
+                isUnreadEffectMenuPresented: $showingUnreadEffectMenu
             )
         }
         .controlSize(.small)
@@ -271,7 +295,7 @@ struct LiveRateControls: View {
         .frame(maxWidth: .infinity, minHeight: LiveRatePanelLayout.contentHeight, maxHeight: LiveRatePanelLayout.contentHeight, alignment: .center)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(AppTheme.raisedBackground.opacity(0.26))
+                .fill(AppTheme.solidControlBackground)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -288,6 +312,8 @@ struct FloatingPanelAppearanceSettings: View {
     @Binding var directionRaw: String
     @Binding var styleRaw: String
     @Binding var unreadEffectRaw: String
+    @Binding var isPaletteMenuPresented: Bool
+    @Binding var isUnreadEffectMenuPresented: Bool
 
     var body: some View {
         HStack(alignment: .center, spacing: 9) {
@@ -296,11 +322,21 @@ struct FloatingPanelAppearanceSettings: View {
                     startHex: $startHex,
                     endHex: $endHex,
                     directionRaw: $directionRaw,
-                    styleRaw: $styleRaw
+                    styleRaw: $styleRaw,
+                    isPresented: $isPaletteMenuPresented,
+                    willOpen: {
+                        isUnreadEffectMenuPresented = false
+                    }
                 )
                 .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
 
-                FloatingUnreadEffectPicker(selection: normalizedUnreadEffectBinding)
+                FloatingUnreadEffectPicker(
+                    selection: normalizedUnreadEffectBinding,
+                    isPresented: $isUnreadEffectMenuPresented,
+                    willOpen: {
+                        isPaletteMenuPresented = false
+                    }
+                )
                     .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
             }
             .frame(width: 76, alignment: .leading)
@@ -338,12 +374,13 @@ struct FloatingPanelAppearanceSettings: View {
         .padding(.vertical, 4)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(AppTheme.raisedBackground.opacity(0.42))
+                .fill(AppTheme.solidControlBackground)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(AppTheme.border.opacity(0.56), lineWidth: 1)
         )
+        .zIndex(isUnreadEffectMenuPresented ? 50 : 0)
     }
 
     private var normalizedUnreadEffectBinding: Binding<String> {
@@ -355,6 +392,7 @@ struct FloatingPanelAppearanceSettings: View {
             set: { unreadEffectRaw = $0 }
         )
     }
+
 }
 
 private struct FloatingAppearanceMiniButtonLabel: View {
@@ -392,7 +430,7 @@ private struct FloatingAppearanceMiniButtonLabel: View {
         .foregroundStyle(isAccent ? AppTheme.accentBlue : .primary)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(AppTheme.raisedBackground.opacity(0.56))
+                .fill(AppTheme.calloutOptionBackground)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -403,12 +441,14 @@ private struct FloatingAppearanceMiniButtonLabel: View {
 
 private struct FloatingUnreadEffectPicker: View {
     @Binding var selection: String
-    @State private var isPresented = false
-    @State private var localClickMonitor: Any?
-    @State private var globalClickMonitor: Any?
+    @Binding var isPresented: Bool
+    let willOpen: () -> Void
 
     var body: some View {
         Button {
+            if !isPresented {
+                willOpen()
+            }
             isPresented.toggle()
         } label: {
             FloatingAppearanceMiniButtonLabel(
@@ -421,59 +461,42 @@ private struct FloatingUnreadEffectPicker: View {
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(alignment: .topLeading) {
-            if isPresented {
-                unreadEffectPanel
-                    .offset(y: 24)
-                    .zIndex(20)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .topLeading)))
-            }
+        .anchorPreference(key: FloatingUnreadEffectButtonBoundsKey.self, value: .bounds) { anchor in
+            anchor
         }
         .zIndex(isPresented ? 20 : 0)
         .help("选择未读时悬浮窗背景动效")
-        .onChange(of: isPresented) { _, presented in
-            presented ? installDismissMonitors() : removeDismissMonitors()
-        }
-        .onDisappear {
-            removeDismissMonitors()
-        }
     }
+}
 
-    private var unreadEffectPanel: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Image(systemName: "bell.badge")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(AppTheme.accentBlue)
-                    .frame(width: 14)
+struct FloatingUnreadEffectMenu: View {
+    @Binding var selection: String
+    let closeAction: () -> Void
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("消息提醒")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.primary)
-                    Text("选择未读时的悬浮窗效果")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.secondary)
+    var body: some View {
+        SettingsCalloutContainer(
+            title: "提醒样式",
+            subtitle: nil,
+            systemImage: "bell.badge",
+            closeAction: closeAction
+        ) {
+            Text("有完成的会话还没点开时，悬浮窗用选中的样式提醒。")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 9)
+                .background(AppTheme.calloutOptionBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            SettingsCalloutSection("样式") {
+                VStack(spacing: 5) {
+                    unreadEffectOption(.off)
+                    unreadEffectOption(.ripple)
+                    unreadEffectOption(.shimmer)
                 }
-            }
-
-            VStack(spacing: 4) {
-                unreadEffectOption(.off)
-                unreadEffectOption(.ripple)
-                unreadEffectOption(.shimmer)
+                .padding(6)
             }
         }
-        .padding(9)
-        .frame(width: 184, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(AppTheme.hoverBubble)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(AppTheme.borderStrong.opacity(0.72), lineWidth: 1)
-        )
-        .shadow(color: AppTheme.shadow, radius: 12, x: 0, y: 6)
     }
 
     private func unreadEffectOption(_ effect: FloatingPanelUnreadEffect) -> some View {
@@ -481,21 +504,21 @@ private struct FloatingUnreadEffectPicker: View {
         return Button {
             selection = effect.rawValue
             triggerUnreadEffectPreview(effect)
-            isPresented = false
+            closeAction()
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: unreadEffectIcon(effect))
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 10.5, weight: .bold))
                     .foregroundStyle(isSelected ? AppTheme.accentBlue : .secondary)
-                    .frame(width: 14)
+                    .frame(width: 15)
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(effect.label)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(isSelected ? .primary : .secondary)
-                    Text(effect.helpText)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary.opacity(0.86))
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(unreadEffectTitle(effect))
+                        .font(.system(size: 11.5, weight: .bold))
+                        .foregroundStyle(.primary)
+                    Text(unreadEffectSubtitle(effect))
+                        .font(.system(size: 8.8, weight: .semibold))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
 
@@ -505,19 +528,41 @@ private struct FloatingUnreadEffectPicker: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(isSelected ? AppTheme.accentBlue : .secondary.opacity(0.45))
             }
-            .padding(.horizontal, 7)
-            .padding(.vertical, 5)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(isSelected ? AppTheme.accentBlue.opacity(0.13) : AppTheme.raisedBackground.opacity(0.48))
+                .fill(isSelected ? AppTheme.selectedControlBackground : AppTheme.calloutOptionBackground)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(isSelected ? AppTheme.accentBlue.opacity(0.30) : AppTheme.border.opacity(0.50), lineWidth: 1)
+                .stroke(isSelected ? AppTheme.accentBlue.opacity(0.55) : AppTheme.border.opacity(0.50), lineWidth: 1)
         )
+    }
+
+    private func unreadEffectTitle(_ effect: FloatingPanelUnreadEffect) -> String {
+        switch effect {
+        case .off:
+            return "关"
+        case .ripple:
+            return "涟漪"
+        case .shimmer:
+            return "扫光"
+        }
+    }
+
+    private func unreadEffectSubtitle(_ effect: FloatingPanelUnreadEffect) -> String {
+        switch effect {
+        case .off:
+            return "不显示动效"
+        case .ripple:
+            return "圆形水波"
+        case .shimmer:
+            return "柔和光带"
+        }
     }
 
     private func unreadEffectIcon(_ effect: FloatingPanelUnreadEffect) -> String {
@@ -544,32 +589,6 @@ private struct FloatingUnreadEffectPicker: View {
             if currentPreviewUntil <= previewUntil {
                 UserDefaults.standard.set(0.0, forKey: FloatingPanelAppearance.unreadPreviewUntilKey)
             }
-        }
-    }
-
-    private func installDismissMonitors() {
-        guard localClickMonitor == nil, globalClickMonitor == nil else { return }
-        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                isPresented = false
-            }
-            return event
-        }
-        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                isPresented = false
-            }
-        }
-    }
-
-    private func removeDismissMonitors() {
-        if let localClickMonitor {
-            NSEvent.removeMonitor(localClickMonitor)
-            self.localClickMonitor = nil
-        }
-        if let globalClickMonitor {
-            NSEvent.removeMonitor(globalClickMonitor)
-            self.globalClickMonitor = nil
         }
     }
 }
@@ -615,65 +634,93 @@ struct FloatingPanelPaletteControl: View {
     @Binding var endHex: String
     @Binding var directionRaw: String
     @Binding var styleRaw: String
+    @Binding var isPresented: Bool
     var isVertical = false
-    @State private var isPresented = false
-    @State private var localClickMonitor: Any?
-    @State private var globalClickMonitor: Any?
-    @State private var scheduledClose: DispatchWorkItem?
+    let willOpen: () -> Void
 
     var body: some View {
         Button {
+            if !isPresented {
+                willOpen()
+            }
             isPresented.toggle()
         } label: {
             FloatingAppearanceMiniButtonLabel(
                 title: isVertical ? "调色" : "调色盘",
-                systemImage: "paintpalette"
+                systemImage: "paintpalette",
+                showsChevron: true,
+                isAccent: false
             )
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-            palettePopover
+        .anchorPreference(key: FloatingPanelPaletteButtonBoundsKey.self, value: .bounds) { anchor in
+            anchor
         }
+        .zIndex(isPresented ? 22 : 0)
         .help("调整悬浮窗背景渐变")
-        .onChange(of: isPresented) { _, presented in
-            presented ? installDismissMonitors() : removeDismissMonitors(closeColorPanel: true)
-        }
-        .onDisappear {
-            removeDismissMonitors(closeColorPanel: true)
-        }
     }
+}
 
-    private var palettePopover: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("悬浮窗背景")
-                    .font(.system(size: 13, weight: .semibold))
-                Text("自定义渐变颜色、方向和类型")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
+struct FloatingPanelPaletteMenu: View {
+    @Binding var startHex: String
+    @Binding var endHex: String
+    @Binding var directionRaw: String
+    @Binding var styleRaw: String
+    let closeAction: () -> Void
+    @State private var scheduledClose: DispatchWorkItem?
 
-            HStack(spacing: 10) {
-                ColorPicker("起始色", selection: colorBinding($startHex), supportsOpacity: false)
-                ColorPicker("结束色", selection: colorBinding($endHex), supportsOpacity: false)
-            }
-            .font(.system(size: 11, weight: .medium))
+    var body: some View {
+        SettingsCalloutContainer(
+            title: "悬浮窗样式",
+            subtitle: nil,
+            systemImage: "paintpalette",
+            closeAction: closePaletteNow
+        ) {
+            SettingsCalloutSection("颜色") {
+                VStack(spacing: 0) {
+                    FloatingStyleControlRow(title: "起始色", systemImage: "circle.fill") {
+                        ColorPicker("", selection: colorBinding($startHex), supportsOpacity: false)
+                            .labelsHidden()
+                    }
 
-            Picker("方向", selection: normalizedDirectionBinding) {
-                ForEach(FloatingPanelGradientDirection.allCases) { direction in
-                    Text(direction.label).tag(direction.rawValue)
+                    FloatingStyleDivider()
+
+                    FloatingStyleControlRow(title: "结束色", systemImage: "circle.lefthalf.filled") {
+                        ColorPicker("", selection: colorBinding($endHex), supportsOpacity: false)
+                            .labelsHidden()
+                    }
                 }
             }
-            .pickerStyle(.menu)
 
-            Picker("类型", selection: normalizedStyleBinding) {
-                ForEach(FloatingPanelGradientStyle.allCases) { style in
-                    Text(style.label).tag(style.rawValue)
+            SettingsCalloutSection("渐变") {
+                VStack(spacing: 0) {
+                    FloatingStyleControlRow(title: "方向", systemImage: "arrow.up.right") {
+                        Picker("", selection: normalizedDirectionBinding) {
+                            ForEach(FloatingPanelGradientDirection.allCases) { direction in
+                                Text(direction.label).tag(direction.rawValue)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: 150, alignment: .trailing)
+                    }
+
+                    FloatingStyleDivider()
+
+                    FloatingStyleControlRow(title: "类型", systemImage: "swirl.circle.righthalf.filled") {
+                        Picker("", selection: normalizedStyleBinding) {
+                            ForEach(FloatingPanelGradientStyle.allCases) { style in
+                                Text(style.label).tag(style.rawValue)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(width: 168)
+                    }
                 }
             }
-            .pickerStyle(.segmented)
 
             Button {
                 startHex = FloatingPanelAppearance.defaultStartHex
@@ -684,12 +731,17 @@ struct FloatingPanelPaletteControl: View {
             } label: {
                 Label("恢复默认", systemImage: "arrow.counterclockwise")
                     .font(.system(size: 11, weight: .semibold))
+                    .frame(maxWidth: .infinity, minHeight: 28)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             .foregroundStyle(.secondary)
+            .background(AppTheme.calloutOptionBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(AppTheme.border.opacity(0.58), lineWidth: 1)
+            )
         }
-        .padding(14)
-        .frame(width: 260, alignment: .leading)
+        .frame(width: 338, alignment: .leading)
         .onChange(of: startHex) { _, _ in
             schedulePaletteClose(after: 0.85)
         }
@@ -701,6 +753,11 @@ struct FloatingPanelPaletteControl: View {
         }
         .onChange(of: styleRaw) { _, _ in
             closePaletteSoon()
+        }
+        .onDisappear {
+            scheduledClose?.cancel()
+            scheduledClose = nil
+            NSColorPanel.shared.close()
         }
     }
 
@@ -739,50 +796,6 @@ struct FloatingPanelPaletteControl: View {
         )
     }
 
-    private func installDismissMonitors() {
-        guard localClickMonitor == nil, globalClickMonitor == nil else { return }
-        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
-            if shouldDismissPalette(for: event) {
-                DispatchQueue.main.async {
-                    closePaletteNow()
-                }
-            }
-            return event
-        }
-        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
-            DispatchQueue.main.async {
-                closePaletteNow()
-            }
-        }
-    }
-
-    private func removeDismissMonitors(closeColorPanel: Bool) {
-        scheduledClose?.cancel()
-        scheduledClose = nil
-        if let localClickMonitor {
-            NSEvent.removeMonitor(localClickMonitor)
-            self.localClickMonitor = nil
-        }
-        if let globalClickMonitor {
-            NSEvent.removeMonitor(globalClickMonitor)
-            self.globalClickMonitor = nil
-        }
-        if closeColorPanel {
-            NSColorPanel.shared.close()
-        }
-    }
-
-    private func shouldDismissPalette(for event: NSEvent) -> Bool {
-        guard let window = event.window else { return true }
-        if window is NSColorPanel {
-            return false
-        }
-        if window is NSPanel {
-            return false
-        }
-        return true
-    }
-
     private func schedulePaletteClose(after delay: TimeInterval) {
         scheduledClose?.cancel()
         let work = DispatchWorkItem {
@@ -797,8 +810,45 @@ struct FloatingPanelPaletteControl: View {
     }
 
     private func closePaletteNow() {
-        isPresented = false
-        removeDismissMonitors(closeColorPanel: true)
+        scheduledClose?.cancel()
+        scheduledClose = nil
+        NSColorPanel.shared.close()
+        closeAction()
+    }
+}
+
+private struct FloatingStyleControlRow<Content: View>: View {
+    let title: String
+    let systemImage: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 15)
+
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 8)
+
+            content
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .frame(minHeight: 36)
+    }
+}
+
+private struct FloatingStyleDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(AppTheme.border.opacity(0.58))
+            .frame(height: 1)
+            .padding(.leading, 35)
     }
 }
 
@@ -813,7 +863,7 @@ struct DisplaySurfaceToggleButton: View {
         } label: {
             ZStack {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isOn ? AppTheme.accentBlue.opacity(0.14) : AppTheme.raisedBackground.opacity(0.72))
+                    .fill(isOn ? AppTheme.accentBlue.opacity(0.14) : AppTheme.calloutOptionBackground)
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .stroke(isOn ? AppTheme.accentBlue.opacity(0.24) : AppTheme.border.opacity(0.82), lineWidth: 1)
 
@@ -860,7 +910,7 @@ struct CompactFloatingSlider: View {
             Group {
                 if showsBackground {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(AppTheme.raisedBackground.opacity(0.56))
+                        .fill(AppTheme.calloutOptionBackground)
                 }
             }
         )

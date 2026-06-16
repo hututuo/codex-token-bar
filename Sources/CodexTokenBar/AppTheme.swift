@@ -7,7 +7,7 @@ enum AppTheme {
         dark: rgba(0.035, 0.045, 0.060)
     )
     static let panelBackground = adaptive(
-        light: rgba(1.000, 1.000, 1.000, 0.82),
+        light: rgba(1.000, 1.000, 1.000),
         dark: rgba(0.070, 0.085, 0.110)
     )
     static let panelBackgroundAlt = adaptive(
@@ -57,6 +57,26 @@ enum AppTheme {
     static let hoverBubble = adaptive(
         light: rgba(1.000, 1.000, 1.000, 0.960),
         dark: rgba(0.080, 0.100, 0.135, 0.960)
+    )
+    static let calloutBackground = adaptive(
+        light: rgba(1.000, 1.000, 1.000),
+        dark: rgba(0.055, 0.065, 0.085)
+    )
+    static let calloutOptionBackground = adaptive(
+        light: rgba(0.946, 0.954, 0.968),
+        dark: rgba(0.100, 0.118, 0.150)
+    )
+    static let calloutHeaderBackground = adaptive(
+        light: rgba(0.928, 0.940, 0.958),
+        dark: rgba(0.086, 0.102, 0.132)
+    )
+    static let solidControlBackground = adaptive(
+        light: rgba(0.972, 0.978, 0.988),
+        dark: rgba(0.115, 0.135, 0.170)
+    )
+    static let selectedControlBackground = adaptive(
+        light: rgba(0.880, 0.930, 1.000),
+        dark: rgba(0.125, 0.205, 0.315)
     )
 
     static func heatmapColor(ratio: Double) -> Color {
