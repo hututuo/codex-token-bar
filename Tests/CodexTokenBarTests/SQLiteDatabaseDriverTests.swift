@@ -1,0 +1,99 @@
+import XCTest
+@testable import CodexTokenBar
+
+final class SQLiteDatabaseDriverTests: XCTestCase {
+    private var temporaryDirectories: [URL] = []
+
+    override func tearDownWithError() throws {
+        for url in temporaryDirectories {
+            try? FileManager.default.removeItem(at: url)
+        }
+        temporaryDirectories.removeAll()
+        try super.tearDownWithError()
+    }
+
+    func testReadRowsAndBindingsRoundTripValues() throws {
+        let driver = SQLiteDatabaseDriver(url: try makeDatabaseURL(), enableWAL: true)
+        try driver.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, title TEXT NOT NULL, score REAL NOT NULL);")
+        try driver.execute(
+            "INSERT INTO events (title, score) VALUES (?, ?), (?, ?);",
+            bindings: [.text("alpha"), .double(1.5), .text("beta"), .double(2.25)]
+        )
+
+        let rows = try driver.readRows(
+            "SELECT id, title, score FROM events WHERE score > ? ORDER BY id;",
+            bindings: [.double(1.0)]
+        ) { statement in
+            (
+                id: statement.int(0),
+                title: statement.text(1),
+                score: statement.double(2)
+            )
+        }
+
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows[0].id, 1)
+        XCTAssertEqual(rows[0].title, "alpha")
+        XCTAssertEqual(rows[0].score ?? 0, 1.5, accuracy: 0.001)
+        XCTAssertEqual(rows[1].id, 2)
+        XCTAssertEqual(rows[1].title, "beta")
+        XCTAssertEqual(rows[1].score ?? 0, 2.25, accuracy: 0.001)
+    }
+
+    func testExecuteChangedRowsReturnsChangedCount() throws {
+        let driver = SQLiteDatabaseDriver(url: try makeDatabaseURL())
+        try driver.execute("CREATE TABLE counters (id INTEGER PRIMARY KEY, value INTEGER NOT NULL);")
+        try driver.execute("INSERT INTO counters (value) VALUES (1), (2), (3);")
+
+        let changed = try driver.executeChangedRows(
+            "UPDATE counters SET value = value + 10 WHERE value >= ?;",
+            bindings: [.int(2)]
+        )
+        let values = try driver.readRows("SELECT value FROM counters ORDER BY id;") { $0.int(0) ?? 0 }
+
+        XCTAssertEqual(changed, 2)
+        XCTAssertEqual(values, [1, 12, 13])
+    }
+
+    func testTransactionRollsBackOnError() throws {
+        enum TestError: Error {
+            case rollback
+        }
+
+        let driver = SQLiteDatabaseDriver(url: try makeDatabaseURL())
+        try driver.execute("CREATE TABLE items (name TEXT NOT NULL);")
+
+        XCTAssertThrowsError(
+            try driver.transaction { connection in
+                try connection.execute("INSERT INTO items (name) VALUES (?);", bindings: [.text("temporary")])
+                throw TestError.rollback
+            }
+        )
+
+        let count = try driver.readRows("SELECT count(*) FROM items;") { $0.int(0) ?? -1 }.first
+        XCTAssertEqual(count, 0)
+    }
+
+    func testPersistentReaderKeepsReadOnlyHandleReusable() throws {
+        let url = try makeDatabaseURL()
+        let writer = SQLiteDatabaseDriver(url: url)
+        try writer.execute("CREATE TABLE logs (id INTEGER PRIMARY KEY, body TEXT NOT NULL);")
+        try writer.execute("INSERT INTO logs (body) VALUES ('one');")
+
+        let reader = SQLitePersistentDatabaseReader(url: url, busyTimeoutMilliseconds: 100)
+        let firstRead = try reader.readRows("SELECT body FROM logs ORDER BY id;") { $0.text(0) ?? "" }
+        XCTAssertEqual(firstRead, ["one"])
+
+        try writer.execute("INSERT INTO logs (body) VALUES ('two');")
+        let secondRead = try reader.readRows("SELECT body FROM logs ORDER BY id;") { $0.text(0) ?? "" }
+        XCTAssertEqual(secondRead, ["one", "two"])
+    }
+
+    private func makeDatabaseURL() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexTokenBarTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        temporaryDirectories.append(directory)
+        return directory.appendingPathComponent("test.sqlite")
+    }
+}
