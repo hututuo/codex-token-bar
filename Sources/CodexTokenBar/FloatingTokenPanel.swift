@@ -56,6 +56,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     private var fastFollowUntil: Date?
     private var accessibilityObserver: AXObserver?
     private var observedAccessibilityWindow: AXUIElement?
+    private var activeLockedTargetDrag: FloatingPanelLockedTargetDrag?
     private var pendingLockedOriginToPersist: NSPoint?
     private var lockedOriginPersistTimer: Timer?
     private var lastLockedOriginPersistAt = Date.distantPast
@@ -89,10 +90,19 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             name: NSWorkspace.didActivateApplicationNotification,
             object: nil
         )
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
             let location = NSEvent.mouseLocation
             Task { @MainActor in
-                self?.recordExternalMouseClick(at: location)
+                switch event.type {
+                case .leftMouseDown:
+                    self?.recordExternalMouseClick(at: location)
+                case .leftMouseDragged:
+                    self?.recordExternalMouseDrag(at: location)
+                case .leftMouseUp:
+                    self?.finishExternalMouseDrag(at: location)
+                default:
+                    break
+                }
             }
         }
     }
@@ -227,27 +237,146 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
 
     private func recordExternalMouseClick(at location: NSPoint) {
         if let panel, panel.frame.contains(location) {
+            activeLockedTargetDrag = nil
             return
         }
         lastExternalClickLocation = location
         lastExternalClickAt = Date()
-        if let clickedAXTarget = accessibilityTarget(at: location) {
-            lastExternalClickAXWindow = clickedAXTarget.window
-            lastExternalClickOwnerPID = clickedAXTarget.ownerPID
-            lastExternalActivePID = clickedAXTarget.ownerPID
+        let clickedAXTarget = accessibilityTarget(at: location)
+        if let target = clickedAXTarget {
+            lastExternalClickAXWindow = target.window
+            lastExternalClickOwnerPID = target.ownerPID
+            lastExternalActivePID = target.ownerPID
         } else {
             lastExternalClickAXWindow = nil
         }
-        if let clickedWindow = visibleWindows(relaxed: true).first(where: { windowContainsClick(location, window: $0) }) {
-            lastExternalClickWindowNumber = clickedWindow.windowNumber
-            lastExternalClickOwnerPID = clickedWindow.ownerPID
-            lastExternalActivePID = clickedWindow.ownerPID
+        let clickedWindow = visibleWindows(relaxed: true).first(where: { windowContainsClick(location, window: $0) })
+        if let window = clickedWindow {
+            lastExternalClickWindowNumber = window.windowNumber
+            lastExternalClickOwnerPID = window.ownerPID
+            lastExternalActivePID = window.ownerPID
         } else {
             lastExternalClickWindowNumber = nil
             if lastExternalClickAXWindow == nil {
                 lastExternalClickOwnerPID = nil
             }
         }
+        beginLockedTargetDragIfNeeded(
+            at: location,
+            clickedWindow: clickedWindow,
+            clickedAXTarget: clickedAXTarget
+        )
+    }
+
+    private func recordExternalMouseDrag(at location: NSPoint) {
+        guard activeLockedTargetDrag != nil else { return }
+        fastFollowUntil = Date().addingTimeInterval(fastFollowGracePeriod)
+        scheduleFollowTimer(interval: fastFollowInterval)
+        followLockedTargetDrag(at: location)
+    }
+
+    private func finishExternalMouseDrag(at location: NSPoint) {
+        guard activeLockedTargetDrag != nil else { return }
+        followLockedTargetDrag(at: location)
+        activeLockedTargetDrag = nil
+        refreshLockedAnchorOffsetForCurrentFrame()
+    }
+
+    private func beginLockedTargetDragIfNeeded(
+        at location: NSPoint,
+        clickedWindow: FloatingPanelTargetWindow?,
+        clickedAXTarget: FloatingPanelAccessibilityTarget?
+    ) {
+        activeLockedTargetDrag = nil
+        guard let panel, let anchor = lockedAnchor else { return }
+        let clickedLockedTarget =
+            (clickedWindow.map { targetWindow($0, matches: anchor) } ?? false) ||
+            (clickedAXTarget.map { accessibilityTarget($0, matches: anchor) } ?? false)
+        guard clickedLockedTarget, let followTarget = targetFrame(matching: anchor) else { return }
+
+        activeLockedTargetDrag = FloatingPanelLockedTargetDrag(
+            anchor: anchor,
+            mouseStart: location,
+            panelOriginStart: panel.frame.origin,
+            targetFrameStart: followTarget.frame
+        )
+    }
+
+    @discardableResult
+    private func followLockedTargetDrag(at location: NSPoint) -> Bool {
+        guard let panel, let drag = activeLockedTargetDrag, let anchor = lockedAnchor else { return false }
+        guard drag.matches(anchor) else {
+            activeLockedTargetDrag = nil
+            return false
+        }
+        guard let followTarget = targetFrame(matching: anchor) else {
+            activeLockedTargetDrag = nil
+            return false
+        }
+
+        let delta = NSPoint(
+            x: location.x - drag.mouseStart.x,
+            y: location.y - drag.mouseStart.y
+        )
+        let mouseDrivenOrigin = NSPoint(
+            x: drag.panelOriginStart.x + delta.x,
+            y: drag.panelOriginStart.y + delta.y
+        )
+        let targetDrivenOrigin = NSPoint(
+            x: followTarget.frame.minX + anchor.offset.x,
+            y: followTarget.frame.minY + anchor.offset.y
+        )
+        let slip = NSPoint(
+            x: mouseDrivenOrigin.x - targetDrivenOrigin.x,
+            y: mouseDrivenOrigin.y - targetDrivenOrigin.y
+        )
+        let boundedSlip = boundedDragSlip(
+            slip,
+            drag: drag,
+            targetFrame: followTarget.frame,
+            panel: panel
+        )
+        let proposedOrigin = NSPoint(
+            x: targetDrivenOrigin.x + boundedSlip.x,
+            y: targetDrivenOrigin.y + boundedSlip.y
+        )
+        let frame = anchoredPanelFrame(
+            for: panel,
+            size: panel.frame.size,
+            topLeft: NSPoint(x: proposedOrigin.x, y: proposedOrigin.y + panel.frame.height)
+        )
+        return movePanelIfNeeded(panel, to: frame.origin, persist: true)
+    }
+
+    private func boundedDragSlip(
+        _ slip: NSPoint,
+        drag: FloatingPanelLockedTargetDrag,
+        targetFrame: NSRect,
+        panel: NSPanel
+    ) -> NSPoint {
+        guard let screenFrame = visibleScreenFrame(for: targetFrame, fallback: panel) else {
+            return slip
+        }
+
+        let clickPointInTarget = NSPoint(
+            x: targetFrame.minX + drag.clickOffsetInTarget.x,
+            y: targetFrame.minY + drag.clickOffsetInTarget.y
+        )
+        var bounded = slip
+
+        if bounded.x > 0 {
+            bounded.x = min(bounded.x, max(0, screenFrame.maxX - clickPointInTarget.x))
+        } else if bounded.x < 0 {
+            bounded.x = max(bounded.x, min(0, screenFrame.minX - clickPointInTarget.x))
+        }
+
+        if bounded.y > 0 {
+            bounded.y = min(bounded.y, max(0, screenFrame.maxY - clickPointInTarget.y))
+        } else if bounded.y < 0 {
+            bounded.y = max(bounded.y, min(0, screenFrame.minY - clickPointInTarget.y))
+        }
+
+        return bounded
     }
 
     private func position(_ panel: NSPanel) {
@@ -301,6 +430,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         } else {
             lockedAnchor = nil
             lockTargetDescription = nil
+            activeLockedTargetDrag = nil
             stopFollowingAnchor()
         }
         refreshFloatingPanelLockStatus()
@@ -360,6 +490,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     private func stopFollowingAnchor() {
+        activeLockedTargetDrag = nil
         followTimer?.invalidate()
         followTimer = nil
         followTimerInterval = nil
@@ -433,22 +564,32 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     @discardableResult
     private func followAnchorIfNeeded() -> Bool {
         guard let panel, let anchor = lockedAnchor else { return false }
+        if activeLockedTargetDrag != nil {
+            return followLockedTargetDrag(at: NSEvent.mouseLocation)
+        }
         guard let targetFrame = targetFrame(matching: anchor) else { return false }
         let origin = NSPoint(
             x: targetFrame.frame.minX + anchor.offset.x,
             y: targetFrame.frame.minY + anchor.offset.y
         )
         let frame = anchoredPanelFrame(for: panel, size: panel.frame.size, topLeft: NSPoint(x: origin.x, y: origin.y + panel.frame.height))
-        if abs(frame.origin.x - panel.frame.origin.x) > 0.5 || abs(frame.origin.y - panel.frame.origin.y) > 0.5 {
-            isProgrammaticPanelMove = true
-            panel.setFrameOrigin(frame.origin)
-            DispatchQueue.main.async { [weak self] in
-                self?.isProgrammaticPanelMove = false
-            }
-            saveLockedOrigin(frame.origin, throttled: true)
-            return true
+        return movePanelIfNeeded(panel, to: frame.origin, persist: true)
+    }
+
+    @discardableResult
+    private func movePanelIfNeeded(_ panel: NSPanel, to origin: NSPoint, persist: Bool) -> Bool {
+        guard abs(origin.x - panel.frame.origin.x) > 0.5 || abs(origin.y - panel.frame.origin.y) > 0.5 else {
+            return false
         }
-        return false
+        isProgrammaticPanelMove = true
+        panel.setFrameOrigin(origin)
+        DispatchQueue.main.async { [weak self] in
+            self?.isProgrammaticPanelMove = false
+        }
+        if persist {
+            saveLockedOrigin(origin, throttled: true)
+        }
+        return true
     }
 
     private func findTargetWindow(near panelFrame: NSRect) -> FloatingPanelTargetWindow? {
@@ -526,9 +667,46 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         return -((dx * dx) + (dy * dy))
     }
 
+    private func targetWindow(_ window: FloatingPanelTargetWindow, matches anchor: FloatingPanelWindowAnchor) -> Bool {
+        if let windowNumber = anchor.windowNumber {
+            return window.windowNumber == windowNumber
+        }
+        guard window.ownerPID == anchor.ownerPID else { return false }
+        if !anchor.windowTitle.isEmpty {
+            return window.title == anchor.windowTitle
+        }
+        if let bundleID = anchor.ownerBundleID {
+            return window.ownerBundleID == bundleID
+        }
+        return true
+    }
+
+    private func accessibilityTarget(_ target: FloatingPanelAccessibilityTarget, matches anchor: FloatingPanelWindowAnchor) -> Bool {
+        guard target.ownerPID == anchor.ownerPID else { return false }
+        if !anchor.windowTitle.isEmpty {
+            return target.title == anchor.windowTitle
+        }
+        if let bundleID = anchor.ownerBundleID {
+            return target.ownerBundleID == bundleID
+        }
+        return true
+    }
+
     private func overlapArea(_ lhs: NSRect, _ rhs: NSRect) -> CGFloat {
         let intersection = lhs.intersection(rhs)
         return intersection.isNull ? 0 : intersection.width * intersection.height
+    }
+
+    private func visibleScreenFrame(for rect: NSRect, fallback panel: NSPanel) -> NSRect? {
+        let center = NSPoint(x: rect.midX, y: rect.midY)
+        if let containingScreen = NSScreen.screens.first(where: { $0.frame.contains(center) }) {
+            return containingScreen.visibleFrame
+        }
+
+        let overlappingScreen = NSScreen.screens.max { lhs, rhs in
+            overlapArea(lhs.frame, rect) < overlapArea(rhs.frame, rect)
+        }
+        return overlappingScreen?.visibleFrame ?? panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
     }
 
     private func targetFrame(matching anchor: FloatingPanelWindowAnchor) -> FloatingPanelFollowTarget? {
@@ -2233,6 +2411,42 @@ private struct FloatingPanelWindowAnchor {
     let targetDescription: String
     let offset: NSPoint
     let accessibilityWindow: AXUIElement?
+}
+
+private struct FloatingPanelLockedTargetDrag {
+    let windowNumber: Int?
+    let ownerPID: pid_t
+    let ownerBundleID: String?
+    let windowTitle: String
+    let mouseStart: NSPoint
+    let panelOriginStart: NSPoint
+    let clickOffsetInTarget: NSPoint
+
+    init(anchor: FloatingPanelWindowAnchor, mouseStart: NSPoint, panelOriginStart: NSPoint, targetFrameStart: NSRect) {
+        self.windowNumber = anchor.windowNumber
+        self.ownerPID = anchor.ownerPID
+        self.ownerBundleID = anchor.ownerBundleID
+        self.windowTitle = anchor.windowTitle
+        self.mouseStart = mouseStart
+        self.panelOriginStart = panelOriginStart
+        self.clickOffsetInTarget = NSPoint(
+            x: min(max(mouseStart.x - targetFrameStart.minX, 0), targetFrameStart.width),
+            y: min(max(mouseStart.y - targetFrameStart.minY, 0), targetFrameStart.height)
+        )
+    }
+
+    func matches(_ anchor: FloatingPanelWindowAnchor) -> Bool {
+        if windowNumber != anchor.windowNumber {
+            return false
+        }
+        if ownerPID != anchor.ownerPID {
+            return false
+        }
+        if ownerBundleID != anchor.ownerBundleID {
+            return false
+        }
+        return windowTitle == anchor.windowTitle
+    }
 }
 
 private enum FloatingPanelScreenGeometry {
