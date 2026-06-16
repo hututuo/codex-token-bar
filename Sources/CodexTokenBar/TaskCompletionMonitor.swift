@@ -16,7 +16,8 @@ final class TaskCompletionMonitor: ObservableObject {
     private var unreadThreadState = CodexUnreadThreadState()
     private var hasCodexUnreadState = false
     private var timer: Timer?
-    private var isPolling = false
+    private var pollTask: Task<Void, Never>?
+    private var pollGeneration = 0
     private var seeded = false
     private var monitorStartedAt = Date()
 
@@ -30,6 +31,9 @@ final class TaskCompletionMonitor: ObservableObject {
         self.dataSource = dataSource
 
         if oldPath != newPath {
+            pollGeneration += 1
+            pollTask?.cancel()
+            pollTask = nil
             fileStates.removeAll()
             seeded = false
             monitorStartedAt = Date()
@@ -75,41 +79,62 @@ final class TaskCompletionMonitor: ObservableObject {
     }
 
     private func poll() {
-        guard !isPolling, let dataSource else {
+        guard pollTask == nil, let dataSource else {
             return
         }
 
-        isPolling = true
+        pollGeneration += 1
+        let generation = pollGeneration
         let root = dataSource.sessionsRoot
         let previousStates = fileStates
         let seedMode = !seeded
         let seedCutoff = monitorStartedAt.addingTimeInterval(-liveSeedWindow)
         let codexHome = dataSource.codexHome
 
-        Task { [weak self] in
-            let result = await Task.detached(priority: .utility) {
-                TaskCompletionScanner.scan(
-                    sessionsRoot: root,
-                    previousStates: previousStates,
-                    seedMode: seedMode,
-                    seedCutoff: seedCutoff
-                )
-            }.value
+        pollTask = Task { [weak self] in
             let unreadThreadRead = await Task.detached(priority: .utility) {
                 CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)
             }.value
+            let result: TaskCompletionScanResult?
+            if case .available = unreadThreadRead {
+                result = nil
+            } else {
+                result = await Task.detached(priority: .utility) {
+                    TaskCompletionScanner.scan(
+                        sessionsRoot: root,
+                        previousStates: previousStates,
+                        seedMode: seedMode,
+                        seedCutoff: seedCutoff
+                    )
+                }.value
+            }
 
             await MainActor.run {
-                self?.apply(result, unreadThreadRead: unreadThreadRead)
+                guard let self else { return }
+                guard self.pollGeneration == generation else { return }
+                self.pollTask = nil
+                self.apply(result, unreadThreadRead: unreadThreadRead)
             }
         }
     }
 
-    private func apply(_ result: TaskCompletionScanResult, unreadThreadRead: CodexUnreadThreadReadResult) {
+    private func apply(_ result: TaskCompletionScanResult?, unreadThreadRead: CodexUnreadThreadReadResult) {
+        applyCodexUnreadRead(unreadThreadRead)
+
+        if hasCodexUnreadState {
+            completedTaskThreadIDs = completedTaskThreadIDs.filter { _, threadID in
+                unreadThreadState.threadIDs.contains(threadID)
+            }
+        }
+
+        guard let result else {
+            recomputeUnreadThreadCount()
+            updateStatusText(fileCount: fileStates.isEmpty ? nil : fileStates.count)
+            return
+        }
+
         fileStates = result.states
         seeded = true
-        isPolling = false
-        applyCodexUnreadRead(unreadThreadRead)
 
         if result.fileCount == 0 {
             statusText = "未发现会话日志"

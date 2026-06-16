@@ -39,6 +39,7 @@ final class LiveRateMonitor: ObservableObject {
     private var lastPollProcessedRows = false
     private var lastSnapshotPublishAt: TimeInterval = 0
     private var lastFallbackPollAt: TimeInterval = 0
+    private var pollInProgress = false
     private var logReader: LogDatabaseReader?
     private var selectedRate = RateAccumulator(resetsOnNewItem: false)
     private var totalRate = RateAccumulator(resetsOnNewItem: false)
@@ -246,6 +247,14 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     private func poll() async {
+        guard !pollInProgress else {
+            return
+        }
+        pollInProgress = true
+        defer {
+            pollInProgress = false
+        }
+
         lastPollProcessedRows = false
         guard let source = dataSource ?? resolver.resolve() else { return }
         setDataSource(source)
