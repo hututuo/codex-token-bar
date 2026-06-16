@@ -368,8 +368,11 @@ struct AccountQuotaSnapshot: Equatable {
     }
 
     var compactResetCreditSummary: String? {
+        guard resetCreditsAvailableCount != nil || !resetCredits.isEmpty else {
+            return "获取失败"
+        }
         let count = availableResetCreditCount
-        guard count > 0 else { return nil }
+        guard count > 0 else { return "0 张重置卡" }
         return "\(count) 张重置卡"
     }
 
@@ -846,7 +849,7 @@ private enum AccountQuotaReader {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 8
+        request.timeoutInterval = 14
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("CodexTokenBar", forHTTPHeaderField: "User-Agent")
@@ -874,7 +877,7 @@ private enum AccountQuotaReader {
         }
         task.resume()
 
-        if semaphore.wait(timeout: .now() + 8.5) == .timedOut {
+        if semaphore.wait(timeout: .now() + 14.5) == .timedOut {
             task.cancel()
         }
         return box.output

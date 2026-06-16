@@ -76,7 +76,7 @@ struct AccountQuotaStrip: View {
     }
 
     private var shouldShowResetCredits: Bool {
-        snapshot.availableResetCreditCount > 0 || !snapshot.resetCredits.isEmpty
+        snapshot.isAvailable || snapshot.status.contains("失败") || snapshot.resetCreditsAvailableCount != nil || !snapshot.resetCredits.isEmpty
     }
 
     private var helpText: String {
@@ -101,7 +101,7 @@ private struct AccountQuotaResetCreditButton: View {
     @Binding var isPresented: Bool
 
     private var summaryText: String {
-        snapshot.compactResetCreditSummary ?? "无可用重置"
+        snapshot.compactResetCreditSummary ?? "重置卡"
     }
 
     var body: some View {
@@ -157,10 +157,11 @@ struct AccountQuotaResetCreditDetailView: View {
             title: "重置卡详情",
             subtitle: "共 \(visibleCredits.count) 张明细 · 可用 \(snapshot.availableResetCreditCount) 张",
             systemImage: "bolt.clock.fill",
+            imageResourceName: "ResetCreditIcon",
             closeAction: onClose
         ) {
             if visibleCredits.isEmpty {
-                Text(snapshot.availableResetCreditCount > 0 ? "已读到可用数量，但暂时没有单卡明细。" : "还没有读取到重置卡。")
+                Text(snapshot.availableResetCreditCount > 0 ? "已读到可用数量，但暂时没有单卡明细。" : "暂时没有读到重置卡明细。可能是网络抖动，点击主页面“立即刷新”重试。")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

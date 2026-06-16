@@ -1,6 +1,22 @@
 import AppKit
 import SwiftUI
 
+struct FloatingUnreadEffectButtonBoundsKey: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
+struct FloatingPanelPaletteButtonBoundsKey: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
 private enum LiveRatePanelLayout {
     static let contentHeight: CGFloat = 106
     static let contentSpacing: CGFloat = 12
@@ -19,6 +35,8 @@ struct LiveRateView: View {
     @Binding var floatingPanelGradientDirection: String
     @Binding var floatingPanelGradientStyle: String
     @Binding var floatingPanelUnreadEffect: String
+    @Binding var showingPaletteMenu: Bool
+    @Binding var showingUnreadEffectMenu: Bool
 
     private var primarySnapshot: LiveRateSnapshot {
         monitor.totalSnapshot
@@ -59,7 +77,9 @@ struct LiveRateView: View {
                         floatingPanelGradientEndHex: $floatingPanelGradientEndHex,
                         floatingPanelGradientDirection: $floatingPanelGradientDirection,
                         floatingPanelGradientStyle: $floatingPanelGradientStyle,
-                        floatingPanelUnreadEffect: $floatingPanelUnreadEffect
+                        floatingPanelUnreadEffect: $floatingPanelUnreadEffect,
+                        showingPaletteMenu: $showingPaletteMenu,
+                        showingUnreadEffectMenu: $showingUnreadEffectMenu
                     )
                     .frame(width: columnWidth, height: LiveRatePanelLayout.contentHeight)
                 }
@@ -229,6 +249,8 @@ struct LiveRateControls: View {
     @Binding var floatingPanelGradientDirection: String
     @Binding var floatingPanelGradientStyle: String
     @Binding var floatingPanelUnreadEffect: String
+    @Binding var showingPaletteMenu: Bool
+    @Binding var showingUnreadEffectMenu: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -262,7 +284,9 @@ struct LiveRateControls: View {
                 endHex: $floatingPanelGradientEndHex,
                 directionRaw: $floatingPanelGradientDirection,
                 styleRaw: $floatingPanelGradientStyle,
-                unreadEffectRaw: $floatingPanelUnreadEffect
+                unreadEffectRaw: $floatingPanelUnreadEffect,
+                isPaletteMenuPresented: $showingPaletteMenu,
+                isUnreadEffectMenuPresented: $showingUnreadEffectMenu
             )
         }
         .controlSize(.small)
@@ -288,6 +312,8 @@ struct FloatingPanelAppearanceSettings: View {
     @Binding var directionRaw: String
     @Binding var styleRaw: String
     @Binding var unreadEffectRaw: String
+    @Binding var isPaletteMenuPresented: Bool
+    @Binding var isUnreadEffectMenuPresented: Bool
 
     var body: some View {
         HStack(alignment: .center, spacing: 9) {
@@ -296,11 +322,21 @@ struct FloatingPanelAppearanceSettings: View {
                     startHex: $startHex,
                     endHex: $endHex,
                     directionRaw: $directionRaw,
-                    styleRaw: $styleRaw
+                    styleRaw: $styleRaw,
+                    isPresented: $isPaletteMenuPresented,
+                    willOpen: {
+                        isUnreadEffectMenuPresented = false
+                    }
                 )
                 .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
 
-                FloatingUnreadEffectPicker(selection: normalizedUnreadEffectBinding)
+                FloatingUnreadEffectPicker(
+                    selection: normalizedUnreadEffectBinding,
+                    isPresented: $isUnreadEffectMenuPresented,
+                    willOpen: {
+                        isPaletteMenuPresented = false
+                    }
+                )
                     .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
             }
             .frame(width: 76, alignment: .leading)
@@ -344,6 +380,7 @@ struct FloatingPanelAppearanceSettings: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(AppTheme.border.opacity(0.56), lineWidth: 1)
         )
+        .zIndex(isUnreadEffectMenuPresented ? 50 : 0)
     }
 
     private var normalizedUnreadEffectBinding: Binding<String> {
@@ -355,6 +392,7 @@ struct FloatingPanelAppearanceSettings: View {
             set: { unreadEffectRaw = $0 }
         )
     }
+
 }
 
 private struct FloatingAppearanceMiniButtonLabel: View {
@@ -403,13 +441,14 @@ private struct FloatingAppearanceMiniButtonLabel: View {
 
 private struct FloatingUnreadEffectPicker: View {
     @Binding var selection: String
-    @State private var isPresented = false
-    @State private var localClickMonitor: Any?
-    @State private var globalClickMonitor: Any?
-    @State private var keyDownMonitor: Any?
+    @Binding var isPresented: Bool
+    let willOpen: () -> Void
 
     var body: some View {
         Button {
+            if !isPresented {
+                willOpen()
+            }
             isPresented.toggle()
         } label: {
             FloatingAppearanceMiniButtonLabel(
@@ -422,38 +461,32 @@ private struct FloatingUnreadEffectPicker: View {
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(alignment: .topLeading) {
-            if isPresented {
-                unreadEffectMenu
-                    .offset(y: 24)
-                    .zIndex(20)
-                    .transition(.identity)
-            }
+        .anchorPreference(key: FloatingUnreadEffectButtonBoundsKey.self, value: .bounds) { anchor in
+            anchor
         }
         .zIndex(isPresented ? 20 : 0)
         .help("选择未读时悬浮窗背景动效")
-        .onChange(of: isPresented) { _, presented in
-            presented ? installDismissMonitors() : removeDismissMonitors()
-        }
-        .onDisappear {
-            removeDismissMonitors()
-        }
     }
+}
 
-    private var unreadEffectMenu: some View {
+struct FloatingUnreadEffectMenu: View {
+    @Binding var selection: String
+    let closeAction: () -> Void
+
+    var body: some View {
         SettingsCalloutContainer(
             title: "提醒样式",
             subtitle: nil,
-            systemImage: "bell.badge"
+            systemImage: "bell.badge",
+            closeAction: closeAction
         ) {
-            SettingsCalloutSection("触发条件") {
-                Text("有完成的会话还没在 Codex 里点开时，悬浮窗会用这里选择的样式提醒。")
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 9)
-            }
+            Text("有完成的会话还没点开时，悬浮窗用选中的样式提醒。")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 9)
+                .background(AppTheme.calloutOptionBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             SettingsCalloutSection("样式") {
                 VStack(spacing: 5) {
@@ -464,7 +497,6 @@ private struct FloatingUnreadEffectPicker: View {
                 .padding(6)
             }
         }
-        .frame(width: 282, alignment: .leading)
     }
 
     private func unreadEffectOption(_ effect: FloatingPanelUnreadEffect) -> some View {
@@ -472,7 +504,7 @@ private struct FloatingUnreadEffectPicker: View {
         return Button {
             selection = effect.rawValue
             triggerUnreadEffectPreview(effect)
-            isPresented = false
+            closeAction()
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: unreadEffectIcon(effect))
@@ -559,45 +591,6 @@ private struct FloatingUnreadEffectPicker: View {
             }
         }
     }
-
-    private func installDismissMonitors() {
-        guard localClickMonitor == nil, globalClickMonitor == nil, keyDownMonitor == nil else { return }
-        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                isPresented = false
-            }
-            return event
-        }
-        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                isPresented = false
-            }
-        }
-        keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            if event.keyCode == 53 {
-                DispatchQueue.main.async {
-                    isPresented = false
-                }
-                return nil
-            }
-            return event
-        }
-    }
-
-    private func removeDismissMonitors() {
-        if let localClickMonitor {
-            NSEvent.removeMonitor(localClickMonitor)
-            self.localClickMonitor = nil
-        }
-        if let globalClickMonitor {
-            NSEvent.removeMonitor(globalClickMonitor)
-            self.globalClickMonitor = nil
-        }
-        if let keyDownMonitor {
-            NSEvent.removeMonitor(keyDownMonitor)
-            self.keyDownMonitor = nil
-        }
-    }
 }
 
 private struct LiveRateResetButton: View {
@@ -641,14 +634,15 @@ struct FloatingPanelPaletteControl: View {
     @Binding var endHex: String
     @Binding var directionRaw: String
     @Binding var styleRaw: String
+    @Binding var isPresented: Bool
     var isVertical = false
-    @State private var isPresented = false
-    @State private var globalClickMonitor: Any?
-    @State private var keyDownMonitor: Any?
-    @State private var scheduledClose: DispatchWorkItem?
+    let willOpen: () -> Void
 
     var body: some View {
         Button {
+            if !isPresented {
+                willOpen()
+            }
             isPresented.toggle()
         } label: {
             FloatingAppearanceMiniButtonLabel(
@@ -661,25 +655,23 @@ struct FloatingPanelPaletteControl: View {
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(alignment: .topLeading) {
-            if isPresented {
-                palettePopover
-                    .offset(y: 24)
-                    .zIndex(22)
-                    .transition(.identity)
-            }
+        .anchorPreference(key: FloatingPanelPaletteButtonBoundsKey.self, value: .bounds) { anchor in
+            anchor
         }
         .zIndex(isPresented ? 22 : 0)
         .help("调整悬浮窗背景渐变")
-        .onChange(of: isPresented) { _, presented in
-            presented ? installDismissMonitors() : removeDismissMonitors(closeColorPanel: true)
-        }
-        .onDisappear {
-            removeDismissMonitors(closeColorPanel: true)
-        }
     }
+}
 
-    private var palettePopover: some View {
+struct FloatingPanelPaletteMenu: View {
+    @Binding var startHex: String
+    @Binding var endHex: String
+    @Binding var directionRaw: String
+    @Binding var styleRaw: String
+    let closeAction: () -> Void
+    @State private var scheduledClose: DispatchWorkItem?
+
+    var body: some View {
         SettingsCalloutContainer(
             title: "悬浮窗样式",
             subtitle: nil,
@@ -762,6 +754,11 @@ struct FloatingPanelPaletteControl: View {
         .onChange(of: styleRaw) { _, _ in
             closePaletteSoon()
         }
+        .onDisappear {
+            scheduledClose?.cancel()
+            scheduledClose = nil
+            NSColorPanel.shared.close()
+        }
     }
 
     private var normalizedDirectionBinding: Binding<String> {
@@ -799,40 +796,6 @@ struct FloatingPanelPaletteControl: View {
         )
     }
 
-    private func installDismissMonitors() {
-        guard globalClickMonitor == nil, keyDownMonitor == nil else { return }
-        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
-            DispatchQueue.main.async {
-                closePaletteNow()
-            }
-        }
-        keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            if event.keyCode == 53 {
-                DispatchQueue.main.async {
-                    closePaletteNow()
-                }
-                return nil
-            }
-            return event
-        }
-    }
-
-    private func removeDismissMonitors(closeColorPanel: Bool) {
-        scheduledClose?.cancel()
-        scheduledClose = nil
-        if let globalClickMonitor {
-            NSEvent.removeMonitor(globalClickMonitor)
-            self.globalClickMonitor = nil
-        }
-        if let keyDownMonitor {
-            NSEvent.removeMonitor(keyDownMonitor)
-            self.keyDownMonitor = nil
-        }
-        if closeColorPanel {
-            NSColorPanel.shared.close()
-        }
-    }
-
     private func schedulePaletteClose(after delay: TimeInterval) {
         scheduledClose?.cancel()
         let work = DispatchWorkItem {
@@ -847,8 +810,10 @@ struct FloatingPanelPaletteControl: View {
     }
 
     private func closePaletteNow() {
-        isPresented = false
-        removeDismissMonitors(closeColorPanel: true)
+        scheduledClose?.cancel()
+        scheduledClose = nil
+        NSColorPanel.shared.close()
+        closeAction()
     }
 }
 

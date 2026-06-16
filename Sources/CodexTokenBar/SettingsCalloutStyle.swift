@@ -1,9 +1,11 @@
+import AppKit
 import SwiftUI
 
 struct SettingsCalloutContainer<Content: View>: View {
     let title: String
     let subtitle: String?
     let systemImage: String
+    var imageResourceName: String? = nil
     var accent: Color = AppTheme.accentBlue
     var closeAction: (() -> Void)?
     @ViewBuilder var content: Content
@@ -11,14 +13,11 @@ struct SettingsCalloutContainer<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(accent.opacity(0.13))
-                    Image(systemName: systemImage)
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(accent)
-                }
-                .frame(width: 34, height: 34)
+                SettingsCalloutHeaderIcon(
+                    systemImage: systemImage,
+                    imageResourceName: imageResourceName,
+                    accent: accent
+                )
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
@@ -50,21 +49,65 @@ struct SettingsCalloutContainer<Content: View>: View {
             .padding(10)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(AppTheme.calloutOptionBackground)
+                    .fill(AppTheme.calloutHeaderBackground)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(AppTheme.borderStrong.opacity(0.58), lineWidth: 1)
             )
 
             content
         }
         .padding(14)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(AppTheme.calloutBackground)
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(AppTheme.pageBackground)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(AppTheme.calloutBackground)
+            }
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(AppTheme.borderStrong.opacity(0.42), lineWidth: 1)
+                .stroke(AppTheme.borderStrong.opacity(0.78), lineWidth: 1)
         )
         .compositingGroup()
+    }
+}
+
+private struct SettingsCalloutHeaderIcon: View {
+    let systemImage: String
+    let imageResourceName: String?
+    let accent: Color
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(accent.opacity(0.13))
+
+            if let imageResourceName,
+               let image = Self.loadImage(named: imageResourceName) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(3)
+            } else {
+                Image(systemName: systemImage)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(accent)
+            }
+        }
+        .frame(width: 34, height: 34)
+    }
+
+    private static func loadImage(named name: String) -> NSImage? {
+        if let image = NSImage(named: NSImage.Name(name)) {
+            return image
+        }
+        guard let url = Bundle.main.url(forResource: name, withExtension: "png") else {
+            return nil
+        }
+        return NSImage(contentsOf: url)
     }
 }
 
@@ -95,7 +138,7 @@ struct SettingsCalloutSection<Content: View>: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(AppTheme.border.opacity(0.62), lineWidth: 1)
+                    .stroke(AppTheme.borderStrong.opacity(0.58), lineWidth: 1)
             )
         }
     }
