@@ -196,18 +196,21 @@ private struct AccountQuotaResetCreditRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("#\(index)")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(AppTheme.accentBlue)
-                    .monospacedDigit()
-                    .frame(width: 30, height: 22)
-                    .background(AppTheme.accentBlue.opacity(0.11), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            HStack(alignment: .center, spacing: 10) {
+                AccountQuotaResetCreditAvatarView(credit: credit)
 
-                Text(credit.titleText)
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(credit.titleText)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Text("第 \(index) 张 · \(credit.profileUserText)")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                }
 
                 Spacer(minLength: 4)
 
@@ -225,7 +228,7 @@ private struct AccountQuotaResetCreditRow: View {
                 SettingsCalloutRow(title: "标题", value: credit.titleText, systemImage: "tag")
                 SettingsCalloutRow(title: "获得原因", value: credit.descriptionSummaryText, systemImage: "text.alignleft")
                 SettingsCalloutRow(title: "关联用户", value: credit.profileUserText, systemImage: "person.crop.circle", isEmphasized: credit.profileUserText != "未提供关联用户")
-                SettingsCalloutRow(title: "头像链接", value: credit.profileImageSummaryText, systemImage: "photo")
+                SettingsCalloutRow(title: "头像", value: credit.profileImageSummaryText, systemImage: "photo")
                 SettingsCalloutRow(title: "发放时间", value: credit.detailedGrantedText, systemImage: "gift")
                 SettingsCalloutRow(title: "到期时间", value: credit.detailedExpiryText, systemImage: "calendar", isEmphasized: credit.isAvailable)
                 SettingsCalloutRow(title: "剩余时间", value: credit.remainingTimeText, systemImage: "hourglass", isEmphasized: credit.isAvailable)
@@ -242,6 +245,50 @@ private struct AccountQuotaResetCreditRow: View {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .stroke(AppTheme.border.opacity(0.65), lineWidth: 1)
         )
+    }
+}
+
+private struct AccountQuotaResetCreditAvatarView: View {
+    let credit: AccountQuotaResetCredit
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(AppTheme.accentBlue.opacity(0.12))
+
+            if let url = credit.profileImageDisplayURL {
+                AsyncImage(url: url, transaction: Transaction(animation: .easeInOut(duration: 0.18))) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    case .failure:
+                        fallback
+                    case .empty:
+                        ProgressView()
+                            .controlSize(.small)
+                    @unknown default:
+                        fallback
+                    }
+                }
+            } else {
+                fallback
+            }
+        }
+        .frame(width: 36, height: 36)
+        .clipShape(Circle())
+        .overlay(
+            Circle()
+                .stroke(AppTheme.borderStrong.opacity(0.52), lineWidth: 1)
+        )
+        .accessibilityLabel("关联用户头像")
+    }
+
+    private var fallback: some View {
+        Image(systemName: "person.crop.circle.fill")
+            .font(.system(size: 24, weight: .semibold))
+            .foregroundStyle(AppTheme.accentBlue.opacity(0.72))
     }
 }
 

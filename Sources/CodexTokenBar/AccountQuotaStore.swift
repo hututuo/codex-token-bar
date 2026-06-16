@@ -209,7 +209,15 @@ struct AccountQuotaResetCredit: Equatable, Identifiable, Sendable {
               !profileImageURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return "未提供头像"
         }
-        return profileImageURL
+        return "已显示头像"
+    }
+
+    var profileImageDisplayURL: URL? {
+        guard let profileImageURL,
+              let url = URL(string: profileImageURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return nil
+        }
+        return url
     }
 
     var cardIdentifierText: String {
