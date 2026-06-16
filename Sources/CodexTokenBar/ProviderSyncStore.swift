@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import SQLite3
 
 struct ProviderSyncProviderCount: Identifiable, Equatable {
     let id = UUID()
@@ -293,7 +292,6 @@ private struct ProviderSyncSQLiteThreadColumns {
 
 private final class ProviderSyncEngine {
     private let fileManager = FileManager.default
-    private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     func scan(codexHome: URL, includeArchivedSessions: Bool) throws -> ProviderSyncSnapshot {
         let report = try makeReport(codexHome: codexHome, includeArchivedSessions: includeArchivedSessions, targetProviderOverride: nil)
@@ -612,7 +610,7 @@ private final class ProviderSyncEngine {
     private func readSQLiteProviders(codexHome: URL) throws -> [ProviderSyncSQLiteProvider] {
         let db = codexHome.appendingPathComponent("state_5.sqlite")
         guard fileManager.fileExists(atPath: db.path) else { return [] }
-        return try withDatabase(path: db.path, flags: SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX) { database in
+        return try withDatabase(path: db.path, readOnly: true) { database in
             guard let columns = try readThreadsTableColumns(database: database),
                   columns.modelProvider else {
                 return []
@@ -629,8 +627,8 @@ private final class ProviderSyncEngine {
             ) { statement in
                 ProviderSyncSQLiteProvider(
                     provider: sqliteText(statement, 0) ?? "(missing)",
-                    archived: Int(sqlite3_column_int64(statement, 1)),
-                    count: Int(sqlite3_column_int64(statement, 2))
+                    archived: Int(sqliteInt64(statement, 1)),
+                    count: Int(sqliteInt64(statement, 2))
                 )
             }
         }
@@ -639,7 +637,7 @@ private final class ProviderSyncEngine {
     private func latestSQLiteProvider(codexHome: URL) throws -> (provider: String?, threadID: String?) {
         let db = codexHome.appendingPathComponent("state_5.sqlite")
         guard fileManager.fileExists(atPath: db.path) else { return (nil, nil) }
-        return try withDatabase(path: db.path, flags: SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX) { database in
+        return try withDatabase(path: db.path, readOnly: true) { database in
             guard let columns = try readThreadsTableColumns(database: database) else {
                 return (nil, nil)
             }
@@ -664,7 +662,7 @@ private final class ProviderSyncEngine {
     private func updateSQLite(codexHome: URL, targetProvider: String) throws -> Int {
         let db = codexHome.appendingPathComponent("state_5.sqlite")
         guard fileManager.fileExists(atPath: db.path) else { return 0 }
-        return try withDatabase(path: db.path, flags: SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX) { database in
+        return try withDatabase(path: db.path, readOnly: false) { database in
             try execute(database: database, sql: "PRAGMA busy_timeout = 3000;")
             guard let columns = try readThreadsTableColumns(database: database),
                   let whereClause = threadsRepairWhereClause(columns: columns),
@@ -694,7 +692,7 @@ private final class ProviderSyncEngine {
     private func countSQLiteRowsToRepair(codexHome: URL, targetProvider: String) throws -> Int {
         let db = codexHome.appendingPathComponent("state_5.sqlite")
         guard fileManager.fileExists(atPath: db.path) else { return 0 }
-        return try withDatabase(path: db.path, flags: SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX) { database in
+        return try withDatabase(path: db.path, readOnly: true) { database in
             guard let columns = try readThreadsTableColumns(database: database),
                   let whereClause = threadsRepairWhereClause(columns: columns) else {
                 return 0
@@ -705,7 +703,7 @@ private final class ProviderSyncEngine {
                 sql: "SELECT COUNT(*) FROM threads WHERE \(whereClause);",
                 values: values
             ) { statement in
-                Int(sqlite3_column_int64(statement, 0))
+                Int(sqliteInt64(statement, 0))
             }.first ?? 0
         }
     }
@@ -723,7 +721,7 @@ private final class ProviderSyncEngine {
 
         let db = codexHome.appendingPathComponent("state_5.sqlite")
         guard fileManager.fileExists(atPath: db.path) else { return 0 }
-        return try withDatabase(path: db.path, flags: SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX) { database in
+        return try withDatabase(path: db.path, readOnly: false) { database in
             try execute(database: database, sql: "PRAGMA busy_timeout = 3000;")
             guard let columns = try readThreadsTableColumns(database: database),
                   columns.updatedAt || columns.updatedAtMilliseconds else {
@@ -807,7 +805,7 @@ private final class ProviderSyncEngine {
     }
 
     private func readSQLiteThreadTimestampRows(
-        database: OpaquePointer,
+        database: SQLiteDatabaseConnection,
         columns: ProviderSyncSQLiteThreadColumns
     ) throws -> [ProviderSyncThreadTimestampRow] {
         let updatedExpression = sqliteUpdatedAtMillisecondsExpression(columns: columns)
@@ -821,7 +819,7 @@ private final class ProviderSyncEngine {
         ) { statement in
             ProviderSyncThreadTimestampRow(
                 id: sqliteText(statement, 0) ?? "",
-                updatedAtMilliseconds: sqlite3_column_int64(statement, 1)
+                updatedAtMilliseconds: sqliteInt64(statement, 1)
             )
         }.filter { !$0.id.isEmpty }
     }
@@ -915,7 +913,7 @@ private final class ProviderSyncEngine {
     private func sqliteIntegrity(codexHome: URL) throws -> String {
         let db = codexHome.appendingPathComponent("state_5.sqlite")
         guard fileManager.fileExists(atPath: db.path) else { return "missing" }
-        return try withDatabase(path: db.path, flags: SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX) { database in
+        return try withDatabase(path: db.path, readOnly: true) { database in
             try queryRows(database: database, sql: "PRAGMA integrity_check;") { statement in
                 sqliteText(statement, 0) ?? "unknown"
             }.first ?? "unknown"
@@ -925,7 +923,7 @@ private final class ProviderSyncEngine {
     private func reconcileSessionIndex(codexHome: URL) throws -> Int {
         let db = codexHome.appendingPathComponent("state_5.sqlite")
         guard fileManager.fileExists(atPath: db.path) else { return 0 }
-        let rows = try withDatabase(path: db.path, flags: SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX) { database in
+        let rows = try withDatabase(path: db.path, readOnly: true) { database in
             guard let columns = try readThreadsTableColumns(database: database) else {
                 return [ProviderSyncThreadIndexRow]()
             }
@@ -942,7 +940,7 @@ private final class ProviderSyncEngine {
                 ProviderSyncThreadIndexRow(
                     id: sqliteText(statement, 0) ?? "",
                     title: sqliteText(statement, 1) ?? "",
-                    updatedAtMilliseconds: sqlite3_column_int64(statement, 2)
+                    updatedAtMilliseconds: sqliteInt64(statement, 2)
                 )
             }
             return queriedRows.filter { !$0.id.isEmpty }
@@ -1077,7 +1075,7 @@ private final class ProviderSyncEngine {
             return ProviderSyncVisibilitySummary(activeWorkspacePath: activeWorkspacePath)
         }
 
-        return try withDatabase(path: db.path, flags: SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX) { database in
+        return try withDatabase(path: db.path, readOnly: true) { database in
             guard let columns = try readThreadsTableColumns(database: database) else {
                 return ProviderSyncVisibilitySummary(activeWorkspacePath: activeWorkspacePath)
             }
@@ -1109,14 +1107,14 @@ private final class ProviderSyncEngine {
                 values: [activeWorkspace, activeWorkspacePrefix]
             ) { statement in
                 ProviderSyncVisibilitySummary(
-                    sqliteThreads: Int(sqlite3_column_int64(statement, 0)),
-                    activeThreads: Int(sqlite3_column_int64(statement, 1)),
-                    archivedThreads: Int(sqlite3_column_int64(statement, 2)),
-                    userThreads: Int(sqlite3_column_int64(statement, 3)),
-                    desktopUserThreads: Int(sqlite3_column_int64(statement, 4)),
-                    currentWorkspaceDesktopThreads: Int(sqlite3_column_int64(statement, 5)),
-                    cliExecUserThreads: Int(sqlite3_column_int64(statement, 6)),
-                    subagentThreads: Int(sqlite3_column_int64(statement, 7)),
+                    sqliteThreads: Int(sqliteInt64(statement, 0)),
+                    activeThreads: Int(sqliteInt64(statement, 1)),
+                    archivedThreads: Int(sqliteInt64(statement, 2)),
+                    userThreads: Int(sqliteInt64(statement, 3)),
+                    desktopUserThreads: Int(sqliteInt64(statement, 4)),
+                    currentWorkspaceDesktopThreads: Int(sqliteInt64(statement, 5)),
+                    cliExecUserThreads: Int(sqliteInt64(statement, 6)),
+                    subagentThreads: Int(sqliteInt64(statement, 7)),
                     activeWorkspacePath: activeWorkspacePath,
                     workspaces: []
                 )
@@ -1138,8 +1136,8 @@ private final class ProviderSyncEngine {
                 """
             ) { statement in
                 let path = sqliteText(statement, 0) ?? ""
-                let desktopCount = Int(sqlite3_column_int64(statement, 1))
-                let interactiveCount = Int(sqlite3_column_int64(statement, 2))
+                let desktopCount = Int(sqliteInt64(statement, 1))
+                let interactiveCount = Int(sqliteInt64(statement, 2))
                 let label = labels[path] ?? URL(fileURLWithPath: path).lastPathComponent
                 let isActive = activeWorkspacePath.map { path == $0 || path.hasPrefix("\($0)/") } ?? false
                 return ProviderSyncWorkspaceCount(
@@ -1211,7 +1209,7 @@ private final class ProviderSyncEngine {
     private func readActiveThreadCountsByCwd(codexHome: URL) throws -> [String: Int] {
         let db = codexHome.appendingPathComponent("state_5.sqlite")
         guard fileManager.fileExists(atPath: db.path) else { return [:] }
-        return try withDatabase(path: db.path, flags: SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX) { database in
+        return try withDatabase(path: db.path, readOnly: true) { database in
             guard let columns = try readThreadsTableColumns(database: database) else {
                 return [:]
             }
@@ -1228,13 +1226,13 @@ private final class ProviderSyncEngine {
                 GROUP BY cwd;
                 """
             ) { statement in
-                (sqliteText(statement, 0) ?? "", Int(sqlite3_column_int64(statement, 1)))
+                (sqliteText(statement, 0) ?? "", Int(sqliteInt64(statement, 1)))
             }
             return Dictionary(uniqueKeysWithValues: rows.filter { !$0.0.isEmpty })
         }
     }
 
-    private func readThreadsTableColumns(database: OpaquePointer) throws -> ProviderSyncSQLiteThreadColumns? {
+    private func readThreadsTableColumns(database: SQLiteDatabaseConnection) throws -> ProviderSyncSQLiteThreadColumns? {
         let names = try queryRows(database: database, sql: "PRAGMA table_info(threads);") { statement in
             sqliteText(statement, 1) ?? ""
         }
@@ -1349,7 +1347,7 @@ private final class ProviderSyncEngine {
         if fileManager.fileExists(atPath: destination.path) {
             try fileManager.removeItem(at: destination)
         }
-        try withDatabase(path: source.path, flags: SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX) { database in
+        try withDatabase(path: source.path, readOnly: true) { database in
             try execute(database: database, sql: "PRAGMA busy_timeout = 3000;")
             _ = try executeBoundUpdate(
                 database: database,
@@ -1511,97 +1509,34 @@ private final class ProviderSyncEngine {
         }
     }
 
-    private func withDatabase<T>(path: String, flags: Int32, body: (OpaquePointer) throws -> T) throws -> T {
-        var database: OpaquePointer?
-        let status = sqlite3_open_v2(path, &database, flags, nil)
-        guard status == SQLITE_OK, let database else {
-            let message = database.map { sqliteErrorMessage($0) } ?? "Unable to open SQLite database"
-            if let database {
-                sqlite3_close(database)
-            }
-            throw NSError(domain: "CodexTokenBar", code: Int(status), userInfo: [NSLocalizedDescriptionKey: message])
-        }
-        defer { sqlite3_close(database) }
-        return try body(database)
+    private func withDatabase<T>(path: String, readOnly: Bool, body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
+        let driver = SQLiteDatabaseDriver(
+            url: URL(fileURLWithPath: path),
+            readOnly: readOnly,
+            busyTimeoutMilliseconds: 3_000,
+            enableWAL: false
+        )
+        return try driver.withConnection(body)
     }
 
-    private func queryRows<T>(database: OpaquePointer, sql: String, map: (OpaquePointer?) throws -> T) throws -> [T] {
-        var statement: OpaquePointer?
-        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-        guard prepareStatus == SQLITE_OK, let statement else {
-            throw NSError(domain: "CodexTokenBar", code: Int(prepareStatus), userInfo: [NSLocalizedDescriptionKey: sqliteErrorMessage(database)])
-        }
-        defer { sqlite3_finalize(statement) }
-
-        var rows: [T] = []
-        while true {
-            let stepStatus = sqlite3_step(statement)
-            if stepStatus == SQLITE_ROW {
-                rows.append(try map(statement))
-            } else if stepStatus == SQLITE_DONE {
-                return rows
-            } else {
-                throw NSError(domain: "CodexTokenBar", code: Int(stepStatus), userInfo: [NSLocalizedDescriptionKey: sqliteErrorMessage(database)])
-            }
-        }
+    private func queryRows<T>(database: SQLiteDatabaseConnection, sql: String, map: (SQLiteStatement) throws -> T) throws -> [T] {
+        try database.readRows(sql, map: map)
     }
 
-    private func queryBoundRows<T>(database: OpaquePointer, sql: String, values: [String], map: (OpaquePointer?) throws -> T) throws -> [T] {
-        var statement: OpaquePointer?
-        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-        guard prepareStatus == SQLITE_OK, let statement else {
-            throw NSError(domain: "CodexTokenBar", code: Int(prepareStatus), userInfo: [NSLocalizedDescriptionKey: sqliteErrorMessage(database)])
-        }
-        defer { sqlite3_finalize(statement) }
-
-        for (index, value) in values.enumerated() {
-            sqlite3_bind_text(statement, Int32(index + 1), value, -1, sqliteTransient)
-        }
-
-        var rows: [T] = []
-        while true {
-            let stepStatus = sqlite3_step(statement)
-            if stepStatus == SQLITE_ROW {
-                rows.append(try map(statement))
-            } else if stepStatus == SQLITE_DONE {
-                return rows
-            } else {
-                throw NSError(domain: "CodexTokenBar", code: Int(stepStatus), userInfo: [NSLocalizedDescriptionKey: sqliteErrorMessage(database)])
-            }
-        }
+    private func queryBoundRows<T>(database: SQLiteDatabaseConnection, sql: String, values: [String], map: (SQLiteStatement) throws -> T) throws -> [T] {
+        try database.readRows(sql, bindings: values.map(SQLiteBinding.text), map: map)
     }
 
-    private func execute(database: OpaquePointer, sql: String) throws {
-        var error: UnsafeMutablePointer<Int8>?
-        let status = sqlite3_exec(database, sql, nil, nil, &error)
-        guard status == SQLITE_OK else {
-            let message = error.map { String(cString: $0) } ?? sqliteErrorMessage(database)
-            sqlite3_free(error)
-            throw NSError(domain: "CodexTokenBar", code: Int(status), userInfo: [NSLocalizedDescriptionKey: message])
-        }
+    private func execute(database: SQLiteDatabaseConnection, sql: String) throws {
+        try database.execute(sql)
     }
 
-    private func executeBoundUpdate(database: OpaquePointer, sql: String, values: [String]) throws -> Int {
-        var statement: OpaquePointer?
-        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-        guard prepareStatus == SQLITE_OK, let statement else {
-            throw NSError(domain: "CodexTokenBar", code: Int(prepareStatus), userInfo: [NSLocalizedDescriptionKey: sqliteErrorMessage(database)])
-        }
-        defer { sqlite3_finalize(statement) }
-
-        for (index, value) in values.enumerated() {
-            sqlite3_bind_text(statement, Int32(index + 1), value, -1, sqliteTransient)
-        }
-        let before = sqlite3_total_changes(database)
-        let stepStatus = sqlite3_step(statement)
-        guard stepStatus == SQLITE_DONE else {
-            throw NSError(domain: "CodexTokenBar", code: Int(stepStatus), userInfo: [NSLocalizedDescriptionKey: sqliteErrorMessage(database)])
-        }
-        return Int(sqlite3_total_changes(database) - before)
+    private func executeBoundUpdate(database: SQLiteDatabaseConnection, sql: String, values: [String]) throws -> Int {
+        try database.executeChangedRows(sql, bindings: values.map(SQLiteBinding.text))
     }
 
     private func executeTimestampUpdate(
-        database: OpaquePointer,
+        database: SQLiteDatabaseConnection,
         columns: ProviderSyncSQLiteThreadColumns,
         timestamp: ProviderSyncSessionTimestamp
     ) throws -> Int {
@@ -1630,32 +1565,19 @@ private final class ProviderSyncEngine {
             """
         }
 
-        var statement: OpaquePointer?
-        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-        guard prepareStatus == SQLITE_OK, let statement else {
-            throw NSError(domain: "CodexTokenBar", code: Int(prepareStatus), userInfo: [NSLocalizedDescriptionKey: sqliteErrorMessage(database)])
-        }
-        defer { sqlite3_finalize(statement) }
-
-        sqlite3_bind_text(statement, 1, timestamp.id, -1, sqliteTransient)
-        sqlite3_bind_int64(statement, 2, seconds)
-        sqlite3_bind_int64(statement, 3, timestamp.updatedAtMilliseconds)
-        let before = sqlite3_total_changes(database)
-        let stepStatus = sqlite3_step(statement)
-        guard stepStatus == SQLITE_DONE else {
-            throw NSError(domain: "CodexTokenBar", code: Int(stepStatus), userInfo: [NSLocalizedDescriptionKey: sqliteErrorMessage(database)])
-        }
-        return Int(sqlite3_total_changes(database) - before)
+        return try database.executeChangedRows(sql, bindings: [
+            .text(timestamp.id),
+            .int64(seconds),
+            .int64(timestamp.updatedAtMilliseconds)
+        ])
     }
 
-    private func sqliteText(_ statement: OpaquePointer?, _ column: Int32) -> String? {
-        guard let value = sqlite3_column_text(statement, column) else { return nil }
-        return String(cString: value)
+    private func sqliteText(_ statement: SQLiteStatement, _ column: Int32) -> String? {
+        statement.text(column)
     }
 
-    private func sqliteErrorMessage(_ database: OpaquePointer) -> String {
-        guard let message = sqlite3_errmsg(database) else { return "SQLite error" }
-        return String(cString: message)
+    private func sqliteInt64(_ statement: SQLiteStatement, _ column: Int32) -> Int64 {
+        statement.int64(column) ?? 0
     }
 }
 

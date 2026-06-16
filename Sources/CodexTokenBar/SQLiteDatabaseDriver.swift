@@ -109,6 +109,12 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         }
     }
 
+    func executeChangedRows(_ sql: String, bindings: [SQLiteBinding] = []) throws -> Int {
+        try withConnection { connection in
+            try connection.executeChangedRows(sql, bindings: bindings)
+        }
+    }
+
     func transaction<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
         try withConnection { connection in
             try connection.transaction(body)
@@ -217,6 +223,30 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
         guard stepStatus == SQLITE_DONE else {
             throw error(operation: "Execute SQLite statement", code: stepStatus)
         }
+    }
+
+    func executeChangedRows(_ sql: String, bindings: [SQLiteBinding] = []) throws -> Int {
+        if bindings.isEmpty {
+            let before = sqlite3_total_changes(database)
+            try execute(sql)
+            return Int(sqlite3_total_changes(database) - before)
+        }
+
+        var statement: OpaquePointer?
+        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+        guard prepareStatus == SQLITE_OK else {
+            throw error(operation: "Prepare SQLite statement", code: prepareStatus)
+        }
+        defer { sqlite3_finalize(statement) }
+
+        try bind(bindings, to: statement)
+
+        let before = sqlite3_total_changes(database)
+        let stepStatus = sqlite3_step(statement)
+        guard stepStatus == SQLITE_DONE else {
+            throw error(operation: "Execute SQLite statement", code: stepStatus)
+        }
+        return Int(sqlite3_total_changes(database) - before)
     }
 
     func transaction<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
