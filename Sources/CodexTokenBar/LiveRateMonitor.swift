@@ -40,7 +40,7 @@ final class LiveRateMonitor: ObservableObject {
     private var lastSnapshotPublishAt: TimeInterval = 0
     private var lastFallbackPollAt: TimeInterval = 0
     private var pollInProgress = false
-    private var logReader: LogDatabaseReader?
+    private var logReader: LiveRateLogDatabaseReader?
     private var selectedRate = RateAccumulator(resetsOnNewItem: false)
     private var totalRate = RateAccumulator(resetsOnNewItem: false)
     private var rolloutOffsets: [String: UInt64] = [:]
@@ -57,40 +57,6 @@ final class LiveRateMonitor: ObservableObject {
         let databaseModifiedAt: TimeInterval
         let walSize: UInt64
         let walModifiedAt: TimeInterval
-    }
-
-    private final class LogDatabaseReader: @unchecked Sendable {
-        let path: String
-        private let database: SQLitePersistentDatabaseReader
-
-        init(path: String) {
-            self.path = path
-            self.database = SQLitePersistentDatabaseReader(
-                url: URL(fileURLWithPath: path),
-                busyTimeoutMilliseconds: 100
-            )
-        }
-
-        func globalLogRows(afterID: Int) throws -> [LogRow] {
-            try logRows(sql: LiveRateMonitor.globalLogRowsSQL(afterID: afterID))
-        }
-
-        func globalLogRows(since timestamp: TimeInterval) throws -> [LogRow] {
-            try logRows(sql: LiveRateMonitor.globalLogRowsSQL(since: timestamp))
-        }
-
-        private func logRows(sql: String) throws -> [LogRow] {
-            try database.readRows(sql) { statement in
-                LogRow(
-                    id: LiveRateMonitor.sqliteInt(statement, 0),
-                    threadID: LiveRateMonitor.sqliteText(statement, 1),
-                    ts: LiveRateMonitor.sqliteInt(statement, 2),
-                    tsNanos: LiveRateMonitor.sqliteInt(statement, 3),
-                    target: LiveRateMonitor.sqliteText(statement, 4) ?? "",
-                    feedbackLogBody: LiveRateMonitor.sqliteText(statement, 5) ?? ""
-                )
-            }
-        }
     }
 
     init(preciseTokenCountingEnabled: Bool = LiveRateMonitor.defaultPreciseTokenCountingEnabled()) {
@@ -345,11 +311,11 @@ final class LiveRateMonitor: ObservableObject {
         eventSource.resume()
     }
 
-    private func logReader(for logsDB: String) -> LogDatabaseReader {
+    private func logReader(for logsDB: String) -> LiveRateLogDatabaseReader {
         if let logReader, logReader.path == logsDB {
             return logReader
         }
-        let reader = LogDatabaseReader(path: logsDB)
+        let reader = LiveRateLogDatabaseReader(path: logsDB)
         logReader = reader
         return reader
     }
@@ -661,7 +627,16 @@ private extension LiveRateMonitor {
         ORDER BY id ASC
         LIMIT 500;
         """
-        return try sqliteLogRows(db: logsDB, sql: sql)
+        return try sqliteRows(db: logsDB, sql: sql) { statement in
+            LogRow(
+                id: sqliteInt(statement, 0),
+                threadID: sqliteText(statement, 1),
+                ts: sqliteInt(statement, 2),
+                tsNanos: sqliteInt(statement, 3),
+                target: sqliteText(statement, 4) ?? "",
+                feedbackLogBody: sqliteText(statement, 5) ?? ""
+            )
+        }
     }
 
     nonisolated static func rolloutReads(options: [LiveThreadOption], offsets: [String: UInt64]) throws -> [RolloutRead] {
@@ -811,78 +786,6 @@ private extension LiveRateMonitor {
             return Date().timeIntervalSince1970
         }
         return date.timeIntervalSince1970
-    }
-
-    nonisolated static func globalLogRows(logsDB: String, afterID: Int) throws -> [LogRow] {
-        try sqliteLogRows(db: logsDB, sql: globalLogRowsSQL(afterID: afterID))
-    }
-
-    nonisolated static func globalLogRows(logsDB: String, since timestamp: TimeInterval) throws -> [LogRow] {
-        try sqliteLogRows(db: logsDB, sql: globalLogRowsSQL(since: timestamp))
-    }
-
-    nonisolated static func globalLogRowsSQL(afterID: Int) -> String {
-        """
-        SELECT id, thread_id, ts, ts_nanos, target, feedback_log_body
-        FROM logs
-        WHERE id > \(afterID)
-          AND (
-            (
-              target = 'codex_api::sse::responses'
-              AND (
-                feedback_log_body LIKE 'SSE event:%'
-                OR feedback_log_body LIKE '%thread.id=%'
-                OR feedback_log_body LIKE '%thread_id=%'
-                OR feedback_log_body LIKE '%conversation.id=%'
-              )
-            )
-            OR (
-              target = 'codex_api::endpoint::responses_websocket'
-              AND feedback_log_body LIKE '%websocket event:%'
-            )
-          )
-        ORDER BY id ASC
-        LIMIT 2000;
-        """
-    }
-
-    nonisolated static func globalLogRowsSQL(since timestamp: TimeInterval) -> String {
-        let sinceSeconds = Int(timestamp.rounded(.down))
-        return """
-        SELECT id, thread_id, ts, ts_nanos, target, feedback_log_body
-        FROM logs
-        WHERE ts >= \(sinceSeconds)
-          AND (
-            (
-              target = 'codex_api::sse::responses'
-              AND (
-                feedback_log_body LIKE 'SSE event:%'
-                OR feedback_log_body LIKE '%thread.id=%'
-                OR feedback_log_body LIKE '%thread_id=%'
-                OR feedback_log_body LIKE '%conversation.id=%'
-              )
-            )
-            OR (
-              target = 'codex_api::endpoint::responses_websocket'
-              AND feedback_log_body LIKE '%websocket event:%'
-            )
-          )
-        ORDER BY id ASC
-        LIMIT 2000;
-        """
-    }
-
-    nonisolated static func sqliteLogRows(db: String, sql: String) throws -> [LogRow] {
-        try sqliteRows(db: db, sql: sql) { statement in
-            LogRow(
-                id: sqliteInt(statement, 0),
-                threadID: sqliteText(statement, 1),
-                ts: sqliteInt(statement, 2),
-                tsNanos: sqliteInt(statement, 3),
-                target: sqliteText(statement, 4) ?? "",
-                feedbackLogBody: sqliteText(statement, 5) ?? ""
-            )
-        }
     }
 
     nonisolated static func sqliteScalarInt(db: String, sql: String) throws -> Int {
