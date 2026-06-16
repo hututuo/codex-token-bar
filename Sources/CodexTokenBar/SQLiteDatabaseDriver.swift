@@ -162,6 +162,67 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     }
 }
 
+final class SQLitePersistentDatabaseReader: @unchecked Sendable {
+    let url: URL
+
+    private let busyTimeoutMilliseconds: Int32
+    private let lock = NSLock()
+    private var database: OpaquePointer?
+
+    init(url: URL, busyTimeoutMilliseconds: Int32 = 100) {
+        self.url = url
+        self.busyTimeoutMilliseconds = busyTimeoutMilliseconds
+    }
+
+    deinit {
+        lock.lock()
+        if let database {
+            sqlite3_close(database)
+        }
+        database = nil
+        lock.unlock()
+    }
+
+    func readRows<T>(
+        _ sql: String,
+        bindings: [SQLiteBinding] = [],
+        map: (SQLiteStatement) throws -> T
+    ) throws -> [T] {
+        try withConnection { connection in
+            try connection.readRows(sql, bindings: bindings, map: map)
+        }
+    }
+
+    private func withConnection<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let connection = SQLiteDatabaseConnection(database: try databaseHandle(), path: url.path)
+        return try body(connection)
+    }
+
+    private func databaseHandle() throws -> OpaquePointer {
+        if let database {
+            return database
+        }
+
+        var opened: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        let status = sqlite3_open_v2(url.path, &opened, flags, nil)
+        guard status == SQLITE_OK, let opened else {
+            let message = opened.map { SQLiteDatabaseDriver.message(from: $0) } ?? "Unable to open database"
+            if let opened {
+                sqlite3_close(opened)
+            }
+            throw SQLiteDatabaseError(operation: "Open SQLite database", code: status, message: message, path: url.path)
+        }
+
+        sqlite3_busy_timeout(opened, busyTimeoutMilliseconds)
+        database = opened
+        return opened
+    }
+}
+
 final class SQLiteDatabaseConnection: DatabaseAccessing {
     private let database: OpaquePointer?
     private let path: String?

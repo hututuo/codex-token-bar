@@ -1,6 +1,5 @@
 import Foundation
 import Darwin
-import SQLite3
 import SwiftUI
 import TiktokenSwift
 
@@ -214,19 +213,14 @@ final class LiveRateMonitor: ObservableObject {
 
     private final class LogDatabaseReader: @unchecked Sendable {
         let path: String
-        private let lock = NSLock()
-        private var database: OpaquePointer?
+        private let database: SQLitePersistentDatabaseReader
 
         init(path: String) {
             self.path = path
-        }
-
-        deinit {
-            lock.lock()
-            if let database {
-                sqlite3_close(database)
-            }
-            lock.unlock()
+            self.database = SQLitePersistentDatabaseReader(
+                url: URL(fileURLWithPath: path),
+                busyTimeoutMilliseconds: 100
+            )
         }
 
         func globalLogRows(afterID: Int) throws -> [LogRow] {
@@ -238,7 +232,7 @@ final class LiveRateMonitor: ObservableObject {
         }
 
         private func logRows(sql: String) throws -> [LogRow] {
-            try rows(sql: sql) { statement in
+            try database.readRows(sql) { statement in
                 LogRow(
                     id: LiveRateMonitor.sqliteInt(statement, 0),
                     threadID: LiveRateMonitor.sqliteText(statement, 1),
@@ -248,58 +242,6 @@ final class LiveRateMonitor: ObservableObject {
                     feedbackLogBody: LiveRateMonitor.sqliteText(statement, 5) ?? ""
                 )
             }
-        }
-
-        private func rows<T>(sql: String, map: (OpaquePointer?) throws -> T) throws -> [T] {
-            lock.lock()
-            defer { lock.unlock() }
-
-            let database = try databaseHandle()
-            var statement: OpaquePointer?
-            let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-            guard prepareStatus == SQLITE_OK, let statement else {
-                throw NSError(
-                    domain: "CodexTokenBar",
-                    code: Int(prepareStatus),
-                    userInfo: [NSLocalizedDescriptionKey: LiveRateMonitor.sqliteErrorMessage(database)]
-                )
-            }
-            defer { sqlite3_finalize(statement) }
-
-            var rows: [T] = []
-            while true {
-                let stepStatus = sqlite3_step(statement)
-                if stepStatus == SQLITE_ROW {
-                    rows.append(try map(statement))
-                } else if stepStatus == SQLITE_DONE {
-                    return rows
-                } else {
-                    throw NSError(
-                        domain: "CodexTokenBar",
-                        code: Int(stepStatus),
-                        userInfo: [NSLocalizedDescriptionKey: LiveRateMonitor.sqliteErrorMessage(database)]
-                    )
-                }
-            }
-        }
-
-        private func databaseHandle() throws -> OpaquePointer {
-            if let database {
-                return database
-            }
-
-            var opened: OpaquePointer?
-            let status = sqlite3_open_v2(path, &opened, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil)
-            guard status == SQLITE_OK, let opened else {
-                let message = opened.map { LiveRateMonitor.sqliteErrorMessage($0) } ?? "Unable to open SQLite database"
-                if let opened {
-                    sqlite3_close(opened)
-                }
-                throw NSError(domain: "CodexTokenBar", code: Int(status), userInfo: [NSLocalizedDescriptionKey: message])
-            }
-            sqlite3_busy_timeout(opened, 100)
-            database = opened
-            return opened
         }
     }
 
@@ -1219,20 +1161,6 @@ private extension LiveRateMonitor {
 
     nonisolated static func sqliteInt(_ statement: SQLiteStatement, _ column: Int32) -> Int {
         statement.int(column) ?? 0
-    }
-
-    nonisolated static func sqliteText(_ statement: OpaquePointer?, _ column: Int32) -> String? {
-        guard let value = sqlite3_column_text(statement, column) else { return nil }
-        return String(cString: value)
-    }
-
-    nonisolated static func sqliteInt(_ statement: OpaquePointer?, _ column: Int32) -> Int {
-        Int(sqlite3_column_int64(statement, column))
-    }
-
-    nonisolated static func sqliteErrorMessage(_ database: OpaquePointer) -> String {
-        guard let message = sqlite3_errmsg(database) else { return "SQLite error" }
-        return String(cString: message)
     }
 
     nonisolated static func streamEvent(from row: LogRow) -> ResponseStreamEvent? {
