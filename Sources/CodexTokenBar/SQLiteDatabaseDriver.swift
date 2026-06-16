@@ -193,7 +193,7 @@ final class SQLitePersistentDatabaseReader: @unchecked Sendable {
         }
     }
 
-    private func withConnection<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
+    func withConnection<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
         lock.lock()
         defer { lock.unlock() }
 
