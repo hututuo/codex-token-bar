@@ -1196,7 +1196,7 @@ private final class FloatingUnreadShimmerView: NSView {
     private var lastBounds: CGRect = .zero
     private var lastBackingScale: CGFloat = 0
     private let cycleDuration: CFTimeInterval = 2.1
-    private let targetFramesPerSecond = 60
+    private let targetFramesPerSecond = 30
     private let resizeRenderDebounce: TimeInterval = 0.14
 
     override init(frame frameRect: NSRect) {
@@ -1913,7 +1913,7 @@ private final class FloatingUnreadSpriteRippleView: NSView {
     private var lastBackingScale: CGFloat = 0
     private let cycleDuration: CFTimeInterval = 3.25
     private let activeFraction = 0.92
-    private let targetFramesPerSecond = 60
+    private let targetFramesPerSecond = 30
     private let resizeRenderDebounce: TimeInterval = 0.14
 
     override init(frame frameRect: NSRect) {

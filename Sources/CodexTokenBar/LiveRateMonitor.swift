@@ -1203,36 +1203,22 @@ private extension LiveRateMonitor {
         }.first ?? 0
     }
 
-    nonisolated static func sqliteRows<T>(db path: String, sql: String, map: (OpaquePointer?) throws -> T) throws -> [T] {
-        var database: OpaquePointer?
-        let openStatus = sqlite3_open_v2(path, &database, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil)
-        guard openStatus == SQLITE_OK, let database else {
-            let message = database.map { sqliteErrorMessage($0) } ?? "Unable to open SQLite database"
-            if let database {
-                sqlite3_close(database)
-            }
-            throw NSError(domain: "CodexTokenBar", code: Int(openStatus), userInfo: [NSLocalizedDescriptionKey: message])
-        }
-        defer { sqlite3_close(database) }
+    nonisolated static func sqliteRows<T>(db path: String, sql: String, map: (SQLiteStatement) throws -> T) throws -> [T] {
+        let driver = SQLiteDatabaseDriver(
+            url: URL(fileURLWithPath: path),
+            readOnly: true,
+            busyTimeoutMilliseconds: 3_000,
+            enableWAL: false
+        )
+        return try driver.readRows(sql, map: map)
+    }
 
-        var statement: OpaquePointer?
-        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-        guard prepareStatus == SQLITE_OK, let statement else {
-            throw NSError(domain: "CodexTokenBar", code: Int(prepareStatus), userInfo: [NSLocalizedDescriptionKey: sqliteErrorMessage(database)])
-        }
-        defer { sqlite3_finalize(statement) }
+    nonisolated static func sqliteText(_ statement: SQLiteStatement, _ column: Int32) -> String? {
+        statement.text(column)
+    }
 
-        var rows: [T] = []
-        while true {
-            let stepStatus = sqlite3_step(statement)
-            if stepStatus == SQLITE_ROW {
-                rows.append(try map(statement))
-            } else if stepStatus == SQLITE_DONE {
-                return rows
-            } else {
-                throw NSError(domain: "CodexTokenBar", code: Int(stepStatus), userInfo: [NSLocalizedDescriptionKey: sqliteErrorMessage(database)])
-            }
-        }
+    nonisolated static func sqliteInt(_ statement: SQLiteStatement, _ column: Int32) -> Int {
+        statement.int(column) ?? 0
     }
 
     nonisolated static func sqliteText(_ statement: OpaquePointer?, _ column: Int32) -> String? {
@@ -1371,32 +1357,6 @@ private extension LiveRateMonitor {
             guard type == "output_text" || type == "text" else { return nil }
             return part["text"] as? String
         }.joined()
-    }
-
-    nonisolated static func sqliteJSON<T: Decodable>(db: String, sql: String) throws -> [T] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = ["-json", db, sql]
-
-        let output = Pipe()
-        let error = Pipe()
-        process.standardOutput = output
-        process.standardError = error
-
-        try process.run()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        let errorData = error.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            let message = String(data: errorData, encoding: .utf8) ?? "sqlite3 failed"
-            throw NSError(domain: "CodexTokenBar", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
-        }
-
-        if data.isEmpty {
-            return []
-        }
-        return try JSONDecoder().decode([T].self, from: data)
     }
 
     nonisolated static func sqlEscape(_ value: String) -> String {
