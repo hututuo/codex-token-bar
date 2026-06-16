@@ -1,5 +1,4 @@
 import Foundation
-import SQLite3
 
 @MainActor
 final class TaskCompletionMonitor: ObservableObject {
@@ -214,8 +213,6 @@ private enum CodexUnreadThreadReadResult: Sendable {
 }
 
 private enum CodexUnreadThreadReader {
-    private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-
     static func readUnreadThreadIDs(codexHome: URL) -> CodexUnreadThreadReadResult {
         let url = codexHome.appendingPathComponent(".codex-global-state.json")
         guard let data = try? Data(contentsOf: url),
@@ -275,62 +272,62 @@ private enum CodexUnreadThreadReader {
             return sessionVisibleThreadIDs(from: threadIDs, codexHome: codexHome).visibleIDs
         }
 
-        var database: OpaquePointer?
-        let openStatus = sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil)
-        guard openStatus == SQLITE_OK, let database else {
-            if let database {
-                sqlite3_close(database)
+        let driver = SQLiteDatabaseDriver(
+            url: databaseURL,
+            readOnly: true,
+            busyTimeoutMilliseconds: 3_000,
+            enableWAL: false
+        )
+
+        do {
+            return try driver.withConnection { database in
+                try visibleUserThreadIDs(from: threadIDs, database: database, codexHome: codexHome)
             }
+        } catch {
             return sessionVisibleThreadIDs(from: threadIDs, codexHome: codexHome).visibleIDs
         }
-        defer { sqlite3_close(database) }
-        sqlite3_busy_timeout(database, 100)
+    }
 
-        let columns = threadTableColumns(database)
+    private static func visibleUserThreadIDs(
+        from threadIDs: Set<String>,
+        database: SQLiteDatabaseConnection,
+        codexHome: URL
+    ) throws -> Set<String> {
+        let columns = try threadTableColumns(database)
         let archivedExpression = columns.contains("archived") ? "COALESCE(archived, 0)" : "0"
         let hasUserEventExpression = columns.contains("has_user_event") ? "COALESCE(has_user_event, 0)" : "1"
         let threadSourceExpression = columns.contains("thread_source") ? "COALESCE(thread_source, 'user')" : "'user'"
         let sourceExpression = columns.contains("source") ? "COALESCE(source, '')" : "''"
         let previewExpression = columns.contains("preview") ? "COALESCE(preview, '')" : "'legacy'"
-        let placeholders = Array(repeating: "?", count: threadIDs.count).joined(separator: ",")
+        let sortedThreadIDs = threadIDs.sorted()
+        let placeholders = Array(repeating: "?", count: sortedThreadIDs.count).joined(separator: ",")
         let sql = """
         SELECT id, \(archivedExpression), \(hasUserEventExpression), \(threadSourceExpression), \(sourceExpression), \(previewExpression)
         FROM threads
         WHERE id IN (\(placeholders))
         """
 
-        var statement: OpaquePointer?
-        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-        guard prepareStatus == SQLITE_OK, let statement else {
-            if let statement {
-                sqlite3_finalize(statement)
-            }
-            return sessionVisibleThreadIDs(from: threadIDs, codexHome: codexHome).visibleIDs
+        let rows = try database.readRows(sql, bindings: sortedThreadIDs.map(SQLiteBinding.text)) { statement in
+            (
+                id: statement.text(0) ?? "",
+                archived: (statement.int(1) ?? 0) != 0,
+                hasUserEvent: (statement.int(2) ?? 0) != 0,
+                threadSource: statement.text(3) ?? "user",
+                source: statement.text(4) ?? "",
+                preview: statement.text(5) ?? ""
+            )
         }
-        defer { sqlite3_finalize(statement) }
-
-        for (index, id) in threadIDs.sorted().enumerated() {
-            sqlite3_bind_text(statement, Int32(index + 1), id, -1, sqliteTransient)
-        }
-
         var visibleIDs = Set<String>()
         var matchedIDs = Set<String>()
-        while sqlite3_step(statement) == SQLITE_ROW {
-            if let text = sqlite3_column_text(statement, 0) {
-                let id = String(cString: text)
-                matchedIDs.insert(id)
-                let archived = sqlite3_column_int(statement, 1) != 0
-                let hasUserEvent = sqlite3_column_int(statement, 2) != 0
-                let threadSource = sqlite3_column_text(statement, 3).map { String(cString: $0) } ?? "user"
-                let source = sqlite3_column_text(statement, 4).map { String(cString: $0) } ?? ""
-                let preview = sqlite3_column_text(statement, 5).map { String(cString: $0) } ?? ""
-                if !archived,
-                   hasUserEvent,
-                   !preview.isEmpty,
-                   !threadSource.localizedCaseInsensitiveContains("subagent"),
-                   !source.localizedCaseInsensitiveContains("subagent") {
-                    visibleIDs.insert(id)
-                }
+
+        for row in rows where !row.id.isEmpty {
+            matchedIDs.insert(row.id)
+            if !row.archived,
+               row.hasUserEvent,
+               !row.preview.isEmpty,
+               !row.threadSource.localizedCaseInsensitiveContains("subagent"),
+               !row.source.localizedCaseInsensitiveContains("subagent") {
+                visibleIDs.insert(row.id)
             }
         }
 
@@ -342,24 +339,11 @@ private enum CodexUnreadThreadReader {
         return visibleIDs
     }
 
-    private static func threadTableColumns(_ database: OpaquePointer) -> Set<String> {
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, "PRAGMA table_info(threads)", -1, &statement, nil) == SQLITE_OK,
-              let statement else {
-            if let statement {
-                sqlite3_finalize(statement)
-            }
-            return []
+    private static func threadTableColumns(_ database: SQLiteDatabaseConnection) throws -> Set<String> {
+        let columns = try database.readRows("PRAGMA table_info(threads)") { statement in
+            statement.text(1) ?? ""
         }
-        defer { sqlite3_finalize(statement) }
-
-        var columns = Set<String>()
-        while sqlite3_step(statement) == SQLITE_ROW {
-            if let text = sqlite3_column_text(statement, 1) {
-                columns.insert(String(cString: text))
-            }
-        }
-        return columns
+        return Set(columns.filter { !$0.isEmpty })
     }
 
     private struct SessionVisibility {

@@ -473,29 +473,17 @@ final class CodexUsageAnalyzer {
     }
 
     private func sqliteRows(db: String, sql: String) throws -> [[String]] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = ["-separator", "\t", db, sql]
-
-        let output = Pipe()
-        let error = Pipe()
-        process.standardOutput = output
-        process.standardError = error
-
-        try process.run()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        let errorData = error.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            let message = String(data: errorData, encoding: .utf8) ?? "sqlite3 failed"
-            throw NSError(domain: "CodexTokenBar", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
+        let driver = SQLiteDatabaseDriver(
+            url: URL(fileURLWithPath: db),
+            readOnly: true,
+            busyTimeoutMilliseconds: 3_000,
+            enableWAL: false
+        )
+        return try driver.readRows(sql) { statement in
+            (0..<statement.columnCount).map { column in
+                statement.text(column) ?? ""
+            }
         }
-
-        let text = String(data: data, encoding: .utf8) ?? ""
-        return text
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map { line in line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init) }
     }
 
     private func loadThreadMetadata() -> (plugins: [PluginUsage], reasoning: String) {

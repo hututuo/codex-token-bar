@@ -25,6 +25,10 @@ enum SQLiteBinding {
 struct SQLiteStatement {
     fileprivate let raw: OpaquePointer?
 
+    var columnCount: Int32 {
+        sqlite3_column_count(raw)
+    }
+
     func text(_ column: Int32) -> String? {
         guard sqlite3_column_type(raw, column) != SQLITE_NULL,
               let value = sqlite3_column_text(raw, column) else {
@@ -111,7 +115,7 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         }
     }
 
-    private func withConnection<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
+    func withConnection<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
         if !readOnly {
             try fileManager.createDirectory(
                 at: url.deletingLastPathComponent(),
