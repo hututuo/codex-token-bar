@@ -23,7 +23,7 @@ private enum LiveRatePanelLayout {
 }
 
 struct LiveRateView: View {
-    @ObservedObject var monitor: LiveRateMonitor
+    let monitor: LiveRateMonitor
     @Binding var floatingPanelEnabled: Bool
     @Binding var statusBarPanelEnabled: Bool
     @Binding var preciseTokenCountingEnabled: Bool
@@ -38,33 +38,15 @@ struct LiveRateView: View {
     @Binding var showingPaletteMenu: Bool
     @Binding var showingUnreadEffectMenu: Bool
 
-    private var primarySnapshot: LiveRateSnapshot {
-        monitor.totalSnapshot
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("全会话实时速度")
-                    .font(.system(size: 15, weight: .semibold))
-                    .lineLimit(1)
-
-                Text(primarySnapshot.status)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                Spacer(minLength: 8)
-
-                LiveRateResetButton(action: monitor.reset)
-            }
+            LiveRateHeader(monitor: monitor, onReset: monitor.reset)
 
             GeometryReader { proxy in
                 let columnWidth = max(0, (proxy.size.width - LiveRatePanelLayout.contentSpacing) / 2)
 
                 HStack(alignment: .top, spacing: LiveRatePanelLayout.contentSpacing) {
-                    LiveRateInstrument(snapshot: primarySnapshot, fullScale: $tokenRateFullScale)
+                    LiveRateInstrumentReader(monitor: monitor, fullScale: $tokenRateFullScale)
                         .frame(width: columnWidth, height: LiveRatePanelLayout.contentHeight)
 
                     LiveRateControls(
@@ -97,6 +79,38 @@ struct LiveRateView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(AppTheme.border, lineWidth: 1)
         )
+    }
+}
+
+private struct LiveRateHeader: View {
+    @ObservedObject var monitor: LiveRateMonitor
+    let onReset: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("全会话实时速度")
+                .font(.system(size: 15, weight: .semibold))
+                .lineLimit(1)
+
+            Text(monitor.totalSnapshot.status)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 8)
+
+            LiveRateResetButton(action: onReset)
+        }
+    }
+}
+
+private struct LiveRateInstrumentReader: View {
+    @ObservedObject var monitor: LiveRateMonitor
+    @Binding var fullScale: Double
+
+    var body: some View {
+        LiveRateInstrument(snapshot: monitor.totalSnapshot, fullScale: $fullScale)
     }
 }
 
