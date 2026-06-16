@@ -15,7 +15,7 @@
   </tr>
 </table>
 
-Codex Token Bar 是一个本地优先的 macOS SwiftUI 应用，用来从本地 Codex 日志查看 token 用量、实时输出速度、缓存命中率和账号额度节奏。
+Codex Token Bar 是一个本地优先的 macOS SwiftUI 应用，用来从本地 Codex 日志和账号接口查看 token 用量、实时输出速度、缓存命中率、Codex 额度和重置卡详情。
 
 <p align="center">
   <img src="Assets/DashboardPreview.png" alt="Codex Token Bar 主界面截图" width="100%">
@@ -29,7 +29,7 @@ Codex Token Bar 是一个本地优先的 macOS SwiftUI 应用，用来从本地 
 
 - 全会话实时 token 速率，支持悬浮窗、透明度、缩放和单会话下钻。
 - 年度 token 热力图、最近 24 小时 5 分钟粒度曲线、缓存命中率曲线和缓存排行。
-- 5h / 7d 账号额度显示、本地轻量历史记录和“使劲蹬”等节奏提示。
+- Codex 5h / 7d 额度显示、本地轻量历史记录和“使劲蹬”等节奏提示。
 - 重置卡详情：显示可用重置机会、每张卡的状态、来源、发放时间、到期时间和使用记录。
 - “会话消失修复”向导：扫描、备份、修复、验证和多备份回滚。
 - 本地优先：读取 `~/.codex` 本地数据，不上传 prompt、输出、日志或账号额度。
@@ -152,7 +152,7 @@ MIT
 
 ## English
 
-Codex Token Bar is a local-first macOS SwiftUI app for reading local Codex logs and showing token usage, live output speed, cache hit rates, and account quota pace.
+Codex Token Bar is a local-first macOS SwiftUI app for reading local Codex logs and account endpoints to show token usage, live output speed, cache hit rates, Codex quota, and reset-credit details.
 
 <p align="center">
   <img src="Assets/DashboardPreview.png" alt="Codex Token Bar dashboard screenshot" width="100%">
@@ -166,7 +166,7 @@ Codex Token Bar is a local-first macOS SwiftUI app for reading local Codex logs 
 
 - Live all-session token speed with a compact floating panel, opacity, scaling, and session drill-down.
 - Yearly token heatmap, 5-minute recent activity chart, cache hit-rate curve, and cache hit ranking.
-- 5h / 7d account quota display with lightweight local history and compact pace hints.
+- Codex 5h / 7d quota display with lightweight local history and compact pace hints.
 - Reset credit details: see available reset credits, status, source, grant time, expiry time, and redemption history for each credit.
 - Session disappearance repair wizard with scan, backup, repair, verify, and rollback list.
 - Local-first: reads local `~/.codex` data and does not upload prompts, outputs, logs, or quota data.
