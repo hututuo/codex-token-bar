@@ -10,7 +10,7 @@ struct DashboardView: View {
     @StateObject private var providerSyncStore = ProviderSyncStore()
     @StateObject private var floatingPanel = FloatingTokenPanelController()
     @StateObject private var statusBarPanel = StatusBarTokenController()
-    @StateObject private var taskCompletionMonitor = TaskCompletionMonitor()
+    @State private var taskCompletionMonitor = TaskCompletionMonitor()
     @State private var liveMonitor = LiveRateMonitor()
     @AppStorage("tokenDisplayMode") private var tokenDisplayModeRaw = TokenDisplayMode.floating.rawValue
     @AppStorage("floatingPanelEnabled") private var floatingPanelEnabled = true

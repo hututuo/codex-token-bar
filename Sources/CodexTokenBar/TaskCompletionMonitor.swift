@@ -41,7 +41,7 @@ final class TaskCompletionMonitor: ObservableObject {
             completedTaskThreadIDs.removeAll()
             unreadThreadState = CodexUnreadThreadState()
             hasCodexUnreadState = false
-            unreadThreadCount = 0
+            setUnreadThreadCount(0)
         }
 
         updateStatusText()
@@ -137,8 +137,7 @@ final class TaskCompletionMonitor: ObservableObject {
         seeded = true
 
         if result.fileCount == 0 {
-            statusText = "未发现会话日志"
-            detailText = "等待 Codex 写入 sessions"
+            setStatusText("未发现会话日志", detail: "等待 Codex 写入 sessions")
         } else if result.events.isEmpty {
             updateStatusText(fileCount: result.fileCount)
         }
@@ -146,7 +145,7 @@ final class TaskCompletionMonitor: ObservableObject {
         var didAddUnread = false
         for event in result.events {
             guard completedEventIDs.insert(event.id).inserted else { continue }
-            lastCompletedTitle = event.title
+            setLastCompletedTitle(event.title)
             completedTaskThreadIDs[event.id] = event.threadID
             didAddUnread = true
         }
@@ -162,9 +161,9 @@ final class TaskCompletionMonitor: ObservableObject {
 
     private func recomputeUnreadThreadCount() {
         if hasCodexUnreadState {
-            unreadThreadCount = unreadThreadState.threadIDs.count
+            setUnreadThreadCount(unreadThreadState.threadIDs.count)
         } else {
-            unreadThreadCount = Set(completedTaskThreadIDs.values).count
+            setUnreadThreadCount(Set(completedTaskThreadIDs.values).count)
         }
     }
 
@@ -177,27 +176,45 @@ final class TaskCompletionMonitor: ObservableObject {
     private func updateStatusText(fileCount: Int? = nil) {
         if unreadThreadCount > 0 {
             if hasCodexUnreadState {
-                statusText = "有未读会话"
-                detailText = "Codex 有 \(unreadThreadCount) 个未读会话"
+                setStatusText("有未读会话", detail: "Codex 有 \(unreadThreadCount) 个未读会话")
             } else {
-                statusText = "有任务完成"
-                detailText = lastCompletedTitle.isEmpty ? "等待 Codex 未读状态同步" : lastCompletedTitle
+                setStatusText(
+                    "有任务完成",
+                    detail: lastCompletedTitle.isEmpty ? "等待 Codex 未读状态同步" : lastCompletedTitle
+                )
             }
             return
         }
 
         if dataSource == nil {
-            statusText = "未找到 Codex 目录"
-            detailText = "选择目录后开始监听"
+            setStatusText("未找到 Codex 目录", detail: "选择目录后开始监听")
             return
         }
 
-        statusText = "未读监听中"
         if let fileCount {
-            detailText = "已跟踪 \(fileCount) 个会话文件"
+            setStatusText("未读监听中", detail: "已跟踪 \(fileCount) 个会话文件")
         } else {
-            detailText = "Codex 有未读会话时会亮点"
+            setStatusText("未读监听中", detail: "Codex 有未读会话时会亮点")
         }
+    }
+
+    private func setStatusText(_ status: String, detail: String) {
+        if statusText != status {
+            statusText = status
+        }
+        if detailText != detail {
+            detailText = detail
+        }
+    }
+
+    private func setLastCompletedTitle(_ title: String) {
+        guard lastCompletedTitle != title else { return }
+        lastCompletedTitle = title
+    }
+
+    private func setUnreadThreadCount(_ count: Int) {
+        guard unreadThreadCount != count else { return }
+        unreadThreadCount = count
     }
 }
 
