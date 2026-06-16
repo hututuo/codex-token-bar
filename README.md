@@ -30,6 +30,7 @@ Codex Token Bar 是一个本地优先的 macOS SwiftUI 应用，用来从本地 
 - 全会话实时 token 速率，支持悬浮窗、透明度、缩放和单会话下钻。
 - 年度 token 热力图、最近 24 小时 5 分钟粒度曲线、缓存命中率曲线和缓存排行。
 - 5h / 7d 账号额度显示、本地轻量历史记录和“使劲蹬”等节奏提示。
+- 重置卡详情：显示可用重置机会、每张卡的状态、来源、发放时间、到期时间和使用记录。
 - “会话消失修复”向导：扫描、备份、修复、验证和多备份回滚。
 - 本地优先：读取 `~/.codex` 本地数据，不上传 prompt、输出、日志或账号额度。
 - Sparkle 更新检查：菜单栏 `Codex Token Bar -> 检查更新...`。
@@ -37,6 +38,12 @@ Codex Token Bar 是一个本地优先的 macOS SwiftUI 应用，用来从本地 
 ## 为什么
 
 Codex 的本地日志里已经有很多有用信息，但平时很难快速看清“今天用了多少”“现在输出多快”“缓存是不是命中”“额度够不够烧”。这个应用把这些本地数据整理成一个轻量 dashboard，并提供一个不挡视线的小悬浮窗。
+
+## 特色：重置卡详情
+
+Codex Token Bar 会读取 Codex 自己使用的本地账号接口，把“重置机会 / 重置卡”展示成可读详情。你可以看到当前有几张可用重置卡、每张卡是否可用、什么时候发放、什么时候到期、是否已经开始兑换或使用完成，以及来源说明。
+
+这个功能是只读的：应用只展示信息，不会调用消耗重置卡的接口，也不会上传账号额度或会话内容。
 
 ## 安装
 
@@ -160,6 +167,7 @@ Codex Token Bar is a local-first macOS SwiftUI app for reading local Codex logs 
 - Live all-session token speed with a compact floating panel, opacity, scaling, and session drill-down.
 - Yearly token heatmap, 5-minute recent activity chart, cache hit-rate curve, and cache hit ranking.
 - 5h / 7d account quota display with lightweight local history and compact pace hints.
+- Reset credit details: see available reset credits, status, source, grant time, expiry time, and redemption history for each credit.
 - Session disappearance repair wizard with scan, backup, repair, verify, and rollback list.
 - Local-first: reads local `~/.codex` data and does not upload prompts, outputs, logs, or quota data.
 - Sparkle update checking from `Codex Token Bar -> Check for Updates...`.
@@ -167,6 +175,12 @@ Codex Token Bar is a local-first macOS SwiftUI app for reading local Codex logs 
 ## Why
 
 Codex already writes useful local usage data, but it is hard to see the current speed, daily burn, cache behavior, and quota pace at a glance. Codex Token Bar turns those local files into a small dashboard and an unobtrusive floating meter.
+
+## Feature: Reset Credit Details
+
+Codex Token Bar reads the same local account endpoint used by Codex and turns reset credits into a readable detail view. You can see how many reset credits are available, whether each credit is usable, when it was granted, when it expires, whether redemption has started or completed, and the human-readable source note.
+
+This feature is read-only: the app displays the information but never calls the endpoint that consumes a reset credit, and it does not upload quota data or conversation content.
 
 ## Installation
 
