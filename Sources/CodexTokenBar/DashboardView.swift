@@ -2160,7 +2160,22 @@ struct RecentUsageChart: View {
 
     private func optionalLinePath(points: [CGPoint?]) -> Path {
         var path = Path()
-        appendSmoothPolyline(points.compactMap { $0 }, to: &path)
+        var segment: [CGPoint] = []
+
+        for point in points {
+            guard let point else {
+                if !segment.isEmpty {
+                    appendSmoothPolyline(segment, to: &path)
+                    segment.removeAll(keepingCapacity: true)
+                }
+                continue
+            }
+            segment.append(point)
+        }
+
+        if !segment.isEmpty {
+            appendSmoothPolyline(segment, to: &path)
+        }
         return path
     }
 
@@ -2177,25 +2192,122 @@ struct RecentUsageChart: View {
             return
         }
 
-        // Hover markers use the raw data points, so the smoothed curve must
-        // interpolate each point instead of only passing through midpoints.
-        let tension: CGFloat = 0.18
-        for index in 0..<(points.count - 1) {
-            let p0 = index > 0 ? points[index - 1] : points[index]
-            let p1 = points[index]
-            let p2 = points[index + 1]
-            let p3 = index + 2 < points.count ? points[index + 2] : p2
-
-            let control1 = CGPoint(
-                x: p1.x + (p2.x - p0.x) * tension,
-                y: p1.y + (p2.y - p0.y) * tension
-            )
-            let control2 = CGPoint(
-                x: p2.x - (p3.x - p1.x) * tension,
-                y: p2.y - (p3.y - p1.y) * tension
-            )
-            path.addCurve(to: p2, control1: control1, control2: control2)
+        guard let slopes = monotoneSlopes(for: points) else {
+            for point in points.dropFirst() {
+                path.addLine(to: point)
+            }
+            return
         }
+
+        for index in 0..<(points.count - 1) {
+            let start = points[index]
+            let end = points[index + 1]
+            let dx = end.x - start.x
+            guard dx > .ulpOfOne else {
+                path.addLine(to: end)
+                continue
+            }
+
+            let controlDistance = dx / 3
+            path.addCurve(
+                to: end,
+                control1: CGPoint(
+                    x: start.x + controlDistance,
+                    y: start.y + slopes[index] * controlDistance
+                ),
+                control2: CGPoint(
+                    x: end.x - controlDistance,
+                    y: end.y - slopes[index + 1] * controlDistance
+                )
+            )
+        }
+    }
+
+    private func monotoneSlopes(for points: [CGPoint]) -> [CGFloat]? {
+        guard points.count > 2 else { return nil }
+
+        // Shape-preserving slopes keep smoothing from inventing peaks between adjacent bins.
+        var intervals: [CGFloat] = []
+        var deltas: [CGFloat] = []
+        for index in 0..<(points.count - 1) {
+            let dx = points[index + 1].x - points[index].x
+            guard dx > .ulpOfOne else { return nil }
+            intervals.append(dx)
+            deltas.append((points[index + 1].y - points[index].y) / dx)
+        }
+
+        var slopes = Array(repeating: CGFloat.zero, count: points.count)
+        slopes[0] = endpointSlope(
+            edgeInterval: intervals[0],
+            neighborInterval: intervals[1],
+            edgeDelta: deltas[0],
+            neighborDelta: deltas[1]
+        )
+        slopes[points.count - 1] = endpointSlope(
+            edgeInterval: intervals[intervals.count - 1],
+            neighborInterval: intervals[intervals.count - 2],
+            edgeDelta: deltas[deltas.count - 1],
+            neighborDelta: deltas[deltas.count - 2]
+        )
+
+        for index in 1..<(points.count - 1) {
+            let left = deltas[index - 1]
+            let right = deltas[index]
+            guard left != 0, right != 0, (left > 0) == (right > 0) else {
+                slopes[index] = 0
+                continue
+            }
+
+            let leftInterval = intervals[index - 1]
+            let rightInterval = intervals[index]
+            let leftWeight = 2 * rightInterval + leftInterval
+            let rightWeight = rightInterval + 2 * leftInterval
+            slopes[index] = (leftWeight + rightWeight) / (leftWeight / left + rightWeight / right)
+        }
+
+        for index in 0..<deltas.count {
+            let delta = deltas[index]
+            guard delta != 0 else {
+                slopes[index] = 0
+                slopes[index + 1] = 0
+                continue
+            }
+
+            let alpha = slopes[index] / delta
+            let beta = slopes[index + 1] / delta
+            if alpha < 0 || beta < 0 {
+                if alpha < 0 { slopes[index] = 0 }
+                if beta < 0 { slopes[index + 1] = 0 }
+                continue
+            }
+
+            let magnitude = alpha * alpha + beta * beta
+            if magnitude > 9 {
+                let scale = 3 / magnitude.squareRoot()
+                slopes[index] = scale * alpha * delta
+                slopes[index + 1] = scale * beta * delta
+            }
+        }
+
+        return slopes
+    }
+
+    private func endpointSlope(
+        edgeInterval: CGFloat,
+        neighborInterval: CGFloat,
+        edgeDelta: CGFloat,
+        neighborDelta: CGFloat
+    ) -> CGFloat {
+        guard edgeDelta != 0 else { return 0 }
+
+        let slope = ((2 * edgeInterval + neighborInterval) * edgeDelta - edgeInterval * neighborDelta) / (edgeInterval + neighborInterval)
+        if (slope > 0) != (edgeDelta > 0) {
+            return 0
+        }
+        if (edgeDelta > 0) != (neighborDelta > 0), abs(slope) > abs(3 * edgeDelta) {
+            return 3 * edgeDelta
+        }
+        return slope
     }
 
     private func hoverIndex(at location: CGPoint, in plot: CGRect, step: CGFloat) -> Int? {
