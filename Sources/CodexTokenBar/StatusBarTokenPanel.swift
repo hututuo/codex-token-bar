@@ -12,6 +12,7 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
     private weak var monitor: LiveRateMonitor?
     private weak var quota: AccountQuotaStore?
     private var onClose: (() -> Void)?
+    private var lastStatusTitle: String?
 
     func show(store: CodexUsageStore, monitor: LiveRateMonitor, quota: AccountQuotaStore, onClose: @escaping () -> Void) {
         self.store = store
@@ -28,6 +29,8 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
             item.button?.action = #selector(togglePopover)
             item.button?.sendAction(on: [.leftMouseDown])
             item.button?.toolTip = "Codex Token Bar 实时速率"
+            item.button?.alignment = .center
+            item.button?.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
             statusItem = item
         }
 
@@ -64,6 +67,7 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
             NSStatusBar.system.removeStatusItem(statusItem)
         }
         statusItem = nil
+        lastStatusTitle = nil
         isPresented = false
     }
 
@@ -84,10 +88,13 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
         guard let store, let monitor, let quota else { return }
         let snapshot = TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota)
         guard let button = statusItem?.button else { return }
-        button.title = "    \(snapshot.statusBarTitle)    "
-        button.alignment = .center
-        button.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
-        statusItem?.length = max(132, button.intrinsicContentSize.width + 48)
+        let title = "    \(snapshot.statusBarTitle)    "
+        guard title != lastStatusTitle else { return }
+
+        button.title = title
+        let length = max(132, button.intrinsicContentSize.width + 48)
+        statusItem?.length = length
+        lastStatusTitle = title
     }
 }
 
@@ -95,7 +102,18 @@ struct StatusBarTokenPopoverView: View {
     @ObservedObject var store: CodexUsageStore
     @ObservedObject var monitor: LiveRateMonitor
     @ObservedObject var quota: AccountQuotaStore
+    @Environment(\.colorScheme) private var colorScheme
     let onClose: () -> Void
+
+    private var panelFill: Color {
+        colorScheme == .dark
+            ? Color(nsColor: .windowBackgroundColor)
+            : Color.white
+    }
+
+    private var panelStroke: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.08)
+    }
 
     var body: some View {
         let snapshot = TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota)
@@ -177,13 +195,12 @@ struct StatusBarTokenPopoverView: View {
         .frame(width: 360, height: 310, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.white)
+                .fill(panelFill)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                .stroke(panelStroke, lineWidth: 1)
         )
-        .preferredColorScheme(.light)
     }
 }
 
@@ -200,7 +217,7 @@ private struct StatusBarRateTrack: View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.black.opacity(0.065))
+                    .fill(Color.primary.opacity(0.07))
                 Capsule()
                     .fill(
                         LinearGradient(
@@ -238,7 +255,7 @@ private struct StatusBarMetricTile: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.black.opacity(0.045))
+                .fill(Color.primary.opacity(0.055))
         )
     }
 }
@@ -260,7 +277,7 @@ private struct StatusBarQuotaLine: View {
                 let width = max(4, proxy.size.width * CGFloat(percent / 100.0))
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(Color.black.opacity(0.055))
+                        .fill(Color.primary.opacity(0.06))
                     Capsule()
                         .fill(AppTheme.quotaRemainingColor(percent: percent))
                         .frame(width: width)
@@ -293,6 +310,6 @@ private struct StatusBarBreakdownChip: View {
         .font(.system(size: 9))
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
-        .background(Capsule().fill(Color.black.opacity(0.045)))
+        .background(Capsule().fill(Color.primary.opacity(0.055)))
     }
 }
