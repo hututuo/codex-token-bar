@@ -35,6 +35,7 @@ struct DashboardView: View {
     @AppStorage("setupGuideCompletedV01") private var setupGuideCompleted = false
     @State private var showingProviderSync = false
     @State private var showingSetupGuide = false
+    @State private var showingResetCreditDetails = false
 
     init(loginItemStore: LoginItemStore, updateSettingsStore: AppUpdateSettingsStore) {
         self.loginItemStore = loginItemStore
@@ -65,7 +66,8 @@ struct DashboardView: View {
                             onOpenProviderSync: {
                                 showingProviderSync = true
                                 providerSyncStore.scan(dataSource: store.currentDataSource)
-                            }
+                            },
+                            showingResetCreditDetails: $showingResetCreditDetails
                         )
 
                         StatStrip(stats: store.snapshot.stats)
@@ -123,6 +125,27 @@ struct DashboardView: View {
                     .transition(.opacity)
                     .zIndex(10)
             }
+
+            if showingResetCreditDetails {
+                GeometryReader { proxy in
+                    ZStack(alignment: .top) {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                showingResetCreditDetails = false
+                            }
+
+                        AccountQuotaResetCreditDetailView(
+                            snapshot: quotaStore.snapshot,
+                            onClose: { showingResetCreditDetails = false }
+                        )
+                        .frame(width: min(560, max(460, proxy.size.width - 108)))
+                        .frame(maxHeight: max(360, proxy.size.height - 90))
+                        .padding(.top, 78)
+                    }
+                }
+                .zIndex(9)
+            }
         }
         .animation(.easeInOut(duration: 0.18), value: store.isInitialLoading)
         .onAppear {
@@ -168,6 +191,9 @@ struct DashboardView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             updateUsageRefreshCadence()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in
+            showingResetCreditDetails = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMiniaturizeNotification)) { _ in
             updateUsageRefreshCadence()
@@ -384,6 +410,7 @@ struct HeaderView: View {
     let onRefresh: () -> Void
     let onChangeDirectory: () -> Void
     let onOpenProviderSync: () -> Void
+    @Binding var showingResetCreditDetails: Bool
 
     @AppStorage("customAccountDisplayName") private var customAccountDisplayName = ""
     @State private var isEditingDisplayName = false
@@ -503,12 +530,18 @@ struct HeaderView: View {
                 .padding(.leading, 12)
                 .frame(maxWidth: 980)
 
-                AccountQuotaStrip(snapshot: quotaSnapshot)
+                AccountQuotaStrip(
+                    snapshot: quotaSnapshot,
+                    showingResetCreditDetails: $showingResetCreditDetails
+                )
             }
         }
+        .zIndex(showingResetCreditDetails ? 10_000 : 0)
         .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in
-            guard isEditingDisplayName else { return }
-            saveDisplayNameDraft()
+            if isEditingDisplayName {
+                saveDisplayNameDraft()
+            }
+            showingResetCreditDetails = false
         }
     }
 

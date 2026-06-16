@@ -249,10 +249,12 @@ final class CodexUsageAnalyzer {
         let hourlyUsage = hourlyUsage(from: events)
         let officialSummary = loadOfficialThreadSummary()
         let cacheUsage = cacheUsage(from: events, recentBins: recentBins, threadInfo: loadThreadInfo())
+        let totalTokens = events.reduce(0) { $0 + $1.tokens }
+        let peakThreadTokens = peakSessionTokens(from: events)
         let stats = DashboardStats(
-            totalTokens: officialSummary?.totalTokens ?? events.reduce(0) { $0 + $1.tokens },
+            totalTokens: totalTokens,
             peakDayTokens: daily.map(\.tokens).max() ?? 0,
-            peakThreadTokens: officialSummary?.peakThreadTokens ?? peakSessionTokens(from: events),
+            peakThreadTokens: peakThreadTokens,
             currentStreakDays: currentStreakDays(from: daily),
             longestStreakDays: longestStreakDays(from: daily),
             totalCalls: events.count,

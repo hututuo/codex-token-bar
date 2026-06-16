@@ -61,7 +61,8 @@ struct ExportSnapshotView: View {
                     isRefreshing: false,
                     onRefresh: {},
                     onChangeDirectory: {},
-                    onOpenProviderSync: {}
+                    onOpenProviderSync: {},
+                    showingResetCreditDetails: .constant(false)
                 )
                 StatStrip(stats: snapshot.stats)
                 ActivitySection(
