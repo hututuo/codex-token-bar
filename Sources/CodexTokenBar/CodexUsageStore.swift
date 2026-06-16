@@ -25,11 +25,19 @@ final class CodexUsageStore: ObservableObject {
     init() {
         dataSource = resolver.resolve()
         updateDataSourceLabels()
-        refresh()
+        refreshInitialSnapshot()
         scheduleTimer()
     }
 
     func refresh() {
+        refresh(includePreciseScan: true)
+    }
+
+    private func refreshInitialSnapshot() {
+        refresh(includePreciseScan: false)
+    }
+
+    private func refresh(includePreciseScan: Bool) {
         guard !isRefreshing else { return }
         dataSource = resolver.resolve()
         updateDataSourceLabels()
@@ -59,19 +67,30 @@ final class CodexUsageStore: ObservableObject {
         Task {
             do {
                 let source = dataSource
-                if isFirstLoad,
-                   let quickSnapshot = try? await (Task.detached(priority: .utility) {
-                    try CodexUsageAnalyzer(dataSource: source).loadFastSnapshot()
-                   }).value {
-                    snapshot = quickSnapshot
-                    status = "\(source.originLabel) · state_5.sqlite · 正在扫描精确 token..."
+                if isFirstLoad || !includePreciseScan {
+                    if includePreciseScan {
+                        if let quickSnapshot = try? await (Task.detached(priority: .utility) {
+                            try CodexUsageAnalyzer(dataSource: source).loadFastSnapshot()
+                        }).value {
+                            snapshot = quickSnapshot
+                            status = "\(source.originLabel) · state_5.sqlite · 正在扫描精确 token..."
+                        }
+                    } else {
+                        let quickSnapshot = try await Task.detached(priority: .utility) {
+                            try CodexUsageAnalyzer(dataSource: source).loadFastSnapshot()
+                        }.value
+                        snapshot = quickSnapshot
+                        status = "\(source.originLabel) · state_5.sqlite · 精确统计稍后更新"
+                    }
                 }
 
-                let loaded = try await Task.detached(priority: .utility) {
-                    try CodexUsageAnalyzer(dataSource: source).load()
-                }.value
-                snapshot = loaded
-                status = "\(source.originLabel) · token_count · Updated \(DateFormatter.status.string(from: loaded.generatedAt))"
+                if includePreciseScan {
+                    let loaded = try await Task.detached(priority: .utility) {
+                        try CodexUsageAnalyzer(dataSource: source).load()
+                    }.value
+                    snapshot = loaded
+                    status = "\(source.originLabel) · token_count · Updated \(DateFormatter.status.string(from: loaded.generatedAt))"
+                }
             } catch {
                 if !hasExistingSnapshot {
                     snapshot = .empty
