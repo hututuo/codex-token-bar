@@ -58,6 +58,14 @@ enum AppTheme {
         light: rgba(1.000, 1.000, 1.000, 0.960),
         dark: rgba(0.080, 0.100, 0.135, 0.960)
     )
+    static let calloutBackground = adaptive(
+        light: rgba(1.000, 1.000, 1.000),
+        dark: rgba(0.090, 0.110, 0.145)
+    )
+    static let calloutOptionBackground = adaptive(
+        light: rgba(0.945, 0.955, 0.975),
+        dark: rgba(0.125, 0.145, 0.185)
+    )
 
     static func heatmapColor(ratio: Double) -> Color {
         switch ratio {

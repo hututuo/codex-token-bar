@@ -11,6 +11,7 @@ dist/
 # Workspace-only notes and validation artifacts
 CONTEXT.md
 PROJECT_INDEX.md
+decisions.md
 notes/
 patches/
 plans/

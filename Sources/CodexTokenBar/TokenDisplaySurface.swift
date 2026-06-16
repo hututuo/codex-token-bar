@@ -124,7 +124,6 @@ struct TokenDisplaySnapshot {
     }
 
     var compactUsageStatus: String {
-        let cardSuffix = quota.compactLimitCardSuffix
         guard quota.isAvailable else {
             if quota.status.contains("失败") {
                 return "读取失败"
@@ -133,16 +132,16 @@ struct TokenDisplaySnapshot {
         }
 
         if let pace = quota.sevenDayPaceStatus {
-            return "\(pace.compactTitle)(\(pace.compactDetail)\(cardSuffix))"
+            return "\(pace.compactTitle)(\(pace.compactDetail))\(quota.compactResetCreditCountSuffix)"
         }
 
         if let sevenDay = quota.sevenDay {
-            return "7d剩\(sevenDay.remainingPercent)%\(cardSuffix)"
+            return "7d剩\(sevenDay.remainingPercent)%\(quota.compactResetCreditCountSuffix)"
         }
         if let fiveHour = quota.fiveHour {
-            return "5h剩\(fiveHour.remainingPercent)%\(cardSuffix)"
+            return "5h剩\(fiveHour.remainingPercent)%\(quota.compactResetCreditCountSuffix)"
         }
-        return "额度已读\(cardSuffix)"
+        return "额度已读\(quota.compactResetCreditCountSuffix)"
     }
 }
 
@@ -322,13 +321,21 @@ struct TokenQuotaMiniSegment: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let clampedFraction = min(max(fillFraction, 0), 1)
+            let fillWidth = proxy.size.width * clampedFraction
             ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(floatingTrackColor)
-                    .overlay(Capsule().stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
-                Capsule()
-                    .fill(AppTheme.accentBlue.opacity(0.78))
-                    .frame(width: max(2, proxy.size.width * fillFraction))
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(floatingTrackColor)
+                    if fillWidth > 0 {
+                        Capsule()
+                            .fill(AppTheme.accentBlue.opacity(0.78))
+                            .frame(width: min(proxy.size.width, max(proxy.size.height, fillWidth)), height: proxy.size.height)
+                    }
+                }
+                .clipShape(Capsule())
+                .overlay(Capsule().stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
+
                 Text("\(window.compactDisplayLabel) \(window.remainingPercent)% \(window.compactResetText)")
                     .font(.system(size: 9.4.scaled(by: displayScale), weight: .bold))
                     .foregroundStyle(.primary.opacity(0.82))

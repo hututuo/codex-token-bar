@@ -26,6 +26,16 @@ enum FloatingTokenPanelMetrics {
     }
 }
 
+private enum FloatingPanelColorTools {
+    private static let fallbackBlue = NSColor(srgbRed: 0.10, green: 0.45, blue: 0.95, alpha: 1.0)
+
+    static func deviceRGB(_ color: NSColor) -> NSColor {
+        color.usingColorSpace(.deviceRGB)
+            ?? color.usingColorSpace(.sRGB)
+            ?? fallbackBlue
+    }
+}
+
 @MainActor
 final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDelegate {
     @Published private(set) var isPresented = false
@@ -934,16 +944,6 @@ struct FloatingTokenPanelView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .zIndex(4)
-
-            FloatingUnreadCompletionDot(
-                count: unreadCount,
-                color: appearance.unreadIndicatorColor,
-                strokeColor: appearance.unreadIndicatorStrokeColor,
-                scale: scale,
-                onClear: taskCompletionMonitor.refreshUnreadThreadStatus
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .zIndex(1)
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -992,7 +992,7 @@ private struct FloatingUnreadShimmerOverlay: NSViewRepresentable {
     }
 
     private var nsColor: NSColor {
-        (NSColor(color).usingColorSpace(.deviceRGB) ?? .systemBlue)
+        FloatingPanelColorTools.deviceRGB(NSColor(color))
     }
 }
 
@@ -1049,7 +1049,7 @@ private final class FloatingUnreadShimmerView: NSView {
     }
 
     func configure(color: NSColor, cornerRadius: CGFloat, scale: CGFloat) {
-        let nextColor = color.usingColorSpace(.deviceRGB) ?? .systemBlue
+        let nextColor = FloatingPanelColorTools.deviceRGB(color)
         let nextScale = max(scale, 0.1)
         let needsLayout = !sameColor(nextColor, currentColor)
             || abs(currentScale - nextScale) > 0.001
@@ -1316,10 +1316,8 @@ private final class FloatingUnreadShimmerView: NSView {
     }
 
     private func sameColor(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
-        guard let lhs = lhs.usingColorSpace(.deviceRGB),
-              let rhs = rhs.usingColorSpace(.deviceRGB) else {
-            return false
-        }
+        let lhs = FloatingPanelColorTools.deviceRGB(lhs)
+        let rhs = FloatingPanelColorTools.deviceRGB(rhs)
         return abs(lhs.redComponent - rhs.redComponent) < 0.001
             && abs(lhs.greenComponent - rhs.greenComponent) < 0.001
             && abs(lhs.blueComponent - rhs.blueComponent) < 0.001
@@ -1343,7 +1341,7 @@ private struct FloatingUnreadRippleOverlay: NSViewRepresentable {
     }
 
     private var nsColor: NSColor {
-        NSColor(color).usingColorSpace(.deviceRGB) ?? .systemBlue
+        FloatingPanelColorTools.deviceRGB(NSColor(color))
     }
 }
 
@@ -1506,7 +1504,7 @@ private final class FloatingUnreadLayerRippleView: NSView {
     }
 
     func configure(color: NSColor, cornerRadius: CGFloat, scale: CGFloat) {
-        currentColor = color.usingColorSpace(.deviceRGB) ?? .systemBlue
+        currentColor = FloatingPanelColorTools.deviceRGB(color)
         currentCornerRadius = cornerRadius
         currentScale = max(scale, 0.1)
         updateColors()
@@ -1768,7 +1766,7 @@ private final class FloatingUnreadSpriteRippleView: NSView {
     }
 
     func configure(color: NSColor, cornerRadius: CGFloat, scale: CGFloat) {
-        let nextColor = color.usingColorSpace(.deviceRGB) ?? .systemBlue
+        let nextColor = FloatingPanelColorTools.deviceRGB(color)
         let nextScale = max(scale, 0.1)
         let needsLayout = !sameColor(nextColor, currentColor)
             || abs(currentScale - nextScale) > 0.001
@@ -2122,10 +2120,8 @@ private final class FloatingUnreadSpriteRippleView: NSView {
     }
 
     private func sameColor(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
-        guard let lhs = lhs.usingColorSpace(.deviceRGB),
-              let rhs = rhs.usingColorSpace(.deviceRGB) else {
-            return false
-        }
+        let lhs = FloatingPanelColorTools.deviceRGB(lhs)
+        let rhs = FloatingPanelColorTools.deviceRGB(rhs)
         return abs(lhs.redComponent - rhs.redComponent) < 0.001
             && abs(lhs.greenComponent - rhs.greenComponent) < 0.001
             && abs(lhs.blueComponent - rhs.blueComponent) < 0.001
@@ -2188,56 +2184,6 @@ private struct FloatingPanelLockButton: View {
             return "已锁定到 \(targetDescription)"
         }
         return TokenDisplayLockState.locked.helpText
-    }
-}
-
-private struct FloatingUnreadCompletionDot: View {
-    let count: Int
-    let color: Color
-    let strokeColor: Color
-    let scale: CGFloat
-    let onClear: () -> Void
-
-    var body: some View {
-        if count > 0 {
-            Button(action: onClear) {
-                ZStack {
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [
-                                    Color.white.opacity(0.54),
-                                    color.opacity(0.56),
-                                    color.opacity(0.90)
-                                ],
-                                center: UnitPoint(x: 0.30, y: 0.25),
-                                startRadius: 0.3 * scale,
-                                endRadius: 5.6 * scale
-                            )
-                        )
-                    Circle()
-                        .fill(color.opacity(0.22))
-                        .blur(radius: 0.8 * scale)
-                        .padding(0.7 * scale)
-                    Circle()
-                        .stroke(strokeColor, lineWidth: max(0.45, 0.55 * scale))
-                    Circle()
-                        .stroke(color.opacity(0.32), lineWidth: max(0.35, 0.45 * scale))
-                        .padding(0.9 * scale)
-                    Circle()
-                        .fill(Color.white.opacity(0.42))
-                        .frame(width: 1.35 * scale, height: 1.35 * scale)
-                        .offset(x: -1.15 * scale, y: -1.15 * scale)
-                }
-                .frame(width: 5.2 * scale, height: 5.2 * scale)
-                .frame(width: 18 * scale, height: 18 * scale, alignment: .topLeading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.leading, 8 * scale)
-            .padding(.top, 4 * scale)
-            .help(count == 1 ? "有 1 个完成任务未点开" : "有 \(count) 个完成任务未点开")
-        }
     }
 }
 

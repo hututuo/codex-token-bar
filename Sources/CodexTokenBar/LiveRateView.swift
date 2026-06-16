@@ -406,6 +406,7 @@ private struct FloatingUnreadEffectPicker: View {
     @State private var isPresented = false
     @State private var localClickMonitor: Any?
     @State private var globalClickMonitor: Any?
+    @State private var keyDownMonitor: Any?
 
     var body: some View {
         Button {
@@ -423,10 +424,10 @@ private struct FloatingUnreadEffectPicker: View {
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(alignment: .topLeading) {
             if isPresented {
-                unreadEffectPanel
+                unreadEffectMenu
                     .offset(y: 24)
                     .zIndex(20)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .topLeading)))
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .zIndex(isPresented ? 20 : 0)
@@ -439,41 +440,45 @@ private struct FloatingUnreadEffectPicker: View {
         }
     }
 
-    private var unreadEffectPanel: some View {
+    private var unreadEffectMenu: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
+            HStack(spacing: 7) {
                 Image(systemName: "bell.badge")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(AppTheme.accentBlue)
-                    .frame(width: 14)
+                    .frame(width: 15)
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("消息提醒")
-                        .font(.system(size: 12, weight: .semibold))
+                    Text("消息提醒样式")
+                        .font(.system(size: 12.5, weight: .bold))
                         .foregroundStyle(.primary)
-                    Text("选择未读时的悬浮窗效果")
-                        .font(.system(size: 10, weight: .medium))
+                    Text("未读会话时显示")
+                        .font(.system(size: 9.5, weight: .semibold))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
+            .padding(.horizontal, 8)
+            .padding(.top, 7)
 
-            VStack(spacing: 4) {
+            VStack(spacing: 3) {
                 unreadEffectOption(.off)
                 unreadEffectOption(.ripple)
                 unreadEffectOption(.shimmer)
             }
+            .padding(.horizontal, 5)
+            .padding(.bottom, 5)
         }
-        .padding(9)
-        .frame(width: 184, alignment: .leading)
+        .frame(width: 172, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(AppTheme.hoverBubble)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(AppTheme.calloutBackground)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(AppTheme.borderStrong.opacity(0.72), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(AppTheme.borderStrong.opacity(0.44), lineWidth: 1)
         )
-        .shadow(color: AppTheme.shadow, radius: 12, x: 0, y: 6)
+        .shadow(color: AppTheme.shadow.opacity(0.36), radius: 6, x: 0, y: 4)
     }
 
     private func unreadEffectOption(_ effect: FloatingPanelUnreadEffect) -> some View {
@@ -485,17 +490,17 @@ private struct FloatingUnreadEffectPicker: View {
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: unreadEffectIcon(effect))
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 10.5, weight: .bold))
                     .foregroundStyle(isSelected ? AppTheme.accentBlue : .secondary)
-                    .frame(width: 14)
+                    .frame(width: 15)
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(effect.label)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(isSelected ? .primary : .secondary)
-                    Text(effect.helpText)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary.opacity(0.86))
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(unreadEffectTitle(effect))
+                        .font(.system(size: 11.5, weight: .bold))
+                        .foregroundStyle(.primary)
+                    Text(unreadEffectSubtitle(effect))
+                        .font(.system(size: 8.8, weight: .semibold))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
 
@@ -506,18 +511,40 @@ private struct FloatingUnreadEffectPicker: View {
                     .foregroundStyle(isSelected ? AppTheme.accentBlue : .secondary.opacity(0.45))
             }
             .padding(.horizontal, 7)
-            .padding(.vertical, 5)
+            .padding(.vertical, 6)
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(isSelected ? AppTheme.accentBlue.opacity(0.13) : AppTheme.raisedBackground.opacity(0.48))
+                .fill(isSelected ? AppTheme.accentBlue.opacity(0.12) : Color.clear)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(isSelected ? AppTheme.accentBlue.opacity(0.30) : AppTheme.border.opacity(0.50), lineWidth: 1)
+                .stroke(isSelected ? AppTheme.accentBlue.opacity(0.36) : Color.clear, lineWidth: 1)
         )
+    }
+
+    private func unreadEffectTitle(_ effect: FloatingPanelUnreadEffect) -> String {
+        switch effect {
+        case .off:
+            return "关"
+        case .ripple:
+            return "涟漪"
+        case .shimmer:
+            return "扫光"
+        }
+    }
+
+    private func unreadEffectSubtitle(_ effect: FloatingPanelUnreadEffect) -> String {
+        switch effect {
+        case .off:
+            return "不显示动效"
+        case .ripple:
+            return "圆形水波"
+        case .shimmer:
+            return "柔和光带"
+        }
     }
 
     private func unreadEffectIcon(_ effect: FloatingPanelUnreadEffect) -> String {
@@ -548,7 +575,7 @@ private struct FloatingUnreadEffectPicker: View {
     }
 
     private func installDismissMonitors() {
-        guard localClickMonitor == nil, globalClickMonitor == nil else { return }
+        guard localClickMonitor == nil, globalClickMonitor == nil, keyDownMonitor == nil else { return }
         localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                 isPresented = false
@@ -560,6 +587,15 @@ private struct FloatingUnreadEffectPicker: View {
                 isPresented = false
             }
         }
+        keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 53 {
+                DispatchQueue.main.async {
+                    isPresented = false
+                }
+                return nil
+            }
+            return event
+        }
     }
 
     private func removeDismissMonitors() {
@@ -570,6 +606,10 @@ private struct FloatingUnreadEffectPicker: View {
         if let globalClickMonitor {
             NSEvent.removeMonitor(globalClickMonitor)
             self.globalClickMonitor = nil
+        }
+        if let keyDownMonitor {
+            NSEvent.removeMonitor(keyDownMonitor)
+            self.keyDownMonitor = nil
         }
     }
 }

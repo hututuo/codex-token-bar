@@ -103,6 +103,76 @@ struct AccountQuotaLimitCard: Equatable {
     }
 }
 
+struct AccountQuotaResetCredit: Equatable, Identifiable, Sendable {
+    let id: String
+    let status: String
+    let grantedAt: Date?
+    let expiresAt: Date?
+    let redeemStartedAt: Date?
+    let redeemedAt: Date?
+    let title: String?
+    let descriptionText: String?
+    let profileUserID: String?
+
+    var isAvailable: Bool {
+        status == "available" && redeemedAt == nil
+    }
+
+    var statusText: String {
+        if redeemedAt != nil {
+            return "已使用"
+        }
+        switch status {
+        case "available":
+            return "可用"
+        case "redeemed":
+            return "已使用"
+        case "expired":
+            return "已过期"
+        default:
+            return status.isEmpty ? "未知" : status
+        }
+    }
+
+    var compactExpiryText: String {
+        guard let expiresAt else { return "到期未知" }
+        return "\(Self.shortDate(expiresAt))到期"
+    }
+
+    var detailedExpiryText: String {
+        guard let expiresAt else { return "到期未知" }
+        return Self.dateTime(expiresAt)
+    }
+
+    var detailedGrantedText: String {
+        guard let grantedAt else { return "发放未知" }
+        return Self.dateTime(grantedAt)
+    }
+
+    var detailedRedeemedText: String? {
+        guard let redeemedAt else { return nil }
+        return Self.dateTime(redeemedAt)
+    }
+
+    private static func shortDate(_ date: Date) -> String {
+        let components = Calendar.current.dateComponents([.month, .day], from: date)
+        guard let month = components.month, let day = components.day else { return "--/--" }
+        return "\(month)/\(day)"
+    }
+
+    private static func dateTime(_ date: Date) -> String {
+        let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+        guard let year = components.year,
+              let month = components.month,
+              let day = components.day,
+              let hour = components.hour,
+              let minute = components.minute else {
+            return "--"
+        }
+        return String(format: "%04d-%02d-%02d %02d:%02d", year, month, day, hour, minute)
+    }
+}
+
 enum AccountQuotaPaceSeverity: Equatable {
     case urgent
     case fast
@@ -130,6 +200,8 @@ struct AccountQuotaSnapshot: Equatable {
     var limitName: String?
     var accountName: String?
     var limitCards: [AccountQuotaLimitCard] = []
+    var resetCreditsAvailableCount: Int?
+    var resetCredits: [AccountQuotaResetCredit] = []
     var status: String = "额度未读取"
     var updatedAt: Date?
 
@@ -159,6 +231,51 @@ struct AccountQuotaSnapshot: Equatable {
     var compactLimitCardSuffix: String {
         guard limitCards.count > 1 else { return "" }
         return " · \(limitCards.count)卡"
+    }
+
+    var availableResetCreditCount: Int {
+        max(resetCreditsAvailableCount ?? 0, resetCredits.filter(\.isAvailable).count)
+    }
+
+    var availableResetCredits: [AccountQuotaResetCredit] {
+        resetCredits.filter(\.isAvailable)
+    }
+
+    var nearestExpiringResetCredit: AccountQuotaResetCredit? {
+        availableResetCredits
+            .sorted {
+                switch ($0.expiresAt, $1.expiresAt) {
+                case let (lhs?, rhs?):
+                    return lhs < rhs
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                case (nil, nil):
+                    return $0.id.localizedStandardCompare($1.id) == .orderedAscending
+                }
+            }
+            .first
+    }
+
+    var compactResetCreditSummary: String? {
+        let count = availableResetCreditCount
+        guard count > 0 else { return nil }
+        return "\(count) 张重置卡"
+    }
+
+    var compactResetCreditCountSuffix: String {
+        let count = availableResetCreditCount
+        guard count > 0 else { return "" }
+        return " · \(count)卡"
+    }
+
+    var resetCreditDetailSummary: String {
+        let countText = compactResetCreditSummary ?? "暂无可用重置卡"
+        if let nearestExpiringResetCredit {
+            return "\(countText) · 最近 \(nearestExpiringResetCredit.compactExpiryText)"
+        }
+        return countText
     }
 
     var sevenDayPaceStatus: AccountQuotaPaceStatus? {
@@ -526,6 +643,7 @@ private enum AccountQuotaReader {
         let planType = (codex["planType"] as? String) ?? primaryCard?.planType
         let limitName = (codex["limitName"] as? String) ?? primaryCard?.limitName
         let accountName = readLocalAccountName()
+        let resetCredits = readResetCredits()
 
         var snapshot = AccountQuotaSnapshot(
             fiveHour: primary,
@@ -534,6 +652,8 @@ private enum AccountQuotaReader {
             limitName: limitName,
             accountName: accountName,
             limitCards: limitCards,
+            resetCreditsAvailableCount: resetCredits?.availableCount,
+            resetCredits: resetCredits?.credits ?? [],
             status: "额度已更新",
             updatedAt: Date()
         )
@@ -583,6 +703,109 @@ private enum AccountQuotaReader {
         )
     }
 
+    private struct ResetCreditsSnapshot: Sendable {
+        let availableCount: Int
+        let credits: [AccountQuotaResetCredit]
+    }
+
+    private final class ResetCreditsResponseBox: @unchecked Sendable {
+        var output: ResetCreditsSnapshot?
+    }
+
+    private static func readResetCredits() -> ResetCreditsSnapshot? {
+        guard let accessToken = readAccessToken(),
+              let url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits") else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 8
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("CodexTokenBar", forHTTPHeaderField: "User-Agent")
+
+        let semaphore = DispatchSemaphore(value: 0)
+        let box = ResetCreditsResponseBox()
+
+        let task = URLSession.shared.dataTask(with: request) { data, response, _ in
+            defer { semaphore.signal() }
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode),
+                  let data,
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return
+            }
+
+            let credits = parseResetCredits(object["credits"])
+            let availableCount = (object["available_count"] as? NSNumber)?.intValue
+                ?? (object["available_count"] as? Int)
+                ?? credits.filter(\.isAvailable).count
+            box.output = ResetCreditsSnapshot(
+                availableCount: max(0, availableCount),
+                credits: credits
+            )
+        }
+        task.resume()
+
+        if semaphore.wait(timeout: .now() + 8.5) == .timedOut {
+            task.cancel()
+        }
+        return box.output
+    }
+
+    private static func parseResetCredits(_ value: Any?) -> [AccountQuotaResetCredit] {
+        let rawCredits = (value as? [[String: Any]])
+            ?? (value as? [Any])?.compactMap { $0 as? [String: Any] }
+            ?? []
+
+        return rawCredits
+            .compactMap(parseResetCredit)
+            .sorted { lhs, rhs in
+                if lhs.isAvailable != rhs.isAvailable {
+                    return lhs.isAvailable && !rhs.isAvailable
+                }
+                switch (lhs.expiresAt, rhs.expiresAt) {
+                case let (lhsDate?, rhsDate?):
+                    return lhsDate < rhsDate
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                case (nil, nil):
+                    return lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending
+                }
+            }
+    }
+
+    private static func parseResetCredit(_ raw: [String: Any]) -> AccountQuotaResetCredit? {
+        let id = (raw["id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let id, !id.isEmpty else { return nil }
+        return AccountQuotaResetCredit(
+            id: id,
+            status: (raw["status"] as? String) ?? "",
+            grantedAt: parseISODate(raw["granted_at"] as? String),
+            expiresAt: parseISODate(raw["expires_at"] as? String),
+            redeemStartedAt: parseISODate(raw["redeem_started_at"] as? String),
+            redeemedAt: parseISODate(raw["redeemed_at"] as? String),
+            title: raw["title"] as? String,
+            descriptionText: raw["description"] as? String,
+            profileUserID: raw["profile_user_id"] as? String
+        )
+    }
+
+    private static func parseISODate(_ value: String?) -> Date? {
+        guard let value, !value.isEmpty else { return nil }
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractionalFormatter.date(from: value) {
+            return date
+        }
+        let plainFormatter = ISO8601DateFormatter()
+        plainFormatter.formatOptions = [.withInternetDateTime]
+        return plainFormatter.date(from: value)
+    }
+
     private static func readLocalAccountName() -> String? {
         let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex/auth.json")
         guard let data = try? Data(contentsOf: url),
@@ -602,6 +825,18 @@ private enum AccountQuotaReader {
             }
         }
         return nil
+    }
+
+    private static func readAccessToken() -> String? {
+        let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex/auth.json")
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tokens = object["tokens"] as? [String: Any],
+              let accessToken = tokens["access_token"] as? String else {
+            return nil
+        }
+        let trimmed = accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func decodeJWTPayload(_ token: String) -> [String: Any]? {
