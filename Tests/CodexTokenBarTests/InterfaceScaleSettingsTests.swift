@@ -30,6 +30,16 @@ final class InterfaceScaleSettingsTests: XCTestCase {
         XCTAssertEqual(scale, 1.10, accuracy: 0.001)
     }
 
+    func testManualScaleAllowsUpToOneHundredFiftyPercent() {
+        XCTAssertEqual(InterfaceScaleSettings.clampedManual(1.50), 1.50, accuracy: 0.001)
+        XCTAssertEqual(InterfaceScaleSettings.clampedManual(1.80), 1.50, accuracy: 0.001)
+        XCTAssertEqual(
+            InterfaceScaleSettings.effectiveScale(manualMultiplier: 1.50, autoEnabled: false, screen: nil),
+            1.50,
+            accuracy: 0.001
+        )
+    }
+
     func testDashboardScaleProtectsNarrowWindowsFromHorizontalOverflow() {
         XCTAssertEqual(
             InterfaceScaleSettings.dashboardScale(requestedScale: 1.30, availableWidth: 1088),

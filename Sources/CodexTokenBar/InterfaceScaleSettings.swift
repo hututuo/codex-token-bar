@@ -6,8 +6,8 @@ enum InterfaceScaleSettings {
     static let manualMultiplierKey = "interfaceScaleManualMultiplier"
     static let defaultAutoEnabled = true
     static let defaultManualMultiplier = 1.0
-    static let manualRange = 0.90...1.30
-    static let effectiveRange = 0.90...1.45
+    static let manualRange = 0.90...1.50
+    static let effectiveRange = 0.90...1.50
     static let step = 0.05
     static let baseDashboardContentWidth: CGFloat = 1088
 
@@ -252,7 +252,7 @@ struct InterfaceScaleSettingsCard: View {
                         .foregroundStyle(.secondary)
                         .background(Circle().fill(AppTheme.raisedBackground))
 
-                        Slider(value: percentBinding, in: 90...130, step: 1)
+                        Slider(value: percentBinding, in: 90...150, step: 1)
                             .accessibilityLabel("界面大小百分比")
                             .accessibilityValue("\(Int(manualPercent.rounded()))%")
 
