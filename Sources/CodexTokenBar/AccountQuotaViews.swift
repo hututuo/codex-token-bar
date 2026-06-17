@@ -68,6 +68,9 @@ struct AccountQuotaStrip: View {
                 .fill(AppTheme.insetBackground)
         )
         .help(helpText)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("账户额度")
+        .accessibilityValue(helpText)
         .zIndex(showingResetCreditDetails ? 10_000 : 0)
     }
 
@@ -137,6 +140,9 @@ private struct AccountQuotaResetCreditButton: View {
         }
         .buttonStyle(.plain)
         .help("查看每张重置机会的到期时间")
+        .accessibilityLabel("重置卡")
+        .accessibilityValue(summaryText)
+        .accessibilityHint("查看每张重置机会的详细状态和到期时间")
         .anchorPreference(key: AccountQuotaResetCreditButtonBoundsKey.self, value: .bounds) { anchor in
             anchor
         }
@@ -353,6 +359,9 @@ struct AccountQuotaSegment: View {
             .frame(height: 20)
         }
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(window.displayLabel)额度")
+        .accessibilityValue("剩余 \(window.remainingPercent)%，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
     }
 }
 struct AccountQuotaPaceInsight: View {

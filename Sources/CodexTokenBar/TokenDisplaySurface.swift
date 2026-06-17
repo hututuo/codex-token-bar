@@ -182,6 +182,26 @@ struct TokenDisplayCard: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Codex Token Bar 悬浮窗")
+        .accessibilityValue(accessibilitySummary)
+    }
+
+    private var accessibilitySummary: String {
+        var parts = [
+            String(format: "实时速率 %.1f token 每秒", snapshot.rate),
+            "累计 \(snapshot.consumedTokens.abbreviatedTokens) token",
+            "今天 \(snapshot.todayTokens.abbreviatedTokens) token",
+            "今天 \(snapshot.todayRequests) 次请求",
+            snapshot.compactUsageStatus
+        ]
+        if let fiveHour = snapshot.quota.fiveHour {
+            parts.append("5 小时额度剩余 \(fiveHour.remainingPercent)%，\(fiveHour.accessibleResetText) 重置")
+        }
+        if let sevenDay = snapshot.quota.sevenDay {
+            parts.append("7 天额度剩余 \(sevenDay.remainingPercent)%，\(sevenDay.accessibleResetText) 重置")
+        }
+        return parts.joined(separator: "；")
     }
 
     private var rateRow: some View {
@@ -299,6 +319,9 @@ struct TokenQuotaMiniStrip: View {
         }
         .frame(height: 16.5.scaled(by: displayScale))
         .help(quotaHelpText)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("账户额度")
+        .accessibilityValue(quotaHelpText)
     }
 
     private var quotaHelpText: String {
@@ -346,6 +369,9 @@ struct TokenQuotaMiniSegment: View {
             }
         }
         .frame(height: 16.5.scaled(by: displayScale))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(window.displayLabel)额度")
+        .accessibilityValue("剩余 \(window.remainingPercent)%，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
     }
 
     private var floatingTrackColor: Color {

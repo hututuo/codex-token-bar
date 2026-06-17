@@ -92,9 +92,21 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
         guard title != lastStatusTitle else { return }
 
         button.title = title
+        button.setAccessibilityLabel("Codex Token Bar 状态栏速率")
+        button.setAccessibilityValue(statusBarAccessibilityValue(snapshot))
         let length = max(132, button.intrinsicContentSize.width + 48)
         statusItem?.length = length
         lastStatusTitle = title
+    }
+
+    private func statusBarAccessibilityValue(_ snapshot: TokenDisplaySnapshot) -> String {
+        [
+            String(format: "实时速率 %.1f token 每秒", snapshot.rate),
+            "累计 \(snapshot.consumedTokens.abbreviatedTokens) token",
+            "今天 \(snapshot.todayTokens.abbreviatedTokens) token",
+            "今天 \(snapshot.todayRequests) 次请求",
+            snapshot.compactUsageStatus
+        ].joined(separator: "；")
     }
 }
 
@@ -217,6 +229,8 @@ struct StatusBarTokenPopoverView: View {
             height: baseSize.height * interfaceScale,
             alignment: .topLeading
         )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Codex Token Bar 状态栏详情")
     }
 }
 
@@ -246,6 +260,9 @@ private struct StatusBarRateTrack: View {
             }
         }
         .frame(height: 6)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("实时速率进度")
+        .accessibilityValue("\(Int((fillFraction * 100).rounded()))%")
     }
 }
 
@@ -273,6 +290,9 @@ private struct StatusBarMetricTile: View {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Color.primary.opacity(0.055))
         )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
     }
 }
 
@@ -307,6 +327,9 @@ private struct StatusBarQuotaLine: View {
                 .lineLimit(1)
                 .frame(width: 88, alignment: .trailing)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title) 额度")
+        .accessibilityValue(window.map { "剩余 \($0.remainingPercent)%，已用 \($0.usedPercent)%，\($0.accessibleResetText) 重置" } ?? "读取中")
     }
 }
 
