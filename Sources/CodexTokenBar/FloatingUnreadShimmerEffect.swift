@@ -1,0 +1,395 @@
+import AppKit
+import Foundation
+import QuartzCore
+import SwiftUI
+
+struct FloatingUnreadShimmerOverlay: NSViewRepresentable {
+    let color: Color
+    let cornerRadius: CGFloat
+    let scale: CGFloat
+
+    func makeNSView(context: Context) -> FloatingUnreadShimmerView {
+        let view = FloatingUnreadShimmerView()
+        view.configure(color: nsColor, cornerRadius: cornerRadius, scale: scale)
+        return view
+    }
+
+    func updateNSView(_ nsView: FloatingUnreadShimmerView, context: Context) {
+        nsView.configure(color: nsColor, cornerRadius: cornerRadius, scale: scale)
+    }
+
+    private var nsColor: NSColor {
+        FloatingPanelColorTools.deviceRGB(NSColor(color))
+    }
+}
+
+final class FloatingUnreadShimmerView: NSView {
+    private struct RenderRequest {
+        let size: CGSize
+        let backingScale: CGFloat
+        let color: NSColor
+        let cornerRadius: CGFloat
+        let scale: CGFloat
+    }
+
+    private static let animationKey = "floatingUnreadShimmerFrames"
+
+    private let imageLayer = CALayer()
+    private var cachedFrames: [CGImage] = []
+    private var pendingRenderWorkItem: DispatchWorkItem?
+    private var renderGeneration: UInt64 = 0
+    private var animationStartLayerTime: CFTimeInterval?
+    private var currentColor = NSColor.systemBlue
+    private var currentCornerRadius: CGFloat = 14
+    private var currentScale: CGFloat = 1
+    private var lastBounds: CGRect = .zero
+    private var lastBackingScale: CGFloat = 0
+    private let cycleDuration: CFTimeInterval = 2.1
+    private let targetFramesPerSecond = 30
+    private let resizeRenderDebounce: TimeInterval = 0.14
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupRootLayer()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupRootLayer()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            cancelPendingRender()
+            stopAnimations()
+            clearFrameCache()
+        } else {
+            updateLayoutIfNeeded(force: true)
+            startAnimations()
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        updateLayoutIfNeeded(force: false)
+    }
+
+    func configure(color: NSColor, cornerRadius: CGFloat, scale: CGFloat) {
+        let nextColor = FloatingPanelColorTools.deviceRGB(color)
+        let nextScale = max(scale, 0.1)
+        let needsLayout = !sameColor(nextColor, currentColor)
+            || abs(currentScale - nextScale) > 0.001
+            || abs(currentCornerRadius - cornerRadius) > 0.001
+        currentColor = nextColor
+        currentCornerRadius = cornerRadius
+        currentScale = nextScale
+        layer?.cornerRadius = cornerRadius
+        layer?.cornerCurve = .continuous
+        updateLayoutIfNeeded(force: needsLayout)
+    }
+
+    private func setupRootLayer() {
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.cornerCurve = .continuous
+        imageLayer.contentsGravity = .resize
+        layer?.addSublayer(imageLayer)
+    }
+
+    private func updateLayoutIfNeeded(force: Bool) {
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let rawBackingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let frameCount = FloatingUnreadFrameBudget.frameCount(
+            cycleDuration: cycleDuration,
+            targetFramesPerSecond: targetFramesPerSecond
+        )
+        guard let backingScale = FloatingUnreadFrameBudget.cappedBackingScale(
+            size: bounds.size,
+            preferredScale: rawBackingScale,
+            frameCount: frameCount
+        ) else {
+            cancelPendingRender()
+            stopAnimations()
+            clearFrameCache()
+            return
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.cornerRadius = currentCornerRadius
+        layer?.cornerCurve = .continuous
+        imageLayer.frame = bounds
+        imageLayer.contentsScale = backingScale
+        CATransaction.commit()
+
+        guard isReasonableRenderableSize(bounds.size) else {
+            cancelPendingRender()
+            stopAnimations()
+            clearFrameCache()
+            return
+        }
+
+        guard force || bounds != lastBounds || abs(backingScale - lastBackingScale) > 0.01 else {
+            return
+        }
+
+        let request = RenderRequest(
+            size: bounds.size,
+            backingScale: backingScale,
+            color: currentColor,
+            cornerRadius: currentCornerRadius,
+            scale: currentScale
+        )
+        requestFrameRender(request, immediate: cachedFrames.isEmpty)
+    }
+
+    private func isReasonableRenderableSize(_ size: CGSize) -> Bool {
+        let maxSize = FloatingTokenPanelMetrics.size(scale: FloatingTokenPanelMetrics.scaleRange.upperBound)
+        return size.width <= maxSize.width + 32
+            && size.height <= maxSize.height + 32
+    }
+
+    private func requestFrameRender(_ request: RenderRequest, immediate: Bool) {
+        renderGeneration &+= 1
+        let generation = renderGeneration
+        cancelPendingRender(advanceGeneration: false)
+        let cycleDuration = cycleDuration
+        let targetFramesPerSecond = targetFramesPerSecond
+
+        if immediate {
+            let frames = Self.renderFrames(
+                request: request,
+                cycleDuration: cycleDuration,
+                targetFramesPerSecond: targetFramesPerSecond
+            )
+            applyRenderedFrames(frames, request: request, generation: generation)
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let frames = Self.renderFrames(
+                request: request,
+                cycleDuration: cycleDuration,
+                targetFramesPerSecond: targetFramesPerSecond
+            )
+            self.applyRenderedFrames(frames, request: request, generation: generation)
+        }
+        pendingRenderWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + resizeRenderDebounce, execute: workItem)
+    }
+
+    private func applyRenderedFrames(_ frames: [CGImage], request: RenderRequest, generation: UInt64) {
+        guard generation == renderGeneration, window != nil, !frames.isEmpty else { return }
+        let phaseOffset = currentAnimationPhaseOffset()
+        stopAnimations()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        lastBounds = CGRect(origin: .zero, size: request.size)
+        lastBackingScale = request.backingScale
+        imageLayer.frame = CGRect(origin: .zero, size: request.size)
+        imageLayer.contentsScale = request.backingScale
+        cachedFrames = frames
+        imageLayer.contents = frames.first
+        CATransaction.commit()
+        startAnimations(phaseOffset: phaseOffset)
+    }
+
+    private static nonisolated func renderFrames(
+        request: RenderRequest,
+        cycleDuration: CFTimeInterval,
+        targetFramesPerSecond: Int
+    ) -> [CGImage] {
+        let descriptor = FloatingUnreadFrameCacheDescriptor(
+            effect: "shimmer",
+            size: request.size,
+            backingScale: request.backingScale,
+            color: request.color,
+            cornerRadius: request.cornerRadius,
+            scale: request.scale,
+            cycleDuration: cycleDuration,
+            activeFraction: 1,
+            framesPerSecond: targetFramesPerSecond
+        )
+        return FloatingUnreadFrameCache.frames(descriptor: descriptor) {
+            renderUncachedFrames(
+                request: request,
+                cycleDuration: cycleDuration,
+                targetFramesPerSecond: targetFramesPerSecond
+            )
+        }
+    }
+
+    private static nonisolated func renderUncachedFrames(
+        request: RenderRequest,
+        cycleDuration: CFTimeInterval,
+        targetFramesPerSecond: Int
+    ) -> [CGImage] {
+        let pixelWidth = max(1, Int((request.size.width * request.backingScale).rounded(.up)))
+        let pixelHeight = max(1, Int((request.size.height * request.backingScale).rounded(.up)))
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let frameCount = FloatingUnreadFrameBudget.frameCount(
+            cycleDuration: cycleDuration,
+            targetFramesPerSecond: targetFramesPerSecond
+        )
+
+        return (0..<frameCount).compactMap { index in
+            guard let context = CGContext(
+                data: nil,
+                width: pixelWidth,
+                height: pixelHeight,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                return nil
+            }
+            context.scaleBy(x: request.backingScale, y: request.backingScale)
+            Self.drawShimmerFrame(in: context, request: request, phase: Double(index) / Double(frameCount))
+            return context.makeImage()
+        }
+    }
+
+    private static nonisolated func drawShimmerFrame(in context: CGContext, request: RenderRequest, phase: Double) {
+        let size = request.size
+        let rect = CGRect(origin: .zero, size: size)
+        context.saveGState()
+        context.addPath(CGPath(
+            roundedRect: rect,
+            cornerWidth: request.cornerRadius,
+            cornerHeight: request.cornerRadius,
+            transform: nil
+        ))
+        context.clip()
+
+        let pulse = (sin(phase * .pi * 4) + 1) / 2
+        context.setFillColor(request.color.withAlphaComponent(0.026 + 0.020 * pulse).cgColor)
+        context.fill(rect)
+        context.setBlendMode(.screen)
+
+        let bandWidth = max(size.width * 0.62, 76 * request.scale)
+        let bandHeight = size.height * 2.0
+        let fromX = -bandWidth * 0.8
+        let toX = size.width + bandWidth * 1.15
+        let centerX = fromX + (toX - fromX) * CGFloat(phase)
+        let centerY = size.height / 2
+
+        Self.drawSweepBand(
+            in: context,
+            center: CGPoint(x: centerX, y: centerY),
+            width: bandWidth,
+            height: bandHeight,
+            angle: -0.20,
+            colors: [
+                NSColor.clear,
+                request.color.withAlphaComponent(0.28),
+                NSColor.white.withAlphaComponent(0.46),
+                request.color.withAlphaComponent(0.22),
+                NSColor.clear
+            ],
+            locations: [0.0, 0.30, 0.50, 0.70, 1.0]
+        )
+
+        Self.drawSweepBand(
+            in: context,
+            center: CGPoint(x: centerX + bandWidth * 0.18, y: centerY),
+            width: max(12 * request.scale, bandWidth * 0.16),
+            height: bandHeight,
+            angle: -0.20,
+            colors: [
+                NSColor.clear,
+                NSColor.white.withAlphaComponent(0.00),
+                NSColor.white.withAlphaComponent(0.28),
+                NSColor.clear
+            ],
+            locations: [0.0, 0.45, 0.55, 1.0]
+        )
+        context.restoreGState()
+    }
+
+    private static nonisolated func drawSweepBand(
+        in context: CGContext,
+        center: CGPoint,
+        width: CGFloat,
+        height: CGFloat,
+        angle: CGFloat,
+        colors: [NSColor],
+        locations: [CGFloat]
+    ) {
+        let cgColors = colors.map { $0.cgColor } as CFArray
+        guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: cgColors, locations: locations) else {
+            return
+        }
+        context.saveGState()
+        context.translateBy(x: center.x, y: center.y)
+        context.rotate(by: angle)
+        let rect = CGRect(x: -width / 2, y: -height / 2, width: width, height: height)
+        context.clip(to: rect)
+        context.drawLinearGradient(
+            gradient,
+            start: CGPoint(x: rect.minX, y: rect.midY),
+            end: CGPoint(x: rect.maxX, y: rect.midY),
+            options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
+        )
+        context.restoreGState()
+    }
+
+    private func startAnimations(phaseOffset: CFTimeInterval = 0) {
+        guard window != nil, cachedFrames.count > 1 else { return }
+        guard imageLayer.animation(forKey: Self.animationKey) == nil else { return }
+        let loopFrames = cachedFrames + [cachedFrames[0]]
+        let lastIndex = max(loopFrames.count - 1, 1)
+        let layerTime = imageLayer.convertTime(CACurrentMediaTime(), from: nil)
+        let offset = min(max(phaseOffset, 0), cycleDuration)
+        let animation = CAKeyframeAnimation(keyPath: "contents")
+        animation.values = loopFrames
+        animation.keyTimes = (0..<loopFrames.count).map { NSNumber(value: Double($0) / Double(lastIndex)) }
+        animation.duration = cycleDuration
+        animation.beginTime = layerTime - offset
+        animation.repeatCount = .infinity
+        animation.calculationMode = .discrete
+        animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        animation.isRemovedOnCompletion = false
+        animationStartLayerTime = layerTime - offset
+        imageLayer.add(animation, forKey: Self.animationKey)
+    }
+
+    private func stopAnimations() {
+        imageLayer.removeAnimation(forKey: Self.animationKey)
+        animationStartLayerTime = nil
+    }
+
+    private func currentAnimationPhaseOffset() -> CFTimeInterval {
+        guard let animationStartLayerTime else { return 0 }
+        let layerTime = imageLayer.convertTime(CACurrentMediaTime(), from: nil)
+        let elapsed = max(0, layerTime - animationStartLayerTime)
+        return elapsed.truncatingRemainder(dividingBy: cycleDuration)
+    }
+
+    private func clearFrameCache() {
+        cachedFrames.removeAll()
+        imageLayer.contents = nil
+        lastBounds = .zero
+        lastBackingScale = 0
+    }
+
+    private func cancelPendingRender(advanceGeneration: Bool = true) {
+        if advanceGeneration {
+            renderGeneration &+= 1
+        }
+        pendingRenderWorkItem?.cancel()
+        pendingRenderWorkItem = nil
+    }
+
+    private func sameColor(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
+        let lhs = FloatingPanelColorTools.deviceRGB(lhs)
+        let rhs = FloatingPanelColorTools.deviceRGB(rhs)
+        return abs(lhs.redComponent - rhs.redComponent) < 0.001
+            && abs(lhs.greenComponent - rhs.greenComponent) < 0.001
+            && abs(lhs.blueComponent - rhs.blueComponent) < 0.001
+            && abs(lhs.alphaComponent - rhs.alphaComponent) < 0.001
+    }
+}
+
