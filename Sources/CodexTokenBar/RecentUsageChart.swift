@@ -359,6 +359,9 @@ struct RecentUsageChart: View {
                 }
             }
             .frame(height: 185)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(selectedRange.title) 曲线图")
+            .accessibilityValue(accessibilitySummary)
         }
         .frame(maxWidth: 980)
         .onAppear(perform: refreshPreparedData)
@@ -384,6 +387,25 @@ struct RecentUsageChart: View {
             hoveredIndex = nil
             refreshPreparedData()
         }
+    }
+
+    private var accessibilitySummary: String {
+        var visibleSeries: [String] = []
+        if showTokens { visibleSeries.append("Token") }
+        if showCalls { visibleSeries.append("调用") }
+        if showCacheHitRate, preparedData.hasCacheCalls { visibleSeries.append("命中率") }
+        if showFiveHourQuota, preparedData.hasFiveHourQuota { visibleSeries.append("5 小时额度") }
+        if showSevenDayQuota, preparedData.hasSevenDayQuota { visibleSeries.append("7 天额度") }
+
+        return [
+            "\(preparedData.bins.count) 个时间点",
+            "Token 总量 \(preparedData.tokenTotal.abbreviatedTokens)",
+            "调用 \(preparedData.callTotal) 次",
+            "缓存命中率 \(preparedData.recentCacheBreakdown.cacheHitRate.percentString)",
+            "5 小时额度 \(Self.percentText(preparedData.latestFiveHourRemaining))",
+            "7 天额度 \(Self.percentText(preparedData.latestSevenDayRemaining))",
+            "已显示 \(visibleSeries.isEmpty ? "无曲线" : visibleSeries.joined(separator: "、"))"
+        ].joined(separator: "；")
     }
 
     private func linePath(points: [CGPoint]) -> Path {
@@ -790,6 +812,8 @@ private struct RecentChartRangeSelector: View {
                         )
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("曲线范围 \(range.title)")
+                .accessibilityValue(selection == range ? "已选择" : "未选择")
             }
         }
         .padding(3)
@@ -818,6 +842,9 @@ struct ChartLegend: View {
                 .foregroundStyle(.primary)
         }
         .font(.system(size: 12))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(label) 图例")
+        .accessibilityValue(value)
     }
 }
 
@@ -850,6 +877,9 @@ struct ChartLineToggle: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("显示 \(title) 曲线")
+        .accessibilityValue(isOn ? "已开启" : "已关闭")
+        .accessibilityHint("切换这条曲线是否显示")
     }
 }
 
@@ -925,10 +955,31 @@ struct ChartHoverBubble: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(AppTheme.borderStrong, lineWidth: 1)
         )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(isHovering ? "曲线当前点" : "曲线最新点")
+        .accessibilityValue(accessibilitySummary)
     }
 
     private var average: Int {
         bin.calls > 0 ? bin.tokens / bin.calls : 0
+    }
+
+    private var accessibilitySummary: String {
+        var parts = [
+            timeRange,
+            "\(bin.tokens.abbreviatedTokens) token",
+            "\(bin.calls) 次请求",
+            "平均 \(average.abbreviatedTokens)"
+        ]
+        if let cacheBreakdown, cacheBreakdown.calls > 0 {
+            parts.append("缓存命中率 \(cacheBreakdown.cacheHitRate.percentString)")
+            parts.append("命中 \(cacheBreakdown.cachedInputTokens.abbreviatedTokens)")
+        }
+        if fiveHourRemaining != nil || sevenDayRemaining != nil {
+            parts.append("5 小时额度 \(percentText(fiveHourRemaining))")
+            parts.append("7 天额度 \(percentText(sevenDayRemaining))")
+        }
+        return parts.joined(separator: "；")
     }
 
     private var timeRange: String {

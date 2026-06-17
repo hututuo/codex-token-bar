@@ -256,6 +256,53 @@ struct TokenHeatmap: View {
             clearRangeSelection()
             refreshPreparedData()
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Token 活动热力图")
+        .accessibilityValue(accessibilitySummary)
+        .accessibilityHint("点击开始和结束日期，可以显示范围总计")
+    }
+
+    private var accessibilitySummary: String {
+        var parts = [
+            "模式 \(mode.rawValue)",
+            "\(preparedData.summaries.count) 个日期"
+        ]
+        if let latest = preparedData.summaries.last {
+            parts.append("最近 \(summaryAccessibilityText(latest))")
+        }
+        if let range = normalizedRangeSelection(dayCount: preparedData.summaries.count),
+           let rangeSummary = makeRangeSummary(range: range) {
+            parts.append("范围 \(rangeAccessibilityText(rangeSummary))")
+        } else if rangeStartIndex != nil {
+            parts.append("已选择起点，再选择结束日期")
+        }
+        return parts.joined(separator: "；")
+    }
+
+    private func summaryAccessibilityText(_ summary: HeatmapUsageSummary) -> String {
+        if summary.isCacheRate {
+            guard let breakdown = summary.cacheBreakdown, breakdown.calls > 0 else {
+                return "\(summary.title)，暂无缓存命中数据"
+            }
+            return "\(summary.title)，命中率 \(breakdown.cacheHitRate.percentString)，命中 \(breakdown.cachedInputTokens.abbreviatedTokens)，未命中 \(breakdown.uncachedInputTokens.abbreviatedTokens)，\(breakdown.calls) 次调用"
+        }
+        if summary.isQuotaRemaining {
+            guard let percent = summary.quotaRemainingPercent else {
+                return "\(summary.title)，暂无额度记录"
+            }
+            return "\(summary.title)，7 天额度剩余 \(Int(percent.rounded()))%，\(summary.calls) 个采样"
+        }
+        return "\(summary.title)，\(summary.tokens.abbreviatedTokens) token，\(summary.calls) 次调用，平均 \(summary.average.abbreviatedTokens)"
+    }
+
+    private func rangeAccessibilityText(_ rangeSummary: HeatmapRangeSummary) -> String {
+        if let breakdown = rangeSummary.cacheBreakdown {
+            return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，命中率 \(breakdown.cacheHitRate.percentString)，命中 \(breakdown.cachedInputTokens.abbreviatedTokens)，未命中 \(breakdown.uncachedInputTokens.abbreviatedTokens)，\(breakdown.calls) 次调用"
+        }
+        if let quotaAverage = rangeSummary.quotaAverageRemainingPercent {
+            return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，7 天额度平均剩余 \(Int(quotaAverage.rounded()))%，\(rangeSummary.calls) 个采样"
+        }
+        return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，\(rangeSummary.tokens.abbreviatedTokens) token，\(rangeSummary.calls) 次调用，平均 \(rangeSummary.average.abbreviatedTokens)"
     }
 
     private func adaptiveCellSize(containerWidth: CGFloat, columnCount: Int) -> CGFloat {

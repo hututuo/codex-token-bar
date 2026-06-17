@@ -49,6 +49,8 @@ struct CacheHitRankingSection: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 132)
+                    .accessibilityLabel("缓存命中排行类型")
+                    .accessibilityValue(scope.rawValue)
                 }
             }
 
@@ -61,6 +63,9 @@ struct CacheHitRankingSection: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, minHeight: 72)
                 .background(AppTheme.insetBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("缓存命中排行")
+                .accessibilityValue("暂无可排行的缓存命中数据")
             } else {
                 VStack(spacing: 5) {
                     ForEach(Array(rankingItems.enumerated()), id: \.element.id) { index, item in
@@ -156,6 +161,9 @@ private struct CacheRankingCheckmark: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(isOn ? "已开启" : "已关闭")
+        .accessibilityHint("切换排行过滤条件")
     }
 }
 
@@ -209,6 +217,24 @@ private struct CacheRankingRow: View {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .stroke(AppTheme.border, lineWidth: 1)
         )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("缓存命中排行第 \(rank) 名，\(item.title)")
+        .accessibilityValue(accessibilitySummary)
+    }
+
+    private var accessibilitySummary: String {
+        var parts = [
+            item.subtitle,
+            "命中率 \(item.breakdown.cacheHitRate.percentString)",
+            "输入 \(item.breakdown.inputTokens.abbreviatedTokens)",
+            "命中 \(item.breakdown.cachedInputTokens.abbreviatedTokens)",
+            "未命中 \(item.breakdown.uncachedInputTokens.abbreviatedTokens)",
+            "\(item.breakdown.calls) 次调用"
+        ]
+        if let context = item.context {
+            parts.insert(context, at: 1)
+        }
+        return parts.joined(separator: "；")
     }
 }
 
@@ -237,5 +263,8 @@ private struct CacheHitMeter: View {
             .font(.system(size: 9))
             .foregroundStyle(.secondary)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("缓存命中比例")
+        .accessibilityValue("\(breakdown.cacheHitRate.percentString)，命中 \(breakdown.cachedInputTokens.abbreviatedTokens)，输入 \(breakdown.inputTokens.abbreviatedTokens)")
     }
 }
