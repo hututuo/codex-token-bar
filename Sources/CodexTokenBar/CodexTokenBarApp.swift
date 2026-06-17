@@ -5,6 +5,8 @@ import SwiftUI
 struct CodexTokenBarApp: App {
     @StateObject private var loginItemStore = LoginItemStore()
     @StateObject private var updateSettingsStore: AppUpdateSettingsStore
+    @StateObject private var floatingPanel = FloatingTokenPanelController()
+    @StateObject private var statusBarPanel = StatusBarTokenController()
     private let updaterController: SPUStandardUpdaterController
 
     init() {
@@ -22,7 +24,9 @@ struct CodexTokenBarApp: App {
         WindowGroup(id: "dashboard") {
             DashboardView(
                 loginItemStore: loginItemStore,
-                updateSettingsStore: updateSettingsStore
+                updateSettingsStore: updateSettingsStore,
+                floatingPanel: floatingPanel,
+                statusBarPanel: statusBarPanel
             )
                 .frame(minWidth: 1080, minHeight: 760)
                 .task {

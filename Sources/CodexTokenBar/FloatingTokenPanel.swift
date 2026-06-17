@@ -8,6 +8,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     @Published private(set) var isPresented = false
     @Published private(set) var lockTargetDescription: String?
 
+    private static weak var activeController: FloatingTokenPanelController?
+    private static let panelIdentifier = NSUserInterfaceItemIdentifier("CodexTokenBarFloatingTokenPanel")
+
     private var panel: NSPanel?
     private var onClose: (() -> Void)?
     private var onToggleLock: (() -> Void)?
@@ -75,9 +78,64 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     deinit {
+        MainActor.assumeIsolated {
+            closePanel(destroy: true, unregisterActive: true)
+        }
         NotificationCenter.default.removeObserver(self)
         if let globalMouseMonitor {
             NSEvent.removeMonitor(globalMouseMonitor)
+        }
+    }
+
+    private static func claimActiveController(_ controller: FloatingTokenPanelController) {
+        if let activeController, activeController !== controller {
+            activeController.closePanel(destroy: true, unregisterActive: false)
+        }
+        activeController = controller
+    }
+
+    private static func unregisterActiveController(_ controller: FloatingTokenPanelController) {
+        if activeController === controller {
+            activeController = nil
+        }
+    }
+
+    private static func closeStrayPanels(except keptPanel: NSPanel?) {
+        for window in NSApp.windows {
+            guard let panel = window as? NSPanel,
+                  panel.identifier == panelIdentifier,
+                  panel !== keptPanel
+            else {
+                continue
+            }
+            panel.delegate = nil
+            panel.contentViewController = nil
+            panel.orderOut(nil)
+            panel.close()
+        }
+    }
+
+    private func closePanel(destroy: Bool, unregisterActive: Bool) {
+        stopFollowingAnchor()
+        let existingPanel = panel
+        panel = nil
+        onClose = nil
+        onToggleLock = nil
+        isPresented = false
+        appliedLockState = false
+
+        if unregisterActive {
+            Self.unregisterActiveController(self)
+        }
+
+        guard let existingPanel else { return }
+        if destroy {
+            existingPanel.delegate = nil
+            existingPanel.contentViewController = nil
+            existingPanel.orderOut(nil)
+            existingPanel.close()
+        } else {
+            existingPanel.orderOut(nil)
         }
     }
 
@@ -91,6 +149,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         onToggleLock: @escaping () -> Void,
         onClose: @escaping () -> Void
     ) {
+        Self.claimActiveController(self)
         self.onClose = onClose
         self.onToggleLock = onToggleLock
 
@@ -121,6 +180,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 backing: .buffered,
                 defer: false
             )
+            panel.identifier = Self.panelIdentifier
             panel.contentViewController = hostingController
             panel.backgroundColor = .clear
             panel.isOpaque = false
@@ -137,6 +197,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             position(panel)
             self.panel = panel
         }
+        Self.closeStrayPanels(except: panel)
 
         if let hostingController = panel?.contentViewController as? NSHostingController<FloatingTokenPanelView> {
             hostingController.rootView = FloatingTokenPanelView(
@@ -175,14 +236,20 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     func close() {
-        panel?.orderOut(nil)
-        stopFollowingAnchor()
-        isPresented = false
+        closePanel(destroy: true, unregisterActive: true)
     }
 
     func windowWillClose(_ notification: Notification) {
+        if let closingPanel = notification.object as? NSPanel,
+           closingPanel.identifier == Self.panelIdentifier,
+           closingPanel === panel {
+            panel = nil
+        }
         stopFollowingAnchor()
+        onClose = nil
+        onToggleLock = nil
         isPresented = false
+        Self.unregisterActiveController(self)
     }
 
     func windowDidMove(_ notification: Notification) {

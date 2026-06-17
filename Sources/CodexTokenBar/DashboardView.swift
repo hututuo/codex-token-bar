@@ -4,12 +4,12 @@ import SwiftUI
 struct DashboardView: View {
     @ObservedObject var loginItemStore: LoginItemStore
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
+    private let floatingPanel: FloatingTokenPanelController
+    private let statusBarPanel: StatusBarTokenController
     @StateObject private var store = CodexUsageStore()
     @StateObject private var quotaStore = AccountQuotaStore()
     @StateObject private var quotaHistoryStore = QuotaHistoryStore()
     @StateObject private var providerSyncStore = ProviderSyncStore()
-    @StateObject private var floatingPanel = FloatingTokenPanelController()
-    @StateObject private var statusBarPanel = StatusBarTokenController()
     @State private var taskCompletionMonitor = TaskCompletionMonitor()
     @State private var liveMonitor = LiveRateMonitor()
     @AppStorage("tokenDisplayMode") private var tokenDisplayModeRaw = TokenDisplayMode.floating.rawValue
@@ -39,9 +39,16 @@ struct DashboardView: View {
     @State private var showingPaletteMenu = false
     @State private var showingUnreadEffectMenu = false
 
-    init(loginItemStore: LoginItemStore, updateSettingsStore: AppUpdateSettingsStore) {
+    init(
+        loginItemStore: LoginItemStore,
+        updateSettingsStore: AppUpdateSettingsStore,
+        floatingPanel: FloatingTokenPanelController,
+        statusBarPanel: StatusBarTokenController
+    ) {
         self.loginItemStore = loginItemStore
         self.updateSettingsStore = updateSettingsStore
+        self.floatingPanel = floatingPanel
+        self.statusBarPanel = statusBarPanel
         Self.applyStartupDisplayModeRepairIfNeeded()
     }
 
