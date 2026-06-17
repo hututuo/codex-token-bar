@@ -63,11 +63,7 @@ final class CodexUsageStore: ObservableObject {
         }
 
         let isFirstLoad = !didFinishInitialLoad
-        let hasExistingSnapshot = didFinishInitialLoad
-            || snapshot.stats.totalTokens > 0
-            || !snapshot.dailyUsage.isEmpty
-            || !snapshot.recentBins.isEmpty
-            || !snapshot.hourlyUsage.isEmpty
+        let hasExistingSnapshot = didFinishInitialLoad || hasDisplayableSnapshot(snapshot)
         isRefreshing = true
         if isFirstLoad {
             isInitialLoading = true
@@ -100,7 +96,7 @@ final class CodexUsageStore: ObservableObject {
                     self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
                 }
             } catch {
-                if !hasExistingSnapshot {
+                if !hasExistingSnapshot && !self.hasDisplayableSnapshot(self.snapshot) {
                     self.snapshot = .empty
                 }
                 self.status = "读取失败：\(error.localizedDescription)"
@@ -109,6 +105,14 @@ final class CodexUsageStore: ObservableObject {
             self.didFinishInitialLoad = true
             self.isInitialLoading = false
         }
+    }
+
+    private func hasDisplayableSnapshot(_ snapshot: DashboardSnapshot) -> Bool {
+        snapshot.stats.totalTokens > 0
+            || snapshot.stats.totalThreads > 0
+            || !snapshot.dailyUsage.isEmpty
+            || !snapshot.recentBins.isEmpty
+            || !snapshot.hourlyUsage.isEmpty
     }
 
     private func scheduleInitialPreciseRefresh() {

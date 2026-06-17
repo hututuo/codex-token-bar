@@ -4,6 +4,32 @@ import XCTest
 
 @MainActor
 final class CodexUsageStoreTests: XCTestCase {
+    func testInitialPreciseFailurePreservesFastUsageSnapshot() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/.codex"),
+            origin: .defaultHome
+        )
+        let fastSnapshot = makeSnapshot(totalTokens: 88_000, dayTokens: 0)
+        let loader = SequentialDashboardSnapshotLoader(
+            fastResults: [.success(fastSnapshot)],
+            preciseResults: [.failure(UsageStoreTestError())]
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("initial precise failure") {
+            store.status.hasPrefix("读取失败") && !store.isRefreshing
+        }
+
+        XCTAssertEqual(store.snapshot.stats.totalTokens, 88_000)
+        XCTAssertEqual(store.snapshot.stats.totalThreads, 2)
+        XCTAssertFalse(store.isInitialLoading)
+    }
+
     func testRefreshFailurePreservesLastSuccessfulUsageSnapshot() async {
         let source = CodexDataSource(
             codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/.codex"),
