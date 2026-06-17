@@ -245,7 +245,7 @@ final class CodexUsageAnalyzer {
     }
 
     func loadFastSnapshot() throws -> DashboardSnapshot {
-        try loadFromStateSQLite(includeRecentBins: false)
+        try loadFromStateSQLite(includeTimeSeries: false)
     }
 
     private func loadFromTokenCountJSONL() throws -> DashboardSnapshot {
@@ -304,25 +304,27 @@ final class CodexUsageAnalyzer {
         )
     }
 
-    private func loadFromStateSQLite(includeRecentBins: Bool = true) throws -> DashboardSnapshot {
+    private func loadFromStateSQLite(includeTimeSeries: Bool = true) throws -> DashboardSnapshot {
         let db = dataSource.stateDatabase.path
         guard fileManager.fileExists(atPath: db) else {
             throw NSError(domain: "CodexTokenBar", code: 1, userInfo: [NSLocalizedDescriptionKey: "\(dataSource.displayPath)/state_5.sqlite not found"])
         }
 
-        let dayRows = try sqliteRows(
-            db: db,
-            sql: """
-            SELECT strftime('%Y-%m-%d', COALESCE(updated_at_ms, updated_at)/1000, 'unixepoch', 'localtime') AS day,
-                   SUM(tokens_used) AS tokens,
-                   COUNT(*) AS threads
-            FROM threads
-            GROUP BY day
-            ORDER BY day;
-            """
-        )
+        let dayRows = includeTimeSeries
+            ? try sqliteRows(
+                db: db,
+                sql: """
+                SELECT strftime('%Y-%m-%d', COALESCE(updated_at_ms, updated_at)/1000, 'unixepoch', 'localtime') AS day,
+                       SUM(tokens_used) AS tokens,
+                       COUNT(*) AS threads
+                FROM threads
+                GROUP BY day
+                ORDER BY day;
+                """
+            )
+            : []
 
-        let binRows = includeRecentBins
+        let binRows = includeTimeSeries
             ? try sqliteRows(
                 db: db,
                 sql: """
@@ -337,7 +339,7 @@ final class CodexUsageAnalyzer {
             )
             : []
 
-        let hourlyRows = includeRecentBins
+        let hourlyRows = includeTimeSeries
             ? try sqliteRows(
                 db: db,
                 sql: """
