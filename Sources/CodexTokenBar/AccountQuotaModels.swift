@@ -129,6 +129,7 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
     var sevenDay: AccountQuotaWindow?
     var planType: String?
     var limitName: String?
+    var activeLimitID: String?
     var accountName: String?
     var limitCards: [AccountQuotaLimitCard] = []
     var resetCreditsAvailableCount: Int?
@@ -387,4 +388,3 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
         }
     }
 }
-
