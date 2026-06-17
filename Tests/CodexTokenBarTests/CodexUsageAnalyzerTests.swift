@@ -62,6 +62,54 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
     func testFastSnapshotKeepsTimeSeriesEmptyToAvoidTodayMisreporting() throws {
         let codexHome = try makeCodexHome()
+        try seedStateDatabase(at: codexHome)
+
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).loadFastSnapshot()
+
+        XCTAssertEqual(snapshot.stats.totalTokens, 300)
+        XCTAssertEqual(snapshot.stats.peakThreadTokens, 200)
+        XCTAssertEqual(snapshot.stats.totalThreads, 2)
+        XCTAssertEqual(snapshot.dailyUsage.reduce(0) { $0 + $1.tokens }, 0)
+        XCTAssertEqual(snapshot.recentBins.reduce(0) { $0 + $1.tokens }, 0)
+        XCTAssertEqual(snapshot.hourlyUsage.reduce(0) { $0 + $1.tokens }, 0)
+    }
+
+    func testLoadFallsBackToSQLiteWhenPreciseTokenEventsAreMissing() throws {
+        let codexHome = try makeCodexHome()
+        try seedStateDatabase(at: codexHome)
+
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertEqual(snapshot.stats.totalTokens, 300)
+        XCTAssertEqual(snapshot.stats.peakThreadTokens, 200)
+        XCTAssertEqual(snapshot.stats.totalThreads, 2)
+        XCTAssertEqual(snapshot.cacheUsage.total, .empty)
+    }
+
+    private struct Usage {
+        let input: Int
+        let cachedInput: Int
+        let output: Int
+        let reasoning: Int
+        let total: Int
+    }
+
+    private func makeCodexHome() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexUsageAnalyzerTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("sessions", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        temporaryDirectories.append(directory)
+        return directory
+    }
+
+    private func dataSource(for codexHome: URL) -> CodexDataSource {
+        CodexDataSource(codexHome: codexHome, origin: .userSelected)
+    }
+
+    private func seedStateDatabase(at codexHome: URL) throws {
         let driver = SQLiteDatabaseDriver(url: codexHome.appendingPathComponent("state_5.sqlite"))
         try driver.execute("""
         CREATE TABLE threads (
@@ -86,38 +134,6 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 .text("thread-b"), .text("B"), .text("B first"), .text("B preview"), .text("low"), .int(nowMilliseconds), .int(nowMilliseconds), .int(200)
             ]
         )
-
-        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).loadFastSnapshot()
-
-        XCTAssertEqual(snapshot.stats.totalTokens, 300)
-        XCTAssertEqual(snapshot.stats.peakThreadTokens, 200)
-        XCTAssertEqual(snapshot.stats.totalThreads, 2)
-        XCTAssertEqual(snapshot.dailyUsage.reduce(0) { $0 + $1.tokens }, 0)
-        XCTAssertEqual(snapshot.recentBins.reduce(0) { $0 + $1.tokens }, 0)
-        XCTAssertEqual(snapshot.hourlyUsage.reduce(0) { $0 + $1.tokens }, 0)
-    }
-
-    private struct Usage {
-        let input: Int
-        let cachedInput: Int
-        let output: Int
-        let reasoning: Int
-        let total: Int
-    }
-
-    private func makeCodexHome() throws -> URL {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CodexUsageAnalyzerTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: directory.appendingPathComponent("sessions", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        temporaryDirectories.append(directory)
-        return directory
-    }
-
-    private func dataSource(for codexHome: URL) -> CodexDataSource {
-        CodexDataSource(codexHome: codexHome, origin: .userSelected)
     }
 
     private func messageLine(timestamp: Date, type: String, message: String) -> String {
