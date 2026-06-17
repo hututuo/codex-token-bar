@@ -8,7 +8,7 @@ final class CodexUsageAnalyzer {
     }
 
     private final class SessionEventCache: @unchecked Sendable {
-        private static let persistentCacheVersion = 3
+        private static let persistentCacheVersion = 4
 
         private struct PersistentCache: Codable {
             let version: Int
@@ -145,13 +145,13 @@ final class CodexUsageAnalyzer {
         private static var cacheURL: URL? {
             FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
                 .appendingPathComponent("CodexTokenBar", isDirectory: true)
-                .appendingPathComponent("session-token-events-v3.json")
+                .appendingPathComponent("session-token-events-v4.json")
         }
 
         private static var legacyCacheURL: URL? {
             FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
                 .appendingPathComponent("CodexTokenBar", isDirectory: true)
-                .appendingPathComponent("session-token-events-v2.json")
+                .appendingPathComponent("session-token-events-v3.json")
         }
 
         private static var readableCacheURL: URL? {
@@ -174,6 +174,20 @@ final class CodexUsageAnalyzer {
     private struct ThreadInfo {
         let title: String
         let updatedAt: Date?
+    }
+
+    private struct ParsedTokenUsage {
+        let inputTokens: Int
+        let cachedInputTokens: Int
+        let outputTokens: Int
+        let reasoningOutputTokens: Int
+        let totalTokens: Int
+    }
+
+    private struct ParsedTokenUsageLine {
+        let timestamp: Date
+        let total: ParsedTokenUsage?
+        let last: ParsedTokenUsage?
     }
 
     private struct TokenCacheAccumulator {
@@ -612,18 +626,16 @@ final class CodexUsageAnalyzer {
                 return
             }
 
-            guard lineString.contains("\"total_token_usage\""),
-                  let timestampString = extractString(after: "\"timestamp\":\"", in: lineString),
-                  let timestamp = parseDate(timestampString) else {
+            guard let usageLine = parseTokenUsageLine(lineString) else {
                 return
             }
 
-            if let forkReplayCutoff, timestamp <= forkReplayCutoff {
+            if let forkReplayCutoff, usageLine.timestamp <= forkReplayCutoff {
                 return
             }
 
-            let totalTokens = extractInt(after: "\"total_token_usage\":", marker: "\"total_tokens\":", in: lineString)
-            let lastTokens = extractInt(after: "\"last_token_usage\":", marker: "\"total_tokens\":", in: lineString)
+            let totalTokens = usageLine.total?.totalTokens
+            let lastTokens = usageLine.last?.totalTokens
             let delta: Int
 
             if let totalTokens {
@@ -640,13 +652,13 @@ final class CodexUsageAnalyzer {
             guard delta > 0 else { return }
 
             events.append(TokenEvent(
-                timestamp: timestamp,
+                timestamp: usageLine.timestamp,
                 sessionID: sessionID,
                 tokens: delta,
-                inputTokens: extractInt(after: "\"last_token_usage\":", marker: "\"input_tokens\":", in: lineString) ?? 0,
-                cachedInputTokens: extractInt(after: "\"last_token_usage\":", marker: "\"cached_input_tokens\":", in: lineString) ?? 0,
-                outputTokens: extractInt(after: "\"last_token_usage\":", marker: "\"output_tokens\":", in: lineString) ?? 0,
-                reasoningOutputTokens: extractInt(after: "\"last_token_usage\":", marker: "\"reasoning_output_tokens\":", in: lineString) ?? 0,
+                inputTokens: usageLine.last?.inputTokens ?? 0,
+                cachedInputTokens: usageLine.last?.cachedInputTokens ?? 0,
+                outputTokens: usageLine.last?.outputTokens ?? 0,
+                reasoningOutputTokens: usageLine.last?.reasoningOutputTokens ?? 0,
                 userPrompt: excerpt(currentUserPrompt, limit: 180),
                 assistantResponse: excerpt(assistantFragments.joined(separator: " "), limit: 220)
             ))
@@ -685,6 +697,56 @@ final class CodexUsageAnalyzer {
         return normalized.isEmpty ? nil : normalized
     }
 
+    private func parseTokenUsageLine(_ line: String) -> ParsedTokenUsageLine? {
+        guard line.contains(#""token_count""#),
+              let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["type"] as? String == "event_msg",
+              let timestampString = object["timestamp"] as? String,
+              let timestamp = parseDate(timestampString),
+              let payload = object["payload"] as? [String: Any],
+              payload["type"] as? String == "token_count",
+              let info = payload["info"] as? [String: Any] else {
+            return nil
+        }
+
+        let total = parseTokenUsage(info["total_token_usage"] as? [String: Any])
+        let last = parseTokenUsage(info["last_token_usage"] as? [String: Any])
+        guard total != nil || last != nil else { return nil }
+        return ParsedTokenUsageLine(timestamp: timestamp, total: total, last: last)
+    }
+
+    private func parseTokenUsage(_ raw: [String: Any]?) -> ParsedTokenUsage? {
+        guard let raw,
+              let totalTokens = intValue(raw["total_tokens"]) else {
+            return nil
+        }
+
+        return ParsedTokenUsage(
+            inputTokens: intValue(raw["input_tokens"]) ?? 0,
+            cachedInputTokens: intValue(raw["cached_input_tokens"]) ?? 0,
+            outputTokens: intValue(raw["output_tokens"]) ?? 0,
+            reasoningOutputTokens: intValue(raw["reasoning_output_tokens"]) ?? 0,
+            totalTokens: totalTokens
+        )
+    }
+
+    private func intValue(_ value: Any?) -> Int? {
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        if let value = value as? Int {
+            return value
+        }
+        if let value = value as? Double {
+            return Int(value)
+        }
+        if let value = value as? String {
+            return Int(value)
+        }
+        return nil
+    }
+
     private func normalizeExcerptText(_ value: String) -> String {
         value
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
@@ -710,21 +772,6 @@ final class CodexUsageAnalyzer {
         let rest = text[markerRange.upperBound...]
         guard let end = rest.firstIndex(of: "\"") else { return nil }
         return String(rest[..<end])
-    }
-
-    private func extractInt(after scopeMarker: String, marker: String, in text: String) -> Int? {
-        guard let scopeRange = text.range(of: scopeMarker) else { return nil }
-        let scoped = text[scopeRange.upperBound...]
-        guard let markerRange = scoped.range(of: marker) else { return nil }
-        var digits = ""
-        for character in scoped[markerRange.upperBound...] {
-            if character.isNumber {
-                digits.append(character)
-            } else {
-                break
-            }
-        }
-        return Int(digits)
     }
 
     private func readFirstLinePrefix(from file: URL, maxBytes: Int = 262_144) -> String? {
