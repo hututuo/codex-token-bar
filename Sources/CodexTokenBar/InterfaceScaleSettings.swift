@@ -6,8 +6,8 @@ enum InterfaceScaleSettings {
     static let manualMultiplierKey = "interfaceScaleManualMultiplier"
     static let defaultAutoEnabled = true
     static let defaultManualMultiplier = 1.0
-    static let manualRange = 0.90...1.50
-    static let effectiveRange = 0.90...1.50
+    static let manualRange = 0.90...1.38
+    static let effectiveRange = 0.90...1.38
     static let step = 0.05
     static let baseDashboardContentWidth: CGFloat = 1088
 
@@ -244,7 +244,7 @@ struct InterfaceScaleSettingsCard: View {
                         .foregroundStyle(.secondary)
                         .background(Circle().fill(AppTheme.raisedBackground))
 
-                        Slider(value: percentBinding, in: 90...150, step: 1)
+                        Slider(value: percentBinding, in: 90...138, step: 1)
                             .accessibilityLabel("界面大小百分比")
                             .accessibilityValue("\(Int(manualPercent.rounded()))%")
 
@@ -319,7 +319,10 @@ struct InterfaceScaleSettingsCard: View {
                 .buttonStyle(InterfaceScaleCardFooterButtonStyle(prominent: true))
             }
         }
-        .onAppear(perform: syncCustomPercentText)
+        .onAppear {
+            manualMultiplier = InterfaceScaleSettings.clampedManual(manualMultiplier)
+            syncCustomPercentText()
+        }
         .onChange(of: manualMultiplier) {
             guard !customPercentFocused else { return }
             syncCustomPercentText()
@@ -345,7 +348,8 @@ struct InterfaceScaleSettingsCard: View {
     }
 
     private func syncCustomPercentText() {
-        customPercentText = "\(Int((manualMultiplier * 100).rounded()))"
+        let clamped = InterfaceScaleSettings.clampedManual(manualMultiplier)
+        customPercentText = "\(Int((clamped * 100).rounded()))"
     }
 }
 

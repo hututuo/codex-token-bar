@@ -30,12 +30,12 @@ final class InterfaceScaleSettingsTests: XCTestCase {
         XCTAssertEqual(scale, 1.10, accuracy: 0.001)
     }
 
-    func testManualScaleAllowsUpToOneHundredFiftyPercent() {
-        XCTAssertEqual(InterfaceScaleSettings.clampedManual(1.50), 1.50, accuracy: 0.001)
-        XCTAssertEqual(InterfaceScaleSettings.clampedManual(1.80), 1.50, accuracy: 0.001)
+    func testManualScaleAllowsUpToOneHundredThirtyEightPercent() {
+        XCTAssertEqual(InterfaceScaleSettings.clampedManual(1.38), 1.38, accuracy: 0.001)
+        XCTAssertEqual(InterfaceScaleSettings.clampedManual(1.80), 1.38, accuracy: 0.001)
         XCTAssertEqual(
-            InterfaceScaleSettings.effectiveScale(manualMultiplier: 1.50, autoEnabled: false, screen: nil),
-            1.50,
+            InterfaceScaleSettings.effectiveScale(manualMultiplier: 1.38, autoEnabled: false, screen: nil),
+            1.38,
             accuracy: 0.001
         )
     }
