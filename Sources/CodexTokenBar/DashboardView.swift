@@ -107,6 +107,30 @@ struct DashboardView: View {
                 .zIndex(9)
             }
 
+            if showingInterfaceScaleMenu {
+                GeometryReader { proxy in
+                    let cardFrame = centeredInterfaceScaleCardFrame(in: proxy, width: 358, estimatedHeight: 352)
+
+                    ZStack(alignment: .topLeading) {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                showingInterfaceScaleMenu = false
+                            }
+
+                        InterfaceScaleSettingsCard(
+                            autoEnabled: $interfaceScaleAutoEnabled,
+                            manualMultiplier: $interfaceScaleManualMultiplier,
+                            closeAction: { showingInterfaceScaleMenu = false }
+                        )
+                        .frame(width: cardFrame.width)
+                        .offset(x: cardFrame.minX, y: cardFrame.minY)
+                    }
+                }
+                .zIndex(11)
+                .transition(.identity)
+            }
+
         }
         .overlayPreferenceValue(FloatingPanelPaletteButtonBoundsKey.self) { anchor in
             GeometryReader { proxy in
@@ -126,31 +150,6 @@ struct DashboardView: View {
                             directionRaw: $floatingPanelGradientDirection,
                             styleRaw: $floatingPanelGradientStyle,
                             closeAction: closePaletteMenu
-                        )
-                        .frame(width: cardFrame.width)
-                        .offset(x: cardFrame.minX, y: cardFrame.minY)
-                    }
-                    .zIndex(10)
-                    .transition(.identity)
-                }
-            }
-        }
-        .overlayPreferenceValue(InterfaceScaleButtonBoundsKey.self) { anchor in
-            GeometryReader { proxy in
-                if showingInterfaceScaleMenu {
-                    let cardFrame = floatingSettingsCardFrame(in: proxy, anchor: anchor, width: 342, estimatedHeight: 352)
-
-                    ZStack(alignment: .topLeading) {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                showingInterfaceScaleMenu = false
-                            }
-
-                        InterfaceScaleSettingsCard(
-                            autoEnabled: $interfaceScaleAutoEnabled,
-                            manualMultiplier: $interfaceScaleManualMultiplier,
-                            closeAction: { showingInterfaceScaleMenu = false }
                         )
                         .frame(width: cardFrame.width)
                         .offset(x: cardFrame.minX, y: cardFrame.minY)
@@ -413,6 +412,18 @@ struct DashboardView: View {
                 floatingPanelScale * Double(requestedInterfaceScale)
             )
         )
+    }
+
+    private func centeredInterfaceScaleCardFrame(
+        in proxy: GeometryProxy,
+        width: CGFloat,
+        estimatedHeight: CGFloat
+    ) -> CGRect {
+        let cardWidth = min(width, max(300, proxy.size.width - 88))
+        let x = max(44, (proxy.size.width - cardWidth) / 2)
+        let availableY = max(28, proxy.size.height - estimatedHeight - 28)
+        let y = min(max(28, (proxy.size.height - estimatedHeight) / 2), availableY)
+        return CGRect(x: x, y: y, width: cardWidth, height: 0)
     }
 
     private func floatingSettingsCardFrame(

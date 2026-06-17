@@ -109,14 +109,6 @@ private struct InterfaceScaledContentSizeKey: PreferenceKey {
     }
 }
 
-struct InterfaceScaleButtonBoundsKey: PreferenceKey {
-    static let defaultValue: Anchor<CGRect>? = nil
-
-    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
-        value = nextValue() ?? value
-    }
-}
-
 struct InterfaceScaledContainer<Content: View>: View {
     let scale: CGFloat
     let visualWidth: CGFloat
@@ -463,9 +455,6 @@ struct InterfaceScaleMenuButton: View {
         }
         .buttonStyle(.plain)
         .fixedSize(horizontal: true, vertical: false)
-        .anchorPreference(key: InterfaceScaleButtonBoundsKey.self, value: .bounds) { anchor in
-            anchor
-        }
         .zIndex(isPresented ? 20 : 0)
         .help("自动适配高分辨率屏幕，也可以手动微调界面大小")
     }
