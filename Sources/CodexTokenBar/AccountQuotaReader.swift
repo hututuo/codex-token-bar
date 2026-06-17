@@ -160,12 +160,18 @@ private enum AccountQuotaReader {
         let byLimit = result["rateLimitsByLimitId"] as? [String: Any]
         let fallbackLimit = result["rateLimits"] as? [String: Any]
         let limitCards = parseLimitCards(byLimit: byLimit, fallbackLimit: fallbackLimit)
-        let codex = (byLimit?["codex"] as? [String: Any]) ?? fallbackLimit ?? [:]
-        let primaryCard = limitCards.first
-        let primary = parseWindow(codex["primary"] as? [String: Any], label: "5h") ?? primaryCard?.fiveHour
-        let secondary = parseWindow(codex["secondary"] as? [String: Any], label: "7d") ?? primaryCard?.sevenDay
-        let planType = (codex["planType"] as? String) ?? primaryCard?.planType
-        let limitName = (codex["limitName"] as? String) ?? primaryCard?.limitName
+        let selectedLimitID = selectedRecentLimitID(matching: limitCards) ?? fallbackLimitID(from: fallbackLimit)
+        let selectedCard = selectedLimitID.flatMap { id in
+            limitCards.first { $0.id == id }
+        } ?? limitCards.first
+        let selectedRaw = selectedCard.flatMap { byLimit?[$0.id] as? [String: Any] }
+            ?? selectedLimitID.flatMap { byLimit?[$0] as? [String: Any] }
+            ?? fallbackLimit
+            ?? [:]
+        let primary = selectedCard?.fiveHour ?? parseWindow(selectedRaw["primary"] as? [String: Any], label: "5h")
+        let secondary = selectedCard?.sevenDay ?? parseWindow(selectedRaw["secondary"] as? [String: Any], label: "7d")
+        let planType = selectedCard?.planType ?? (selectedRaw["planType"] as? String)
+        let limitName = selectedCard?.limitName ?? (selectedRaw["limitName"] as? String)
         let accountName = readLocalAccountName()
 
         var snapshot = AccountQuotaSnapshot(
@@ -173,6 +179,7 @@ private enum AccountQuotaReader {
             sevenDay: secondary,
             planType: planType,
             limitName: limitName,
+            activeLimitID: selectedCard?.id ?? selectedLimitID,
             accountName: accountName,
             limitCards: limitCards,
             status: "额度已更新",
@@ -182,6 +189,22 @@ private enum AccountQuotaReader {
             snapshot.status = "额度暂无数据"
         }
         return snapshot
+    }
+
+    private static func selectedRecentLimitID(matching cards: [AccountQuotaLimitCard]) -> String? {
+        guard !cards.isEmpty,
+              let codexHome = CodexDataSourceResolver().resolve()?.codexHome,
+              let recentLimitID = RecentRateLimitDetector.latestLimitID(codexHome: codexHome),
+              cards.contains(where: { $0.id == recentLimitID }) else {
+            return nil
+        }
+        return recentLimitID
+    }
+
+    private static func fallbackLimitID(from fallbackLimit: [String: Any]?) -> String? {
+        let value = (fallbackLimit?["limitId"] as? String) ?? (fallbackLimit?["limit_id"] as? String)
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
     }
 
     private static func parseLimitCards(byLimit: [String: Any]?, fallbackLimit: [String: Any]?) -> [AccountQuotaLimitCard] {
