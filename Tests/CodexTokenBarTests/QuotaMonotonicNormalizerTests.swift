@@ -3,6 +3,45 @@ import XCTest
 @testable import CodexTokenBar
 
 final class QuotaMonotonicNormalizerTests: XCTestCase {
+    func testOutOfOrderCodexSnapshotCannotMoveUsedPercentBackWithinSameCycle() {
+        let reset = Date(timeIntervalSince1970: 1_782_144_492)
+        let adjusted = QuotaMonotonicNormalizer.normalizedUsedPercent(
+            currentUsedPercent: 71,
+            currentResetsAt: reset,
+            previousUsedPercent: 84,
+            previousResetsAt: reset
+        )
+
+        XCTAssertEqual(adjusted, 84)
+    }
+
+    func testAcceptsFreshWindowProgressWhileIgnoringStaleSevenDaySnapshot() {
+        let reset = Date(timeIntervalSince1970: 1_782_144_492)
+        let previous = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 50, resetsAt: reset),
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 84, resetsAt: reset),
+            planType: "pro",
+            limitName: nil,
+            accountName: "来先生",
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        let outOfOrder = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 51, resetsAt: reset),
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 71, resetsAt: reset),
+            planType: "pro",
+            limitName: nil,
+            accountName: "来先生",
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+
+        let adjusted = QuotaMonotonicNormalizer.normalizedSnapshot(outOfOrder, after: previous)
+
+        XCTAssertEqual(adjusted.fiveHour?.usedPercent, 51)
+        XCTAssertEqual(adjusted.sevenDay?.usedPercent, 84)
+    }
+
     func testSameResetCycleDoesNotAllowRemainingToIncrease() {
         let reset = Date(timeIntervalSince1970: 10_000)
         let adjusted = QuotaMonotonicNormalizer.normalizedUsedPercent(

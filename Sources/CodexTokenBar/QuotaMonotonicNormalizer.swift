@@ -1,5 +1,10 @@
 import Foundation
 
+/// Codex records quota snapshots on completed model responses. When several
+/// sessions are active, an older request can finish after a newer request and
+/// publish an older rate-limit snapshot with a later log timestamp. Within the
+/// same reset window, the newest observed used percent is the trustworthy
+/// display/history value; a reset timestamp change starts a fresh cycle.
 enum QuotaMonotonicNormalizer {
     private static let resetGraceInterval: TimeInterval = 2 * 60
 
