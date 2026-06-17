@@ -9,7 +9,10 @@ enum StartupPresentation {
     @MainActor
     static func configureInitialActivationPolicy() {
         guard shouldHideDashboardAtStartup() else { return }
-        NSApp.setActivationPolicy(.accessory)
+        DispatchQueue.main.async {
+            guard shouldHideDashboardAtStartup() else { return }
+            NSApplication.shared.setActivationPolicy(.accessory)
+        }
     }
 
     @MainActor
