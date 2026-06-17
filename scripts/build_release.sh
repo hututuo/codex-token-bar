@@ -15,6 +15,16 @@ PRIVATE_KEY_FILE="${SPARKLE_PRIVATE_KEY_FILE:-$HOME/.config/codex-token-bar/spar
 RELEASE_NOTES_FILE="${RELEASE_NOTES_FILE:-$ROOT_DIR/release-notes/v$VERSION.md}"
 NOTARIZE_RELEASE="${NOTARIZE_RELEASE:-auto}"
 RELEASE_SECURITY_STRICT="${RELEASE_SECURITY_STRICT:-0}"
+ENABLE_HARDENED_RUNTIME_WAS_SET=0
+ENABLE_APP_SANDBOX_WAS_SET=0
+if [[ -n "${ENABLE_HARDENED_RUNTIME+x}" ]]; then
+  ENABLE_HARDENED_RUNTIME_WAS_SET=1
+fi
+if [[ -n "${ENABLE_APP_SANDBOX+x}" ]]; then
+  ENABLE_APP_SANDBOX_WAS_SET=1
+fi
+ENABLE_HARDENED_RUNTIME="${ENABLE_HARDENED_RUNTIME:-auto}"
+ENABLE_APP_SANDBOX="${ENABLE_APP_SANDBOX:-0}"
 APPLE_NOTARY_PROFILE="${APPLE_NOTARY_PROFILE:-}"
 APPLE_ID="${APPLE_ID:-}"
 APPLE_TEAM_ID="${APPLE_TEAM_ID:-}"
@@ -63,6 +73,15 @@ fi
 
 cd "$ROOT_DIR"
 
+if [[ "$RELEASE_SECURITY_STRICT" == "1" ]]; then
+  if [[ "$ENABLE_HARDENED_RUNTIME_WAS_SET" == "0" ]]; then
+    ENABLE_HARDENED_RUNTIME="1"
+  fi
+  if [[ "$ENABLE_APP_SANDBOX_WAS_SET" == "0" ]]; then
+    ENABLE_APP_SANDBOX="1"
+  fi
+fi
+
 notary_available() {
   if [[ "$NOTARIZE_RELEASE" == "0" ]]; then
     return 1
@@ -74,6 +93,12 @@ notary_available() {
 }
 
 release_security_preflight() {
+  if [[ "$NOTARIZE_RELEASE" == "1" ]] && ! notary_available; then
+    echo "NOTARIZE_RELEASE=1 requires Apple notarization credentials." >&2
+    echo "Set APPLE_NOTARY_PROFILE, or APPLE_ID + APPLE_TEAM_ID + APPLE_APP_SPECIFIC_PASSWORD." >&2
+    exit 1
+  fi
+
   if [[ "$RELEASE_SECURITY_STRICT" != "1" ]]; then
     return 0
   fi
@@ -91,6 +116,16 @@ release_security_preflight() {
   if ! notary_available; then
     echo "RELEASE_SECURITY_STRICT=1 requires Apple notarization credentials." >&2
     echo "Set APPLE_NOTARY_PROFILE, or APPLE_ID + APPLE_TEAM_ID + APPLE_APP_SPECIFIC_PASSWORD." >&2
+    exit 1
+  fi
+
+  if [[ "$ENABLE_HARDENED_RUNTIME" == "0" ]]; then
+    echo "RELEASE_SECURITY_STRICT=1 requires ENABLE_HARDENED_RUNTIME=1." >&2
+    exit 1
+  fi
+
+  if [[ "$ENABLE_APP_SANDBOX" != "1" ]]; then
+    echo "RELEASE_SECURITY_STRICT=1 requires ENABLE_APP_SANDBOX=1." >&2
     exit 1
   fi
 }
@@ -111,6 +146,7 @@ notarize_artifact() {
 release_security_preflight
 
 APP_VERSION="$VERSION" APP_BUILD="$BUILD" CODEX_TOKEN_BAR_NO_OPEN=1 \
+  ENABLE_HARDENED_RUNTIME="$ENABLE_HARDENED_RUNTIME" ENABLE_APP_SANDBOX="$ENABLE_APP_SANDBOX" \
   "$ROOT_DIR/scripts/package_app.sh" release >/dev/null
 
 APP_DIR="$ROOT_DIR/dist/$APP_NAME.app"

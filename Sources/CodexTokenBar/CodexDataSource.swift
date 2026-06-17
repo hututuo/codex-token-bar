@@ -59,8 +59,18 @@ struct CodexDataSource: Equatable {
 
 final class CodexDataSourceResolver {
     private let fileManager = FileManager.default
+    private let defaults: UserDefaults
+    private let scopedAccess: SecurityScopedCodexDirectoryAccess
     private let selectedPathKey = "CodexTokenBar.selectedCodexHome"
     private let legacySelectedPathKey = "CodexTokenDashboard.selectedCodexHome"
+
+    init(
+        defaults: UserDefaults = .standard,
+        scopedAccess: SecurityScopedCodexDirectoryAccess? = nil
+    ) {
+        self.defaults = defaults
+        self.scopedAccess = scopedAccess ?? SecurityScopedCodexDirectoryAccess(defaults: defaults)
+    }
 
     func resolve() -> CodexDataSource? {
         if let selected = selectedDataSource(), isUsable(selected) {
@@ -78,22 +88,29 @@ final class CodexDataSourceResolver {
 
     func saveSelectedDirectory(_ directory: URL) -> CodexDataSource? {
         let normalized = normalize(directory)
-        UserDefaults.standard.set(normalized.path, forKey: selectedPathKey)
-        UserDefaults.standard.removeObject(forKey: legacySelectedPathKey)
+        scopedAccess.saveAccess(for: normalized)
+        defaults.set(normalized.path, forKey: selectedPathKey)
+        defaults.removeObject(forKey: legacySelectedPathKey)
         return selectedDataSource()
     }
 
     func selectedDataSource() -> CodexDataSource? {
-        let currentPath = UserDefaults.standard.string(forKey: selectedPathKey)
-        let legacyPath = UserDefaults.standard.string(forKey: legacySelectedPathKey)
-        guard let path = [currentPath, legacyPath].compactMap({ $0 }).first(where: { !$0.isEmpty }) else {
+        let bookmarkedURL = scopedAccess.restoreAccess()
+        let currentPath = defaults.string(forKey: selectedPathKey)
+        let legacyPath = defaults.string(forKey: legacySelectedPathKey)
+        let selectedURL = bookmarkedURL ?? [currentPath, legacyPath]
+            .compactMap { $0 }
+            .first(where: { !$0.isEmpty })
+            .map { URL(fileURLWithPath: $0) }
+
+        guard let selectedURL else {
             return nil
         }
 
         if currentPath == nil {
-            UserDefaults.standard.set(path, forKey: selectedPathKey)
+            defaults.set(selectedURL.path, forKey: selectedPathKey)
         }
-        return CodexDataSource(codexHome: normalize(URL(fileURLWithPath: path)), origin: .userSelected)
+        return CodexDataSource(codexHome: normalize(selectedURL), origin: .userSelected)
     }
 
     private func automaticCandidates() -> [CodexDataSource] {
