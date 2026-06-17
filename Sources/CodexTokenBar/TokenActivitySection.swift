@@ -29,7 +29,7 @@ struct ActivityModeSelector: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Text("Mode")
+            Text("模式")
                 .font(.system(size: 13))
                 .foregroundStyle(.primary)
 

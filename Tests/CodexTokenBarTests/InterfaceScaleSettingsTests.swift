@@ -72,7 +72,6 @@ final class InterfaceScaleSettingsTests: XCTestCase {
             longestStreakDays: 27,
             totalCalls: 513,
             totalThreads: 180,
-            fastModePercent: 0,
             mostUsedReasoning: "medium",
             skillsExplored: 0,
             totalSkillsUsed: 0

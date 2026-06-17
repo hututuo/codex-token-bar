@@ -192,7 +192,6 @@ extension DashboardSnapshot {
             longestStreakDays: 0,
             totalCalls: 0,
             totalThreads: 0,
-            fastModePercent: 0,
             mostUsedReasoning: "未知",
             skillsExplored: 0,
             totalSkillsUsed: 0
@@ -240,7 +239,6 @@ extension DashboardSnapshot {
                 longestStreakDays: 26,
                 totalCalls: bins.reduce(0) { $0 + $1.calls },
                 totalThreads: 13_040,
-                fastModePercent: 0,
                 mostUsedReasoning: "中 · 51%",
                 skillsExplored: 11,
                 totalSkillsUsed: 31

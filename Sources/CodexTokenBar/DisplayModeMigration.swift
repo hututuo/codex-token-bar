@@ -2,6 +2,10 @@ import Foundation
 
 enum DisplayModeMigration {
     private static let tokenDisplayModeKey = "tokenDisplayMode"
+    private static let pairMigrationKey = "displaySurfacePairMigrationV01"
+    private static let defaultedToFloatingKey = "tokenDisplayModeDefaultedToFloatingV021"
+    private static let defaultedToFloatingQuotaKey = "tokenDisplayModeDefaultedToFloatingQuotaV01"
+    private static let defaultedToFloatingQuotaV02Key = "tokenDisplayModeDefaultedToFloatingQuotaV02"
     private static let initialDefaultAppliedKey = "tokenDisplayModeInitialDefaultAppliedV03"
     private static let userSelectedKey = "tokenDisplayModeUserSelected"
     private static let panelCloseRepairKey = "tokenDisplayModePanelCloseRepairV01"
@@ -26,37 +30,33 @@ enum DisplayModeMigration {
     }
 
     static func applyViewDefaults(
-        tokenDisplayModeRaw: inout String,
         floatingPanelEnabled: inout Bool,
         statusBarPanelEnabled: inout Bool,
-        pairMigrationApplied: inout Bool,
-        defaultedToFloating: inout Bool,
-        defaultedToFloatingQuota: inout Bool,
-        defaultedToFloatingQuotaV02: inout Bool,
-        initialDefaultApplied: inout Bool,
-        userSelected: inout Bool,
-        panelCloseRepairApplied: inout Bool
+        defaults: UserDefaults = .standard
     ) {
-        defaultedToFloating = true
-        defaultedToFloatingQuota = true
-        defaultedToFloatingQuotaV02 = true
+        defaults.set(true, forKey: defaultedToFloatingKey)
+        defaults.set(true, forKey: defaultedToFloatingQuotaKey)
+        defaults.set(true, forKey: defaultedToFloatingQuotaV02Key)
 
-        let currentMode = TokenDisplayMode(rawValue: tokenDisplayModeRaw)
-        if !initialDefaultApplied && !userSelected,
-           currentMode == nil || currentMode == .off {
-            tokenDisplayModeRaw = TokenDisplayMode.floating.rawValue
+        var mode = storedMode(defaults: defaults)
+        if !defaults.bool(forKey: initialDefaultAppliedKey),
+           !defaults.bool(forKey: userSelectedKey),
+           mode == nil || mode == .off {
+            defaults.set(TokenDisplayMode.floating.rawValue, forKey: tokenDisplayModeKey)
+            mode = .floating
         }
-        initialDefaultApplied = true
+        defaults.set(true, forKey: initialDefaultAppliedKey)
 
-        if !panelCloseRepairApplied,
-           currentMode == nil || currentMode == .off {
-            tokenDisplayModeRaw = TokenDisplayMode.floating.rawValue
-            userSelected = false
+        if !defaults.bool(forKey: panelCloseRepairKey),
+           mode == nil || mode == .off {
+            defaults.set(TokenDisplayMode.floating.rawValue, forKey: tokenDisplayModeKey)
+            defaults.set(false, forKey: userSelectedKey)
+            mode = .floating
         }
-        panelCloseRepairApplied = true
+        defaults.set(true, forKey: panelCloseRepairKey)
 
-        guard !pairMigrationApplied else { return }
-        let mode = TokenDisplayMode(rawValue: tokenDisplayModeRaw)
+        guard !defaults.bool(forKey: pairMigrationKey) else { return }
+        mode = storedMode(defaults: defaults) ?? .floating
         if mode == .statusBar {
             floatingPanelEnabled = false
             statusBarPanelEnabled = true
@@ -66,6 +66,10 @@ enum DisplayModeMigration {
         } else {
             floatingPanelEnabled = true
         }
-        pairMigrationApplied = true
+        defaults.set(true, forKey: pairMigrationKey)
+    }
+
+    private static func storedMode(defaults: UserDefaults) -> TokenDisplayMode? {
+        defaults.string(forKey: tokenDisplayModeKey).flatMap(TokenDisplayMode.init(rawValue:))
     }
 }

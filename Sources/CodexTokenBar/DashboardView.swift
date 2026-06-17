@@ -12,16 +12,8 @@ struct DashboardView: View {
     @StateObject private var providerSyncStore = ProviderSyncStore()
     @State private var taskCompletionMonitor = TaskCompletionMonitor()
     @State private var liveMonitor = LiveRateMonitor()
-    @AppStorage("tokenDisplayMode") private var tokenDisplayModeRaw = TokenDisplayMode.floating.rawValue
     @AppStorage("floatingPanelEnabled") private var floatingPanelEnabled = true
     @AppStorage("statusBarPanelEnabled") private var statusBarPanelEnabled = false
-    @AppStorage("displaySurfacePairMigrationV01") private var displaySurfacePairMigrationApplied = false
-    @AppStorage("tokenDisplayModeDefaultedToFloatingV021") private var tokenDisplayModeDefaultedToFloating = false
-    @AppStorage("tokenDisplayModeDefaultedToFloatingQuotaV01") private var tokenDisplayModeDefaultedToFloatingQuota = false
-    @AppStorage("tokenDisplayModeDefaultedToFloatingQuotaV02") private var tokenDisplayModeDefaultedToFloatingQuotaV02 = false
-    @AppStorage("tokenDisplayModeInitialDefaultAppliedV03") private var tokenDisplayModeInitialDefaultApplied = false
-    @AppStorage("tokenDisplayModeUserSelected") private var tokenDisplayModeUserSelected = false
-    @AppStorage("tokenDisplayModePanelCloseRepairV01") private var tokenDisplayModePanelCloseRepairApplied = false
     @AppStorage("preciseTokenCountingEnabled") private var preciseTokenCountingEnabled = false
     @AppStorage("floatingPanelOpacity") private var floatingPanelOpacity = 0.88
     @AppStorage("floatingPanelScale") private var floatingPanelScale = FloatingTokenPanelMetrics.defaultScale
@@ -298,20 +290,20 @@ struct DashboardView: View {
                 Button {
                     refreshAllData()
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label("刷新", systemImage: "arrow.clockwise")
                 }
                 .disabled(store.isRefreshing)
 
                 Button {
                     Exporter.exportCSV(snapshot: store.snapshot)
                 } label: {
-                    Label("Export CSV", systemImage: "tablecells")
+                    Label("导出 CSV", systemImage: "tablecells")
                 }
 
                 Button {
                     Exporter.exportPNG(snapshot: store.snapshot)
                 } label: {
-                    Label("Export PNG", systemImage: "photo")
+                    Label("导出 PNG", systemImage: "photo")
                 }
             }
         }
@@ -457,16 +449,8 @@ struct DashboardView: View {
 
     private func applyDisplaySurfaceDefaultsIfNeeded() {
         DisplayModeMigration.applyViewDefaults(
-            tokenDisplayModeRaw: &tokenDisplayModeRaw,
             floatingPanelEnabled: &floatingPanelEnabled,
-            statusBarPanelEnabled: &statusBarPanelEnabled,
-            pairMigrationApplied: &displaySurfacePairMigrationApplied,
-            defaultedToFloating: &tokenDisplayModeDefaultedToFloating,
-            defaultedToFloatingQuota: &tokenDisplayModeDefaultedToFloatingQuota,
-            defaultedToFloatingQuotaV02: &tokenDisplayModeDefaultedToFloatingQuotaV02,
-            initialDefaultApplied: &tokenDisplayModeInitialDefaultApplied,
-            userSelected: &tokenDisplayModeUserSelected,
-            panelCloseRepairApplied: &tokenDisplayModePanelCloseRepairApplied
+            statusBarPanelEnabled: &statusBarPanelEnabled
         )
     }
 

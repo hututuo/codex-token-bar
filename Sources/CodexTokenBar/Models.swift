@@ -153,7 +153,6 @@ struct DashboardStats {
     let longestStreakDays: Int
     let totalCalls: Int
     let totalThreads: Int
-    let fastModePercent: Int
     let mostUsedReasoning: String
     let skillsExplored: Int
     let totalSkillsUsed: Int

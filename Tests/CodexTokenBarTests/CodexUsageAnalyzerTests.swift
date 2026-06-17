@@ -58,7 +58,6 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.cacheUsage.sessions.first?.id, sessionID)
         XCTAssertEqual(snapshot.cacheUsage.turns.count, 2)
         XCTAssertEqual(Set(snapshot.cacheUsage.turns.map(\.userPrompt)), ["First question", "Second question"])
-        XCTAssertEqual(snapshot.stats.fastModePercent, 0)
     }
 
     func testFastSnapshotKeepsTimeSeriesEmptyToAvoidTodayMisreporting() throws {
@@ -70,7 +69,6 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.stats.totalTokens, 300)
         XCTAssertEqual(snapshot.stats.peakThreadTokens, 200)
         XCTAssertEqual(snapshot.stats.totalThreads, 2)
-        XCTAssertEqual(snapshot.stats.fastModePercent, 0)
         XCTAssertEqual(snapshot.dailyUsage.reduce(0) { $0 + $1.tokens }, 0)
         XCTAssertEqual(snapshot.recentBins.reduce(0) { $0 + $1.tokens }, 0)
         XCTAssertEqual(snapshot.hourlyUsage.reduce(0) { $0 + $1.tokens }, 0)
@@ -85,7 +83,6 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.stats.totalTokens, 300)
         XCTAssertEqual(snapshot.stats.peakThreadTokens, 200)
         XCTAssertEqual(snapshot.stats.totalThreads, 2)
-        XCTAssertEqual(snapshot.stats.fastModePercent, 0)
         XCTAssertEqual(snapshot.cacheUsage.total, .empty)
     }
 

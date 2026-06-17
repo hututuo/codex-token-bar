@@ -299,7 +299,6 @@ final class CodexUsageAnalyzer {
             longestStreakDays: longestStreakDays(from: daily),
             totalCalls: events.count,
             totalThreads: officialSummary?.totalThreads ?? sessionIDsWithEvents.count,
-            fastModePercent: 0,
             mostUsedReasoning: metadata.reasoning,
             skillsExplored: metadata.plugins.filter { $0.name.hasPrefix("$") }.count,
             totalSkillsUsed: metadata.plugins.count
@@ -477,7 +476,6 @@ final class CodexUsageAnalyzer {
             longestStreakDays: longestStreakDays(from: daily),
             totalCalls: recentBins.reduce(0) { $0 + $1.calls },
             totalThreads: totalThreads,
-            fastModePercent: 0,
             mostUsedReasoning: reasoningCounts.max(by: { $0.value < $1.value }).map { "\($0.key) · \($0.value)" } ?? "未知",
             skillsExplored: pluginCounts.keys.filter { $0.hasPrefix("$") }.count,
             totalSkillsUsed: pluginCounts.count

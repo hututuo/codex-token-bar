@@ -13,36 +13,43 @@ final class DisplayModeMigrationTests: XCTestCase {
     }
 
     func testViewDefaultsMigratesLegacyStatusBarModeToSeparateSurfaceFlags() {
-        var mode = TokenDisplayMode.statusBar.rawValue
+        let defaults = makeDefaults()
+        defaults.set(TokenDisplayMode.statusBar.rawValue, forKey: "tokenDisplayMode")
         var floatingEnabled = true
         var statusBarEnabled = false
-        var pairMigrationApplied = false
-        var defaultedToFloating = false
-        var defaultedToFloatingQuota = false
-        var defaultedToFloatingQuotaV02 = false
-        var initialDefaultApplied = true
-        var userSelected = true
-        var panelCloseRepairApplied = true
+        defaults.set(true, forKey: "tokenDisplayModeInitialDefaultAppliedV03")
+        defaults.set(true, forKey: "tokenDisplayModeUserSelected")
+        defaults.set(true, forKey: "tokenDisplayModePanelCloseRepairV01")
 
         DisplayModeMigration.applyViewDefaults(
-            tokenDisplayModeRaw: &mode,
             floatingPanelEnabled: &floatingEnabled,
             statusBarPanelEnabled: &statusBarEnabled,
-            pairMigrationApplied: &pairMigrationApplied,
-            defaultedToFloating: &defaultedToFloating,
-            defaultedToFloatingQuota: &defaultedToFloatingQuota,
-            defaultedToFloatingQuotaV02: &defaultedToFloatingQuotaV02,
-            initialDefaultApplied: &initialDefaultApplied,
-            userSelected: &userSelected,
-            panelCloseRepairApplied: &panelCloseRepairApplied
+            defaults: defaults
         )
 
         XCTAssertFalse(floatingEnabled)
         XCTAssertTrue(statusBarEnabled)
-        XCTAssertTrue(pairMigrationApplied)
-        XCTAssertTrue(defaultedToFloating)
-        XCTAssertTrue(defaultedToFloatingQuota)
-        XCTAssertTrue(defaultedToFloatingQuotaV02)
+        XCTAssertTrue(defaults.bool(forKey: "displaySurfacePairMigrationV01"))
+        XCTAssertTrue(defaults.bool(forKey: "tokenDisplayModeDefaultedToFloatingV021"))
+        XCTAssertTrue(defaults.bool(forKey: "tokenDisplayModeDefaultedToFloatingQuotaV01"))
+        XCTAssertTrue(defaults.bool(forKey: "tokenDisplayModeDefaultedToFloatingQuotaV02"))
+    }
+
+    func testViewDefaultsDoesNotOverrideSeparateSurfaceFlagsAfterMigration() {
+        let defaults = makeDefaults()
+        defaults.set(TokenDisplayMode.statusBar.rawValue, forKey: "tokenDisplayMode")
+        defaults.set(true, forKey: "displaySurfacePairMigrationV01")
+        var floatingEnabled = true
+        var statusBarEnabled = false
+
+        DisplayModeMigration.applyViewDefaults(
+            floatingPanelEnabled: &floatingEnabled,
+            statusBarPanelEnabled: &statusBarEnabled,
+            defaults: defaults
+        )
+
+        XCTAssertTrue(floatingEnabled)
+        XCTAssertFalse(statusBarEnabled)
     }
 
     private func makeDefaults() -> UserDefaults {
