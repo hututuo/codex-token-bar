@@ -743,7 +743,7 @@ final class CodexUsageAnalyzer {
 
     private func extractPayloadMessage(from line: String, expectedType: String) -> String? {
         guard line.contains(#""payload""#),
-              line.contains(#""type":"\#(expectedType)""#),
+              line.contains(expectedType),
               let data = line.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let payload = object["payload"] as? [String: Any],
@@ -851,8 +851,8 @@ final class CodexUsageAnalyzer {
         var pending = Data()
         let newline = Data([0x0A])
         let tokenNeedle = Data(#""token_count""#.utf8)
-        let userMessageNeedle = Data(#""type":"user_message""#.utf8)
-        let agentMessageNeedle = Data(#""type":"agent_message""#.utf8)
+        let userMessageNeedle = Data(#""user_message""#.utf8)
+        let agentMessageNeedle = Data(#""agent_message""#.utf8)
 
         while true {
             let data = handle.readData(ofLength: 1_048_576)

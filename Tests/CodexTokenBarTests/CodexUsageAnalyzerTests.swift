@@ -171,6 +171,32 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.cacheUsage.total.cachedInputTokens, 10)
     }
 
+    func testMessageExcerptsParseWhitespaceJSONLines() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-spacedmsg"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date()
+
+        let lines = [
+            spacedMessageLine(timestamp: now.addingTimeInterval(-80), type: "user_message", message: "spaced user prompt"),
+            spacedMessageLine(timestamp: now.addingTimeInterval(-70), type: "agent_message", message: "spaced assistant answer"),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-60),
+                total: Usage(input: 1_100, cachedInput: 200, output: 75, reasoning: 0, total: 1_175),
+                last: Usage(input: 1_100, cachedInput: 200, output: 75, reasoning: 0, total: 1_175)
+            )
+        ]
+        try lines.joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertTrue(snapshot.cacheUsage.turns.contains { turn in
+            turn.userPrompt == "spaced user prompt" && turn.assistantResponse == "spaced assistant answer"
+        })
+    }
+
     func testSQLiteReasoningUsesExactReasoningEffortColumn() throws {
         let codexHome = try makeCodexHome()
         try seedStateDatabaseWithReasoningNoise(at: codexHome)
@@ -276,6 +302,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
     private func spacedSessionMetaLine(timestamp: Date, sessionID: String) -> String {
         "{ \"timestamp\" : \"\(iso8601String(from: timestamp))\", \"type\" : \"session_meta\", \"payload\" : { \"id\" : \"\(sessionID)\", \"forked_from_id\" : \"origin-session\" } }"
+    }
+
+    private func spacedMessageLine(timestamp: Date, type: String, message: String) -> String {
+        "{ \"timestamp\" : \"\(iso8601String(from: timestamp))\", \"type\" : \"event_msg\", \"payload\" : { \"type\" : \"\(type)\", \"message\" : \"\(message)\" } }"
     }
 
     private func tokenCountLine(timestamp: Date, total: Usage, last: Usage) throws -> String {
