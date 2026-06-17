@@ -175,7 +175,6 @@ final class CodexUsageAnalyzer {
     private static let sessionEventCache = SessionEventCache()
     private static var isPersistentSessionEventCacheDisabled: Bool {
         ProcessInfo.processInfo.environment["CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE"] == "1"
-            || NSClassFromString("XCTest.XCTestCase") != nil
     }
 
     private struct OfficialThreadSummary {

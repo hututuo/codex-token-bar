@@ -4,7 +4,13 @@ import XCTest
 final class CodexUsageAnalyzerTests: XCTestCase {
     private var temporaryDirectories: [URL] = []
 
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+    }
+
     override func tearDownWithError() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         for url in temporaryDirectories {
             try? FileManager.default.removeItem(at: url)
         }
