@@ -37,7 +37,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     var appliedLockState = false
     let recentExternalClickTargetInterval: TimeInterval = 5 * 60
     let fastFollowInterval: TimeInterval = 1.0 / 60.0
-    let idleFollowInterval: TimeInterval = 0.5
+    let idleFollowInterval: TimeInterval = 2.0
     let fastFollowGracePeriod: TimeInterval = 1.2
     let lockedOriginPersistInterval: TimeInterval = 0.45
     let visibleWindowListRefreshInterval: TimeInterval = 1.0
