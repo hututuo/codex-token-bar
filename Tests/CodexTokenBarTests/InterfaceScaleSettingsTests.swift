@@ -21,13 +21,22 @@ final class InterfaceScaleSettingsTests: XCTestCase {
         )
     }
 
-    func testEffectiveScaleCombinesManualAndAutoWhenEnabled() {
+    func testEffectiveScaleUsesManualWhenAutoIsDisabled() {
         let scale = InterfaceScaleSettings.effectiveScale(
             manualMultiplier: 1.10,
             autoEnabled: false,
             screen: nil
         )
         XCTAssertEqual(scale, 1.10, accuracy: 0.001)
+    }
+
+    func testEffectiveScaleIgnoresManualWhenAutoIsEnabled() {
+        let scale = InterfaceScaleSettings.effectiveScale(
+            manualMultiplier: 1.38,
+            autoEnabled: true,
+            screen: nil
+        )
+        XCTAssertEqual(scale, 1.0, accuracy: 0.001)
     }
 
     func testManualScaleAllowsUpToOneHundredThirtyEightPercent() {

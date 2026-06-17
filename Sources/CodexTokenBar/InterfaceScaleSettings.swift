@@ -56,9 +56,11 @@ enum InterfaceScaleSettings {
         autoEnabled: Bool,
         screen: NSScreen?
     ) -> Double {
+        if autoEnabled {
+            return autoScale(for: screen)
+        }
         let manual = clampedManual(manualMultiplier)
-        let automatic = autoEnabled ? autoScale(for: screen) : 1.0
-        return clampedEffective(manual * automatic)
+        return clampedEffective(manual)
     }
 
     static func dashboardScale(
@@ -190,7 +192,7 @@ struct InterfaceScaleSettingsCard: View {
             systemImage: "textformat.size",
             closeAction: closeAction
         ) {
-            Text("自动适配会按屏幕大小给建议值；下面的百分比可以继续微调，也可以直接输入。")
+            Text(autoEnabled ? "自动适配会按屏幕大小使用建议值；关闭自动后，可以用下面的百分比手动微调。" : "当前使用手动百分比；打开自动后，会切回屏幕建议值。")
                 .font(.system(size: 11.5, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -301,7 +303,9 @@ struct InterfaceScaleSettingsCard: View {
                     }
                 }
                 .padding(10)
+                .opacity(autoEnabled ? 0.48 : 1)
             }
+            .disabled(autoEnabled)
 
             HStack(spacing: 8) {
                 Button("恢复默认") {
@@ -396,19 +400,24 @@ struct InterfaceScaleMenuContent: View {
         Divider()
 
         Text("当前界面大小 \(InterfaceScaleSettings.displayValue(effectiveScale))")
-        Text("屏幕建议 \(InterfaceScaleSettings.displayValue(autoEnabled ? automaticScale : 1.0))")
+        Text("屏幕建议 \(InterfaceScaleSettings.displayValue(automaticScale))")
+        if autoEnabled {
+            Text("手动调整需先关闭自动适配")
+        }
 
         Divider()
 
         Button("缩小一点") {
+            autoEnabled = false
             manualMultiplier = InterfaceScaleSettings.nudgeManual(manualMultiplier, delta: -InterfaceScaleSettings.step)
         }
-        .disabled(manualMultiplier <= InterfaceScaleSettings.manualRange.lowerBound)
+        .disabled(!autoEnabled && manualMultiplier <= InterfaceScaleSettings.manualRange.lowerBound)
 
         Button("放大一点") {
+            autoEnabled = false
             manualMultiplier = InterfaceScaleSettings.nudgeManual(manualMultiplier, delta: InterfaceScaleSettings.step)
         }
-        .disabled(manualMultiplier >= InterfaceScaleSettings.manualRange.upperBound)
+        .disabled(!autoEnabled && manualMultiplier >= InterfaceScaleSettings.manualRange.upperBound)
 
         Button("恢复默认大小") {
             autoEnabled = InterfaceScaleSettings.defaultAutoEnabled
