@@ -647,7 +647,7 @@ private enum AccountQuotaReader {
             switch result {
             case .success(let snapshot):
                 if snapshot.isAvailable || attempt == 3 {
-                    return .success(snapshot)
+                    return .success(await snapshotByAddingResetCredits(to: snapshot))
                 }
                 lastError = ReaderError.emptyRateLimits
             case .failure(let error):
@@ -659,6 +659,14 @@ private enum AccountQuotaReader {
             try? await Task.sleep(nanoseconds: 350_000_000)
         }
         return .failure(lastError ?? ReaderError.invalidResponse)
+    }
+
+    private static func snapshotByAddingResetCredits(to snapshot: AccountQuotaSnapshot) async -> AccountQuotaSnapshot {
+        guard let resetCredits = await readResetCredits() else { return snapshot }
+        var enriched = snapshot
+        enriched.resetCreditsAvailableCount = resetCredits.availableCount
+        enriched.resetCredits = resetCredits.credits
+        return enriched
     }
 
     private static func readOnce() -> Result<AccountQuotaSnapshot, Error> {
@@ -772,7 +780,6 @@ private enum AccountQuotaReader {
         let planType = (codex["planType"] as? String) ?? primaryCard?.planType
         let limitName = (codex["limitName"] as? String) ?? primaryCard?.limitName
         let accountName = readLocalAccountName()
-        let resetCredits = readResetCredits()
 
         var snapshot = AccountQuotaSnapshot(
             fiveHour: primary,
@@ -781,8 +788,6 @@ private enum AccountQuotaReader {
             limitName: limitName,
             accountName: accountName,
             limitCards: limitCards,
-            resetCreditsAvailableCount: resetCredits?.availableCount,
-            resetCredits: resetCredits?.credits ?? [],
             status: "额度已更新",
             updatedAt: Date()
         )
@@ -837,11 +842,7 @@ private enum AccountQuotaReader {
         let credits: [AccountQuotaResetCredit]
     }
 
-    private final class ResetCreditsResponseBox: @unchecked Sendable {
-        var output: ResetCreditsSnapshot?
-    }
-
-    private static func readResetCredits() -> ResetCreditsSnapshot? {
+    private static func readResetCredits() async -> ResetCreditsSnapshot? {
         guard let accessToken = readAccessToken(),
               let url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits") else {
             return nil
@@ -854,41 +855,32 @@ private enum AccountQuotaReader {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("CodexTokenBar", forHTTPHeaderField: "User-Agent")
 
-        let semaphore = DispatchSemaphore(value: 0)
-        let box = ResetCreditsResponseBox()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
         let session = URLSession(configuration: configuration)
-        defer {
-            session.finishTasksAndInvalidate()
-        }
+        defer { session.finishTasksAndInvalidate() }
 
-        let task = session.dataTask(with: request) { data, response, _ in
-            defer { semaphore.signal() }
+        do {
+            let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode),
-                  let data,
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return
+                return nil
             }
 
             let credits = parseResetCredits(object["credits"])
             let availableCount = (object["available_count"] as? NSNumber)?.intValue
                 ?? (object["available_count"] as? Int)
                 ?? credits.filter(\.isAvailable).count
-            box.output = ResetCreditsSnapshot(
+            return ResetCreditsSnapshot(
                 availableCount: max(0, availableCount),
                 credits: credits
             )
+        } catch {
+            return nil
         }
-        task.resume()
-
-        if semaphore.wait(timeout: .now() + 14.5) == .timedOut {
-            task.cancel()
-        }
-        return box.output
     }
 
     private static func parseResetCredits(_ value: Any?) -> [AccountQuotaResetCredit] {
