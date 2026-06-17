@@ -107,7 +107,7 @@ final class CodexUsageAnalyzer {
             didLoadPersistentCache = true
             lock.unlock()
 
-            guard let cacheURL = Self.cacheURL,
+            guard let cacheURL = Self.readableCacheURL,
                   let data = try? Data(contentsOf: cacheURL),
                   let cache = try? JSONDecoder().decode(PersistentCache.self, from: data),
                   cache.version == Self.persistentCacheVersion else {
@@ -145,7 +145,21 @@ final class CodexUsageAnalyzer {
         private static var cacheURL: URL? {
             FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
                 .appendingPathComponent("CodexTokenBar", isDirectory: true)
+                .appendingPathComponent("session-token-events-v3.json")
+        }
+
+        private static var legacyCacheURL: URL? {
+            FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("CodexTokenBar", isDirectory: true)
                 .appendingPathComponent("session-token-events-v2.json")
+        }
+
+        private static var readableCacheURL: URL? {
+            guard let cacheURL else { return legacyCacheURL }
+            if FileManager.default.fileExists(atPath: cacheURL.path) {
+                return cacheURL
+            }
+            return legacyCacheURL ?? cacheURL
         }
     }
 
