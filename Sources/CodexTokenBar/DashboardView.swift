@@ -25,6 +25,8 @@ struct DashboardView: View {
     @AppStorage("preciseTokenCountingEnabled") private var preciseTokenCountingEnabled = false
     @AppStorage("floatingPanelOpacity") private var floatingPanelOpacity = 0.88
     @AppStorage("floatingPanelScale") private var floatingPanelScale = FloatingTokenPanelMetrics.defaultScale
+    @AppStorage(InterfaceScaleSettings.autoEnabledKey) private var interfaceScaleAutoEnabled = InterfaceScaleSettings.defaultAutoEnabled
+    @AppStorage(InterfaceScaleSettings.manualMultiplierKey) private var interfaceScaleManualMultiplier = InterfaceScaleSettings.defaultManualMultiplier
     @AppStorage(TokenRateScaleSettings.key) private var tokenRateFullScale = TokenRateScaleSettings.defaultValue
     @AppStorage("floatingPanelLocked") private var floatingPanelLocked = false
     @AppStorage(FloatingPanelAppearance.startHexKey) private var floatingPanelGradientStartHex = FloatingPanelAppearance.defaultStartHex
@@ -61,71 +63,17 @@ struct DashboardView: View {
                 }
 
             GeometryReader { proxy in
+                let requestedScale = requestedInterfaceScale
+                let contentScale = InterfaceScaleSettings.dashboardScale(
+                    requestedScale: requestedScale,
+                    availableWidth: proxy.size.width
+                )
+                let logicalWidth = proxy.size.width / max(contentScale, 0.1)
+
                 ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 18) {
-                        HeaderView(
-                            snapshot: store.snapshot,
-                            quotaSnapshot: quotaStore.snapshot,
-                            status: store.status,
-                            dataSourceLabel: store.dataSourceLabel,
-                            dataSourceOrigin: store.dataSourceOrigin,
-                            isRefreshing: store.isRefreshing,
-                            onRefresh: refreshAllData,
-                            onChangeDirectory: store.chooseDataSourceDirectory,
-                            onOpenProviderSync: {
-                                showingProviderSync = true
-                                providerSyncStore.scan(dataSource: store.currentDataSource)
-                            },
-                            showingResetCreditDetails: $showingResetCreditDetails
-                        )
-
-                        StatStrip(stats: store.snapshot.stats)
-
-                        LiveRateView(
-                            monitor: liveMonitor,
-                            floatingPanelEnabled: $floatingPanelEnabled,
-                            statusBarPanelEnabled: $statusBarPanelEnabled,
-                            preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
-                            floatingPanelOpacity: $floatingPanelOpacity,
-                            floatingPanelScale: $floatingPanelScale,
-                            tokenRateFullScale: $tokenRateFullScale,
-                            floatingPanelGradientStartHex: $floatingPanelGradientStartHex,
-                            floatingPanelGradientEndHex: $floatingPanelGradientEndHex,
-                            floatingPanelGradientDirection: $floatingPanelGradientDirection,
-                            floatingPanelGradientStyle: $floatingPanelGradientStyle,
-                            floatingPanelUnreadEffect: $floatingPanelUnreadEffect,
-                            showingPaletteMenu: $showingPaletteMenu,
-                            showingUnreadEffectMenu: $showingUnreadEffectMenu
-                        )
-
-                        ActivitySection(
-                            dailyUsage: store.snapshot.dailyUsage,
-                            cacheDaily: store.snapshot.cacheUsage.daily,
-                            quotaDaily: quotaHistoryStore.snapshot.daily,
-                            selectedMode: $store.selectedMode
-                        )
-
-                        RecentUsageChart(
-                            bins: store.snapshot.recentBins,
-                            hourlyBins: store.snapshot.hourlyUsage,
-                            cacheRecentBins: store.snapshot.cacheUsage.recentBins,
-                            cacheHourlyBins: store.snapshot.cacheUsage.hourly,
-                            quotaRecentBins: quotaHistoryStore.snapshot.recentBins,
-                            quotaHourlyBins: quotaHistoryStore.snapshot.hourlyBins
-                        )
-
-                        CacheHitRankingSection(cacheUsage: store.snapshot.cacheUsage)
+                    InterfaceScaledContainer(scale: contentScale, visualWidth: proxy.size.width) {
+                        dashboardContent(logicalWidth: logicalWidth)
                     }
-                    .padding(.horizontal, 54)
-                    .padding(.vertical, 20)
-                    .frame(minWidth: proxy.size.width, maxWidth: .infinity, alignment: .top)
-                    .background(
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                NotificationCenter.default.post(name: .dashboardBlankAreaClicked, object: nil)
-                            }
-                    )
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
             }
@@ -242,6 +190,12 @@ struct DashboardView: View {
         .onChange(of: floatingPanelScale) {
             updateTokenDisplaySurface()
         }
+        .onChange(of: interfaceScaleAutoEnabled) {
+            updateTokenDisplaySurface()
+        }
+        .onChange(of: interfaceScaleManualMultiplier) {
+            updateTokenDisplaySurface()
+        }
         .onChange(of: floatingPanelLocked) {
             updateTokenDisplaySurface()
         }
@@ -282,18 +236,20 @@ struct DashboardView: View {
             )
         }
         .sheet(isPresented: $showingSetupGuide) {
-            SetupGuideView(
-                dataSource: store.currentDataSource,
-                dataSourceLabel: store.dataSourceLabel,
-                dataSourceOrigin: store.dataSourceOrigin,
-                loginItemStore: loginItemStore,
-                updateSettingsStore: updateSettingsStore,
-                onChooseDirectory: store.chooseDataSourceDirectory,
-                onFinish: {
-                    setupGuideCompleted = true
-                    showingSetupGuide = false
-                }
-            )
+            InterfaceScaledContainer(scale: requestedInterfaceScale, visualWidth: 560 * requestedInterfaceScale) {
+                SetupGuideView(
+                    dataSource: store.currentDataSource,
+                    dataSourceLabel: store.dataSourceLabel,
+                    dataSourceOrigin: store.dataSourceOrigin,
+                    loginItemStore: loginItemStore,
+                    updateSettingsStore: updateSettingsStore,
+                    onChooseDirectory: store.chooseDataSourceDirectory,
+                    onFinish: {
+                        setupGuideCompleted = true
+                        showingSetupGuide = false
+                    }
+                )
+            }
         }
         .toolbar {
             ToolbarItemGroup {
@@ -319,12 +275,98 @@ struct DashboardView: View {
         }
     }
 
+    @ViewBuilder
+    private func dashboardContent(logicalWidth: CGFloat) -> some View {
+        VStack(spacing: 18) {
+            HeaderView(
+                snapshot: store.snapshot,
+                quotaSnapshot: quotaStore.snapshot,
+                status: store.status,
+                dataSourceLabel: store.dataSourceLabel,
+                dataSourceOrigin: store.dataSourceOrigin,
+                isRefreshing: store.isRefreshing,
+                onRefresh: refreshAllData,
+                onChangeDirectory: store.chooseDataSourceDirectory,
+                onOpenProviderSync: {
+                    showingProviderSync = true
+                    providerSyncStore.scan(dataSource: store.currentDataSource)
+                },
+                showingResetCreditDetails: $showingResetCreditDetails
+            )
+
+            StatStrip(stats: store.snapshot.stats)
+
+            LiveRateView(
+                monitor: liveMonitor,
+                floatingPanelEnabled: $floatingPanelEnabled,
+                statusBarPanelEnabled: $statusBarPanelEnabled,
+                preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
+                floatingPanelOpacity: $floatingPanelOpacity,
+                floatingPanelScale: $floatingPanelScale,
+                tokenRateFullScale: $tokenRateFullScale,
+                floatingPanelGradientStartHex: $floatingPanelGradientStartHex,
+                floatingPanelGradientEndHex: $floatingPanelGradientEndHex,
+                floatingPanelGradientDirection: $floatingPanelGradientDirection,
+                floatingPanelGradientStyle: $floatingPanelGradientStyle,
+                floatingPanelUnreadEffect: $floatingPanelUnreadEffect,
+                showingPaletteMenu: $showingPaletteMenu,
+                showingUnreadEffectMenu: $showingUnreadEffectMenu
+            )
+
+            ActivitySection(
+                dailyUsage: store.snapshot.dailyUsage,
+                cacheDaily: store.snapshot.cacheUsage.daily,
+                quotaDaily: quotaHistoryStore.snapshot.daily,
+                selectedMode: $store.selectedMode
+            )
+
+            RecentUsageChart(
+                bins: store.snapshot.recentBins,
+                hourlyBins: store.snapshot.hourlyUsage,
+                cacheRecentBins: store.snapshot.cacheUsage.recentBins,
+                cacheHourlyBins: store.snapshot.cacheUsage.hourly,
+                quotaRecentBins: quotaHistoryStore.snapshot.recentBins,
+                quotaHourlyBins: quotaHistoryStore.snapshot.hourlyBins
+            )
+
+            CacheHitRankingSection(cacheUsage: store.snapshot.cacheUsage)
+        }
+        .padding(.horizontal, 54)
+        .padding(.vertical, 20)
+        .frame(minWidth: logicalWidth, maxWidth: .infinity, alignment: .top)
+        .background(
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    NotificationCenter.default.post(name: .dashboardBlankAreaClicked, object: nil)
+                }
+        )
+    }
+
     private func refreshAllData() {
         store.refresh()
         quotaStore.refresh()
         if showingProviderSync {
             providerSyncStore.scan(dataSource: store.currentDataSource)
         }
+    }
+
+    private var requestedInterfaceScale: CGFloat {
+        CGFloat(
+            InterfaceScaleSettings.effectiveScale(
+                manualMultiplier: interfaceScaleManualMultiplier,
+                autoEnabled: interfaceScaleAutoEnabled,
+                screen: InterfaceScaleSettings.activeScreen()
+            )
+        )
+    }
+
+    private var effectiveFloatingPanelScale: Double {
+        Double(
+            FloatingTokenPanelMetrics.clampedScale(
+                floatingPanelScale * Double(requestedInterfaceScale)
+            )
+        )
     }
 
     private func floatingSettingsCardFrame(
@@ -420,7 +462,7 @@ struct DashboardView: View {
                 monitor: liveMonitor,
                 quota: quotaStore,
                 taskCompletionMonitor: taskCompletionMonitor,
-                scale: floatingPanelScale,
+                scale: effectiveFloatingPanelScale,
                 isLocked: floatingPanelLocked,
                 onToggleLock: {
                     floatingPanelLocked.toggle()

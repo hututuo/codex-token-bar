@@ -65,6 +65,10 @@ struct CodexTokenBarApp: App {
                     )
                 )
 
+                Menu("界面大小") {
+                    InterfaceScaleMenuContent()
+                }
+
                 if loginItemStore.needsSystemApproval {
                     Button("打开登录项设置") {
                         loginItemStore.openLoginItemsSettings()

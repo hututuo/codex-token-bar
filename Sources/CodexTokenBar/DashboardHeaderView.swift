@@ -134,6 +134,7 @@ struct HeaderView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(width: 132, alignment: .leading)
+                    InterfaceScaleMenuButton()
                     Text("Local")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.secondary)

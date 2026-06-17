@@ -103,6 +103,8 @@ struct StatusBarTokenPopoverView: View {
     @ObservedObject var monitor: LiveRateMonitor
     @ObservedObject var quota: AccountQuotaStore
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(InterfaceScaleSettings.autoEnabledKey) private var interfaceScaleAutoEnabled = InterfaceScaleSettings.defaultAutoEnabled
+    @AppStorage(InterfaceScaleSettings.manualMultiplierKey) private var interfaceScaleManualMultiplier = InterfaceScaleSettings.defaultManualMultiplier
     let onClose: () -> Void
 
     private var panelFill: Color {
@@ -118,6 +120,14 @@ struct StatusBarTokenPopoverView: View {
     var body: some View {
         let snapshot = TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota)
         let live = monitor.totalSnapshot
+        let interfaceScale = CGFloat(
+            InterfaceScaleSettings.effectiveScale(
+                manualMultiplier: interfaceScaleManualMultiplier,
+                autoEnabled: interfaceScaleAutoEnabled,
+                screen: InterfaceScaleSettings.activeScreen()
+            )
+        )
+        let baseSize = CGSize(width: 360, height: 310)
 
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 10) {
@@ -200,6 +210,12 @@ struct StatusBarTokenPopoverView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(panelStroke, lineWidth: 1)
+        )
+        .scaleEffect(interfaceScale, anchor: .topLeading)
+        .frame(
+            width: baseSize.width * interfaceScale,
+            height: baseSize.height * interfaceScale,
+            alignment: .topLeading
         )
     }
 }
