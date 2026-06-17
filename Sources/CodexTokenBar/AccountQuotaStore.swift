@@ -1,6 +1,6 @@
 import Foundation
 
-struct AccountQuotaWindow: Equatable {
+struct AccountQuotaWindow: Equatable, Sendable {
     let label: String
     let usedPercent: Int
     let resetsAt: Date?
@@ -84,7 +84,7 @@ struct AccountQuotaWindow: Equatable {
     }
 }
 
-struct AccountQuotaLimitCard: Equatable {
+struct AccountQuotaLimitCard: Equatable, Sendable {
     let id: String
     let limitName: String?
     let planType: String?
@@ -302,7 +302,7 @@ struct AccountQuotaPaceStatus: Equatable {
     let deltaPercent: Int
 }
 
-struct AccountQuotaSnapshot: Equatable {
+struct AccountQuotaSnapshot: Equatable, Sendable {
     var fiveHour: AccountQuotaWindow?
     var sevenDay: AccountQuotaWindow?
     var planType: String?
@@ -574,6 +574,11 @@ final class AccountQuotaStore: ObservableObject {
     private weak var historyStore: QuotaHistoryStore?
     private var isRefreshing = false
     private let refreshInterval: TimeInterval = 60
+    private let quotaReader: any QuotaReading
+
+    init(quotaReader: any QuotaReading = LiveAccountQuotaReader()) {
+        self.quotaReader = quotaReader
+    }
 
     func setHistoryStore(_ historyStore: QuotaHistoryStore) {
         self.historyStore = historyStore
@@ -601,8 +606,9 @@ final class AccountQuotaStore: ObservableObject {
         refreshing.status = snapshot.isAvailable ? "正在更新额度" : "正在读取额度"
         snapshot = refreshing
 
+        let reader = quotaReader
         Task.detached(priority: .utility) {
-            let result = await AccountQuotaReader.read()
+            let result = await reader.readQuota()
             await MainActor.run {
                 self.isRefreshing = false
                 switch result {
@@ -616,6 +622,12 @@ final class AccountQuotaStore: ObservableObject {
                 }
             }
         }
+    }
+}
+
+private struct LiveAccountQuotaReader: QuotaReading {
+    func readQuota() async -> Result<AccountQuotaSnapshot, Error> {
+        await AccountQuotaReader.read()
     }
 }
 

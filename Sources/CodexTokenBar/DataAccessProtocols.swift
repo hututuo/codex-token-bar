@@ -33,6 +33,6 @@ protocol UsageDataSource {
 
 extension CodexDataSource: UsageDataSource {}
 
-protocol QuotaReading {
+protocol QuotaReading: Sendable {
     func readQuota() async -> Result<AccountQuotaSnapshot, Error>
 }
