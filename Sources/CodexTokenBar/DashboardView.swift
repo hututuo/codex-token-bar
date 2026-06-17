@@ -487,7 +487,6 @@ struct DashboardView: View {
         let onlyCompactSurfaceVisible = (floatingPanelEnabled || statusBarPanelEnabled) && !hasVisibleDashboardWindow()
         store.setRefreshInterval(onlyCompactSurfaceVisible ? 180 : 300)
     }
-
     private func hasVisibleDashboardWindow() -> Bool {
         guard !NSApp.isHidden else { return false }
         return NSApp.windows.contains { window in
@@ -498,8 +497,4 @@ struct DashboardView: View {
                 && window.contentViewController != nil
         }
     }
-}
-
-extension Notification.Name {
-    static let dashboardBlankAreaClicked = Notification.Name("CodexTokenBarDashboardBlankAreaClicked")
 }

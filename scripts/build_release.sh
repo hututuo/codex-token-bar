@@ -14,10 +14,12 @@ SPARKLE_KEY_SOURCE="${SPARKLE_KEY_SOURCE:-auto}"
 PRIVATE_KEY_FILE="${SPARKLE_PRIVATE_KEY_FILE:-$HOME/.config/codex-token-bar/sparkle-ed25519-private.key}"
 RELEASE_NOTES_FILE="${RELEASE_NOTES_FILE:-$ROOT_DIR/release-notes/v$VERSION.md}"
 NOTARIZE_RELEASE="${NOTARIZE_RELEASE:-auto}"
+RELEASE_SECURITY_STRICT="${RELEASE_SECURITY_STRICT:-0}"
 APPLE_NOTARY_PROFILE="${APPLE_NOTARY_PROFILE:-}"
 APPLE_ID="${APPLE_ID:-}"
 APPLE_TEAM_ID="${APPLE_TEAM_ID:-}"
 APPLE_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:-}"
+CODE_SIGN_IDENTITY="${CODE_SIGN_IDENTITY:-${CODESIGN_IDENTITY:--}}"
 
 if [[ -z "$BUILD" ]]; then
   BUILD="$(python3 - "$VERSION" <<'PY'
@@ -71,6 +73,28 @@ notary_available() {
   [[ -n "$APPLE_ID" && -n "$APPLE_TEAM_ID" && -n "$APPLE_APP_SPECIFIC_PASSWORD" ]]
 }
 
+release_security_preflight() {
+  if [[ "$RELEASE_SECURITY_STRICT" != "1" ]]; then
+    return 0
+  fi
+
+  if [[ "$CODE_SIGN_IDENTITY" == "-" ]]; then
+    echo "RELEASE_SECURITY_STRICT=1 requires CODE_SIGN_IDENTITY or CODESIGN_IDENTITY." >&2
+    exit 1
+  fi
+
+  if ! security find-identity -v -p codesigning | grep -F -- "$CODE_SIGN_IDENTITY" >/dev/null; then
+    echo "Code signing identity not found or not trusted: $CODE_SIGN_IDENTITY" >&2
+    exit 1
+  fi
+
+  if ! notary_available; then
+    echo "RELEASE_SECURITY_STRICT=1 requires Apple notarization credentials." >&2
+    echo "Set APPLE_NOTARY_PROFILE, or APPLE_ID + APPLE_TEAM_ID + APPLE_APP_SPECIFIC_PASSWORD." >&2
+    exit 1
+  fi
+}
+
 notarize_artifact() {
   local artifact="$1"
   local -a args=(notarytool submit "$artifact" --wait)
@@ -83,6 +107,8 @@ notarize_artifact() {
   xcrun stapler staple "$artifact" >/dev/null
   xcrun stapler validate "$artifact" >/dev/null
 }
+
+release_security_preflight
 
 APP_VERSION="$VERSION" APP_BUILD="$BUILD" CODEX_TOKEN_BAR_NO_OPEN=1 \
   "$ROOT_DIR/scripts/package_app.sh" release >/dev/null
