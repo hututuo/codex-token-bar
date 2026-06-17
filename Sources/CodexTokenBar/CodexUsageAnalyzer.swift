@@ -8,7 +8,8 @@ final class CodexUsageAnalyzer {
     }
 
     private final class SessionEventCache: @unchecked Sendable {
-        private static let persistentCacheVersion = 4
+        private static let persistentCacheVersion = 5
+        private static let cacheDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_DIR"
 
         private struct PersistentCache: Codable {
             let version: Int
@@ -30,8 +31,8 @@ final class CodexUsageAnalyzer {
             let cachedInputTokens: Int
             let outputTokens: Int
             let reasoningOutputTokens: Int
-            let userPrompt: String
-            let assistantResponse: String
+            let userPromptDigest: String?
+            let assistantResponseDigest: String?
         }
 
         private let lock = NSLock()
@@ -80,8 +81,8 @@ final class CodexUsageAnalyzer {
                             cachedInputTokens: event.cachedInputTokens,
                             outputTokens: event.outputTokens,
                             reasoningOutputTokens: event.reasoningOutputTokens,
-                            userPrompt: event.userPrompt,
-                            assistantResponse: event.assistantResponse
+                            userPromptDigest: Self.digest(event.userPrompt),
+                            assistantResponseDigest: Self.digest(event.assistantResponse)
                         )
                     }
                 )
@@ -91,6 +92,7 @@ final class CodexUsageAnalyzer {
 
             guard let cacheURL = Self.cacheURL else { return }
             do {
+                Self.removeLegacyCaches()
                 try FileManager.default.createDirectory(
                     at: cacheURL.deletingLastPathComponent(),
                     withIntermediateDirectories: true
@@ -114,11 +116,12 @@ final class CodexUsageAnalyzer {
                 lock.unlock()
             }
 
+            Self.removeLegacyCaches()
             guard !CodexUsageAnalyzer.isPersistentSessionEventCacheDisabled else {
                 return
             }
 
-            guard let cacheURL = Self.readableCacheURL,
+            guard let cacheURL = Self.cacheURL,
                   let data = try? Data(contentsOf: cacheURL),
                   let cache = try? JSONDecoder().decode(PersistentCache.self, from: data),
                   cache.version == Self.persistentCacheVersion else {
@@ -139,8 +142,8 @@ final class CodexUsageAnalyzer {
                             cachedInputTokens: event.cachedInputTokens,
                             outputTokens: event.outputTokens,
                             reasoningOutputTokens: event.reasoningOutputTokens,
-                            userPrompt: event.userPrompt,
-                            assistantResponse: event.assistantResponse
+                            userPrompt: "",
+                            assistantResponse: ""
                         )
                     }
                 )
@@ -152,23 +155,44 @@ final class CodexUsageAnalyzer {
         }
 
         private static var cacheURL: URL? {
-            FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            cacheRootURL?
                 .appendingPathComponent("CodexTokenBar", isDirectory: true)
-                .appendingPathComponent("session-token-events-v4.json")
+                .appendingPathComponent("session-token-events-v5.json")
         }
 
-        private static var legacyCacheURL: URL? {
-            FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-                .appendingPathComponent("CodexTokenBar", isDirectory: true)
-                .appendingPathComponent("session-token-events-v3.json")
-        }
-
-        private static var readableCacheURL: URL? {
-            guard let cacheURL else { return legacyCacheURL }
-            if FileManager.default.fileExists(atPath: cacheURL.path) {
-                return cacheURL
+        private static var legacyCacheURLs: [URL] {
+            guard let cacheRootURL else { return [] }
+            return [2, 3, 4].map { version in
+                cacheRootURL
+                    .appendingPathComponent("CodexTokenBar", isDirectory: true)
+                    .appendingPathComponent("session-token-events-v\(version).json")
             }
-            return legacyCacheURL ?? cacheURL
+        }
+
+        private static var cacheRootURL: URL? {
+            if let override = ProcessInfo.processInfo.environment[cacheDirectoryEnvironmentKey],
+               !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
+            }
+            return FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        }
+
+        private static func removeLegacyCaches() {
+            for url in legacyCacheURLs {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+
+        private static func digest(_ value: String) -> String? {
+            let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { return nil }
+
+            var hash: UInt64 = 0xcbf29ce484222325
+            for byte in normalized.utf8 {
+                hash ^= UInt64(byte)
+                hash &*= 0x100000001b3
+            }
+            return String(format: "%016llx", hash)
         }
     }
 

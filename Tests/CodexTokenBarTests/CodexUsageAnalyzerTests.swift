@@ -11,6 +11,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
     override func tearDownWithError() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
         for url in temporaryDirectories {
             try? FileManager.default.removeItem(at: url)
         }
@@ -60,6 +61,59 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(Set(snapshot.cacheUsage.turns.map(\.userPrompt)), ["First question", "Second question"])
     }
 
+    func testPersistentSessionCacheDoesNotStoreConversationText() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerCache")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+        }
+
+        let cacheDirectory = cacheRoot.appendingPathComponent("CodexTokenBar", isDirectory: true)
+        try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        let legacyCache = cacheDirectory.appendingPathComponent("session-token-events-v4.json")
+        try #"{"userPrompt":"legacy secret question","assistantResponse":"legacy secret answer"}"#
+            .write(to: legacyCache, atomically: true, encoding: .utf8)
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-cacheprivacy"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date()
+        let secretQuestion = "privacy unique prompt 8E2A2A0D"
+        let secretAnswer = "privacy unique answer B03F65A1"
+
+        let lines = [
+            messageLine(timestamp: now.addingTimeInterval(-80), type: "user_message", message: secretQuestion),
+            messageLine(timestamp: now.addingTimeInterval(-70), type: "agent_message", message: secretAnswer),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-60),
+                total: Usage(input: 1_200, cachedInput: 300, output: 90, reasoning: 10, total: 1_300),
+                last: Usage(input: 1_200, cachedInput: 300, output: 90, reasoning: 10, total: 1_300)
+            )
+        ]
+        try lines.joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertTrue(snapshot.cacheUsage.turns.contains { $0.userPrompt == secretQuestion })
+        XCTAssertTrue(snapshot.cacheUsage.turns.contains { $0.assistantResponse == secretAnswer })
+
+        let cacheFile = cacheDirectory.appendingPathComponent("session-token-events-v5.json")
+        let cacheText = try String(contentsOf: cacheFile, encoding: .utf8)
+        XCTAssertFalse(cacheText.contains(secretQuestion))
+        XCTAssertFalse(cacheText.contains(secretAnswer))
+        XCTAssertFalse(cacheText.contains("legacy secret question"))
+        XCTAssertFalse(cacheText.contains("legacy secret answer"))
+        XCTAssertFalse(cacheText.contains(#""userPrompt":"#))
+        XCTAssertFalse(cacheText.contains(#""assistantResponse":"#))
+        XCTAssertTrue(cacheText.contains("userPromptDigest"))
+        XCTAssertTrue(cacheText.contains("assistantResponseDigest"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyCache.path))
+    }
+
     func testFastSnapshotKeepsTimeSeriesEmptyToAvoidTodayMisreporting() throws {
         let codexHome = try makeCodexHome()
         try seedStateDatabase(at: codexHome)
@@ -104,12 +158,18 @@ final class CodexUsageAnalyzerTests: XCTestCase {
     }
 
     private func makeCodexHome() throws -> URL {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CodexUsageAnalyzerTests-\(UUID().uuidString)", isDirectory: true)
+        let directory = try makeTemporaryDirectory(named: "CodexUsageAnalyzerTests")
         try FileManager.default.createDirectory(
             at: directory.appendingPathComponent("sessions", isDirectory: true),
             withIntermediateDirectories: true
         )
+        return directory
+    }
+
+    private func makeTemporaryDirectory(named prefix: String) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         temporaryDirectories.append(directory)
         return directory
     }
