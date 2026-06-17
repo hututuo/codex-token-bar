@@ -57,6 +57,11 @@ final class CodexUsageAnalyzer {
 
         func flushPersistentCache() {
             lock.lock()
+            if CodexUsageAnalyzer.isPersistentSessionEventCacheDisabled {
+                isDirty = false
+                lock.unlock()
+                return
+            }
             guard isDirty else {
                 lock.unlock()
                 return
@@ -106,6 +111,10 @@ final class CodexUsageAnalyzer {
             }
             didLoadPersistentCache = true
             lock.unlock()
+
+            guard !CodexUsageAnalyzer.isPersistentSessionEventCacheDisabled else {
+                return
+            }
 
             guard let cacheURL = Self.readableCacheURL,
                   let data = try? Data(contentsOf: cacheURL),
@@ -164,6 +173,10 @@ final class CodexUsageAnalyzer {
     }
 
     private static let sessionEventCache = SessionEventCache()
+    private static var isPersistentSessionEventCacheDisabled: Bool {
+        ProcessInfo.processInfo.environment["CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE"] == "1"
+            || NSClassFromString("XCTest.XCTestCase") != nil
+    }
 
     private struct OfficialThreadSummary {
         let totalTokens: Int
