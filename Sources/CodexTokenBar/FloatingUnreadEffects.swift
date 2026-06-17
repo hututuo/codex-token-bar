@@ -119,7 +119,20 @@ private final class FloatingUnreadShimmerView: NSView {
     private func updateLayoutIfNeeded(force: Bool) {
         guard bounds.width > 0, bounds.height > 0 else { return }
         let rawBackingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
-        let backingScale = min(max(rawBackingScale, 1), 2)
+        let frameCount = FloatingUnreadFrameBudget.frameCount(
+            cycleDuration: cycleDuration,
+            targetFramesPerSecond: targetFramesPerSecond
+        )
+        guard let backingScale = FloatingUnreadFrameBudget.cappedBackingScale(
+            size: bounds.size,
+            preferredScale: rawBackingScale,
+            frameCount: frameCount
+        ) else {
+            cancelPendingRender()
+            stopAnimations()
+            clearFrameCache()
+            return
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer?.cornerRadius = currentCornerRadius
@@ -206,10 +219,38 @@ private final class FloatingUnreadShimmerView: NSView {
         cycleDuration: CFTimeInterval,
         targetFramesPerSecond: Int
     ) -> [CGImage] {
+        let descriptor = FloatingUnreadFrameCacheDescriptor(
+            effect: "shimmer",
+            size: request.size,
+            backingScale: request.backingScale,
+            color: request.color,
+            cornerRadius: request.cornerRadius,
+            scale: request.scale,
+            cycleDuration: cycleDuration,
+            activeFraction: 1,
+            framesPerSecond: targetFramesPerSecond
+        )
+        return FloatingUnreadFrameCache.frames(descriptor: descriptor) {
+            renderUncachedFrames(
+                request: request,
+                cycleDuration: cycleDuration,
+                targetFramesPerSecond: targetFramesPerSecond
+            )
+        }
+    }
+
+    private static nonisolated func renderUncachedFrames(
+        request: RenderRequest,
+        cycleDuration: CFTimeInterval,
+        targetFramesPerSecond: Int
+    ) -> [CGImage] {
         let pixelWidth = max(1, Int((request.size.width * request.backingScale).rounded(.up)))
         let pixelHeight = max(1, Int((request.size.height * request.backingScale).rounded(.up)))
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let frameCount = max(1, Int((cycleDuration * Double(targetFramesPerSecond)).rounded(.up)))
+        let frameCount = FloatingUnreadFrameBudget.frameCount(
+            cycleDuration: cycleDuration,
+            targetFramesPerSecond: targetFramesPerSecond
+        )
 
         return (0..<frameCount).compactMap { index in
             guard let context = CGContext(
@@ -476,7 +517,20 @@ private final class FloatingUnreadSpriteRippleView: NSView {
     private func updateLayoutIfNeeded(force: Bool) {
         guard bounds.width > 0, bounds.height > 0 else { return }
         let rawBackingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
-        let backingScale = min(max(rawBackingScale, 1), 2)
+        let frameCount = FloatingUnreadFrameBudget.frameCount(
+            cycleDuration: cycleDuration,
+            targetFramesPerSecond: targetFramesPerSecond
+        )
+        guard let backingScale = FloatingUnreadFrameBudget.cappedBackingScale(
+            size: bounds.size,
+            preferredScale: rawBackingScale,
+            frameCount: frameCount
+        ) else {
+            cancelPendingRender()
+            stopAnimations()
+            clearFrameCache()
+            return
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer?.cornerRadius = currentCornerRadius
@@ -559,6 +613,33 @@ private final class FloatingUnreadSpriteRippleView: NSView {
         activeFraction: Double,
         targetFramesPerSecond: Int
     ) -> [CGImage] {
+        let descriptor = FloatingUnreadFrameCacheDescriptor(
+            effect: "ripple",
+            size: request.size,
+            backingScale: request.backingScale,
+            color: request.color,
+            cornerRadius: request.cornerRadius,
+            scale: request.scale,
+            cycleDuration: cycleDuration,
+            activeFraction: activeFraction,
+            framesPerSecond: targetFramesPerSecond
+        )
+        return FloatingUnreadFrameCache.frames(descriptor: descriptor) {
+            renderUncachedFrames(
+                request: request,
+                cycleDuration: cycleDuration,
+                activeFraction: activeFraction,
+                targetFramesPerSecond: targetFramesPerSecond
+            )
+        }
+    }
+
+    private static nonisolated func renderUncachedFrames(
+        request: RenderRequest,
+        cycleDuration: CFTimeInterval,
+        activeFraction: Double,
+        targetFramesPerSecond: Int
+    ) -> [CGImage] {
         let pixelWidth = max(1, Int((request.size.width * request.backingScale).rounded(.up)))
         let pixelHeight = max(1, Int((request.size.height * request.backingScale).rounded(.up)))
         let colorSpace = CGColorSpaceCreateDeviceRGB()
@@ -588,7 +669,10 @@ private final class FloatingUnreadSpriteRippleView: NSView {
     }
 
     private static nonisolated func frameCount(cycleDuration: CFTimeInterval, targetFramesPerSecond: Int) -> Int {
-        max(1, Int((cycleDuration * Double(targetFramesPerSecond)).rounded(.up)))
+        FloatingUnreadFrameBudget.frameCount(
+            cycleDuration: cycleDuration,
+            targetFramesPerSecond: targetFramesPerSecond
+        )
     }
 
     private static nonisolated func drawRippleFrame(
