@@ -33,6 +33,32 @@ protocol UsageDataSource {
 
 extension CodexDataSource: UsageDataSource {}
 
+protocol CodexDataSourceResolving {
+    func resolve() -> CodexDataSource?
+    func saveSelectedDirectory(_ directory: URL) -> CodexDataSource?
+}
+
+extension CodexDataSourceResolver: CodexDataSourceResolving {}
+
+protocol DashboardSnapshotLoading: Sendable {
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot
+}
+
+struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, Sendable {
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        try await Task.detached(priority: .utility) {
+            try CodexUsageAnalyzer(dataSource: dataSource).loadFastSnapshot()
+        }.value
+    }
+
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        try await Task.detached(priority: .utility) {
+            try CodexUsageAnalyzer(dataSource: dataSource).load()
+        }.value
+    }
+}
+
 protocol QuotaReading: Sendable {
     func readQuota() async -> Result<AccountQuotaSnapshot, Error>
 }
