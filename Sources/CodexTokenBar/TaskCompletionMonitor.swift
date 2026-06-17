@@ -2,6 +2,9 @@ import Foundation
 
 @MainActor
 final class TaskCompletionMonitor: ObservableObject {
+    private static let completedEventIDsKey = "TaskCompletionMonitor.completedEventIDs.v1"
+    private static let maxPersistedCompletedEventIDs = 2_000
+
     @Published private(set) var statusText = "未读监听准备中"
     @Published private(set) var detailText = "Codex 有未读会话时在悬浮窗显示小红点"
     @Published private(set) var lastCompletedTitle = ""
@@ -12,6 +15,7 @@ final class TaskCompletionMonitor: ObservableObject {
     private var dataSource: CodexDataSource?
     private var fileStates: [String: TaskCompletionFileState] = [:]
     private var completedEventIDs: Set<String> = []
+    private var completedEventIDOrder: [String] = []
     private var completedTaskThreadIDs: [String: String] = [:]
     private var unreadThreadState = CodexUnreadThreadState()
     private var hasCodexUnreadState = false
@@ -22,6 +26,7 @@ final class TaskCompletionMonitor: ObservableObject {
     private var monitorStartedAt = Date()
 
     init() {
+        loadPersistedCompletedEventIDs()
         updateStatusText()
     }
 
@@ -37,7 +42,7 @@ final class TaskCompletionMonitor: ObservableObject {
             fileStates.removeAll()
             seeded = false
             monitorStartedAt = Date()
-            completedEventIDs.removeAll()
+            loadPersistedCompletedEventIDs()
             completedTaskThreadIDs.removeAll()
             unreadThreadState = CodexUnreadThreadState()
             hasCodexUnreadState = false
@@ -144,7 +149,7 @@ final class TaskCompletionMonitor: ObservableObject {
 
         var didAddUnread = false
         for event in result.events {
-            guard completedEventIDs.insert(event.id).inserted else { continue }
+            guard rememberCompletedEventID(event.id) else { continue }
             setLastCompletedTitle(event.title)
             completedTaskThreadIDs[event.id] = event.threadID
             didAddUnread = true
@@ -215,6 +220,37 @@ final class TaskCompletionMonitor: ObservableObject {
     private func setUnreadThreadCount(_ count: Int) {
         guard unreadThreadCount != count else { return }
         unreadThreadCount = count
+    }
+
+    private func loadPersistedCompletedEventIDs() {
+        let storedIDs = UserDefaults.standard.stringArray(forKey: Self.completedEventIDsKey) ?? []
+        var ordered: [String] = []
+        var seen = Set<String>()
+        for id in storedIDs where !id.isEmpty && seen.insert(id).inserted {
+            ordered.append(id)
+        }
+        if ordered.count > Self.maxPersistedCompletedEventIDs {
+            ordered = Array(ordered.suffix(Self.maxPersistedCompletedEventIDs))
+            UserDefaults.standard.set(ordered, forKey: Self.completedEventIDsKey)
+        }
+        completedEventIDOrder = ordered
+        completedEventIDs = Set(ordered)
+    }
+
+    private func rememberCompletedEventID(_ id: String) -> Bool {
+        guard !id.isEmpty, completedEventIDs.insert(id).inserted else {
+            return false
+        }
+
+        completedEventIDOrder.append(id)
+        if completedEventIDOrder.count > Self.maxPersistedCompletedEventIDs {
+            let overflow = completedEventIDOrder.count - Self.maxPersistedCompletedEventIDs
+            let removed = completedEventIDOrder.prefix(overflow)
+            completedEventIDs.subtract(removed)
+            completedEventIDOrder.removeFirst(overflow)
+        }
+        UserDefaults.standard.set(completedEventIDOrder, forKey: Self.completedEventIDsKey)
+        return true
     }
 }
 
