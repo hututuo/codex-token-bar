@@ -62,6 +62,9 @@ struct ExportSnapshotView: View {
                     onRefresh: {},
                     onChangeDirectory: {},
                     onOpenProviderSync: {},
+                    showingInterfaceScaleMenu: .constant(false),
+                    interfaceScaleAutoEnabled: .constant(InterfaceScaleSettings.defaultAutoEnabled),
+                    interfaceScaleManualMultiplier: .constant(InterfaceScaleSettings.defaultManualMultiplier),
                     showingResetCreditDetails: .constant(false)
                 )
                 StatStrip(stats: snapshot.stats)

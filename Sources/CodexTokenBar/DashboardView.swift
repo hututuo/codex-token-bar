@@ -38,6 +38,7 @@ struct DashboardView: View {
     @State private var showingProviderSync = false
     @State private var showingSetupGuide = false
     @State private var showingResetCreditDetails = false
+    @State private var showingInterfaceScaleMenu = false
     @State private var showingPaletteMenu = false
     @State private var showingUnreadEffectMenu = false
 
@@ -134,6 +135,31 @@ struct DashboardView: View {
                 }
             }
         }
+        .overlayPreferenceValue(InterfaceScaleButtonBoundsKey.self) { anchor in
+            GeometryReader { proxy in
+                if showingInterfaceScaleMenu {
+                    let cardFrame = floatingSettingsCardFrame(in: proxy, anchor: anchor, width: 342, estimatedHeight: 352)
+
+                    ZStack(alignment: .topLeading) {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                showingInterfaceScaleMenu = false
+                            }
+
+                        InterfaceScaleSettingsCard(
+                            autoEnabled: $interfaceScaleAutoEnabled,
+                            manualMultiplier: $interfaceScaleManualMultiplier,
+                            closeAction: { showingInterfaceScaleMenu = false }
+                        )
+                        .frame(width: cardFrame.width)
+                        .offset(x: cardFrame.minX, y: cardFrame.minY)
+                    }
+                    .zIndex(10)
+                    .transition(.identity)
+                }
+            }
+        }
         .overlayPreferenceValue(FloatingUnreadEffectButtonBoundsKey.self) { anchor in
             GeometryReader { proxy in
                 if showingUnreadEffectMenu {
@@ -163,6 +189,7 @@ struct DashboardView: View {
             showingResetCreditDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
+            showingInterfaceScaleMenu = false
         }
         .onAppear {
             applyDisplaySurfaceDefaultsIfNeeded()
@@ -205,6 +232,20 @@ struct DashboardView: View {
         .onChange(of: preciseTokenCountingEnabled) {
             liveMonitor.setPreciseTokenCountingEnabled(preciseTokenCountingEnabled)
         }
+        .onChange(of: showingInterfaceScaleMenu) {
+            guard showingInterfaceScaleMenu else { return }
+            closePaletteMenu()
+            showingUnreadEffectMenu = false
+            showingResetCreditDetails = false
+        }
+        .onChange(of: showingPaletteMenu) {
+            guard showingPaletteMenu else { return }
+            showingInterfaceScaleMenu = false
+        }
+        .onChange(of: showingUnreadEffectMenu) {
+            guard showingUnreadEffectMenu else { return }
+            showingInterfaceScaleMenu = false
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didHideNotification)) { _ in
             updateUsageRefreshCadence()
         }
@@ -218,10 +259,12 @@ struct DashboardView: View {
             showingResetCreditDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
+            showingInterfaceScaleMenu = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             closePaletteMenu()
             showingUnreadEffectMenu = false
+            showingInterfaceScaleMenu = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMiniaturizeNotification)) { _ in
             updateUsageRefreshCadence()
@@ -291,6 +334,9 @@ struct DashboardView: View {
                     showingProviderSync = true
                     providerSyncStore.scan(dataSource: store.currentDataSource)
                 },
+                showingInterfaceScaleMenu: $showingInterfaceScaleMenu,
+                interfaceScaleAutoEnabled: $interfaceScaleAutoEnabled,
+                interfaceScaleManualMultiplier: $interfaceScaleManualMultiplier,
                 showingResetCreditDetails: $showingResetCreditDetails
             )
 

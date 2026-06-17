@@ -109,6 +109,14 @@ private struct InterfaceScaledContentSizeKey: PreferenceKey {
     }
 }
 
+struct InterfaceScaleButtonBoundsKey: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
 struct InterfaceScaledContainer<Content: View>: View {
     let scale: CGFloat
     let visualWidth: CGFloat
@@ -129,6 +137,7 @@ struct InterfaceScaledContainer<Content: View>: View {
         content
             .environment(\.interfaceScale, safeScale)
             .frame(width: visualWidth / safeScale, alignment: .top)
+            .fixedSize(horizontal: false, vertical: true)
             .background(
                 GeometryReader { proxy in
                     Color.clear.preference(key: InterfaceScaledContentSizeKey.self, value: proxy.size)
@@ -146,6 +155,226 @@ struct InterfaceScaledContainer<Content: View>: View {
                 else { return }
                 contentSize = newSize
             }
+    }
+}
+
+struct InterfaceScaleSettingsCard: View {
+    @Binding var autoEnabled: Bool
+    @Binding var manualMultiplier: Double
+    let closeAction: () -> Void
+    @State private var customPercentText = ""
+    @FocusState private var customPercentFocused: Bool
+
+    private var automaticScale: Double {
+        InterfaceScaleSettings.autoScale(for: InterfaceScaleSettings.activeScreen())
+    }
+
+    private var manualPercent: Double {
+        InterfaceScaleSettings.clampedManual(manualMultiplier) * 100
+    }
+
+    private var effectiveScale: Double {
+        InterfaceScaleSettings.effectiveScale(
+            manualMultiplier: manualMultiplier,
+            autoEnabled: autoEnabled,
+            screen: InterfaceScaleSettings.activeScreen()
+        )
+    }
+
+    private var percentBinding: Binding<Double> {
+        Binding(
+            get: { manualPercent },
+            set: { newPercent in
+                manualMultiplier = InterfaceScaleSettings.clampedManual(newPercent / 100)
+                customPercentText = "\(Int((manualMultiplier * 100).rounded()))"
+            }
+        )
+    }
+
+    var body: some View {
+        SettingsCalloutContainer(
+            title: "界面大小",
+            subtitle: "当前 \(InterfaceScaleSettings.displayValue(effectiveScale))",
+            systemImage: "textformat.size",
+            closeAction: closeAction
+        ) {
+            Text("自动适配会按屏幕大小给建议值；下面的百分比可以继续微调，也可以直接输入。")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 9)
+                .background(AppTheme.calloutOptionBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            SettingsCalloutSection("模式") {
+                Button {
+                    autoEnabled.toggle()
+                } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: autoEnabled ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(autoEnabled ? AppTheme.accentBlue : .secondary.opacity(0.55))
+                            .frame(width: 16)
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("自动适配屏幕")
+                                .font(.system(size: 11.5, weight: .bold))
+                                .foregroundStyle(.primary)
+                            Text("屏幕建议 \(InterfaceScaleSettings.displayValue(automaticScale))")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer(minLength: 8)
+
+                        Text(autoEnabled ? "开" : "关")
+                            .font(.system(size: 10.5, weight: .bold))
+                            .foregroundStyle(autoEnabled ? AppTheme.accentBlue : .secondary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+
+            SettingsCalloutSection("百分比") {
+                VStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        Button {
+                            adjustManualPercent(by: -5)
+                        } label: {
+                            Image(systemName: "minus")
+                                .font(.system(size: 10, weight: .bold))
+                                .frame(width: 22, height: 22)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .background(Circle().fill(AppTheme.raisedBackground))
+
+                        Slider(value: percentBinding, in: 90...130, step: 1)
+                            .accessibilityLabel("界面大小百分比")
+                            .accessibilityValue("\(Int(manualPercent.rounded()))%")
+
+                        Button {
+                            adjustManualPercent(by: 5)
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 10, weight: .bold))
+                                .frame(width: 22, height: 22)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .background(Circle().fill(AppTheme.raisedBackground))
+                    }
+
+                    HStack(spacing: 8) {
+                        Text("自定义")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+
+                        TextField("100", text: $customPercentText)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .multilineTextAlignment(.trailing)
+                            .focused($customPercentFocused)
+                            .frame(width: 54)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(AppTheme.raisedBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(customPercentFocused ? AppTheme.accentBlue.opacity(0.65) : AppTheme.border, lineWidth: 1)
+                            )
+                            .onSubmit(applyCustomPercent)
+
+                        Text("%")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.secondary)
+
+                        Button("应用") {
+                            applyCustomPercent()
+                        }
+                        .font(.system(size: 11, weight: .bold))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(AppTheme.accentBlue)
+
+                        Spacer(minLength: 8)
+
+                        Text("最终 \(InterfaceScaleSettings.displayValue(effectiveScale))")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.primary)
+                            .monospacedDigit()
+                    }
+                }
+                .padding(10)
+            }
+
+            HStack(spacing: 8) {
+                Button("恢复默认") {
+                    autoEnabled = InterfaceScaleSettings.defaultAutoEnabled
+                    manualMultiplier = InterfaceScaleSettings.defaultManualMultiplier
+                    syncCustomPercentText()
+                }
+                .buttonStyle(InterfaceScaleCardFooterButtonStyle())
+
+                Spacer(minLength: 8)
+
+                Button("完成") {
+                    closeAction()
+                }
+                .buttonStyle(InterfaceScaleCardFooterButtonStyle(prominent: true))
+            }
+        }
+        .onAppear(perform: syncCustomPercentText)
+        .onChange(of: manualMultiplier) {
+            guard !customPercentFocused else { return }
+            syncCustomPercentText()
+        }
+    }
+
+    private func adjustManualPercent(by delta: Double) {
+        manualMultiplier = InterfaceScaleSettings.clampedManual((manualPercent + delta) / 100)
+        syncCustomPercentText()
+    }
+
+    private func applyCustomPercent() {
+        let cleaned = customPercentText
+            .replacingOccurrences(of: "%", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let percent = Double(cleaned) else {
+            syncCustomPercentText()
+            return
+        }
+        manualMultiplier = InterfaceScaleSettings.clampedManual(percent / 100)
+        syncCustomPercentText()
+        customPercentFocused = false
+    }
+
+    private func syncCustomPercentText() {
+        customPercentText = "\(Int((manualMultiplier * 100).rounded()))"
+    }
+}
+
+private struct InterfaceScaleCardFooterButtonStyle: ButtonStyle {
+    var prominent = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11.5, weight: .bold))
+            .foregroundStyle(prominent ? Color.white : Color.primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(prominent ? AppTheme.accentBlue : AppTheme.calloutOptionBackground)
+                    .opacity(configuration.isPressed ? 0.82 : 1)
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(prominent ? Color.clear : AppTheme.border.opacity(0.72), lineWidth: 1)
+            )
     }
 }
 
@@ -193,8 +422,9 @@ struct InterfaceScaleMenuContent: View {
 }
 
 struct InterfaceScaleMenuButton: View {
-    @AppStorage(InterfaceScaleSettings.autoEnabledKey) private var autoEnabled = InterfaceScaleSettings.defaultAutoEnabled
-    @AppStorage(InterfaceScaleSettings.manualMultiplierKey) private var manualMultiplier = InterfaceScaleSettings.defaultManualMultiplier
+    @Binding var isPresented: Bool
+    @Binding var autoEnabled: Bool
+    @Binding var manualMultiplier: Double
 
     private var effectiveScale: Double {
         InterfaceScaleSettings.effectiveScale(
@@ -205,8 +435,8 @@ struct InterfaceScaleMenuButton: View {
     }
 
     var body: some View {
-        Menu {
-            InterfaceScaleMenuContent()
+        Button {
+            isPresented.toggle()
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "textformat.size")
@@ -231,8 +461,12 @@ struct InterfaceScaleMenuButton: View {
                     .stroke(AppTheme.border, lineWidth: 1)
             )
         }
-        .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
         .fixedSize(horizontal: true, vertical: false)
+        .anchorPreference(key: InterfaceScaleButtonBoundsKey.self, value: .bounds) { anchor in
+            anchor
+        }
+        .zIndex(isPresented ? 20 : 0)
         .help("自动适配高分辨率屏幕，也可以手动微调界面大小")
     }
 }

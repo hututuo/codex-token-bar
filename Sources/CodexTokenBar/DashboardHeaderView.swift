@@ -54,6 +54,9 @@ struct HeaderView: View {
     let onRefresh: () -> Void
     let onChangeDirectory: () -> Void
     let onOpenProviderSync: () -> Void
+    @Binding var showingInterfaceScaleMenu: Bool
+    @Binding var interfaceScaleAutoEnabled: Bool
+    @Binding var interfaceScaleManualMultiplier: Double
     @Binding var showingResetCreditDetails: Bool
 
     @AppStorage("customAccountDisplayName") private var customAccountDisplayName = ""
@@ -134,7 +137,11 @@ struct HeaderView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(width: 132, alignment: .leading)
-                    InterfaceScaleMenuButton()
+                    InterfaceScaleMenuButton(
+                        isPresented: $showingInterfaceScaleMenu,
+                        autoEnabled: $interfaceScaleAutoEnabled,
+                        manualMultiplier: $interfaceScaleManualMultiplier
+                    )
                     Text("Local")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.secondary)
@@ -187,6 +194,7 @@ struct HeaderView: View {
                 saveDisplayNameDraft()
             }
             showingResetCreditDetails = false
+            showingInterfaceScaleMenu = false
         }
     }
 
@@ -245,7 +253,7 @@ struct StatStrip: View {
             Divider().frame(height: 40)
             StatCell(value: "\(stats.longestStreakDays) 天", label: "最长连续天数")
         }
-        .padding(.vertical, 11)
+        .frame(height: 70)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(AppTheme.panelBackground)
@@ -255,6 +263,7 @@ struct StatStrip: View {
                 .stroke(AppTheme.border, lineWidth: 1)
         )
         .frame(maxWidth: 980)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -274,6 +283,6 @@ struct StatCell: View {
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 48, maxHeight: 48)
     }
 }
