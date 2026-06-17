@@ -856,8 +856,16 @@ private enum AccountQuotaReader {
 
         let semaphore = DispatchSemaphore(value: 0)
         let box = ResetCreditsResponseBox()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        let session = URLSession(configuration: configuration)
+        defer {
+            session.finishTasksAndInvalidate()
+        }
 
-        let task = URLSession.shared.dataTask(with: request) { data, response, _ in
+        let task = session.dataTask(with: request) { data, response, _ in
             defer { semaphore.signal() }
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode),
