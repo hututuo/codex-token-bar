@@ -15,8 +15,10 @@ final class CodexUsageStore: ObservableObject {
     private let resolver = CodexDataSourceResolver()
     private var dataSource: CodexDataSource?
     private var timer: Timer?
+    private var initialPreciseTask: Task<Void, Never>?
     private var refreshInterval: TimeInterval = 300
     private var didFinishInitialLoad = false
+    private var didRunPreciseScan = false
 
     var currentDataSource: CodexDataSource? {
         dataSource
@@ -26,6 +28,7 @@ final class CodexUsageStore: ObservableObject {
         dataSource = resolver.resolve()
         updateDataSourceLabels()
         refreshInitialSnapshot()
+        scheduleInitialPreciseRefresh()
         scheduleTimer()
     }
 
@@ -80,7 +83,7 @@ final class CodexUsageStore: ObservableObject {
                             try CodexUsageAnalyzer(dataSource: source).loadFastSnapshot()
                         }.value
                         snapshot = quickSnapshot
-                        status = "\(source.originLabel) · state_5.sqlite · 精确统计稍后更新"
+                        status = "\(source.originLabel) · state_5.sqlite · 准备扫描精确 token..."
                     }
                 }
 
@@ -89,6 +92,7 @@ final class CodexUsageStore: ObservableObject {
                         try CodexUsageAnalyzer(dataSource: source).load()
                     }.value
                     snapshot = loaded
+                    didRunPreciseScan = true
                     status = "\(source.originLabel) · token_count · Updated \(DateFormatter.status.string(from: loaded.generatedAt))"
                 }
             } catch {
@@ -100,6 +104,21 @@ final class CodexUsageStore: ObservableObject {
             isRefreshing = false
             didFinishInitialLoad = true
             isInitialLoading = false
+        }
+    }
+
+    private func scheduleInitialPreciseRefresh() {
+        initialPreciseTask?.cancel()
+        initialPreciseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard let self, !Task.isCancelled else { return }
+
+            while self.isRefreshing && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            }
+
+            guard !Task.isCancelled, !self.didRunPreciseScan else { return }
+            self.refresh()
         }
     }
 
@@ -116,6 +135,7 @@ final class CodexUsageStore: ObservableObject {
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
         dataSource = resolver.saveSelectedDirectory(url)
+        didRunPreciseScan = false
         updateDataSourceLabels()
         refresh()
     }
