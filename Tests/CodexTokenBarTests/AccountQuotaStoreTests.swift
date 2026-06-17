@@ -38,6 +38,46 @@ final class AccountQuotaStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.accountName, "测试用户")
     }
 
+    func testRefreshClampsQuotaRegressionWithinSameResetWindow() async {
+        let reset = Date().addingTimeInterval(60 * 60)
+        let firstSnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 80, resetsAt: reset),
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 90, resetsAt: reset),
+            planType: "pro",
+            limitName: "codex",
+            accountName: "测试用户",
+            status: "额度已读取",
+            updatedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        let regressedSnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 70, resetsAt: reset),
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 88, resetsAt: reset),
+            planType: "pro",
+            limitName: "codex",
+            accountName: "测试用户",
+            status: "额度已读取",
+            updatedAt: Date(timeIntervalSince1970: 1_100)
+        )
+        let reader = SequentialQuotaReader(results: [
+            .success(firstSnapshot),
+            .success(regressedSnapshot)
+        ])
+        let store = AccountQuotaStore(quotaReader: reader)
+
+        store.refresh()
+        await waitUntil("first quota refresh") {
+            store.snapshot.fiveHour?.usedPercent == 80
+        }
+
+        store.refresh()
+        await waitUntil("second quota refresh") {
+            store.snapshot.updatedAt == regressedSnapshot.updatedAt
+        }
+
+        XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 80)
+        XCTAssertEqual(store.snapshot.sevenDay?.usedPercent, 90)
+    }
+
     private func waitUntil(
         _ label: String,
         timeout: TimeInterval = 2,

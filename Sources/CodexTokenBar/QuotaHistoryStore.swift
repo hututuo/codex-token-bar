@@ -33,6 +33,14 @@ final class QuotaHistoryStore: ObservableObject {
             }
         }
     }
+
+    func normalizedForDisplay(_ quota: AccountQuotaSnapshot) async -> AccountQuotaSnapshot {
+        guard quota.isAvailable else { return quota }
+        let database = database
+        return (try? await Task.detached(priority: .utility) {
+            try database.normalizedSnapshot(quota)
+        }.value) ?? quota
+    }
 }
 
 private struct QuotaHistoryRow {
@@ -54,6 +62,32 @@ private struct QuotaHistoryRow {
     var sevenDayRemainingPercent: Double? {
         sevenDayUsedPercent.map { Double(max(0, min(100, 100 - $0))) }
     }
+
+    func normalized(after previous: QuotaHistoryRow?) -> QuotaHistoryRow {
+        guard let previous else { return self }
+        return QuotaHistoryRow(
+            createdAt: createdAt,
+            accountKey: accountKey,
+            planType: planType,
+            limitName: limitName,
+            accountName: accountName,
+            fiveHourUsedPercent: QuotaMonotonicNormalizer.normalizedUsedPercent(
+                currentUsedPercent: fiveHourUsedPercent,
+                currentResetsAt: fiveHourResetsAt,
+                previousUsedPercent: previous.fiveHourUsedPercent,
+                previousResetsAt: previous.fiveHourResetsAt
+            ),
+            fiveHourResetsAt: fiveHourResetsAt,
+            sevenDayUsedPercent: QuotaMonotonicNormalizer.normalizedUsedPercent(
+                currentUsedPercent: sevenDayUsedPercent,
+                currentResetsAt: sevenDayResetsAt,
+                previousUsedPercent: previous.sevenDayUsedPercent,
+                previousResetsAt: previous.sevenDayResetsAt
+            ),
+            sevenDayResetsAt: sevenDayResetsAt,
+            status: status
+        )
+    }
 }
 
 private final class QuotaHistoryDatabase: @unchecked Sendable {
@@ -65,27 +99,28 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
 
     func record(_ quota: AccountQuotaSnapshot) throws {
         let now = Date()
-        let row = QuotaHistoryRow(
-            createdAt: now,
-            accountKey: Self.accountKey(for: quota),
-            planType: quota.planType,
-            limitName: quota.limitName,
-            accountName: quota.accountName,
-            fiveHourUsedPercent: quota.fiveHour?.usedPercent,
-            fiveHourResetsAt: quota.fiveHour?.resetsAt,
-            sevenDayUsedPercent: quota.sevenDay?.usedPercent,
-            sevenDayResetsAt: quota.sevenDay?.resetsAt,
-            status: quota.status
-        )
+        let row = Self.row(from: quota, createdAt: now)
 
         try withDatabase { database in
             try ensureSchema(database)
-            if let latest = try latestRow(database: database, accountKey: row.accountKey),
-               !shouldInsert(row, after: latest, now: now) {
+            let latest = try latestTrustedRow(database: database, accountKey: row.accountKey)
+            let normalizedRow = row.normalized(after: latest)
+            if let latest,
+               !shouldInsert(normalizedRow, after: latest, now: now) {
                 return
             }
-            try insert(row, database: database)
+            try insert(normalizedRow, database: database)
             try prune(database: database, now: now)
+        }
+    }
+
+    func normalizedSnapshot(_ quota: AccountQuotaSnapshot) throws -> AccountQuotaSnapshot {
+        let row = Self.row(from: quota, createdAt: Date())
+        return try withDatabase { database in
+            try ensureSchema(database)
+            let latest = try latestTrustedRow(database: database, accountKey: row.accountKey)
+            let normalizedRow = row.normalized(after: latest)
+            return Self.snapshot(from: normalizedRow, base: quota)
         }
     }
 
@@ -115,7 +150,7 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
         }
 
         let intervalCount = 288
-        let sorted = rows.sorted { $0.createdAt < $1.createdAt }
+        let sorted = sanitizedRows(rows.sorted { $0.createdAt < $1.createdAt })
         let recentBins = makeCarriedBins(
             rows: sorted,
             start: recentStart,
@@ -153,6 +188,42 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
         }
 
         return QuotaHistorySnapshot(daily: daily, recentBins: recentBins, hourlyBins: hourlyBins, latest: sorted.last?.createdAt)
+    }
+
+    private static func sanitizedRows(_ rows: [QuotaHistoryRow]) -> [QuotaHistoryRow] {
+        var lastByAccount: [String: QuotaHistoryRow] = [:]
+        return rows.map { row in
+            let normalized = row.normalized(after: lastByAccount[row.accountKey])
+            lastByAccount[row.accountKey] = normalized
+            return normalized
+        }
+    }
+
+    private static func row(from quota: AccountQuotaSnapshot, createdAt: Date) -> QuotaHistoryRow {
+        QuotaHistoryRow(
+            createdAt: createdAt,
+            accountKey: Self.accountKey(for: quota),
+            planType: quota.planType,
+            limitName: quota.limitName,
+            accountName: quota.accountName,
+            fiveHourUsedPercent: quota.fiveHour?.usedPercent,
+            fiveHourResetsAt: quota.fiveHour?.resetsAt,
+            sevenDayUsedPercent: quota.sevenDay?.usedPercent,
+            sevenDayResetsAt: quota.sevenDay?.resetsAt,
+            status: quota.status
+        )
+    }
+
+    private static func snapshot(from row: QuotaHistoryRow, base quota: AccountQuotaSnapshot) -> AccountQuotaSnapshot {
+        var adjusted = quota
+        adjusted.fiveHour = window(label: "5h", usedPercent: row.fiveHourUsedPercent, resetsAt: row.fiveHourResetsAt)
+        adjusted.sevenDay = window(label: "7d", usedPercent: row.sevenDayUsedPercent, resetsAt: row.sevenDayResetsAt)
+        return adjusted
+    }
+
+    private static func window(label: String, usedPercent: Int?, resetsAt: Date?) -> AccountQuotaWindow? {
+        guard let usedPercent else { return nil }
+        return AccountQuotaWindow(label: label, usedPercent: usedPercent, resetsAt: resetsAt)
     }
 
     private static func makeCarriedBins(
@@ -267,8 +338,8 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
         ])
     }
 
-    private func latestRow(database: SQLiteDatabaseConnection, accountKey: String) throws -> QuotaHistoryRow? {
-        try rows(
+    private func latestTrustedRow(database: SQLiteDatabaseConnection, accountKey: String) throws -> QuotaHistoryRow? {
+        let rawRows = try rows(
             database: database,
             sql: """
             SELECT created_at, account_key, plan_type, limit_name, account_name,
@@ -276,11 +347,11 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
                    seven_day_used_percent, seven_day_resets_at, status
             FROM quota_snapshots
             WHERE account_key = ?
-            ORDER BY created_at DESC
-            LIMIT 1;
+            ORDER BY created_at DESC;
             """,
             bindings: [.text(accountKey)]
-        ).first
+        )
+        return Self.sanitizedRows(Array(rawRows.reversed())).last
     }
 
     private func recentRows(database: SQLiteDatabaseConnection) throws -> [QuotaHistoryRow] {

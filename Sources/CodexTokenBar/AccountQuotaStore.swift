@@ -43,13 +43,21 @@ final class AccountQuotaStore: ObservableObject {
         let reader = quotaReader
         Task.detached(priority: .utility) {
             let result = await reader.readQuota()
-            await MainActor.run {
-                self.isRefreshing = false
-                switch result {
-                case .success(let quota):
-                    self.snapshot = quota
-                    self.historyStore?.record(quota)
-                case .failure(let error):
+            switch result {
+            case .success(let quota):
+                let previousSnapshot = await MainActor.run { self.snapshot }
+                let historyStore = await MainActor.run { self.historyStore }
+                let memoryAdjustedQuota = QuotaMonotonicNormalizer.normalizedSnapshot(quota, after: previousSnapshot)
+                let adjustedQuota = await historyStore?.normalizedForDisplay(memoryAdjustedQuota) ?? memoryAdjustedQuota
+
+                await MainActor.run {
+                    self.isRefreshing = false
+                    self.snapshot = adjustedQuota
+                    self.historyStore?.record(adjustedQuota)
+                }
+            case .failure(let error):
+                await MainActor.run {
+                    self.isRefreshing = false
                     var failed = self.snapshot
                     failed.status = "额度读取失败：\(error.localizedDescription)"
                     self.snapshot = failed
