@@ -13,6 +13,11 @@ SPARKLE_KEY_ACCOUNT="${SPARKLE_KEY_ACCOUNT:-local.codex.token-bar}"
 SPARKLE_KEY_SOURCE="${SPARKLE_KEY_SOURCE:-auto}"
 PRIVATE_KEY_FILE="${SPARKLE_PRIVATE_KEY_FILE:-$HOME/.config/codex-token-bar/sparkle-ed25519-private.key}"
 RELEASE_NOTES_FILE="${RELEASE_NOTES_FILE:-$ROOT_DIR/release-notes/v$VERSION.md}"
+NOTARIZE_RELEASE="${NOTARIZE_RELEASE:-auto}"
+APPLE_NOTARY_PROFILE="${APPLE_NOTARY_PROFILE:-}"
+APPLE_ID="${APPLE_ID:-}"
+APPLE_TEAM_ID="${APPLE_TEAM_ID:-}"
+APPLE_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:-}"
 
 if [[ -z "$BUILD" ]]; then
   BUILD="$(python3 - "$VERSION" <<'PY'
@@ -55,6 +60,29 @@ if [[ ! -f "$RELEASE_NOTES_FILE" ]]; then
 fi
 
 cd "$ROOT_DIR"
+
+notary_available() {
+  if [[ "$NOTARIZE_RELEASE" == "0" ]]; then
+    return 1
+  fi
+  if [[ -n "$APPLE_NOTARY_PROFILE" ]]; then
+    return 0
+  fi
+  [[ -n "$APPLE_ID" && -n "$APPLE_TEAM_ID" && -n "$APPLE_APP_SPECIFIC_PASSWORD" ]]
+}
+
+notarize_artifact() {
+  local artifact="$1"
+  local -a args=(notarytool submit "$artifact" --wait)
+  if [[ -n "$APPLE_NOTARY_PROFILE" ]]; then
+    args+=(--keychain-profile "$APPLE_NOTARY_PROFILE")
+  else
+    args+=(--apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD")
+  fi
+  xcrun "${args[@]}"
+  xcrun stapler staple "$artifact" >/dev/null
+  xcrun stapler validate "$artifact" >/dev/null
+}
 
 APP_VERSION="$VERSION" APP_BUILD="$BUILD" CODEX_TOKEN_BAR_NO_OPEN=1 \
   "$ROOT_DIR/scripts/package_app.sh" release >/dev/null
@@ -280,6 +308,10 @@ hdiutil convert \
 rm -f "$RW_DMG"
 
 hdiutil verify "$RELEASE_DIR/$DMG_NAME" >/dev/null
+
+if notary_available; then
+  notarize_artifact "$RELEASE_DIR/$DMG_NAME"
+fi
 
 cp "$RELEASE_DIR/$VERSIONED_ZIP" "$APPCAST_SOURCE_DIR/$VERSIONED_ZIP"
 cp "$RELEASE_NOTES_FILE" "$APPCAST_SOURCE_DIR/${VERSIONED_ZIP%.zip}.md"

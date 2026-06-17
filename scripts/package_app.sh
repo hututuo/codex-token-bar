@@ -10,6 +10,9 @@ APP_BUILD="${APP_BUILD:-501}"
 BUNDLE_ID="local.codex.token-bar"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://raw.githubusercontent.com/hututuo/codex-token-bar/main/appcast.xml}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-gzOiRKuKM4MkXj1OaYuL40U39RvfEWavuB8PaOdMDq0=}"
+CODE_SIGN_IDENTITY="${CODE_SIGN_IDENTITY:-${CODESIGN_IDENTITY:--}}"
+ENABLE_HARDENED_RUNTIME="${ENABLE_HARDENED_RUNTIME:-auto}"
+ENABLE_APP_SANDBOX="${ENABLE_APP_SANDBOX:-0}"
 
 cd "$ROOT_DIR"
 "$ROOT_DIR/scripts/prepare_tiktoken_lfs.sh"
@@ -22,6 +25,29 @@ MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
 SPARKLE_FRAMEWORK_SRC="$ROOT_DIR/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+ENTITLEMENTS_FILE="$ROOT_DIR/Resources/CodexTokenBar.entitlements"
+SANDBOX_ENTITLEMENTS_FILE="$ROOT_DIR/Resources/CodexTokenBar.sandbox.entitlements"
+
+if [[ "$ENABLE_APP_SANDBOX" == "1" ]]; then
+  ENTITLEMENTS_FILE="$SANDBOX_ENTITLEMENTS_FILE"
+fi
+
+HARDENED_RUNTIME=0
+if [[ "$ENABLE_HARDENED_RUNTIME" == "1" || ( "$ENABLE_HARDENED_RUNTIME" == "auto" && "$CODE_SIGN_IDENTITY" != "-" ) ]]; then
+  HARDENED_RUNTIME=1
+fi
+
+sign_target() {
+  local target="$1"
+  local -a args=(--force --sign "$CODE_SIGN_IDENTITY")
+  if [[ "$CODE_SIGN_IDENTITY" == "-" ]]; then
+    args+=(--timestamp=none)
+  fi
+  if [[ "$HARDENED_RUNTIME" == "1" ]]; then
+    args+=(--options runtime --entitlements "$ENTITLEMENTS_FILE")
+  fi
+  codesign "${args[@]}" "$target" >/dev/null
+}
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR"
@@ -91,16 +117,14 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 PLIST
 
 if [[ -d "$FRAMEWORKS_DIR/Sparkle.framework" ]]; then
-  codesign --force --sign - --timestamp=none "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/Autoupdate" >/dev/null
-  codesign --force --sign - --timestamp=none "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/Updater.app" >/dev/null
-  codesign --force --sign - --timestamp=none "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc" >/dev/null
-  codesign --force --sign - --timestamp=none "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/XPCServices/Installer.xpc" >/dev/null
-  codesign --force --sign - --timestamp=none "$FRAMEWORKS_DIR/Sparkle.framework" >/dev/null
+  sign_target "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/Autoupdate"
+  sign_target "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/Updater.app"
+  sign_target "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc"
+  sign_target "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/XPCServices/Installer.xpc"
+  sign_target "$FRAMEWORKS_DIR/Sparkle.framework"
 fi
 
-codesign --force --sign - --timestamp=none \
-  --requirements "=designated => identifier \"$BUNDLE_ID\"" \
-  "$APP_DIR" >/dev/null
+sign_target "$APP_DIR"
 codesign --verify --deep --strict --verbose=2 "$APP_DIR" >/dev/null
 
 echo "$APP_DIR"

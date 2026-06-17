@@ -39,6 +39,11 @@ struct FloatingPanelFollowTarget {
     let targetDescription: String
 }
 
+struct FloatingPanelWindowListCache {
+    let createdAt: Date
+    let windows: [FloatingPanelTargetWindow]
+}
+
 struct FloatingPanelWindowAnchor {
     let windowNumber: Int?
     let ownerPID: pid_t

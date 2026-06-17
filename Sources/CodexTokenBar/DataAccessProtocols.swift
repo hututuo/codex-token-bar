@@ -62,3 +62,20 @@ struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, Sendable {
 protocol QuotaReading: Sendable {
     func readQuota() async -> Result<AccountQuotaSnapshot, Error>
 }
+
+protocol LiveRateLogReading: Sendable {
+    var path: String { get }
+
+    func globalLogRows(afterID: Int) throws -> [LiveRateMonitor.LogRow]
+    func globalLogRows(since timestamp: TimeInterval) throws -> [LiveRateMonitor.LogRow]
+}
+
+protocol LiveRateLogReaderMaking: Sendable {
+    func makeLiveRateLogReader(path: String) -> LiveRateLogReading
+}
+
+struct DefaultLiveRateLogReaderFactory: LiveRateLogReaderMaking, Sendable {
+    func makeLiveRateLogReader(path: String) -> LiveRateLogReading {
+        LiveRateLogDatabaseReader(path: path)
+    }
+}

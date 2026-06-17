@@ -1,6 +1,6 @@
 import Foundation
 
-final class LiveRateLogDatabaseReader: @unchecked Sendable {
+final class LiveRateLogDatabaseReader: LiveRateLogReading, @unchecked Sendable {
     let path: String
     private let database: SQLitePersistentDatabaseReader
 
