@@ -49,7 +49,7 @@ final class LiveRateMonitor: ObservableObject {
     private var itemThreadIDs: [String: String] = [:]
     private var itemToolNames: [String: String] = [:]
     private var itemCallIDs: [String: String] = [:]
-    private var countedStreamFingerprints: Set<String> = []
+    private var countedStreamFingerprints = RecentFingerprintSet(limit: 4_096)
     private var tokenEncoder: CoreBpe?
 
     private struct LogStoreSignature: Equatable {
@@ -400,11 +400,7 @@ final class LiveRateMonitor: ObservableObject {
         }
         let sequence = event.sequenceNumber.map(String.init) ?? "\(event.timestamp):\(event.text.hashValue)"
         let fingerprint = "\(event.itemID):\(category.rawValue):\(sequence)"
-        if countedStreamFingerprints.contains(fingerprint) {
-            return false
-        }
-        countedStreamFingerprints.insert(fingerprint)
-        return true
+        return countedStreamFingerprints.insertIfNew(fingerprint)
     }
 
     private func updateTraceAttribution(from row: LogRow) {
@@ -607,8 +603,8 @@ private extension LiveRateMonitor {
     }
 
     nonisolated static func maxLogID(logsDB: String, threadID: String) throws -> Int {
-        let sql = "SELECT coalesce(max(id), 0) AS maxID FROM logs WHERE thread_id = '\(sqlEscape(threadID))';"
-        return try sqliteScalarInt(db: logsDB, sql: sql)
+        let sql = "SELECT coalesce(max(id), 0) AS maxID FROM logs WHERE thread_id = ?;"
+        return try sqliteScalarInt(db: logsDB, sql: sql, bindings: [.text(threadID)])
     }
 
     nonisolated static func maxGlobalLogID(logsDB: String) throws -> Int {
@@ -620,14 +616,14 @@ private extension LiveRateMonitor {
         let sql = """
         SELECT id, thread_id, ts, ts_nanos, target, feedback_log_body
         FROM logs
-        WHERE thread_id = '\(sqlEscape(threadID))'
-          AND id > \(afterID)
+        WHERE thread_id = ?
+          AND id > ?
           AND target = 'codex_api::endpoint::responses_websocket'
           AND feedback_log_body LIKE '%websocket event:%'
         ORDER BY id ASC
         LIMIT 500;
         """
-        return try sqliteRows(db: logsDB, sql: sql) { statement in
+        return try sqliteRows(db: logsDB, sql: sql, bindings: [.text(threadID), .int(afterID)]) { statement in
             LogRow(
                 id: sqliteInt(statement, 0),
                 threadID: sqliteText(statement, 1),
@@ -788,20 +784,25 @@ private extension LiveRateMonitor {
         return date.timeIntervalSince1970
     }
 
-    nonisolated static func sqliteScalarInt(db: String, sql: String) throws -> Int {
-        try sqliteRows(db: db, sql: sql) { statement in
+    nonisolated static func sqliteScalarInt(db: String, sql: String, bindings: [SQLiteBinding] = []) throws -> Int {
+        try sqliteRows(db: db, sql: sql, bindings: bindings) { statement in
             sqliteInt(statement, 0)
         }.first ?? 0
     }
 
-    nonisolated static func sqliteRows<T>(db path: String, sql: String, map: (SQLiteStatement) throws -> T) throws -> [T] {
+    nonisolated static func sqliteRows<T>(
+        db path: String,
+        sql: String,
+        bindings: [SQLiteBinding] = [],
+        map: (SQLiteStatement) throws -> T
+    ) throws -> [T] {
         let driver = SQLiteDatabaseDriver(
             url: URL(fileURLWithPath: path),
             readOnly: true,
             busyTimeoutMilliseconds: 3_000,
             enableWAL: false
         )
-        return try driver.readRows(sql, map: map)
+        return try driver.readRows(sql, bindings: bindings, map: map)
     }
 
     nonisolated static func sqliteText(_ statement: SQLiteStatement, _ column: Int32) -> String? {
@@ -936,10 +937,6 @@ private extension LiveRateMonitor {
         }.joined()
     }
 
-    nonisolated static func sqlEscape(_ value: String) -> String {
-        value.replacingOccurrences(of: "'", with: "''")
-    }
-
     nonisolated static func fileSize(path: String) -> UInt64 {
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
         return attrs?[.size] as? UInt64 ?? 0
@@ -965,6 +962,18 @@ private extension LiveRateMonitor {
         return (size, modifiedAt)
     }
 }
+
+#if DEBUG
+extension LiveRateMonitor {
+    nonisolated static func testMaxLogID(logsDB: String, threadID: String) throws -> Int {
+        try maxLogID(logsDB: logsDB, threadID: threadID)
+    }
+
+    nonisolated static func testLogRows(logsDB: String, threadID: String, afterID: Int) throws -> [LogRow] {
+        try logRows(logsDB: logsDB, threadID: threadID, afterID: afterID)
+    }
+}
+#endif
 
 extension CodexDataSource {
     var logsDatabase: URL {

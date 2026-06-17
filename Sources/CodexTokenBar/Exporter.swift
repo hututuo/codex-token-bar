@@ -55,7 +55,7 @@ struct ExportSnapshotView: View {
                 HeaderView(
                     snapshot: snapshot,
                     quotaSnapshot: .empty,
-                    status: "Exported \(DateFormatter.status.string(from: Date()))",
+                    status: "导出于 \(DateFormatter.statusString(from: Date()))",
                     dataSourceLabel: "本地数据",
                     dataSourceOrigin: "导出",
                     isRefreshing: false,

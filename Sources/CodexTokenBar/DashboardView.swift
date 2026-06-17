@@ -52,7 +52,7 @@ struct DashboardView: View {
         self.updateSettingsStore = updateSettingsStore
         self.floatingPanel = floatingPanel
         self.statusBarPanel = statusBarPanel
-        Self.applyStartupDisplayModeRepairIfNeeded()
+        DisplayModeMigration.repairStartup()
     }
 
     var body: some View {
@@ -456,60 +456,18 @@ struct DashboardView: View {
     }
 
     private func applyDisplaySurfaceDefaultsIfNeeded() {
-        tokenDisplayModeDefaultedToFloating = true
-        tokenDisplayModeDefaultedToFloatingQuota = true
-        tokenDisplayModeDefaultedToFloatingQuotaV02 = true
-
-        let currentMode = TokenDisplayMode(rawValue: tokenDisplayModeRaw)
-        if !tokenDisplayModeInitialDefaultApplied && !tokenDisplayModeUserSelected,
-           currentMode == nil || currentMode == .off {
-            tokenDisplayModeRaw = TokenDisplayMode.floating.rawValue
-        }
-        tokenDisplayModeInitialDefaultApplied = true
-
-        if !tokenDisplayModePanelCloseRepairApplied,
-           currentMode == nil || currentMode == .off {
-            tokenDisplayModeRaw = TokenDisplayMode.floating.rawValue
-            tokenDisplayModeUserSelected = false
-        }
-        tokenDisplayModePanelCloseRepairApplied = true
-
-        guard !displaySurfacePairMigrationApplied else { return }
-        let mode = TokenDisplayMode(rawValue: tokenDisplayModeRaw)
-        if mode == .statusBar {
-            floatingPanelEnabled = false
-            statusBarPanelEnabled = true
-        } else if mode == .off {
-            floatingPanelEnabled = false
-            statusBarPanelEnabled = false
-        } else {
-            floatingPanelEnabled = true
-        }
-        displaySurfacePairMigrationApplied = true
-    }
-
-    private static func applyStartupDisplayModeRepairIfNeeded() {
-        let defaults = UserDefaults.standard
-        let defaultAppliedKey = "tokenDisplayModeInitialDefaultAppliedV03"
-        let userSelectedKey = "tokenDisplayModeUserSelected"
-        let panelCloseRepairKey = "tokenDisplayModePanelCloseRepairV01"
-
-        let rawMode = defaults.string(forKey: "tokenDisplayMode")
-        let mode = rawMode.flatMap(TokenDisplayMode.init(rawValue:))
-
-        if !defaults.bool(forKey: defaultAppliedKey), !defaults.bool(forKey: userSelectedKey) {
-            if mode == nil || mode == .off {
-                defaults.set(TokenDisplayMode.floating.rawValue, forKey: "tokenDisplayMode")
-            }
-            defaults.set(true, forKey: defaultAppliedKey)
-            return
-        }
-
-        if !defaults.bool(forKey: panelCloseRepairKey), mode == nil || mode == .off {
-            defaults.set(TokenDisplayMode.floating.rawValue, forKey: "tokenDisplayMode")
-            defaults.set(false, forKey: userSelectedKey)
-        }
-        defaults.set(true, forKey: panelCloseRepairKey)
+        DisplayModeMigration.applyViewDefaults(
+            tokenDisplayModeRaw: &tokenDisplayModeRaw,
+            floatingPanelEnabled: &floatingPanelEnabled,
+            statusBarPanelEnabled: &statusBarPanelEnabled,
+            pairMigrationApplied: &displaySurfacePairMigrationApplied,
+            defaultedToFloating: &tokenDisplayModeDefaultedToFloating,
+            defaultedToFloatingQuota: &tokenDisplayModeDefaultedToFloatingQuota,
+            defaultedToFloatingQuotaV02: &tokenDisplayModeDefaultedToFloatingQuotaV02,
+            initialDefaultApplied: &tokenDisplayModeInitialDefaultApplied,
+            userSelected: &tokenDisplayModeUserSelected,
+            panelCloseRepairApplied: &tokenDisplayModePanelCloseRepairApplied
+        )
     }
 
     private func updateTokenDisplaySurface() {

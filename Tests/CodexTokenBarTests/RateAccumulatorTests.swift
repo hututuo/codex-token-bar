@@ -91,4 +91,20 @@ final class RateAccumulatorTests: XCTestCase {
         XCTAssertEqual(accumulator.breakdown.modelGenerated, 20)
         XCTAssertEqual(accumulator.outputTokens, 20)
     }
+
+    func testPruneDropsExpiredPrefixAndKeepsRecentDeltas() {
+        var accumulator = RateAccumulator(resetsOnNewItem: false)
+
+        accumulator.add(tokens: 10, category: .visibleText, key: "first", at: 0, windowSeconds: 10)
+        accumulator.add(tokens: 20, category: .visibleText, key: "second", at: 2, windowSeconds: 10)
+        accumulator.add(tokens: 30, category: .visibleText, key: "third", at: 4, windowSeconds: 10)
+
+        accumulator.prune(now: 5, windowSeconds: 2.5)
+
+        XCTAssertEqual(accumulator.rollingRate(now: 5, windowSeconds: 2.5, minimumSpan: 0.4), 30, accuracy: 0.001)
+
+        accumulator.prune(now: 10, windowSeconds: 2.5)
+
+        XCTAssertEqual(accumulator.rollingRate(now: 10, windowSeconds: 2.5, minimumSpan: 0.4), 0, accuracy: 0.001)
+    }
 }

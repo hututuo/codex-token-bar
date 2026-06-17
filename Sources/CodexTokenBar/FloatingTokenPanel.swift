@@ -78,9 +78,6 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     deinit {
-        MainActor.assumeIsolated {
-            closePanel(destroy: true, unregisterActive: true)
-        }
         NotificationCenter.default.removeObserver(self)
         if let globalMouseMonitor {
             NSEvent.removeMonitor(globalMouseMonitor)

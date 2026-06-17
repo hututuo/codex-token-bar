@@ -109,8 +109,10 @@ final class CodexUsageAnalyzer {
                 lock.unlock()
                 return
             }
-            didLoadPersistentCache = true
-            lock.unlock()
+            defer {
+                didLoadPersistentCache = true
+                lock.unlock()
+            }
 
             guard !CodexUsageAnalyzer.isPersistentSessionEventCacheDisabled else {
                 return
@@ -144,11 +146,9 @@ final class CodexUsageAnalyzer {
                 )
             }
 
-            lock.lock()
             for (path, value) in loaded where storage[path] == nil {
                 storage[path] = value
             }
-            lock.unlock()
         }
 
         private static var cacheURL: URL? {
@@ -299,7 +299,7 @@ final class CodexUsageAnalyzer {
             longestStreakDays: longestStreakDays(from: daily),
             totalCalls: events.count,
             totalThreads: officialSummary?.totalThreads ?? sessionIDsWithEvents.count,
-            fastModePercent: 14,
+            fastModePercent: 0,
             mostUsedReasoning: metadata.reasoning,
             skillsExplored: metadata.plugins.filter { $0.name.hasPrefix("$") }.count,
             totalSkillsUsed: metadata.plugins.count
@@ -451,9 +451,11 @@ final class CodexUsageAnalyzer {
         var pluginCounts: [String: Int] = [:]
         var reasoningCounts: [String: Int] = [:]
         for row in titleRows {
-            let text = row.joined(separator: " ")
+            let text = [row[safe: 0], row[safe: 1], row[safe: 2]]
+                .compactMap { $0 }
+                .joined(separator: " ")
             collectPluginMentions(from: text, into: &pluginCounts)
-            collectReasoning(from: text, into: &reasoningCounts)
+            collectReasoningEffort(row[safe: 3], into: &reasoningCounts)
         }
 
         let totalTokens = Int(summaryRows.first?[safe: 0] ?? "0") ?? 0
@@ -475,7 +477,7 @@ final class CodexUsageAnalyzer {
             longestStreakDays: longestStreakDays(from: daily),
             totalCalls: recentBins.reduce(0) { $0 + $1.calls },
             totalThreads: totalThreads,
-            fastModePercent: 14,
+            fastModePercent: 0,
             mostUsedReasoning: reasoningCounts.max(by: { $0.value < $1.value }).map { "\($0.key) · \($0.value)" } ?? "未知",
             skillsExplored: pluginCounts.keys.filter { $0.hasPrefix("$") }.count,
             totalSkillsUsed: pluginCounts.count
@@ -545,9 +547,11 @@ final class CodexUsageAnalyzer {
         var pluginCounts: [String: Int] = [:]
         var reasoningCounts: [String: Int] = [:]
         for row in rows {
-            let text = row.joined(separator: " ")
+            let text = [row[safe: 0], row[safe: 1], row[safe: 2]]
+                .compactMap { $0 }
+                .joined(separator: " ")
             collectPluginMentions(from: text, into: &pluginCounts)
-            collectReasoning(from: text, into: &reasoningCounts)
+            collectReasoningEffort(row[safe: 3], into: &reasoningCounts)
         }
 
         let pluginItems = pluginCounts.map { key, value in
@@ -854,15 +858,16 @@ final class CodexUsageAnalyzer {
         }
     }
 
-    private func collectReasoning(from text: String, into counts: inout [String: Int]) {
-        if text.contains("reasoning_effort") || text.contains("effort") {
-            if text.contains("high") {
-                counts["高", default: 0] += 1
-            } else if text.contains("medium") {
-                counts["中", default: 0] += 1
-            } else if text.contains("low") {
-                counts["低", default: 0] += 1
-            }
+    private func collectReasoningEffort(_ value: String?, into counts: inout [String: Int]) {
+        switch value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "high":
+            counts["高", default: 0] += 1
+        case "medium":
+            counts["中", default: 0] += 1
+        case "low":
+            counts["低", default: 0] += 1
+        default:
+            return
         }
     }
 

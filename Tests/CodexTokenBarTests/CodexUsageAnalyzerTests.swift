@@ -58,6 +58,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.cacheUsage.sessions.first?.id, sessionID)
         XCTAssertEqual(snapshot.cacheUsage.turns.count, 2)
         XCTAssertEqual(Set(snapshot.cacheUsage.turns.map(\.userPrompt)), ["First question", "Second question"])
+        XCTAssertEqual(snapshot.stats.fastModePercent, 0)
     }
 
     func testFastSnapshotKeepsTimeSeriesEmptyToAvoidTodayMisreporting() throws {
@@ -69,6 +70,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.stats.totalTokens, 300)
         XCTAssertEqual(snapshot.stats.peakThreadTokens, 200)
         XCTAssertEqual(snapshot.stats.totalThreads, 2)
+        XCTAssertEqual(snapshot.stats.fastModePercent, 0)
         XCTAssertEqual(snapshot.dailyUsage.reduce(0) { $0 + $1.tokens }, 0)
         XCTAssertEqual(snapshot.recentBins.reduce(0) { $0 + $1.tokens }, 0)
         XCTAssertEqual(snapshot.hourlyUsage.reduce(0) { $0 + $1.tokens }, 0)
@@ -83,7 +85,17 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.stats.totalTokens, 300)
         XCTAssertEqual(snapshot.stats.peakThreadTokens, 200)
         XCTAssertEqual(snapshot.stats.totalThreads, 2)
+        XCTAssertEqual(snapshot.stats.fastModePercent, 0)
         XCTAssertEqual(snapshot.cacheUsage.total, .empty)
+    }
+
+    func testSQLiteReasoningUsesExactReasoningEffortColumn() throws {
+        let codexHome = try makeCodexHome()
+        try seedStateDatabaseWithReasoningNoise(at: codexHome)
+
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).loadFastSnapshot()
+
+        XCTAssertEqual(snapshot.stats.mostUsedReasoning, "中 · 1")
     }
 
     private struct Usage {
@@ -132,6 +144,33 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             bindings: [
                 .text("thread-a"), .text("A"), .text("A first"), .text("A preview"), .text("high"), .int(nowMilliseconds), .int(nowMilliseconds), .int(100),
                 .text("thread-b"), .text("B"), .text("B first"), .text("B preview"), .text("low"), .int(nowMilliseconds), .int(nowMilliseconds), .int(200)
+            ]
+        )
+    }
+
+    private func seedStateDatabaseWithReasoningNoise(at codexHome: URL) throws {
+        let driver = SQLiteDatabaseDriver(url: codexHome.appendingPathComponent("state_5.sqlite"))
+        try driver.execute("""
+        CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            first_user_message TEXT,
+            preview TEXT,
+            reasoning_effort TEXT,
+            updated_at_ms INTEGER,
+            updated_at INTEGER,
+            tokens_used INTEGER NOT NULL
+        );
+        """)
+        let nowMilliseconds = Int(Date().timeIntervalSince1970 * 1000)
+        try driver.execute(
+            """
+            INSERT INTO threads (id, title, first_user_message, preview, reasoning_effort, updated_at_ms, updated_at, tokens_used)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            bindings: [
+                .text("thread-medium"), .text("highlight low memory"), .text("effort high in prompt"), .text("preview low"), .text("medium"), .int(nowMilliseconds), .int(nowMilliseconds), .int(100),
+                .text("thread-no-effort"), .text("high effort words only"), .text("low words only"), .text("medium words only"), .null, .int(nowMilliseconds), .int(nowMilliseconds), .int(200)
             ]
         )
     }

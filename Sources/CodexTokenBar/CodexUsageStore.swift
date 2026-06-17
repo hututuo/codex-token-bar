@@ -5,7 +5,7 @@ import Foundation
 @MainActor
 final class CodexUsageStore: ObservableObject {
     @Published private(set) var snapshot: DashboardSnapshot = .empty
-    @Published private(set) var status: String = "Loading local Codex usage..."
+    @Published private(set) var status: String = "正在加载本地 Codex 用量..."
     @Published private(set) var isRefreshing = false
     @Published private(set) var isInitialLoading = true
     @Published private(set) var dataSourceLabel: String = "查找 Codex 目录..."
@@ -64,10 +64,11 @@ final class CodexUsageStore: ObservableObject {
             isInitialLoading = true
             status = "正在读取本地索引..."
         } else {
-            status = "Scanning \(dataSource.displayPath)/sessions..."
+            status = "正在扫描 \(dataSource.displayPath)/sessions..."
         }
 
-        Task {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
             do {
                 let source = dataSource
                 if isFirstLoad || !includePreciseScan {
@@ -75,15 +76,15 @@ final class CodexUsageStore: ObservableObject {
                         if let quickSnapshot = try? await (Task.detached(priority: .utility) {
                             try CodexUsageAnalyzer(dataSource: source).loadFastSnapshot()
                         }).value {
-                            snapshot = quickSnapshot
-                            status = "\(source.originLabel) · state_5.sqlite · 正在扫描精确 token..."
+                            self.snapshot = quickSnapshot
+                            self.status = "\(source.originLabel) · state_5.sqlite · 正在扫描精确 token..."
                         }
                     } else {
                         let quickSnapshot = try await Task.detached(priority: .utility) {
                             try CodexUsageAnalyzer(dataSource: source).loadFastSnapshot()
                         }.value
-                        snapshot = quickSnapshot
-                        status = "\(source.originLabel) · state_5.sqlite · 准备扫描精确 token..."
+                        self.snapshot = quickSnapshot
+                        self.status = "\(source.originLabel) · state_5.sqlite · 准备扫描精确 token..."
                     }
                 }
 
@@ -91,19 +92,19 @@ final class CodexUsageStore: ObservableObject {
                     let loaded = try await Task.detached(priority: .utility) {
                         try CodexUsageAnalyzer(dataSource: source).load()
                     }.value
-                    snapshot = loaded
-                    didRunPreciseScan = true
-                    status = "\(source.originLabel) · token_count · Updated \(DateFormatter.status.string(from: loaded.generatedAt))"
+                    self.snapshot = loaded
+                    self.didRunPreciseScan = true
+                    self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
                 }
             } catch {
                 if !hasExistingSnapshot {
-                    snapshot = .empty
+                    self.snapshot = .empty
                 }
-                status = "读取失败：\(error.localizedDescription)"
+                self.status = "读取失败：\(error.localizedDescription)"
             }
-            isRefreshing = false
-            didFinishInitialLoad = true
-            isInitialLoading = false
+            self.isRefreshing = false
+            self.didFinishInitialLoad = true
+            self.isInitialLoading = false
         }
     }
 
@@ -239,7 +240,7 @@ extension DashboardSnapshot {
                 longestStreakDays: 26,
                 totalCalls: bins.reduce(0) { $0 + $1.calls },
                 totalThreads: 13_040,
-                fastModePercent: 14,
+                fastModePercent: 0,
                 mostUsedReasoning: "中 · 51%",
                 skillsExplored: 11,
                 totalSkillsUsed: 31
@@ -342,12 +343,4 @@ extension DashboardSnapshot {
 
         return TokenCacheUsage(total: total, daily: daily, hourly: hourly, recentBins: recentBins, sessions: sessions, turns: turns)
     }
-}
-
-extension DateFormatter {
-    static let status: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter
-    }()
 }

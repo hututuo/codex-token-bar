@@ -167,7 +167,7 @@ struct StatusBarTokenPopoverView: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(AppTheme.accentBlue)
                         .lineLimit(1)
-                    Text("更新 \(DateFormatter.status.string(from: snapshot.updatedAt))")
+                    Text("更新 \(DateFormatter.statusString(from: snapshot.updatedAt))")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
                         .monospacedDigit()

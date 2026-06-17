@@ -187,7 +187,13 @@ struct RateAccumulator {
     }
 
     mutating func prune(now: TimeInterval, windowSeconds: TimeInterval) {
-        rollingDeltas.removeAll { now - $0.time > windowSeconds }
+        guard let firstVisibleIndex = rollingDeltas.firstIndex(where: { now - $0.time <= windowSeconds }) else {
+            rollingDeltas.removeAll(keepingCapacity: true)
+            return
+        }
+        if firstVisibleIndex > rollingDeltas.startIndex {
+            rollingDeltas.removeSubrange(..<firstVisibleIndex)
+        }
     }
 
     func rollingRate(now: TimeInterval, windowSeconds: TimeInterval, minimumSpan: TimeInterval) -> Double {

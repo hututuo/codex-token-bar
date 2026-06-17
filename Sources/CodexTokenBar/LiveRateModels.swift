@@ -67,6 +67,46 @@ enum LiveTokenCategory: String {
     case reasoning
 }
 
+struct RecentFingerprintSet {
+    private let limit: Int
+    private var values: Set<String> = []
+    private var insertionOrder: [String] = []
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+    }
+
+    var count: Int {
+        values.count
+    }
+
+    func contains(_ value: String) -> Bool {
+        values.contains(value)
+    }
+
+    mutating func insertIfNew(_ value: String) -> Bool {
+        guard !values.contains(value) else { return false }
+        values.insert(value)
+        insertionOrder.append(value)
+        pruneOverflow()
+        return true
+    }
+
+    mutating func removeAll() {
+        values.removeAll(keepingCapacity: true)
+        insertionOrder.removeAll(keepingCapacity: true)
+    }
+
+    private mutating func pruneOverflow() {
+        let overflow = insertionOrder.count - limit
+        guard overflow > 0 else { return }
+        for oldValue in insertionOrder.prefix(overflow) {
+            values.remove(oldValue)
+        }
+        insertionOrder.removeFirst(overflow)
+    }
+}
+
 enum LiveMetricSource {
     case sse
     case websocket
