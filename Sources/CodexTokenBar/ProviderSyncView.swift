@@ -28,6 +28,8 @@ struct ProviderSyncPage: View {
                             .frame(width: 28, height: 28)
                     }
                     .buttonStyle(.borderless)
+                    .accessibilityLabel("关闭会话消失修复")
+                    .accessibilityHint("关闭当前修复向导窗口")
                     .background(
                         Circle()
                             .fill(AppTheme.raisedBackground)

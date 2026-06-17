@@ -20,6 +20,8 @@ struct FloatingPanelCloseButton: View {
         }
         .buttonStyle(.plain)
         .help("关闭悬浮窗")
+        .accessibilityLabel("关闭悬浮窗")
+        .accessibilityHint("关闭当前悬浮窗显示")
     }
 }
 
@@ -45,6 +47,9 @@ struct FloatingPanelLockButton: View {
         }
         .buttonStyle(.plain)
         .help(helpText)
+        .accessibilityLabel(state == .locked ? "悬浮窗已锁定" : "锁定悬浮窗")
+        .accessibilityValue(accessibilityValue)
+        .accessibilityHint(state == .locked ? "解除悬浮窗锁定" : "锁定到最近选择的窗口")
     }
 
     private var helpText: String {
@@ -55,5 +60,13 @@ struct FloatingPanelLockButton: View {
             return "已锁定到 \(targetDescription)"
         }
         return TokenDisplayLockState.locked.helpText
+    }
+
+    private var accessibilityValue: String {
+        guard state == .locked else { return "未锁定" }
+        if let targetDescription, !targetDescription.isEmpty {
+            return "已锁定到 \(targetDescription)"
+        }
+        return "已锁定"
     }
 }

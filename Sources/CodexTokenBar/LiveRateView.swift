@@ -239,6 +239,8 @@ private struct AlignedSettingSliderRow: View {
 
             Slider(value: $value, in: range, step: step)
                 .frame(maxWidth: .infinity)
+                .accessibilityLabel(title)
+                .accessibilityValue(displayValue)
 
             Text(displayValue)
                 .font(.system(size: 10, weight: .medium))
@@ -480,6 +482,20 @@ private struct FloatingUnreadEffectPicker: View {
         }
         .zIndex(isPresented ? 20 : 0)
         .help("选择未读时悬浮窗背景动效")
+        .accessibilityLabel("提醒样式")
+        .accessibilityValue(selectionTitle)
+        .accessibilityHint("选择有未读会话时悬浮窗的提醒动画")
+    }
+
+    private var selectionTitle: String {
+        switch FloatingPanelUnreadEffect(rawValue: selection) ?? .ripple {
+        case .off:
+            return "关"
+        case .ripple:
+            return "涟漪"
+        case .shimmer:
+            return "扫光"
+        }
     }
 }
 
@@ -674,6 +690,8 @@ struct FloatingPanelPaletteControl: View {
         }
         .zIndex(isPresented ? 22 : 0)
         .help("调整悬浮窗背景渐变")
+        .accessibilityLabel("调色盘")
+        .accessibilityHint("调整悬浮窗背景渐变颜色、方向和类型")
     }
 }
 
@@ -697,6 +715,7 @@ struct FloatingPanelPaletteMenu: View {
                     FloatingStyleControlRow(title: "起始色", systemImage: "circle.fill") {
                         ColorPicker("", selection: colorBinding($startHex), supportsOpacity: false)
                             .labelsHidden()
+                            .accessibilityLabel("起始色")
                     }
 
                     FloatingStyleDivider()
@@ -704,6 +723,7 @@ struct FloatingPanelPaletteMenu: View {
                     FloatingStyleControlRow(title: "结束色", systemImage: "circle.lefthalf.filled") {
                         ColorPicker("", selection: colorBinding($endHex), supportsOpacity: false)
                             .labelsHidden()
+                            .accessibilityLabel("结束色")
                     }
                 }
             }
@@ -717,6 +737,7 @@ struct FloatingPanelPaletteMenu: View {
                             }
                         }
                         .labelsHidden()
+                        .accessibilityLabel("渐变方向")
                         .pickerStyle(.menu)
                         .frame(maxWidth: 150, alignment: .trailing)
                     }
@@ -730,6 +751,7 @@ struct FloatingPanelPaletteMenu: View {
                             }
                         }
                         .labelsHidden()
+                        .accessibilityLabel("渐变类型")
                         .pickerStyle(.segmented)
                         .frame(width: 168)
                     }
@@ -897,6 +919,9 @@ struct DisplaySurfaceToggleButton: View {
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .foregroundStyle(isOn ? AppTheme.accentBlue : .secondary)
         .help(isOn ? "关闭\(title)" : "开启\(title)")
+        .accessibilityLabel(title)
+        .accessibilityValue(isOn ? "已开启" : "已关闭")
+        .accessibilityHint(isOn ? "点击关闭\(title)" : "点击开启\(title)")
     }
 }
 

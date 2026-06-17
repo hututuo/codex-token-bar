@@ -76,6 +76,10 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <string>14.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSAccessibilityUsageDescription</key>
+  <string>用于在你开启悬浮窗锁定时读取目标窗口的位置，让悬浮窗跟随你选择的窗口。</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>用于识别屏幕上的窗口位置和名称，以支持悬浮窗锁定与跟随；不会截取或上传屏幕内容。</string>
   <key>SUEnableInstallerLauncherService</key>
   <true/>
   <key>SUFeedURL</key>

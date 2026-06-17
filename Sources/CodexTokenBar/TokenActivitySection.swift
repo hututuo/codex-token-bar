@@ -74,6 +74,9 @@ struct ActivityModeSelector: View {
                 )
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Token 活动模式 \(mode.rawValue)")
+        .accessibilityValue(selectedMode == mode ? "已选择" : "未选择")
+        .accessibilityHint("切换 Token 活动显示模式")
     }
 
     private func labelColor(for mode: ActivityMode) -> Color {
@@ -783,4 +786,3 @@ private struct MonthLabels: View {
         CGFloat(max(2, marker.nextColumn - marker.column)) * (cellSize + gap)
     }
 }
-
