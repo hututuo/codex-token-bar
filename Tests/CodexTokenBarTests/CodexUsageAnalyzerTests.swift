@@ -140,6 +140,37 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.cacheUsage.total, .empty)
     }
 
+    func testForkedSessionMetaSkipsReplayEvenWhenJSONHasWhitespace() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-forkedmeta"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let forkedAt = Date()
+
+        let lines = [
+            spacedSessionMetaLine(timestamp: forkedAt, sessionID: sessionID),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(10),
+                total: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120)
+            ),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(45),
+                total: Usage(input: 180, cachedInput: 10, output: 30, reasoning: 0, total: 200),
+                last: Usage(input: 80, cachedInput: 10, output: 10, reasoning: 0, total: 80)
+            )
+        ]
+        try lines.joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertEqual(snapshot.stats.totalTokens, 80)
+        XCTAssertEqual(snapshot.stats.totalCalls, 1)
+        XCTAssertEqual(snapshot.cacheUsage.total.inputTokens, 80)
+        XCTAssertEqual(snapshot.cacheUsage.total.cachedInputTokens, 10)
+    }
+
     func testSQLiteReasoningUsesExactReasoningEffortColumn() throws {
         let codexHome = try makeCodexHome()
         try seedStateDatabaseWithReasoningNoise(at: codexHome)
@@ -241,6 +272,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 "message": message
             ]
         ])
+    }
+
+    private func spacedSessionMetaLine(timestamp: Date, sessionID: String) -> String {
+        "{ \"timestamp\" : \"\(iso8601String(from: timestamp))\", \"type\" : \"session_meta\", \"payload\" : { \"id\" : \"\(sessionID)\", \"forked_from_id\" : \"origin-session\" } }"
     }
 
     private func tokenCountLine(timestamp: Date, total: Usage, last: Usage) throws -> String {

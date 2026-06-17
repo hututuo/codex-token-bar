@@ -714,13 +714,31 @@ final class CodexUsageAnalyzer {
 
     private func forkedSessionReplayCutoff(for file: URL) -> Date? {
         guard let firstLine = readFirstLinePrefix(from: file),
-              firstLine.contains("\"type\":\"session_meta\""),
-              firstLine.contains("\"forked_from_id\":\""),
-              let timestampString = extractString(after: "\"timestamp\":\"", in: firstLine),
-              let timestamp = parseDate(timestampString) else {
+              let timestamp = parseSessionMetaForkTimestamp(firstLine) else { return nil }
+        return timestamp.addingTimeInterval(30)
+    }
+
+    private func parseSessionMetaForkTimestamp(_ line: String) -> Date? {
+        guard line.contains("session_meta"),
+              line.contains("forked_from_id"),
+              let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["type"] as? String == "session_meta",
+              let payload = object["payload"] as? [String: Any],
+              let forkedFromID = payload["forked_from_id"] as? String,
+              !forkedFromID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
-        return timestamp.addingTimeInterval(30)
+
+        if let timestampString = object["timestamp"] as? String,
+           let timestamp = parseDate(timestampString) {
+            return timestamp
+        }
+        if let timestampString = payload["timestamp"] as? String,
+           let timestamp = parseDate(timestampString) {
+            return timestamp
+        }
+        return nil
     }
 
     private func extractPayloadMessage(from line: String, expectedType: String) -> String? {
@@ -805,13 +823,6 @@ final class CodexUsageAnalyzer {
         let size = attributes[.size] as? UInt64 ?? 0
         let modifiedAt = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
         return SessionCacheKey(path: file.path, size: size, modifiedAt: modifiedAt)
-    }
-
-    private func extractString(after marker: String, in text: String) -> String? {
-        guard let markerRange = text.range(of: marker) else { return nil }
-        let rest = text[markerRange.upperBound...]
-        guard let end = rest.firstIndex(of: "\"") else { return nil }
-        return String(rest[..<end])
     }
 
     private func readFirstLinePrefix(from file: URL, maxBytes: Int = 262_144) -> String? {
