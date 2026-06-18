@@ -48,7 +48,7 @@ export function FloatingWindowApp() {
     let cancelled = false;
 
     void readAppSettings().then((settings) => {
-      if (!cancelled) {
+      if (!cancelled && settings !== null) {
         setSettings(sanitizeFloatingSettings(settings.floatingWindow));
       }
     });

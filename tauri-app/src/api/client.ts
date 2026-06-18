@@ -97,8 +97,8 @@ export function resetCodexHome(): Promise<CodexHomeStatus> {
   return callCommand("reset_codex_home", fallbackCodexHome);
 }
 
-export function readAppSettings(): Promise<AppSettingsSnapshot> {
-  return callCommand("read_app_settings", fallbackAppSettings);
+export function readAppSettings(): Promise<AppSettingsSnapshot | null> {
+  return callCommandOptional("read_app_settings");
 }
 
 export function saveFloatingSettings(settings: FloatingWindowSettings): Promise<AppSettingsSnapshot> {

@@ -5,6 +5,11 @@ export const DEFAULT_DISPLAY_SURFACES: DisplaySurfaceSettings = {
   statusTrayLiveTextEnabled: true,
 };
 
+export const INACTIVE_DISPLAY_SURFACES: DisplaySurfaceSettings = {
+  floatingWindowEnabled: false,
+  statusTrayLiveTextEnabled: false,
+};
+
 export function sanitizeDisplaySurfaces(
   settings: Partial<DisplaySurfaceSettings>,
 ): DisplaySurfaceSettings {

@@ -16,7 +16,7 @@ export function useFloatingWindowPlacement() {
     let unlisten: (() => void) | null = null;
 
     void readAppSettings().then((settings) => {
-      if (!disposed && isStoredPosition(settings.floatingPosition)) {
+      if (!disposed && settings !== null && isStoredPosition(settings.floatingPosition)) {
         void desktopPlatform.setFloatingWindowPosition(settings.floatingPosition);
       }
     });

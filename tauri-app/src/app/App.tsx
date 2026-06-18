@@ -13,7 +13,7 @@ import {
 import { DashboardPage } from "../pages/DashboardPage";
 import { SetupGuide } from "../components/SetupGuide";
 import { desktopPlatform } from "../platform/desktop";
-import { DEFAULT_DISPLAY_SURFACES, sanitizeDisplaySurfaces } from "../settings/displaySettings";
+import { INACTIVE_DISPLAY_SURFACES, sanitizeDisplaySurfaces } from "../settings/displaySettings";
 import { useDashboardData } from "../state/useDashboardData";
 import { StatusPanelApp } from "../status/StatusPanelApp";
 import { useStatusTray } from "../tray/useStatusTray";
@@ -41,9 +41,9 @@ function DashboardApp() {
     selectedLiveThreadId,
     setSelectedLiveThreadId,
   } = useDashboardData();
-  const [floatingVisible, setFloatingVisible] = useState(true);
+  const [floatingVisible, setFloatingVisible] = useState(false);
   const [floatingSettings, setFloatingSettings] = useState(DEFAULT_FLOATING_SETTINGS);
-  const [displaySurfaces, setDisplaySurfaces] = useState(DEFAULT_DISPLAY_SURFACES);
+  const [displaySurfaces, setDisplaySurfaces] = useState(INACTIVE_DISPLAY_SURFACES);
   const [showSetupGuide, setShowSetupGuide] = useState(false);
   const floatingSettingsLoaded = useRef(false);
   const displaySettingsLoaded = useRef(false);
@@ -94,7 +94,7 @@ function DashboardApp() {
     let cancelled = false;
 
     void readAppSettings().then((settings) => {
-      if (cancelled) {
+      if (cancelled || settings === null) {
         return;
       }
       floatingSettingsLoaded.current = true;
