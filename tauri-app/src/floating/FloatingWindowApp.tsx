@@ -124,13 +124,16 @@ export function FloatingWindowApp() {
       }
     }
 
-    void refreshQuota();
+    const firstQuotaTimer = window.setTimeout(() => {
+      void refreshQuota();
+    }, 8_000);
     const interval = window.setInterval(() => {
       void refreshQuota();
     }, 180_000);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(firstQuotaTimer);
       window.clearInterval(interval);
     };
   }, []);

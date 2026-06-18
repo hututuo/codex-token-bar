@@ -268,7 +268,7 @@ function DashboardApp() {
     setShowSetupGuide(false);
   }
 
-  if (readyState === null || !dashboardHydrated) {
+  if (readyState === null) {
     return (
       <main className="app-shell app-shell--loading">
         <div className="loading-mark">CX</div>
