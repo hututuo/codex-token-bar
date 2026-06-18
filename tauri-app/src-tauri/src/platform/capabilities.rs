@@ -19,7 +19,7 @@ pub fn platform_capabilities() -> PlatformCapabilities {
         floating_lock: pending("窗口锁定", "共享 UI 已预留入口，跟随窗口和锁定逻辑留到 Windows 真机实现。"),
         status_tray: status_tray_capability(status_surface_error),
         status_tray_live_text: status_tray_live_text_capability(status_tray_error),
-        autostart: pending("开机自启", "需要按系统分别接入登录项 / 启动项，本轮只保留平台接口。"),
+        autostart: autostart_capability(),
         notifications: pending("完成提醒", "通知和未读提醒 UI 可复用，系统通知权限留到平台层实现。"),
     }
 }
@@ -103,6 +103,14 @@ fn status_tray_live_text_capability(setup_error: Option<&str>) -> PlatformFeatur
         pending("托盘实时数字", "Windows 托盘不能直接放文字，后续需要动态图标或弹出面板方案。")
     } else {
         unavailable("托盘实时数字", "当前平台暂未接入实时托盘文字。")
+    }
+}
+
+fn autostart_capability() -> PlatformFeatureCapability {
+    if cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux")) {
+        ready("开机自启", "已接入 Tauri autostart 共享接口；登录后隐藏主界面仍需按平台验收。")
+    } else {
+        unavailable("开机自启", "当前平台暂不支持开机自启。")
     }
 }
 

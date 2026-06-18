@@ -32,6 +32,15 @@ pub struct PlatformFeatureCapability {
     pub note: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutostartStatus {
+    pub available: bool,
+    pub enabled: bool,
+    pub status: String,
+    pub message: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettingsSnapshot {

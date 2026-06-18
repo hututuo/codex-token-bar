@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import type {
+  AutostartStatus,
   CodexHomeStatus,
   DisplaySurfaceSettings,
   PlatformCapabilities,
 } from "../types/dashboard";
 
 interface SetupGuideProps {
+  autostartStatus: AutostartStatus;
   codexHome: CodexHomeStatus;
   displaySurfaces: DisplaySurfaceSettings;
   floatingVisible: boolean;
@@ -14,11 +16,13 @@ interface SetupGuideProps {
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
   onComplete: () => Promise<void>;
+  onToggleAutostart: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
 }
 
 export function SetupGuide({
+  autostartStatus,
   codexHome,
   displaySurfaces,
   floatingVisible,
@@ -27,6 +31,7 @@ export function SetupGuide({
   onCodexHomeChange,
   onCodexHomeReset,
   onComplete,
+  onToggleAutostart,
   onToggleFloating,
   onToggleStatusTray,
 }: SetupGuideProps) {
@@ -173,10 +178,22 @@ export function SetupGuide({
             <div className="setup-step-index is-ok">3</div>
             <div className="setup-step-body">
               <div className="setup-step-title">
-                <strong>本地读取</strong>
-                <span>{codexHome.exists ? "可以开始" : "等待目录"}</span>
+                <strong>常驻运行</strong>
+                <span>{autostartStatus.enabled ? "已开启" : "建议开启"}</span>
               </div>
-              <p>数据只从本机 Codex 目录读取；读取失败时页面会显示待读取。</p>
+              <div className="setup-toggle-row">
+                <button
+                  className={autostartStatus.enabled ? "setup-toggle is-active" : "setup-toggle"}
+                  disabled={!platform.autostart.available}
+                  onClick={onToggleAutostart}
+                  title={autostartStatus.message || platform.autostart.note}
+                  type="button"
+                >
+                  <span>开机自启</span>
+                  <strong>{autostartStatus.enabled ? "开" : "关"}</strong>
+                </button>
+              </div>
+              <p>建议开启后常驻读取本地状态；这次不开也没关系，之后可在主界面顶部开启。数据只从本机 Codex 目录读取。</p>
             </div>
           </section>
         </div>

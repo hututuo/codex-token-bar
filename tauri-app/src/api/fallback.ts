@@ -1,6 +1,7 @@
 import type {
   AccountQuotaBundle,
   AppSettingsSnapshot,
+  AutostartStatus,
   CodexHomeStatus,
   DashboardSnapshot,
   FloatingPanelSnapshot,
@@ -42,6 +43,13 @@ export const fallbackPlatformCapabilities: PlatformCapabilities = {
   statusTrayLiveText: pendingFeature("状态栏实时数字"),
   autostart: pendingFeature("开机自启"),
   notifications: pendingFeature("完成提醒"),
+};
+
+export const fallbackAutostartStatus: AutostartStatus = {
+  available: false,
+  enabled: false,
+  status: "unavailable",
+  message: "开机自启状态待读取。",
 };
 
 export function emptyDashboardSnapshot(): DashboardSnapshot {

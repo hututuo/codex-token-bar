@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AccountQuotaBundle,
   AppSettingsSnapshot,
+  AutostartStatus,
   CodexHomeStatus,
   DashboardSnapshot,
   FloatingPanelSnapshot,
@@ -16,6 +17,7 @@ import {
   emptyDashboardSnapshot,
   emptyFloatingPanelSnapshot,
   emptyLiveRateSnapshot,
+  fallbackAutostartStatus,
   fallbackCodexHome,
   fallbackPlatformCapabilities,
   fallbackProviderRepairSnapshot,
@@ -153,6 +155,14 @@ export function saveSetupGuideCompleted(completed: boolean): Promise<AppSettings
 
 export function readPlatformCapabilities(): Promise<PlatformCapabilities> {
   return callCommand("read_platform_capabilities", fallbackPlatformCapabilities);
+}
+
+export function readAutostartStatus(): Promise<AutostartStatus> {
+  return callCommand("read_autostart_status", fallbackAutostartStatus);
+}
+
+export function setAutostartEnabled(enabled: boolean): Promise<AutostartStatus> {
+  return callCommandStrict<AutostartStatus>("set_autostart_enabled", { enabled });
 }
 
 export function readDashboardSnapshot(): Promise<DashboardSnapshot> {

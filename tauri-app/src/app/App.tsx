@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  readAutostartStatus,
   readAppSettings,
   saveDisplaySurfaces,
   saveFloatingSettings,
   saveSetupGuideCompleted,
+  setAutostartEnabled,
 } from "../api/client";
 import { FloatingWindowApp } from "../floating/FloatingWindowApp";
 import {
@@ -17,6 +19,8 @@ import { INACTIVE_DISPLAY_SURFACES, sanitizeDisplaySurfaces } from "../settings/
 import { useDashboardData } from "../state/useDashboardData";
 import { StatusPanelApp } from "../status/StatusPanelApp";
 import { useStatusTray } from "../tray/useStatusTray";
+import type { AutostartStatus } from "../types/dashboard";
+import { fallbackAutostartStatus } from "../api/fallback";
 
 export function App() {
   const surface = useMemo(getSurfaceMode, []);
@@ -44,6 +48,8 @@ function DashboardApp() {
   const [floatingVisible, setFloatingVisible] = useState(false);
   const [floatingSettings, setFloatingSettings] = useState(DEFAULT_FLOATING_SETTINGS);
   const [displaySurfaces, setDisplaySurfaces] = useState(INACTIVE_DISPLAY_SURFACES);
+  const [autostartStatus, setAutostartStatus] = useState<AutostartStatus>(fallbackAutostartStatus);
+  const [autostartUpdating, setAutostartUpdating] = useState(false);
   const [showSetupGuide, setShowSetupGuide] = useState(false);
   const floatingSettingsLoaded = useRef(false);
   const displaySettingsLoaded = useRef(false);
@@ -87,6 +93,20 @@ function DashboardApp() {
     return () => {
       disposed = true;
       unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void readAutostartStatus().then((status) => {
+      if (!cancelled) {
+        setAutostartStatus(status);
+      }
+    });
+
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -144,6 +164,23 @@ function DashboardApp() {
     });
   }
 
+  async function toggleAutostart() {
+    if (autostartUpdating || !autostartStatus.available) {
+      return;
+    }
+
+    setAutostartUpdating(true);
+    try {
+      const next = await setAutostartEnabled(!autostartStatus.enabled);
+      setAutostartStatus(next);
+    } catch {
+      const refreshed = await readAutostartStatus();
+      setAutostartStatus(refreshed);
+    } finally {
+      setAutostartUpdating(false);
+    }
+  }
+
   function updateDisplaySurfaces(next: Partial<typeof displaySurfaces>) {
     setDisplaySurfaces((current) => {
       const sanitized = sanitizeDisplaySurfaces({ ...current, ...next });
@@ -186,6 +223,7 @@ function DashboardApp() {
   return (
     <>
       <DashboardPage
+        autostartStatus={autostartStatus}
         codexHome={readyState.codexHome}
         dashboard={readyState.dashboard}
         diagnostics={readyState.diagnostics}
@@ -204,6 +242,7 @@ function DashboardApp() {
         onToggleStatusTray={toggleStatusTrayLiveText}
         onCodexHomeChange={updateCodexHome}
         onCodexHomeReset={restoreAutoCodexHome}
+        onToggleAutostart={toggleAutostart}
         providerRepair={readyState.repair}
         onProviderRepairChange={updateProviderRepair}
         refreshing={state.loading}
@@ -212,6 +251,7 @@ function DashboardApp() {
       {showSetupGuide ? (
         <SetupGuide
           codexHome={readyState.codexHome}
+          autostartStatus={autostartStatus}
           displaySurfaces={displaySurfaces}
           floatingVisible={floatingVisible}
           platform={readyState.platform}
@@ -219,6 +259,7 @@ function DashboardApp() {
           onCodexHomeChange={updateCodexHome}
           onCodexHomeReset={restoreAutoCodexHome}
           onComplete={completeSetupGuide}
+          onToggleAutostart={toggleAutostart}
           onToggleFloating={toggleFloatingWindow}
           onToggleStatusTray={toggleStatusTrayLiveText}
         />

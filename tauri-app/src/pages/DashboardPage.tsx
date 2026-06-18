@@ -8,6 +8,7 @@ import { StatsStrip } from "../components/StatsStrip";
 import { TokenActivitySection } from "../components/TokenActivitySection";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import type {
+  AutostartStatus,
   CodexHomeStatus,
   DashboardSnapshot,
   DisplaySurfaceSettings,
@@ -20,6 +21,7 @@ import type {
 import type { CommandFailureDiagnostic } from "../api/client";
 
 interface DashboardPageProps {
+  autostartStatus: AutostartStatus;
   codexHome: CodexHomeStatus;
   dashboard: DashboardSnapshot;
   diagnostics: CommandFailureDiagnostic[];
@@ -36,6 +38,7 @@ interface DashboardPageProps {
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
   onLiveThreadSelect: (threadId: string) => void;
   onRefresh: () => Promise<void>;
+  onToggleAutostart: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
   onProviderRepairChange: (snapshot: ProviderRepairSnapshot) => void;
@@ -45,6 +48,7 @@ interface DashboardPageProps {
 }
 
 export function DashboardPage({
+  autostartStatus,
   codexHome,
   dashboard,
   diagnostics,
@@ -62,6 +66,7 @@ export function DashboardPage({
   onLiveThreadSelect,
   onRefresh,
   onProviderRepairChange,
+  onToggleAutostart,
   onToggleFloating,
   onToggleStatusTray,
   providerRepair,
@@ -80,6 +85,7 @@ export function DashboardPage({
       <section className="dashboard">
         <DashboardHeader
           account={dashboard.account}
+          autostartStatus={autostartStatus}
           codexHome={codexHome}
           diagnostics={diagnostics}
           generatedAt={dashboard.generatedAt}
@@ -87,6 +93,7 @@ export function DashboardPage({
           onCodexHomeReset={onCodexHomeReset}
           onOpenProviderRepair={openProviderRepair}
           onRefresh={onRefresh}
+          onToggleAutostart={onToggleAutostart}
           refreshing={refreshing}
         />
 

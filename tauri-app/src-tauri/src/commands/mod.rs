@@ -3,7 +3,7 @@ use crate::core::{
     provider_repair,
 };
 use crate::models::{
-    AccountQuotaBundle, AppSettingsSnapshot, CodexHomeStatus, DashboardSnapshot,
+    AccountQuotaBundle, AppSettingsSnapshot, AutostartStatus, CodexHomeStatus, DashboardSnapshot,
     DisplaySurfaceSettingsSnapshot, FloatingPanelSnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, LiveRateSnapshot, PlatformCapabilities,
     LiveThreadOption, ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
@@ -57,6 +57,19 @@ pub fn reset_codex_home() -> Result<CodexHomeStatus, String> {
 #[tauri::command]
 pub fn read_app_settings() -> Result<AppSettingsSnapshot, String> {
     platform::read_app_settings()
+}
+
+#[tauri::command]
+pub fn read_autostart_status(app: tauri::AppHandle) -> Result<AutostartStatus, String> {
+    Ok(platform::read_autostart_status(&app))
+}
+
+#[tauri::command]
+pub fn set_autostart_enabled(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<AutostartStatus, String> {
+    platform::set_autostart_enabled(&app, enabled)
 }
 
 #[tauri::command]

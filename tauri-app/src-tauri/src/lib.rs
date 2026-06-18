@@ -7,6 +7,10 @@ mod platform;
 pub fn run() {
     tauri::Builder::default()
         .manage(commands::LiveRateStreamState::default())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ))
         .setup(|app| {
             platform::setup_desktop_surfaces(app)?;
             Ok(())
@@ -16,6 +20,8 @@ pub fn run() {
             commands::set_codex_home,
             commands::reset_codex_home,
             commands::read_app_settings,
+            commands::read_autostart_status,
+            commands::set_autostart_enabled,
             commands::save_floating_settings,
             commands::save_floating_position,
             commands::save_display_surfaces,

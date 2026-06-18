@@ -1,6 +1,6 @@
 use crate::core::app_paths;
 use crate::models::{
-    AppSettingsSnapshot, CodexHomeStatus, DisplaySurfaceSettingsSnapshot,
+    AppSettingsSnapshot, AutostartStatus, CodexHomeStatus, DisplaySurfaceSettingsSnapshot,
     FloatingWindowPositionSnapshot, FloatingWindowSettingsSnapshot,
 };
 use std::{
@@ -12,6 +12,8 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, WebviewUrl, WebviewWindowBuilder,
 };
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+use tauri_plugin_autostart::ManagerExt;
 
 mod capabilities;
 #[cfg(target_os = "macos")]
@@ -92,6 +94,28 @@ pub fn read_app_settings() -> Result<AppSettingsSnapshot, String> {
     read_app_settings_at(&path)
 }
 
+pub fn read_autostart_status(app: &tauri::AppHandle) -> AutostartStatus {
+    read_autostart_status_impl(app).unwrap_or_else(|error| AutostartStatus {
+        available: false,
+        enabled: false,
+        status: "unavailable".into(),
+        message: format!("开机自启状态读取失败：{error}"),
+    })
+}
+
+pub fn set_autostart_enabled(
+    app: &tauri::AppHandle,
+    enabled: bool,
+) -> Result<AutostartStatus, String> {
+    set_autostart_enabled_impl(app, enabled).map_err(|error| {
+        if enabled {
+            format!("开启开机自启失败：{error}")
+        } else {
+            format!("关闭开机自启失败：{error}")
+        }
+    })
+}
+
 pub fn save_floating_settings(
     floating_window: FloatingWindowSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
@@ -156,6 +180,52 @@ fn set_surface_setup_status(next: SurfaceSetupStatus) {
 
 fn surface_setup_status_cell() -> &'static Mutex<SurfaceSetupStatus> {
     SURFACE_SETUP_STATUS.get_or_init(|| Mutex::new(SurfaceSetupStatus::default()))
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+fn read_autostart_status_impl(app: &tauri::AppHandle) -> Result<AutostartStatus, String> {
+    let enabled = app.autolaunch().is_enabled().map_err(|error| error.to_string())?;
+    Ok(AutostartStatus {
+        available: true,
+        enabled,
+        status: if enabled { "enabled" } else { "disabled" }.into(),
+        message: if enabled {
+            "已开启开机自启。".into()
+        } else {
+            "未开启开机自启。".into()
+        },
+    })
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+fn read_autostart_status_impl(_app: &tauri::AppHandle) -> Result<AutostartStatus, String> {
+    Ok(AutostartStatus {
+        available: false,
+        enabled: false,
+        status: "unavailable".into(),
+        message: "当前平台暂不支持开机自启。".into(),
+    })
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+fn set_autostart_enabled_impl(
+    app: &tauri::AppHandle,
+    enabled: bool,
+) -> Result<AutostartStatus, String> {
+    if enabled {
+        app.autolaunch().enable().map_err(|error| error.to_string())?;
+    } else {
+        app.autolaunch().disable().map_err(|error| error.to_string())?;
+    }
+    read_autostart_status_impl(app)
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+fn set_autostart_enabled_impl(
+    _app: &tauri::AppHandle,
+    _enabled: bool,
+) -> Result<AutostartStatus, String> {
+    Err("当前平台暂不支持开机自启。".into())
 }
 
 pub fn show_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {

@@ -24,6 +24,13 @@ export interface PlatformFeatureCapability {
   note: string;
 }
 
+export interface AutostartStatus {
+  available: boolean;
+  enabled: boolean;
+  status: "enabled" | "disabled" | "unavailable" | string;
+  message: string;
+}
+
 export interface FloatingWindowSettings {
   opacity: number;
   scale: number;

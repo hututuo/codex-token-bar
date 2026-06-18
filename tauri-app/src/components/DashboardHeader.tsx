@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import type { CommandFailureDiagnostic } from "../api/client";
-import type { AccountInfo, CodexHomeStatus } from "../types/dashboard";
+import type { AccountInfo, AutostartStatus, CodexHomeStatus } from "../types/dashboard";
 
 interface DashboardHeaderProps {
   account: AccountInfo;
+  autostartStatus: AutostartStatus;
   codexHome: CodexHomeStatus;
   diagnostics: CommandFailureDiagnostic[];
   generatedAt: string;
@@ -11,11 +12,13 @@ interface DashboardHeaderProps {
   onCodexHomeReset: () => Promise<void>;
   onOpenProviderRepair: () => void;
   onRefresh: () => Promise<void>;
+  onToggleAutostart: () => void;
   refreshing: boolean;
 }
 
 export function DashboardHeader({
   account,
+  autostartStatus,
   codexHome,
   diagnostics,
   generatedAt,
@@ -23,6 +26,7 @@ export function DashboardHeader({
   onCodexHomeReset,
   onOpenProviderRepair,
   onRefresh,
+  onToggleAutostart,
   refreshing,
 }: DashboardHeaderProps) {
   const [editingPath, setEditingPath] = useState(false);
@@ -91,6 +95,15 @@ export function DashboardHeader({
         <button className="toolbar-button" onClick={onOpenProviderRepair} type="button">
           会话消失修复
         </button>
+        <button
+          className={autostartStatus.enabled ? "toolbar-button is-active" : "toolbar-button"}
+          disabled={!autostartStatus.available}
+          onClick={onToggleAutostart}
+          title={autostartStatus.message}
+          type="button"
+        >
+          开机自启{autostartStatus.enabled ? "开" : "关"}
+        </button>
         <span className="refresh-label">{refreshing ? "同步中" : ""}</span>
       </div>
       {editingPath ? (
@@ -156,8 +169,10 @@ function commandDisplayName(command: string): string {
     read_live_rate_snapshot: "实时速率读取",
     read_live_thread_options: "会话列表读取",
     read_floating_snapshot: "悬浮窗数据读取",
+    read_autostart_status: "开机自启读取",
     set_codex_home: "Codex 目录保存",
     reset_codex_home: "Codex 目录恢复",
+    set_autostart_enabled: "开机自启设置",
     save_floating_settings: "悬浮窗设置保存",
     save_floating_position: "悬浮窗位置保存",
     save_display_surfaces: "显示设置保存",
