@@ -97,7 +97,7 @@ pub fn read_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
 
 #[tauri::command]
 pub fn read_precise_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
-    Ok(local_source().read_precise_dashboard_snapshot())
+    local_source().read_precise_dashboard_snapshot()
 }
 
 #[tauri::command]

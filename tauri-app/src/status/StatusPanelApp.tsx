@@ -87,7 +87,7 @@ export function StatusPanelApp() {
       inFlight = true;
       try {
         const next = await readAccountQuota();
-        if (!cancelled) {
+        if (!cancelled && next !== null) {
           setQuota(next);
         }
       } finally {

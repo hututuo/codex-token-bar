@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 pub trait DashboardDataSource {
     fn codex_home(&self) -> &Path;
     fn read_dashboard_snapshot(&self) -> DashboardSnapshot;
-    fn read_precise_dashboard_snapshot(&self) -> DashboardSnapshot;
+    fn read_precise_dashboard_snapshot(&self) -> Result<DashboardSnapshot, String>;
     fn read_account_quota(&self, force_refresh: bool) -> Result<AccountQuotaBundle, String>;
     fn read_live_rate_snapshot(&self, selected_thread_id: Option<&str>) -> LiveRateSnapshot;
     fn read_live_thread_options(&self) -> Vec<LiveThreadOption>;
@@ -38,12 +38,10 @@ impl DashboardDataSource for LocalCodexDataSource {
         snapshot
     }
 
-    fn read_precise_dashboard_snapshot(&self) -> DashboardSnapshot {
-        let mut snapshot = usage::token_count_jsonl::dashboard_snapshot(self.codex_home())
-            .or_else(|_| usage::state_sqlite::dashboard_snapshot(self.codex_home()))
-            .unwrap_or_else(|_| usage::state_sqlite::empty_dashboard_snapshot());
+    fn read_precise_dashboard_snapshot(&self) -> Result<DashboardSnapshot, String> {
+        let mut snapshot = usage::token_count_jsonl::dashboard_snapshot(self.codex_home())?;
         quota_history::apply_recent_history(&mut snapshot.recent_usage_24h);
-        snapshot
+        Ok(snapshot)
     }
 
     fn read_account_quota(&self, force_refresh: bool) -> Result<AccountQuotaBundle, String> {

@@ -24,8 +24,8 @@ export interface DashboardDataSource {
   resetCodexHome: () => Promise<CodexHomeStatus>;
   readPlatformCapabilities: () => Promise<PlatformCapabilities>;
   readDashboardSnapshot: () => Promise<DashboardSnapshot>;
-  readPreciseDashboardSnapshot: () => Promise<DashboardSnapshot>;
-  readAccountQuota: (forceRefresh?: boolean) => Promise<AccountQuotaBundle>;
+  readPreciseDashboardSnapshot: () => Promise<DashboardSnapshot | null>;
+  readAccountQuota: (forceRefresh?: boolean) => Promise<AccountQuotaBundle | null>;
   readLiveRateSnapshot: (selectedThreadId?: string | null) => Promise<LiveRateSnapshot>;
   readLiveThreadOptions: () => Promise<LiveThreadOption[]>;
 }

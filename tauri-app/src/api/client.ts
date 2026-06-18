@@ -13,7 +13,6 @@ import type {
   ProviderRepairSnapshot,
 } from "../types/dashboard";
 import {
-  emptyAccountQuotaBundle,
   emptyDashboardSnapshot,
   emptyFloatingPanelSnapshot,
   emptyLiveRateSnapshot,
@@ -61,6 +60,26 @@ async function callCommand<T>(
   } catch (error) {
     recordCommandFailure(command, error);
     return fallback;
+  }
+}
+
+async function callCommandOptional<T>(
+  command: string,
+  args?: Record<string, unknown>,
+  timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+): Promise<T | null> {
+  if (!isTauriRuntimeAvailable()) {
+    recordCommandFailure(command, new Error("当前不是 Tauri 桌面运行环境。"));
+    return null;
+  }
+
+  try {
+    const result = await withTimeout(invoke<T>(command, args), timeoutMs);
+    clearCommandFailure(command);
+    return result;
+  } catch (error) {
+    recordCommandFailure(command, error);
+    return null;
   }
 }
 
@@ -164,14 +183,13 @@ export function readDashboardSnapshot(): Promise<DashboardSnapshot> {
   return callCommand("read_dashboard_snapshot", emptyDashboardSnapshot());
 }
 
-export function readPreciseDashboardSnapshot(): Promise<DashboardSnapshot> {
-  return callCommand("read_precise_dashboard_snapshot", emptyDashboardSnapshot(), undefined, 30_000);
+export function readPreciseDashboardSnapshot(): Promise<DashboardSnapshot | null> {
+  return callCommandOptional("read_precise_dashboard_snapshot", undefined, 30_000);
 }
 
-export function readAccountQuota(forceRefresh = false): Promise<AccountQuotaBundle> {
-  return callCommand(
+export function readAccountQuota(forceRefresh = false): Promise<AccountQuotaBundle | null> {
+  return callCommandOptional(
     "read_account_quota",
-    emptyAccountQuotaBundle(),
     { forceRefresh },
     12_000,
   );

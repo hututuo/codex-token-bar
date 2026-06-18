@@ -24,9 +24,8 @@ static QUOTA_READ_CACHE: OnceLock<Mutex<Option<QuotaCacheEntry>>> = OnceLock::ne
 #[derive(Clone)]
 struct QuotaCacheEntry {
     codex_home: std::path::PathBuf,
-    bundle: AccountQuotaBundle,
+    result: Result<AccountQuotaBundle, String>,
     cached_at: Instant,
-    available: bool,
 }
 
 pub fn read_account_quota(codex_home: &Path, force_refresh: bool) -> Result<AccountQuotaBundle, String> {
@@ -34,26 +33,33 @@ pub fn read_account_quota(codex_home: &Path, force_refresh: bool) -> Result<Acco
     let mut guard = cache.lock().map_err(|error| error.to_string())?;
     if !force_refresh {
         if let Some(entry) = guard.as_ref() {
-            if entry.codex_home == codex_home && entry.cached_at.elapsed() <= cache_ttl(entry.available) {
-                let mut cached = entry.bundle.clone();
-                cached.quota_history_24h = quota_history::recent_history_24h();
-                return Ok(cached);
+            if entry.codex_home == codex_home && entry.cached_at.elapsed() <= cache_ttl(&entry.result) {
+                return match &entry.result {
+                    Ok(bundle) => {
+                        let mut cached = bundle.clone();
+                        cached.quota_history_24h = quota_history::recent_history_24h();
+                        Ok(cached)
+                    }
+                    Err(error) => Err(error.clone()),
+                };
             }
         }
     }
 
-    let bundle = read_account_quota_uncached(codex_home)?;
+    let result = read_account_quota_uncached(codex_home);
     *guard = Some(QuotaCacheEntry {
         codex_home: codex_home.to_path_buf(),
-        available: quota_available(&bundle.quota),
         cached_at: Instant::now(),
-        bundle: bundle.clone(),
+        result: result.clone(),
     });
-    Ok(bundle)
+    result
 }
 
-fn cache_ttl(available: bool) -> Duration {
-    if available {
+fn cache_ttl(result: &Result<AccountQuotaBundle, String>) -> Duration {
+    if result
+        .as_ref()
+        .is_ok_and(|bundle| quota_available(&bundle.quota))
+    {
         SUCCESS_CACHE_TTL
     } else {
         FAILURE_CACHE_TTL
@@ -81,12 +87,7 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
             bundle.quota_history_24h = quota_history::recent_history_24h();
             bundle
         }
-        Err(error) => {
-            let mut bundle = placeholder_bundle(codex_home);
-            bundle.quota.pace_label = format!("额度读取失败：{error}");
-            bundle.quota_history_24h = quota_history::recent_history_24h();
-            bundle
-        }
+        Err(error) => return Err(format!("额度读取失败：{error}")),
     };
 
     if bundle.quota.reset_credit.status == "重置卡待读取" {
@@ -99,15 +100,6 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
     }
 
     Ok(bundle)
-}
-
-pub fn placeholder_bundle(codex_home: &Path) -> AccountQuotaBundle {
-    let quota = placeholder_quota();
-    AccountQuotaBundle {
-        account: account_info(codex_home, Some(&quota)),
-        quota,
-        quota_history_24h: quota_history::recent_history_24h(),
-    }
 }
 
 pub fn placeholder_quota() -> QuotaSnapshot {
@@ -809,5 +801,32 @@ mod tests {
             URL_SAFE_NO_PAD.encode(r#"{"name":"本地用户","email":"local-account@codex.local"}"#);
         let decoded = decode_jwt_payload(&format!("header.{payload}.signature")).unwrap();
         assert_eq!(decoded.get("name").and_then(Value::as_str), Some("本地用户"));
+    }
+
+    #[test]
+    fn quota_cache_uses_short_ttl_for_failures() {
+        let failure = Err("network unavailable".to_string());
+        assert_eq!(cache_ttl(&failure), FAILURE_CACHE_TTL);
+
+        let quota = parse_rate_limits(&json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "limitId": "codex",
+                    "limitName": "Codex",
+                    "primary": { "usedPercent": 20, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 0.4, "resetsAt": 1782144492 }
+                }
+            }
+        }))
+        .unwrap();
+        let success = Ok(AccountQuotaBundle {
+            account: AccountInfo {
+                display_name: "本地用户".into(),
+                plan_label: "Pro".into(),
+            },
+            quota,
+            quota_history_24h: Vec::new(),
+        });
+        assert_eq!(cache_ttl(&success), SUCCESS_CACHE_TTL);
     }
 }

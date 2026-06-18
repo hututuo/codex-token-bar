@@ -112,7 +112,7 @@ export function FloatingWindowApp() {
       quotaInFlight = true;
       try {
         const quota = await readAccountQuota();
-        if (!cancelled) {
+        if (!cancelled && quota !== null) {
           setSnapshot((current) => ({
             ...current,
             fiveHourLabel: compactQuotaLabel(quota.quota.fiveHour),

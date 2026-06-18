@@ -59,7 +59,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
 
     async function loadPreciseSnapshot() {
       const precise = await source.readPreciseDashboardSnapshot();
-      if (!cancelled) {
+      if (!cancelled && precise !== null) {
         setState((current) => mergePreciseDashboard(current, precise));
       }
     }
@@ -82,7 +82,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     async function loadQuota() {
       const quota = await source.readAccountQuota(forceNextQuotaLoad.current);
       forceNextQuotaLoad.current = false;
-      if (!cancelled) {
+      if (!cancelled && quota !== null) {
         setState((current) => mergeQuota(current, quota));
       }
     }
