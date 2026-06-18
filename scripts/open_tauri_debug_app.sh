@@ -65,16 +65,27 @@ fi
 
 /usr/bin/open -n "$APP_PATH"
 
+opened_pid=""
 for _ in $(seq 1 120); do
   pid="$(/usr/bin/pgrep -f "$PROCESS_PATTERN" | head -n 1 || true)"
   if [[ -n "$pid" ]]; then
-    echo "Opened Codex Token Bar Tauri debug app."
-    echo "App: $APP_PATH"
-    echo "PID: $pid"
-    exit 0
+    opened_pid="$pid"
+    break
   fi
   /bin/sleep 0.1
 done
+
+if [[ -n "$opened_pid" ]]; then
+  /bin/sleep 1
+  if /bin/kill -0 "$opened_pid" >/dev/null 2>&1; then
+    echo "Opened Codex Token Bar Tauri debug app."
+    echo "App: $APP_PATH"
+    echo "PID: $opened_pid"
+    exit 0
+  fi
+  echo "Tauri debug app appeared and then exited quickly: $APP_PATH" >&2
+  exit 1
+fi
 
 echo "Tauri debug app did not appear after opening: $APP_PATH" >&2
 exit 1

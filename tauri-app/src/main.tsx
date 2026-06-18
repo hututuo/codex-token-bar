@@ -2,17 +2,11 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { recordStartupEvent } from "./api/client";
 import { App } from "./app/App";
-import { desktopPlatform } from "./platform/desktop";
 import "./styles/global.css";
 
 const startupSurface = new URLSearchParams(window.location.search).get("surface") ?? "main";
 
 void recordStartupEvent(`${startupSurface} entry script`);
-if (startupSurface === "main") {
-  void desktopPlatform.showDashboardWindow().then(() => {
-    void recordStartupEvent("main window shown after entry script");
-  });
-}
 
 function showRuntimeError(error: unknown) {
   const message = error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);

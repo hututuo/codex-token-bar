@@ -10,6 +10,7 @@ use std::{
 };
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    webview::PageLoadEvent,
     Manager, WebviewUrl, WebviewWindowBuilder,
 };
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -369,6 +370,19 @@ fn create_dashboard_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         .resizable(true)
         .center()
         .visible(false)
+        .on_page_load(|window, payload| {
+            if matches!(payload.event(), PageLoadEvent::Finished) {
+                startup_trace::mark("dashboard page load finished");
+                if let Err(error) = window.show() {
+                    startup_trace::mark(&format!("dashboard page load show failed: {error}"));
+                    return;
+                }
+                if let Err(error) = window.set_focus() {
+                    startup_trace::mark(&format!("dashboard page load focus failed: {error}"));
+                }
+                startup_trace::mark("dashboard window shown after page load");
+            }
+        })
         .build()?;
 
     Ok(())
