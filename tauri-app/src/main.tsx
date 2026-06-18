@@ -48,8 +48,12 @@ window.addEventListener("unhandledrejection", (event) => {
   showRuntimeError(event.reason);
 });
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+try {
+  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  );
+} catch (error) {
+  showRuntimeError(error);
+}

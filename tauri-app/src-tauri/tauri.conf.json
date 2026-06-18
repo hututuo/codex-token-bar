@@ -11,19 +11,7 @@
   },
   "app": {
     "macOSPrivateApi": true,
-    "windows": [
-      {
-        "label": "main",
-        "title": "Codex Token Bar",
-        "url": "index.html",
-        "width": 1180,
-        "height": 860,
-        "minWidth": 960,
-        "minHeight": 720,
-        "resizable": true,
-        "center": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

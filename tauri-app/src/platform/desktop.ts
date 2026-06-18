@@ -48,18 +48,7 @@ function getSurfaceMode(): SurfaceMode {
   if (surface === "floating" || surface === "status") {
     return surface;
   }
-
-  if (!isTauriRuntimeAvailable()) {
-    return "dashboard";
-  }
-
-  try {
-    const label = getCurrentWindow().label;
-    return label === "floating" || label === "status" ? label : "dashboard";
-  } catch (error) {
-    warnPlatformFailure("read-window-label", error);
-    return "dashboard";
-  }
+  return "dashboard";
 }
 
 function showFloatingWindow(): Promise<boolean> {
