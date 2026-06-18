@@ -1,9 +1,7 @@
 import { type CSSProperties, useEffect, useState } from "react";
-import { readAccountQuota, readAppSettings, readFloatingPanelSnapshot } from "../api/client";
-import { emptyFloatingPanelSnapshot } from "../api/fallback";
+import { readAppSettings } from "../api/client";
 import { desktopPlatform } from "../platform/desktop";
-import type { FloatingPanelSnapshot } from "../types/dashboard";
-import { compactQuotaLabel } from "../utils/quota";
+import { useCompactPanelData } from "../surfaces/useCompactPanelData";
 import {
   FLOATING_BASE_HEIGHT,
   FLOATING_BASE_WIDTH,
@@ -15,7 +13,11 @@ import { FloatingPanelSurface } from "./FloatingPanelPreview";
 import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
 
 export function FloatingWindowApp() {
-  const [snapshot, setSnapshot] = useState<FloatingPanelSnapshot>(emptyFloatingPanelSnapshot);
+  const { snapshot } = useCompactPanelData({
+    snapshotIntervalMs: 500,
+    quotaInitialDelayMs: 8_000,
+    quotaIntervalMs: 180_000,
+  });
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   useFloatingWindowPlacement();
 
@@ -64,79 +66,6 @@ export function FloatingWindowApp() {
       FLOATING_BASE_HEIGHT * settings.scale,
     );
   }, [settings.scale]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let snapshotInFlight = false;
-
-    async function refreshSnapshot() {
-      if (snapshotInFlight) {
-        return;
-      }
-
-      snapshotInFlight = true;
-      try {
-        const next = await readFloatingPanelSnapshot();
-        if (!cancelled) {
-          setSnapshot((current) => ({
-            ...next,
-            fiveHourLabel: current.fiveHourLabel,
-            sevenDayLabel: current.sevenDayLabel,
-          }));
-        }
-      } finally {
-        snapshotInFlight = false;
-      }
-    }
-
-    void refreshSnapshot();
-    const interval = window.setInterval(() => {
-      void refreshSnapshot();
-    }, 500);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    let quotaInFlight = false;
-
-    async function refreshQuota() {
-      if (quotaInFlight) {
-        return;
-      }
-
-      quotaInFlight = true;
-      try {
-        const quota = await readAccountQuota();
-        if (!cancelled && quota !== null) {
-          setSnapshot((current) => ({
-            ...current,
-            fiveHourLabel: compactQuotaLabel(quota.quota.fiveHour),
-            sevenDayLabel: compactQuotaLabel(quota.quota.sevenDay),
-          }));
-        }
-      } finally {
-        quotaInFlight = false;
-      }
-    }
-
-    const firstQuotaTimer = window.setTimeout(() => {
-      void refreshQuota();
-    }, 8_000);
-    const interval = window.setInterval(() => {
-      void refreshQuota();
-    }, 180_000);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(firstQuotaTimer);
-      window.clearInterval(interval);
-    };
-  }, []);
 
   function closeFloatingWindow() {
     void desktopPlatform.hideFloatingWindow().then((visible) => {

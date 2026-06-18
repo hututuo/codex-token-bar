@@ -1,21 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
-import {
-  readAccountQuota,
-  readFloatingPanelSnapshot,
-} from "../api/client";
-import { emptyAccountQuotaBundle, emptyFloatingPanelSnapshot } from "../api/fallback";
+import { useEffect, useState } from "react";
 import { desktopPlatform } from "../platform/desktop";
-import type { AccountQuotaBundle, FloatingPanelSnapshot } from "../types/dashboard";
-import { compactQuotaLabel } from "../utils/quota";
+import { useCompactPanelData } from "../surfaces/useCompactPanelData";
 
 export function StatusPanelApp() {
-  const [snapshot, setSnapshot] = useState<FloatingPanelSnapshot>(emptyFloatingPanelSnapshot);
-  const [quota, setQuota] = useState<AccountQuotaBundle>(() => emptyAccountQuotaBundle());
   const [active, setActive] = useState(() => document.hasFocus());
-  const quotaLabels = useMemo(() => ({
-    fiveHour: compactQuotaLabel(quota.quota.fiveHour),
-    sevenDay: compactQuotaLabel(quota.quota.sevenDay),
-  }), [quota]);
+  const { snapshot, quotaLabels } = useCompactPanelData({
+    active,
+    snapshotIntervalMs: 750,
+    quotaInitialDelayMs: 0,
+    quotaIntervalMs: 180_000,
+  });
 
   useEffect(() => {
     document.documentElement.classList.add("status-document");
@@ -35,76 +29,6 @@ export function StatusPanelApp() {
       window.removeEventListener("blur", hideWhenBlurred);
     };
   }, []);
-
-  useEffect(() => {
-    if (!active) {
-      return;
-    }
-
-    let cancelled = false;
-    let inFlight = false;
-
-    async function refresh() {
-      if (inFlight) {
-        return;
-      }
-
-      inFlight = true;
-      try {
-        const next = await readFloatingPanelSnapshot();
-        if (!cancelled) {
-          setSnapshot(next);
-        }
-      } finally {
-        inFlight = false;
-      }
-    }
-
-    void refresh();
-    const interval = window.setInterval(() => {
-      void refresh();
-    }, 750);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [active]);
-
-  useEffect(() => {
-    if (!active) {
-      return;
-    }
-
-    let cancelled = false;
-    let inFlight = false;
-
-    async function refreshQuota() {
-      if (inFlight) {
-        return;
-      }
-
-      inFlight = true;
-      try {
-        const next = await readAccountQuota();
-        if (!cancelled && next !== null) {
-          setQuota(next);
-        }
-      } finally {
-        inFlight = false;
-      }
-    }
-
-    void refreshQuota();
-    const interval = window.setInterval(() => {
-      void refreshQuota();
-    }, 180_000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [active]);
 
   function openDashboard() {
     void desktopPlatform.showDashboardWindow();
