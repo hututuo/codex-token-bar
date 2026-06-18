@@ -2,13 +2,21 @@ use rusqlite::{params_from_iter, Connection, OpenFlags, Result as SqlResult};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
+
+const RECENT_COMPLETION_LOOKBACK_SECONDS: f64 = 30.0;
+const RECENT_COMPLETION_FILE_LIMIT: usize = 64;
+const RECENT_COMPLETION_TAIL_BYTE_LIMIT: u64 = 4 * 1024 * 1024;
 
 pub fn has_unread_threads(codex_home: &Path) -> bool {
-    read_unread_thread_ids(codex_home)
-        .map(|thread_ids| !thread_ids.is_empty())
-        .unwrap_or(false)
+    match read_unread_thread_ids(codex_home) {
+        Some(thread_ids) => !thread_ids.is_empty(),
+        None => has_recent_completed_user_task(codex_home),
+    }
 }
 
 fn read_unread_thread_ids(codex_home: &Path) -> Option<HashSet<String>> {
@@ -277,6 +285,114 @@ fn first_line(file: &Path) -> Option<String> {
     }
 }
 
+fn has_recent_completed_user_task(codex_home: &Path) -> bool {
+    let now = current_time_seconds();
+    recent_session_files(&codex_home.join("sessions"), now)
+        .into_iter()
+        .any(|file| file_has_recent_completed_user_task(&file, now))
+}
+
+fn recent_session_files(root: &Path, now: f64) -> Vec<PathBuf> {
+    let cutoff = now - RECENT_COMPLETION_LOOKBACK_SECONDS;
+    let mut files = Vec::<(PathBuf, f64)>::new();
+    for file in jsonl_files(root) {
+        let modified_at = fs::metadata(&file)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(system_time_seconds)
+            .unwrap_or(0.0);
+        if modified_at >= cutoff {
+            files.push((file, modified_at));
+        }
+    }
+    files.sort_by(|left, right| right.1.total_cmp(&left.1));
+    files
+        .into_iter()
+        .take(RECENT_COMPLETION_FILE_LIMIT)
+        .map(|(file, _)| file)
+        .collect()
+}
+
+fn file_has_recent_completed_user_task(file: &Path, now: f64) -> bool {
+    let Some(payload) = session_meta_payload(file) else {
+        return false;
+    };
+    let thread_source = payload
+        .get("thread_source")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if contains_subagent_text(thread_source) || value_contains_subagent(payload.get("source")) {
+        return false;
+    }
+
+    let cutoff = now - RECENT_COMPLETION_LOOKBACK_SECONDS;
+    tail_lines(file)
+        .into_iter()
+        .any(|line| recent_task_complete_timestamp(&line).is_some_and(|time| time >= cutoff))
+}
+
+fn tail_lines(file: &Path) -> Vec<String> {
+    let Ok(mut handle) = fs::File::open(file) else {
+        return Vec::new();
+    };
+    let size = handle.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let start = size.saturating_sub(RECENT_COMPLETION_TAIL_BYTE_LIMIT);
+    if handle.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
+    let mut data = Vec::new();
+    if handle.read_to_end(&mut data).is_err() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&data);
+    let mut lines = text.lines();
+    if start > 0 {
+        let _ = lines.next();
+    }
+    lines.map(str::to_string).collect()
+}
+
+fn recent_task_complete_timestamp(line: &str) -> Option<f64> {
+    if !line.contains("event_msg") || !line.contains("task_complete") {
+        return None;
+    }
+    let object: Value = serde_json::from_str(line).ok()?;
+    if object.get("type")?.as_str()? != "event_msg" {
+        return None;
+    }
+    let payload = object.get("payload")?;
+    if payload.get("type")?.as_str()? != "task_complete" {
+        return None;
+    }
+    number(payload.get("completed_at"))
+        .or_else(|| parse_timestamp(object.get("timestamp")?.as_str()?))
+}
+
+fn number(value: Option<&Value>) -> Option<f64> {
+    match value {
+        Some(Value::Number(number)) => number.as_f64(),
+        Some(Value::String(text)) => text.parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn parse_timestamp(value: &str) -> Option<f64> {
+    OffsetDateTime::parse(value, &Rfc3339)
+        .ok()
+        .map(|date| date.unix_timestamp() as f64 + f64::from(date.nanosecond()) / 1_000_000_000.0)
+}
+
+fn current_time_seconds() -> f64 {
+    system_time_seconds(SystemTime::now()).unwrap_or(0.0)
+}
+
+fn system_time_seconds(value: SystemTime) -> Option<f64> {
+    value
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs_f64())
+}
+
 fn contains_subagent_text(value: &str) -> bool {
     value.to_ascii_lowercase().contains("subagent")
 }
@@ -336,6 +452,66 @@ mod tests {
 
         let ids = read_unread_thread_ids(&root).unwrap();
         assert_eq!(ids, HashSet::from([visible.to_string()]));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn falls_back_to_recent_task_complete_when_unread_state_is_unavailable() {
+        let root = temp_root("task-complete-fallback");
+        let sessions = root.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let visible = "019eaaaa-0000-0000-0000-000000000008";
+        write_session_complete(
+            &sessions.join("visible.jsonl"),
+            visible,
+            false,
+            current_time_seconds() - 3.0,
+        );
+
+        assert!(has_unread_threads(&root));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn does_not_use_task_complete_fallback_when_unread_state_is_available() {
+        let root = temp_root("task-complete-state-priority");
+        let sessions = root.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let visible = "019eaaaa-0000-0000-0000-000000000009";
+        write_unread_state(&root, &[]);
+        write_session_complete(
+            &sessions.join("visible.jsonl"),
+            visible,
+            false,
+            current_time_seconds() - 3.0,
+        );
+
+        assert!(!has_unread_threads(&root));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task_complete_fallback_filters_subagents_and_old_completions() {
+        let root = temp_root("task-complete-filter");
+        let sessions = root.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        write_session_complete(
+            &sessions.join("subagent.jsonl"),
+            "019eaaaa-0000-0000-0000-000000000010",
+            true,
+            current_time_seconds() - 3.0,
+        );
+        write_session_complete(
+            &sessions.join("old.jsonl"),
+            "019eaaaa-0000-0000-0000-000000000011",
+            false,
+            current_time_seconds() - RECENT_COMPLETION_LOOKBACK_SECONDS - 10.0,
+        );
+
+        assert!(!has_unread_threads(&root));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -417,6 +593,22 @@ mod tests {
             file,
             r#"{{"type":"session_meta","payload":{{"id":"{id}","thread_source":{},"source":{source}}}}}"#,
             if subagent { r#""subagent""# } else { r#""user""# }
+        )
+        .unwrap();
+    }
+
+    fn write_session_complete(path: &Path, id: &str, subagent: bool, completed_at: f64) {
+        let mut file = fs::File::create(path).unwrap();
+        let source = if subagent { r#""subagent""# } else { r#""desktop""# };
+        writeln!(
+            file,
+            r#"{{"type":"session_meta","payload":{{"id":"{id}","thread_source":{},"source":{source}}}}}"#,
+            if subagent { r#""subagent""# } else { r#""user""# }
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{{"type":"task_complete","turn_id":"turn-{id}","completed_at":{completed_at},"duration_ms":2000}}}}"#
         )
         .unwrap();
     }
