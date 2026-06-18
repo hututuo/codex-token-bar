@@ -43,6 +43,8 @@ pub struct AppSettingsSnapshot {
     pub floating_position: Option<FloatingWindowPositionSnapshot>,
     #[serde(default)]
     pub display_surfaces: DisplaySurfaceSettingsSnapshot,
+    #[serde(default)]
+    pub setup_guide_completed: bool,
 }
 
 impl Default for AppSettingsSnapshot {
@@ -52,6 +54,7 @@ impl Default for AppSettingsSnapshot {
             floating_window: FloatingWindowSettingsSnapshot::default(),
             floating_position: None,
             display_surfaces: DisplaySurfaceSettingsSnapshot::default(),
+            setup_guide_completed: false,
         }
     }
 }

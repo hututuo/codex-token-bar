@@ -1,11 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { readAppSettings, saveDisplaySurfaces, saveFloatingSettings } from "../api/client";
+import {
+  readAppSettings,
+  saveDisplaySurfaces,
+  saveFloatingSettings,
+  saveSetupGuideCompleted,
+} from "../api/client";
 import { FloatingWindowApp } from "../floating/FloatingWindowApp";
 import {
   DEFAULT_FLOATING_SETTINGS,
   sanitizeFloatingSettings,
 } from "../floating/floatingSettings";
 import { DashboardPage } from "../pages/DashboardPage";
+import { SetupGuide } from "../components/SetupGuide";
 import { desktopPlatform } from "../platform/desktop";
 import { DEFAULT_DISPLAY_SURFACES, sanitizeDisplaySurfaces } from "../settings/displaySettings";
 import { useDashboardData } from "../state/useDashboardData";
@@ -38,6 +44,7 @@ function DashboardApp() {
   const [floatingVisible, setFloatingVisible] = useState(true);
   const [floatingSettings, setFloatingSettings] = useState(DEFAULT_FLOATING_SETTINGS);
   const [displaySurfaces, setDisplaySurfaces] = useState(DEFAULT_DISPLAY_SURFACES);
+  const [showSetupGuide, setShowSetupGuide] = useState(false);
   const floatingSettingsLoaded = useRef(false);
   const displaySettingsLoaded = useRef(false);
   useStatusTray(
@@ -95,6 +102,7 @@ function DashboardApp() {
       setFloatingSettings(sanitizeFloatingSettings(settings.floatingWindow));
       const display = sanitizeDisplaySurfaces(settings.displaySurfaces);
       setDisplaySurfaces(display);
+      setShowSetupGuide(!settings.setupGuideCompleted);
       setFloatingVisible(display.floatingWindowEnabled);
       if (display.floatingWindowEnabled) {
         void desktopPlatform.showFloatingWindow();
@@ -158,6 +166,14 @@ function DashboardApp() {
     setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, unreadEffect }));
   }
 
+  async function completeSetupGuide() {
+    const settings = await saveSetupGuideCompleted(true);
+    if (!settings.setupGuideCompleted) {
+      throw new Error("首次设置状态没有写入本地设置文件。");
+    }
+    setShowSetupGuide(false);
+  }
+
   if (readyState === null) {
     return (
       <main className="app-shell app-shell--loading">
@@ -168,29 +184,45 @@ function DashboardApp() {
   }
 
   return (
-    <DashboardPage
-      codexHome={readyState.codexHome}
-      dashboard={readyState.dashboard}
-      displaySurfaces={displaySurfaces}
-      floatingSettings={floatingSettings}
-      floatingVisible={floatingVisible}
-      liveRate={readyState.liveRate}
-      liveThreadOptions={readyState.liveThreadOptions}
-      platform={readyState.platform}
-      onRefresh={reloadAll}
-      onFloatingOpacityChange={updateFloatingOpacity}
-      onFloatingScaleChange={updateFloatingScale}
-      onFloatingUnreadEffectChange={updateFloatingUnreadEffect}
-      onLiveThreadSelect={setSelectedLiveThreadId}
-      onToggleFloating={toggleFloatingWindow}
-      onToggleStatusTray={toggleStatusTrayLiveText}
-      onCodexHomeChange={updateCodexHome}
-      onCodexHomeReset={restoreAutoCodexHome}
-      providerRepair={readyState.repair}
-      onProviderRepairChange={updateProviderRepair}
-      refreshing={state.loading}
-      selectedLiveThreadId={selectedLiveThreadId}
-    />
+    <>
+      <DashboardPage
+        codexHome={readyState.codexHome}
+        dashboard={readyState.dashboard}
+        displaySurfaces={displaySurfaces}
+        floatingSettings={floatingSettings}
+        floatingVisible={floatingVisible}
+        liveRate={readyState.liveRate}
+        liveThreadOptions={readyState.liveThreadOptions}
+        platform={readyState.platform}
+        onRefresh={reloadAll}
+        onFloatingOpacityChange={updateFloatingOpacity}
+        onFloatingScaleChange={updateFloatingScale}
+        onFloatingUnreadEffectChange={updateFloatingUnreadEffect}
+        onLiveThreadSelect={setSelectedLiveThreadId}
+        onToggleFloating={toggleFloatingWindow}
+        onToggleStatusTray={toggleStatusTrayLiveText}
+        onCodexHomeChange={updateCodexHome}
+        onCodexHomeReset={restoreAutoCodexHome}
+        providerRepair={readyState.repair}
+        onProviderRepairChange={updateProviderRepair}
+        refreshing={state.loading}
+        selectedLiveThreadId={selectedLiveThreadId}
+      />
+      {showSetupGuide ? (
+        <SetupGuide
+          codexHome={readyState.codexHome}
+          displaySurfaces={displaySurfaces}
+          floatingVisible={floatingVisible}
+          platform={readyState.platform}
+          statusTrayLiveTextEnabled={displaySurfaces.statusTrayLiveTextEnabled}
+          onCodexHomeChange={updateCodexHome}
+          onCodexHomeReset={restoreAutoCodexHome}
+          onComplete={completeSetupGuide}
+          onToggleFloating={toggleFloatingWindow}
+          onToggleStatusTray={toggleStatusTrayLiveText}
+        />
+      ) : null}
+    </>
   );
 }
 

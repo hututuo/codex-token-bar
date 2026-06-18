@@ -37,6 +37,7 @@ export interface AppSettingsSnapshot {
   floatingWindow: FloatingWindowSettings;
   floatingPosition: FloatingWindowPosition | null;
   displaySurfaces: DisplaySurfaceSettings;
+  setupGuideCompleted: boolean;
 }
 
 export interface FloatingWindowPosition {

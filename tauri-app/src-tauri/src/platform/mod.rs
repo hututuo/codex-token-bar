@@ -100,6 +100,13 @@ pub fn save_display_surfaces(
     Ok(settings)
 }
 
+pub fn save_setup_guide_completed(completed: bool) -> Result<AppSettingsSnapshot, String> {
+    let mut settings = read_app_settings();
+    settings.setup_guide_completed = completed;
+    write_app_settings(&settings)?;
+    Ok(settings)
+}
+
 pub fn setup_desktop_surfaces(app: &tauri::App) -> tauri::Result<()> {
     create_floating_window(app)?;
     create_status_panel_window(app)?;
@@ -396,6 +403,7 @@ mod tests {
         assert_eq!(sanitized.floating_window.unread_effect, "ripple");
         assert!(sanitized.display_surfaces.floating_window_enabled);
         assert!(sanitized.display_surfaces.status_tray_live_text_enabled);
+        assert!(!sanitized.setup_guide_completed);
     }
 
     #[test]
@@ -419,6 +427,7 @@ mod tests {
                 "opacity": 0.7,
                 "unreadEffect": "shimmer"
             },
+            "setupGuideCompleted": true,
             "displaySurfaces": {
                 "floatingWindowEnabled": false
             }
@@ -429,6 +438,7 @@ mod tests {
         assert_eq!(settings.floating_window.opacity, 0.7);
         assert_eq!(settings.floating_window.scale, 1.0);
         assert_eq!(settings.floating_window.unread_effect, "shimmer");
+        assert!(settings.setup_guide_completed);
         assert!(!settings.display_surfaces.floating_window_enabled);
         assert!(settings.display_surfaces.status_tray_live_text_enabled);
     }

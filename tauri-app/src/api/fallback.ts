@@ -28,6 +28,7 @@ export const fallbackAppSettings: AppSettingsSnapshot = {
     floatingWindowEnabled: true,
     statusTrayLiveTextEnabled: true,
   },
+  setupGuideCompleted: false,
 };
 
 export const fallbackPlatformCapabilities: PlatformCapabilities = {

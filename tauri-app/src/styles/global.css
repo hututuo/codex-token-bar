@@ -249,6 +249,220 @@ button {
   opacity: 0.55;
 }
 
+.setup-overlay {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: color-mix(in srgb, var(--page) 62%, transparent);
+}
+
+.setup-card {
+  display: grid;
+  gap: 16px;
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(680px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 18px;
+  background: var(--panel-solid);
+  padding: 20px;
+}
+
+.setup-head {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+}
+
+.setup-mark {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  border-radius: 14px;
+  background: linear-gradient(145deg, #ff9a31, #ff771f);
+  color: white;
+  font-size: 16px;
+  font-weight: 760;
+}
+
+.setup-head span,
+.setup-step-title span,
+.setup-step-body p {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.setup-head h2 {
+  margin: 2px 0 0;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.setup-steps {
+  display: grid;
+  gap: 10px;
+}
+
+.setup-step {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 11px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-soft) 68%, var(--panel-solid));
+}
+
+.setup-step-index {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--orange) 18%, var(--panel-solid));
+  color: var(--text);
+  font-weight: 760;
+}
+
+.setup-step-index.is-ok {
+  background: color-mix(in srgb, var(--green) 18%, var(--panel-solid));
+}
+
+.setup-step-body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.setup-step-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.setup-step-title strong {
+  font-size: 14px;
+}
+
+.setup-path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.setup-path-row span {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-solid);
+  padding: 7px 9px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.setup-path-row button,
+.setup-path-editor button,
+.setup-toggle,
+.setup-actions button {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 64%, var(--panel-soft));
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.setup-path-row button,
+.setup-path-editor button {
+  min-height: 30px;
+  padding: 5px 10px;
+}
+
+.setup-path-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+}
+
+.setup-path-editor input {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-solid);
+  color: var(--text);
+  padding: 7px 9px;
+  font-weight: 650;
+}
+
+.setup-toggle-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.setup-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 38px;
+  gap: 10px;
+  padding: 8px 10px;
+}
+
+.setup-toggle.is-active {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 13%, var(--panel-solid));
+}
+
+.setup-toggle:disabled,
+.setup-actions button:disabled,
+.setup-path-editor button:disabled,
+.setup-path-editor input:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.setup-step-body p {
+  margin: 0;
+}
+
+.setup-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.setup-error {
+  margin-right: auto;
+  color: var(--orange);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.setup-actions button {
+  min-height: 34px;
+  padding: 7px 13px;
+}
+
+.setup-actions .setup-primary {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+  background: var(--accent);
+  color: white;
+}
+
 .quota-strip,
 .stats-strip,
 .live-card,

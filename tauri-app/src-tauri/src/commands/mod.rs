@@ -81,6 +81,11 @@ pub fn save_display_surfaces(
 }
 
 #[tauri::command]
+pub fn save_setup_guide_completed(completed: bool) -> Result<AppSettingsSnapshot, String> {
+    platform::save_setup_guide_completed(completed)
+}
+
+#[tauri::command]
 pub fn read_platform_capabilities() -> Result<PlatformCapabilities, String> {
     Ok(platform::platform_capabilities())
 }

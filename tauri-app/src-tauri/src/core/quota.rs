@@ -740,7 +740,7 @@ mod tests {
             "created_at": "2026-06-12T01:00:00Z",
             "expires_at": "2026-06-20T01:00:00Z",
             "source": "system_grant",
-            "associatedUsers": [{ "email": "user@example.com" }],
+            "associatedUsers": [{ "email": "local-account@codex.local" }],
             "id": "reset-credit-abcdef123456"
         });
 
@@ -749,7 +749,7 @@ mod tests {
         assert_eq!(detail.status, "可用");
         assert_eq!(detail.redeemed_at, "未使用");
         assert_eq!(detail.source, "system_grant");
-        assert_eq!(detail.associated_user, "user@example.com");
+        assert_eq!(detail.associated_user, "local-account@codex.local");
         assert_eq!(detail.short_id, "reset-...3456");
         assert!(detail.issued_at.starts_with("2026-06-12 "));
         assert!(detail.expires_at.starts_with("2026-06-20 "));
@@ -757,7 +757,8 @@ mod tests {
 
     #[test]
     fn decodes_account_name_from_auth_jwt() {
-        let payload = URL_SAFE_NO_PAD.encode(r#"{"name":"本地用户","email":"user@example.com"}"#);
+        let payload =
+            URL_SAFE_NO_PAD.encode(r#"{"name":"本地用户","email":"local-account@codex.local"}"#);
         let decoded = decode_jwt_payload(&format!("header.{payload}.signature")).unwrap();
         assert_eq!(decoded.get("name").and_then(Value::as_str), Some("本地用户"));
     }

@@ -19,6 +19,7 @@ pub fn run() {
             commands::save_floating_settings,
             commands::save_floating_position,
             commands::save_display_surfaces,
+            commands::save_setup_guide_completed,
             commands::read_platform_capabilities,
             commands::read_account_quota,
             commands::read_dashboard_snapshot,

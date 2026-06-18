@@ -91,6 +91,10 @@ export function saveDisplaySurfaces(display: DisplaySurfaceSettings): Promise<Ap
   return callCommand("save_display_surfaces", fallbackAppSettings, { display });
 }
 
+export function saveSetupGuideCompleted(completed: boolean): Promise<AppSettingsSnapshot> {
+  return callCommand("save_setup_guide_completed", fallbackAppSettings, { completed });
+}
+
 export function readPlatformCapabilities(): Promise<PlatformCapabilities> {
   return callCommand("read_platform_capabilities", fallbackPlatformCapabilities);
 }
