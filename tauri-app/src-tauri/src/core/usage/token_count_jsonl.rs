@@ -1,17 +1,17 @@
 use crate::core::app_paths;
 use crate::core::quota_history;
+use crate::core::sqlite;
 use crate::models::{
     AccountInfo, ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats,
     QuotaLimit, QuotaSnapshot, RecentUsagePoint, ResetCreditSummary,
 };
-use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{Duration as StdDuration, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
@@ -643,13 +643,9 @@ fn cache_hit_ranking(
 
 fn read_thread_info(codex_home: &Path) -> HashMap<String, ThreadInfo> {
     let db_path = codex_home.join("state_5.sqlite");
-    let Ok(connection) = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-    ) else {
+    let Ok(connection) = sqlite::open_read_only(&db_path, StdDuration::from_secs(3)) else {
         return HashMap::new();
     };
-    let _ = connection.busy_timeout(std::time::Duration::from_secs(3));
 
     let Ok(mut statement) = connection.prepare(
         r#"
@@ -793,6 +789,7 @@ fn placeholder_quota() -> QuotaSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
 

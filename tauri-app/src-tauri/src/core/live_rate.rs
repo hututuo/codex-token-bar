@@ -1,6 +1,7 @@
 use crate::core::unread;
+use crate::core::sqlite;
 use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption};
-use rusqlite::{params, Connection, OpenFlags, Result};
+use rusqlite::{params, Connection, Result};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -50,7 +51,6 @@ fn read_snapshot_result(
 ) -> Result<LiveRateSnapshot> {
     let now = current_time_seconds();
     let logs_connection = open_read_only(&codex_home.join("logs_2.sqlite"))?;
-    logs_connection.busy_timeout(Duration::from_millis(100))?;
 
     let rows = read_recent_log_rows(&logs_connection, now - LOOKBACK_SECONDS)?;
     let rollup = rollup_stream_rows(&rows, now, None);
@@ -348,7 +348,6 @@ fn is_cjk(character: char) -> bool {
 
 fn read_usage_summary(codex_home: &Path) -> Result<UsageSummary> {
     let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
-    connection.busy_timeout(Duration::from_millis(100))?;
     connection.query_row(
         r#"
         SELECT
@@ -399,7 +398,6 @@ fn read_usage_summary(codex_home: &Path) -> Result<UsageSummary> {
 
 fn read_thread_options_result(codex_home: &Path, limit: usize) -> Result<Vec<LiveThreadOption>> {
     let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
-    connection.busy_timeout(Duration::from_millis(100))?;
 
     let archived_filter = if column_exists(&connection, "threads", "archived") {
         "COALESCE(archived, 0) = 0"
@@ -466,7 +464,6 @@ fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {
 
 fn read_thread_title(codex_home: &Path, thread_id: &str) -> Result<Option<String>> {
     let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
-    connection.busy_timeout(Duration::from_millis(100))?;
     let mut statement = connection.prepare(
         r#"
         SELECT title, first_user_message, preview
@@ -520,10 +517,7 @@ fn compact_title(value: &str) -> String {
 }
 
 fn open_read_only(path: &Path) -> Result<Connection> {
-    Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-    )
+    sqlite::open_read_only(path, Duration::from_millis(100))
 }
 
 fn current_time_seconds() -> f64 {

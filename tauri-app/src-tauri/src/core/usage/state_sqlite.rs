@@ -1,21 +1,19 @@
 use crate::core::quota_history;
+use crate::core::sqlite;
 use crate::models::{
     AccountInfo, ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats,
     QuotaLimit, QuotaSnapshot, RecentUsagePoint, ResetCreditSummary,
 };
-use rusqlite::{Connection, OpenFlags, Result};
+use rusqlite::{Connection, Result};
 use std::path::Path;
+use std::time::Duration as StdDuration;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
 
 pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
     let db_path = codex_home.join("state_5.sqlite");
-    let connection = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-    )?;
-    connection.busy_timeout(std::time::Duration::from_secs(3))?;
+    let connection = sqlite::open_read_only(&db_path, StdDuration::from_secs(3))?;
 
     let generated_at: String = connection.query_row(
         "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",

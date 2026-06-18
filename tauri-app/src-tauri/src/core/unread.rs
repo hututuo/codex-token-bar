@@ -1,10 +1,11 @@
-use rusqlite::{params_from_iter, Connection, OpenFlags, Result as SqlResult};
+use crate::core::sqlite;
+use rusqlite::{params_from_iter, Connection, Result as SqlResult};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
@@ -88,11 +89,7 @@ fn read_visible_user_thread_ids(
     database_path: &Path,
     codex_home: &Path,
 ) -> SqlResult<HashSet<String>> {
-    let connection = Connection::open_with_flags(
-        database_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-    )?;
-    connection.busy_timeout(std::time::Duration::from_secs(3))?;
+    let connection = sqlite::open_read_only(database_path, Duration::from_secs(3))?;
     let columns = read_thread_columns(&connection)?;
 
     let archived = if columns.contains("archived") {

@@ -1,10 +1,12 @@
 use crate::core::app_paths;
+use crate::core::sqlite;
 use crate::models::{
     AccountQuotaBundle, ActivityDay, QuotaHistoryPoint, QuotaSnapshot, RecentUsagePoint,
 };
 use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 use time::macros::format_description;
 use time::{OffsetDateTime, UtcOffset};
 
@@ -122,10 +124,7 @@ impl QuotaHistoryDatabase {
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let connection = Connection::open(&self.path)?;
-        connection.busy_timeout(std::time::Duration::from_secs(3))?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
-        Ok(connection)
+        sqlite::open_wal(&self.path, Duration::from_secs(3))
     }
 }
 

@@ -1,9 +1,10 @@
 use crate::core::app_paths;
+use crate::core::sqlite;
 use crate::models::{
     ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
     ProviderRepairStep,
 };
-use rusqlite::{Connection, OpenFlags, Result as SqlResult};
+use rusqlite::{Connection, Result as SqlResult};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -281,7 +282,6 @@ fn read_session_provider(file: &Path) -> Result<Option<String>, String> {
 fn scan_sqlite(codex_home: &Path) -> SqlResult<SQLiteScan> {
     let db_path = codex_home.join("state_5.sqlite");
     let connection = open_read_only(&db_path)?;
-    connection.busy_timeout(Duration::from_millis(250))?;
     let columns = thread_columns(&connection)?;
     if !columns.contains("model_provider") {
         return Ok(SQLiteScan {
@@ -383,10 +383,7 @@ fn sqlite_integrity(connection: &Connection) -> SqlResult<String> {
 }
 
 fn open_read_only(path: &Path) -> SqlResult<Connection> {
-    Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-    )
+    sqlite::open_read_only(path, Duration::from_millis(250))
 }
 
 fn scan_session_index(codex_home: &Path) -> SessionIndexScan {
@@ -753,9 +750,7 @@ fn sync_sqlite_provider(codex_home: &Path, target_provider: &str) -> Result<u32,
     if !db_path.exists() {
         return Ok(0);
     }
-    let connection = Connection::open(&db_path).map_err(|error| error.to_string())?;
-    connection
-        .busy_timeout(Duration::from_secs(2))
+    let connection = sqlite::open_read_write(&db_path, Duration::from_secs(2))
         .map_err(|error| error.to_string())?;
     let columns = thread_columns(&connection).map_err(|error| error.to_string())?;
     if !columns.contains("model_provider") {
@@ -767,7 +762,7 @@ fn sync_sqlite_provider(codex_home: &Path, target_provider: &str) -> Result<u32,
             [target_provider],
         )
         .map_err(|error| error.to_string())?;
-    let _ = connection.execute("PRAGMA wal_checkpoint(FULL);", []);
+    sqlite::checkpoint_wal_full(&connection);
     let integrity = sqlite_integrity(&connection).map_err(|error| error.to_string())?;
     if integrity != "ok" {
         return Err(format!("SQLite integrity_check: {integrity}"));
@@ -800,7 +795,8 @@ fn repair_session_index(codex_home: &Path) -> Result<bool, String> {
 }
 
 fn latest_thread_index_entry(codex_home: &Path, thread_id: &str) -> Result<Value, String> {
-    let connection = open_read_only(&codex_home.join("state_5.sqlite")).map_err(|error| error.to_string())?;
+    let connection =
+        open_read_only(&codex_home.join("state_5.sqlite")).map_err(|error| error.to_string())?;
     let columns = thread_columns(&connection).map_err(|error| error.to_string())?;
     let title_expression = if columns.contains("thread_name") {
         "COALESCE(thread_name, id)"
