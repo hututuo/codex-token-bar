@@ -43,7 +43,9 @@ stop_existing_debug_app() {
 }
 
 if [[ "$BUILD_FIRST" == "1" ]]; then
-  stop_existing_debug_app
+  # Keep the previous app visible while the new bundle is being compiled. The
+  # handoff happens after a successful build so visual testing does not look
+  # like a slow gray startup or a window that briefly appears and gets killed.
   (cd "$TAURI_DIR" && npm run tauri -- build --debug --bundles app)
 fi
 
