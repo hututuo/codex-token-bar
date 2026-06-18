@@ -65,6 +65,45 @@ fn scan_falls_back_to_latest_sqlite_provider_when_config_is_missing() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn sync_core_logic_rewrites_sources_and_repairs_index() {
+    let root = temp_root("provider-sync-core");
+    fs::create_dir_all(root.join("sessions/2026/06")).unwrap();
+    fs::write(root.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let old_session = root.join("sessions/2026/06/old.jsonl");
+    write_session(&old_session, "thread-old", "codex_local_access");
+    write_session(
+        &root.join("sessions/2026/06/openai.jsonl"),
+        "thread-openai",
+        "openai",
+    );
+    create_state_database(
+        &root,
+        &[("thread-old", "codex_local_access", 0), ("thread-openai", "openai", 0)],
+    );
+
+    let before = scan_provider_repair(&root);
+    assert_eq!(before.inconsistent_count, 3);
+
+    let report = scan_provider_repair_result(&root).unwrap();
+    for file in find_session_files(&root, true) {
+        rewrite_session_provider(&file, &report.target.provider).unwrap();
+    }
+    let changed_rows = sync_sqlite_provider(&root, &report.target.provider).unwrap();
+    let index_changed = repair_session_index(&root).unwrap();
+
+    assert_eq!(changed_rows, 1);
+    assert!(index_changed);
+    assert!(fs::read_to_string(old_session).unwrap().contains(r#""model_provider":"openai""#));
+    assert!(fs::read_to_string(root.join("session_index.jsonl"))
+        .unwrap()
+        .contains("thread-openai"));
+    let after = scan_provider_repair(&root);
+    assert_eq!(after.inconsistent_count, 0);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn temp_root(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "codex-token-bar-tauri-{label}-{}-{}",

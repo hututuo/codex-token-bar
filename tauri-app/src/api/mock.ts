@@ -4,6 +4,8 @@ import type {
   DashboardSnapshot,
   FloatingPanelSnapshot,
   LiveRateSnapshot,
+  ProviderRepairActionResult,
+  ProviderRepairBackupInfo,
   ProviderRepairSnapshot,
 } from "../types/dashboard";
 
@@ -163,4 +165,23 @@ export const mockProviderRepairSnapshot: ProviderRepairSnapshot = {
     { label: "修复", status: "未进行修复", done: false, healthy: true },
     { label: "验证", status: "未验证", done: false, healthy: true },
   ],
+};
+
+export const mockProviderRepairBackups: ProviderRepairBackupInfo[] = [
+  {
+    id: "20260618-160300",
+    createdAt: "2026-06-18T16:03:00+08:00",
+    path: "~/Library/Application Support/CodexHistoryRepair/backups/20260618-160300",
+    targetProvider: "openai",
+    sessionFiles: 182,
+    stateDatabase: true,
+    sessionIndex: true,
+  },
+];
+
+export const mockProviderRepairActionResult: ProviderRepairActionResult = {
+  snapshot: mockProviderRepairSnapshot,
+  message: "示例操作完成",
+  backup: mockProviderRepairBackups[0],
+  backups: mockProviderRepairBackups,
 };

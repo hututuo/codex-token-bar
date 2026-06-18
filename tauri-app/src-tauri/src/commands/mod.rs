@@ -1,7 +1,7 @@
 use crate::core::{live_rate, mock_data, provider_repair, quota, quota_history, usage};
 use crate::models::{
     AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, FloatingPanelSnapshot, LiveRateSnapshot,
-    ProviderRepairSnapshot,
+    ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
 };
 use crate::platform;
 use tauri::Manager;
@@ -90,4 +90,33 @@ pub fn set_status_tray_readout(
 pub fn scan_provider_repair() -> Result<ProviderRepairSnapshot, String> {
     let codex_home = platform::default_codex_home();
     Ok(provider_repair::scan_provider_repair(&codex_home))
+}
+
+#[tauri::command]
+pub fn list_provider_backups() -> Result<Vec<ProviderRepairBackupInfo>, String> {
+    provider_repair::list_provider_backups()
+}
+
+#[tauri::command]
+pub fn create_provider_backup() -> Result<ProviderRepairActionResult, String> {
+    let codex_home = platform::default_codex_home();
+    provider_repair::create_provider_backup(&codex_home)
+}
+
+#[tauri::command]
+pub fn sync_provider_history(backup_id: String) -> Result<ProviderRepairActionResult, String> {
+    let codex_home = platform::default_codex_home();
+    provider_repair::sync_provider_history(&codex_home, &backup_id)
+}
+
+#[tauri::command]
+pub fn verify_provider_repair() -> Result<ProviderRepairActionResult, String> {
+    let codex_home = platform::default_codex_home();
+    Ok(provider_repair::verify_provider_repair(&codex_home))
+}
+
+#[tauri::command]
+pub fn rollback_provider_backup(backup_id: String) -> Result<ProviderRepairActionResult, String> {
+    let codex_home = platform::default_codex_home();
+    provider_repair::rollback_provider_backup(&codex_home, &backup_id)
 }

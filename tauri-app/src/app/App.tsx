@@ -214,6 +214,10 @@ function DashboardApp() {
     setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, scale }));
   }
 
+  function updateProviderRepair(repair: ProviderRepairSnapshot) {
+    setState((current) => ({ ...current, repair }));
+  }
+
   const readyState = useMemo(() => {
     if (
       state.codexHome === null ||
@@ -251,6 +255,7 @@ function DashboardApp() {
       onFloatingScaleChange={updateFloatingScale}
       onToggleFloating={toggleFloatingWindow}
       providerRepair={readyState.repair}
+      onProviderRepairChange={updateProviderRepair}
       refreshing={state.loading}
     />
   );

@@ -137,3 +137,20 @@ export interface ProviderRepairSnapshot {
   status: string;
   steps: ProviderRepairStep[];
 }
+
+export interface ProviderRepairBackupInfo {
+  id: string;
+  createdAt: string;
+  path: string;
+  targetProvider: string;
+  sessionFiles: number;
+  stateDatabase: boolean;
+  sessionIndex: boolean;
+}
+
+export interface ProviderRepairActionResult {
+  snapshot: ProviderRepairSnapshot;
+  message: string;
+  backup: ProviderRepairBackupInfo | null;
+  backups: ProviderRepairBackupInfo[];
+}

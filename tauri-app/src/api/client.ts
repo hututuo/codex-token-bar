@@ -5,6 +5,8 @@ import type {
   DashboardSnapshot,
   FloatingPanelSnapshot,
   LiveRateSnapshot,
+  ProviderRepairActionResult,
+  ProviderRepairBackupInfo,
   ProviderRepairSnapshot,
 } from "../types/dashboard";
 import {
@@ -13,6 +15,8 @@ import {
   mockDashboardSnapshot,
   mockFloatingPanelSnapshot,
   mockLiveRateSnapshot,
+  mockProviderRepairActionResult,
+  mockProviderRepairBackups,
   mockProviderRepairSnapshot,
 } from "./mock";
 
@@ -73,4 +77,24 @@ export function setStatusTrayReadout(title: string, tooltip: string): Promise<bo
 
 export function scanProviderRepair(): Promise<ProviderRepairSnapshot> {
   return callCommand("scan_provider_repair", mockProviderRepairSnapshot);
+}
+
+export function listProviderBackups(): Promise<ProviderRepairBackupInfo[]> {
+  return callCommand("list_provider_backups", mockProviderRepairBackups);
+}
+
+export function createProviderBackup(): Promise<ProviderRepairActionResult> {
+  return callCommand("create_provider_backup", mockProviderRepairActionResult);
+}
+
+export function syncProviderHistory(backupId: string): Promise<ProviderRepairActionResult> {
+  return callCommand("sync_provider_history", mockProviderRepairActionResult, { backupId });
+}
+
+export function verifyProviderRepair(): Promise<ProviderRepairActionResult> {
+  return callCommand("verify_provider_repair", mockProviderRepairActionResult);
+}
+
+export function rollbackProviderBackup(backupId: string): Promise<ProviderRepairActionResult> {
+  return callCommand("rollback_provider_backup", mockProviderRepairActionResult, { backupId });
 }

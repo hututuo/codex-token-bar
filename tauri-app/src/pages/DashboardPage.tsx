@@ -23,6 +23,7 @@ interface DashboardPageProps {
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
   onToggleFloating: () => void;
+  onProviderRepairChange: (snapshot: ProviderRepairSnapshot) => void;
   providerRepair: ProviderRepairSnapshot;
   refreshing: boolean;
 }
@@ -35,6 +36,7 @@ export function DashboardPage({
   liveRate,
   onFloatingOpacityChange,
   onFloatingScaleChange,
+  onProviderRepairChange,
   onToggleFloating,
   providerRepair,
   refreshing,
@@ -62,7 +64,7 @@ export function DashboardPage({
         <TokenActivitySection days={dashboard.activityDays} />
         <RecentUsageChart points={dashboard.recentUsage24h} />
         <CacheHitRanking items={dashboard.cacheHitRanking} />
-        <ProviderRepairCard snapshot={providerRepair} />
+        <ProviderRepairCard onSnapshotChange={onProviderRepairChange} snapshot={providerRepair} />
       </section>
     </main>
   );

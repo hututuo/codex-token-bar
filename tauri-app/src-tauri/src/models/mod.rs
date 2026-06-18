@@ -173,3 +173,24 @@ pub struct ProviderRepairStep {
     pub done: bool,
     pub healthy: bool,
 }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRepairBackupInfo {
+    pub id: String,
+    pub created_at: String,
+    pub path: String,
+    pub target_provider: String,
+    pub session_files: u32,
+    pub state_database: bool,
+    pub session_index: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRepairActionResult {
+    pub snapshot: ProviderRepairSnapshot,
+    pub message: String,
+    pub backup: Option<ProviderRepairBackupInfo>,
+    pub backups: Vec<ProviderRepairBackupInfo>,
+}

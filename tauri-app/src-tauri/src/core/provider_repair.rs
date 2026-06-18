@@ -1,17 +1,114 @@
-use crate::models::{ProviderRepairSnapshot, ProviderRepairStep};
+use crate::models::{
+    ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
+    ProviderRepairStep,
+};
 use rusqlite::{Connection, OpenFlags, Result as SqlResult};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use time::format_description::well_known::Rfc3339;
+use time::macros::format_description;
+use time::{OffsetDateTime, UtcOffset};
 
 pub fn scan_provider_repair(codex_home: &Path) -> ProviderRepairSnapshot {
     match scan_provider_repair_result(codex_home) {
         Ok(report) => snapshot_from_report(report),
         Err(error) => error_snapshot(codex_home, error.to_string()),
     }
+}
+
+pub fn list_provider_backups() -> Result<Vec<ProviderRepairBackupInfo>, String> {
+    let root = provider_backup_root();
+    let Ok(entries) = fs::read_dir(root) else {
+        return Ok(Vec::new());
+    };
+
+    let mut backups = entries
+        .flatten()
+        .filter_map(|entry| read_backup_info(&entry.path()).ok())
+        .collect::<Vec<_>>();
+    backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(backups)
+}
+
+pub fn create_provider_backup(codex_home: &Path) -> Result<ProviderRepairActionResult, String> {
+    let report = scan_provider_repair_result(codex_home)?;
+    let backup = create_backup_from_report(codex_home, &report)?;
+    Ok(action_result(
+        scan_provider_repair(codex_home),
+        format!("已创建备份：{}", backup.id),
+        Some(backup),
+    ))
+}
+
+pub fn sync_provider_history(
+    codex_home: &Path,
+    backup_id: &str,
+) -> Result<ProviderRepairActionResult, String> {
+    let backup = backup_by_id(backup_id)?;
+    let report = scan_provider_repair_result(codex_home)?;
+    let mut rewritten_sessions = 0_u32;
+    for file in find_session_files(codex_home, true) {
+        if rewrite_session_provider(&file, &report.target.provider)? {
+            rewritten_sessions = rewritten_sessions.saturating_add(1);
+        }
+    }
+
+    let sqlite_rows = sync_sqlite_provider(codex_home, &report.target.provider)?;
+    let index_changed = repair_session_index(codex_home)?;
+    let snapshot = scan_provider_repair(codex_home);
+    let message = format!(
+        "已同步为 {}：JSONL {} 个，SQLite {} 行，session_index {}。",
+        report.target.provider,
+        rewritten_sessions,
+        sqlite_rows,
+        if index_changed { "已补齐" } else { "无需修改" }
+    );
+    Ok(action_result(snapshot, message, Some(backup)))
+}
+
+pub fn verify_provider_repair(codex_home: &Path) -> ProviderRepairActionResult {
+    let snapshot = scan_provider_repair(codex_home);
+    let message = if snapshot.inconsistent_count == 0 {
+        "验证完成：未发现不一致。".into()
+    } else {
+        format!("验证完成：仍有 {} 条不一致。", snapshot.inconsistent_count)
+    };
+    action_result(snapshot, message, None)
+}
+
+pub fn rollback_provider_backup(
+    codex_home: &Path,
+    backup_id: &str,
+) -> Result<ProviderRepairActionResult, String> {
+    let backup = backup_by_id(backup_id)?;
+    let backup_path = PathBuf::from(&backup.path);
+
+    restore_if_exists(
+        &backup_path.join("config.toml.before"),
+        &codex_home.join("config.toml"),
+    )?;
+    restore_if_exists(
+        &backup_path.join("state_5.sqlite.before"),
+        &codex_home.join("state_5.sqlite"),
+    )?;
+    restore_if_exists(
+        &backup_path.join("session_index.jsonl.before"),
+        &codex_home.join("session_index.jsonl"),
+    )?;
+    let _ = fs::remove_file(codex_home.join("state_5.sqlite-shm"));
+    let _ = fs::remove_file(codex_home.join("state_5.sqlite-wal"));
+    restore_session_backups(codex_home, &backup_path.join("session-jsonl"))?;
+
+    Ok(action_result(
+        scan_provider_repair(codex_home),
+        format!("已回滚备份：{}", backup.id),
+        Some(backup),
+    ))
 }
 
 fn scan_provider_repair_result(codex_home: &Path) -> Result<ProviderRepairReport, String> {
@@ -411,6 +508,305 @@ fn error_snapshot(codex_home: &Path, message: String) -> ProviderRepairSnapshot 
             },
         ],
     }
+}
+
+fn action_result(
+    snapshot: ProviderRepairSnapshot,
+    message: String,
+    backup: Option<ProviderRepairBackupInfo>,
+) -> ProviderRepairActionResult {
+    ProviderRepairActionResult {
+        snapshot,
+        message,
+        backup,
+        backups: list_provider_backups().unwrap_or_default(),
+    }
+}
+
+fn create_backup_from_report(
+    codex_home: &Path,
+    report: &ProviderRepairReport,
+) -> Result<ProviderRepairBackupInfo, String> {
+    let id = timestamp_id();
+    let backup_path = provider_backup_root().join(&id);
+    fs::create_dir_all(&backup_path).map_err(|error| error.to_string())?;
+
+    let state_database = copy_if_exists(
+        &codex_home.join("state_5.sqlite"),
+        &backup_path.join("state_5.sqlite.before"),
+    )?;
+    let _ = copy_if_exists(
+        &codex_home.join("state_5.sqlite-wal"),
+        &backup_path.join("state_5.sqlite-wal.before"),
+    );
+    let _ = copy_if_exists(
+        &codex_home.join("state_5.sqlite-shm"),
+        &backup_path.join("state_5.sqlite-shm.before"),
+    );
+    let session_index = copy_if_exists(
+        &codex_home.join("session_index.jsonl"),
+        &backup_path.join("session_index.jsonl.before"),
+    )?;
+    let _ = copy_if_exists(
+        &codex_home.join("config.toml"),
+        &backup_path.join("config.toml.before"),
+    )?;
+
+    let mut session_files = 0_u32;
+    let session_backup_root = backup_path.join("session-jsonl");
+    for file in find_session_files(codex_home, true) {
+        let relative = file.strip_prefix(codex_home).unwrap_or(file.as_path());
+        let target = session_backup_root.join(relative);
+        if copy_if_exists(&file, &target)? {
+            session_files = session_files.saturating_add(1);
+        }
+    }
+
+    let created_at = format_now_rfc3339();
+    let manifest = json!({
+        "id": id,
+        "created_at": created_at,
+        "target_provider": report.target.provider,
+        "session_files": session_files,
+        "state_database": state_database,
+        "session_index": session_index
+    });
+    write_json_file(&backup_path.join("manifest.json"), &manifest)?;
+
+    read_backup_info(&backup_path)
+}
+
+fn provider_backup_root() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    if cfg!(target_os = "windows") {
+        home.join("AppData")
+            .join("Roaming")
+            .join("CodexHistoryRepair")
+            .join("backups")
+    } else {
+        home.join("Library")
+            .join("Application Support")
+            .join("CodexHistoryRepair")
+            .join("backups")
+    }
+}
+
+fn backup_by_id(backup_id: &str) -> Result<ProviderRepairBackupInfo, String> {
+    let trimmed = backup_id.trim();
+    if trimmed.is_empty() || trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("..")
+    {
+        return Err("备份 ID 无效".into());
+    }
+    let path = provider_backup_root().join(trimmed);
+    read_backup_info(&path)
+}
+
+fn read_backup_info(path: &Path) -> Result<ProviderRepairBackupInfo, String> {
+    let manifest_path = path.join("manifest.json");
+    let value: Value = serde_json::from_slice(
+        &fs::read(&manifest_path).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(ProviderRepairBackupInfo {
+        id: value
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| path.file_name().and_then(|name| name.to_str()).unwrap_or("unknown"))
+            .into(),
+        created_at: value
+            .get("created_at")
+            .and_then(Value::as_str)
+            .unwrap_or("未知时间")
+            .into(),
+        path: path.display().to_string(),
+        target_provider: value
+            .get("target_provider")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .into(),
+        session_files: value
+            .get("session_files")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(0),
+        state_database: value
+            .get("state_database")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        session_index: value
+            .get("session_index")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+fn copy_if_exists(source: &Path, target: &Path) -> Result<bool, String> {
+    if !source.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::copy(source, target).map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+fn restore_if_exists(source: &Path, target: &Path) -> Result<bool, String> {
+    copy_if_exists(source, target)
+}
+
+fn restore_session_backups(codex_home: &Path, backup_root: &Path) -> Result<u32, String> {
+    let mut files = Vec::new();
+    collect_jsonl_files(backup_root, &mut files);
+    let mut restored = 0_u32;
+    for file in files {
+        let relative = file.strip_prefix(backup_root).unwrap_or(file.as_path());
+        let target = codex_home.join(relative);
+        if copy_if_exists(&file, &target)? {
+            restored = restored.saturating_add(1);
+        }
+    }
+    Ok(restored)
+}
+
+fn write_json_file(path: &Path, value: &Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
+    fs::write(path, bytes).map_err(|error| error.to_string())
+}
+
+fn rewrite_session_provider(file: &Path, target_provider: &str) -> Result<bool, String> {
+    let text = fs::read_to_string(file).map_err(|error| error.to_string())?;
+    let (first_line, rest) = match text.find('\n') {
+        Some(index) => (&text[..index], &text[index..]),
+        None => (text.as_str(), ""),
+    };
+    let mut value: Value = serde_json::from_str(first_line.trim_end())
+        .map_err(|error| format!("{}: {error}", file.display()))?;
+    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return Ok(false);
+    }
+    let payload = value
+        .get_mut("payload")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| format!("{} 缺少 session_meta.payload", file.display()))?;
+    if payload.get("model_provider").and_then(Value::as_str) == Some(target_provider) {
+        return Ok(false);
+    }
+    payload.insert("model_provider".into(), Value::String(target_provider.into()));
+    let first_line = serde_json::to_string(&value).map_err(|error| error.to_string())?;
+    write_atomic(file, format!("{first_line}{rest}").as_bytes())?;
+    Ok(true)
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let temp = path.with_extension("tmp-codex-token-bar");
+    fs::write(&temp, bytes).map_err(|error| error.to_string())?;
+    fs::rename(&temp, path).map_err(|error| error.to_string())
+}
+
+fn sync_sqlite_provider(codex_home: &Path, target_provider: &str) -> Result<u32, String> {
+    let db_path = codex_home.join("state_5.sqlite");
+    if !db_path.exists() {
+        return Ok(0);
+    }
+    let connection = Connection::open(&db_path).map_err(|error| error.to_string())?;
+    connection
+        .busy_timeout(Duration::from_secs(2))
+        .map_err(|error| error.to_string())?;
+    let columns = thread_columns(&connection).map_err(|error| error.to_string())?;
+    if !columns.contains("model_provider") {
+        return Ok(0);
+    }
+    let changed = connection
+        .execute(
+            "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1;",
+            [target_provider],
+        )
+        .map_err(|error| error.to_string())?;
+    let _ = connection.execute("PRAGMA wal_checkpoint(FULL);", []);
+    let integrity = sqlite_integrity(&connection).map_err(|error| error.to_string())?;
+    if integrity != "ok" {
+        return Err(format!("SQLite integrity_check: {integrity}"));
+    }
+    Ok(u32::try_from(changed).unwrap_or(u32::MAX))
+}
+
+fn repair_session_index(codex_home: &Path) -> Result<bool, String> {
+    let sqlite = scan_sqlite(codex_home).map_err(|error| error.to_string())?;
+    let Some(thread_id) = sqlite.latest_unarchived_thread_id else {
+        return Ok(false);
+    };
+    let session_index = scan_session_index(codex_home);
+    if session_index.ids.contains(&thread_id) {
+        return Ok(false);
+    }
+    let entry = latest_thread_index_entry(codex_home, &thread_id)?;
+    let path = codex_home.join("session_index.jsonl");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    writeln!(file, "{}", serde_json::to_string(&entry).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+fn latest_thread_index_entry(codex_home: &Path, thread_id: &str) -> Result<Value, String> {
+    let connection = open_read_only(&codex_home.join("state_5.sqlite")).map_err(|error| error.to_string())?;
+    let columns = thread_columns(&connection).map_err(|error| error.to_string())?;
+    let title_expression = if columns.contains("thread_name") {
+        "COALESCE(thread_name, id)"
+    } else if columns.contains("title") {
+        "COALESCE(title, id)"
+    } else {
+        "id"
+    };
+    let updated_expression = updated_at_expression(&columns);
+    let sql = format!(
+        "SELECT id, {title_expression}, {updated_expression} FROM threads WHERE id = ?1 LIMIT 1;"
+    );
+    let (id, title, updated_ms): (String, String, i64) = connection
+        .query_row(&sql, [thread_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(|error| error.to_string())?;
+    Ok(json!({
+        "id": id,
+        "thread_name": title,
+        "updated_at": format_unix_millis_rfc3339(updated_ms)
+    }))
+}
+
+fn timestamp_id() -> String {
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    OffsetDateTime::now_utc()
+        .to_offset(local_offset)
+        .format(format_description!("[year][month][day]-[hour][minute][second]"))
+        .unwrap_or_else(|_| "unknown-time".into())
+}
+
+fn format_now_rfc3339() -> String {
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    OffsetDateTime::now_utc()
+        .to_offset(local_offset)
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "unknown-time".into())
+}
+
+fn format_unix_millis_rfc3339(millis: i64) -> String {
+    let seconds = if millis > 10_000_000_000 { millis / 1000 } else { millis };
+    OffsetDateTime::from_unix_timestamp(seconds)
+        .unwrap_or_else(|_| OffsetDateTime::UNIX_EPOCH)
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
 fn provider_or_missing(value: String) -> String {
