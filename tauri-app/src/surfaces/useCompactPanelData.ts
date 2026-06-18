@@ -37,7 +37,7 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
   const [quota, setQuota] = useState<AccountQuotaBundle>(() => emptyAccountQuotaBundle());
 
   useEffect(() => {
-    if (!active || !quotaEnabled) {
+    if (!active) {
       return;
     }
 
@@ -72,7 +72,7 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
   }, [active, snapshotIntervalMs]);
 
   useEffect(() => {
-    if (!active) {
+    if (!active || !quotaEnabled) {
       return;
     }
 

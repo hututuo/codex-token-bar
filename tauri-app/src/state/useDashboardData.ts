@@ -1,12 +1,19 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import {
   getCommandDiagnosticsSnapshot,
   recordStartupEvent,
   subscribeCommandDiagnostics,
 } from "../api/client";
 import { dashboardDataSource, type DashboardDataSource } from "../data/dashboardDataSource";
-import { desktopPlatform } from "../platform/desktop";
-import type { ProviderRepairSnapshot } from "../types/dashboard";
+import type { LiveRateSnapshot, ProviderRepairSnapshot } from "../types/dashboard";
 import {
   initialDashboardState,
   mergeLiveRate,
@@ -18,6 +25,7 @@ import {
   readyDashboardState,
   type DashboardAppState,
 } from "./dashboardState";
+import { useLiveRateFeed } from "./useLiveRateFeed";
 
 export function useDashboardData(source: DashboardDataSource = dashboardDataSource) {
   const [state, setState] = useState<DashboardAppState>(initialDashboardState);
@@ -27,6 +35,10 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   const forceNextQuotaLoad = useRef(false);
   const liveThreadOptionsLoadStarted = useRef(false);
   const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
+
+  const mergeLiveRateSnapshot = useCallback((liveRate: LiveRateSnapshot) => {
+    setState((current) => mergeLiveRate(current, liveRate));
+  }, []);
 
   useEffect(() => {
     return subscribeCommandDiagnostics((diagnostics) => {
@@ -99,74 +111,12 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     };
   }, [fastSnapshotLoaded, source, state.dashboard, state.loading]);
 
-  useEffect(() => {
-    if (!fastSnapshotLoaded) {
-      return;
-    }
-
-    let cancelled = false;
-    let liveRateInFlight = false;
-    let streaming = false;
-    let unlisten: (() => void) | null = null;
-    let startupTimer = 0;
-
-    async function refreshLiveRate() {
-      if (liveRateInFlight) {
-        return;
-      }
-
-      liveRateInFlight = true;
-      try {
-        const liveRate = await source.readLiveRateSnapshot(selectedLiveThreadId || null);
-        if (!cancelled) {
-          setState((current) => mergeLiveRate(current, liveRate));
-        }
-      } finally {
-        liveRateInFlight = false;
-      }
-    }
-
-    void desktopPlatform.onLiveRateSnapshot((liveRate) => {
-      if (!cancelled) {
-        setState((current) => mergeLiveRate(current, liveRate));
-      }
-    }).then((listener) => {
-      if (cancelled) {
-        listener();
-      } else {
-        unlisten = listener;
-      }
-    });
-
-    startupTimer = window.setTimeout(() => {
-      void refreshLiveRate();
-      void desktopPlatform.startLiveRateStream(selectedLiveThreadId || null).then((started) => {
-        if (cancelled) {
-          if (started) {
-            void desktopPlatform.stopLiveRateStream();
-          }
-          return;
-        }
-        streaming = started;
-      });
-    }, 250);
-
-    const interval = window.setInterval(() => {
-      if (!streaming) {
-        void refreshLiveRate();
-      }
-    }, 750);
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-      if (streaming) {
-        void desktopPlatform.stopLiveRateStream();
-      }
-      window.clearTimeout(startupTimer);
-      window.clearInterval(interval);
-    };
-  }, [fastSnapshotLoaded, source, selectedLiveThreadId]);
+  useLiveRateFeed({
+    active: fastSnapshotLoaded,
+    selectedThreadId: selectedLiveThreadId,
+    source,
+    onSnapshot: mergeLiveRateSnapshot,
+  });
 
   useEffect(() => {
     if (!fastSnapshotLoaded || state.dashboard === null || liveThreadOptionsLoadStarted.current) {
