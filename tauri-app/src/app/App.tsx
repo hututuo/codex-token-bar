@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { readAppSettings, saveFloatingSettings } from "../api/client";
+import { readAppSettings, saveDisplaySurfaces, saveFloatingSettings } from "../api/client";
 import { FloatingWindowApp } from "../floating/FloatingWindowApp";
 import {
   DEFAULT_FLOATING_SETTINGS,
@@ -7,6 +7,7 @@ import {
 } from "../floating/floatingSettings";
 import { DashboardPage } from "../pages/DashboardPage";
 import { desktopPlatform } from "../platform/desktop";
+import { DEFAULT_DISPLAY_SURFACES, sanitizeDisplaySurfaces } from "../settings/displaySettings";
 import { useDashboardData } from "../state/useDashboardData";
 import { useStatusTray } from "../tray/useStatusTray";
 
@@ -30,8 +31,14 @@ function DashboardApp() {
   } = useDashboardData();
   const [floatingVisible, setFloatingVisible] = useState(true);
   const [floatingSettings, setFloatingSettings] = useState(DEFAULT_FLOATING_SETTINGS);
+  const [displaySurfaces, setDisplaySurfaces] = useState(DEFAULT_DISPLAY_SURFACES);
   const floatingSettingsLoaded = useRef(false);
-  useStatusTray(state.liveRate, state.platform);
+  const displaySettingsLoaded = useRef(false);
+  useStatusTray(
+    state.liveRate,
+    state.platform,
+    displaySurfaces.statusTrayLiveTextEnabled,
+  );
 
   useEffect(() => {
     if ("scrollRestoration" in window.history) {
@@ -78,7 +85,16 @@ function DashboardApp() {
         return;
       }
       floatingSettingsLoaded.current = true;
+      displaySettingsLoaded.current = true;
       setFloatingSettings(sanitizeFloatingSettings(settings.floatingWindow));
+      const display = sanitizeDisplaySurfaces(settings.displaySurfaces);
+      setDisplaySurfaces(display);
+      setFloatingVisible(display.floatingWindowEnabled);
+      if (display.floatingWindowEnabled) {
+        void desktopPlatform.showFloatingWindow();
+      } else {
+        void desktopPlatform.hideFloatingWindow();
+      }
     });
 
     return () => {
@@ -105,6 +121,23 @@ function DashboardApp() {
       ? await desktopPlatform.showFloatingWindow()
       : await desktopPlatform.hideFloatingWindow();
     setFloatingVisible(confirmed);
+    updateDisplaySurfaces({ floatingWindowEnabled: confirmed });
+  }
+
+  function toggleStatusTrayLiveText() {
+    updateDisplaySurfaces({
+      statusTrayLiveTextEnabled: !displaySurfaces.statusTrayLiveTextEnabled,
+    });
+  }
+
+  function updateDisplaySurfaces(next: Partial<typeof displaySurfaces>) {
+    setDisplaySurfaces((current) => {
+      const sanitized = sanitizeDisplaySurfaces({ ...current, ...next });
+      if (displaySettingsLoaded.current) {
+        void saveDisplaySurfaces(sanitized);
+      }
+      return sanitized;
+    });
   }
 
   function updateFloatingOpacity(opacity: number) {
@@ -128,6 +161,7 @@ function DashboardApp() {
     <DashboardPage
       codexHome={readyState.codexHome}
       dashboard={readyState.dashboard}
+      displaySurfaces={displaySurfaces}
       floatingSettings={floatingSettings}
       floatingVisible={floatingVisible}
       liveRate={readyState.liveRate}
@@ -136,6 +170,7 @@ function DashboardApp() {
       onFloatingOpacityChange={updateFloatingOpacity}
       onFloatingScaleChange={updateFloatingScale}
       onToggleFloating={toggleFloatingWindow}
+      onToggleStatusTray={toggleStatusTrayLiveText}
       onCodexHomeChange={updateCodexHome}
       onCodexHomeReset={restoreAutoCodexHome}
       providerRepair={readyState.repair}

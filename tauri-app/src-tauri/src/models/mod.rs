@@ -41,6 +41,8 @@ pub struct AppSettingsSnapshot {
     pub floating_window: FloatingWindowSettingsSnapshot,
     #[serde(default)]
     pub floating_position: Option<FloatingWindowPositionSnapshot>,
+    #[serde(default)]
+    pub display_surfaces: DisplaySurfaceSettingsSnapshot,
 }
 
 impl Default for AppSettingsSnapshot {
@@ -49,6 +51,7 @@ impl Default for AppSettingsSnapshot {
             codex_home: None,
             floating_window: FloatingWindowSettingsSnapshot::default(),
             floating_position: None,
+            display_surfaces: DisplaySurfaceSettingsSnapshot::default(),
         }
     }
 }
@@ -56,17 +59,27 @@ impl Default for AppSettingsSnapshot {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FloatingWindowSettingsSnapshot {
+    #[serde(default = "default_floating_opacity")]
     pub opacity: f64,
+    #[serde(default = "default_floating_scale")]
     pub scale: f64,
 }
 
 impl Default for FloatingWindowSettingsSnapshot {
     fn default() -> Self {
         Self {
-            opacity: 0.92,
-            scale: 1.0,
+            opacity: default_floating_opacity(),
+            scale: default_floating_scale(),
         }
     }
+}
+
+fn default_floating_opacity() -> f64 {
+    0.92
+}
+
+fn default_floating_scale() -> f64 {
+    1.0
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -75,6 +88,28 @@ pub struct FloatingWindowPositionSnapshot {
     pub x: f64,
     pub y: f64,
     pub saved_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplaySurfaceSettingsSnapshot {
+    #[serde(default = "default_enabled")]
+    pub floating_window_enabled: bool,
+    #[serde(default = "default_enabled")]
+    pub status_tray_live_text_enabled: bool,
+}
+
+impl Default for DisplaySurfaceSettingsSnapshot {
+    fn default() -> Self {
+        Self {
+            floating_window_enabled: default_enabled(),
+            status_tray_live_text_enabled: default_enabled(),
+        }
+    }
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize)]

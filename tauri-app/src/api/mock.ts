@@ -24,6 +24,10 @@ export const mockAppSettings: AppSettingsSnapshot = {
     scale: 1,
   },
   floatingPosition: null,
+  displaySurfaces: {
+    floatingWindowEnabled: true,
+    statusTrayLiveTextEnabled: true,
+  },
 };
 
 export const mockPlatformCapabilities: PlatformCapabilities = {

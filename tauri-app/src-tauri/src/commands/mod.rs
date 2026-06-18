@@ -4,9 +4,9 @@ use crate::core::{
 };
 use crate::models::{
     AccountQuotaBundle, AppSettingsSnapshot, CodexHomeStatus, DashboardSnapshot,
-    FloatingPanelSnapshot, FloatingWindowPositionSnapshot, FloatingWindowSettingsSnapshot,
-    LiveRateSnapshot, PlatformCapabilities, ProviderRepairActionResult, ProviderRepairBackupInfo,
-    ProviderRepairSnapshot,
+    DisplaySurfaceSettingsSnapshot, FloatingPanelSnapshot, FloatingWindowPositionSnapshot,
+    FloatingWindowSettingsSnapshot, LiveRateSnapshot, PlatformCapabilities,
+    ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
 };
 use crate::platform;
 
@@ -42,6 +42,13 @@ pub fn save_floating_position(
     position: FloatingWindowPositionSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
     platform::save_floating_position(position)
+}
+
+#[tauri::command]
+pub fn save_display_surfaces(
+    display: DisplaySurfaceSettingsSnapshot,
+) -> Result<AppSettingsSnapshot, String> {
+    platform::save_display_surfaces(display)
 }
 
 #[tauri::command]

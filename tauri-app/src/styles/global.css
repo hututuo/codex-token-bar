@@ -680,6 +680,13 @@ button {
   align-items: center;
 }
 
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .setting-slider {
   display: grid;
   grid-template-columns: 74px minmax(0, 1fr) 42px;

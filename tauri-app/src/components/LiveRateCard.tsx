@@ -9,8 +9,10 @@ interface LiveRateCardProps {
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
   onToggleFloating: () => void;
+  onToggleStatusTray: () => void;
   platform: PlatformCapabilities;
   snapshot: LiveRateSnapshot;
+  statusTrayLiveTextEnabled: boolean;
 }
 
 export function LiveRateCard({
@@ -19,8 +21,10 @@ export function LiveRateCard({
   onFloatingOpacityChange,
   onFloatingScaleChange,
   onToggleFloating,
+  onToggleStatusTray,
   platform,
   snapshot,
+  statusTrayLiveTextEnabled,
 }: LiveRateCardProps) {
   const progress = clamp(snapshot.tokensPerSecond / snapshot.maxTokensPerSecond, 0, 1);
   const opacityPercent = Math.round(floatingSettings.opacity * 100);
@@ -32,6 +36,10 @@ export function LiveRateCard({
   const floatingButtonLabel = floatingAvailable
     ? `显示：${floatingVisible ? "悬浮窗" : "关闭"}`
     : "悬浮窗待接入";
+  const statusTrayAvailable = platform.statusTray.available;
+  const statusTrayButtonLabel = statusTrayAvailable
+    ? `状态栏数字：${statusTrayLiveTextEnabled ? "开" : "关"}`
+    : "状态栏待接入";
 
   return (
     <section className="live-card" aria-label="实时速率">
@@ -87,16 +95,27 @@ export function LiveRateCard({
 
         <div className="settings-panel">
           <div className="settings-topline">
-            <span className="settings-label">悬浮窗设置</span>
-            <button
-              className="live-toggle-button"
-              disabled={!floatingAvailable}
-              onClick={onToggleFloating}
-              title={platform.floatingWindow.note}
-              type="button"
-            >
-              {floatingButtonLabel}
-            </button>
+            <span className="settings-label">显示设置</span>
+            <div className="settings-actions">
+              <button
+                className="live-toggle-button"
+                disabled={!floatingAvailable}
+                onClick={onToggleFloating}
+                title={platform.floatingWindow.note}
+                type="button"
+              >
+                {floatingButtonLabel}
+              </button>
+              <button
+                className="live-toggle-button"
+                disabled={!statusTrayAvailable}
+                onClick={onToggleStatusTray}
+                title={platform.statusTrayLiveText.note}
+                type="button"
+              >
+                {statusTrayButtonLabel}
+              </button>
+            </div>
           </div>
           <label className="setting-slider">
             <span>透明度</span>

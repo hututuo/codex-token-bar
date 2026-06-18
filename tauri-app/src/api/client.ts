@@ -24,7 +24,11 @@ import {
   mockProviderRepairSnapshot,
 } from "./mock";
 import { isTauriRuntimeAvailable, withTimeout } from "../platform/runtime";
-import type { FloatingWindowPosition, FloatingWindowSettings } from "../types/dashboard";
+import type {
+  DisplaySurfaceSettings,
+  FloatingWindowPosition,
+  FloatingWindowSettings,
+} from "../types/dashboard";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 4_000;
 const WARNING_THROTTLE_MS = 5_000;
@@ -81,6 +85,10 @@ export function saveFloatingSettings(settings: FloatingWindowSettings): Promise<
 
 export function saveFloatingPosition(position: FloatingWindowPosition): Promise<AppSettingsSnapshot> {
   return callCommand("save_floating_position", mockAppSettings, { position });
+}
+
+export function saveDisplaySurfaces(display: DisplaySurfaceSettings): Promise<AppSettingsSnapshot> {
+  return callCommand("save_display_surfaces", mockAppSettings, { display });
 }
 
 export function readPlatformCapabilities(): Promise<PlatformCapabilities> {

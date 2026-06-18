@@ -1,6 +1,6 @@
 use crate::models::{
-    AppSettingsSnapshot, CodexHomeStatus, FloatingWindowPositionSnapshot,
-    FloatingWindowSettingsSnapshot,
+    AppSettingsSnapshot, CodexHomeStatus, DisplaySurfaceSettingsSnapshot,
+    FloatingWindowPositionSnapshot, FloatingWindowSettingsSnapshot,
 };
 use std::path::PathBuf;
 use tauri::{
@@ -85,6 +85,15 @@ pub fn save_floating_position(
 ) -> Result<AppSettingsSnapshot, String> {
     let mut settings = read_app_settings();
     settings.floating_position = sanitize_floating_position(Some(floating_position));
+    write_app_settings(&settings)?;
+    Ok(settings)
+}
+
+pub fn save_display_surfaces(
+    display_surfaces: DisplaySurfaceSettingsSnapshot,
+) -> Result<AppSettingsSnapshot, String> {
+    let mut settings = read_app_settings();
+    settings.display_surfaces = display_surfaces;
     write_app_settings(&settings)?;
     Ok(settings)
 }
@@ -312,6 +321,8 @@ mod tests {
         assert_eq!(sanitized.codex_home.as_deref(), Some("~/custom-codex"));
         assert_eq!(sanitized.floating_window.opacity, 1.0);
         assert_eq!(sanitized.floating_window.scale, 0.9);
+        assert!(sanitized.display_surfaces.floating_window_enabled);
+        assert!(sanitized.display_surfaces.status_tray_live_text_enabled);
     }
 
     #[test]
@@ -326,5 +337,24 @@ mod tests {
         };
 
         assert!(sanitize_app_settings(settings).floating_position.is_none());
+    }
+
+    #[test]
+    fn settings_accept_partial_nested_objects() {
+        let raw = r#"{
+            "floatingWindow": {
+                "opacity": 0.7
+            },
+            "displaySurfaces": {
+                "floatingWindowEnabled": false
+            }
+        }"#;
+
+        let settings: AppSettingsSnapshot = serde_json::from_str(raw).unwrap();
+
+        assert_eq!(settings.floating_window.opacity, 0.7);
+        assert_eq!(settings.floating_window.scale, 1.0);
+        assert!(!settings.display_surfaces.floating_window_enabled);
+        assert!(settings.display_surfaces.status_tray_live_text_enabled);
     }
 }

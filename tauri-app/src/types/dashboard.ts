@@ -33,12 +33,18 @@ export interface AppSettingsSnapshot {
   codexHome: string | null;
   floatingWindow: FloatingWindowSettings;
   floatingPosition: FloatingWindowPosition | null;
+  displaySurfaces: DisplaySurfaceSettings;
 }
 
 export interface FloatingWindowPosition {
   x: number;
   y: number;
   savedAt?: number | null;
+}
+
+export interface DisplaySurfaceSettings {
+  floatingWindowEnabled: boolean;
+  statusTrayLiveTextEnabled: boolean;
 }
 
 export interface AccountInfo {

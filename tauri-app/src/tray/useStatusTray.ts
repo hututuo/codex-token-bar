@@ -2,18 +2,22 @@ import { useEffect, useState } from "react";
 import { desktopPlatform } from "../platform/desktop";
 import type { LiveRateSnapshot, PlatformCapabilities } from "../types/dashboard";
 
-export function useStatusTray(snapshot: LiveRateSnapshot | null, platform: PlatformCapabilities | null) {
+export function useStatusTray(
+  snapshot: LiveRateSnapshot | null,
+  platform: PlatformCapabilities | null,
+  liveTextEnabled: boolean,
+) {
   const [lastTitle, setLastTitle] = useState<string | null>(null);
 
   useEffect(() => {
-    if (snapshot === null) {
-      return;
-    }
-    if (platform !== null && !platform.statusTrayLiveText.available) {
+    if (platform !== null && !platform.statusTray.available) {
       return;
     }
 
-    const title = formatTrayTitle(snapshot);
+    const title =
+      liveTextEnabled && snapshot !== null && platform?.statusTrayLiveText.available !== false
+        ? formatTrayTitle(snapshot)
+        : "CTB";
     if (title === lastTitle) {
       return;
     }
@@ -21,9 +25,11 @@ export function useStatusTray(snapshot: LiveRateSnapshot | null, platform: Platf
     setLastTitle(title);
     void desktopPlatform.setStatusTrayReadout(
       title,
-      `Codex Token Bar · ${snapshot.tokensPerSecond.toFixed(1)} tok/s`,
+      liveTextEnabled && snapshot !== null
+        ? `Codex Token Bar · ${snapshot.tokensPerSecond.toFixed(1)} tok/s`
+        : "Codex Token Bar",
     );
-  }, [lastTitle, platform, snapshot]);
+  }, [lastTitle, liveTextEnabled, platform, snapshot]);
 }
 
 function formatTrayTitle(snapshot: LiveRateSnapshot): string {

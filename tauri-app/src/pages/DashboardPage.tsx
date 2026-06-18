@@ -10,6 +10,7 @@ import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import type {
   CodexHomeStatus,
   DashboardSnapshot,
+  DisplaySurfaceSettings,
   LiveRateSnapshot,
   PlatformCapabilities,
   ProviderRepairSnapshot,
@@ -18,6 +19,7 @@ import type {
 interface DashboardPageProps {
   codexHome: CodexHomeStatus;
   dashboard: DashboardSnapshot;
+  displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
   floatingVisible: boolean;
   liveRate: LiveRateSnapshot;
@@ -28,6 +30,7 @@ interface DashboardPageProps {
   onFloatingScaleChange: (scale: number) => void;
   onRefresh: () => Promise<void>;
   onToggleFloating: () => void;
+  onToggleStatusTray: () => void;
   onProviderRepairChange: (snapshot: ProviderRepairSnapshot) => void;
   providerRepair: ProviderRepairSnapshot;
   refreshing: boolean;
@@ -36,6 +39,7 @@ interface DashboardPageProps {
 export function DashboardPage({
   codexHome,
   dashboard,
+  displaySurfaces,
   floatingSettings,
   floatingVisible,
   liveRate,
@@ -47,6 +51,7 @@ export function DashboardPage({
   onRefresh,
   onProviderRepairChange,
   onToggleFloating,
+  onToggleStatusTray,
   providerRepair,
   refreshing,
 }: DashboardPageProps) {
@@ -76,9 +81,11 @@ export function DashboardPage({
         <LiveRateCard
           floatingSettings={floatingSettings}
           floatingVisible={floatingVisible}
+          statusTrayLiveTextEnabled={displaySurfaces.statusTrayLiveTextEnabled}
           onFloatingOpacityChange={onFloatingOpacityChange}
           onFloatingScaleChange={onFloatingScaleChange}
           onToggleFloating={onToggleFloating}
+          onToggleStatusTray={onToggleStatusTray}
           platform={platform}
           snapshot={liveRate}
         />
