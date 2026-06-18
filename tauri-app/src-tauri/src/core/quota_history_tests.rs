@@ -39,6 +39,30 @@ fn history_carries_to_reset_as_full_quota() {
     let _ = std::fs::remove_file(path);
 }
 
+#[test]
+fn daily_history_groups_quota_samples_by_local_day() {
+    let path = temp_db_path("daily");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let reset = now_unix() + 3_600.0;
+
+    database
+        .record(&bundle("tester", 0.20, reset as i64, 0.40, (reset + 500_000.0) as i64))
+        .unwrap();
+    database
+        .record(&bundle("tester", 0.30, reset as i64, 0.50, (reset + 500_000.0) as i64))
+        .unwrap();
+
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let today = format_date(OffsetDateTime::now_utc().to_offset(local_offset).date());
+    let history = database.daily_history(1).unwrap();
+    let quota = history.get(&today).unwrap();
+
+    assert_eq!(quota.five_hour_remaining_percent, Some(0.75));
+    assert_eq!(quota.seven_day_remaining_percent, Some(0.55));
+
+    let _ = std::fs::remove_file(path);
+}
+
 fn bundle(
     name: &str,
     five_used: f64,

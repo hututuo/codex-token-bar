@@ -1,3 +1,4 @@
+use crate::core::quota_history;
 use crate::models::{
     AccountInfo, ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats,
     QuotaLimit, QuotaSnapshot, RecentUsagePoint, ResetCreditSummary,
@@ -88,7 +89,8 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     let generated_at = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
-    let activity_days = activity_days(&events, local_offset);
+    let mut activity_days = activity_days(&events, local_offset);
+    quota_history::apply_activity_history(&mut activity_days);
     let recent_usage_24h = recent_usage(&events, local_offset);
     let stats = stats(&events, &activity_days);
     let cache_hit_ranking = cache_hit_ranking(&events, codex_home, local_offset);
@@ -275,6 +277,8 @@ fn activity_days(events: &[TokenEvent], local_offset: UtcOffset) -> Vec<Activity
                 tokens: usage.tokens,
                 calls: usage.calls,
                 cache_hit_rate: usage.cache_hit_rate(),
+                five_hour_remaining_percent: None,
+                seven_day_remaining_percent: None,
             }
         })
         .collect()

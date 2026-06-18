@@ -1,4 +1,6 @@
-use crate::models::{AccountQuotaBundle, QuotaHistoryPoint, QuotaSnapshot, RecentUsagePoint};
+use crate::models::{
+    AccountQuotaBundle, ActivityDay, QuotaHistoryPoint, QuotaSnapshot, RecentUsagePoint,
+};
 use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -41,6 +43,24 @@ pub fn apply_recent_history(points: &mut [RecentUsagePoint]) {
         .recent_history_24h(points.len())
         .unwrap_or_default();
     overlay_history(points, &history);
+}
+
+pub fn apply_activity_history(days: &mut [ActivityDay]) {
+    if days.is_empty() {
+        return;
+    }
+    let Ok(database) = QuotaHistoryDatabase::default() else {
+        return;
+    };
+    let history = database
+        .daily_history(days.len())
+        .unwrap_or_default();
+    for day in days {
+        if let Some(quota) = history.get(&day.date) {
+            day.five_hour_remaining_percent = quota.five_hour_remaining_percent;
+            day.seven_day_remaining_percent = quota.seven_day_remaining_percent;
+        }
+    }
 }
 
 pub fn overlay_history(points: &mut [RecentUsagePoint], history: &[QuotaHistoryPoint]) {
@@ -90,6 +110,13 @@ impl QuotaHistoryDatabase {
         Ok(make_recent_history(rows, count.max(1)))
     }
 
+    fn daily_history(&self, day_count: usize) -> SqlResult<HashMap<String, DailyQuotaHistory>> {
+        let connection = self.open()?;
+        ensure_schema(&connection)?;
+        let rows = rows_since(&connection, day_count.max(1) as f64 * 24.0 * 60.0 * 60.0)?;
+        Ok(make_daily_history(rows))
+    }
+
     fn open(&self) -> SqlResult<Connection> {
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -113,6 +140,40 @@ struct QuotaHistoryRow {
     seven_day_used_percent: Option<i32>,
     seven_day_resets_at: Option<f64>,
     status: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct DailyQuotaAccumulator {
+    five_hour_total: f64,
+    five_hour_count: u32,
+    seven_day_total: f64,
+    seven_day_count: u32,
+}
+
+impl DailyQuotaAccumulator {
+    fn add(&mut self, row: &QuotaHistoryRow) {
+        if let Some(value) = row.five_hour_remaining() {
+            self.five_hour_total += value;
+            self.five_hour_count = self.five_hour_count.saturating_add(1);
+        }
+        if let Some(value) = row.seven_day_remaining() {
+            self.seven_day_total += value;
+            self.seven_day_count = self.seven_day_count.saturating_add(1);
+        }
+    }
+
+    fn into_history(self) -> DailyQuotaHistory {
+        DailyQuotaHistory {
+            five_hour_remaining_percent: average(self.five_hour_total, self.five_hour_count),
+            seven_day_remaining_percent: average(self.seven_day_total, self.seven_day_count),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DailyQuotaHistory {
+    five_hour_remaining_percent: Option<f64>,
+    seven_day_remaining_percent: Option<f64>,
 }
 
 impl QuotaHistoryRow {
@@ -244,6 +305,29 @@ fn make_recent_history(rows: Vec<QuotaHistoryRow>, count: usize) -> Vec<QuotaHis
         .collect()
 }
 
+fn make_daily_history(rows: Vec<QuotaHistoryRow>) -> HashMap<String, DailyQuotaHistory> {
+    let sorted = sanitized_rows(rows);
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let mut grouped: HashMap<String, DailyQuotaAccumulator> = HashMap::new();
+
+    for row in sorted {
+        let Some(timestamp) = OffsetDateTime::from_unix_timestamp(row.created_at.round() as i64).ok()
+        else {
+            continue;
+        };
+        let date = timestamp.to_offset(local_offset).date();
+        grouped
+            .entry(format_date(date))
+            .or_default()
+            .add(&row);
+    }
+
+    grouped
+        .into_iter()
+        .map(|(date, usage)| (date, usage.into_history()))
+        .collect()
+}
+
 fn quota_remaining(
     row: Option<&QuotaHistoryRow>,
     at: f64,
@@ -262,6 +346,14 @@ fn quota_remaining(
         Some(value)
     } else {
         None
+    }
+}
+
+fn average(total: f64, count: u32) -> Option<f64> {
+    if count == 0 {
+        None
+    } else {
+        Some((total / f64::from(count)).clamp(0.0, 1.0))
     }
 }
 
@@ -340,10 +432,14 @@ fn latest_trusted_row(connection: &Connection, account_key: &str) -> SqlResult<O
 }
 
 fn recent_rows(connection: &Connection) -> SqlResult<Vec<QuotaHistoryRow>> {
+    rows_since(connection, 31.0 * 24.0 * 60.0 * 60.0)
+}
+
+fn rows_since(connection: &Connection, age_seconds: f64) -> SqlResult<Vec<QuotaHistoryRow>> {
     let Some(account_key) = latest_account_key(connection)? else {
         return Ok(Vec::new());
     };
-    let cutoff = now_unix() - 31.0 * 24.0 * 60.0 * 60.0;
+    let cutoff = now_unix() - age_seconds;
     let rows = query_rows(
         connection,
         r#"
@@ -437,6 +533,11 @@ fn format_unix_time(value: f64) -> String {
         .to_offset(offset)
         .format(format_description!("[hour]:[minute]"))
         .unwrap_or_else(|_| "00:00".into())
+}
+
+fn format_date(date: time::Date) -> String {
+    date.format(format_description!("[year]-[month]-[day]"))
+        .unwrap_or_else(|_| "1970-01-01".into())
 }
 
 fn database_path() -> Option<PathBuf> {

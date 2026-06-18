@@ -50,6 +50,8 @@ export interface ActivityDay {
   tokens: number;
   calls: number;
   cacheHitRate: number;
+  fiveHourRemainingPercent: number | null;
+  sevenDayRemainingPercent: number | null;
 }
 
 export interface RecentUsagePoint {

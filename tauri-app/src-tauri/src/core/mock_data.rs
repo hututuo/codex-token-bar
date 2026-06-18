@@ -86,6 +86,16 @@ fn mock_activity_days() -> Vec<ActivityDay> {
                 tokens: (value * 58_000_000.0) as u64,
                 calls: (value * 16.0).round() as u32,
                 cache_hit_rate: 0.78 + value * 0.18,
+                five_hour_remaining_percent: if idx > 62 {
+                    Some(1.0 - value * 0.08)
+                } else {
+                    None
+                },
+                seven_day_remaining_percent: if idx > 62 {
+                    Some(0.86 - value * 0.03)
+                } else {
+                    None
+                },
             }
         })
         .collect()

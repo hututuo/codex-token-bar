@@ -404,6 +404,10 @@ input[type="range"] {
   color: var(--accent-strong);
 }
 
+.segmented--activity button:nth-last-child(-n + 2) {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
 .heatmap-grid {
   display: grid;
   grid-template-columns: repeat(42, 1fr);
@@ -413,12 +417,27 @@ input[type="range"] {
 
 .heatmap-cell {
   aspect-ratio: 1;
+  min-width: 0;
+  border: 0;
   border-radius: 5px;
+  padding: 0;
   outline: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  cursor: pointer;
+}
+
+.heatmap-cell--selected {
+  outline: 2px solid color-mix(in srgb, var(--accent-strong) 74%, white);
+  outline-offset: 1px;
+}
+
+.heatmap-cell:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
 }
 
 .range-summary {
   display: flex;
+  gap: 18px;
   justify-content: space-between;
   margin-top: 12px;
   padding: 10px 12px;
@@ -427,7 +446,15 @@ input[type="range"] {
 }
 
 .range-summary span {
+  min-width: 0;
+  overflow: hidden;
   color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.range-summary strong {
+  flex: 0 0 auto;
 }
 
 .chart-legend,

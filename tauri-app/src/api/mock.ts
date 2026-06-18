@@ -23,6 +23,8 @@ const activityDays = Array.from({ length: 84 }, (_, index) => {
     tokens: Math.round(value * 58_000_000),
     calls: Math.round(value * 16),
     cacheHitRate: 0.78 + value * 0.18,
+    fiveHourRemainingPercent: active ? 1 - value * 0.08 : null,
+    sevenDayRemainingPercent: active ? 0.86 - value * 0.03 : null,
   };
 });
 

@@ -88,6 +88,8 @@ pub struct ActivityDay {
     pub tokens: u64,
     pub calls: u32,
     pub cache_hit_rate: f64,
+    pub five_hour_remaining_percent: Option<f64>,
+    pub seven_day_remaining_percent: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]

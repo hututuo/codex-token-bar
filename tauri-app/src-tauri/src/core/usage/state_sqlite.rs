@@ -1,3 +1,4 @@
+use crate::core::quota_history;
 use crate::models::{
     AccountInfo, ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats,
     QuotaLimit, QuotaSnapshot, RecentUsagePoint, ResetCreditSummary,
@@ -19,7 +20,8 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
         |row| row.get(0),
     )?;
     let stats = read_stats(&connection)?;
-    let activity_days = read_activity_days(&connection)?;
+    let mut activity_days = read_activity_days(&connection)?;
+    quota_history::apply_activity_history(&mut activity_days);
     let recent_usage_24h = read_recent_usage(&connection)?;
 
     Ok(DashboardSnapshot {
@@ -103,6 +105,8 @@ fn read_activity_days(connection: &Connection) -> Result<Vec<ActivityDay>> {
             tokens: to_u64(tokens),
             calls: to_u32(calls),
             cache_hit_rate: 0.0,
+            five_hour_remaining_percent: None,
+            seven_day_remaining_percent: None,
         })
     })?;
 
