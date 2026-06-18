@@ -30,11 +30,10 @@ pub fn token_event_cache_path() -> Option<PathBuf> {
     }
 }
 
-pub fn provider_repair_backup_root() -> PathBuf {
+pub fn provider_repair_backup_root() -> Result<PathBuf, String> {
     app_support_base_dir()
-        .unwrap_or_else(|| std::env::temp_dir())
-        .join(HISTORY_REPAIR_DIRECTORY_NAME)
-        .join("backups")
+        .map(|path| path.join(HISTORY_REPAIR_DIRECTORY_NAME).join("backups"))
+        .ok_or_else(|| "无法定位系统应用支持目录，不能创建会话修复备份".into())
 }
 
 fn app_support_dir() -> Option<PathBuf> {

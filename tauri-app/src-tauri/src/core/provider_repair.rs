@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -24,9 +25,11 @@ pub fn scan_provider_repair(codex_home: &Path) -> ProviderRepairSnapshot {
 }
 
 pub fn list_provider_backups() -> Result<Vec<ProviderRepairBackupInfo>, String> {
-    let root = provider_backup_root();
-    let Ok(entries) = fs::read_dir(root) else {
-        return Ok(Vec::new());
+    let root = provider_backup_root()?;
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("读取备份列表失败：{error}")),
     };
 
     let mut backups = entries
@@ -528,7 +531,7 @@ fn create_backup_from_report(
     report: &ProviderRepairReport,
 ) -> Result<ProviderRepairBackupInfo, String> {
     let id = timestamp_id();
-    let backup_path = provider_backup_root().join(&id);
+    let backup_path = provider_backup_root()?.join(&id);
     fs::create_dir_all(&backup_path).map_err(|error| error.to_string())?;
 
     let state_database = copy_if_exists(
@@ -580,7 +583,7 @@ fn create_backup_from_report(
     read_backup_info(&backup_path)
 }
 
-fn provider_backup_root() -> PathBuf {
+fn provider_backup_root() -> Result<PathBuf, String> {
     app_paths::provider_repair_backup_root()
 }
 
@@ -590,7 +593,7 @@ fn backup_by_id(backup_id: &str) -> Result<ProviderRepairBackupInfo, String> {
     {
         return Err("备份 ID 无效".into());
     }
-    let path = provider_backup_root().join(trimmed);
+    let path = provider_backup_root()?.join(trimmed);
     read_backup_info(&path)
 }
 

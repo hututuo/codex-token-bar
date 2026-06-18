@@ -4,7 +4,8 @@ use crate::models::{
     FloatingWindowPositionSnapshot, FloatingWindowSettingsSnapshot,
 };
 use std::{
-    path::PathBuf,
+    io::ErrorKind,
+    path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
 use tauri::{
@@ -65,7 +66,7 @@ pub fn default_codex_home_status() -> CodexHomeStatus {
 
 pub fn save_codex_home(path: &str) -> Result<CodexHomeStatus, String> {
     let path = normalize_user_path(path);
-    let mut settings = read_app_settings();
+    let mut settings = read_app_settings()?;
     settings.codex_home = Some(path.display().to_string());
     write_app_settings(&settings)?;
     Ok(CodexHomeStatus {
@@ -76,20 +77,21 @@ pub fn save_codex_home(path: &str) -> Result<CodexHomeStatus, String> {
 }
 
 pub fn reset_codex_home() -> Result<CodexHomeStatus, String> {
-    let mut settings = read_app_settings();
+    let mut settings = read_app_settings()?;
     settings.codex_home = None;
     write_app_settings(&settings)?;
     Ok(default_codex_home_status())
 }
 
-pub fn read_app_settings() -> AppSettingsSnapshot {
-    sanitize_app_settings(read_settings_file())
+pub fn read_app_settings() -> Result<AppSettingsSnapshot, String> {
+    let path = settings_path()?;
+    read_app_settings_at(&path)
 }
 
 pub fn save_floating_settings(
     floating_window: FloatingWindowSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
-    let mut settings = read_app_settings();
+    let mut settings = read_app_settings()?;
     settings.floating_window = sanitize_floating_settings(floating_window);
     write_app_settings(&settings)?;
     Ok(settings)
@@ -98,7 +100,7 @@ pub fn save_floating_settings(
 pub fn save_floating_position(
     floating_position: FloatingWindowPositionSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
-    let mut settings = read_app_settings();
+    let mut settings = read_app_settings()?;
     settings.floating_position = sanitize_floating_position(Some(floating_position));
     write_app_settings(&settings)?;
     Ok(settings)
@@ -107,14 +109,14 @@ pub fn save_floating_position(
 pub fn save_display_surfaces(
     display_surfaces: DisplaySurfaceSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
-    let mut settings = read_app_settings();
+    let mut settings = read_app_settings()?;
     settings.display_surfaces = display_surfaces;
     write_app_settings(&settings)?;
     Ok(settings)
 }
 
 pub fn save_setup_guide_completed(completed: bool) -> Result<AppSettingsSnapshot, String> {
-    let mut settings = read_app_settings();
+    let mut settings = read_app_settings()?;
     settings.setup_guide_completed = completed;
     write_app_settings(&settings)?;
     Ok(settings)
@@ -313,18 +315,28 @@ fn create_status_panel_window(app: &tauri::App) -> tauri::Result<()> {
 }
 
 fn saved_codex_home() -> Option<PathBuf> {
-    read_app_settings().codex_home.as_deref().map(normalize_user_path)
+    read_app_settings_or_default()
+        .codex_home
+        .as_deref()
+        .map(normalize_user_path)
 }
 
-fn read_settings_file() -> AppSettingsSnapshot {
-    std::fs::read(settings_path())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<AppSettingsSnapshot>(&bytes).ok())
-        .unwrap_or_default()
+fn read_app_settings_or_default() -> AppSettingsSnapshot {
+    read_app_settings().unwrap_or_default()
+}
+
+fn read_app_settings_at(path: &Path) -> Result<AppSettingsSnapshot, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<AppSettingsSnapshot>(&bytes)
+            .map(sanitize_app_settings)
+            .map_err(|error| format!("设置文件不是有效 JSON：{}（{}）", path.display(), error)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(AppSettingsSnapshot::default()),
+        Err(error) => Err(format!("读取设置文件失败：{}（{}）", path.display(), error)),
+    }
 }
 
 fn write_app_settings(settings: &AppSettingsSnapshot) -> Result<(), String> {
-    let settings_path = settings_path();
+    let settings_path = settings_path()?;
     if let Some(parent) = settings_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -404,13 +416,15 @@ fn normalize_user_path(path: &str) -> PathBuf {
     PathBuf::from(trimmed)
 }
 
-fn settings_path() -> PathBuf {
-    app_paths::settings_path().unwrap_or_else(|| app_paths::home_dir().join("settings.json"))
+fn settings_path() -> Result<PathBuf, String> {
+    app_paths::settings_path()
+        .ok_or_else(|| "无法定位系统应用支持目录，不能读取或保存本地设置".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn settings_keep_legacy_codex_home_and_sanitize_floating_values() {
@@ -470,5 +484,38 @@ mod tests {
         assert!(settings.setup_guide_completed);
         assert!(!settings.display_surfaces.floating_window_enabled);
         assert!(settings.display_surfaces.status_tray_live_text_enabled);
+    }
+
+    #[test]
+    fn missing_settings_file_uses_first_launch_defaults() {
+        let path = unique_test_settings_path("missing");
+        let settings = read_app_settings_at(&path).unwrap();
+
+        assert!(settings.codex_home.is_none());
+        assert!(settings.display_surfaces.floating_window_enabled);
+        assert!(settings.display_surfaces.status_tray_live_text_enabled);
+        assert!(!settings.setup_guide_completed);
+    }
+
+    #[test]
+    fn corrupt_settings_file_returns_error() {
+        let path = unique_test_settings_path("corrupt");
+        std::fs::write(&path, b"{not-json").unwrap();
+
+        let error = read_app_settings_at(&path).unwrap_err();
+
+        assert!(error.contains("设置文件不是有效 JSON"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn unique_test_settings_path(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "codex-token-bar-settings-{label}-{}-{nanos}.json",
+            std::process::id()
+        ))
     }
 }

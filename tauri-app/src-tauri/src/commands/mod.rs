@@ -56,7 +56,7 @@ pub fn reset_codex_home() -> Result<CodexHomeStatus, String> {
 
 #[tauri::command]
 pub fn read_app_settings() -> Result<AppSettingsSnapshot, String> {
-    Ok(platform::read_app_settings())
+    platform::read_app_settings()
 }
 
 #[tauri::command]
