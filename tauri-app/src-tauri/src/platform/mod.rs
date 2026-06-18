@@ -1,3 +1,4 @@
+use crate::core::app_paths;
 use crate::models::{
     AppSettingsSnapshot, CodexHomeStatus, DisplaySurfaceSettingsSnapshot,
     FloatingWindowPositionSnapshot, FloatingWindowSettingsSnapshot,
@@ -348,35 +349,16 @@ fn is_valid_coordinate(value: f64) -> bool {
 fn normalize_user_path(path: &str) -> PathBuf {
     let trimmed = path.trim();
     if trimmed == "~" {
-        return home_dir();
+        return app_paths::home_dir();
     }
     if let Some(rest) = trimmed.strip_prefix("~/") {
-        return home_dir().join(rest);
+        return app_paths::home_dir().join(rest);
     }
     PathBuf::from(trimmed)
 }
 
 fn settings_path() -> PathBuf {
-    if cfg!(target_os = "windows") {
-        std::env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(home_dir)
-            .join("CodexTokenBar")
-            .join("settings.json")
-    } else {
-        home_dir()
-            .join("Library")
-            .join("Application Support")
-            .join("CodexTokenBar")
-            .join("settings.json")
-    }
-}
-
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+    app_paths::settings_path().unwrap_or_else(|| app_paths::home_dir().join("settings.json"))
 }
 
 #[cfg(test)]

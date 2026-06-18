@@ -1,3 +1,4 @@
+use crate::core::app_paths;
 use crate::core::quota_history;
 use crate::models::{
     AccountInfo, ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats,
@@ -210,7 +211,7 @@ fn session_id_from_file(file: &Path) -> String {
 
 impl TokenEventCache {
     fn load() -> Self {
-        let Some(path) = token_event_cache_path() else {
+        let Some(path) = app_paths::token_event_cache_path() else {
             return Self::default();
         };
         let Ok(data) = fs::read(path) else {
@@ -227,7 +228,7 @@ impl TokenEventCache {
     }
 
     fn save(&self) {
-        let Some(path) = token_event_cache_path() else {
+        let Some(path) = app_paths::token_event_cache_path() else {
             return;
         };
         if let Some(parent) = path.parent() {
@@ -361,27 +362,6 @@ fn stable_path_fingerprint(value: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("{hash:016x}")
-}
-
-fn token_event_cache_path() -> Option<PathBuf> {
-    #[cfg(test)]
-    {
-        None
-    }
-
-    #[cfg(not(test))]
-    {
-        let base = if cfg!(target_os = "windows") {
-            std::env::var_os("LOCALAPPDATA")
-                .or_else(|| std::env::var_os("APPDATA"))
-                .map(PathBuf::from)
-        } else {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|home| home.join("Library").join("Caches"))
-        }?;
-        Some(base.join("CodexTokenBar").join("token-events-cache-v2.json"))
-    }
 }
 
 fn parse_session_file(file: &Path, session_id: &str) -> Vec<TokenEvent> {

@@ -1,3 +1,4 @@
+use crate::core::app_paths;
 use crate::models::{
     AccountQuotaBundle, ActivityDay, QuotaHistoryPoint, QuotaSnapshot, RecentUsagePoint,
 };
@@ -546,20 +547,7 @@ fn format_date(date: time::Date) -> String {
 }
 
 fn database_path() -> Option<PathBuf> {
-    if cfg!(target_os = "windows") {
-        std::env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .map(|path| path.join("CodexTokenBar").join("quota-history.sqlite"))
-    } else {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| {
-                home.join("Library")
-                    .join("Application Support")
-                    .join("CodexTokenBar")
-                    .join("quota-history.sqlite")
-            })
-    }
+    app_paths::quota_history_database_path()
 }
 
 #[cfg(test)]

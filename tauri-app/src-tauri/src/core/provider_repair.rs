@@ -1,3 +1,4 @@
+use crate::core::app_paths;
 use crate::models::{
     ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
     ProviderRepairStep,
@@ -583,21 +584,7 @@ fn create_backup_from_report(
 }
 
 fn provider_backup_root() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    if cfg!(target_os = "windows") {
-        home.join("AppData")
-            .join("Roaming")
-            .join("CodexHistoryRepair")
-            .join("backups")
-    } else {
-        home.join("Library")
-            .join("Application Support")
-            .join("CodexHistoryRepair")
-            .join("backups")
-    }
+    app_paths::provider_repair_backup_root()
 }
 
 fn backup_by_id(backup_id: &str) -> Result<ProviderRepairBackupInfo, String> {

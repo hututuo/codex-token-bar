@@ -1,3 +1,4 @@
+pub mod app_paths;
 pub mod dashboard;
 pub mod live_rate;
 pub mod provider_repair;
