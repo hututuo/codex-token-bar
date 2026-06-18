@@ -9,14 +9,62 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{OffsetDateTime, UtcOffset};
 
-pub fn read_account_quota(codex_home: &Path) -> Result<AccountQuotaBundle, String> {
+const SUCCESS_CACHE_TTL: Duration = Duration::from_secs(180);
+const FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
+
+static QUOTA_READ_CACHE: OnceLock<Mutex<Option<QuotaCacheEntry>>> = OnceLock::new();
+
+#[derive(Clone)]
+struct QuotaCacheEntry {
+    codex_home: std::path::PathBuf,
+    bundle: AccountQuotaBundle,
+    cached_at: Instant,
+    available: bool,
+}
+
+pub fn read_account_quota(codex_home: &Path, force_refresh: bool) -> Result<AccountQuotaBundle, String> {
+    let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().map_err(|error| error.to_string())?;
+    if !force_refresh {
+        if let Some(entry) = guard.as_ref() {
+            if entry.codex_home == codex_home && entry.cached_at.elapsed() <= cache_ttl(entry.available) {
+                let mut cached = entry.bundle.clone();
+                cached.quota_history_24h = quota_history::recent_history_24h();
+                return Ok(cached);
+            }
+        }
+    }
+
+    let bundle = read_account_quota_uncached(codex_home)?;
+    *guard = Some(QuotaCacheEntry {
+        codex_home: codex_home.to_path_buf(),
+        available: quota_available(&bundle.quota),
+        cached_at: Instant::now(),
+        bundle: bundle.clone(),
+    });
+    Ok(bundle)
+}
+
+fn cache_ttl(available: bool) -> Duration {
+    if available {
+        SUCCESS_CACHE_TTL
+    } else {
+        FAILURE_CACHE_TTL
+    }
+}
+
+fn quota_available(quota: &QuotaSnapshot) -> bool {
+    quota.five_hour.resets_at_unix.is_some() || quota.seven_day.resets_at_unix.is_some()
+}
+
+fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, String> {
     let mut bundle = match read_rate_limits() {
         Ok(mut quota) => {
             quota.reset_credit = read_reset_credits(codex_home).unwrap_or_else(|_| ResetCreditSummary {

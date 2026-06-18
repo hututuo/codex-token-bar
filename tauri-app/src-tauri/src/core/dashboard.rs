@@ -9,7 +9,7 @@ pub trait DashboardDataSource {
     fn codex_home(&self) -> &Path;
     fn read_dashboard_snapshot(&self) -> DashboardSnapshot;
     fn read_precise_dashboard_snapshot(&self) -> DashboardSnapshot;
-    fn read_account_quota(&self) -> Result<AccountQuotaBundle, String>;
+    fn read_account_quota(&self, force_refresh: bool) -> Result<AccountQuotaBundle, String>;
     fn read_live_rate_snapshot(&self, selected_thread_id: Option<&str>) -> LiveRateSnapshot;
     fn read_live_thread_options(&self) -> Vec<LiveThreadOption>;
     fn read_floating_snapshot(&self) -> FloatingPanelSnapshot;
@@ -46,8 +46,8 @@ impl DashboardDataSource for LocalCodexDataSource {
         snapshot
     }
 
-    fn read_account_quota(&self) -> Result<AccountQuotaBundle, String> {
-        quota::read_account_quota(self.codex_home())
+    fn read_account_quota(&self, force_refresh: bool) -> Result<AccountQuotaBundle, String> {
+        quota::read_account_quota(self.codex_home(), force_refresh)
     }
 
     fn read_live_rate_snapshot(&self, selected_thread_id: Option<&str>) -> LiveRateSnapshot {

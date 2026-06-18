@@ -18,6 +18,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   const [state, setState] = useState<DashboardAppState>(initialDashboardState);
   const preciseLoadStarted = useRef(false);
   const quotaLoadStarted = useRef(false);
+  const forceNextQuotaLoad = useRef(false);
   const liveThreadOptionsLoadStarted = useRef(false);
   const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
 
@@ -69,7 +70,8 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     quotaLoadStarted.current = true;
 
     async function loadQuota() {
-      const quota = await source.readAccountQuota();
+      const quota = await source.readAccountQuota(forceNextQuotaLoad.current);
+      forceNextQuotaLoad.current = false;
       if (!cancelled) {
         setState((current) => mergeQuota(current, quota));
       }
@@ -172,6 +174,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   async function reloadAll() {
     preciseLoadStarted.current = false;
     quotaLoadStarted.current = false;
+    forceNextQuotaLoad.current = true;
     liveThreadOptionsLoadStarted.current = false;
     setState((current) => ({ ...current, loading: true }));
     setState(await readInitialAppState(source));

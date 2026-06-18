@@ -25,7 +25,7 @@ export interface DashboardDataSource {
   readPlatformCapabilities: () => Promise<PlatformCapabilities>;
   readDashboardSnapshot: () => Promise<DashboardSnapshot>;
   readPreciseDashboardSnapshot: () => Promise<DashboardSnapshot>;
-  readAccountQuota: () => Promise<AccountQuotaBundle>;
+  readAccountQuota: (forceRefresh?: boolean) => Promise<AccountQuotaBundle>;
   readLiveRateSnapshot: (selectedThreadId?: string | null) => Promise<LiveRateSnapshot>;
   readLiveThreadOptions: () => Promise<LiveThreadOption[]>;
 }

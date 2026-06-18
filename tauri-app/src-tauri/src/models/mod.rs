@@ -134,7 +134,7 @@ pub struct DashboardSnapshot {
     pub cache_hit_ranking: Vec<CacheHitRankingItem>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountQuotaBundle {
     pub account: AccountInfo,
@@ -142,7 +142,7 @@ pub struct AccountQuotaBundle {
     pub quota_history_24h: Vec<QuotaHistoryPoint>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountInfo {
     pub display_name: String,
@@ -161,7 +161,7 @@ pub struct DashboardStats {
     pub total_threads: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaSnapshot {
     pub five_hour: QuotaLimit,
@@ -188,7 +188,7 @@ pub struct QuotaHistoryPoint {
     pub seven_day_remaining_percent: Option<f64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResetCreditSummary {
     pub available_count: u32,
@@ -196,7 +196,7 @@ pub struct ResetCreditSummary {
     pub credits: Vec<ResetCreditDetail>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResetCreditDetail {
     pub title: String,

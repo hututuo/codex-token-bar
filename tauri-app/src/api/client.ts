@@ -107,8 +107,13 @@ export function readPreciseDashboardSnapshot(): Promise<DashboardSnapshot> {
   return callCommand("read_precise_dashboard_snapshot", emptyDashboardSnapshot(), undefined, 30_000);
 }
 
-export function readAccountQuota(): Promise<AccountQuotaBundle> {
-  return callCommand("read_account_quota", emptyAccountQuotaBundle(), undefined, 12_000);
+export function readAccountQuota(forceRefresh = false): Promise<AccountQuotaBundle> {
+  return callCommand(
+    "read_account_quota",
+    emptyAccountQuotaBundle(),
+    { forceRefresh },
+    12_000,
+  );
 }
 
 export function readLiveRateSnapshot(selectedThreadId?: string | null): Promise<LiveRateSnapshot> {

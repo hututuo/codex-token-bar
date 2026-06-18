@@ -101,8 +101,8 @@ pub fn read_precise_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
 }
 
 #[tauri::command]
-pub fn read_account_quota() -> Result<AccountQuotaBundle, String> {
-    local_source().read_account_quota()
+pub fn read_account_quota(force_refresh: Option<bool>) -> Result<AccountQuotaBundle, String> {
+    local_source().read_account_quota(force_refresh.unwrap_or(false))
 }
 
 #[tauri::command]
