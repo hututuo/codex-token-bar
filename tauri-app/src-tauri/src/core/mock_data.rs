@@ -1,7 +1,7 @@
 use crate::models::{
     AccountInfo, ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats,
-    FloatingPanelSnapshot, LiveRateSnapshot, ProviderRepairStep, ProviderRepairSnapshot,
-    QuotaLimit, QuotaSnapshot, RecentUsagePoint, ResetCreditSummary,
+    ProviderRepairStep, ProviderRepairSnapshot, QuotaLimit, QuotaSnapshot, RecentUsagePoint,
+    ResetCreditSummary,
 };
 
 pub fn dashboard_snapshot() -> DashboardSnapshot {
@@ -67,31 +67,6 @@ pub fn dashboard_snapshot() -> DashboardSnapshot {
                 cached_tokens: 464_000,
             },
         ],
-    }
-}
-
-pub fn live_rate_snapshot() -> LiveRateSnapshot {
-    LiveRateSnapshot {
-        scope_label: "全会话".into(),
-        thread_title: "等待任意会话输出".into(),
-        tokens_per_second: 43.1,
-        total_tokens_today: 61_461_000,
-        requests_today: 513,
-        max_tokens_per_second: 200.0,
-        precise_enabled: true,
-    }
-}
-
-pub fn floating_panel_snapshot() -> FloatingPanelSnapshot {
-    FloatingPanelSnapshot {
-        tokens_per_second: 43.1,
-        trend_label: "节奏稳，多 3%".into(),
-        total_tokens_label: "总 43.6亿".into(),
-        today_tokens_label: "今 6146.1万".into(),
-        requests_label: "次 513".into(),
-        five_hour_label: "5h 100% 00:59".into(),
-        seven_day_label: "7d 83% 06/18".into(),
-        unread: true,
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::core::{mock_data, quota, usage};
+use crate::core::{live_rate, mock_data, quota, usage};
 use crate::models::{
     AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, FloatingPanelSnapshot, LiveRateSnapshot,
     ProviderRepairSnapshot,
@@ -33,12 +33,14 @@ pub fn read_account_quota() -> Result<AccountQuotaBundle, String> {
 
 #[tauri::command]
 pub fn read_live_rate_snapshot() -> Result<LiveRateSnapshot, String> {
-    Ok(mock_data::live_rate_snapshot())
+    let codex_home = platform::default_codex_home();
+    Ok(live_rate::read_snapshot(&codex_home))
 }
 
 #[tauri::command]
 pub fn read_floating_snapshot() -> Result<FloatingPanelSnapshot, String> {
-    Ok(mock_data::floating_panel_snapshot())
+    let codex_home = platform::default_codex_home();
+    Ok(live_rate::read_floating_snapshot(&codex_home))
 }
 
 #[tauri::command]

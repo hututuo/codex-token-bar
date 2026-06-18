@@ -17,6 +17,7 @@ import type {
   LiveRateSnapshot,
   ProviderRepairSnapshot,
 } from "../types/dashboard";
+import { formatTokens } from "../utils/format";
 
 interface AppState {
   codexHome: CodexHomeStatus | null;
@@ -40,6 +41,7 @@ export function App() {
   const [state, setState] = useState<AppState>(initialState);
   const preciseLoadStarted = useRef(false);
   const quotaLoadStarted = useRef(false);
+  const liveRatePollStarted = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -119,6 +121,32 @@ export function App() {
     };
   }, [state.dashboard, state.loading]);
 
+  useEffect(() => {
+    if (state.loading || liveRatePollStarted.current) {
+      return;
+    }
+
+    let cancelled = false;
+    liveRatePollStarted.current = true;
+
+    async function refreshLiveRate() {
+      const liveRate = await readLiveRateSnapshot();
+      if (!cancelled) {
+        setState((current) => mergeLiveRate(current, liveRate));
+      }
+    }
+
+    void refreshLiveRate();
+    const interval = window.setInterval(() => {
+      void refreshLiveRate();
+    }, 500);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [state.loading]);
+
   const readyState = useMemo(() => {
     if (
       state.codexHome === null ||
@@ -179,6 +207,29 @@ function mergeQuota(state: AppState, quota: AccountQuotaBundle): AppState {
   return {
     ...state,
     dashboard,
+    floating,
+  };
+}
+
+function mergeLiveRate(state: AppState, liveRate: LiveRateSnapshot): AppState {
+  const floating =
+    state.floating === null
+      ? null
+      : {
+          ...state.floating,
+          tokensPerSecond: liveRate.tokensPerSecond,
+          trendLabel: liveRate.tokensPerSecond > 0.05 ? "输出中" : "待输出",
+          totalTokensLabel:
+            state.dashboard === null
+              ? state.floating.totalTokensLabel
+              : `总 ${formatTokens(state.dashboard.stats.totalTokens)}`,
+          todayTokensLabel: `今 ${formatTokens(liveRate.totalTokensToday)}`,
+          requestsLabel: `次 ${liveRate.requestsToday}`,
+        };
+
+  return {
+    ...state,
+    liveRate,
     floating,
   };
 }
