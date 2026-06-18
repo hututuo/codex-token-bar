@@ -17,7 +17,7 @@ use time::{Date, Duration, OffsetDateTime, UtcOffset};
 
 const RECENT_INTERVAL_SECONDS: i64 = 5 * 60;
 const RECENT_POINT_COUNT: i64 = 289;
-const TOKEN_EVENT_CACHE_VERSION: u32 = 1;
+const TOKEN_EVENT_CACHE_VERSION: u32 = 2;
 
 #[derive(Clone, Debug)]
 struct TokenEvent {
@@ -79,16 +79,23 @@ struct ThreadInfo {
 #[serde(rename_all = "camelCase")]
 struct TokenEventCache {
     version: u32,
-    files: HashMap<String, CachedSessionFile>,
+    homes: HashMap<String, CachedCodexHome>,
 }
 
 impl Default for TokenEventCache {
     fn default() -> Self {
         Self {
             version: TOKEN_EVENT_CACHE_VERSION,
-            files: HashMap::new(),
+            homes: HashMap::new(),
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedCodexHome {
+    codex_home: String,
+    files: HashMap<String, CachedSessionFile>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -122,20 +129,23 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
 
     let mut events = Vec::new();
     let mut cache = TokenEventCache::load();
+    let home_cache_key = codex_home_cache_key(codex_home);
+    let home_cache = cache.home_cache_mut(&home_cache_key, codex_home);
     let mut seen_cache_keys = HashSet::new();
     let mut cache_changed = false;
     for file in jsonl_files(&sessions_root) {
         let session_id = session_id_from_file(&file);
-        let cache_key = file_cache_key(&file);
+        let cache_key = file_cache_key(codex_home, &file);
         seen_cache_keys.insert(cache_key);
         events.extend(parse_session_file_cached(
             &file,
             &session_id,
-            &mut cache,
+            &mut home_cache.files,
             &mut cache_changed,
+            codex_home,
         ));
     }
-    if cache.retain_seen(&seen_cache_keys) {
+    if home_cache.retain_seen(&seen_cache_keys) {
         cache_changed = true;
     }
     if cache_changed {
@@ -232,6 +242,23 @@ impl TokenEventCache {
         }
     }
 
+    fn home_cache_mut(&mut self, home_key: &str, codex_home: &Path) -> &mut CachedCodexHome {
+        let identity = codex_home_identity(codex_home);
+        let home = self
+            .homes
+            .entry(home_key.to_string())
+            .or_insert_with(|| CachedCodexHome {
+                codex_home: identity.clone(),
+                files: HashMap::new(),
+            });
+        if home.codex_home != identity {
+            home.codex_home = identity;
+        }
+        home
+    }
+}
+
+impl CachedCodexHome {
     fn retain_seen(&mut self, seen: &HashSet<String>) -> bool {
         let before = self.files.len();
         self.files.retain(|path, _| seen.contains(path));
@@ -242,22 +269,23 @@ impl TokenEventCache {
 fn parse_session_file_cached(
     file: &Path,
     session_id: &str,
-    cache: &mut TokenEventCache,
+    files: &mut HashMap<String, CachedSessionFile>,
     cache_changed: &mut bool,
+    codex_home: &Path,
 ) -> Vec<TokenEvent> {
-    let cache_key = file_cache_key(file);
+    let cache_key = file_cache_key(codex_home, file);
     let Some(signature) = file_signature(file) else {
         return parse_session_file(file, session_id);
     };
 
-    if let Some(entry) = cache.files.get(&cache_key) {
+    if let Some(entry) = files.get(&cache_key) {
         if entry.signature == signature {
             return entry.to_events(session_id);
         }
     }
 
     let events = parse_session_file(file, session_id);
-    cache.files.insert(
+    files.insert(
         cache_key,
         CachedSessionFile {
             signature,
@@ -308,21 +336,52 @@ fn file_signature(file: &Path) -> Option<CachedFileSignature> {
     })
 }
 
-fn file_cache_key(file: &Path) -> String {
-    file.to_string_lossy().into_owned()
+fn file_cache_key(codex_home: &Path, file: &Path) -> String {
+    file.strip_prefix(codex_home)
+        .unwrap_or(file)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn codex_home_cache_key(codex_home: &Path) -> String {
+    stable_path_fingerprint(&codex_home_identity(codex_home))
+}
+
+fn codex_home_identity(codex_home: &Path) -> String {
+    fs::canonicalize(codex_home)
+        .unwrap_or_else(|_| codex_home.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn stable_path_fingerprint(value: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn token_event_cache_path() -> Option<PathBuf> {
-    let base = if cfg!(target_os = "windows") {
-        std::env::var_os("LOCALAPPDATA")
-            .or_else(|| std::env::var_os("APPDATA"))
-            .map(PathBuf::from)
-    } else {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| home.join("Library").join("Caches"))
-    }?;
-    Some(base.join("CodexTokenBar").join("token-events-cache-v1.json"))
+    #[cfg(test)]
+    {
+        None
+    }
+
+    #[cfg(not(test))]
+    {
+        let base = if cfg!(target_os = "windows") {
+            std::env::var_os("LOCALAPPDATA")
+                .or_else(|| std::env::var_os("APPDATA"))
+                .map(PathBuf::from)
+        } else {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join("Library").join("Caches"))
+        }?;
+        Some(base.join("CodexTokenBar").join("token-events-cache-v2.json"))
+    }
 }
 
 fn parse_session_file(file: &Path, session_id: &str) -> Vec<TokenEvent> {
@@ -842,7 +901,14 @@ mod tests {
     #[test]
     fn token_event_cache_serializes_only_usage_summary() {
         let mut cache = TokenEventCache::default();
-        cache.files.insert(
+        cache.homes.insert(
+            "home-a".into(),
+            CachedCodexHome {
+                codex_home: "/tmp/codex-a".into(),
+                files: HashMap::new(),
+            },
+        );
+        cache.homes.get_mut("home-a").unwrap().files.insert(
             "/tmp/session.jsonl".into(),
             CachedSessionFile {
                 signature: CachedFileSignature {
@@ -864,6 +930,43 @@ mod tests {
         assert!(!serialized.contains("assistantResponse"));
         assert!(!serialized.contains("用户问题"));
         assert!(!serialized.contains("模型回答"));
+    }
+
+    #[test]
+    fn token_event_cache_partitions_entries_by_codex_home() {
+        let root = temp_root();
+        let home_a = root.join("codex-a");
+        let home_b = root.join("codex-b");
+        fs::create_dir_all(&home_a).unwrap();
+        fs::create_dir_all(&home_b).unwrap();
+
+        let key_a = codex_home_cache_key(&home_a);
+        let key_b = codex_home_cache_key(&home_b);
+        let mut cache = TokenEventCache::default();
+
+        cache
+            .home_cache_mut(&key_a, &home_a)
+            .files
+            .insert("sessions/a.jsonl".into(), cached_file_with_one_event(10));
+        cache
+            .home_cache_mut(&key_b, &home_b)
+            .files
+            .insert("sessions/b.jsonl".into(), cached_file_with_one_event(20));
+
+        let mut seen = HashSet::new();
+        seen.insert("sessions/a.jsonl".into());
+        assert!(!cache.home_cache_mut(&key_a, &home_a).retain_seen(&seen));
+
+        assert_eq!(cache.homes.get(&key_a).unwrap().files.len(), 1);
+        assert_eq!(cache.homes.get(&key_b).unwrap().files.len(), 1);
+        assert!(cache
+            .homes
+            .get(&key_b)
+            .unwrap()
+            .files
+            .contains_key("sessions/b.jsonl"));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn temp_root() -> PathBuf {
@@ -915,5 +1018,20 @@ mod tests {
                 [high_id],
             )
             .unwrap();
+    }
+
+    fn cached_file_with_one_event(tokens: u64) -> CachedSessionFile {
+        CachedSessionFile {
+            signature: CachedFileSignature {
+                size: tokens,
+                modified_millis: 1_781_715_600_000,
+            },
+            events: vec![CachedTokenEvent {
+                timestamp_unix: 1_781_715_600,
+                tokens,
+                input_tokens: tokens,
+                cached_input_tokens: tokens / 2,
+            }],
+        }
     }
 }
