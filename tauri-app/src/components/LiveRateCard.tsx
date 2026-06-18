@@ -1,13 +1,20 @@
 import type { CSSProperties } from "react";
-import type { LiveRateSnapshot, PlatformCapabilities } from "../types/dashboard";
+import type { FloatingUnreadEffect, LiveRateSnapshot, PlatformCapabilities } from "../types/dashboard";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { clamp, formatTokens } from "../utils/format";
+
+const UNREAD_EFFECT_OPTIONS: Array<{ value: FloatingUnreadEffect; label: string }> = [
+  { value: "off", label: "关" },
+  { value: "ripple", label: "涟漪" },
+  { value: "shimmer", label: "扫光" },
+];
 
 interface LiveRateCardProps {
   floatingSettings: FloatingWindowSettings;
   floatingVisible: boolean;
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
+  onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
   platform: PlatformCapabilities;
@@ -20,6 +27,7 @@ export function LiveRateCard({
   floatingVisible,
   onFloatingOpacityChange,
   onFloatingScaleChange,
+  onFloatingUnreadEffectChange,
   onToggleFloating,
   onToggleStatusTray,
   platform,
@@ -141,6 +149,21 @@ export function LiveRateCard({
             />
             <strong>{scalePercent}%</strong>
           </label>
+          <div className="setting-segment" aria-label="未读提醒样式">
+            <span>未读提醒</span>
+            <div>
+              {UNREAD_EFFECT_OPTIONS.map((option) => (
+                <button
+                  className={floatingSettings.unreadEffect === option.value ? "is-active" : ""}
+                  key={option.value}
+                  onClick={() => onFloatingUnreadEffectChange(option.value)}
+                  type="button"
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </section>

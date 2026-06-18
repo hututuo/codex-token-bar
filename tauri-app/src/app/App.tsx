@@ -152,6 +152,10 @@ function DashboardApp() {
     setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, scale }));
   }
 
+  function updateFloatingUnreadEffect(unreadEffect: typeof floatingSettings.unreadEffect) {
+    setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, unreadEffect }));
+  }
+
   if (readyState === null) {
     return (
       <main className="app-shell app-shell--loading">
@@ -173,6 +177,7 @@ function DashboardApp() {
       onRefresh={reloadAll}
       onFloatingOpacityChange={updateFloatingOpacity}
       onFloatingScaleChange={updateFloatingScale}
+      onFloatingUnreadEffectChange={updateFloatingUnreadEffect}
       onToggleFloating={toggleFloatingWindow}
       onToggleStatusTray={toggleStatusTrayLiveText}
       onCodexHomeChange={updateCodexHome}

@@ -298,6 +298,16 @@ fn sanitize_floating_settings(
     FloatingWindowSettingsSnapshot {
         opacity: clamp_f64(settings.opacity, 0.4, 1.0, 0.92),
         scale: clamp_f64(settings.scale, 0.9, 1.38, 1.0),
+        unread_effect: sanitize_unread_effect(&settings.unread_effect).into(),
+    }
+}
+
+fn sanitize_unread_effect(value: &str) -> &'static str {
+    match value {
+        "off" => "off",
+        "ripple" => "ripple",
+        "shimmer" => "shimmer",
+        _ => "ripple",
     }
 }
 
@@ -372,7 +382,8 @@ mod tests {
             "codex_home": "~/custom-codex",
             "floatingWindow": {
                 "opacity": 1.4,
-                "scale": 0.2
+                "scale": 0.2,
+                "unreadEffect": "sparkle"
             }
         }"#;
 
@@ -382,6 +393,7 @@ mod tests {
         assert_eq!(sanitized.codex_home.as_deref(), Some("~/custom-codex"));
         assert_eq!(sanitized.floating_window.opacity, 1.0);
         assert_eq!(sanitized.floating_window.scale, 0.9);
+        assert_eq!(sanitized.floating_window.unread_effect, "ripple");
         assert!(sanitized.display_surfaces.floating_window_enabled);
         assert!(sanitized.display_surfaces.status_tray_live_text_enabled);
     }
@@ -404,7 +416,8 @@ mod tests {
     fn settings_accept_partial_nested_objects() {
         let raw = r#"{
             "floatingWindow": {
-                "opacity": 0.7
+                "opacity": 0.7,
+                "unreadEffect": "shimmer"
             },
             "displaySurfaces": {
                 "floatingWindowEnabled": false
@@ -415,6 +428,7 @@ mod tests {
 
         assert_eq!(settings.floating_window.opacity, 0.7);
         assert_eq!(settings.floating_window.scale, 1.0);
+        assert_eq!(settings.floating_window.unread_effect, "shimmer");
         assert!(!settings.display_surfaces.floating_window_enabled);
         assert!(settings.display_surfaces.status_tray_live_text_enabled);
     }

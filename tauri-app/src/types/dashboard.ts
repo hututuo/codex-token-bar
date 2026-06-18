@@ -27,7 +27,10 @@ export interface PlatformFeatureCapability {
 export interface FloatingWindowSettings {
   opacity: number;
   scale: number;
+  unreadEffect: FloatingUnreadEffect;
 }
+
+export type FloatingUnreadEffect = "off" | "ripple" | "shimmer";
 
 export interface AppSettingsSnapshot {
   codexHome: string | null;

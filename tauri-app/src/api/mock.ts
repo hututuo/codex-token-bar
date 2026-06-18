@@ -22,6 +22,7 @@ export const mockAppSettings: AppSettingsSnapshot = {
   floatingWindow: {
     opacity: 0.92,
     scale: 1,
+    unreadEffect: "ripple",
   },
   floatingPosition: null,
   displaySurfaces: {

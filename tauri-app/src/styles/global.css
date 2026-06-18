@@ -677,7 +677,7 @@ button {
 .settings-panel {
   display: grid;
   align-content: center;
-  gap: 8px;
+  gap: 7px;
   min-height: 85px;
   padding: 7px 9px;
 }
@@ -701,6 +701,42 @@ button {
   grid-template-columns: 74px minmax(0, 1fr) 42px;
   align-items: center;
   gap: 9px;
+}
+
+.setting-segment {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+}
+
+.setting-segment > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 640;
+}
+
+.setting-segment > div {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+}
+
+.setting-segment button {
+  min-height: 23px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel) 62%, transparent);
+  color: color-mix(in srgb, var(--text) 80%, var(--muted));
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 660;
+}
+
+.setting-segment button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  color: var(--text);
 }
 
 .settings-label,
@@ -1244,12 +1280,89 @@ input[type="range"]::-moz-range-thumb {
   white-space: nowrap;
 }
 
-.unread-ripple {
+.unread-effect {
   position: absolute;
   inset: 5px;
-  border: 1px solid rgba(25, 113, 210, 0.22);
   border-radius: 8px;
   pointer-events: none;
+}
+
+.unread-effect--ripple {
+  border: 1px solid rgba(25, 113, 210, 0.26);
+  animation: unread-ripple-pulse 1.8s ease-in-out infinite;
+}
+
+.unread-effect--ripple::before,
+.unread-effect--ripple::after {
+  position: absolute;
+  inset: 7px;
+  border: 1px solid rgba(25, 113, 210, 0.2);
+  border-radius: inherit;
+  content: "";
+  animation: unread-ripple-ring 1.8s ease-out infinite;
+}
+
+.unread-effect--ripple::after {
+  animation-delay: 0.55s;
+}
+
+.unread-effect--shimmer {
+  overflow: hidden;
+  border: 1px solid rgba(25, 113, 210, 0.22);
+}
+
+.unread-effect--shimmer::before {
+  position: absolute;
+  top: -30%;
+  bottom: -30%;
+  left: -45%;
+  width: 34%;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(25, 113, 210, 0.12),
+    rgba(255, 255, 255, 0.48),
+    transparent
+  );
+  content: "";
+  transform: rotate(12deg);
+  animation: unread-shimmer-sweep 2.1s ease-in-out infinite;
+}
+
+@keyframes unread-ripple-pulse {
+  0%,
+  100% {
+    border-color: rgba(25, 113, 210, 0.22);
+  }
+  50% {
+    border-color: rgba(25, 113, 210, 0.44);
+  }
+}
+
+@keyframes unread-ripple-ring {
+  0% {
+    opacity: 0.46;
+    transform: scale(0.9);
+  }
+  74% {
+    opacity: 0;
+    transform: scale(1.16);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.16);
+  }
+}
+
+@keyframes unread-shimmer-sweep {
+  0% {
+    transform: translateX(0) rotate(12deg);
+  }
+  72%,
+  100% {
+    transform: translateX(390%) rotate(12deg);
+  }
 }
 
 .status-window-shell {

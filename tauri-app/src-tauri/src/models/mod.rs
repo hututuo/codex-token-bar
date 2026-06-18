@@ -63,6 +63,8 @@ pub struct FloatingWindowSettingsSnapshot {
     pub opacity: f64,
     #[serde(default = "default_floating_scale")]
     pub scale: f64,
+    #[serde(default = "default_floating_unread_effect")]
+    pub unread_effect: String,
 }
 
 impl Default for FloatingWindowSettingsSnapshot {
@@ -70,6 +72,7 @@ impl Default for FloatingWindowSettingsSnapshot {
         Self {
             opacity: default_floating_opacity(),
             scale: default_floating_scale(),
+            unread_effect: default_floating_unread_effect(),
         }
     }
 }
@@ -80,6 +83,10 @@ fn default_floating_opacity() -> f64 {
 
 fn default_floating_scale() -> f64 {
     1.0
+}
+
+fn default_floating_unread_effect() -> String {
+    "ripple".into()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

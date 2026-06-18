@@ -1,15 +1,23 @@
-import type { FloatingPanelSnapshot } from "../types/dashboard";
+import type { FloatingPanelSnapshot, FloatingUnreadEffect } from "../types/dashboard";
 
 interface FloatingPanelSurfaceProps {
   snapshot: FloatingPanelSnapshot;
+  unreadEffect?: FloatingUnreadEffect;
   onClose?: () => void;
   onDragStart?: () => void;
 }
 
-export function FloatingPanelSurface({ snapshot, onClose, onDragStart }: FloatingPanelSurfaceProps) {
+export function FloatingPanelSurface({
+  snapshot,
+  unreadEffect = "ripple",
+  onClose,
+  onDragStart,
+}: FloatingPanelSurfaceProps) {
+  const shouldShowUnreadEffect = snapshot.unread && unreadEffect !== "off";
+
   return (
     <aside className="floating-panel-surface" aria-label="悬浮窗" onMouseDown={onDragStart}>
-      {snapshot.unread ? <span className="unread-ripple" /> : null}
+      {shouldShowUnreadEffect ? <span className={`unread-effect unread-effect--${unreadEffect}`} /> : null}
       <div className="floating-topline">
         <strong>{snapshot.tokensPerSecond.toFixed(1)}</strong>
         <span>tok/s</span>

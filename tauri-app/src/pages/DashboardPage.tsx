@@ -11,6 +11,7 @@ import type {
   CodexHomeStatus,
   DashboardSnapshot,
   DisplaySurfaceSettings,
+  FloatingUnreadEffect,
   LiveRateSnapshot,
   PlatformCapabilities,
   ProviderRepairSnapshot,
@@ -28,6 +29,7 @@ interface DashboardPageProps {
   onCodexHomeReset: () => Promise<void>;
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
+  onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
   onRefresh: () => Promise<void>;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
@@ -48,6 +50,7 @@ export function DashboardPage({
   onCodexHomeReset,
   onFloatingOpacityChange,
   onFloatingScaleChange,
+  onFloatingUnreadEffectChange,
   onRefresh,
   onProviderRepairChange,
   onToggleFloating,
@@ -84,6 +87,7 @@ export function DashboardPage({
           statusTrayLiveTextEnabled={displaySurfaces.statusTrayLiveTextEnabled}
           onFloatingOpacityChange={onFloatingOpacityChange}
           onFloatingScaleChange={onFloatingScaleChange}
+          onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
           onToggleFloating={onToggleFloating}
           onToggleStatusTray={onToggleStatusTray}
           platform={platform}

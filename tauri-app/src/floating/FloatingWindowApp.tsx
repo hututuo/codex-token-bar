@@ -154,6 +154,7 @@ export function FloatingWindowApp() {
     <main className="floating-window-shell" style={shellStyle}>
       <FloatingPanelSurface
         snapshot={snapshot}
+        unreadEffect={settings.unreadEffect}
         onClose={closeFloatingWindow}
         onDragStart={startWindowDrag}
       />
