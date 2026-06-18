@@ -13,6 +13,7 @@ import {
 } from "../api/client";
 import { FloatingWindowApp } from "../floating/FloatingWindowApp";
 import { DashboardPage } from "../pages/DashboardPage";
+import { useStatusTray } from "../tray/useStatusTray";
 import type {
   AccountQuotaBundle,
   CodexHomeStatus,
@@ -54,6 +55,7 @@ function DashboardApp() {
   const quotaLoadStarted = useRef(false);
   const liveRatePollStarted = useRef(false);
   const [floatingVisible, setFloatingVisible] = useState(true);
+  useStatusTray(state.liveRate);
 
   useEffect(() => {
     let cancelled = false;

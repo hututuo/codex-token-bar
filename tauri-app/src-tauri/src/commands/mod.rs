@@ -70,6 +70,23 @@ pub fn hide_floating_window(app: tauri::AppHandle) -> Result<bool, String> {
 }
 
 #[tauri::command]
+pub fn set_status_tray_readout(
+    app: tauri::AppHandle,
+    title: String,
+    tooltip: String,
+) -> Result<bool, String> {
+    let Some(tray) = app.tray_by_id("codex-token-bar-status") else {
+        return Ok(false);
+    };
+
+    tray.set_title(Some(title))
+        .map_err(|error| error.to_string())?;
+    tray.set_tooltip(Some(tooltip))
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
 pub fn scan_provider_repair() -> Result<ProviderRepairSnapshot, String> {
     let codex_home = platform::default_codex_home();
     Ok(provider_repair::scan_provider_repair(&codex_home))

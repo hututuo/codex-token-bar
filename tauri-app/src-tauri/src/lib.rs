@@ -3,16 +3,21 @@ mod core;
 mod models;
 mod platform;
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager, WebviewUrl, WebviewWindowBuilder,
+};
 
 const FLOATING_WINDOW_WIDTH: f64 = 296.0;
 const FLOATING_WINDOW_HEIGHT: f64 = 98.0;
+const STATUS_TRAY_ID: &str = "codex-token-bar-status";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             create_floating_window(app)?;
+            create_status_tray(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -25,9 +30,37 @@ pub fn run() {
             commands::read_floating_snapshot,
             commands::show_floating_window,
             commands::hide_floating_window,
+            commands::set_status_tray_readout,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Codex Token Bar");
+}
+
+fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
+    if app.tray_by_id(STATUS_TRAY_ID).is_some() {
+        return Ok(());
+    }
+
+    TrayIconBuilder::with_id(STATUS_TRAY_ID)
+        .title("0.0/s")
+        .tooltip("Codex Token Bar")
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                if let Some(window) = tray.app_handle().get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        })
+        .build(app)?;
+
+    Ok(())
 }
 
 fn create_floating_window(app: &tauri::App) -> tauri::Result<()> {

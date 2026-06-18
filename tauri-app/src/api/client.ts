@@ -18,13 +18,13 @@ import {
 
 const isTauriRuntime = "__TAURI_INTERNALS__" in window;
 
-async function callCommand<T>(command: string, fallback: T): Promise<T> {
+async function callCommand<T>(command: string, fallback: T, args?: Record<string, unknown>): Promise<T> {
   if (!isTauriRuntime) {
     return fallback;
   }
 
   try {
-    return await invoke<T>(command);
+    return await invoke<T>(command, args);
   } catch (error) {
     console.warn(`Tauri command failed: ${command}`, error);
     return fallback;
@@ -61,6 +61,14 @@ export function showFloatingWindow(): Promise<boolean> {
 
 export function hideFloatingWindow(): Promise<boolean> {
   return callCommand("hide_floating_window", false);
+}
+
+export function setStatusTrayReadout(title: string, tooltip: string): Promise<boolean> {
+  if (!isTauriRuntime) {
+    return Promise.resolve(false);
+  }
+
+  return callCommand("set_status_tray_readout", false, { title, tooltip });
 }
 
 export function scanProviderRepair(): Promise<ProviderRepairSnapshot> {
