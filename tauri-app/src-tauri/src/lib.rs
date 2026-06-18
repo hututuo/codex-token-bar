@@ -9,6 +9,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_codex_home,
             commands::read_dashboard_snapshot,
+            commands::read_precise_dashboard_snapshot,
             commands::read_live_rate_snapshot,
             commands::scan_provider_repair,
             commands::read_floating_snapshot,

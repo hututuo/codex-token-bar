@@ -18,6 +18,14 @@ pub fn read_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
 }
 
 #[tauri::command]
+pub fn read_precise_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
+    let codex_home = platform::default_codex_home();
+    Ok(usage::token_count_jsonl::dashboard_snapshot(&codex_home)
+        .or_else(|_| usage::state_sqlite::dashboard_snapshot(&codex_home))
+        .unwrap_or_else(|_| mock_data::dashboard_snapshot()))
+}
+
+#[tauri::command]
 pub fn read_live_rate_snapshot() -> Result<LiveRateSnapshot, String> {
     Ok(mock_data::live_rate_snapshot())
 }

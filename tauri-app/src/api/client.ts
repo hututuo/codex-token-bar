@@ -37,6 +37,10 @@ export function readDashboardSnapshot(): Promise<DashboardSnapshot> {
   return callCommand("read_dashboard_snapshot", mockDashboardSnapshot);
 }
 
+export function readPreciseDashboardSnapshot(): Promise<DashboardSnapshot> {
+  return callCommand("read_precise_dashboard_snapshot", mockDashboardSnapshot);
+}
+
 export function readLiveRateSnapshot(): Promise<LiveRateSnapshot> {
   return callCommand("read_live_rate_snapshot", mockLiveRateSnapshot);
 }

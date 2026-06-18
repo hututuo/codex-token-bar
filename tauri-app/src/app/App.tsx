@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getCodexHome,
   readDashboardSnapshot,
   readFloatingPanelSnapshot,
   readLiveRateSnapshot,
+  readPreciseDashboardSnapshot,
   scanProviderRepair,
 } from "../api/client";
 import { DashboardPage } from "../pages/DashboardPage";
@@ -35,6 +36,7 @@ const initialState: AppState = {
 
 export function App() {
   const [state, setState] = useState<AppState>(initialState);
+  const preciseLoadStarted = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -59,6 +61,28 @@ export function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (state.dashboard === null || state.loading || preciseLoadStarted.current) {
+      return;
+    }
+
+    let cancelled = false;
+    preciseLoadStarted.current = true;
+
+    async function loadPreciseSnapshot() {
+      const precise = await readPreciseDashboardSnapshot();
+      if (!cancelled) {
+        setState((current) => ({ ...current, dashboard: precise }));
+      }
+    }
+
+    void loadPreciseSnapshot();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [state.dashboard, state.loading]);
 
   const readyState = useMemo(() => {
     if (
