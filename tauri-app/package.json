@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "tauri:open-debug": "../scripts/open_tauri_debug_app.sh --build"
+    "tauri:open-debug": "../scripts/open_tauri_debug_app.sh",
+    "tauri:build-open-debug": "../scripts/open_tauri_debug_app.sh --build"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",

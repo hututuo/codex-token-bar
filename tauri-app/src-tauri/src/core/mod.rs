@@ -5,5 +5,6 @@ pub mod provider_repair;
 pub mod quota;
 pub mod quota_history;
 pub mod sqlite;
+pub mod startup_trace;
 pub mod unread;
 pub mod usage;

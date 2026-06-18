@@ -1,4 +1,4 @@
-use crate::core::app_paths;
+use crate::core::{app_paths, startup_trace};
 use crate::models::{
     AppSettingsSnapshot, AutostartStatus, CodexHomeStatus, DisplaySurfaceSettingsSnapshot,
     FloatingWindowPositionSnapshot, FloatingWindowSettingsSnapshot,
@@ -151,17 +151,23 @@ pub fn save_setup_guide_completed(completed: bool) -> Result<AppSettingsSnapshot
 }
 
 pub fn setup_desktop_surfaces(app: &tauri::App) -> tauri::Result<()> {
+    startup_trace::mark("rust setup start");
     let mut status = SurfaceSetupStatus::default();
 
+    startup_trace::mark("dashboard window create start");
     create_dashboard_window(app.handle())?;
+    startup_trace::mark("dashboard window create end");
 
+    startup_trace::mark("status tray create start");
     if let Err(error) = create_status_tray(app) {
         let message = error.to_string();
         eprintln!("Codex Token Bar: status tray setup failed: {message}");
         status.status_tray_error = Some(message);
     }
+    startup_trace::mark("status tray create end");
 
     set_surface_setup_status(status);
+    startup_trace::mark("rust setup end");
     Ok(())
 }
 

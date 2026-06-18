@@ -1,7 +1,12 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { recordStartupEvent } from "./api/client";
 import { App } from "./app/App";
 import "./styles/global.css";
+
+const startupSurface = new URLSearchParams(window.location.search).get("surface") ?? "main";
+
+void recordStartupEvent(`${startupSurface} entry script`);
 
 function showRuntimeError(error: unknown) {
   const message = error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
@@ -54,6 +59,7 @@ try {
       <App />
     </React.StrictMode>,
   );
+  void recordStartupEvent(`${startupSurface} react render requested`);
 } catch (error) {
   showRuntimeError(error);
 }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import {
   getCommandDiagnosticsSnapshot,
+  recordStartupEvent,
   subscribeCommandDiagnostics,
 } from "../api/client";
 import { dashboardDataSource, type DashboardDataSource } from "../data/dashboardDataSource";
@@ -72,12 +73,13 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   }, [fastSnapshotLoaded, source, state.dashboard, state.loading]);
 
   useEffect(() => {
-    if (state.dashboard === null || quotaLoadStarted.current) {
+    if (!fastSnapshotLoaded || state.dashboard === null || state.loading || quotaLoadStarted.current) {
       return;
     }
 
     let cancelled = false;
     quotaLoadStarted.current = true;
+    const delayMs = forceNextQuotaLoad.current ? 0 : 5_000;
 
     async function loadQuota() {
       const quota = await source.readAccountQuota(forceNextQuotaLoad.current);
@@ -87,18 +89,26 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
       }
     }
 
-    void loadQuota();
+    const timer = window.setTimeout(() => {
+      void loadQuota();
+    }, delayMs);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [source, state.dashboard, state.loading]);
+  }, [fastSnapshotLoaded, source, state.dashboard, state.loading]);
 
   useEffect(() => {
+    if (!fastSnapshotLoaded) {
+      return;
+    }
+
     let cancelled = false;
     let liveRateInFlight = false;
     let streaming = false;
     let unlisten: (() => void) | null = null;
+    let startupTimer = 0;
 
     async function refreshLiveRate() {
       if (liveRateInFlight) {
@@ -128,16 +138,18 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
       }
     });
 
-    void refreshLiveRate();
-    void desktopPlatform.startLiveRateStream(selectedLiveThreadId || null).then((started) => {
-      if (cancelled) {
-        if (started) {
-          void desktopPlatform.stopLiveRateStream();
+    startupTimer = window.setTimeout(() => {
+      void refreshLiveRate();
+      void desktopPlatform.startLiveRateStream(selectedLiveThreadId || null).then((started) => {
+        if (cancelled) {
+          if (started) {
+            void desktopPlatform.stopLiveRateStream();
+          }
+          return;
         }
-        return;
-      }
-      streaming = started;
-    });
+        streaming = started;
+      });
+    }, 250);
 
     const interval = window.setInterval(() => {
       if (!streaming) {
@@ -151,9 +163,10 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
       if (streaming) {
         void desktopPlatform.stopLiveRateStream();
       }
+      window.clearTimeout(startupTimer);
       window.clearInterval(interval);
     };
-  }, [source, selectedLiveThreadId]);
+  }, [fastSnapshotLoaded, source, selectedLiveThreadId]);
 
   useEffect(() => {
     if (!fastSnapshotLoaded || state.dashboard === null || liveThreadOptionsLoadStarted.current) {
@@ -184,8 +197,12 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     liveThreadOptionsLoadStarted.current = false;
     setFastSnapshotLoaded(false);
     setState((current) => ({ ...current, loading: true }));
-    setState(await readInitialAppState(source));
-    setFastSnapshotLoaded(true);
+    await loadInitialAppStateInParts(
+      source,
+      () => false,
+      (update) => setState(update),
+      () => setFastSnapshotLoaded(true),
+    );
   }
 
   async function updateCodexHome(path: string) {
@@ -225,20 +242,22 @@ async function loadInitialAppStateInParts(
   isCancelled: () => boolean,
   setState: Dispatch<SetStateAction<DashboardAppState>>,
   markFastSnapshotLoaded: () => void,
-) {
+): Promise<void> {
   void source.getCodexHome().then((codexHome) => {
     if (!isCancelled()) {
       setState((current) => ({ ...current, codexHome }));
+      void recordStartupEvent("codex home ready");
     }
   });
 
   void source.readPlatformCapabilities().then((platform) => {
     if (!isCancelled()) {
       setState((current) => ({ ...current, platform }));
+      void recordStartupEvent("platform ready");
     }
   });
 
-  void source.readDashboardSnapshot().then((dashboard) => {
+  await source.readDashboardSnapshot().then((dashboard) => {
     if (!isCancelled()) {
       setState((current) => ({
         ...current,
@@ -247,24 +266,7 @@ async function loadInitialAppStateInParts(
         loading: false,
       }));
       markFastSnapshotLoaded();
+      void recordStartupEvent("dashboard snapshot ready");
     }
   });
-}
-
-async function readInitialAppState(source: DashboardDataSource): Promise<DashboardAppState> {
-  const [codexHome, platform, dashboard] = await Promise.all([
-    source.getCodexHome(),
-    source.readPlatformCapabilities(),
-    source.readDashboardSnapshot(),
-  ]);
-  return {
-    codexHome,
-    platform,
-    dashboard,
-    liveRate: pendingLiveRateSnapshot(),
-    liveThreadOptions: [],
-    repair: pendingRepairSnapshot(),
-    diagnostics: getCommandDiagnosticsSnapshot(),
-    loading: false,
-  };
 }

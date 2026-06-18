@@ -20,6 +20,7 @@ pub fn run() {
             commands::set_codex_home,
             commands::reset_codex_home,
             commands::read_app_settings,
+            commands::record_startup_event,
             commands::read_autostart_status,
             commands::set_autostart_enabled,
             commands::save_floating_settings,

@@ -18,6 +18,10 @@ pub fn quota_history_database_path() -> Option<PathBuf> {
     app_support_dir().map(|path| path.join("quota-history.sqlite"))
 }
 
+pub fn startup_trace_log_path() -> Option<PathBuf> {
+    app_support_dir().map(|path| path.join("startup-trace.log"))
+}
+
 pub fn token_event_cache_path() -> Option<PathBuf> {
     #[cfg(test)]
     {

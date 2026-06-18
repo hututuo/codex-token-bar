@@ -137,6 +137,10 @@ export function readAppSettings(): Promise<AppSettingsSnapshot | null> {
   return callCommandOptional("read_app_settings");
 }
 
+export function recordStartupEvent(label: string): Promise<boolean> {
+  return callCommand("record_startup_event", false, { label }, 1_000);
+}
+
 export function saveFloatingSettings(settings: FloatingWindowSettings): Promise<AppSettingsSnapshot> {
   return callCommandStrict<AppSettingsSnapshot>("save_floating_settings", { settings });
 }

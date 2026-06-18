@@ -7,6 +7,7 @@ import { QuotaStrip } from "../components/QuotaStrip";
 import { RecentUsageChart } from "../components/RecentUsageChart";
 import { StatsStrip } from "../components/StatsStrip";
 import { TokenActivitySection } from "../components/TokenActivitySection";
+import { recordStartupEvent } from "../api/client";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import type {
   AutostartStatus,
@@ -74,13 +75,15 @@ export function DashboardPage({
   refreshing,
   selectedLiveThreadId,
 }: DashboardPageProps) {
+  const [summaryReady, setSummaryReady] = useState(false);
   const [analyticsReady, setAnalyticsReady] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     const reveal = () => {
       if (!cancelled) {
-        setAnalyticsReady(true);
+        setSummaryReady(true);
+        void recordStartupEvent("dashboard summary ui ready");
       }
     };
     const schedule = scheduleAfterFirstPaint(reveal);
@@ -90,6 +93,26 @@ export function DashboardPage({
       schedule.cancel();
     };
   }, []);
+
+  useEffect(() => {
+    if (!summaryReady) {
+      return;
+    }
+
+    let cancelled = false;
+    const reveal = () => {
+      if (!cancelled) {
+        setAnalyticsReady(true);
+        void recordStartupEvent("dashboard analytics ui ready");
+      }
+    };
+    const schedule = scheduleAfterFirstPaint(reveal);
+
+    return () => {
+      cancelled = true;
+      schedule.cancel();
+    };
+  }, [summaryReady]);
 
   function openProviderRepair() {
     document.getElementById("provider-repair")?.scrollIntoView({
@@ -115,37 +138,45 @@ export function DashboardPage({
           refreshing={refreshing}
         />
 
-        <QuotaStrip snapshot={dashboard.quota} />
-        <StatsStrip stats={dashboard.stats} />
-        <LiveRateCard
-          floatingSettings={floatingSettings}
-          floatingVisible={floatingVisible}
-          statusTrayLiveTextEnabled={displaySurfaces.statusTrayLiveTextEnabled}
-          onFloatingOpacityChange={onFloatingOpacityChange}
-          onFloatingScaleChange={onFloatingScaleChange}
-          onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
-          onLiveThreadSelect={onLiveThreadSelect}
-          onToggleFloating={onToggleFloating}
-          onToggleStatusTray={onToggleStatusTray}
-          liveThreadOptions={liveThreadOptions}
-          platform={platform}
-          selectedLiveThreadId={selectedLiveThreadId}
-          snapshot={liveRate}
-        />
-        {analyticsReady ? (
+        {summaryReady ? (
           <>
-            <TokenActivitySection days={dashboard.activityDays} />
-            <RecentUsageChart points={dashboard.recentUsage24h} />
-            <CacheHitRanking items={dashboard.cacheHitRanking} />
-            <ProviderRepairCard
-              id="provider-repair"
-              onSnapshotChange={onProviderRepairChange}
-              snapshot={providerRepair}
+            <QuotaStrip snapshot={dashboard.quota} />
+            <StatsStrip stats={dashboard.stats} />
+            <LiveRateCard
+              floatingSettings={floatingSettings}
+              floatingVisible={floatingVisible}
+              statusTrayLiveTextEnabled={displaySurfaces.statusTrayLiveTextEnabled}
+              onFloatingOpacityChange={onFloatingOpacityChange}
+              onFloatingScaleChange={onFloatingScaleChange}
+              onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
+              onLiveThreadSelect={onLiveThreadSelect}
+              onToggleFloating={onToggleFloating}
+              onToggleStatusTray={onToggleStatusTray}
+              liveThreadOptions={liveThreadOptions}
+              platform={platform}
+              selectedLiveThreadId={selectedLiveThreadId}
+              snapshot={liveRate}
             />
+            {analyticsReady ? (
+              <>
+                <TokenActivitySection days={dashboard.activityDays} />
+                <RecentUsageChart points={dashboard.recentUsage24h} />
+                <CacheHitRanking items={dashboard.cacheHitRanking} />
+                <ProviderRepairCard
+                  id="provider-repair"
+                  onSnapshotChange={onProviderRepairChange}
+                  snapshot={providerRepair}
+                />
+              </>
+            ) : (
+              <section className="analytics-boot" aria-label="图表区域正在准备">
+                <span>正在准备图表和排行...</span>
+              </section>
+            )}
           </>
         ) : (
-          <section className="analytics-boot" aria-label="图表区域正在准备">
-            <span>正在准备图表和排行...</span>
+          <section className="analytics-boot" aria-label="统计区域正在准备">
+            <span>正在准备统计和实时速率...</span>
           </section>
         )}
       </section>

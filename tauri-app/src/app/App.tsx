@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   readAutostartStatus,
   readAppSettings,
+  recordStartupEvent,
   saveDisplaySurfaces,
   saveFloatingSettings,
   saveSetupGuideCompleted,
@@ -40,6 +41,27 @@ export function App() {
 }
 
 function DashboardApp() {
+  const [dashboardHydrated, setDashboardHydrated] = useState(false);
+
+  useEffect(() => {
+    void recordStartupEvent("dashboard mounted");
+  }, []);
+
+  useEffect(() => {
+    let timeoutId = 0;
+    const frameId = window.requestAnimationFrame(() => {
+      timeoutId = window.setTimeout(() => {
+        setDashboardHydrated(true);
+        void recordStartupEvent("dashboard hydrate full ui");
+      }, 0);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.clearTimeout(timeoutId);
+    };
+  }, []);
+
   const {
     state,
     readyState,
@@ -104,18 +126,25 @@ function DashboardApp() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    if (!dashboardHydrated) {
+      return;
+    }
 
-    void readAutostartStatus().then((status) => {
-      if (!cancelled) {
-        setAutostartStatus(status);
-      }
-    });
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      void recordStartupEvent("autostart lazy read requested");
+      void readAutostartStatus().then((status) => {
+        if (!cancelled) {
+          setAutostartStatus(status);
+        }
+      });
+    }, 800);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(timeoutId);
     };
-  }, []);
+  }, [dashboardHydrated]);
 
   useEffect(() => {
     let cancelled = false;
@@ -239,11 +268,11 @@ function DashboardApp() {
     setShowSetupGuide(false);
   }
 
-  if (readyState === null) {
+  if (readyState === null || !dashboardHydrated) {
     return (
       <main className="app-shell app-shell--loading">
         <div className="loading-mark">CX</div>
-        <div className="loading-text">正在读取本地数据</div>
+        <div className="loading-text">正在打开本地面板</div>
       </main>
     );
   }

@@ -1,6 +1,6 @@
 use crate::core::{
     dashboard::{DashboardDataSource, LocalCodexDataSource},
-    provider_repair,
+    provider_repair, startup_trace,
 };
 use crate::models::{
     AccountQuotaBundle, AppSettingsSnapshot, AutostartStatus, CodexHomeStatus, DashboardSnapshot,
@@ -41,7 +41,10 @@ impl Drop for LiveRateStreamHandle {
 
 #[tauri::command]
 pub fn get_codex_home() -> Result<CodexHomeStatus, String> {
-    Ok(platform::default_codex_home_status())
+    startup_trace::mark("command get_codex_home start");
+    let result = platform::default_codex_home_status();
+    startup_trace::mark("command get_codex_home end");
+    Ok(result)
 }
 
 #[tauri::command]
@@ -56,12 +59,24 @@ pub fn reset_codex_home() -> Result<CodexHomeStatus, String> {
 
 #[tauri::command]
 pub fn read_app_settings() -> Result<AppSettingsSnapshot, String> {
-    platform::read_app_settings()
+    startup_trace::mark("command read_app_settings start");
+    let result = platform::read_app_settings();
+    startup_trace::mark("command read_app_settings end");
+    result
+}
+
+#[tauri::command]
+pub fn record_startup_event(label: String) -> Result<bool, String> {
+    startup_trace::mark(&format!("frontend {label}"));
+    Ok(true)
 }
 
 #[tauri::command]
 pub fn read_autostart_status(app: tauri::AppHandle) -> Result<AutostartStatus, String> {
-    Ok(platform::read_autostart_status(&app))
+    startup_trace::mark("command read_autostart_status start");
+    let result = platform::read_autostart_status(&app);
+    startup_trace::mark("command read_autostart_status end");
+    Ok(result)
 }
 
 #[tauri::command]
@@ -100,12 +115,18 @@ pub fn save_setup_guide_completed(completed: bool) -> Result<AppSettingsSnapshot
 
 #[tauri::command]
 pub fn read_platform_capabilities() -> Result<PlatformCapabilities, String> {
-    Ok(platform::platform_capabilities())
+    startup_trace::mark("command read_platform_capabilities start");
+    let result = platform::platform_capabilities();
+    startup_trace::mark("command read_platform_capabilities end");
+    Ok(result)
 }
 
 #[tauri::command]
 pub fn read_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
-    local_source().read_dashboard_snapshot()
+    startup_trace::mark("command read_dashboard_snapshot start");
+    let result = local_source().read_dashboard_snapshot();
+    startup_trace::mark("command read_dashboard_snapshot end");
+    result
 }
 
 #[tauri::command]
@@ -115,14 +136,20 @@ pub fn read_precise_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
 
 #[tauri::command]
 pub fn read_account_quota(force_refresh: Option<bool>) -> Result<AccountQuotaBundle, String> {
-    local_source().read_account_quota(force_refresh.unwrap_or(false))
+    startup_trace::mark("command read_account_quota start");
+    let result = local_source().read_account_quota(force_refresh.unwrap_or(false));
+    startup_trace::mark("command read_account_quota end");
+    result
 }
 
 #[tauri::command]
 pub fn read_live_rate_snapshot(
     selected_thread_id: Option<String>,
 ) -> Result<LiveRateSnapshot, String> {
-    local_source().try_read_live_rate_snapshot(selected_thread_id.as_deref())
+    startup_trace::mark("command read_live_rate_snapshot start");
+    let result = local_source().try_read_live_rate_snapshot(selected_thread_id.as_deref());
+    startup_trace::mark("command read_live_rate_snapshot end");
+    result
 }
 
 #[tauri::command]
@@ -136,11 +163,13 @@ pub fn start_live_rate_stream(
     state: State<LiveRateStreamState>,
     selected_thread_id: Option<String>,
 ) -> Result<bool, String> {
+    startup_trace::mark("command start_live_rate_stream start");
     let mut current = state.handle.lock().map_err(|error| error.to_string())?;
     if current
         .as_ref()
         .is_some_and(|handle| handle.selected_thread_id == selected_thread_id)
     {
+        startup_trace::mark("command start_live_rate_stream end");
         return Ok(true);
     }
     current.take();
@@ -176,6 +205,7 @@ pub fn start_live_rate_stream(
         stop_sender,
         join_handle: Some(join_handle),
     });
+    startup_trace::mark("command start_live_rate_stream end");
     Ok(true)
 }
 
