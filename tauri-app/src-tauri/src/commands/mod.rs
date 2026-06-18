@@ -1,4 +1,4 @@
-use crate::core::mock_data;
+use crate::core::{mock_data, usage};
 use crate::models::{
     CodexHomeStatus, DashboardSnapshot, FloatingPanelSnapshot, LiveRateSnapshot,
     ProviderRepairSnapshot,
@@ -12,7 +12,9 @@ pub fn get_codex_home() -> Result<CodexHomeStatus, String> {
 
 #[tauri::command]
 pub fn read_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
-    Ok(mock_data::dashboard_snapshot())
+    let codex_home = platform::default_codex_home();
+    Ok(usage::state_sqlite::dashboard_snapshot(&codex_home)
+        .unwrap_or_else(|_| mock_data::dashboard_snapshot()))
 }
 
 #[tauri::command]
