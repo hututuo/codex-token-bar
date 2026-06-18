@@ -110,7 +110,7 @@ fn read_thread_options_works_with_minimal_thread_schema() {
     create_state_database(&root, "thread-a", "最近会话", 300);
     insert_state_thread(&root, "thread-b", "稍早会话", 200);
 
-    let options = read_thread_options(&root);
+    let options = try_read_thread_options(&root).unwrap();
     assert_eq!(options.len(), 2);
     assert_eq!(options[0].title, "最近会话");
     assert_eq!(options[0].tokens_used, 300);

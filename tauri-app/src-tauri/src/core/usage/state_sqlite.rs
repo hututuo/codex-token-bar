@@ -7,7 +7,6 @@ use crate::models::{
 use rusqlite::{Connection, Result};
 use std::path::Path;
 use std::time::Duration as StdDuration;
-use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
 
@@ -39,33 +38,6 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
         recent_usage_24h,
         cache_hit_ranking: Vec::<CacheHitRankingItem>::new(),
     })
-}
-
-pub fn empty_dashboard_snapshot() -> DashboardSnapshot {
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-    let now = OffsetDateTime::now_utc();
-    let local_now = now.to_offset(local_offset);
-
-    DashboardSnapshot {
-        generated_at: now.format(&Rfc3339).unwrap_or_else(|_| String::new()),
-        account: AccountInfo {
-            display_name: "本地账户".into(),
-            plan_label: "Pro".into(),
-        },
-        stats: DashboardStats {
-            total_tokens: 0,
-            peak_day_tokens: 0,
-            peak_thread_tokens: 0,
-            current_streak_days: 0,
-            longest_streak_days: 0,
-            total_calls: 0,
-            total_threads: 0,
-        },
-        quota: placeholder_quota(),
-        activity_days: empty_activity_days(local_now.date()),
-        recent_usage_24h: empty_recent_usage(local_now),
-        cache_hit_ranking: Vec::new(),
-    }
 }
 
 fn empty_activity_days(today: Date) -> Vec<ActivityDay> {
@@ -223,19 +195,4 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn empty_dashboard_snapshot_is_zero_without_real_usage() {
-        let snapshot = empty_dashboard_snapshot();
-
-        assert_eq!(snapshot.account.display_name, "本地账户");
-        assert_eq!(snapshot.stats.total_tokens, 0);
-        assert_eq!(snapshot.stats.peak_day_tokens, 0);
-        assert_eq!(snapshot.stats.peak_thread_tokens, 0);
-        assert_eq!(snapshot.stats.total_calls, 0);
-        assert_eq!(snapshot.stats.total_threads, 0);
-        assert_eq!(snapshot.quota.pace_label, "额度待读取");
-        assert_eq!(snapshot.activity_days.len(), 365);
-        assert_eq!(snapshot.recent_usage_24h.len(), 289);
-        assert!(snapshot.cache_hit_ranking.is_empty());
-    }
 }

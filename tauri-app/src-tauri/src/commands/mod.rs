@@ -92,7 +92,7 @@ pub fn read_platform_capabilities() -> Result<PlatformCapabilities, String> {
 
 #[tauri::command]
 pub fn read_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
-    Ok(local_source().read_dashboard_snapshot())
+    local_source().read_dashboard_snapshot()
 }
 
 #[tauri::command]
@@ -109,12 +109,12 @@ pub fn read_account_quota(force_refresh: Option<bool>) -> Result<AccountQuotaBun
 pub fn read_live_rate_snapshot(
     selected_thread_id: Option<String>,
 ) -> Result<LiveRateSnapshot, String> {
-    Ok(local_source().read_live_rate_snapshot(selected_thread_id.as_deref()))
+    local_source().try_read_live_rate_snapshot(selected_thread_id.as_deref())
 }
 
 #[tauri::command]
 pub fn read_live_thread_options() -> Result<Vec<LiveThreadOption>, String> {
-    Ok(local_source().read_live_thread_options())
+    local_source().try_read_live_thread_options()
 }
 
 #[tauri::command]

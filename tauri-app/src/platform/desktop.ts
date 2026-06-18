@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { LogicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { clearCommandFailure, recordCommandFailure } from "../diagnostics/localDiagnostics";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { FLOATING_SETTINGS_EVENT } from "../floating/floatingSettings";
 import type { LiveRateSnapshot } from "../types/dashboard";
@@ -19,8 +20,6 @@ type Unlisten = () => void;
 const FLOATING_WINDOW_HIDDEN_EVENT = "floating-window-hidden";
 const LIVE_RATE_SNAPSHOT_EVENT = "live-rate-snapshot";
 const PLATFORM_COMMAND_TIMEOUT_MS = 2_000;
-const WARNING_THROTTLE_MS = 5_000;
-const lastPlatformWarningAtByKey = new Map<string, number>();
 
 export const desktopPlatform = {
   isAvailable: isTauriRuntimeAvailable,
@@ -104,6 +103,7 @@ async function notifyFloatingWindowHidden(): Promise<boolean> {
 
   try {
     await emit(FLOATING_WINDOW_HIDDEN_EVENT);
+    clearPlatformFailure("emit-floating-window-hidden");
     return true;
   } catch (error) {
     warnPlatformFailure("emit-floating-window-hidden", error);
@@ -126,6 +126,7 @@ async function publishFloatingSettings(settings: FloatingWindowSettings): Promis
 
   try {
     await emit(FLOATING_SETTINGS_EVENT, settings);
+    clearPlatformFailure("publish-floating-settings");
     return true;
   } catch (error) {
     warnPlatformFailure("publish-floating-settings", error);
@@ -144,6 +145,7 @@ async function resizeFloatingWindow(width: number, height: number): Promise<bool
 
   try {
     await getCurrentWindow().setSize(new LogicalSize(width, height));
+    clearPlatformFailure("resize-floating-window");
     return true;
   } catch (error) {
     warnPlatformFailure("resize-floating-window", error);
@@ -158,6 +160,7 @@ async function startFloatingWindowDrag(): Promise<boolean> {
 
   try {
     await getCurrentWindow().startDragging();
+    clearPlatformFailure("start-floating-window-drag");
     return true;
   } catch (error) {
     warnPlatformFailure("start-floating-window-drag", error);
@@ -172,6 +175,7 @@ async function setFloatingWindowPosition(position: DesktopPosition): Promise<boo
 
   try {
     await getCurrentWindow().setPosition(new PhysicalPosition(position.x, position.y));
+    clearPlatformFailure("restore-floating-window-position");
     return true;
   } catch (error) {
     warnPlatformFailure("restore-floating-window-position", error);
@@ -185,9 +189,11 @@ async function onFloatingWindowMoved(handler: (position: DesktopPosition) => voi
   }
 
   try {
-    return await getCurrentWindow().onMoved(({ payload }) => {
+    const unlisten = await getCurrentWindow().onMoved(({ payload }) => {
       handler({ x: payload.x, y: payload.y });
     });
+    clearPlatformFailure("listen-floating-window-moved");
+    return unlisten;
   } catch (error) {
     warnPlatformFailure("listen-floating-window-moved", error);
     return () => {};
@@ -204,7 +210,9 @@ async function invokePlatformCommand<T>(
   }
 
   try {
-    return await withTimeout(invoke<T>(command, args), PLATFORM_COMMAND_TIMEOUT_MS);
+    const result = await withTimeout(invoke<T>(command, args), PLATFORM_COMMAND_TIMEOUT_MS);
+    clearPlatformFailure(`command:${command}`);
+    return result;
   } catch (error) {
     warnPlatformFailure(`command:${command}`, error);
     return fallback;
@@ -220,7 +228,9 @@ async function listenToEvent<T = void>(
   }
 
   try {
-    return await listen<T>(eventName, ({ payload }) => handler(payload));
+    const unlisten = await listen<T>(eventName, ({ payload }) => handler(payload));
+    clearPlatformFailure(`listen:${eventName}`);
+    return unlisten;
   } catch (error) {
     warnPlatformFailure(`listen:${eventName}`, error);
     return () => {};
@@ -228,12 +238,13 @@ async function listenToEvent<T = void>(
 }
 
 function warnPlatformFailure(key: string, error: unknown) {
-  const now = Date.now();
-  const lastWarningAt = lastPlatformWarningAtByKey.get(key) ?? 0;
-  if (now - lastWarningAt < WARNING_THROTTLE_MS) {
-    return;
-  }
+  recordCommandFailure(platformDiagnosticKey(key), error);
+}
 
-  lastPlatformWarningAtByKey.set(key, now);
-  console.warn(`Desktop platform failed: ${key}`, error);
+function clearPlatformFailure(key: string) {
+  clearCommandFailure(platformDiagnosticKey(key));
+}
+
+function platformDiagnosticKey(key: string) {
+  return `platform:${key}`;
 }

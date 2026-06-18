@@ -13,8 +13,15 @@ const MINIMUM_RATE_SPAN_SECONDS: f64 = 0.4;
 const MAX_TOKENS_PER_SECOND: f64 = 200.0;
 
 pub fn read_snapshot(codex_home: &Path, selected_thread_id: Option<&str>) -> LiveRateSnapshot {
-    read_snapshot_result(codex_home, selected_thread_id)
+    try_read_snapshot(codex_home, selected_thread_id)
         .unwrap_or_else(|_| idle_snapshot(codex_home, selected_thread_id))
+}
+
+pub fn try_read_snapshot(
+    codex_home: &Path,
+    selected_thread_id: Option<&str>,
+) -> Result<LiveRateSnapshot> {
+    read_snapshot_result(codex_home, selected_thread_id)
 }
 
 pub fn read_floating_snapshot(codex_home: &Path) -> FloatingPanelSnapshot {
@@ -22,8 +29,8 @@ pub fn read_floating_snapshot(codex_home: &Path) -> FloatingPanelSnapshot {
     floating_from_live(codex_home, &live)
 }
 
-pub fn read_thread_options(codex_home: &Path) -> Vec<LiveThreadOption> {
-    read_thread_options_result(codex_home, 18).unwrap_or_default()
+pub fn try_read_thread_options(codex_home: &Path) -> Result<Vec<LiveThreadOption>> {
+    read_thread_options_result(codex_home, 18)
 }
 
 pub fn idle_snapshot(codex_home: &Path, selected_thread_id: Option<&str>) -> LiveRateSnapshot {

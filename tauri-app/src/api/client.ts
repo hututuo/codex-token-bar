@@ -22,6 +22,13 @@ import {
   fallbackProviderRepairActionResult,
   fallbackProviderRepairSnapshot,
 } from "./fallback";
+import {
+  clearCommandFailure,
+  getCommandDiagnosticsSnapshot,
+  recordCommandFailure,
+  subscribeCommandDiagnostics,
+  type CommandFailureDiagnostic,
+} from "../diagnostics/localDiagnostics";
 import { isTauriRuntimeAvailable, withTimeout } from "../platform/runtime";
 import type {
   DisplaySurfaceSettings,
@@ -30,17 +37,12 @@ import type {
 } from "../types/dashboard";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 4_000;
-const WARNING_THROTTLE_MS = 5_000;
-const lastWarningAtByCommand = new Map<string, number>();
-const commandDiagnosticsByName = new Map<string, CommandFailureDiagnostic>();
-const commandDiagnosticsListeners = new Set<(diagnostics: CommandFailureDiagnostic[]) => void>();
 
-export interface CommandFailureDiagnostic {
-  command: string;
-  message: string;
-  occurredAt: string;
-  count: number;
-}
+export {
+  getCommandDiagnosticsSnapshot,
+  subscribeCommandDiagnostics,
+  type CommandFailureDiagnostic,
+};
 
 async function callCommand<T>(
   command: string,
@@ -80,66 +82,6 @@ async function callCommandOptional<T>(
   } catch (error) {
     recordCommandFailure(command, error);
     return null;
-  }
-}
-
-export function getCommandDiagnosticsSnapshot(): CommandFailureDiagnostic[] {
-  return Array.from(commandDiagnosticsByName.values()).sort((left, right) =>
-    right.occurredAt.localeCompare(left.occurredAt),
-  );
-}
-
-export function subscribeCommandDiagnostics(
-  listener: (diagnostics: CommandFailureDiagnostic[]) => void,
-): () => void {
-  commandDiagnosticsListeners.add(listener);
-  listener(getCommandDiagnosticsSnapshot());
-  return () => {
-    commandDiagnosticsListeners.delete(listener);
-  };
-}
-
-function recordCommandFailure(command: string, error: unknown) {
-  const now = Date.now();
-  const lastWarningAt = lastWarningAtByCommand.get(command) ?? 0;
-  if (now - lastWarningAt < WARNING_THROTTLE_MS) {
-    return;
-  }
-
-  lastWarningAtByCommand.set(command, now);
-  const previous = commandDiagnosticsByName.get(command);
-  commandDiagnosticsByName.set(command, {
-    command,
-    message: commandFailureMessage(error),
-    occurredAt: new Date(now).toISOString(),
-    count: (previous?.count ?? 0) + 1,
-  });
-  emitCommandDiagnostics();
-  console.warn(`Tauri command failed: ${command}`, error);
-}
-
-function clearCommandFailure(command: string) {
-  if (commandDiagnosticsByName.delete(command)) {
-    emitCommandDiagnostics();
-  }
-}
-
-function emitCommandDiagnostics() {
-  const snapshot = getCommandDiagnosticsSnapshot();
-  commandDiagnosticsListeners.forEach((listener) => listener(snapshot));
-}
-
-function commandFailureMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (typeof error === "string") {
-    return error;
-  }
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return String(error);
   }
 }
 

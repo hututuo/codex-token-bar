@@ -3,7 +3,10 @@ use crate::models::{
     AppSettingsSnapshot, CodexHomeStatus, DisplaySurfaceSettingsSnapshot,
     FloatingWindowPositionSnapshot, FloatingWindowSettingsSnapshot,
 };
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
+};
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, WebviewUrl, WebviewWindowBuilder,
@@ -29,6 +32,15 @@ const FLOATING_WINDOW_MAX_SCALE: f64 = 1.38;
 const STATUS_PANEL_WIDTH: f64 = 336.0;
 const STATUS_PANEL_HEIGHT: f64 = 236.0;
 const STATUS_TRAY_ID: &str = "codex-token-bar-status";
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct SurfaceSetupStatus {
+    pub(super) floating_window_error: Option<String>,
+    pub(super) status_panel_error: Option<String>,
+    pub(super) status_tray_error: Option<String>,
+}
+
+static SURFACE_SETUP_STATUS: OnceLock<Mutex<SurfaceSetupStatus>> = OnceLock::new();
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn automatic_codex_home() -> std::path::PathBuf {
@@ -109,10 +121,45 @@ pub fn save_setup_guide_completed(completed: bool) -> Result<AppSettingsSnapshot
 }
 
 pub fn setup_desktop_surfaces(app: &tauri::App) -> tauri::Result<()> {
-    create_floating_window(app)?;
-    create_status_panel_window(app)?;
-    create_status_tray(app)?;
+    let mut status = SurfaceSetupStatus::default();
+
+    if let Err(error) = create_floating_window(app) {
+        let message = error.to_string();
+        eprintln!("Codex Token Bar: floating window setup failed: {message}");
+        status.floating_window_error = Some(message);
+    }
+
+    if let Err(error) = create_status_panel_window(app) {
+        let message = error.to_string();
+        eprintln!("Codex Token Bar: status panel setup failed: {message}");
+        status.status_panel_error = Some(message);
+    }
+
+    if let Err(error) = create_status_tray(app) {
+        let message = error.to_string();
+        eprintln!("Codex Token Bar: status tray setup failed: {message}");
+        status.status_tray_error = Some(message);
+    }
+
+    set_surface_setup_status(status);
     Ok(())
+}
+
+pub(super) fn surface_setup_status() -> SurfaceSetupStatus {
+    surface_setup_status_cell()
+        .lock()
+        .map(|status| status.clone())
+        .unwrap_or_default()
+}
+
+fn set_surface_setup_status(next: SurfaceSetupStatus) {
+    if let Ok(mut status) = surface_setup_status_cell().lock() {
+        *status = next;
+    }
+}
+
+fn surface_setup_status_cell() -> &'static Mutex<SurfaceSetupStatus> {
+    SURFACE_SETUP_STATUS.get_or_init(|| Mutex::new(SurfaceSetupStatus::default()))
 }
 
 pub fn show_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {

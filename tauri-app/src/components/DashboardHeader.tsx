@@ -133,8 +133,32 @@ function commandDisplayName(command: string): string {
     read_live_rate_snapshot: "实时速率读取",
     read_live_thread_options: "会话列表读取",
     read_floating_snapshot: "悬浮窗数据读取",
+    "platform:command:show_floating_window": "悬浮窗打开",
+    "platform:command:hide_floating_window": "悬浮窗关闭",
+    "platform:command:show_status_panel_window": "状态栏面板打开",
+    "platform:command:hide_status_panel_window": "状态栏面板关闭",
+    "platform:command:show_dashboard_window": "主界面打开",
+    "platform:command:set_status_tray_readout": "状态栏数字更新",
+    "platform:command:start_live_rate_stream": "实时速率事件流",
+    "platform:command:stop_live_rate_stream": "实时速率事件流停止",
+    "platform:emit-floating-window-hidden": "悬浮窗关闭同步",
+    "platform:publish-floating-settings": "悬浮窗设置同步",
+    "platform:resize-floating-window": "悬浮窗尺寸调整",
+    "platform:start-floating-window-drag": "悬浮窗拖动",
+    "platform:restore-floating-window-position": "悬浮窗位置恢复",
+    "platform:listen-floating-window-moved": "悬浮窗位置监听",
+    "platform:listen:floating-window-hidden": "悬浮窗关闭监听",
+    "platform:listen:floating-settings-changed": "悬浮窗设置监听",
+    "platform:listen:live-rate-snapshot": "实时速率事件监听",
+    "platform:read-window-label": "窗口类型识别",
   };
-  return knownNames[command] ?? command.replaceAll("_", " ");
+  if (knownNames[command]) {
+    return knownNames[command];
+  }
+  if (command.startsWith("platform:")) {
+    return command.slice("platform:".length).replaceAll("_", " ").replaceAll(":", " ");
+  }
+  return command.replaceAll("_", " ");
 }
 
 function formatDiagnosticTime(value: string): string {
