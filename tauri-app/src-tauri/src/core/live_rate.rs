@@ -1,3 +1,4 @@
+use crate::core::unread;
 use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot};
 use rusqlite::{params, Connection, OpenFlags, Result};
 use serde::Deserialize;
@@ -71,7 +72,7 @@ fn floating_from_live(codex_home: &Path, live: &LiveRateSnapshot) -> FloatingPan
         requests_label: format!("次 {}", live.requests_today),
         five_hour_label: "5h 待读取".into(),
         seven_day_label: "7d 待读取".into(),
-        unread: false,
+        unread: unread::has_unread_threads(codex_home),
     }
 }
 
