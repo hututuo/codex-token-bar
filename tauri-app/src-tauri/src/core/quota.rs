@@ -1,6 +1,7 @@
 use crate::core::quota_history;
 use crate::models::{
-    AccountInfo, AccountQuotaBundle, QuotaLimit, QuotaSnapshot, ResetCreditSummary,
+    AccountInfo, AccountQuotaBundle, QuotaLimit, QuotaSnapshot, ResetCreditDetail,
+    ResetCreditSummary,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::{json, Value};
@@ -11,6 +12,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
+use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{OffsetDateTime, UtcOffset};
 
@@ -20,6 +22,7 @@ pub fn read_account_quota(codex_home: &Path) -> Result<AccountQuotaBundle, Strin
             quota.reset_credit = read_reset_credits(codex_home).unwrap_or_else(|_| ResetCreditSummary {
                 available_count: 0,
                 status: "重置卡获取失败".into(),
+                credits: Vec::new(),
             });
             let mut bundle = AccountQuotaBundle {
                 account: account_info(codex_home, Some(&quota)),
@@ -43,6 +46,7 @@ pub fn read_account_quota(codex_home: &Path) -> Result<AccountQuotaBundle, Strin
             read_reset_credits(codex_home).unwrap_or_else(|_| ResetCreditSummary {
                 available_count: 0,
                 status: "重置卡获取失败".into(),
+                credits: Vec::new(),
             });
     }
 
@@ -77,6 +81,7 @@ pub fn placeholder_quota() -> QuotaSnapshot {
         reset_credit: ResetCreditSummary {
             available_count: 0,
             status: "重置卡待读取".into(),
+            credits: Vec::new(),
         },
         pace_label: "额度待读取".into(),
     }
@@ -242,6 +247,7 @@ fn parse_rate_limits(result: &Value) -> Result<QuotaSnapshot, String> {
         reset_credit: ResetCreditSummary {
             available_count: 0,
             status: "重置卡待读取".into(),
+            credits: Vec::new(),
         },
     })
 }
@@ -402,23 +408,21 @@ fn read_reset_credits(codex_home: &Path) -> Result<ResetCreditSummary, String> {
         return Err(format!("HTTP {}", response.status()));
     }
     let value = response.json::<Value>().map_err(|error| error.to_string())?;
+    let credits = value
+        .get("credits")
+        .and_then(Value::as_array)
+        .map(|credits| {
+            credits
+                .iter()
+                .enumerate()
+                .map(|(index, credit)| parse_reset_credit_detail(credit, index))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let available = value
         .get("available_count")
         .and_then(|value| value.as_u64())
-        .or_else(|| {
-            value
-                .get("credits")
-                .and_then(Value::as_array)
-                .map(|credits| {
-                    credits
-                        .iter()
-                        .filter(|credit| {
-                            credit.get("status").and_then(Value::as_str) == Some("available")
-                                && credit.get("redeemed_at").is_none_or(Value::is_null)
-                        })
-                        .count() as u64
-                })
-        })
+        .or_else(|| Some(credits.iter().filter(|credit| credit.status == "可用").count() as u64))
         .unwrap_or(0);
     let available_count = u32::try_from(available).unwrap_or(u32::MAX);
     Ok(ResetCreditSummary {
@@ -428,7 +432,208 @@ fn read_reset_credits(codex_home: &Path) -> Result<ResetCreditSummary, String> {
         } else {
             format!("{available_count} 张重置卡可用")
         },
+        credits,
     })
+}
+
+fn parse_reset_credit_detail(value: &Value, index: usize) -> ResetCreditDetail {
+    let status_raw = text_from_keys(value, &["status"]).unwrap_or_else(|| "unknown".into());
+    let status = human_reset_status(&status_raw, value);
+    let issued_at = time_from_keys(
+        value,
+        &[
+            "issued_at",
+            "issuedAt",
+            "created_at",
+            "createdAt",
+            "granted_at",
+            "grantedAt",
+        ],
+    );
+    let expires_at = time_from_keys(value, &["expires_at", "expiresAt", "expiration", "expires"]);
+    let redeemed_at = {
+        let value = time_from_keys(value, &["redeemed_at", "redeemedAt", "used_at", "usedAt"]);
+        if value == "未提供" && status != "已使用" {
+            "未使用".into()
+        } else {
+            value
+        }
+    };
+    let source = text_from_keys(value, &["source", "grant_source", "grantSource", "origin", "reason"])
+        .unwrap_or_else(|| "未提供".into());
+    let associated_user = associated_user_label(value).unwrap_or_else(|| "未提供".into());
+    let short_id = text_from_keys(
+        value,
+        &["id", "credit_id", "creditId", "reset_credit_id", "resetCreditId"],
+    )
+    .map(|id| short_identifier(&id))
+    .unwrap_or_else(|| "未提供".into());
+    let summary = [
+        format!("状态 {status}"),
+        format!("到期 {expires_at}"),
+        format!("关联 {associated_user}"),
+    ]
+    .join(" · ");
+
+    ResetCreditDetail {
+        title: format!("重置卡 {}", index + 1),
+        status,
+        summary,
+        issued_at,
+        expires_at,
+        redeemed_at,
+        source,
+        associated_user,
+        short_id,
+    }
+}
+
+fn human_reset_status(status: &str, value: &Value) -> String {
+    if value.get("redeemed_at").is_some_and(|value| !value.is_null())
+        || value.get("redeemedAt").is_some_and(|value| !value.is_null())
+    {
+        return "已使用".into();
+    }
+
+    match status {
+        "available" | "active" | "unused" => "可用".into(),
+        "redeemed" | "used" | "consumed" => "已使用".into(),
+        "expired" => "已过期".into(),
+        "pending" => "待生效".into(),
+        other if other.trim().is_empty() => "未知".into(),
+        other => other.to_string(),
+    }
+}
+
+fn associated_user_label(value: &Value) -> Option<String> {
+    text_from_keys(
+        value,
+        &[
+            "user_name",
+            "userName",
+            "user_email",
+            "userEmail",
+            "email",
+            "user_id",
+            "userId",
+            "account_id",
+            "accountId",
+        ],
+    )
+    .or_else(|| {
+        value.get("user").and_then(|user| {
+            text_from_keys(user, &["name", "email", "id", "user_id", "userId"])
+        })
+    })
+    .or_else(|| {
+        ["associated_users", "associatedUsers", "users", "accounts"]
+            .iter()
+            .find_map(|key| labels_from_array(value.get(*key)?))
+    })
+}
+
+fn time_from_keys(value: &Value, keys: &[&str]) -> String {
+    keys.iter()
+        .find_map(|key| value.get(*key))
+        .and_then(parse_time)
+        .map(format_reset_credit_time)
+        .unwrap_or_else(|| "未提供".into())
+}
+
+fn parse_time(value: &Value) -> Option<OffsetDateTime> {
+    if value.is_null() {
+        return None;
+    }
+
+    if let Some(number) = number(value) {
+        let seconds = if number > 10_000_000_000.0 {
+            number / 1000.0
+        } else {
+            number
+        };
+        return OffsetDateTime::from_unix_timestamp(seconds.round() as i64).ok();
+    }
+
+    let text = value.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    OffsetDateTime::parse(text, &Rfc3339).ok()
+}
+
+fn format_reset_credit_time(date: OffsetDateTime) -> String {
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    date.to_offset(local_offset)
+        .format(format_description!("[year]-[month]-[day] [hour]:[minute]"))
+        .unwrap_or_else(|_| "未提供".into())
+}
+
+fn text_from_keys(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(*key))
+        .and_then(text_from_value)
+        .filter(|text| !text.is_empty())
+}
+
+fn labels_from_array(value: &Value) -> Option<String> {
+    let labels = value
+        .as_array()?
+        .iter()
+        .filter_map(|item| {
+            text_from_value(item).or_else(|| {
+                text_from_keys(
+                    item,
+                    &[
+                        "name",
+                        "email",
+                        "id",
+                        "user_id",
+                        "userId",
+                        "account_id",
+                        "accountId",
+                    ],
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    if labels.is_empty() {
+        None
+    } else {
+        Some(labels.join("、"))
+    }
+}
+
+fn text_from_value(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.trim().to_string());
+    }
+    if let Some(number) = value.as_i64() {
+        return Some(number.to_string());
+    }
+    if let Some(number) = value.as_u64() {
+        return Some(number.to_string());
+    }
+    if let Some(flag) = value.as_bool() {
+        return Some(if flag { "是" } else { "否" }.into());
+    }
+    None
+}
+
+fn short_identifier(id: &str) -> String {
+    let trimmed = id.trim();
+    if trimmed.chars().count() <= 10 {
+        return trimmed.to_string();
+    }
+    let start = trimmed.chars().take(6).collect::<String>();
+    let end = trimmed
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    format!("{start}...{end}")
 }
 
 fn read_access_token(codex_home: &Path) -> Option<String> {
@@ -526,6 +731,28 @@ mod tests {
         assert_eq!(quota.five_hour.label, "5h");
         assert!((quota.five_hour.used_percent - 0.25).abs() < 0.001);
         assert!((quota.seven_day.remaining_percent - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn parses_reset_credit_detail_into_human_fields() {
+        let credit = json!({
+            "status": "available",
+            "created_at": "2026-06-12T01:00:00Z",
+            "expires_at": "2026-06-20T01:00:00Z",
+            "source": "system_grant",
+            "associatedUsers": [{ "email": "user@example.com" }],
+            "id": "reset-credit-abcdef123456"
+        });
+
+        let detail = parse_reset_credit_detail(&credit, 0);
+        assert_eq!(detail.title, "重置卡 1");
+        assert_eq!(detail.status, "可用");
+        assert_eq!(detail.redeemed_at, "未使用");
+        assert_eq!(detail.source, "system_grant");
+        assert_eq!(detail.associated_user, "user@example.com");
+        assert_eq!(detail.short_id, "reset-...3456");
+        assert!(detail.issued_at.starts_with("2026-06-12 "));
+        assert!(detail.expires_at.starts_with("2026-06-20 "));
     }
 
     #[test]

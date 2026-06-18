@@ -93,6 +93,7 @@ fn bundle(
             reset_credit: ResetCreditSummary {
                 available_count: 0,
                 status: "0 张重置卡".into(),
+                credits: Vec::new(),
             },
             pace_label: "测试".into(),
         },

@@ -1,6 +1,6 @@
 use crate::models::{
-    AccountInfo, ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats,
-    QuotaLimit, QuotaSnapshot, RecentUsagePoint, ResetCreditSummary,
+    AccountInfo, ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats, QuotaLimit,
+    QuotaSnapshot, RecentUsagePoint, ResetCreditDetail, ResetCreditSummary,
 };
 
 pub fn dashboard_snapshot() -> DashboardSnapshot {
@@ -37,6 +37,17 @@ pub fn dashboard_snapshot() -> DashboardSnapshot {
             reset_credit: ResetCreditSummary {
                 available_count: 1,
                 status: "1 张重置卡可用".into(),
+                credits: vec![ResetCreditDetail {
+                    title: "重置卡 1".into(),
+                    status: "可用".into(),
+                    summary: "状态 可用 · 到期 2026-06-20 09:56".into(),
+                    issued_at: "2026-06-12 09:56".into(),
+                    expires_at: "2026-06-20 09:56".into(),
+                    redeemed_at: "未使用".into(),
+                    source: "系统发放".into(),
+                    associated_user: "来先生".into(),
+                    short_id: "rc_01...9f2a".into(),
+                }],
             },
             pace_label: "节奏稳，多 3%".into(),
         },

@@ -79,6 +79,21 @@ pub struct QuotaHistoryPoint {
 pub struct ResetCreditSummary {
     pub available_count: u32,
     pub status: String,
+    pub credits: Vec<ResetCreditDetail>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetCreditDetail {
+    pub title: String,
+    pub status: String,
+    pub summary: String,
+    pub issued_at: String,
+    pub expires_at: String,
+    pub redeemed_at: String,
+    pub source: String,
+    pub associated_user: String,
+    pub short_id: String,
 }
 
 #[derive(Debug, Serialize)]

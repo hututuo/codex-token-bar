@@ -74,6 +74,19 @@ export const mockDashboardSnapshot: DashboardSnapshot = {
     resetCredit: {
       availableCount: 1,
       status: "1 张重置卡可用",
+      credits: [
+        {
+          title: "重置卡 1",
+          status: "可用",
+          summary: "状态 可用 · 到期 2026-06-20 09:56",
+          issuedAt: "2026-06-12 09:56",
+          expiresAt: "2026-06-20 09:56",
+          redeemedAt: "未使用",
+          source: "系统发放",
+          associatedUser: "来先生",
+          shortId: "rc_01...9f2a",
+        },
+      ],
     },
     paceLabel: "节奏稳，多 3%",
   },

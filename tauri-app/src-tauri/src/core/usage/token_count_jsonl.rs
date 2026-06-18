@@ -548,6 +548,7 @@ fn placeholder_quota() -> QuotaSnapshot {
         reset_credit: ResetCreditSummary {
             available_count: 0,
             status: "重置卡待读取".into(),
+            credits: Vec::new(),
         },
         pace_label: "额度待读取".into(),
     }

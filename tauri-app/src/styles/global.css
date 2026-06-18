@@ -206,6 +206,30 @@ button {
   gap: 3px;
 }
 
+.quota-pace-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.quota-detail-button {
+  min-width: 76px;
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel-solid) 92%, var(--accent-soft));
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.quota-detail-button:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+
 .quota-plan span,
 .quota-pace span,
 .quota-bar em,
@@ -244,6 +268,94 @@ button {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--green) 38%, var(--accent)));
+}
+
+.reset-credit-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+  border-radius: 8px;
+  background: var(--panel-solid);
+}
+
+.reset-credit-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reset-credit-panel-head span,
+.reset-credit-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.reset-credit-list {
+  display: grid;
+  gap: 9px;
+}
+
+.reset-credit-item {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-solid) 94%, var(--accent-soft));
+}
+
+.reset-credit-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reset-credit-title span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 16%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.reset-credit-item p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.reset-credit-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+}
+
+.reset-credit-fields div {
+  min-width: 0;
+}
+
+.reset-credit-fields dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.reset-credit-fields dd {
+  overflow: hidden;
+  margin: 2px 0 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 760;
 }
 
 .stats-strip {

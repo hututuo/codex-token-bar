@@ -36,6 +36,19 @@ export interface QuotaHistoryPoint {
 export interface ResetCreditSummary {
   availableCount: number;
   status: string;
+  credits: ResetCreditDetail[];
+}
+
+export interface ResetCreditDetail {
+  title: string;
+  status: string;
+  summary: string;
+  issuedAt: string;
+  expiresAt: string;
+  redeemedAt: string;
+  source: string;
+  associatedUser: string;
+  shortId: string;
 }
 
 export interface QuotaSnapshot {
