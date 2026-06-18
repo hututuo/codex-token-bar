@@ -73,6 +73,11 @@ export interface DashboardSnapshot {
   cacheHitRanking: CacheHitRankingItem[];
 }
 
+export interface AccountQuotaBundle {
+  account: AccountInfo;
+  quota: QuotaSnapshot;
+}
+
 export interface LiveRateSnapshot {
   scopeLabel: string;
   threadTitle: string;

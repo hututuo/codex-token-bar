@@ -22,6 +22,13 @@ pub struct DashboardSnapshot {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AccountQuotaBundle {
+    pub account: AccountInfo,
+    pub quota: QuotaSnapshot,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AccountInfo {
     pub display_name: String,
     pub plan_label: String,
@@ -48,7 +55,7 @@ pub struct QuotaSnapshot {
     pub pace_label: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaLimit {
     pub label: String,

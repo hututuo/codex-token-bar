@@ -1,4 +1,5 @@
 import type {
+  AccountQuotaBundle,
   CodexHomeStatus,
   DashboardSnapshot,
   FloatingPanelSnapshot,
@@ -100,6 +101,11 @@ export const mockDashboardSnapshot: DashboardSnapshot = {
       cachedTokens: 464_000,
     },
   ],
+};
+
+export const mockAccountQuotaBundle: AccountQuotaBundle = {
+  account: mockDashboardSnapshot.account,
+  quota: mockDashboardSnapshot.quota,
 };
 
 export const mockLiveRateSnapshot: LiveRateSnapshot = {

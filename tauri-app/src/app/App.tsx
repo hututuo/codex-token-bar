@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getCodexHome,
+  readAccountQuota,
   readDashboardSnapshot,
   readFloatingPanelSnapshot,
   readLiveRateSnapshot,
@@ -9,6 +10,7 @@ import {
 } from "../api/client";
 import { DashboardPage } from "../pages/DashboardPage";
 import type {
+  AccountQuotaBundle,
   CodexHomeStatus,
   DashboardSnapshot,
   FloatingPanelSnapshot,
@@ -37,6 +39,7 @@ const initialState: AppState = {
 export function App() {
   const [state, setState] = useState<AppState>(initialState);
   const preciseLoadStarted = useRef(false);
+  const quotaLoadStarted = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -73,11 +76,43 @@ export function App() {
     async function loadPreciseSnapshot() {
       const precise = await readPreciseDashboardSnapshot();
       if (!cancelled) {
-        setState((current) => ({ ...current, dashboard: precise }));
+        setState((current) => ({
+          ...current,
+          dashboard:
+            current.dashboard === null
+              ? precise
+              : {
+                  ...precise,
+                  account: current.dashboard.account,
+                  quota: current.dashboard.quota,
+                },
+        }));
       }
     }
 
     void loadPreciseSnapshot();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [state.dashboard, state.loading]);
+
+  useEffect(() => {
+    if (state.dashboard === null || state.loading || quotaLoadStarted.current) {
+      return;
+    }
+
+    let cancelled = false;
+    quotaLoadStarted.current = true;
+
+    async function loadQuota() {
+      const quota = await readAccountQuota();
+      if (!cancelled) {
+        setState((current) => mergeQuota(current, quota));
+      }
+    }
+
+    void loadQuota();
 
     return () => {
       cancelled = true;
@@ -122,4 +157,33 @@ export function App() {
       refreshing={state.loading}
     />
   );
+}
+
+function mergeQuota(state: AppState, quota: AccountQuotaBundle): AppState {
+  const dashboard =
+    state.dashboard === null
+      ? null
+      : {
+          ...state.dashboard,
+          account: quota.account,
+          quota: quota.quota,
+        };
+  const floating =
+    state.floating === null
+      ? null
+      : {
+          ...state.floating,
+          fiveHourLabel: compactQuotaLabel(quota.quota.fiveHour),
+          sevenDayLabel: compactQuotaLabel(quota.quota.sevenDay),
+        };
+  return {
+    ...state,
+    dashboard,
+    floating,
+  };
+}
+
+function compactQuotaLabel(limit: AccountQuotaBundle["quota"]["fiveHour"]): string {
+  const percent = Math.round(limit.remainingPercent * 100);
+  return `${limit.label} ${percent}% ${limit.resetsAt}`;
 }

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AccountQuotaBundle,
   CodexHomeStatus,
   DashboardSnapshot,
   FloatingPanelSnapshot,
@@ -7,6 +8,7 @@ import type {
   ProviderRepairSnapshot,
 } from "../types/dashboard";
 import {
+  mockAccountQuotaBundle,
   mockCodexHome,
   mockDashboardSnapshot,
   mockFloatingPanelSnapshot,
@@ -39,6 +41,10 @@ export function readDashboardSnapshot(): Promise<DashboardSnapshot> {
 
 export function readPreciseDashboardSnapshot(): Promise<DashboardSnapshot> {
   return callCommand("read_precise_dashboard_snapshot", mockDashboardSnapshot);
+}
+
+export function readAccountQuota(): Promise<AccountQuotaBundle> {
+  return callCommand("read_account_quota", mockAccountQuotaBundle);
 }
 
 export function readLiveRateSnapshot(): Promise<LiveRateSnapshot> {

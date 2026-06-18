@@ -1,6 +1,6 @@
-use crate::core::{mock_data, usage};
+use crate::core::{mock_data, quota, usage};
 use crate::models::{
-    CodexHomeStatus, DashboardSnapshot, FloatingPanelSnapshot, LiveRateSnapshot,
+    AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, FloatingPanelSnapshot, LiveRateSnapshot,
     ProviderRepairSnapshot,
 };
 use crate::platform;
@@ -23,6 +23,12 @@ pub fn read_precise_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
     Ok(usage::token_count_jsonl::dashboard_snapshot(&codex_home)
         .or_else(|_| usage::state_sqlite::dashboard_snapshot(&codex_home))
         .unwrap_or_else(|_| mock_data::dashboard_snapshot()))
+}
+
+#[tauri::command]
+pub fn read_account_quota() -> Result<AccountQuotaBundle, String> {
+    let codex_home = platform::default_codex_home();
+    quota::read_account_quota(&codex_home)
 }
 
 #[tauri::command]
