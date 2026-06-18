@@ -104,6 +104,24 @@ fn read_snapshot_includes_selected_thread_rate() {
 }
 
 #[test]
+fn read_snapshot_keeps_idle_state_with_warning_when_logs_database_is_missing() {
+    let root = temp_root("live-rate-missing-logs");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "缺少实时日志", 300);
+
+    let snapshot = read_snapshot(&root, None);
+
+    assert_eq!(snapshot.tokens_per_second, 0.0);
+    assert_eq!(snapshot.total_tokens_today, 300);
+    assert!(snapshot
+        .warnings
+        .iter()
+        .any(|warning| warning.source == "live_rate_stream"));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn read_thread_options_works_with_minimal_thread_schema() {
     let root = temp_root("live-thread-options");
     fs::create_dir_all(&root).unwrap();

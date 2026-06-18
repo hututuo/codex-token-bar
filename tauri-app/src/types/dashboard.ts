@@ -166,6 +166,7 @@ export interface LiveRateSnapshot {
   requestsToday: number;
   maxTokensPerSecond: number;
   preciseEnabled: boolean;
+  warnings: LocalDataWarning[];
 }
 
 export interface LiveThreadOption {

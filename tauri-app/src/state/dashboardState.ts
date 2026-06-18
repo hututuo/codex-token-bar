@@ -55,6 +55,7 @@ export function pendingLiveRateSnapshot(): LiveRateSnapshot {
     requestsToday: 0,
     maxTokensPerSecond: 200,
     preciseEnabled: false,
+    warnings: [],
   };
 }
 
@@ -92,7 +93,11 @@ export function readyDashboardState(state: DashboardAppState): DashboardReadySta
     liveRate: state.liveRate,
     liveThreadOptions: state.liveThreadOptions,
     repair: state.repair,
-    diagnostics: mergeWarningDiagnostics(state.diagnostics, state.dashboard.warnings, state.dashboard.generatedAt),
+    diagnostics: mergeWarningDiagnostics(
+      state.diagnostics,
+      mergeWarnings(state.dashboard.warnings, state.liveRate.warnings),
+      state.dashboard.generatedAt,
+    ),
   };
 }
 

@@ -267,4 +267,13 @@ fn should_emit_live_rate(
         || previous.selected_thread_title != current.selected_thread_title
         || (previous.selected_tokens_per_second - current.selected_tokens_per_second).abs() >= 0.05
         || previous.precise_enabled != current.precise_enabled
+        || warning_signature(&previous.warnings) != warning_signature(&current.warnings)
+}
+
+fn warning_signature(warnings: &[crate::models::LocalDataWarning]) -> String {
+    warnings
+        .iter()
+        .map(|warning| format!("{}:{}", warning.source, warning.message))
+        .collect::<Vec<_>>()
+        .join("\n")
 }

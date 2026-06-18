@@ -265,6 +265,7 @@ pub struct LiveRateSnapshot {
     pub requests_today: u32,
     pub max_tokens_per_second: f64,
     pub precise_enabled: bool,
+    pub warnings: Vec<LocalDataWarning>,
 }
 
 #[derive(Debug, Serialize)]

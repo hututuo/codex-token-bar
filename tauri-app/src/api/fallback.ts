@@ -97,6 +97,7 @@ export function emptyLiveRateSnapshot(selectedThreadId?: string | null): LiveRat
     requestsToday: 0,
     maxTokensPerSecond: 200,
     preciseEnabled: false,
+    warnings: [],
   };
 }
 

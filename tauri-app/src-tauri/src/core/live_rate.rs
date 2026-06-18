@@ -1,6 +1,6 @@
 use crate::core::unread;
 use crate::core::sqlite;
-use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption};
+use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, LocalDataWarning};
 use rusqlite::{params, Connection, Result};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -13,8 +13,17 @@ const MINIMUM_RATE_SPAN_SECONDS: f64 = 0.4;
 const MAX_TOKENS_PER_SECOND: f64 = 200.0;
 
 pub fn read_snapshot(codex_home: &Path, selected_thread_id: Option<&str>) -> LiveRateSnapshot {
-    try_read_snapshot(codex_home, selected_thread_id)
-        .unwrap_or_else(|_| idle_snapshot(codex_home, selected_thread_id))
+    match try_read_snapshot(codex_home, selected_thread_id) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let warnings = vec![live_rate_warning(format!(
+                "读取实时输出流失败：{}（{}）",
+                codex_home.join("logs_2.sqlite").display(),
+                error
+            ))];
+            idle_snapshot_with_warnings(codex_home, selected_thread_id, warnings)
+        }
+    }
 }
 
 pub fn try_read_snapshot(
@@ -33,10 +42,14 @@ pub fn try_read_thread_options(codex_home: &Path) -> Result<Vec<LiveThreadOption
     read_thread_options_result(codex_home, 18)
 }
 
-pub fn idle_snapshot(codex_home: &Path, selected_thread_id: Option<&str>) -> LiveRateSnapshot {
-    let summary = read_usage_summary(codex_home).unwrap_or_default();
+fn idle_snapshot_with_warnings(
+    codex_home: &Path,
+    selected_thread_id: Option<&str>,
+    mut warnings: Vec<LocalDataWarning>,
+) -> LiveRateSnapshot {
+    let summary = read_usage_summary_or_default(codex_home, &mut warnings);
     let selected_thread_title = selected_thread_id
-        .and_then(|thread_id| read_thread_title(codex_home, thread_id).ok().flatten())
+        .and_then(|thread_id| read_thread_title_or_warn(codex_home, thread_id, &mut warnings))
         .unwrap_or_else(|| "选择会话查看单会话速率".into());
     LiveRateSnapshot {
         scope_label: "全会话".into(),
@@ -49,6 +62,7 @@ pub fn idle_snapshot(codex_home: &Path, selected_thread_id: Option<&str>) -> Liv
         requests_today: summary.today_requests,
         max_tokens_per_second: MAX_TOKENS_PER_SECOND,
         precise_enabled: false,
+        warnings,
     }
 }
 
@@ -56,6 +70,7 @@ fn read_snapshot_result(
     codex_home: &Path,
     selected_thread_id: Option<&str>,
 ) -> Result<LiveRateSnapshot> {
+    let mut warnings = Vec::new();
     let now = current_time_seconds();
     let logs_connection = open_read_only(&codex_home.join("logs_2.sqlite"))?;
 
@@ -67,14 +82,14 @@ fn read_snapshot_result(
             tokens_per_second: 0.0,
             latest_thread_id: None,
         });
-    let summary = read_usage_summary(codex_home).unwrap_or_default();
+    let summary = read_usage_summary_or_default(codex_home, &mut warnings);
     let thread_title = rollup
         .latest_thread_id
         .as_deref()
-        .and_then(|thread_id| read_thread_title(codex_home, thread_id).ok().flatten())
+        .and_then(|thread_id| read_thread_title_or_warn(codex_home, thread_id, &mut warnings))
         .unwrap_or_else(|| "等待任意会话输出".into());
     let selected_thread_title = selected_thread_id
-        .and_then(|thread_id| read_thread_title(codex_home, thread_id).ok().flatten())
+        .and_then(|thread_id| read_thread_title_or_warn(codex_home, thread_id, &mut warnings))
         .unwrap_or_else(|| "选择会话查看单会话速率".into());
 
     Ok(LiveRateSnapshot {
@@ -88,11 +103,13 @@ fn read_snapshot_result(
         requests_today: summary.today_requests,
         max_tokens_per_second: MAX_TOKENS_PER_SECOND,
         precise_enabled: false,
+        warnings,
     })
 }
 
 fn floating_from_live(codex_home: &Path, live: &LiveRateSnapshot) -> FloatingPanelSnapshot {
-    let summary = read_usage_summary(codex_home).unwrap_or_default();
+    let mut warnings = Vec::new();
+    let summary = read_usage_summary_or_default(codex_home, &mut warnings);
     FloatingPanelSnapshot {
         tokens_per_second: live.tokens_per_second,
         trend_label: if live.tokens_per_second > 0.05 {
@@ -106,6 +123,62 @@ fn floating_from_live(codex_home: &Path, live: &LiveRateSnapshot) -> FloatingPan
         five_hour_label: "5h 待读取".into(),
         seven_day_label: "7d 待读取".into(),
         unread: unread::has_unread_threads(codex_home),
+    }
+}
+
+fn live_rate_warning(message: String) -> LocalDataWarning {
+    LocalDataWarning {
+        source: "live_rate_stream".into(),
+        message,
+    }
+}
+
+fn live_rate_summary_warning(message: String) -> LocalDataWarning {
+    LocalDataWarning {
+        source: "live_rate_summary".into(),
+        message,
+    }
+}
+
+fn live_rate_thread_title_warning(message: String) -> LocalDataWarning {
+    LocalDataWarning {
+        source: "live_rate_thread_title".into(),
+        message,
+    }
+}
+
+fn read_usage_summary_or_default(
+    codex_home: &Path,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> UsageSummary {
+    match read_usage_summary(codex_home) {
+        Ok(summary) => summary,
+        Err(error) => {
+            warnings.push(live_rate_summary_warning(format!(
+                "读取实时速率汇总失败：{}（{}）",
+                codex_home.join("state_5.sqlite").display(),
+                error
+            )));
+            UsageSummary::default()
+        }
+    }
+}
+
+fn read_thread_title_or_warn(
+    codex_home: &Path,
+    thread_id: &str,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Option<String> {
+    match read_thread_title(codex_home, thread_id) {
+        Ok(title) => title,
+        Err(error) => {
+            warnings.push(live_rate_thread_title_warning(format!(
+                "读取实时速率会话标题失败：{}（{}）",
+                thread_id,
+                error
+            )));
+            None
+        }
     }
 }
 
@@ -433,7 +506,7 @@ fn read_thread_options_result(codex_home: &Path, limit: usize) -> Result<Vec<Liv
         FROM threads
         WHERE {archived_filter}
           AND {source_filter}
-        ORDER BY COALESCE(updated_at_ms, updated_at * 1000) DESC
+        ORDER BY COALESCE(updated_at_ms, updated_at * 1000) DESC, id ASC
         LIMIT ?1;
         "#,
     );
