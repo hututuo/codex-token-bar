@@ -17,10 +17,12 @@ import type {
   PlatformCapabilities,
   ProviderRepairSnapshot,
 } from "../types/dashboard";
+import type { CommandFailureDiagnostic } from "../api/client";
 
 interface DashboardPageProps {
   codexHome: CodexHomeStatus;
   dashboard: DashboardSnapshot;
+  diagnostics: CommandFailureDiagnostic[];
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
   floatingVisible: boolean;
@@ -45,6 +47,7 @@ interface DashboardPageProps {
 export function DashboardPage({
   codexHome,
   dashboard,
+  diagnostics,
   displaySurfaces,
   floatingSettings,
   floatingVisible,
@@ -78,6 +81,7 @@ export function DashboardPage({
         <DashboardHeader
           account={dashboard.account}
           codexHome={codexHome}
+          diagnostics={diagnostics}
           generatedAt={dashboard.generatedAt}
           onCodexHomeChange={onCodexHomeChange}
           onCodexHomeReset={onCodexHomeReset}

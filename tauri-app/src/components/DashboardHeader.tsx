@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
+import type { CommandFailureDiagnostic } from "../api/client";
 import type { AccountInfo, CodexHomeStatus } from "../types/dashboard";
 
 interface DashboardHeaderProps {
   account: AccountInfo;
   codexHome: CodexHomeStatus;
+  diagnostics: CommandFailureDiagnostic[];
   generatedAt: string;
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
@@ -15,6 +17,7 @@ interface DashboardHeaderProps {
 export function DashboardHeader({
   account,
   codexHome,
+  diagnostics,
   generatedAt,
   onCodexHomeChange,
   onCodexHomeReset,
@@ -36,6 +39,7 @@ export function DashboardHeader({
     second: "2-digit",
   }).format(new Date(generatedAt));
   const sourceLabel = codexHome.source === "manual" ? "手动目录" : codexHome.exists ? "自动发现" : "等待选择";
+  const latestDiagnostic = diagnostics[0] ?? null;
 
   async function savePath() {
     setSavingPath(true);
@@ -103,6 +107,40 @@ export function DashboardHeader({
           </button>
         </div>
       ) : null}
+      {latestDiagnostic ? (
+        <div className="diagnostic-strip" title={latestDiagnostic.message}>
+          <span className="diagnostic-strip__label">本地读取提醒</span>
+          <span className="diagnostic-strip__message">
+            {commandDisplayName(latestDiagnostic.command)} 失败，已显示待读取/零值数据。
+          </span>
+          <span className="diagnostic-strip__meta">
+            {formatDiagnosticTime(latestDiagnostic.occurredAt)}
+            {latestDiagnostic.count > 1 ? ` · ${latestDiagnostic.count} 次` : ""}
+          </span>
+        </div>
+      ) : null}
     </header>
   );
+}
+
+function commandDisplayName(command: string): string {
+  const knownNames: Record<string, string> = {
+    get_codex_home: "Codex 目录读取",
+    read_platform_capabilities: "平台能力读取",
+    read_dashboard_snapshot: "首页快速统计读取",
+    read_precise_dashboard_snapshot: "精确 token 扫描",
+    read_account_quota: "额度读取",
+    read_live_rate_snapshot: "实时速率读取",
+    read_live_thread_options: "会话列表读取",
+    read_floating_snapshot: "悬浮窗数据读取",
+  };
+  return knownNames[command] ?? command.replaceAll("_", " ");
+}
+
+function formatDiagnosticTime(value: string): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value));
 }

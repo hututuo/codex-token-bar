@@ -1,4 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  getCommandDiagnosticsSnapshot,
+  subscribeCommandDiagnostics,
+} from "../api/client";
 import { dashboardDataSource, type DashboardDataSource } from "../data/dashboardDataSource";
 import { desktopPlatform } from "../platform/desktop";
 import type { ProviderRepairSnapshot } from "../types/dashboard";
@@ -21,6 +25,12 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   const forceNextQuotaLoad = useRef(false);
   const liveThreadOptionsLoadStarted = useRef(false);
   const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
+
+  useEffect(() => {
+    return subscribeCommandDiagnostics((diagnostics) => {
+      setState((current) => ({ ...current, diagnostics }));
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -225,6 +235,7 @@ async function readInitialAppState(source: DashboardDataSource): Promise<Dashboa
     liveRate: pendingLiveRateSnapshot(),
     liveThreadOptions: [],
     repair: pendingRepairSnapshot(),
+    diagnostics: getCommandDiagnosticsSnapshot(),
     loading: false,
   };
 }

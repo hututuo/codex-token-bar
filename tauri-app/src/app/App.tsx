@@ -188,6 +188,7 @@ function DashboardApp() {
       <DashboardPage
         codexHome={readyState.codexHome}
         dashboard={readyState.dashboard}
+        diagnostics={readyState.diagnostics}
         displaySurfaces={displaySurfaces}
         floatingSettings={floatingSettings}
         floatingVisible={floatingVisible}

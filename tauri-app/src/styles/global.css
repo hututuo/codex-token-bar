@@ -249,6 +249,41 @@ button {
   opacity: 0.55;
 }
 
+.diagnostic-strip {
+  display: flex;
+  width: min(760px, 100%);
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-soft) 46%, var(--panel-solid));
+  padding: 5px 10px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.diagnostic-strip__label {
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+  font-weight: 760;
+}
+
+.diagnostic-strip__message {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnostic-strip__meta {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-weight: 620;
+}
+
 .setup-overlay {
   position: fixed;
   z-index: 50;

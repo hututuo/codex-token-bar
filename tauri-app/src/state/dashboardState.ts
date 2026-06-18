@@ -8,6 +8,7 @@ import type {
   ProviderRepairSnapshot,
   RecentUsagePoint,
 } from "../types/dashboard";
+import type { CommandFailureDiagnostic } from "../api/client";
 
 export interface DashboardAppState {
   codexHome: CodexHomeStatus | null;
@@ -16,6 +17,7 @@ export interface DashboardAppState {
   liveRate: LiveRateSnapshot | null;
   liveThreadOptions: LiveThreadOption[];
   repair: ProviderRepairSnapshot | null;
+  diagnostics: CommandFailureDiagnostic[];
   loading: boolean;
 }
 
@@ -26,6 +28,7 @@ export interface DashboardReadyState {
   liveRate: LiveRateSnapshot;
   liveThreadOptions: LiveThreadOption[];
   repair: ProviderRepairSnapshot;
+  diagnostics: CommandFailureDiagnostic[];
 }
 
 export const initialDashboardState: DashboardAppState = {
@@ -35,6 +38,7 @@ export const initialDashboardState: DashboardAppState = {
   liveRate: pendingLiveRateSnapshot(),
   liveThreadOptions: [],
   repair: pendingRepairSnapshot(),
+  diagnostics: [],
   loading: true,
 };
 
@@ -87,6 +91,7 @@ export function readyDashboardState(state: DashboardAppState): DashboardReadySta
     liveRate: state.liveRate,
     liveThreadOptions: state.liveThreadOptions,
     repair: state.repair,
+    diagnostics: state.diagnostics,
   };
 }
 
