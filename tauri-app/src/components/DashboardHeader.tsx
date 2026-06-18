@@ -28,6 +28,7 @@ export function DashboardHeader({
   const [editingPath, setEditingPath] = useState(false);
   const [pathDraft, setPathDraft] = useState(codexHome.path);
   const [savingPath, setSavingPath] = useState(false);
+  const [pathError, setPathError] = useState<string | null>(null);
 
   useEffect(() => {
     setPathDraft(codexHome.path);
@@ -43,9 +44,12 @@ export function DashboardHeader({
 
   async function savePath() {
     setSavingPath(true);
+    setPathError(null);
     try {
       await onCodexHomeChange(pathDraft);
       setEditingPath(false);
+    } catch (error) {
+      setPathError(error instanceof Error ? error.message : "Codex 目录保存失败。");
     } finally {
       setSavingPath(false);
     }
@@ -53,9 +57,12 @@ export function DashboardHeader({
 
   async function resetPath() {
     setSavingPath(true);
+    setPathError(null);
     try {
       await onCodexHomeReset();
       setEditingPath(false);
+    } catch (error) {
+      setPathError(error instanceof Error ? error.message : "自动发现 Codex 目录失败。");
     } finally {
       setSavingPath(false);
     }
@@ -105,6 +112,7 @@ export function DashboardHeader({
           <button disabled={savingPath} onClick={resetPath} type="button">
             恢复自动
           </button>
+          {pathError ? <span className="setup-error">{pathError}</span> : null}
         </div>
       ) : null}
       {latestDiagnostic ? (
@@ -133,6 +141,16 @@ function commandDisplayName(command: string): string {
     read_live_rate_snapshot: "实时速率读取",
     read_live_thread_options: "会话列表读取",
     read_floating_snapshot: "悬浮窗数据读取",
+    set_codex_home: "Codex 目录保存",
+    reset_codex_home: "Codex 目录恢复",
+    save_floating_settings: "悬浮窗设置保存",
+    save_floating_position: "悬浮窗位置保存",
+    save_display_surfaces: "显示设置保存",
+    save_setup_guide_completed: "首次设置保存",
+    create_provider_backup: "会话修复备份",
+    sync_provider_history: "会话修复同步",
+    verify_provider_repair: "会话修复验证",
+    rollback_provider_backup: "会话修复回滚",
     "platform:command:show_floating_window": "悬浮窗打开",
     "platform:command:hide_floating_window": "悬浮窗关闭",
     "platform:command:show_status_panel_window": "状态栏面板打开",

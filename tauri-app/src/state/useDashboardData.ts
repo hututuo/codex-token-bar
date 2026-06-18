@@ -72,7 +72,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   }, [source, state.dashboard, state.loading]);
 
   useEffect(() => {
-    if (state.dashboard === null || state.loading || quotaLoadStarted.current) {
+    if (state.dashboard === null || quotaLoadStarted.current) {
       return;
     }
 
@@ -95,10 +95,6 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   }, [source, state.dashboard, state.loading]);
 
   useEffect(() => {
-    if (state.loading) {
-      return;
-    }
-
     let cancelled = false;
     let liveRateInFlight = false;
     let streaming = false;
@@ -157,10 +153,10 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
       }
       window.clearInterval(interval);
     };
-  }, [source, state.loading, selectedLiveThreadId]);
+  }, [source, selectedLiveThreadId]);
 
   useEffect(() => {
-    if (state.dashboard === null || state.loading || liveThreadOptionsLoadStarted.current) {
+    if (state.dashboard === null || liveThreadOptionsLoadStarted.current) {
       return;
     }
 

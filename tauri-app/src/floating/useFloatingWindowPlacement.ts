@@ -27,7 +27,7 @@ export function useFloatingWindowPlacement() {
           x: position.x,
           y: position.y,
           savedAt: Date.now(),
-        });
+        }).catch(() => {});
       }
     }).then((listener) => {
       if (disposed) {

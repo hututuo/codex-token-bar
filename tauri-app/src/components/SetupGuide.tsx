@@ -34,6 +34,7 @@ export function SetupGuide({
   const [pathDraft, setPathDraft] = useState(codexHome.path);
   const [savingPath, setSavingPath] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [pathError, setPathError] = useState<string | null>(null);
   const [completionError, setCompletionError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -50,8 +51,11 @@ export function SetupGuide({
     }
 
     setSavingPath(true);
+    setPathError(null);
     try {
       await onCodexHomeChange(path);
+    } catch (error) {
+      setPathError(error instanceof Error ? error.message : "Codex 目录保存失败。");
     } finally {
       setSavingPath(false);
     }
@@ -59,8 +63,11 @@ export function SetupGuide({
 
   async function resetPath() {
     setSavingPath(true);
+    setPathError(null);
     try {
       await onCodexHomeReset();
+    } catch (error) {
+      setPathError(error instanceof Error ? error.message : "自动发现 Codex 目录失败。");
     } finally {
       setSavingPath(false);
     }
@@ -126,6 +133,7 @@ export function SetupGuide({
                   </button>
                 </div>
               ) : null}
+              {pathError ? <p className="setup-error">{pathError}</p> : null}
             </div>
           </section>
 

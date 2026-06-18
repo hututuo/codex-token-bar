@@ -120,7 +120,7 @@ function DashboardApp() {
     const sanitized = sanitizeFloatingSettings(floatingSettings);
     void desktopPlatform.publishFloatingSettings(sanitized);
     if (floatingSettingsLoaded.current) {
-      void saveFloatingSettings(sanitized);
+      void saveFloatingSettings(sanitized).catch(() => {});
     }
   }, [floatingSettings]);
 
@@ -148,7 +148,7 @@ function DashboardApp() {
     setDisplaySurfaces((current) => {
       const sanitized = sanitizeDisplaySurfaces({ ...current, ...next });
       if (displaySettingsLoaded.current) {
-        void saveDisplaySurfaces(sanitized);
+        void saveDisplaySurfaces(sanitized).catch(() => {});
       }
       return sanitized;
     });

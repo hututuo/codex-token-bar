@@ -16,10 +16,8 @@ import {
   emptyDashboardSnapshot,
   emptyFloatingPanelSnapshot,
   emptyLiveRateSnapshot,
-  fallbackAppSettings,
   fallbackCodexHome,
   fallbackPlatformCapabilities,
-  fallbackProviderRepairActionResult,
   fallbackProviderRepairSnapshot,
 } from "./fallback";
 import {
@@ -85,16 +83,52 @@ async function callCommandOptional<T>(
   }
 }
 
+async function callCommandStrict<T>(
+  command: string,
+  args?: Record<string, unknown>,
+  timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+): Promise<T> {
+  if (!isTauriRuntimeAvailable()) {
+    const error = new Error("当前不是 Tauri 桌面运行环境。");
+    recordCommandFailure(command, error);
+    throw error;
+  }
+
+  try {
+    const result = await withTimeout(invoke<T>(command, args), timeoutMs);
+    clearCommandFailure(command);
+    return result;
+  } catch (error) {
+    const normalized = normalizeError(error);
+    recordCommandFailure(command, normalized);
+    throw normalized;
+  }
+}
+
+function normalizeError(error: unknown): Error {
+  if (error instanceof Error) {
+    return error;
+  }
+  if (typeof error === "string") {
+    return new Error(error);
+  }
+  try {
+    return new Error(JSON.stringify(error));
+  } catch {
+    return new Error(String(error));
+  }
+}
+
 export function getCodexHome(): Promise<CodexHomeStatus> {
   return callCommand("get_codex_home", fallbackCodexHome);
 }
 
 export function setCodexHome(path: string): Promise<CodexHomeStatus> {
-  return callCommand("set_codex_home", { ...fallbackCodexHome, path, source: "manual" }, { path });
+  return callCommandStrict<CodexHomeStatus>("set_codex_home", { path });
 }
 
 export function resetCodexHome(): Promise<CodexHomeStatus> {
-  return callCommand("reset_codex_home", fallbackCodexHome);
+  return callCommandStrict<CodexHomeStatus>("reset_codex_home");
 }
 
 export function readAppSettings(): Promise<AppSettingsSnapshot | null> {
@@ -102,19 +136,19 @@ export function readAppSettings(): Promise<AppSettingsSnapshot | null> {
 }
 
 export function saveFloatingSettings(settings: FloatingWindowSettings): Promise<AppSettingsSnapshot> {
-  return callCommand("save_floating_settings", fallbackAppSettings, { settings });
+  return callCommandStrict<AppSettingsSnapshot>("save_floating_settings", { settings });
 }
 
 export function saveFloatingPosition(position: FloatingWindowPosition): Promise<AppSettingsSnapshot> {
-  return callCommand("save_floating_position", fallbackAppSettings, { position });
+  return callCommandStrict<AppSettingsSnapshot>("save_floating_position", { position });
 }
 
 export function saveDisplaySurfaces(display: DisplaySurfaceSettings): Promise<AppSettingsSnapshot> {
-  return callCommand("save_display_surfaces", fallbackAppSettings, { display });
+  return callCommandStrict<AppSettingsSnapshot>("save_display_surfaces", { display });
 }
 
 export function saveSetupGuideCompleted(completed: boolean): Promise<AppSettingsSnapshot> {
-  return callCommand("save_setup_guide_completed", fallbackAppSettings, { completed });
+  return callCommandStrict<AppSettingsSnapshot>("save_setup_guide_completed", { completed });
 }
 
 export function readPlatformCapabilities(): Promise<PlatformCapabilities> {
@@ -163,17 +197,17 @@ export function listProviderBackups(): Promise<ProviderRepairBackupInfo[]> {
 }
 
 export function createProviderBackup(): Promise<ProviderRepairActionResult> {
-  return callCommand("create_provider_backup", fallbackProviderRepairActionResult, undefined, 60_000);
+  return callCommandStrict<ProviderRepairActionResult>("create_provider_backup", undefined, 60_000);
 }
 
 export function syncProviderHistory(backupId: string): Promise<ProviderRepairActionResult> {
-  return callCommand("sync_provider_history", fallbackProviderRepairActionResult, { backupId }, 60_000);
+  return callCommandStrict<ProviderRepairActionResult>("sync_provider_history", { backupId }, 60_000);
 }
 
 export function verifyProviderRepair(): Promise<ProviderRepairActionResult> {
-  return callCommand("verify_provider_repair", fallbackProviderRepairActionResult, undefined, 30_000);
+  return callCommandStrict<ProviderRepairActionResult>("verify_provider_repair", undefined, 30_000);
 }
 
 export function rollbackProviderBackup(backupId: string): Promise<ProviderRepairActionResult> {
-  return callCommand("rollback_provider_backup", fallbackProviderRepairActionResult, { backupId }, 60_000);
+  return callCommandStrict<ProviderRepairActionResult>("rollback_provider_backup", { backupId }, 60_000);
 }

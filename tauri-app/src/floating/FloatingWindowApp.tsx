@@ -136,8 +136,10 @@ export function FloatingWindowApp() {
   }, []);
 
   function closeFloatingWindow() {
-    void desktopPlatform.hideFloatingWindow().then(() => {
-      void desktopPlatform.notifyFloatingWindowHidden();
+    void desktopPlatform.hideFloatingWindow().then((visible) => {
+      if (!visible) {
+        void desktopPlatform.notifyFloatingWindowHidden();
+      }
     });
   }
 

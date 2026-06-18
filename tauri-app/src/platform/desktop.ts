@@ -63,23 +63,23 @@ function getSurfaceMode(): SurfaceMode {
 }
 
 function showFloatingWindow(): Promise<boolean> {
-  return invokePlatformCommand("show_floating_window", true);
+  return invokePlatformCommand("show_floating_window", false);
 }
 
 function hideFloatingWindow(): Promise<boolean> {
-  return invokePlatformCommand("hide_floating_window", false);
+  return invokePlatformCommand("hide_floating_window", true);
 }
 
 function showStatusPanelWindow(): Promise<boolean> {
-  return invokePlatformCommand("show_status_panel_window", true);
+  return invokePlatformCommand("show_status_panel_window", false);
 }
 
 function hideStatusPanelWindow(): Promise<boolean> {
-  return invokePlatformCommand("hide_status_panel_window", false);
+  return invokePlatformCommand("hide_status_panel_window", true);
 }
 
 function showDashboardWindow(): Promise<boolean> {
-  return invokePlatformCommand("show_dashboard_window", true);
+  return invokePlatformCommand("show_dashboard_window", false);
 }
 
 function setStatusTrayReadout(title: string, tooltip: string): Promise<boolean> {
