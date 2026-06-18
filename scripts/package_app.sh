@@ -5,8 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Codex Token Bar"
 PRODUCT_NAME="CodexTokenBar"
 CONFIGURATION="${1:-debug}"
-APP_VERSION="${APP_VERSION:-0.5.1}"
-APP_BUILD="${APP_BUILD:-501}"
+APP_VERSION="${APP_VERSION:-0.5.2}"
+APP_BUILD="${APP_BUILD:-502}"
 BUNDLE_ID="local.codex.token-bar"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://raw.githubusercontent.com/hututuo/codex-token-bar/main/appcast.xml}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-gzOiRKuKM4MkXj1OaYuL40U39RvfEWavuB8PaOdMDq0=}"
@@ -39,12 +39,16 @@ fi
 
 sign_target() {
   local target="$1"
+  local role="${2:-}"
   local -a args=(--force --sign "$CODE_SIGN_IDENTITY")
   if [[ "$CODE_SIGN_IDENTITY" == "-" ]]; then
     args+=(--timestamp=none)
   fi
   if [[ "$HARDENED_RUNTIME" == "1" ]]; then
     args+=(--options runtime --entitlements "$ENTITLEMENTS_FILE")
+  fi
+  if [[ "$role" == "app" ]]; then
+    args+=(--requirements "=designated => identifier \"$BUNDLE_ID\"")
   fi
   codesign "${args[@]}" "$target" >/dev/null
 }
@@ -124,7 +128,7 @@ if [[ -d "$FRAMEWORKS_DIR/Sparkle.framework" ]]; then
   sign_target "$FRAMEWORKS_DIR/Sparkle.framework"
 fi
 
-sign_target "$APP_DIR"
+sign_target "$APP_DIR" app
 codesign --verify --deep --strict --verbose=2 "$APP_DIR" >/dev/null
 
 echo "$APP_DIR"
