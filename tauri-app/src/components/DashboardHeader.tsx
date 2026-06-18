@@ -141,6 +141,7 @@ function diagnosticSummary(diagnostic: CommandFailureDiagnostic): string {
 function commandDisplayName(command: string): string {
   const knownNames: Record<string, string> = {
     "local:quota_history": "额度历史",
+    "local:token_event_cache": "精确 token 缓存",
     get_codex_home: "Codex 目录读取",
     read_platform_capabilities: "平台能力读取",
     read_dashboard_snapshot: "首页快速统计读取",

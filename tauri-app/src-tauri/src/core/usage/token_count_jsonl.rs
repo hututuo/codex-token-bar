@@ -3,12 +3,13 @@ use crate::core::quota_history;
 use crate::core::sqlite;
 use crate::models::{
     AccountInfo, ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats,
-    QuotaLimit, QuotaSnapshot, RecentUsagePoint, ResetCreditSummary,
+    LocalDataWarning, QuotaLimit, QuotaSnapshot, RecentUsagePoint, ResetCreditSummary,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::ErrorKind;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::{Duration as StdDuration, UNIX_EPOCH};
@@ -129,7 +130,8 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     }
 
     let mut events = Vec::new();
-    let mut cache = TokenEventCache::load();
+    let mut warnings = Vec::new();
+    let mut cache = TokenEventCache::load(&mut warnings);
     let home_cache_key = codex_home_cache_key(codex_home);
     let home_cache = cache.home_cache_mut(&home_cache_key, codex_home);
     let mut seen_cache_keys = HashSet::new();
@@ -150,7 +152,9 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         cache_changed = true;
     }
     if cache_changed {
-        cache.save();
+        if let Err(error) = cache.save() {
+            warnings.push(token_cache_warning(error));
+        }
     }
 
     if events.is_empty() {
@@ -162,7 +166,6 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
     let mut activity_days = activity_days(&events, local_offset);
-    let mut warnings = Vec::new();
     if let Err(error) = quota_history::apply_activity_history(&mut activity_days) {
         warnings.push(quota_history::warning(error));
     }
@@ -183,6 +186,13 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         cache_hit_ranking,
         warnings,
     })
+}
+
+fn token_cache_warning(message: String) -> LocalDataWarning {
+    LocalDataWarning {
+        source: "token_event_cache".into(),
+        message,
+    }
 }
 
 fn jsonl_files(root: &Path) -> Vec<PathBuf> {
@@ -214,15 +224,32 @@ fn session_id_from_file(file: &Path) -> String {
 }
 
 impl TokenEventCache {
-    fn load() -> Self {
+    fn load(warnings: &mut Vec<LocalDataWarning>) -> Self {
         let Some(path) = app_paths::token_event_cache_path() else {
             return Self::default();
         };
-        let Ok(data) = fs::read(path) else {
-            return Self::default();
+        let data = match fs::read(&path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Self::default(),
+            Err(error) => {
+                warnings.push(token_cache_warning(format!(
+                    "读取精确 token 缓存失败：{}（{}）",
+                    path.display(),
+                    error
+                )));
+                return Self::default();
+            }
         };
-        let Ok(cache) = serde_json::from_slice::<Self>(&data) else {
-            return Self::default();
+        let cache = match serde_json::from_slice::<Self>(&data) {
+            Ok(cache) => cache,
+            Err(error) => {
+                warnings.push(token_cache_warning(format!(
+                    "精确 token 缓存不是有效 JSON：{}（{}）",
+                    path.display(),
+                    error
+                )));
+                return Self::default();
+            }
         };
         if cache.version == TOKEN_EVENT_CACHE_VERSION {
             cache
@@ -231,20 +258,24 @@ impl TokenEventCache {
         }
     }
 
-    fn save(&self) {
+    fn save(&self) -> Result<(), String> {
         let Some(path) = app_paths::token_event_cache_path() else {
-            return;
+            return Ok(());
         };
         if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
+            fs::create_dir_all(parent).map_err(|error| {
+                format!("创建精确 token 缓存目录失败：{}（{}）", parent.display(), error)
+            })?;
         }
-        let Ok(data) = serde_json::to_vec(self) else {
-            return;
-        };
+        let data = serde_json::to_vec(self)
+            .map_err(|error| format!("序列化精确 token 缓存失败：{error}"))?;
         let temp_path = path.with_extension("json.tmp");
-        if fs::write(&temp_path, data).is_ok() {
-            let _ = fs::rename(temp_path, path);
-        }
+        fs::write(&temp_path, data).map_err(|error| {
+            format!("写入精确 token 缓存失败：{}（{}）", temp_path.display(), error)
+        })?;
+        fs::rename(&temp_path, &path).map_err(|error| {
+            format!("替换精确 token 缓存失败：{}（{}）", path.display(), error)
+        })
     }
 
     fn home_cache_mut(&mut self, home_key: &str, codex_home: &Path) -> &mut CachedCodexHome {
