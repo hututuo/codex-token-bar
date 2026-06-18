@@ -536,6 +536,11 @@ input[type="range"] {
   font-weight: 800;
 }
 
+.ranking-row--empty {
+  grid-template-columns: 38px minmax(0, 1fr);
+  color: var(--text-muted);
+}
+
 .repair-steps {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

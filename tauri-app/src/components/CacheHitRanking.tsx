@@ -11,33 +11,35 @@ export function CacheHitRanking({ items }: CacheHitRankingProps) {
       <div className="section-title-row">
         <div>
           <h2>缓存命中排行</h2>
-          <span>排除单轮和第一轮</span>
-        </div>
-        <div className="compact-checks">
-          <label>
-            <input defaultChecked type="checkbox" /> 排除单轮
-          </label>
-          <label>
-            <input defaultChecked type="checkbox" /> 排除第一轮
-          </label>
+          <span>会话低命中优先 · 已排除单轮会话</span>
         </div>
       </div>
 
       <div className="ranking-list">
-        {items.map((item) => (
-          <article className="ranking-row" key={item.rank}>
-            <strong>{item.rank}</strong>
+        {items.length === 0 ? (
+          <article className="ranking-row ranking-row--empty">
+            <strong>#</strong>
             <div>
-              <h3>{item.title}</h3>
-              <span>{item.subtitle}</span>
+              <h3>暂无可排行的缓存命中数据</h3>
+              <span>需要至少两轮且输入 token 足够的会话</span>
             </div>
-            <div className="hit-meter">
-              <span style={{ width: `${Math.round(item.hitRate * 100)}%` }} />
-            </div>
-            <em>{formatPercent(item.hitRate)}</em>
-            <span>{formatTokens(item.cachedTokens)} / {formatTokens(item.inputTokens)}</span>
           </article>
-        ))}
+        ) : (
+          items.map((item) => (
+            <article className="ranking-row" key={`${item.rank}-${item.title}`}>
+              <strong>{item.rank}</strong>
+              <div>
+                <h3>{item.title}</h3>
+                <span>{item.subtitle}</span>
+              </div>
+              <div className="hit-meter">
+                <span style={{ width: `${Math.round(item.hitRate * 100)}%` }} />
+              </div>
+              <em>{formatPercent(item.hitRate)}</em>
+              <span>{formatTokens(item.cachedTokens)} / {formatTokens(item.inputTokens)}</span>
+            </article>
+          ))
+        )}
       </div>
     </section>
   );
