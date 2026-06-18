@@ -4,17 +4,20 @@ use crate::models::{
     QuotaLimit, QuotaSnapshot, RecentUsagePoint, ResetCreditSummary,
 };
 use rusqlite::{Connection, OpenFlags};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
 
 const RECENT_INTERVAL_SECONDS: i64 = 5 * 60;
 const RECENT_POINT_COUNT: i64 = 289;
+const TOKEN_EVENT_CACHE_VERSION: u32 = 1;
 
 #[derive(Clone, Debug)]
 struct TokenEvent {
@@ -72,6 +75,45 @@ struct ThreadInfo {
     updated_at: Option<OffsetDateTime>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenEventCache {
+    version: u32,
+    files: HashMap<String, CachedSessionFile>,
+}
+
+impl Default for TokenEventCache {
+    fn default() -> Self {
+        Self {
+            version: TOKEN_EVENT_CACHE_VERSION,
+            files: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct CachedFileSignature {
+    size: u64,
+    modified_millis: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedSessionFile {
+    signature: CachedFileSignature,
+    events: Vec<CachedTokenEvent>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedTokenEvent {
+    timestamp_unix: i64,
+    tokens: u64,
+    input_tokens: u64,
+    cached_input_tokens: u64,
+}
+
 pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String> {
     let sessions_root = codex_home.join("sessions");
     if !sessions_root.exists() {
@@ -79,9 +121,25 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     }
 
     let mut events = Vec::new();
+    let mut cache = TokenEventCache::load();
+    let mut seen_cache_keys = HashSet::new();
+    let mut cache_changed = false;
     for file in jsonl_files(&sessions_root) {
         let session_id = session_id_from_file(&file);
-        events.extend(parse_session_file(&file, &session_id));
+        let cache_key = file_cache_key(&file);
+        seen_cache_keys.insert(cache_key);
+        events.extend(parse_session_file_cached(
+            &file,
+            &session_id,
+            &mut cache,
+            &mut cache_changed,
+        ));
+    }
+    if cache.retain_seen(&seen_cache_keys) {
+        cache_changed = true;
+    }
+    if cache_changed {
+        cache.save();
     }
 
     if events.is_empty() {
@@ -138,6 +196,133 @@ fn session_id_from_file(file: &Path) -> String {
     let parts: Vec<&str> = stem.split('-').collect();
     let start = parts.len().saturating_sub(5);
     parts[start..].join("-")
+}
+
+impl TokenEventCache {
+    fn load() -> Self {
+        let Some(path) = token_event_cache_path() else {
+            return Self::default();
+        };
+        let Ok(data) = fs::read(path) else {
+            return Self::default();
+        };
+        let Ok(cache) = serde_json::from_slice::<Self>(&data) else {
+            return Self::default();
+        };
+        if cache.version == TOKEN_EVENT_CACHE_VERSION {
+            cache
+        } else {
+            Self::default()
+        }
+    }
+
+    fn save(&self) {
+        let Some(path) = token_event_cache_path() else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let Ok(data) = serde_json::to_vec(self) else {
+            return;
+        };
+        let temp_path = path.with_extension("json.tmp");
+        if fs::write(&temp_path, data).is_ok() {
+            let _ = fs::rename(temp_path, path);
+        }
+    }
+
+    fn retain_seen(&mut self, seen: &HashSet<String>) -> bool {
+        let before = self.files.len();
+        self.files.retain(|path, _| seen.contains(path));
+        before != self.files.len()
+    }
+}
+
+fn parse_session_file_cached(
+    file: &Path,
+    session_id: &str,
+    cache: &mut TokenEventCache,
+    cache_changed: &mut bool,
+) -> Vec<TokenEvent> {
+    let cache_key = file_cache_key(file);
+    let Some(signature) = file_signature(file) else {
+        return parse_session_file(file, session_id);
+    };
+
+    if let Some(entry) = cache.files.get(&cache_key) {
+        if entry.signature == signature {
+            return entry.to_events(session_id);
+        }
+    }
+
+    let events = parse_session_file(file, session_id);
+    cache.files.insert(
+        cache_key,
+        CachedSessionFile {
+            signature,
+            events: events.iter().map(CachedTokenEvent::from_event).collect(),
+        },
+    );
+    *cache_changed = true;
+    events
+}
+
+impl CachedSessionFile {
+    fn to_events(&self, session_id: &str) -> Vec<TokenEvent> {
+        self.events
+            .iter()
+            .filter_map(|event| event.to_event(session_id))
+            .collect()
+    }
+}
+
+impl CachedTokenEvent {
+    fn from_event(event: &TokenEvent) -> Self {
+        Self {
+            timestamp_unix: event.timestamp.unix_timestamp(),
+            tokens: event.tokens,
+            input_tokens: event.input_tokens,
+            cached_input_tokens: event.cached_input_tokens,
+        }
+    }
+
+    fn to_event(&self, session_id: &str) -> Option<TokenEvent> {
+        Some(TokenEvent {
+            timestamp: OffsetDateTime::from_unix_timestamp(self.timestamp_unix).ok()?,
+            session_id: session_id.to_string(),
+            tokens: self.tokens,
+            input_tokens: self.input_tokens,
+            cached_input_tokens: self.cached_input_tokens,
+        })
+    }
+}
+
+fn file_signature(file: &Path) -> Option<CachedFileSignature> {
+    let metadata = fs::metadata(file).ok()?;
+    let modified = metadata.modified().ok()?;
+    let modified_millis = modified.duration_since(UNIX_EPOCH).ok()?.as_millis();
+    Some(CachedFileSignature {
+        size: metadata.len(),
+        modified_millis: u64::try_from(modified_millis).unwrap_or(u64::MAX),
+    })
+}
+
+fn file_cache_key(file: &Path) -> String {
+    file.to_string_lossy().into_owned()
+}
+
+fn token_event_cache_path() -> Option<PathBuf> {
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("LOCALAPPDATA")
+            .or_else(|| std::env::var_os("APPDATA"))
+            .map(PathBuf::from)
+    } else {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("Library").join("Caches"))
+    }?;
+    Some(base.join("CodexTokenBar").join("token-events-cache-v1.json"))
 }
 
 fn parse_session_file(file: &Path, session_id: &str) -> Vec<TokenEvent> {
@@ -647,6 +832,33 @@ mod tests {
         assert!(snapshot.cache_hit_ranking[0].subtitle.contains("2 轮"));
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn token_event_cache_serializes_only_usage_summary() {
+        let mut cache = TokenEventCache::default();
+        cache.files.insert(
+            "/tmp/session.jsonl".into(),
+            CachedSessionFile {
+                signature: CachedFileSignature {
+                    size: 128,
+                    modified_millis: 1_781_715_600_000,
+                },
+                events: vec![CachedTokenEvent {
+                    timestamp_unix: 1_781_715_600,
+                    tokens: 42,
+                    input_tokens: 40,
+                    cached_input_tokens: 30,
+                }],
+            },
+        );
+
+        let serialized = serde_json::to_string(&cache).unwrap();
+        assert!(serialized.contains("cachedInputTokens"));
+        assert!(!serialized.contains("userPrompt"));
+        assert!(!serialized.contains("assistantResponse"));
+        assert!(!serialized.contains("用户问题"));
+        assert!(!serialized.contains("模型回答"));
     }
 
     fn temp_root() -> PathBuf {
