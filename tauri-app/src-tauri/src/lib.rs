@@ -32,6 +32,9 @@ pub fn run() {
             commands::read_floating_snapshot,
             commands::show_floating_window,
             commands::hide_floating_window,
+            commands::show_dashboard_window,
+            commands::show_status_panel_window,
+            commands::hide_status_panel_window,
             commands::set_status_tray_readout,
         ])
         .run(tauri::generate_context!())

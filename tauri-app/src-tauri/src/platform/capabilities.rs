@@ -59,9 +59,9 @@ fn floating_drag_capability() -> PlatformFeatureCapability {
 
 fn status_tray_capability() -> PlatformFeatureCapability {
     if cfg!(target_os = "macos") {
-        ready("状态栏", "macOS 状态栏调试实现可用。")
+        ready("状态栏", "macOS 状态栏调试实现可用，已接入独立弹出面板。")
     } else if cfg!(target_os = "windows") {
-        pending("系统托盘", "Windows 托盘入口需单独实现图标、菜单和弹出面板。")
+        pending("系统托盘", "共享弹出面板已完成，Windows 托盘定位和图标行为留到真机实现。")
     } else {
         unavailable("系统托盘", "当前平台暂未接入托盘入口。")
     }

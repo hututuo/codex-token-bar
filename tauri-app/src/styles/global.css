@@ -72,6 +72,15 @@ html.floating-document #root {
   background: transparent;
 }
 
+html.status-document,
+html.status-document body,
+html.status-document #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
 button,
 input {
   font: inherit;
@@ -1241,6 +1250,165 @@ input[type="range"]::-moz-range-thumb {
   border: 1px solid rgba(25, 113, 210, 0.22);
   border-radius: 8px;
   pointer-events: none;
+}
+
+.status-window-shell {
+  display: grid;
+  width: 100vw;
+  height: 100vh;
+  place-items: center;
+  overflow: hidden;
+  padding: 8px;
+  background: transparent;
+}
+
+.status-panel-card {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  gap: 9px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 72%, white);
+  border-radius: 14px;
+  background: #fbfdff;
+  color: #1f2732;
+}
+
+.status-panel-head,
+.status-panel-status,
+.status-panel-actions,
+.status-panel-quota {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.status-panel-head {
+  align-items: flex-start;
+}
+
+.status-panel-head div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.status-panel-head span,
+.status-panel-status span,
+.status-panel-stats dt {
+  color: #768294;
+  font-size: 11px;
+  font-weight: 670;
+}
+
+.status-panel-head strong {
+  font-size: 34px;
+  font-weight: 730;
+  line-height: 0.92;
+}
+
+.status-panel-rate-unit {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+}
+
+.status-panel-rate-unit em {
+  color: #667386;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 720;
+}
+
+.status-panel-rate-unit button {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, #e9eef6 86%, white);
+  color: #6b7684;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.status-panel-meter {
+  overflow: hidden;
+  height: 9px;
+  border-radius: 999px;
+  background: #e9eef6;
+}
+
+.status-panel-meter i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #1688f2, #18c3d5);
+}
+
+.status-panel-status strong {
+  overflow: hidden;
+  color: #304155;
+  font-size: 12px;
+  font-weight: 730;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-panel-status span {
+  flex: 0 0 auto;
+}
+
+.status-panel-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+  margin: 0;
+}
+
+.status-panel-stats div {
+  min-width: 0;
+  padding: 8px 9px;
+  border-radius: 10px;
+  background: #edf3fa;
+}
+
+.status-panel-stats dd {
+  overflow: hidden;
+  margin: 2px 0 0;
+  color: #253142;
+  font-size: 13px;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-panel-quota span {
+  flex: 1;
+  overflow: hidden;
+  border-radius: 9px;
+  background: #5d95ea;
+  color: #162033;
+  padding: 6px 8px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.status-panel-actions button {
+  flex: 1;
+  min-height: 30px;
+  border: 1px solid #d7e1ec;
+  border-radius: 9px;
+  background: #eef4fa;
+  color: #223047;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 730;
 }
 
 @media (max-width: 960px) {

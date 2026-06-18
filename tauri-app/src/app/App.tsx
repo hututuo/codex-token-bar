@@ -9,12 +9,16 @@ import { DashboardPage } from "../pages/DashboardPage";
 import { desktopPlatform } from "../platform/desktop";
 import { DEFAULT_DISPLAY_SURFACES, sanitizeDisplaySurfaces } from "../settings/displaySettings";
 import { useDashboardData } from "../state/useDashboardData";
+import { StatusPanelApp } from "../status/StatusPanelApp";
 import { useStatusTray } from "../tray/useStatusTray";
 
 export function App() {
   const surface = useMemo(getSurfaceMode, []);
   if (surface === "floating") {
     return <FloatingWindowApp />;
+  }
+  if (surface === "status") {
+    return <StatusPanelApp />;
   }
 
   return <DashboardApp />;
@@ -180,6 +184,6 @@ function DashboardApp() {
   );
 }
 
-function getSurfaceMode(): "dashboard" | "floating" {
+function getSurfaceMode() {
   return desktopPlatform.getSurfaceMode();
 }

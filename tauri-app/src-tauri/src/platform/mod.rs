@@ -25,6 +25,8 @@ const FLOATING_WINDOW_WIDTH: f64 = 296.0;
 const FLOATING_WINDOW_HEIGHT: f64 = 112.0;
 const FLOATING_WINDOW_MIN_SCALE: f64 = 0.9;
 const FLOATING_WINDOW_MAX_SCALE: f64 = 1.38;
+const STATUS_PANEL_WIDTH: f64 = 336.0;
+const STATUS_PANEL_HEIGHT: f64 = 236.0;
 const STATUS_TRAY_ID: &str = "codex-token-bar-status";
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -100,6 +102,7 @@ pub fn save_display_surfaces(
 
 pub fn setup_desktop_surfaces(app: &tauri::App) -> tauri::Result<()> {
     create_floating_window(app)?;
+    create_status_panel_window(app)?;
     create_status_tray(app)?;
     Ok(())
 }
@@ -121,6 +124,46 @@ pub fn hide_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {
         .ok_or_else(|| "floating window is not available".to_string())?;
     window.hide().map_err(|error| error.to_string())?;
     Ok(false)
+}
+
+pub fn show_dashboard_window(app: &tauri::AppHandle) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "dashboard window is not available".to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+pub fn show_status_panel_window(app: &tauri::AppHandle) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("status")
+        .ok_or_else(|| "status panel is not available".to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+pub fn hide_status_panel_window(app: &tauri::AppHandle) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("status")
+        .ok_or_else(|| "status panel is not available".to_string())?;
+    window.hide().map_err(|error| error.to_string())?;
+    Ok(false)
+}
+
+fn toggle_status_panel_window(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("status") else {
+        return;
+    };
+
+    if window.is_visible().unwrap_or(false) {
+        let _ = window.hide();
+        return;
+    }
+
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 pub fn set_status_tray_readout(
@@ -155,10 +198,7 @@ fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                if let Some(window) = tray.app_handle().get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                toggle_status_panel_window(tray.app_handle());
             }
         })
         .build(app)?;
@@ -191,6 +231,27 @@ fn create_floating_window(app: &tauri::App) -> tauri::Result<()> {
         .skip_taskbar(true)
         .shadow(false)
         .transparent(true)
+        .build()?;
+
+    Ok(())
+}
+
+fn create_status_panel_window(app: &tauri::App) -> tauri::Result<()> {
+    if app.get_webview_window("status").is_some() {
+        return Ok(());
+    }
+
+    WebviewWindowBuilder::new(app, "status", WebviewUrl::App("index.html?surface=status".into()))
+        .title("Codex Token Bar Status")
+        .inner_size(STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT)
+        .position(84.0, 80.0)
+        .decorations(false)
+        .resizable(false)
+        .focused(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(true)
+        .visible(false)
         .build()?;
 
     Ok(())

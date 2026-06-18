@@ -6,7 +6,7 @@ import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { FLOATING_SETTINGS_EVENT } from "../floating/floatingSettings";
 import { isTauriRuntimeAvailable, withTimeout } from "./runtime";
 
-export type SurfaceMode = "dashboard" | "floating";
+export type SurfaceMode = "dashboard" | "floating" | "status";
 
 export interface DesktopPosition {
   x: number;
@@ -25,6 +25,9 @@ export const desktopPlatform = {
   getSurfaceMode,
   showFloatingWindow,
   hideFloatingWindow,
+  showStatusPanelWindow,
+  hideStatusPanelWindow,
+  showDashboardWindow,
   notifyFloatingWindowHidden,
   onFloatingWindowHidden,
   publishFloatingSettings,
@@ -37,8 +40,9 @@ export const desktopPlatform = {
 };
 
 function getSurfaceMode(): SurfaceMode {
-  if (new URLSearchParams(window.location.search).get("surface") === "floating") {
-    return "floating";
+  const surface = new URLSearchParams(window.location.search).get("surface");
+  if (surface === "floating" || surface === "status") {
+    return surface;
   }
 
   if (!isTauriRuntimeAvailable()) {
@@ -46,7 +50,8 @@ function getSurfaceMode(): SurfaceMode {
   }
 
   try {
-    return getCurrentWindow().label === "floating" ? "floating" : "dashboard";
+    const label = getCurrentWindow().label;
+    return label === "floating" || label === "status" ? label : "dashboard";
   } catch (error) {
     warnPlatformFailure("read-window-label", error);
     return "dashboard";
@@ -59,6 +64,18 @@ function showFloatingWindow(): Promise<boolean> {
 
 function hideFloatingWindow(): Promise<boolean> {
   return invokePlatformCommand("hide_floating_window", false);
+}
+
+function showStatusPanelWindow(): Promise<boolean> {
+  return invokePlatformCommand("show_status_panel_window", true);
+}
+
+function hideStatusPanelWindow(): Promise<boolean> {
+  return invokePlatformCommand("hide_status_panel_window", false);
+}
+
+function showDashboardWindow(): Promise<boolean> {
+  return invokePlatformCommand("show_dashboard_window", true);
 }
 
 function setStatusTrayReadout(title: string, tooltip: string): Promise<boolean> {
