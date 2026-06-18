@@ -1,30 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   getCodexHome,
   readAccountQuota,
   readDashboardSnapshot,
-  readFloatingPanelSnapshot,
   readLiveRateSnapshot,
   readPreciseDashboardSnapshot,
   scanProviderRepair,
 } from "../api/client";
+import { FloatingWindowApp } from "../floating/FloatingWindowApp";
 import { DashboardPage } from "../pages/DashboardPage";
 import type {
   AccountQuotaBundle,
   CodexHomeStatus,
   DashboardSnapshot,
-  FloatingPanelSnapshot,
   LiveRateSnapshot,
   ProviderRepairSnapshot,
   RecentUsagePoint,
 } from "../types/dashboard";
-import { formatTokens } from "../utils/format";
+import { compactQuotaLabel } from "../utils/quota";
 
 interface AppState {
   codexHome: CodexHomeStatus | null;
   dashboard: DashboardSnapshot | null;
   liveRate: LiveRateSnapshot | null;
-  floating: FloatingPanelSnapshot | null;
   repair: ProviderRepairSnapshot | null;
   loading: boolean;
 }
@@ -33,12 +32,20 @@ const initialState: AppState = {
   codexHome: null,
   dashboard: null,
   liveRate: null,
-  floating: null,
   repair: null,
   loading: true,
 };
 
 export function App() {
+  const surface = useMemo(getSurfaceMode, []);
+  if (surface === "floating") {
+    return <FloatingWindowApp />;
+  }
+
+  return <DashboardApp />;
+}
+
+function DashboardApp() {
   const [state, setState] = useState<AppState>(initialState);
   const preciseLoadStarted = useRef(false);
   const quotaLoadStarted = useRef(false);
@@ -48,16 +55,15 @@ export function App() {
     let cancelled = false;
 
     async function load() {
-      const [codexHome, dashboard, liveRate, floating, repair] = await Promise.all([
+      const [codexHome, dashboard, liveRate, repair] = await Promise.all([
         getCodexHome(),
         readDashboardSnapshot(),
         readLiveRateSnapshot(),
-        readFloatingPanelSnapshot(),
         scanProviderRepair(),
       ]);
 
       if (!cancelled) {
-        setState({ codexHome, dashboard, liveRate, floating, repair, loading: false });
+        setState({ codexHome, dashboard, liveRate, repair, loading: false });
       }
     }
 
@@ -153,7 +159,6 @@ export function App() {
       state.codexHome === null ||
       state.dashboard === null ||
       state.liveRate === null ||
-      state.floating === null ||
       state.repair === null
     ) {
       return null;
@@ -163,7 +168,6 @@ export function App() {
       codexHome: state.codexHome,
       dashboard: state.dashboard,
       liveRate: state.liveRate,
-      floating: state.floating,
       repair: state.repair,
     };
   }, [state]);
@@ -180,7 +184,6 @@ export function App() {
     <DashboardPage
       codexHome={readyState.codexHome}
       dashboard={readyState.dashboard}
-      floating={readyState.floating}
       liveRate={readyState.liveRate}
       providerRepair={readyState.repair}
       refreshing={state.loading}
@@ -198,18 +201,9 @@ function mergeQuota(state: AppState, quota: AccountQuotaBundle): AppState {
           quota: quota.quota,
           recentUsage24h: mergeQuotaHistory(state.dashboard.recentUsage24h, quota),
         };
-  const floating =
-    state.floating === null
-      ? null
-      : {
-          ...state.floating,
-          fiveHourLabel: compactQuotaLabel(quota.quota.fiveHour),
-          sevenDayLabel: compactQuotaLabel(quota.quota.sevenDay),
-        };
   return {
     ...state,
     dashboard,
-    floating,
   };
 }
 
@@ -232,29 +226,24 @@ function mergeQuotaHistory(points: RecentUsagePoint[], quota: AccountQuotaBundle
 }
 
 function mergeLiveRate(state: AppState, liveRate: LiveRateSnapshot): AppState {
-  const floating =
-    state.floating === null
-      ? null
-      : {
-          ...state.floating,
-          tokensPerSecond: liveRate.tokensPerSecond,
-          trendLabel: liveRate.tokensPerSecond > 0.05 ? "输出中" : "待输出",
-          totalTokensLabel:
-            state.dashboard === null
-              ? state.floating.totalTokensLabel
-              : `总 ${formatTokens(state.dashboard.stats.totalTokens)}`,
-          todayTokensLabel: `今 ${formatTokens(liveRate.totalTokensToday)}`,
-          requestsLabel: `次 ${liveRate.requestsToday}`,
-        };
-
   return {
     ...state,
     liveRate,
-    floating,
   };
 }
 
-function compactQuotaLabel(limit: AccountQuotaBundle["quota"]["fiveHour"]): string {
-  const percent = Math.round(limit.remainingPercent * 100);
-  return `${limit.label} ${percent}% ${limit.resetsAt}`;
+function getSurfaceMode(): "dashboard" | "floating" {
+  if (new URLSearchParams(window.location.search).get("surface") === "floating") {
+    return "floating";
+  }
+
+  if ("__TAURI_INTERNALS__" in window) {
+    try {
+      return getCurrentWindow().label === "floating" ? "floating" : "dashboard";
+    } catch (error) {
+      console.warn("Failed to read Tauri window label", error);
+    }
+  }
+
+  return "dashboard";
 }

@@ -57,6 +57,15 @@ body {
   overflow: auto;
 }
 
+html.floating-document,
+html.floating-document body,
+html.floating-document #root {
+  min-width: 100%;
+  min-height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
 button,
 input {
   font: inherit;
@@ -609,16 +618,30 @@ input[type="range"] {
   color: var(--green);
 }
 
-.floating-preview {
-  position: absolute;
-  top: 78px;
-  left: max(36px, calc((100vw - 1120px) / 2 + 12px));
-  width: 296px;
+.floating-window-shell {
+  display: grid;
+  width: 100vw;
+  height: 100vh;
+  place-items: center;
+  overflow: hidden;
+  background: transparent;
+}
+
+.floating-panel-surface {
+  position: relative;
+  width: min(292px, calc(100vw - 4px));
   padding: 12px 14px;
   border: 1px solid rgba(255, 255, 255, 0.72);
   border-radius: 8px;
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.84), rgba(218, 239, 255, 0.82));
   color: #1f2732;
+  cursor: grab;
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+.floating-panel-surface:active {
+  cursor: grabbing;
 }
 
 .floating-topline,
@@ -651,7 +674,9 @@ input[type="range"] {
   border: 0;
   background: transparent;
   color: #6a7581;
+  cursor: default;
   font-size: 18px;
+  -webkit-app-region: no-drag;
 }
 
 .floating-metrics {
@@ -707,12 +732,5 @@ input[type="range"] {
 
   .heatmap-grid {
     grid-template-columns: repeat(21, 1fr);
-  }
-
-  .floating-preview {
-    position: relative;
-    top: auto;
-    left: auto;
-    margin: 0 auto 12px;
   }
 }

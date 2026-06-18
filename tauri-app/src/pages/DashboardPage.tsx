@@ -6,11 +6,9 @@ import { QuotaStrip } from "../components/QuotaStrip";
 import { RecentUsageChart } from "../components/RecentUsageChart";
 import { StatsStrip } from "../components/StatsStrip";
 import { TokenActivitySection } from "../components/TokenActivitySection";
-import { FloatingPanelPreview } from "../floating/FloatingPanelPreview";
 import type {
   CodexHomeStatus,
   DashboardSnapshot,
-  FloatingPanelSnapshot,
   LiveRateSnapshot,
   ProviderRepairSnapshot,
 } from "../types/dashboard";
@@ -18,7 +16,6 @@ import type {
 interface DashboardPageProps {
   codexHome: CodexHomeStatus;
   dashboard: DashboardSnapshot;
-  floating: FloatingPanelSnapshot;
   liveRate: LiveRateSnapshot;
   providerRepair: ProviderRepairSnapshot;
   refreshing: boolean;
@@ -27,15 +24,12 @@ interface DashboardPageProps {
 export function DashboardPage({
   codexHome,
   dashboard,
-  floating,
   liveRate,
   providerRepair,
   refreshing,
 }: DashboardPageProps) {
   return (
     <main className="app-shell">
-      <FloatingPanelPreview snapshot={floating} />
-
       <section className="dashboard">
         <DashboardHeader
           account={dashboard.account}

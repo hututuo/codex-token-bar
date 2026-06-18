@@ -1,18 +1,27 @@
 import type { FloatingPanelSnapshot } from "../types/dashboard";
 
-interface FloatingPanelPreviewProps {
+interface FloatingPanelSurfaceProps {
   snapshot: FloatingPanelSnapshot;
+  onClose?: () => void;
+  onDragStart?: () => void;
 }
 
-export function FloatingPanelPreview({ snapshot }: FloatingPanelPreviewProps) {
+export function FloatingPanelSurface({ snapshot, onClose, onDragStart }: FloatingPanelSurfaceProps) {
   return (
-    <aside className="floating-preview" aria-label="悬浮窗预览">
+    <aside className="floating-panel-surface" aria-label="悬浮窗" onMouseDown={onDragStart}>
       {snapshot.unread ? <span className="unread-ripple" /> : null}
       <div className="floating-topline">
         <strong>{snapshot.tokensPerSecond.toFixed(1)}</strong>
         <span>tok/s</span>
         <em>{snapshot.trendLabel}</em>
-        <button type="button">×</button>
+        <button
+          type="button"
+          aria-label="关闭悬浮窗"
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={onClose}
+        >
+          ×
+        </button>
       </div>
       <div className="floating-metrics">
         <span>{snapshot.totalTokensLabel}</span>
