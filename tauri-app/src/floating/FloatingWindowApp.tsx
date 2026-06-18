@@ -6,9 +6,11 @@ import { hideFloatingWindow, readAccountQuota, readFloatingPanelSnapshot } from 
 import type { FloatingPanelSnapshot } from "../types/dashboard";
 import { compactQuotaLabel } from "../utils/quota";
 import { FloatingPanelSurface } from "./FloatingPanelPreview";
+import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
 
 export function FloatingWindowApp() {
   const [snapshot, setSnapshot] = useState<FloatingPanelSnapshot>(mockFloatingPanelSnapshot);
+  useFloatingWindowPlacement();
 
   useEffect(() => {
     document.documentElement.classList.add("floating-document");
