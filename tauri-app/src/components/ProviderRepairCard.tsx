@@ -157,6 +157,7 @@ export function ProviderRepairCard({ id, onSnapshotChange, snapshot }: ProviderR
                   JSONL {backup.sessionFiles} · SQLite {backup.stateDatabase ? "已备份" : "无"} · 索引{" "}
                   {backup.sessionIndex ? "已备份" : "无"}
                 </small>
+                <small title={backup.codexHome}>目录 {compactCodexHome(backup.codexHome)}</small>
                 <button
                   className="repair-rollback-button"
                   disabled={busyAction !== null}
@@ -172,4 +173,15 @@ export function ProviderRepairCard({ id, onSnapshotChange, snapshot }: ProviderR
       </div>
     </section>
   );
+}
+
+function compactCodexHome(path: string) {
+  if (!path || path === "unknown") {
+    return "未知";
+  }
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  if (parts.length <= 2) {
+    return path;
+  }
+  return `.../${parts.slice(-2).join("/")}`;
 }

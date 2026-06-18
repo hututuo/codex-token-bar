@@ -307,6 +307,8 @@ pub struct ProviderRepairBackupInfo {
     pub id: String,
     pub created_at: String,
     pub path: String,
+    pub codex_home: String,
+    pub codex_home_fingerprint: String,
     pub target_provider: String,
     pub session_files: u32,
     pub state_database: bool,

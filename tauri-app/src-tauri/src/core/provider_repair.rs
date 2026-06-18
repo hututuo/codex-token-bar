@@ -50,6 +50,7 @@ pub fn sync_provider_history(
     backup_id: &str,
 ) -> Result<ProviderRepairActionResult, String> {
     let backup = backup_by_id(backup_id)?;
+    ensure_backup_matches_codex_home(&backup, codex_home)?;
     let report = scan_provider_repair_result(codex_home)?;
     let mut rewritten_sessions = 0_u32;
     for file in find_session_files(codex_home, true) {
@@ -86,6 +87,7 @@ pub fn rollback_provider_backup(
     backup_id: &str,
 ) -> Result<ProviderRepairActionResult, String> {
     let backup = backup_by_id(backup_id)?;
+    ensure_backup_matches_codex_home(&backup, codex_home)?;
     let backup_path = PathBuf::from(&backup.path);
 
     restore_if_exists(
@@ -563,9 +565,13 @@ fn create_backup_from_report(
     }
 
     let created_at = format_now_rfc3339();
+    let codex_home_identity = codex_home_identity(codex_home);
+    let codex_home_fingerprint = codex_home_fingerprint(codex_home);
     let manifest = json!({
         "id": id,
         "created_at": created_at,
+        "codex_home": codex_home_identity,
+        "codex_home_fingerprint": codex_home_fingerprint,
         "target_provider": report.target.provider,
         "session_files": session_files,
         "state_database": state_database,
@@ -622,6 +628,16 @@ fn read_backup_info(path: &Path) -> Result<ProviderRepairBackupInfo, String> {
             .unwrap_or("未知时间")
             .into(),
         path: path.display().to_string(),
+        codex_home: value
+            .get("codex_home")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .into(),
+        codex_home_fingerprint: value
+            .get("codex_home_fingerprint")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
         target_provider: value
             .get("target_provider")
             .and_then(Value::as_str)
@@ -641,6 +657,41 @@ fn read_backup_info(path: &Path) -> Result<ProviderRepairBackupInfo, String> {
             .and_then(Value::as_bool)
             .unwrap_or(false),
     })
+}
+
+fn ensure_backup_matches_codex_home(
+    backup: &ProviderRepairBackupInfo,
+    codex_home: &Path,
+) -> Result<(), String> {
+    let expected = codex_home_fingerprint(codex_home);
+    if backup.codex_home_fingerprint.trim().is_empty() {
+        return Err("这个备份缺少 Codex Home 绑定信息，请先为当前目录重新创建备份。".into());
+    }
+    if backup.codex_home_fingerprint != expected {
+        return Err(format!(
+            "备份属于 {}，当前目录是 {}。为避免误回滚，请为当前目录重新创建备份。",
+            backup.codex_home,
+            codex_home_identity(codex_home)
+        ));
+    }
+    Ok(())
+}
+
+fn codex_home_identity(codex_home: &Path) -> String {
+    codex_home
+        .canonicalize()
+        .unwrap_or_else(|_| codex_home.to_path_buf())
+        .display()
+        .to_string()
+}
+
+fn codex_home_fingerprint(codex_home: &Path) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in codex_home_identity(codex_home).as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn copy_if_exists(source: &Path, target: &Path) -> Result<bool, String> {

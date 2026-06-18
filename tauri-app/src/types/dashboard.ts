@@ -200,6 +200,8 @@ export interface ProviderRepairBackupInfo {
   id: string;
   createdAt: string;
   path: string;
+  codexHome: string;
+  codexHomeFingerprint: string;
   targetProvider: string;
   sessionFiles: number;
   stateDatabase: boolean;

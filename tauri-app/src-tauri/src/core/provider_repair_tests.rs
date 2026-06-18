@@ -104,6 +104,27 @@ fn sync_core_logic_rewrites_sources_and_repairs_index() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn backup_scope_validation_rejects_other_codex_home() {
+    let source = temp_root("provider-backup-source");
+    let other = temp_root("provider-backup-other");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(&other).unwrap();
+    let backup = backup_info_for_home(&source);
+
+    assert!(ensure_backup_matches_codex_home(&backup, &source).is_ok());
+    let mismatch = ensure_backup_matches_codex_home(&backup, &other).unwrap_err();
+    assert!(mismatch.contains("备份属于"));
+
+    let mut legacy = backup_info_for_home(&source);
+    legacy.codex_home_fingerprint.clear();
+    let legacy_error = ensure_backup_matches_codex_home(&legacy, &source).unwrap_err();
+    assert!(legacy_error.contains("缺少 Codex Home"));
+
+    fs::remove_dir_all(source).unwrap();
+    fs::remove_dir_all(other).unwrap();
+}
+
 fn temp_root(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "codex-token-bar-tauri-{label}-{}-{}",
@@ -113,6 +134,20 @@ fn temp_root(label: &str) -> PathBuf {
             .unwrap()
             .as_nanos()
     ))
+}
+
+fn backup_info_for_home(root: &Path) -> crate::models::ProviderRepairBackupInfo {
+    crate::models::ProviderRepairBackupInfo {
+        id: "backup".into(),
+        created_at: "2026-06-18T00:00:00Z".into(),
+        path: "/tmp/backup".into(),
+        codex_home: codex_home_identity(root),
+        codex_home_fingerprint: codex_home_fingerprint(root),
+        target_provider: "openai".into(),
+        session_files: 0,
+        state_database: true,
+        session_index: true,
+    }
 }
 
 fn write_session(path: &Path, thread_id: &str, provider: &str) {
