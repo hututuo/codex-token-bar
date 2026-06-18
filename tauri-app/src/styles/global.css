@@ -87,7 +87,9 @@ button {
 
 .app-shell--loading {
   display: grid;
+  gap: 14px;
   place-items: center;
+  align-content: center;
 }
 
 .loading-mark,
@@ -101,6 +103,12 @@ button {
   color: white;
   font-size: 30px;
   font-weight: 800;
+}
+
+.loading-text {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .dashboard {
@@ -170,11 +178,51 @@ button {
   min-height: 30px;
   padding: 5px 13px;
   font-weight: 700;
+  cursor: pointer;
+}
+
+.toolbar-button:disabled {
   cursor: default;
+  opacity: 0.55;
 }
 
 .toolbar-button--wide {
   min-width: 128px;
+}
+
+.codex-home-editor {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) auto auto;
+  width: min(760px, 100%);
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.codex-home-editor input {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-solid);
+  color: var(--text);
+  padding: 7px 10px;
+  font-weight: 700;
+}
+
+.codex-home-editor button {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-soft);
+  color: var(--text);
+  padding: 7px 10px;
+  font-weight: 780;
+}
+
+.codex-home-editor button:disabled,
+.codex-home-editor input:disabled {
+  opacity: 0.55;
 }
 
 .quota-strip,
@@ -971,7 +1019,8 @@ input[type="range"] {
   }
 
   .settings-panel,
-  .session-row {
+  .session-row,
+  .codex-home-editor {
     grid-template-columns: 1fr;
   }
 

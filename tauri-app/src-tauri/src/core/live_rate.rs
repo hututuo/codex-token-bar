@@ -78,30 +78,40 @@ fn floating_from_live(codex_home: &Path, live: &LiveRateSnapshot) -> FloatingPan
 
 fn read_recent_log_rows(connection: &Connection, since: f64) -> Result<Vec<LogRow>> {
     let since_seconds = since.floor() as i64;
-    let mut statement = connection.prepare(
+    let index_hint = if logs_ts_index_exists(connection) {
+        " INDEXED BY idx_logs_ts"
+    } else {
+        ""
+    };
+    let sql = format!(
         r#"
         SELECT id, thread_id, ts, ts_nanos, target, COALESCE(feedback_log_body, '')
-        FROM logs
-        WHERE ts >= ?1
-          AND (
-            (
-              target = 'codex_api::sse::responses'
-              AND (
-                feedback_log_body LIKE 'SSE event:%'
-                OR feedback_log_body LIKE '%thread.id=%'
-                OR feedback_log_body LIKE '%thread_id=%'
-                OR feedback_log_body LIKE '%conversation.id=%'
-              )
+        FROM (
+          SELECT id, thread_id, ts, ts_nanos, target, feedback_log_body
+          FROM logs{index_hint}
+          WHERE ts >= ?1
+          ORDER BY ts DESC, ts_nanos DESC, id DESC
+          LIMIT 5000
+        ) recent
+        WHERE
+          (
+            target = 'codex_api::sse::responses'
+            AND (
+              feedback_log_body LIKE 'SSE event:%'
+              OR feedback_log_body LIKE '%thread.id=%'
+              OR feedback_log_body LIKE '%thread_id=%'
+              OR feedback_log_body LIKE '%conversation.id=%'
             )
-            OR (
-              target = 'codex_api::endpoint::responses_websocket'
-              AND feedback_log_body LIKE '%websocket event:%'
-            )
+          )
+          OR (
+            target = 'codex_api::endpoint::responses_websocket'
+            AND feedback_log_body LIKE '%websocket event:%'
           )
         ORDER BY id ASC
         LIMIT 2000;
         "#,
-    )?;
+    );
+    let mut statement = connection.prepare(&sql)?;
 
     let rows = statement.query_map(params![since_seconds], |row| {
         Ok(LogRow {
@@ -115,6 +125,16 @@ fn read_recent_log_rows(connection: &Connection, since: f64) -> Result<Vec<LogRo
     })?;
 
     rows.collect()
+}
+
+fn logs_ts_index_exists(connection: &Connection) -> bool {
+    connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_logs_ts' LIMIT 1;",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok()
 }
 
 fn rollup_stream_rows(rows: Vec<LogRow>, now: f64) -> LiveRateRollup {

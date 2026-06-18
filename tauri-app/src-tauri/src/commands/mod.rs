@@ -12,6 +12,16 @@ pub fn get_codex_home() -> Result<CodexHomeStatus, String> {
 }
 
 #[tauri::command]
+pub fn set_codex_home(path: String) -> Result<CodexHomeStatus, String> {
+    platform::save_codex_home(&path)
+}
+
+#[tauri::command]
+pub fn reset_codex_home() -> Result<CodexHomeStatus, String> {
+    platform::reset_codex_home()
+}
+
+#[tauri::command]
 pub fn read_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
     let codex_home = platform::default_codex_home();
     let mut snapshot = usage::state_sqlite::dashboard_snapshot(&codex_home)

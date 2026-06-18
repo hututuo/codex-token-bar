@@ -20,8 +20,11 @@ interface DashboardPageProps {
   floatingSettings: FloatingWindowSettings;
   floatingVisible: boolean;
   liveRate: LiveRateSnapshot;
+  onCodexHomeChange: (path: string) => Promise<void>;
+  onCodexHomeReset: () => Promise<void>;
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
+  onRefresh: () => Promise<void>;
   onToggleFloating: () => void;
   onProviderRepairChange: (snapshot: ProviderRepairSnapshot) => void;
   providerRepair: ProviderRepairSnapshot;
@@ -34,8 +37,11 @@ export function DashboardPage({
   floatingSettings,
   floatingVisible,
   liveRate,
+  onCodexHomeChange,
+  onCodexHomeReset,
   onFloatingOpacityChange,
   onFloatingScaleChange,
+  onRefresh,
   onProviderRepairChange,
   onToggleFloating,
   providerRepair,
@@ -48,6 +54,9 @@ export function DashboardPage({
           account={dashboard.account}
           codexHome={codexHome}
           generatedAt={dashboard.generatedAt}
+          onCodexHomeChange={onCodexHomeChange}
+          onCodexHomeReset={onCodexHomeReset}
+          onRefresh={onRefresh}
           refreshing={refreshing}
         />
 

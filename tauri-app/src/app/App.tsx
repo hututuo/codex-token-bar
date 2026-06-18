@@ -8,7 +8,9 @@ import {
   readDashboardSnapshot,
   readLiveRateSnapshot,
   readPreciseDashboardSnapshot,
+  resetCodexHome,
   scanProviderRepair,
+  setCodexHome,
   showFloatingWindow,
 } from "../api/client";
 import { FloatingWindowApp } from "../floating/FloatingWindowApp";
@@ -39,10 +41,10 @@ interface AppState {
 }
 
 const initialState: AppState = {
-  codexHome: null,
-  dashboard: null,
-  liveRate: null,
-  repair: null,
+  codexHome: pendingCodexHomeStatus(),
+  dashboard: pendingDashboardSnapshot(),
+  liveRate: pendingLiveRateSnapshot(),
+  repair: pendingRepairSnapshot(),
   loading: true,
 };
 
@@ -60,6 +62,7 @@ function DashboardApp() {
   const preciseLoadStarted = useRef(false);
   const quotaLoadStarted = useRef(false);
   const liveRatePollStarted = useRef(false);
+  const repairScanStarted = useRef(false);
   const [floatingVisible, setFloatingVisible] = useState(true);
   const [floatingSettings, setFloatingSettings] = useState(readFloatingSettings);
   useStatusTray(state.liveRate);
@@ -68,15 +71,9 @@ function DashboardApp() {
     let cancelled = false;
 
     async function load() {
-      const [codexHome, dashboard, liveRate, repair] = await Promise.all([
-        getCodexHome(),
-        readDashboardSnapshot(),
-        readLiveRateSnapshot(),
-        scanProviderRepair(),
-      ]);
-
+      const nextState = await readAppState();
       if (!cancelled) {
-        setState({ codexHome, dashboard, liveRate, repair, loading: false });
+        setState(nextState);
       }
     }
 
@@ -113,6 +110,28 @@ function DashboardApp() {
     }
 
     void loadPreciseSnapshot();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [state.dashboard, state.loading]);
+
+  useEffect(() => {
+    if (state.dashboard === null || state.loading || repairScanStarted.current) {
+      return;
+    }
+
+    let cancelled = false;
+    repairScanStarted.current = true;
+
+    async function loadProviderRepair() {
+      const repair = await scanProviderRepair();
+      if (!cancelled) {
+        setState((current) => ({ ...current, repair }));
+      }
+    }
+
+    void loadProviderRepair();
 
     return () => {
       cancelled = true;
@@ -218,6 +237,26 @@ function DashboardApp() {
     setState((current) => ({ ...current, repair }));
   }
 
+  async function reloadAll() {
+    preciseLoadStarted.current = false;
+    quotaLoadStarted.current = false;
+    repairScanStarted.current = false;
+    setState((current) => ({ ...current, loading: true }));
+    setState(await readAppState());
+  }
+
+  async function updateCodexHome(path: string) {
+    setState((current) => ({ ...current, loading: true }));
+    await setCodexHome(path);
+    await reloadAll();
+  }
+
+  async function restoreAutoCodexHome() {
+    setState((current) => ({ ...current, loading: true }));
+    await resetCodexHome();
+    await reloadAll();
+  }
+
   const readyState = useMemo(() => {
     if (
       state.codexHome === null ||
@@ -240,6 +279,7 @@ function DashboardApp() {
     return (
       <main className="app-shell app-shell--loading">
         <div className="loading-mark">CX</div>
+        <div className="loading-text">正在读取本地数据</div>
       </main>
     );
   }
@@ -251,14 +291,132 @@ function DashboardApp() {
       floatingSettings={floatingSettings}
       floatingVisible={floatingVisible}
       liveRate={readyState.liveRate}
+      onRefresh={reloadAll}
       onFloatingOpacityChange={updateFloatingOpacity}
       onFloatingScaleChange={updateFloatingScale}
       onToggleFloating={toggleFloatingWindow}
+      onCodexHomeChange={updateCodexHome}
+      onCodexHomeReset={restoreAutoCodexHome}
       providerRepair={readyState.repair}
       onProviderRepairChange={updateProviderRepair}
       refreshing={state.loading}
     />
   );
+}
+
+async function readAppState(): Promise<AppState> {
+  const [codexHome, dashboard] = await Promise.all([
+    getCodexHome(),
+    readDashboardSnapshot(),
+  ]);
+  const liveRate = pendingLiveRateSnapshot();
+  return { codexHome, dashboard, liveRate, repair: pendingRepairSnapshot(), loading: false };
+}
+
+function pendingLiveRateSnapshot(): LiveRateSnapshot {
+  return {
+    scopeLabel: "全会话",
+    threadTitle: "实时速率正在连接",
+    tokensPerSecond: 0,
+    totalTokensToday: 0,
+    requestsToday: 0,
+    maxTokensPerSecond: 200,
+    preciseEnabled: false,
+  };
+}
+
+function pendingCodexHomeStatus(): CodexHomeStatus {
+  return {
+    path: "~/.codex",
+    exists: false,
+    source: "读取中",
+  };
+}
+
+function pendingDashboardSnapshot(): DashboardSnapshot {
+  return {
+    generatedAt: new Date().toISOString(),
+    account: {
+      displayName: "读取中",
+      planLabel: "Pro",
+    },
+    stats: {
+      totalTokens: 0,
+      peakDayTokens: 0,
+      peakThreadTokens: 0,
+      currentStreakDays: 0,
+      longestStreakDays: 0,
+      totalCalls: 0,
+      totalThreads: 0,
+    },
+    quota: {
+      fiveHour: {
+        label: "5h",
+        remainingPercent: 0,
+        usedPercent: 0,
+        resetsAt: "待读取",
+        resetsAtUnix: null,
+      },
+      sevenDay: {
+        label: "7d",
+        remainingPercent: 0,
+        usedPercent: 0,
+        resetsAt: "待读取",
+        resetsAtUnix: null,
+      },
+      resetCredit: {
+        availableCount: 0,
+        status: "重置卡待读取",
+        credits: [],
+      },
+      paceLabel: "额度待读取",
+    },
+    activityDays: pendingActivityDays(),
+    recentUsage24h: pendingRecentUsage(),
+    cacheHitRanking: [],
+  };
+}
+
+function pendingActivityDays() {
+  return Array.from({ length: 365 }, (_, index) => {
+    const date = new Date();
+    date.setDate(date.getDate() - (364 - index));
+    return {
+      date: date.toISOString().slice(0, 10),
+      tokens: 0,
+      calls: 0,
+      cacheHitRate: 0,
+      fiveHourRemainingPercent: null,
+      sevenDayRemainingPercent: null,
+    };
+  });
+}
+
+function pendingRecentUsage() {
+  return Array.from({ length: 48 }, (_, index) => ({
+    label: `${String(Math.floor(index / 2)).padStart(2, "0")}:00`,
+    tokens: 0,
+    calls: 0,
+    cacheHitRate: null,
+    fiveHourRemainingPercent: null,
+    sevenDayRemainingPercent: null,
+  }));
+}
+
+function pendingRepairSnapshot(): ProviderRepairSnapshot {
+  return {
+    detectedProvider: "读取中",
+    providerSource: "后台扫描",
+    sessionFilesFound: 0,
+    inconsistentCount: 0,
+    status: "会话修复正在后台扫描，不影响主页面打开。",
+    steps: [
+      { label: "扫描", status: "后台扫描中", done: false, healthy: true },
+      { label: "备份", status: "未备份", done: false, healthy: true },
+      { label: "修复", status: "未进行修复", done: false, healthy: true },
+      { label: "验证", status: "未验证", done: false, healthy: true },
+    ],
+  };
 }
 
 function mergeQuota(state: AppState, quota: AccountQuotaBundle): AppState {

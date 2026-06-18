@@ -22,6 +22,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_codex_home,
+            commands::set_codex_home,
+            commands::reset_codex_home,
             commands::read_account_quota,
             commands::read_dashboard_snapshot,
             commands::read_precise_dashboard_snapshot,
@@ -73,7 +75,7 @@ fn create_floating_window(app: &tauri::App) -> tauri::Result<()> {
         return Ok(());
     }
 
-    WebviewWindowBuilder::new(app, "floating", WebviewUrl::App("index.html".into()))
+    WebviewWindowBuilder::new(app, "floating", WebviewUrl::App("index.html?surface=floating".into()))
         .title("Codex Token Bar Floating")
         .inner_size(FLOATING_WINDOW_WIDTH, FLOATING_WINDOW_HEIGHT)
         .min_inner_size(FLOATING_WINDOW_WIDTH, FLOATING_WINDOW_HEIGHT)
