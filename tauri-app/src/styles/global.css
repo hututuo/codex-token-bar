@@ -385,8 +385,16 @@ button {
   padding: 12px;
 }
 
+.settings-panel label {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
 .settings-label,
-.settings-note {
+.settings-note,
+.settings-panel label span {
   color: var(--muted);
   font-size: 13px;
   font-weight: 700;
@@ -628,6 +636,8 @@ input[type="range"] {
 }
 
 .floating-window-shell {
+  --floating-card-opacity: 0.92;
+  --floating-scale: 1;
   display: grid;
   width: 100vw;
   height: 100vh;
@@ -638,11 +648,15 @@ input[type="range"] {
 
 .floating-panel-surface {
   position: relative;
-  width: min(292px, calc(100vw - 4px));
-  padding: 12px 14px;
+  width: min(calc(292px * var(--floating-scale)), calc(100vw - 4px));
+  padding: calc(12px * var(--floating-scale)) calc(14px * var(--floating-scale));
   border: 1px solid rgba(255, 255, 255, 0.72);
-  border-radius: 8px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.84), rgba(218, 239, 255, 0.82));
+  border-radius: calc(8px * var(--floating-scale));
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, var(--floating-card-opacity)),
+    rgba(218, 239, 255, var(--floating-card-opacity))
+  );
   color: #1f2732;
   cursor: grab;
   user-select: none;
@@ -663,7 +677,7 @@ input[type="range"] {
 }
 
 .floating-topline strong {
-  font-size: 30px;
+  font-size: calc(30px * var(--floating-scale));
 }
 
 .floating-topline span,
@@ -675,7 +689,7 @@ input[type="range"] {
 
 .floating-topline em {
   color: #4f6175;
-  font-size: 12px;
+  font-size: calc(12px * var(--floating-scale));
   font-style: normal;
 }
 
@@ -684,25 +698,25 @@ input[type="range"] {
   background: transparent;
   color: #6a7581;
   cursor: default;
-  font-size: 18px;
+  font-size: calc(18px * var(--floating-scale));
   -webkit-app-region: no-drag;
 }
 
 .floating-metrics {
-  margin-top: 4px;
+  margin-top: calc(4px * var(--floating-scale));
   color: #5c6978;
-  font-size: 12px;
+  font-size: calc(12px * var(--floating-scale));
 }
 
 .floating-quota {
-  margin-top: 8px;
+  margin-top: calc(8px * var(--floating-scale));
 }
 
 .floating-quota strong {
   flex: 1;
-  border-radius: 7px;
+  border-radius: calc(7px * var(--floating-scale));
   background: #5d95ea;
-  padding: 4px 8px;
+  padding: calc(4px * var(--floating-scale)) calc(8px * var(--floating-scale));
   text-align: center;
 }
 

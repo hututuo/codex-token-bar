@@ -6,6 +6,7 @@ import { QuotaStrip } from "../components/QuotaStrip";
 import { RecentUsageChart } from "../components/RecentUsageChart";
 import { StatsStrip } from "../components/StatsStrip";
 import { TokenActivitySection } from "../components/TokenActivitySection";
+import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import type {
   CodexHomeStatus,
   DashboardSnapshot,
@@ -16,8 +17,11 @@ import type {
 interface DashboardPageProps {
   codexHome: CodexHomeStatus;
   dashboard: DashboardSnapshot;
+  floatingSettings: FloatingWindowSettings;
   floatingVisible: boolean;
   liveRate: LiveRateSnapshot;
+  onFloatingOpacityChange: (opacity: number) => void;
+  onFloatingScaleChange: (scale: number) => void;
   onToggleFloating: () => void;
   providerRepair: ProviderRepairSnapshot;
   refreshing: boolean;
@@ -26,8 +30,11 @@ interface DashboardPageProps {
 export function DashboardPage({
   codexHome,
   dashboard,
+  floatingSettings,
   floatingVisible,
   liveRate,
+  onFloatingOpacityChange,
+  onFloatingScaleChange,
   onToggleFloating,
   providerRepair,
   refreshing,
@@ -45,7 +52,10 @@ export function DashboardPage({
         <QuotaStrip snapshot={dashboard.quota} />
         <StatsStrip stats={dashboard.stats} />
         <LiveRateCard
+          floatingSettings={floatingSettings}
           floatingVisible={floatingVisible}
+          onFloatingOpacityChange={onFloatingOpacityChange}
+          onFloatingScaleChange={onFloatingScaleChange}
           onToggleFloating={onToggleFloating}
           snapshot={liveRate}
         />

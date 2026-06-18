@@ -1,14 +1,27 @@
 import type { LiveRateSnapshot } from "../types/dashboard";
+import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { clamp, formatTokens } from "../utils/format";
 
 interface LiveRateCardProps {
+  floatingSettings: FloatingWindowSettings;
   floatingVisible: boolean;
+  onFloatingOpacityChange: (opacity: number) => void;
+  onFloatingScaleChange: (scale: number) => void;
   onToggleFloating: () => void;
   snapshot: LiveRateSnapshot;
 }
 
-export function LiveRateCard({ floatingVisible, onToggleFloating, snapshot }: LiveRateCardProps) {
+export function LiveRateCard({
+  floatingSettings,
+  floatingVisible,
+  onFloatingOpacityChange,
+  onFloatingScaleChange,
+  onToggleFloating,
+  snapshot,
+}: LiveRateCardProps) {
   const progress = clamp(snapshot.tokensPerSecond / snapshot.maxTokensPerSecond, 0, 1);
+  const opacityPercent = Math.round(floatingSettings.opacity * 100);
+  const scalePercent = Math.round(floatingSettings.scale * 100);
 
   return (
     <section className="live-card" aria-label="实时速率">
@@ -51,7 +64,26 @@ export function LiveRateCard({ floatingVisible, onToggleFloating, snapshot }: Li
           <button className="toolbar-button toolbar-button--wide" onClick={onToggleFloating} type="button">
             悬浮窗：{floatingVisible ? "开启" : "关闭"}
           </button>
-          <span className="settings-note">{floatingVisible ? "窗口已显示" : "窗口已隐藏"}</span>
+          <label>
+            <span>透明度 {opacityPercent}%</span>
+            <input
+              max="100"
+              min="40"
+              onChange={(event) => onFloatingOpacityChange(Number(event.currentTarget.value) / 100)}
+              type="range"
+              value={opacityPercent}
+            />
+          </label>
+          <label>
+            <span>大小 {scalePercent}%</span>
+            <input
+              max="138"
+              min="90"
+              onChange={(event) => onFloatingScaleChange(Number(event.currentTarget.value) / 100)}
+              type="range"
+              value={scalePercent}
+            />
+          </label>
         </div>
       </div>
     </section>

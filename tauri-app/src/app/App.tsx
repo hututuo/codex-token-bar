@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   getCodexHome,
@@ -12,6 +12,12 @@ import {
   showFloatingWindow,
 } from "../api/client";
 import { FloatingWindowApp } from "../floating/FloatingWindowApp";
+import {
+  FLOATING_SETTINGS_EVENT,
+  readFloatingSettings,
+  sanitizeFloatingSettings,
+  writeFloatingSettings,
+} from "../floating/floatingSettings";
 import { DashboardPage } from "../pages/DashboardPage";
 import { useStatusTray } from "../tray/useStatusTray";
 import type {
@@ -55,6 +61,7 @@ function DashboardApp() {
   const quotaLoadStarted = useRef(false);
   const liveRatePollStarted = useRef(false);
   const [floatingVisible, setFloatingVisible] = useState(true);
+  const [floatingSettings, setFloatingSettings] = useState(readFloatingSettings);
   useStatusTray(state.liveRate);
 
   useEffect(() => {
@@ -184,11 +191,27 @@ function DashboardApp() {
     };
   }, []);
 
+  useEffect(() => {
+    const sanitized = sanitizeFloatingSettings(floatingSettings);
+    writeFloatingSettings(sanitized);
+    if ("__TAURI_INTERNALS__" in window) {
+      void emit(FLOATING_SETTINGS_EVENT, sanitized);
+    }
+  }, [floatingSettings]);
+
   async function toggleFloatingWindow() {
     const nextVisible = !floatingVisible;
     setFloatingVisible(nextVisible);
     const confirmed = nextVisible ? await showFloatingWindow() : await hideFloatingWindow();
     setFloatingVisible(confirmed);
+  }
+
+  function updateFloatingOpacity(opacity: number) {
+    setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, opacity }));
+  }
+
+  function updateFloatingScale(scale: number) {
+    setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, scale }));
   }
 
   const readyState = useMemo(() => {
@@ -221,8 +244,11 @@ function DashboardApp() {
     <DashboardPage
       codexHome={readyState.codexHome}
       dashboard={readyState.dashboard}
+      floatingSettings={floatingSettings}
       floatingVisible={floatingVisible}
       liveRate={readyState.liveRate}
+      onFloatingOpacityChange={updateFloatingOpacity}
+      onFloatingScaleChange={updateFloatingScale}
       onToggleFloating={toggleFloatingWindow}
       providerRepair={readyState.repair}
       refreshing={state.loading}
