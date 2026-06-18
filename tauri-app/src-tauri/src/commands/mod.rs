@@ -7,6 +7,7 @@ use crate::models::{
     DisplaySurfaceSettingsSnapshot, FloatingPanelSnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, LiveRateSnapshot, PlatformCapabilities,
     LiveThreadOption, ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
+    UnreadSummary,
 };
 use crate::platform;
 use std::{
@@ -219,6 +220,11 @@ pub fn stop_live_rate_stream(state: State<LiveRateStreamState>) -> Result<bool, 
 #[tauri::command]
 pub fn read_floating_snapshot() -> Result<FloatingPanelSnapshot, String> {
     Ok(local_source().read_floating_snapshot())
+}
+
+#[tauri::command]
+pub fn read_unread_summary() -> Result<UnreadSummary, String> {
+    Ok(local_source().read_unread_summary())
 }
 
 #[tauri::command]

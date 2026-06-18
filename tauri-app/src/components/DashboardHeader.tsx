@@ -169,6 +169,7 @@ function commandDisplayName(command: string): string {
     read_live_rate_snapshot: "实时速率读取",
     read_live_thread_options: "会话列表读取",
     read_floating_snapshot: "悬浮窗数据读取",
+    read_unread_summary: "未读状态读取",
     read_autostart_status: "开机自启读取",
     set_codex_home: "Codex 目录保存",
     reset_codex_home: "Codex 目录恢复",

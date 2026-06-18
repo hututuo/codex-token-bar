@@ -42,6 +42,7 @@ pub fn run() {
             commands::verify_provider_repair,
             commands::rollback_provider_backup,
             commands::read_floating_snapshot,
+            commands::read_unread_summary,
             commands::show_floating_window,
             commands::hide_floating_window,
             commands::show_dashboard_window,

@@ -12,11 +12,13 @@ import type {
   ProviderRepairActionResult,
   ProviderRepairBackupInfo,
   ProviderRepairSnapshot,
+  UnreadSummary,
 } from "../types/dashboard";
 import {
   emptyDashboardSnapshot,
   emptyFloatingPanelSnapshot,
   emptyLiveRateSnapshot,
+  emptyUnreadSummary,
   fallbackAutostartStatus,
   fallbackCodexHome,
   fallbackPlatformCapabilities,
@@ -200,6 +202,10 @@ export function readLiveThreadOptions(): Promise<LiveThreadOption[]> {
 
 export function readFloatingPanelSnapshot(): Promise<FloatingPanelSnapshot> {
   return callCommand("read_floating_snapshot", emptyFloatingPanelSnapshot, undefined, 1_500);
+}
+
+export function readUnreadSummary(): Promise<UnreadSummary> {
+  return callCommand("read_unread_summary", emptyUnreadSummary, undefined, 1_500);
 }
 
 export function scanProviderRepair(): Promise<ProviderRepairSnapshot> {

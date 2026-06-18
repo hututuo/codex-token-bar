@@ -1,7 +1,7 @@
-use crate::core::{live_rate, provider_repair, quota, quota_history, usage};
+use crate::core::{live_rate, provider_repair, quota, quota_history, unread, usage};
 use crate::models::{
     AccountQuotaBundle, DashboardSnapshot, FloatingPanelSnapshot, LiveRateSnapshot,
-    LiveThreadOption, ProviderRepairSnapshot,
+    LiveThreadOption, ProviderRepairSnapshot, UnreadSummary,
 };
 use std::path::{Path, PathBuf};
 
@@ -17,6 +17,7 @@ pub trait DashboardDataSource {
     ) -> Result<LiveRateSnapshot, String>;
     fn try_read_live_thread_options(&self) -> Result<Vec<LiveThreadOption>, String>;
     fn read_floating_snapshot(&self) -> FloatingPanelSnapshot;
+    fn read_unread_summary(&self) -> UnreadSummary;
     fn scan_provider_repair(&self) -> ProviderRepairSnapshot;
 }
 
@@ -74,6 +75,10 @@ impl DashboardDataSource for LocalCodexDataSource {
 
     fn read_floating_snapshot(&self) -> FloatingPanelSnapshot {
         live_rate::read_floating_snapshot(self.codex_home())
+    }
+
+    fn read_unread_summary(&self) -> UnreadSummary {
+        unread::read_unread_summary(self.codex_home())
     }
 
     fn scan_provider_repair(&self) -> ProviderRepairSnapshot {

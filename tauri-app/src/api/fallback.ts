@@ -9,6 +9,7 @@ import type {
   PlatformCapabilities,
   ProviderRepairActionResult,
   ProviderRepairSnapshot,
+  UnreadSummary,
 } from "../types/dashboard";
 
 export const fallbackCodexHome: CodexHomeStatus = {
@@ -109,6 +110,14 @@ export function emptyLiveRateSnapshot(selectedThreadId?: string | null): LiveRat
   };
 }
 
+export const emptyUnreadSummary: UnreadSummary = {
+  active: false,
+  count: 0,
+  label: "暂无未读完成会话",
+  detail: "未读状态待读取。",
+  source: "pending",
+};
+
 export const emptyFloatingPanelSnapshot: FloatingPanelSnapshot = {
   tokensPerSecond: 0,
   trendLabel: "待输出",
@@ -118,13 +127,7 @@ export const emptyFloatingPanelSnapshot: FloatingPanelSnapshot = {
   fiveHourLabel: "5h 待读取",
   sevenDayLabel: "7d 待读取",
   unread: false,
-  unreadSummary: {
-    active: false,
-    count: 0,
-    label: "暂无未读完成会话",
-    detail: "未读状态待读取。",
-    source: "pending",
-  },
+  unreadSummary: emptyUnreadSummary,
 };
 
 export const fallbackProviderRepairSnapshot: ProviderRepairSnapshot = {
