@@ -37,7 +37,13 @@ while (($# > 0)); do
   esac
 done
 
+stop_existing_debug_app() {
+  # Only stop this project's debug bundle, not installed release builds.
+  /usr/bin/pkill -f "$PROCESS_PATTERN" >/dev/null 2>&1 || true
+}
+
 if [[ "$BUILD_FIRST" == "1" ]]; then
+  stop_existing_debug_app
   (cd "$TAURI_DIR" && npm run tauri -- build --debug --bundles app)
 fi
 
@@ -46,8 +52,7 @@ if [[ ! -x "$APP_BINARY" ]]; then
   exit 1
 fi
 
-# Only stop this project's debug bundle, not installed release builds.
-/usr/bin/pkill -f "$PROCESS_PATTERN" >/dev/null 2>&1 || true
+stop_existing_debug_app
 
 if ! /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH" >/dev/null 2>&1; then
   echo "Debug app signature is not valid; repairing with ad-hoc signing." >&2

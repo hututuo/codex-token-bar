@@ -75,23 +75,11 @@ export function DashboardPage({
   refreshing,
   selectedLiveThreadId,
 }: DashboardPageProps) {
-  const [summaryReady, setSummaryReady] = useState(false);
+  const [summaryReady] = useState(true);
   const [analyticsReady, setAnalyticsReady] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-    const reveal = () => {
-      if (!cancelled) {
-        setSummaryReady(true);
-        void recordStartupEvent("dashboard summary ui ready");
-      }
-    };
-    const schedule = scheduleAfterFirstPaint(reveal);
-
-    return () => {
-      cancelled = true;
-      schedule.cancel();
-    };
+    void recordStartupEvent("dashboard summary ui ready");
   }, []);
 
   useEffect(() => {
@@ -185,15 +173,10 @@ export function DashboardPage({
 }
 
 function scheduleAfterFirstPaint(callback: () => void) {
-  if (typeof window.requestIdleCallback === "function") {
-    const id = window.requestIdleCallback(callback, { timeout: 700 });
-    return {
-      cancel: () => window.cancelIdleCallback(id),
-    };
-  }
-
-  const id = window.setTimeout(callback, 160);
+  const timeoutId = window.setTimeout(callback, 120);
   return {
-    cancel: () => window.clearTimeout(id),
+    cancel: () => {
+      window.clearTimeout(timeoutId);
+    },
   };
 }
