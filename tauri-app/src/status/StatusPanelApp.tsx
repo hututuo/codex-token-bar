@@ -135,7 +135,7 @@ export function StatusPanelApp() {
 
         <div className="status-panel-status">
           <strong>{snapshot.trendLabel}</strong>
-          <span>{snapshot.unread ? "有未读完成会话" : "暂无未读完成会话"}</span>
+          <span title={snapshot.unreadSummary.detail}>{snapshot.unreadSummary.label}</span>
         </div>
 
         <dl className="status-panel-stats">

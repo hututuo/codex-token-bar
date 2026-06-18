@@ -110,6 +110,7 @@ fn read_snapshot_result(
 fn floating_from_live(codex_home: &Path, live: &LiveRateSnapshot) -> FloatingPanelSnapshot {
     let mut warnings = Vec::new();
     let summary = read_usage_summary_or_default(codex_home, &mut warnings);
+    let unread_summary = unread::read_unread_summary(codex_home);
     FloatingPanelSnapshot {
         tokens_per_second: live.tokens_per_second,
         trend_label: if live.tokens_per_second > 0.05 {
@@ -122,7 +123,8 @@ fn floating_from_live(codex_home: &Path, live: &LiveRateSnapshot) -> FloatingPan
         requests_label: format!("次 {}", live.requests_today),
         five_hour_label: "5h 待读取".into(),
         seven_day_label: "7d 待读取".into(),
-        unread: unread::has_unread_threads(codex_home),
+        unread: unread_summary.active,
+        unread_summary,
     }
 }
 

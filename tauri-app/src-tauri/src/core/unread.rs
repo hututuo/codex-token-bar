@@ -1,4 +1,5 @@
 use crate::core::sqlite;
+use crate::models::UnreadSummary;
 use rusqlite::{params_from_iter, Connection, Result as SqlResult};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -13,10 +14,10 @@ const RECENT_COMPLETION_LOOKBACK_SECONDS: f64 = 30.0;
 const RECENT_COMPLETION_FILE_LIMIT: usize = 64;
 const RECENT_COMPLETION_TAIL_BYTE_LIMIT: u64 = 4 * 1024 * 1024;
 
-pub fn has_unread_threads(codex_home: &Path) -> bool {
+pub fn read_unread_summary(codex_home: &Path) -> UnreadSummary {
     match read_unread_thread_ids(codex_home) {
-        Some(thread_ids) => !thread_ids.is_empty(),
-        None => has_recent_completed_user_task(codex_home),
+        Some(thread_ids) => unread_state_summary(thread_ids.len()),
+        None => recent_completion_summary(count_recent_completed_user_tasks(codex_home)),
     }
 }
 
@@ -282,11 +283,57 @@ fn first_line(file: &Path) -> Option<String> {
     }
 }
 
-fn has_recent_completed_user_task(codex_home: &Path) -> bool {
+fn count_recent_completed_user_tasks(codex_home: &Path) -> usize {
     let now = current_time_seconds();
     recent_session_files(&codex_home.join("sessions"), now)
         .into_iter()
-        .any(|file| file_has_recent_completed_user_task(&file, now))
+        .filter(|file| file_has_recent_completed_user_task(file, now))
+        .count()
+}
+
+fn unread_state_summary(count: usize) -> UnreadSummary {
+    let active = count > 0;
+    UnreadSummary {
+        active,
+        count: count as u32,
+        label: if active {
+            "有未读完成会话".into()
+        } else {
+            "暂无未读完成会话".into()
+        },
+        detail: if active {
+            format!("{count} 个会话等待查看")
+        } else {
+            "Codex 未读列表为空。".into()
+        },
+        source: "codex_unread_state".into(),
+    }
+}
+
+fn recent_completion_summary(count: usize) -> UnreadSummary {
+    let active = count > 0;
+    UnreadSummary {
+        active,
+        count: count as u32,
+        label: if active {
+            "刚有任务完成".into()
+        } else {
+            "暂无未读完成会话".into()
+        },
+        detail: if active {
+            format!(
+                "Codex 未读状态不可用，按最近 {} 秒内完成的 {} 个会话兜底。",
+                RECENT_COMPLETION_LOOKBACK_SECONDS as u32,
+                count
+            )
+        } else {
+            format!(
+                "Codex 未读状态不可用，最近 {} 秒没有可见会话完成。",
+                RECENT_COMPLETION_LOOKBACK_SECONDS as u32
+            )
+        },
+        source: "recent_task_complete".into(),
+    }
 }
 
 fn recent_session_files(root: &Path, now: f64) -> Vec<PathBuf> {
@@ -427,7 +474,10 @@ mod tests {
 
         let ids = read_unread_thread_ids(&root).unwrap();
         assert_eq!(ids, HashSet::from([visible.to_string()]));
-        assert!(has_unread_threads(&root));
+        let summary = read_unread_summary(&root);
+        assert!(summary.active);
+        assert_eq!(summary.count, 1);
+        assert_eq!(summary.source, "codex_unread_state");
 
         let _ = fs::remove_dir_all(root);
     }
@@ -466,7 +516,10 @@ mod tests {
             current_time_seconds() - 3.0,
         );
 
-        assert!(has_unread_threads(&root));
+        let summary = read_unread_summary(&root);
+        assert!(summary.active);
+        assert_eq!(summary.count, 1);
+        assert_eq!(summary.source, "recent_task_complete");
 
         let _ = fs::remove_dir_all(root);
     }
@@ -485,7 +538,7 @@ mod tests {
             current_time_seconds() - 3.0,
         );
 
-        assert!(!has_unread_threads(&root));
+        assert!(!read_unread_summary(&root).active);
 
         let _ = fs::remove_dir_all(root);
     }
@@ -508,7 +561,7 @@ mod tests {
             current_time_seconds() - RECENT_COMPLETION_LOOKBACK_SECONDS - 10.0,
         );
 
-        assert!(!has_unread_threads(&root));
+        assert!(!read_unread_summary(&root).active);
 
         let _ = fs::remove_dir_all(root);
     }

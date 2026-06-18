@@ -193,6 +193,15 @@ export interface FloatingPanelSnapshot {
   fiveHourLabel: string;
   sevenDayLabel: string;
   unread: boolean;
+  unreadSummary: UnreadSummary;
+}
+
+export interface UnreadSummary {
+  active: boolean;
+  count: number;
+  label: string;
+  detail: string;
+  source: string;
 }
 
 export interface ProviderRepairStep {

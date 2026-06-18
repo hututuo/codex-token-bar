@@ -13,10 +13,15 @@ export function FloatingPanelSurface({
   onClose,
   onDragStart,
 }: FloatingPanelSurfaceProps) {
-  const shouldShowUnreadEffect = snapshot.unread && unreadEffect !== "off";
+  const shouldShowUnreadEffect = snapshot.unreadSummary.active && unreadEffect !== "off";
 
   return (
-    <aside className="floating-panel-surface" aria-label="悬浮窗" onMouseDown={onDragStart}>
+    <aside
+      className="floating-panel-surface"
+      aria-label={`悬浮窗，${snapshot.unreadSummary.label}`}
+      onMouseDown={onDragStart}
+      title={snapshot.unreadSummary.detail}
+    >
       {shouldShowUnreadEffect ? <span className={`unread-effect unread-effect--${unreadEffect}`} /> : null}
       <div className="floating-topline">
         <strong>{snapshot.tokensPerSecond.toFixed(1)}</strong>

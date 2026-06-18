@@ -118,6 +118,13 @@ export const emptyFloatingPanelSnapshot: FloatingPanelSnapshot = {
   fiveHourLabel: "5h 待读取",
   sevenDayLabel: "7d 待读取",
   unread: false,
+  unreadSummary: {
+    active: false,
+    count: 0,
+    label: "暂无未读完成会话",
+    detail: "未读状态待读取。",
+    source: "pending",
+  },
 };
 
 export const fallbackProviderRepairSnapshot: ProviderRepairSnapshot = {

@@ -298,6 +298,17 @@ pub struct FloatingPanelSnapshot {
     pub five_hour_label: String,
     pub seven_day_label: String,
     pub unread: bool,
+    pub unread_summary: UnreadSummary,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreadSummary {
+    pub active: bool,
+    pub count: u32,
+    pub label: String,
+    pub detail: String,
+    pub source: String,
 }
 
 #[derive(Debug, Serialize)]
