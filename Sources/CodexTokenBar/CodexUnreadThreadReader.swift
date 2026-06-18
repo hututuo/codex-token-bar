@@ -59,7 +59,7 @@ enum CodexUnreadThreadReader {
         guard !threadIDs.isEmpty else { return [] }
         let databaseURL = codexHome.appendingPathComponent("state_5.sqlite")
         guard FileManager.default.fileExists(atPath: databaseURL.path) else {
-            return sessionVisibleThreadIDs(from: threadIDs, codexHome: codexHome).visibleIDs
+            return visibleOrUnresolvedThreadIDs(from: threadIDs, codexHome: codexHome)
         }
 
         do {
@@ -83,14 +83,13 @@ enum CodexUnreadThreadReader {
         codexHome: URL
     ) throws -> Set<String> {
         let archivedExpression = columns.contains("archived") ? "COALESCE(archived, 0)" : "0"
-        let hasUserEventExpression = columns.contains("has_user_event") ? "COALESCE(has_user_event, 0)" : "1"
         let threadSourceExpression = columns.contains("thread_source") ? "COALESCE(thread_source, 'user')" : "'user'"
         let sourceExpression = columns.contains("source") ? "COALESCE(source, '')" : "''"
         let previewExpression = columns.contains("preview") ? "COALESCE(preview, '')" : "'legacy'"
         let sortedThreadIDs = threadIDs.sorted()
         let placeholders = Array(repeating: "?", count: sortedThreadIDs.count).joined(separator: ",")
         let sql = """
-        SELECT id, \(archivedExpression), \(hasUserEventExpression), \(threadSourceExpression), \(sourceExpression), \(previewExpression)
+        SELECT id, \(archivedExpression), \(threadSourceExpression), \(sourceExpression), \(previewExpression)
         FROM threads
         WHERE id IN (\(placeholders))
         """
@@ -99,10 +98,9 @@ enum CodexUnreadThreadReader {
             (
                 id: statement.text(0) ?? "",
                 archived: (statement.int(1) ?? 0) != 0,
-                hasUserEvent: (statement.int(2) ?? 0) != 0,
-                threadSource: statement.text(3) ?? "user",
-                source: statement.text(4) ?? "",
-                preview: statement.text(5) ?? ""
+                threadSource: statement.text(2) ?? "user",
+                source: statement.text(3) ?? "",
+                preview: statement.text(4) ?? ""
             )
         }
         var visibleIDs = Set<String>()
@@ -111,7 +109,6 @@ enum CodexUnreadThreadReader {
         for row in rows where !row.id.isEmpty {
             matchedIDs.insert(row.id)
             if !row.archived,
-               row.hasUserEvent,
                !row.preview.isEmpty,
                !row.threadSource.localizedCaseInsensitiveContains("subagent"),
                !row.source.localizedCaseInsensitiveContains("subagent") {
@@ -123,6 +120,7 @@ enum CodexUnreadThreadReader {
         if !unresolvedIDs.isEmpty {
             let sessionVisibility = sessionVisibleThreadIDs(from: unresolvedIDs, codexHome: codexHome)
             visibleIDs.formUnion(sessionVisibility.visibleIDs)
+            visibleIDs.formUnion(unresolvedIDs.subtracting(sessionVisibility.foundIDs))
         }
         return visibleIDs
     }
@@ -220,6 +218,11 @@ enum CodexUnreadThreadReader {
         let archivedSessions = codexHome.appendingPathComponent("archived_sessions", isDirectory: true)
         scanSessionMetas(under: archivedSessions, archived: true, threadIDs: threadIDs, visibility: &visibility)
         return visibility
+    }
+
+    private static func visibleOrUnresolvedThreadIDs(from threadIDs: Set<String>, codexHome: URL) -> Set<String> {
+        let sessionVisibility = sessionVisibleThreadIDs(from: threadIDs, codexHome: codexHome)
+        return sessionVisibility.visibleIDs.union(threadIDs.subtracting(sessionVisibility.foundIDs))
     }
 
     private static func scanSessionMetas(
