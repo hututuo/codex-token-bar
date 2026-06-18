@@ -7,6 +7,16 @@
 
 # Local app packaging output
 dist/
+**/dist/
+**/target/
+**/src-tauri/gen/
+**/node_modules/
+**/.vite/
+**/.turbo/
+**/.parcel-cache/
+**/coverage/
+**/*.tsbuildinfo
+**/.DS_Store
 
 # Workspace-only notes and validation artifacts
 CONTEXT.md
