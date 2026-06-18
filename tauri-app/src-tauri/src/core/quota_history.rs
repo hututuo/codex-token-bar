@@ -1,7 +1,8 @@
 use crate::core::app_paths;
 use crate::core::sqlite;
 use crate::models::{
-    AccountQuotaBundle, ActivityDay, QuotaHistoryPoint, QuotaSnapshot, RecentUsagePoint,
+    AccountQuotaBundle, ActivityDay, LocalDataWarning, QuotaHistoryPoint, QuotaSnapshot,
+    RecentUsagePoint,
 };
 use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 use std::collections::HashMap;
@@ -16,60 +17,59 @@ const RECENT_INTERVAL_SECONDS: i64 = 5 * 60;
 const RECENT_BIN_COUNT: usize = 289;
 const MAX_CARRY_GAP_SECONDS: f64 = 90.0 * 60.0;
 
-pub fn record_bundle(bundle: &AccountQuotaBundle) {
+pub fn record_bundle(bundle: &AccountQuotaBundle) -> Result<(), String> {
     if !quota_available(&bundle.quota) {
-        return;
+        return Ok(());
     }
-    let Ok(database) = QuotaHistoryDatabase::default() else {
-        return;
-    };
-    let _ = database.record(bundle);
+    QuotaHistoryDatabase::default()?
+        .record(bundle)
+        .map_err(|error| format!("写入额度历史失败：{error}"))
 }
 
-pub fn recent_history_24h() -> Vec<QuotaHistoryPoint> {
-    let Ok(database) = QuotaHistoryDatabase::default() else {
-        return Vec::new();
-    };
-    database
+pub fn recent_history_24h() -> Result<Vec<QuotaHistoryPoint>, String> {
+    QuotaHistoryDatabase::default()?
         .recent_history_24h(RECENT_BIN_COUNT)
-        .unwrap_or_default()
+        .map_err(|error| format!("读取 24 小时额度历史失败：{error}"))
 }
 
-pub fn apply_recent_history(points: &mut [RecentUsagePoint]) {
+pub fn apply_recent_history(points: &mut [RecentUsagePoint]) -> Result<(), String> {
     if points.is_empty() {
-        return;
+        return Ok(());
     }
-    let Ok(database) = QuotaHistoryDatabase::default() else {
-        return;
-    };
-    let history = database
+    let history = QuotaHistoryDatabase::default()?
         .recent_history_24h(points.len())
-        .unwrap_or_default();
+        .map_err(|error| format!("读取 24 小时额度历史失败：{error}"))?;
     overlay_history(points, &history);
+    Ok(())
 }
 
-pub fn apply_activity_history(days: &mut [ActivityDay]) {
+pub fn apply_activity_history(days: &mut [ActivityDay]) -> Result<(), String> {
     if days.is_empty() {
-        return;
+        return Ok(());
     }
-    let Ok(database) = QuotaHistoryDatabase::default() else {
-        return;
-    };
-    let history = database
+    let history = QuotaHistoryDatabase::default()?
         .daily_history(days.len())
-        .unwrap_or_default();
+        .map_err(|error| format!("读取每日额度历史失败：{error}"))?;
     for day in days {
         if let Some(quota) = history.get(&day.date) {
             day.five_hour_remaining_percent = quota.five_hour_remaining_percent;
             day.seven_day_remaining_percent = quota.seven_day_remaining_percent;
         }
     }
+    Ok(())
 }
 
 pub fn overlay_history(points: &mut [RecentUsagePoint], history: &[QuotaHistoryPoint]) {
     for (point, quota) in points.iter_mut().zip(history.iter()) {
         point.five_hour_remaining_percent = quota.five_hour_remaining_percent;
         point.seven_day_remaining_percent = quota.seven_day_remaining_percent;
+    }
+}
+
+pub fn warning(message: String) -> LocalDataWarning {
+    LocalDataWarning {
+        source: "quota_history".into(),
+        message,
     }
 }
 
@@ -85,7 +85,7 @@ impl QuotaHistoryDatabase {
     fn default() -> Result<Self, String> {
         database_path()
             .map(|path| Self { path })
-            .ok_or_else(|| "Unable to locate application support directory".into())
+            .ok_or_else(|| "无法定位系统应用支持目录，不能读取额度历史".into())
     }
 
     fn record(&self, bundle: &AccountQuotaBundle) -> SqlResult<()> {

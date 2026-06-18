@@ -119,7 +119,7 @@ export function DashboardHeader({
         <div className="diagnostic-strip" title={latestDiagnostic.message}>
           <span className="diagnostic-strip__label">本地读取提醒</span>
           <span className="diagnostic-strip__message">
-            {commandDisplayName(latestDiagnostic.command)} 失败，已显示待读取/零值数据。
+            {diagnosticSummary(latestDiagnostic)}
           </span>
           <span className="diagnostic-strip__meta">
             {formatDiagnosticTime(latestDiagnostic.occurredAt)}
@@ -131,8 +131,16 @@ export function DashboardHeader({
   );
 }
 
+function diagnosticSummary(diagnostic: CommandFailureDiagnostic): string {
+  if (diagnostic.command.startsWith("local:")) {
+    return `${commandDisplayName(diagnostic.command)}：${diagnostic.message}`;
+  }
+  return `${commandDisplayName(diagnostic.command)} 失败，已显示待读取/零值数据。`;
+}
+
 function commandDisplayName(command: string): string {
   const knownNames: Record<string, string> = {
+    "local:quota_history": "额度历史",
     get_codex_home: "Codex 目录读取",
     read_platform_capabilities: "平台能力读取",
     read_dashboard_snapshot: "首页快速统计读取",

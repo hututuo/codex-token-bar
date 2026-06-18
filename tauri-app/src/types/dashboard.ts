@@ -132,6 +132,11 @@ export interface CacheHitRankingItem {
   cachedTokens: number;
 }
 
+export interface LocalDataWarning {
+  source: string;
+  message: string;
+}
+
 export interface DashboardSnapshot {
   generatedAt: string;
   account: AccountInfo;
@@ -140,12 +145,14 @@ export interface DashboardSnapshot {
   activityDays: ActivityDay[];
   recentUsage24h: RecentUsagePoint[];
   cacheHitRanking: CacheHitRankingItem[];
+  warnings: LocalDataWarning[];
 }
 
 export interface AccountQuotaBundle {
   account: AccountInfo;
   quota: QuotaSnapshot;
   quotaHistory24h: QuotaHistoryPoint[];
+  warnings: LocalDataWarning[];
 }
 
 export interface LiveRateSnapshot {

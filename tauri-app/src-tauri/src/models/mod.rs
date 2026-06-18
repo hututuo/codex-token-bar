@@ -132,6 +132,7 @@ pub struct DashboardSnapshot {
     pub activity_days: Vec<ActivityDay>,
     pub recent_usage_24h: Vec<RecentUsagePoint>,
     pub cache_hit_ranking: Vec<CacheHitRankingItem>,
+    pub warnings: Vec<LocalDataWarning>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -140,6 +141,14 @@ pub struct AccountQuotaBundle {
     pub account: AccountInfo,
     pub quota: QuotaSnapshot,
     pub quota_history_24h: Vec<QuotaHistoryPoint>,
+    pub warnings: Vec<LocalDataWarning>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataWarning {
+    pub source: String,
+    pub message: String,
 }
 
 #[derive(Clone, Debug, Serialize)]

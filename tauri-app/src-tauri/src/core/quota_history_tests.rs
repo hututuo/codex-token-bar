@@ -122,6 +122,7 @@ fn bundle(
             pace_label: "测试".into(),
         },
         quota_history_24h: Vec::new(),
+        warnings: Vec::new(),
     }
 }
 

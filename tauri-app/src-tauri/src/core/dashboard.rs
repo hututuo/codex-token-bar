@@ -38,13 +38,17 @@ impl DashboardDataSource for LocalCodexDataSource {
     fn read_dashboard_snapshot(&self) -> Result<DashboardSnapshot, String> {
         let mut snapshot = usage::state_sqlite::dashboard_snapshot(self.codex_home())
             .map_err(|error| error.to_string())?;
-        quota_history::apply_recent_history(&mut snapshot.recent_usage_24h);
+        if let Err(error) = quota_history::apply_recent_history(&mut snapshot.recent_usage_24h) {
+            snapshot.warnings.push(quota_history::warning(error));
+        }
         Ok(snapshot)
     }
 
     fn read_precise_dashboard_snapshot(&self) -> Result<DashboardSnapshot, String> {
         let mut snapshot = usage::token_count_jsonl::dashboard_snapshot(self.codex_home())?;
-        quota_history::apply_recent_history(&mut snapshot.recent_usage_24h);
+        if let Err(error) = quota_history::apply_recent_history(&mut snapshot.recent_usage_24h) {
+            snapshot.warnings.push(quota_history::warning(error));
+        }
         Ok(snapshot)
     }
 

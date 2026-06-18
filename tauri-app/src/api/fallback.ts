@@ -65,6 +65,7 @@ export function emptyDashboardSnapshot(): DashboardSnapshot {
     activityDays: emptyActivityDays(now),
     recentUsage24h: emptyRecentUsage(now),
     cacheHitRanking: [],
+    warnings: [],
   };
 }
 
@@ -80,6 +81,7 @@ export function emptyAccountQuotaBundle(): AccountQuotaBundle {
       fiveHourRemainingPercent: null,
       sevenDayRemainingPercent: null,
     })),
+    warnings: [],
   };
 }
 

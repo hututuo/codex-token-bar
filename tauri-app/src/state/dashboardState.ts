@@ -2,6 +2,7 @@ import type {
   AccountQuotaBundle,
   CodexHomeStatus,
   DashboardSnapshot,
+  LocalDataWarning,
   LiveRateSnapshot,
   LiveThreadOption,
   PlatformCapabilities,
@@ -91,7 +92,7 @@ export function readyDashboardState(state: DashboardAppState): DashboardReadySta
     liveRate: state.liveRate,
     liveThreadOptions: state.liveThreadOptions,
     repair: state.repair,
-    diagnostics: state.diagnostics,
+    diagnostics: mergeWarningDiagnostics(state.diagnostics, state.dashboard.warnings, state.dashboard.generatedAt),
   };
 }
 
@@ -108,6 +109,7 @@ export function mergePreciseDashboard(
             ...precise,
             account: state.dashboard.account,
             quota: state.dashboard.quota,
+            warnings: mergeWarnings(state.dashboard.warnings, precise.warnings),
           },
   };
 }
@@ -121,6 +123,7 @@ export function mergeQuota(state: DashboardAppState, quota: AccountQuotaBundle):
           account: quota.account,
           quota: quota.quota,
           recentUsage24h: mergeQuotaHistory(state.dashboard.recentUsage24h, quota),
+          warnings: mergeWarnings(state.dashboard.warnings, quota.warnings),
         };
   return {
     ...state,
@@ -252,6 +255,7 @@ function pendingDashboardSnapshot(): DashboardSnapshot {
     activityDays: pendingActivityDays(),
     recentUsage24h: pendingRecentUsage(),
     cacheHitRanking: [],
+    warnings: [],
   };
 }
 
@@ -303,4 +307,30 @@ function mergeQuotaHistory(points: RecentUsagePoint[], quota: AccountQuotaBundle
       sevenDayRemainingPercent: history.sevenDayRemainingPercent,
     };
   });
+}
+
+function mergeWarnings(left: LocalDataWarning[], right: LocalDataWarning[]): LocalDataWarning[] {
+  const byKey = new Map<string, LocalDataWarning>();
+  [...left, ...right].forEach((warning) => {
+    const key = `${warning.source}:${warning.message}`;
+    byKey.set(key, warning);
+  });
+  return Array.from(byKey.values());
+}
+
+function mergeWarningDiagnostics(
+  diagnostics: CommandFailureDiagnostic[],
+  warnings: LocalDataWarning[],
+  generatedAt: string,
+): CommandFailureDiagnostic[] {
+  if (warnings.length === 0) {
+    return diagnostics;
+  }
+  const warningDiagnostics = warnings.map((warning) => ({
+    command: `local:${warning.source}`,
+    message: warning.message,
+    occurredAt: generatedAt,
+    count: 1,
+  }));
+  return [...warningDiagnostics, ...diagnostics];
 }

@@ -162,7 +162,10 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
     let mut activity_days = activity_days(&events, local_offset);
-    quota_history::apply_activity_history(&mut activity_days);
+    let mut warnings = Vec::new();
+    if let Err(error) = quota_history::apply_activity_history(&mut activity_days) {
+        warnings.push(quota_history::warning(error));
+    }
     let recent_usage_24h = recent_usage(&events, local_offset);
     let stats = stats(&events, &activity_days);
     let cache_hit_ranking = cache_hit_ranking(&events, codex_home, local_offset);
@@ -178,6 +181,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         activity_days,
         recent_usage_24h,
         cache_hit_ranking,
+        warnings,
     })
 }
 
