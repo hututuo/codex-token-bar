@@ -18,6 +18,10 @@
   },
   "bundle": {
     "active": false,
-    "targets": "all"
+    "targets": "all",
+    "macOS": {
+      "infoPlist": "Info.plist",
+      "signingIdentity": "-"
+    }
   }
 }

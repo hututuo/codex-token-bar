@@ -9,7 +9,8 @@
     "preview": "vite preview --host 127.0.0.1 --port 1421",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:open-debug": "../scripts/open_tauri_debug_app.sh --build"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
