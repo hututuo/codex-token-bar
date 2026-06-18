@@ -1,4 +1,4 @@
-use crate::core::{live_rate, mock_data, provider_repair, quota, usage};
+use crate::core::{live_rate, mock_data, provider_repair, quota, quota_history, usage};
 use crate::models::{
     AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, FloatingPanelSnapshot, LiveRateSnapshot,
     ProviderRepairSnapshot,
@@ -13,16 +13,20 @@ pub fn get_codex_home() -> Result<CodexHomeStatus, String> {
 #[tauri::command]
 pub fn read_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
     let codex_home = platform::default_codex_home();
-    Ok(usage::state_sqlite::dashboard_snapshot(&codex_home)
-        .unwrap_or_else(|_| mock_data::dashboard_snapshot()))
+    let mut snapshot = usage::state_sqlite::dashboard_snapshot(&codex_home)
+        .unwrap_or_else(|_| mock_data::dashboard_snapshot());
+    quota_history::apply_recent_history(&mut snapshot.recent_usage_24h);
+    Ok(snapshot)
 }
 
 #[tauri::command]
 pub fn read_precise_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
     let codex_home = platform::default_codex_home();
-    Ok(usage::token_count_jsonl::dashboard_snapshot(&codex_home)
+    let mut snapshot = usage::token_count_jsonl::dashboard_snapshot(&codex_home)
         .or_else(|_| usage::state_sqlite::dashboard_snapshot(&codex_home))
-        .unwrap_or_else(|_| mock_data::dashboard_snapshot()))
+        .unwrap_or_else(|_| mock_data::dashboard_snapshot());
+    quota_history::apply_recent_history(&mut snapshot.recent_usage_24h);
+    Ok(snapshot)
 }
 
 #[tauri::command]

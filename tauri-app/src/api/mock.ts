@@ -60,12 +60,14 @@ export const mockDashboardSnapshot: DashboardSnapshot = {
       remainingPercent: 1,
       usedPercent: 0,
       resetsAt: "00:59",
+      resetsAtUnix: null,
     },
     sevenDay: {
       label: "7d",
       remainingPercent: 0.83,
       usedPercent: 0.17,
       resetsAt: "06/18 09:56",
+      resetsAtUnix: null,
     },
     resetCredit: {
       availableCount: 1,
@@ -106,6 +108,11 @@ export const mockDashboardSnapshot: DashboardSnapshot = {
 export const mockAccountQuotaBundle: AccountQuotaBundle = {
   account: mockDashboardSnapshot.account,
   quota: mockDashboardSnapshot.quota,
+  quotaHistory24h: recentUsage24h.map((point) => ({
+    label: point.label,
+    fiveHourRemainingPercent: point.fiveHourRemainingPercent,
+    sevenDayRemainingPercent: point.sevenDayRemainingPercent,
+  })),
 };
 
 export const mockLiveRateSnapshot: LiveRateSnapshot = {

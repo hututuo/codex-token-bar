@@ -16,6 +16,7 @@ import type {
   FloatingPanelSnapshot,
   LiveRateSnapshot,
   ProviderRepairSnapshot,
+  RecentUsagePoint,
 } from "../types/dashboard";
 import { formatTokens } from "../utils/format";
 
@@ -195,6 +196,7 @@ function mergeQuota(state: AppState, quota: AccountQuotaBundle): AppState {
           ...state.dashboard,
           account: quota.account,
           quota: quota.quota,
+          recentUsage24h: mergeQuotaHistory(state.dashboard.recentUsage24h, quota),
         };
   const floating =
     state.floating === null
@@ -209,6 +211,24 @@ function mergeQuota(state: AppState, quota: AccountQuotaBundle): AppState {
     dashboard,
     floating,
   };
+}
+
+function mergeQuotaHistory(points: RecentUsagePoint[], quota: AccountQuotaBundle): RecentUsagePoint[] {
+  if (quota.quotaHistory24h.length === 0) {
+    return points;
+  }
+
+  return points.map((point, index) => {
+    const history = quota.quotaHistory24h[index];
+    if (history === undefined) {
+      return point;
+    }
+    return {
+      ...point,
+      fiveHourRemainingPercent: history.fiveHourRemainingPercent,
+      sevenDayRemainingPercent: history.sevenDayRemainingPercent,
+    };
+  });
 }
 
 function mergeLiveRate(state: AppState, liveRate: LiveRateSnapshot): AppState {

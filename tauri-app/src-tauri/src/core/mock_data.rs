@@ -25,12 +25,14 @@ pub fn dashboard_snapshot() -> DashboardSnapshot {
                 remaining_percent: 1.0,
                 used_percent: 0.0,
                 resets_at: "00:59".into(),
+                resets_at_unix: None,
             },
             seven_day: QuotaLimit {
                 label: "7d".into(),
                 remaining_percent: 0.83,
                 used_percent: 0.17,
                 resets_at: "06/18 09:56".into(),
+                resets_at_unix: None,
             },
             reset_credit: ResetCreditSummary {
                 available_count: 1,

@@ -1,3 +1,4 @@
+use crate::core::quota_history;
 use crate::models::{
     AccountInfo, AccountQuotaBundle, QuotaLimit, QuotaSnapshot, ResetCreditSummary,
 };
@@ -20,14 +21,19 @@ pub fn read_account_quota(codex_home: &Path) -> Result<AccountQuotaBundle, Strin
                 available_count: 0,
                 status: "重置卡获取失败".into(),
             });
-            AccountQuotaBundle {
+            let mut bundle = AccountQuotaBundle {
                 account: account_info(codex_home, Some(&quota)),
                 quota,
-            }
+                quota_history_24h: Vec::new(),
+            };
+            quota_history::record_bundle(&bundle);
+            bundle.quota_history_24h = quota_history::recent_history_24h();
+            bundle
         }
         Err(error) => {
             let mut bundle = placeholder_bundle(codex_home);
             bundle.quota.pace_label = format!("额度读取失败：{error}");
+            bundle.quota_history_24h = quota_history::recent_history_24h();
             bundle
         }
     };
@@ -48,6 +54,7 @@ pub fn placeholder_bundle(codex_home: &Path) -> AccountQuotaBundle {
     AccountQuotaBundle {
         account: account_info(codex_home, Some(&quota)),
         quota,
+        quota_history_24h: quota_history::recent_history_24h(),
     }
 }
 
@@ -58,12 +65,14 @@ pub fn placeholder_quota() -> QuotaSnapshot {
             remaining_percent: 0.0,
             used_percent: 0.0,
             resets_at: "待读取".into(),
+            resets_at_unix: None,
         },
         seven_day: QuotaLimit {
             label: "7d".into(),
             remaining_percent: 0.0,
             used_percent: 0.0,
             resets_at: "待读取".into(),
+            resets_at_unix: None,
         },
         reset_credit: ResetCreditSummary {
             available_count: 0,
@@ -267,9 +276,8 @@ fn parse_limit_card(value: &Value, fallback_id: &str) -> Option<ParsedLimitCard>
 fn parse_window(value: Option<&Value>, label: &str) -> Option<QuotaLimit> {
     let value = value?;
     let used = normalized_percent(value.get("usedPercent")?)?;
-    let reset_at = value.get("resetsAt").and_then(number).and_then(|seconds| {
-        OffsetDateTime::from_unix_timestamp(seconds.round() as i64).ok()
-    });
+    let reset_at_unix = value.get("resetsAt").and_then(number).map(|seconds| seconds.round() as i64);
+    let reset_at = reset_at_unix.and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok());
     Some(QuotaLimit {
         label: label.into(),
         remaining_percent: (1.0 - used).clamp(0.0, 1.0),
@@ -277,6 +285,7 @@ fn parse_window(value: Option<&Value>, label: &str) -> Option<QuotaLimit> {
         resets_at: reset_at
             .map(|date| compact_reset_text(date, label))
             .unwrap_or_else(|| "--:--".into()),
+        resets_at_unix: reset_at_unix,
     })
 }
 

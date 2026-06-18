@@ -25,6 +25,7 @@ pub struct DashboardSnapshot {
 pub struct AccountQuotaBundle {
     pub account: AccountInfo,
     pub quota: QuotaSnapshot,
+    pub quota_history_24h: Vec<QuotaHistoryPoint>,
 }
 
 #[derive(Debug, Serialize)]
@@ -62,6 +63,15 @@ pub struct QuotaLimit {
     pub remaining_percent: f64,
     pub used_percent: f64,
     pub resets_at: String,
+    pub resets_at_unix: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaHistoryPoint {
+    pub label: String,
+    pub five_hour_remaining_percent: Option<f64>,
+    pub seven_day_remaining_percent: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]

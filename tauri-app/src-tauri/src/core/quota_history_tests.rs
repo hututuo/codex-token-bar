@@ -1,0 +1,88 @@
+use super::*;
+use crate::models::{AccountInfo, QuotaLimit, ResetCreditSummary};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[test]
+fn record_normalizes_same_reset_window_regressions() {
+    let path = temp_db_path("normalize");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let reset = now_unix() + 3_600.0;
+
+    database
+        .record(&bundle("tester", 0.84, reset as i64, 0.20, (reset + 500_000.0) as i64))
+        .unwrap();
+    database
+        .record(&bundle("tester", 0.71, reset as i64, 0.21, (reset + 500_000.0) as i64))
+        .unwrap();
+
+    let history = database.recent_history_24h(4).unwrap();
+    let latest = history.last().unwrap();
+    assert_eq!(latest.five_hour_remaining_percent, Some(0.16));
+    assert_eq!(latest.seven_day_remaining_percent, Some(0.79));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn history_carries_to_reset_as_full_quota() {
+    let path = temp_db_path("reset-carry");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let reset = (now_unix() - 60.0) as i64;
+
+    database
+        .record(&bundle("tester", 0.50, reset, 0.30, reset + 500_000))
+        .unwrap();
+
+    let history = database.recent_history_24h(2).unwrap();
+    assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(1.0));
+
+    let _ = std::fs::remove_file(path);
+}
+
+fn bundle(
+    name: &str,
+    five_used: f64,
+    five_reset: i64,
+    seven_used: f64,
+    seven_reset: i64,
+) -> AccountQuotaBundle {
+    AccountQuotaBundle {
+        account: AccountInfo {
+            display_name: name.into(),
+            plan_label: "Pro".into(),
+        },
+        quota: QuotaSnapshot {
+            five_hour: QuotaLimit {
+                label: "5h".into(),
+                remaining_percent: 1.0 - five_used,
+                used_percent: five_used,
+                resets_at: "12:00".into(),
+                resets_at_unix: Some(five_reset),
+            },
+            seven_day: QuotaLimit {
+                label: "7d".into(),
+                remaining_percent: 1.0 - seven_used,
+                used_percent: seven_used,
+                resets_at: "06/18".into(),
+                resets_at_unix: Some(seven_reset),
+            },
+            reset_credit: ResetCreditSummary {
+                available_count: 0,
+                status: "0 张重置卡".into(),
+            },
+            pace_label: "测试".into(),
+        },
+        quota_history_24h: Vec::new(),
+    }
+}
+
+fn temp_db_path(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "codex-token-bar-quota-history-{label}-{}-{}.sqlite",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
