@@ -13,6 +13,11 @@ interface HeatmapDay {
   intensity: number;
 }
 
+interface MonthMarker {
+  column: number;
+  label: string;
+}
+
 const modes: Array<{ id: ActivityMode; label: string }> = [
   { id: "daily", label: "每日" },
   { id: "weekly", label: "每周" },
@@ -26,10 +31,12 @@ export function TokenActivitySection({ days }: TokenActivitySectionProps) {
   const [rangeStart, setRangeStart] = useState<string | null>(null);
   const [rangeEnd, setRangeEnd] = useState<string | null>(null);
 
-  const heatmapDays = useMemo(() => buildHeatmapDays(days, mode), [days, mode]);
+  const calendarDays = useMemo(() => buildCalendarDays(days), [days]);
+  const heatmapDays = useMemo(() => buildHeatmapDays(calendarDays, mode), [calendarDays, mode]);
+  const monthMarkers = useMemo(() => buildMonthMarkers(calendarDays), [calendarDays]);
   const selectedDays = useMemo(
-    () => days.filter((day) => isInRange(day.date, rangeStart, rangeEnd)),
-    [days, rangeEnd, rangeStart],
+    () => calendarDays.filter((day) => isInRange(day.date, rangeStart, rangeEnd)),
+    [calendarDays, rangeEnd, rangeStart],
   );
   const summary = summarizeRange(selectedDays, rangeStart, rangeEnd, mode);
 
@@ -82,6 +89,13 @@ export function TokenActivitySection({ days }: TokenActivitySectionProps) {
           );
         })}
       </div>
+      <div className="heatmap-months" aria-hidden="true">
+        {monthMarkers.map((marker) => (
+          <span key={`${marker.label}-${marker.column}`} style={{ gridColumn: `${marker.column} / span 4` }}>
+            {marker.label}
+          </span>
+        ))}
+      </div>
 
       <div className="range-summary">
         <span>{summary.hint}</span>
@@ -89,6 +103,17 @@ export function TokenActivitySection({ days }: TokenActivitySectionProps) {
       </div>
     </section>
   );
+}
+
+function buildCalendarDays(days: ActivityDay[]): ActivityDay[] {
+  const byDate = new Map(days.map((day) => [day.date, day]));
+  const end = latestActivityDate(days) ?? new Date();
+  const start = addDays(end, -370);
+
+  return Array.from({ length: 371 }, (_, index) => {
+    const date = formatDateKey(addDays(start, index));
+    return byDate.get(date) ?? emptyActivityDay(date);
+  });
 }
 
 function buildHeatmapDays(days: ActivityDay[], mode: ActivityMode): HeatmapDay[] {
@@ -124,6 +149,68 @@ function buildHeatmapDays(days: ActivityDay[], mode: ActivityMode): HeatmapDay[]
       intensity: normalizeValue(value, tokenMax, mode),
     };
   });
+}
+
+function buildMonthMarkers(days: ActivityDay[]): MonthMarker[] {
+  const markers: MonthMarker[] = [];
+  let lastMonth = "";
+
+  days.forEach((day, index) => {
+    const [, month] = day.date.split("-");
+    if (month === undefined || month === lastMonth) {
+      return;
+    }
+
+    lastMonth = month;
+    markers.push({
+      column: Math.floor(index / 7) + 1,
+      label: `${Number(month)}月`,
+    });
+  });
+
+  return markers;
+}
+
+function latestActivityDate(days: ActivityDay[]): Date | null {
+  const sorted = days
+    .map((day) => parseDateKey(day.date))
+    .filter((date): date is Date => date !== null)
+    .sort((a, b) => a.getTime() - b.getTime());
+
+  return sorted.at(-1) ?? null;
+}
+
+function emptyActivityDay(date: string): ActivityDay {
+  return {
+    date,
+    tokens: 0,
+    calls: 0,
+    cacheHitRate: 0,
+    fiveHourRemainingPercent: null,
+    sevenDayRemainingPercent: null,
+  };
+}
+
+function parseDateKey(date: string): Date | null {
+  const [year, month, day] = date.split("-").map(Number);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null;
+  }
+
+  return new Date(year, month - 1, day, 12);
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function formatDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function normalizeValue(value: number | null, tokenMax: number, mode: ActivityMode): number {
@@ -223,6 +310,10 @@ function sumTokens(days: ActivityDay[]): number {
 }
 
 function cellColor(mode: ActivityMode, intensity: number): string {
+  if (intensity <= 0) {
+    return "var(--heatmap-empty)";
+  }
+
   const color = mode === "cache" ? "#03a6c8" : mode === "quota" ? "var(--green)" : "var(--accent)";
   const weight = Math.round(14 + intensity * 78);
   return `color-mix(in srgb, ${color} ${weight}%, var(--heatmap-empty))`;

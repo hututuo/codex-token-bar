@@ -1,16 +1,29 @@
 use crate::models::CodexHomeStatus;
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use tauri::{
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager, WebviewUrl, WebviewWindowBuilder,
+};
 
+mod capabilities;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
+pub use capabilities::platform_capabilities;
+
 #[cfg(target_os = "macos")]
 use macos::default_codex_home as automatic_codex_home;
 #[cfg(target_os = "windows")]
 use windows::default_codex_home as automatic_codex_home;
+
+const FLOATING_WINDOW_WIDTH: f64 = 296.0;
+const FLOATING_WINDOW_HEIGHT: f64 = 112.0;
+const FLOATING_WINDOW_MIN_SCALE: f64 = 0.9;
+const FLOATING_WINDOW_MAX_SCALE: f64 = 1.38;
+const STATUS_TRAY_ID: &str = "codex-token-bar-status";
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn automatic_codex_home() -> std::path::PathBuf {
@@ -57,6 +70,104 @@ pub fn reset_codex_home() -> Result<CodexHomeStatus, String> {
         std::fs::remove_file(path).map_err(|error| error.to_string())?;
     }
     Ok(default_codex_home_status())
+}
+
+pub fn setup_desktop_surfaces(app: &tauri::App) -> tauri::Result<()> {
+    create_floating_window(app)?;
+    create_status_tray(app)?;
+    Ok(())
+}
+
+pub fn show_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("floating")
+        .ok_or_else(|| "floating window is not available".to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    window
+        .set_always_on_top(true)
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+pub fn hide_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("floating")
+        .ok_or_else(|| "floating window is not available".to_string())?;
+    window.hide().map_err(|error| error.to_string())?;
+    Ok(false)
+}
+
+pub fn set_status_tray_readout(
+    app: &tauri::AppHandle,
+    title: String,
+    tooltip: String,
+) -> Result<bool, String> {
+    let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else {
+        return Ok(false);
+    };
+
+    tray.set_title(Some(title))
+        .map_err(|error| error.to_string())?;
+    tray.set_tooltip(Some(tooltip))
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
+    if app.tray_by_id(STATUS_TRAY_ID).is_some() {
+        return Ok(());
+    }
+
+    TrayIconBuilder::with_id(STATUS_TRAY_ID)
+        .title("0.0/s")
+        .tooltip("Codex Token Bar")
+        .show_menu_on_left_click(false)
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                if let Some(window) = tray.app_handle().get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+fn create_floating_window(app: &tauri::App) -> tauri::Result<()> {
+    if app.get_webview_window("floating").is_some() {
+        return Ok(());
+    }
+
+    WebviewWindowBuilder::new(app, "floating", WebviewUrl::App("index.html?surface=floating".into()))
+        .title("Codex Token Bar Floating")
+        .inner_size(FLOATING_WINDOW_WIDTH, FLOATING_WINDOW_HEIGHT)
+        .min_inner_size(
+            FLOATING_WINDOW_WIDTH * FLOATING_WINDOW_MIN_SCALE,
+            FLOATING_WINDOW_HEIGHT * FLOATING_WINDOW_MIN_SCALE,
+        )
+        .max_inner_size(
+            FLOATING_WINDOW_WIDTH * FLOATING_WINDOW_MAX_SCALE,
+            FLOATING_WINDOW_HEIGHT * FLOATING_WINDOW_MAX_SCALE,
+        )
+        .position(48.0, 86.0)
+        .decorations(false)
+        .resizable(false)
+        .focused(false)
+        .always_on_top(true)
+        .visible_on_all_workspaces(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .transparent(true)
+        .build()?;
+
+    Ok(())
 }
 
 fn saved_codex_home() -> Option<PathBuf> {

@@ -4,6 +4,7 @@ import type {
   DashboardSnapshot,
   FloatingPanelSnapshot,
   LiveRateSnapshot,
+  PlatformCapabilities,
   ProviderRepairActionResult,
   ProviderRepairBackupInfo,
   ProviderRepairSnapshot,
@@ -13,6 +14,59 @@ export const mockCodexHome: CodexHomeStatus = {
   path: "~/.codex",
   exists: true,
   source: "mock",
+};
+
+export const mockPlatformCapabilities: PlatformCapabilities = {
+  platform: "mock",
+  shell: "Tauri desktop",
+  floatingWindow: {
+    available: true,
+    status: "ready",
+    label: "悬浮窗",
+    note: "共享 UI 调试模式可用。",
+  },
+  floatingTransparency: {
+    available: true,
+    status: "ready",
+    label: "透明悬浮窗",
+    note: "共享 UI 调试模式可用。",
+  },
+  floatingDrag: {
+    available: true,
+    status: "ready",
+    label: "拖动悬浮窗",
+    note: "共享 UI 调试模式可用。",
+  },
+  floatingLock: {
+    available: false,
+    status: "pending",
+    label: "窗口锁定",
+    note: "平台层待接入。",
+  },
+  statusTray: {
+    available: true,
+    status: "ready",
+    label: "状态栏",
+    note: "共享 UI 调试模式可用。",
+  },
+  statusTrayLiveText: {
+    available: true,
+    status: "ready",
+    label: "状态栏实时数字",
+    note: "共享 UI 调试模式可用。",
+  },
+  autostart: {
+    available: false,
+    status: "pending",
+    label: "开机自启",
+    note: "平台层待接入。",
+  },
+  notifications: {
+    available: false,
+    status: "pending",
+    label: "完成提醒",
+    note: "平台层待接入。",
+  },
 };
 
 const activityDays = Array.from({ length: 84 }, (_, index) => {

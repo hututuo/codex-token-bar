@@ -5,7 +5,7 @@ export interface FloatingWindowSettings {
 
 export const FLOATING_SETTINGS_EVENT = "floating-settings-changed";
 export const FLOATING_BASE_WIDTH = 296;
-export const FLOATING_BASE_HEIGHT = 98;
+export const FLOATING_BASE_HEIGHT = 112;
 
 const FLOATING_SETTINGS_KEY = "codex-token-bar-floating-settings-v1";
 

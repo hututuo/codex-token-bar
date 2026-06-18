@@ -1,6 +1,5 @@
 import { useEffect } from "react";
-import { PhysicalPosition } from "@tauri-apps/api/dpi";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { desktopPlatform } from "../platform/desktop";
 
 const FLOATING_POSITION_KEY = "codex-token-bar-floating-position-v1";
 const MAX_REASONABLE_COORDINATE = 20_000;
@@ -13,21 +12,16 @@ interface StoredFloatingPosition {
 
 export function useFloatingWindowPlacement() {
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window)) {
-      return;
-    }
-
-    const currentWindow = getCurrentWindow();
     const storedPosition = readStoredPosition();
     if (storedPosition !== null) {
-      void currentWindow.setPosition(new PhysicalPosition(storedPosition.x, storedPosition.y));
+      void desktopPlatform.setFloatingWindowPosition(storedPosition);
     }
 
     let disposed = false;
     let unlisten: (() => void) | null = null;
 
-    void currentWindow.onMoved(({ payload }) => {
-      writeStoredPosition(payload.x, payload.y);
+    void desktopPlatform.onFloatingWindowMoved((position) => {
+      writeStoredPosition(position.x, position.y);
     }).then((listener) => {
       if (disposed) {
         listener();

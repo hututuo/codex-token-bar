@@ -14,11 +14,12 @@ import type {
 } from "../types/dashboard";
 
 interface ProviderRepairCardProps {
+  id?: string;
   onSnapshotChange: (snapshot: ProviderRepairSnapshot) => void;
   snapshot: ProviderRepairSnapshot;
 }
 
-export function ProviderRepairCard({ onSnapshotChange, snapshot }: ProviderRepairCardProps) {
+export function ProviderRepairCard({ id, onSnapshotChange, snapshot }: ProviderRepairCardProps) {
   const [backups, setBackups] = useState<ProviderRepairBackupInfo[]>([]);
   const [activeBackupId, setActiveBackupId] = useState<string | null>(null);
   const [message, setMessage] = useState(snapshot.status);
@@ -90,7 +91,7 @@ export function ProviderRepairCard({ onSnapshotChange, snapshot }: ProviderRepai
   }
 
   return (
-    <section className="repair-card" aria-label="会话消失修复">
+    <section className="repair-card" id={id} aria-label="会话消失修复">
       <div className="section-title-row">
         <div>
           <h2>会话消失修复</h2>

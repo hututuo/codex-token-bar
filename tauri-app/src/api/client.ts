@@ -5,6 +5,7 @@ import type {
   DashboardSnapshot,
   FloatingPanelSnapshot,
   LiveRateSnapshot,
+  PlatformCapabilities,
   ProviderRepairActionResult,
   ProviderRepairBackupInfo,
   ProviderRepairSnapshot,
@@ -15,13 +16,16 @@ import {
   mockDashboardSnapshot,
   mockFloatingPanelSnapshot,
   mockLiveRateSnapshot,
+  mockPlatformCapabilities,
   mockProviderRepairActionResult,
   mockProviderRepairBackups,
   mockProviderRepairSnapshot,
 } from "./mock";
+import { isTauriRuntimeAvailable, withTimeout } from "../platform/runtime";
 
-const isTauriRuntime = "__TAURI_INTERNALS__" in window;
 const DEFAULT_COMMAND_TIMEOUT_MS = 4_000;
+const WARNING_THROTTLE_MS = 5_000;
+const lastWarningAtByCommand = new Map<string, number>();
 
 async function callCommand<T>(
   command: string,
@@ -29,31 +33,27 @@ async function callCommand<T>(
   args?: Record<string, unknown>,
   timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
 ): Promise<T> {
-  if (!isTauriRuntime) {
+  if (!isTauriRuntimeAvailable()) {
     return fallback;
   }
 
   try {
     return await withTimeout(invoke<T>(command, args), timeoutMs);
   } catch (error) {
-    console.warn(`Tauri command failed: ${command}`, error);
+    warnCommandFailure(command, error);
     return fallback;
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: number | undefined;
-  const timeout = new Promise<T>((_, reject) => {
-    timer = window.setTimeout(() => {
-      reject(new Error(`Command timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-  });
+function warnCommandFailure(command: string, error: unknown) {
+  const now = Date.now();
+  const lastWarningAt = lastWarningAtByCommand.get(command) ?? 0;
+  if (now - lastWarningAt < WARNING_THROTTLE_MS) {
+    return;
+  }
 
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer !== undefined) {
-      window.clearTimeout(timer);
-    }
-  });
+  lastWarningAtByCommand.set(command, now);
+  console.warn(`Tauri command failed: ${command}`, error);
 }
 
 export function getCodexHome(): Promise<CodexHomeStatus> {
@@ -66,6 +66,10 @@ export function setCodexHome(path: string): Promise<CodexHomeStatus> {
 
 export function resetCodexHome(): Promise<CodexHomeStatus> {
   return callCommand("reset_codex_home", mockCodexHome);
+}
+
+export function readPlatformCapabilities(): Promise<PlatformCapabilities> {
+  return callCommand("read_platform_capabilities", mockPlatformCapabilities);
 }
 
 export function readDashboardSnapshot(): Promise<DashboardSnapshot> {
@@ -86,22 +90,6 @@ export function readLiveRateSnapshot(): Promise<LiveRateSnapshot> {
 
 export function readFloatingPanelSnapshot(): Promise<FloatingPanelSnapshot> {
   return callCommand("read_floating_snapshot", mockFloatingPanelSnapshot, undefined, 1_500);
-}
-
-export function showFloatingWindow(): Promise<boolean> {
-  return callCommand("show_floating_window", true);
-}
-
-export function hideFloatingWindow(): Promise<boolean> {
-  return callCommand("hide_floating_window", false);
-}
-
-export function setStatusTrayReadout(title: string, tooltip: string): Promise<boolean> {
-  if (!isTauriRuntime) {
-    return Promise.resolve(false);
-  }
-
-  return callCommand("set_status_tray_readout", false, { title, tooltip });
 }
 
 export function scanProviderRepair(): Promise<ProviderRepairSnapshot> {

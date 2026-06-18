@@ -10,6 +10,30 @@ pub struct CodexHomeStatus {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PlatformCapabilities {
+    pub platform: String,
+    pub shell: String,
+    pub floating_window: PlatformFeatureCapability,
+    pub floating_transparency: PlatformFeatureCapability,
+    pub floating_drag: PlatformFeatureCapability,
+    pub floating_lock: PlatformFeatureCapability,
+    pub status_tray: PlatformFeatureCapability,
+    pub status_tray_live_text: PlatformFeatureCapability,
+    pub autostart: PlatformFeatureCapability,
+    pub notifications: PlatformFeatureCapability,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformFeatureCapability {
+    pub available: bool,
+    pub status: String,
+    pub label: String,
+    pub note: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DashboardSnapshot {
     pub generated_at: String,
     pub account: AccountInfo,

@@ -11,6 +11,7 @@ import type {
   CodexHomeStatus,
   DashboardSnapshot,
   LiveRateSnapshot,
+  PlatformCapabilities,
   ProviderRepairSnapshot,
 } from "../types/dashboard";
 
@@ -20,6 +21,7 @@ interface DashboardPageProps {
   floatingSettings: FloatingWindowSettings;
   floatingVisible: boolean;
   liveRate: LiveRateSnapshot;
+  platform: PlatformCapabilities;
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
   onFloatingOpacityChange: (opacity: number) => void;
@@ -37,6 +39,7 @@ export function DashboardPage({
   floatingSettings,
   floatingVisible,
   liveRate,
+  platform,
   onCodexHomeChange,
   onCodexHomeReset,
   onFloatingOpacityChange,
@@ -47,6 +50,13 @@ export function DashboardPage({
   providerRepair,
   refreshing,
 }: DashboardPageProps) {
+  function openProviderRepair() {
+    document.getElementById("provider-repair")?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }
+
   return (
     <main className="app-shell">
       <section className="dashboard">
@@ -56,6 +66,7 @@ export function DashboardPage({
           generatedAt={dashboard.generatedAt}
           onCodexHomeChange={onCodexHomeChange}
           onCodexHomeReset={onCodexHomeReset}
+          onOpenProviderRepair={openProviderRepair}
           onRefresh={onRefresh}
           refreshing={refreshing}
         />
@@ -68,12 +79,17 @@ export function DashboardPage({
           onFloatingOpacityChange={onFloatingOpacityChange}
           onFloatingScaleChange={onFloatingScaleChange}
           onToggleFloating={onToggleFloating}
+          platform={platform}
           snapshot={liveRate}
         />
         <TokenActivitySection days={dashboard.activityDays} />
         <RecentUsageChart points={dashboard.recentUsage24h} />
         <CacheHitRanking items={dashboard.cacheHitRanking} />
-        <ProviderRepairCard onSnapshotChange={onProviderRepairChange} snapshot={providerRepair} />
+        <ProviderRepairCard
+          id="provider-repair"
+          onSnapshotChange={onProviderRepairChange}
+          snapshot={providerRepair}
+        />
       </section>
     </main>
   );

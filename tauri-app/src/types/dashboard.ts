@@ -4,6 +4,26 @@ export interface CodexHomeStatus {
   source: string;
 }
 
+export interface PlatformCapabilities {
+  platform: string;
+  shell: string;
+  floatingWindow: PlatformFeatureCapability;
+  floatingTransparency: PlatformFeatureCapability;
+  floatingDrag: PlatformFeatureCapability;
+  floatingLock: PlatformFeatureCapability;
+  statusTray: PlatformFeatureCapability;
+  statusTrayLiveText: PlatformFeatureCapability;
+  autostart: PlatformFeatureCapability;
+  notifications: PlatformFeatureCapability;
+}
+
+export interface PlatformFeatureCapability {
+  available: boolean;
+  status: "ready" | "pending" | "unavailable" | string;
+  label: string;
+  note: string;
+}
+
 export interface AccountInfo {
   displayName: string;
   planLabel: string;

@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
-import { setStatusTrayReadout } from "../api/client";
-import type { LiveRateSnapshot } from "../types/dashboard";
+import { desktopPlatform } from "../platform/desktop";
+import type { LiveRateSnapshot, PlatformCapabilities } from "../types/dashboard";
 
-export function useStatusTray(snapshot: LiveRateSnapshot | null) {
+export function useStatusTray(snapshot: LiveRateSnapshot | null, platform: PlatformCapabilities | null) {
   const [lastTitle, setLastTitle] = useState<string | null>(null);
 
   useEffect(() => {
     if (snapshot === null) {
+      return;
+    }
+    if (platform !== null && !platform.statusTrayLiveText.available) {
       return;
     }
 
@@ -16,8 +19,11 @@ export function useStatusTray(snapshot: LiveRateSnapshot | null) {
     }
 
     setLastTitle(title);
-    void setStatusTrayReadout(title, `Codex Token Bar · ${snapshot.tokensPerSecond.toFixed(1)} tok/s`);
-  }, [lastTitle, snapshot]);
+    void desktopPlatform.setStatusTrayReadout(
+      title,
+      `Codex Token Bar · ${snapshot.tokensPerSecond.toFixed(1)} tok/s`,
+    );
+  }, [lastTitle, platform, snapshot]);
 }
 
 function formatTrayTitle(snapshot: LiveRateSnapshot): string {

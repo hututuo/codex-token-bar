@@ -1,15 +1,12 @@
 import { type CSSProperties, useEffect, useState } from "react";
-import { emit, listen } from "@tauri-apps/api/event";
-import { LogicalSize } from "@tauri-apps/api/dpi";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { mockFloatingPanelSnapshot } from "../api/mock";
-import { hideFloatingWindow, readAccountQuota, readFloatingPanelSnapshot } from "../api/client";
+import { readAccountQuota, readFloatingPanelSnapshot } from "../api/client";
+import { desktopPlatform } from "../platform/desktop";
 import type { FloatingPanelSnapshot } from "../types/dashboard";
 import { compactQuotaLabel } from "../utils/quota";
 import {
   FLOATING_BASE_HEIGHT,
   FLOATING_BASE_WIDTH,
-  FLOATING_SETTINGS_EVENT,
   readFloatingSettings,
   sanitizeFloatingSettings,
   type FloatingWindowSettings,
@@ -28,14 +25,10 @@ export function FloatingWindowApp() {
   }, []);
 
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window)) {
-      return;
-    }
-
     let disposed = false;
     let unlisten: (() => void) | null = null;
 
-    void listen<FloatingWindowSettings>(FLOATING_SETTINGS_EVENT, ({ payload }) => {
+    void desktopPlatform.onFloatingSettingsChanged((payload) => {
       setSettings(sanitizeFloatingSettings(payload));
     }).then((listener) => {
       if (disposed) {
@@ -52,26 +45,33 @@ export function FloatingWindowApp() {
   }, []);
 
   useEffect(() => {
-    if (!("__TAURI_INTERNALS__" in window)) {
-      return;
-    }
-
-    void getCurrentWindow().setSize(
-      new LogicalSize(FLOATING_BASE_WIDTH * settings.scale, FLOATING_BASE_HEIGHT * settings.scale),
+    void desktopPlatform.resizeFloatingWindow(
+      FLOATING_BASE_WIDTH * settings.scale,
+      FLOATING_BASE_HEIGHT * settings.scale,
     );
   }, [settings.scale]);
 
   useEffect(() => {
     let cancelled = false;
+    let snapshotInFlight = false;
 
     async function refreshSnapshot() {
-      const next = await readFloatingPanelSnapshot();
-      if (!cancelled) {
-        setSnapshot((current) => ({
-          ...next,
-          fiveHourLabel: current.fiveHourLabel,
-          sevenDayLabel: current.sevenDayLabel,
-        }));
+      if (snapshotInFlight) {
+        return;
+      }
+
+      snapshotInFlight = true;
+      try {
+        const next = await readFloatingPanelSnapshot();
+        if (!cancelled) {
+          setSnapshot((current) => ({
+            ...next,
+            fiveHourLabel: current.fiveHourLabel,
+            sevenDayLabel: current.sevenDayLabel,
+          }));
+        }
+      } finally {
+        snapshotInFlight = false;
       }
     }
 
@@ -88,15 +88,25 @@ export function FloatingWindowApp() {
 
   useEffect(() => {
     let cancelled = false;
+    let quotaInFlight = false;
 
     async function refreshQuota() {
-      const quota = await readAccountQuota();
-      if (!cancelled) {
-        setSnapshot((current) => ({
-          ...current,
-          fiveHourLabel: compactQuotaLabel(quota.quota.fiveHour),
-          sevenDayLabel: compactQuotaLabel(quota.quota.sevenDay),
-        }));
+      if (quotaInFlight) {
+        return;
+      }
+
+      quotaInFlight = true;
+      try {
+        const quota = await readAccountQuota();
+        if (!cancelled) {
+          setSnapshot((current) => ({
+            ...current,
+            fiveHourLabel: compactQuotaLabel(quota.quota.fiveHour),
+            sevenDayLabel: compactQuotaLabel(quota.quota.sevenDay),
+          }));
+        }
+      } finally {
+        quotaInFlight = false;
       }
     }
 
@@ -112,17 +122,13 @@ export function FloatingWindowApp() {
   }, []);
 
   function closeFloatingWindow() {
-    if (!("__TAURI_INTERNALS__" in window)) {
-      return;
-    }
-    void hideFloatingWindow().then(() => emit("floating-window-hidden"));
+    void desktopPlatform.hideFloatingWindow().then(() => {
+      void desktopPlatform.notifyFloatingWindowHidden();
+    });
   }
 
   function startWindowDrag() {
-    if (!("__TAURI_INTERNALS__" in window)) {
-      return;
-    }
-    void getCurrentWindow().startDragging();
+    void desktopPlatform.startFloatingWindowDrag();
   }
 
   const shellStyle = {
