@@ -4,10 +4,8 @@ import {
   useMemo,
   useState,
 } from "react";
-import {
-  subscribeCommandDiagnostics,
-} from "../api/client";
 import { dashboardDataSource, type DashboardDataSource } from "../data/dashboardDataSource";
+import { useCommandDiagnostics } from "../diagnostics/useCommandDiagnostics";
 import type {
   AccountQuotaBundle,
   DashboardSnapshot,
@@ -21,8 +19,6 @@ import {
   mergeLiveThreadOptions,
   mergePreciseDashboard,
   mergeQuota,
-  pendingLiveRateSnapshot,
-  pendingRepairSnapshot,
   readyDashboardState,
   type DashboardAppState,
 } from "./dashboardState";
@@ -36,6 +32,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   const [loadGeneration, setLoadGeneration] = useState(0);
   const [forceNextQuotaLoad, setForceNextQuotaLoad] = useState(false);
   const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
+  const commandDiagnostics = useCommandDiagnostics();
 
   const mergePreciseSnapshot = useCallback((precise: DashboardSnapshot) => {
     setState((current) => mergePreciseDashboard(current, precise));
@@ -58,10 +55,8 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   }, []);
 
   useEffect(() => {
-    return subscribeCommandDiagnostics((diagnostics) => {
-      setState((current) => ({ ...current, diagnostics }));
-    });
-  }, []);
+    setState((current) => ({ ...current, diagnostics: commandDiagnostics }));
+  }, [commandDiagnostics]);
 
   useEffect(() => {
     let cancelled = false;
