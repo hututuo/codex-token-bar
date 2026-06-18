@@ -368,6 +368,7 @@ fn create_dashboard_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         .min_inner_size(DASHBOARD_WINDOW_MIN_WIDTH, DASHBOARD_WINDOW_MIN_HEIGHT)
         .resizable(true)
         .center()
+        .visible(false)
         .build()?;
 
     Ok(())
