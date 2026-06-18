@@ -7,6 +7,7 @@ import { compactQuotaLabel } from "../utils/quota";
 interface CompactPanelDataOptions {
   active?: boolean;
   snapshotIntervalMs?: number;
+  quotaEnabled?: boolean;
   quotaInitialDelayMs?: number;
   quotaIntervalMs?: number;
 }
@@ -28,6 +29,7 @@ const DEFAULT_QUOTA_INTERVAL_MS = 180_000;
 export function useCompactPanelData(options: CompactPanelDataOptions = {}): CompactPanelData {
   const active = options.active ?? true;
   const snapshotIntervalMs = options.snapshotIntervalMs ?? DEFAULT_SNAPSHOT_INTERVAL_MS;
+  const quotaEnabled = options.quotaEnabled ?? true;
   const quotaInitialDelayMs = options.quotaInitialDelayMs ?? DEFAULT_QUOTA_INITIAL_DELAY_MS;
   const quotaIntervalMs = options.quotaIntervalMs ?? DEFAULT_QUOTA_INTERVAL_MS;
 
@@ -35,7 +37,7 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
   const [quota, setQuota] = useState<AccountQuotaBundle>(() => emptyAccountQuotaBundle());
 
   useEffect(() => {
-    if (!active) {
+    if (!active || !quotaEnabled) {
       return;
     }
 
@@ -105,7 +107,7 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
       window.clearTimeout(firstTimer);
       window.clearInterval(interval);
     };
-  }, [active, quotaInitialDelayMs, quotaIntervalMs]);
+  }, [active, quotaEnabled, quotaInitialDelayMs, quotaIntervalMs]);
 
   const quotaLabels = useMemo(
     () => ({

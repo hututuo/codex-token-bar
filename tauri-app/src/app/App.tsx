@@ -83,7 +83,6 @@ function DashboardApp() {
   const floatingAvailable = canUseFloatingWindow(state.platform);
   const statusTrayLiveTextAvailable = canUseStatusTrayLiveText(state.platform);
   useStatusTray(
-    state.liveRate,
     state.platform,
     displaySurfaces.statusTrayLiveTextEnabled && statusTrayLiveTextAvailable,
   );
