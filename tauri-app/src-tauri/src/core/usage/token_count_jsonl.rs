@@ -380,7 +380,12 @@ fn parse_session_file(file: &Path, session_id: &str) -> Vec<TokenEvent> {
 }
 
 fn fork_replay_cutoff(file: &Path) -> Option<OffsetDateTime> {
-    let first_line = fs::read_to_string(file).ok()?.lines().next()?.to_string();
+    let handle = fs::File::open(file).ok()?;
+    let mut reader = BufReader::new(handle);
+    let mut first_line = String::new();
+    if reader.read_line(&mut first_line).ok()? == 0 {
+        return None;
+    }
     if !first_line.contains("session_meta") || !first_line.contains("forked_from_id") {
         return None;
     }
