@@ -13,6 +13,7 @@ import type {
   DisplaySurfaceSettings,
   FloatingUnreadEffect,
   LiveRateSnapshot,
+  LiveThreadOption,
   PlatformCapabilities,
   ProviderRepairSnapshot,
 } from "../types/dashboard";
@@ -24,18 +25,21 @@ interface DashboardPageProps {
   floatingSettings: FloatingWindowSettings;
   floatingVisible: boolean;
   liveRate: LiveRateSnapshot;
+  liveThreadOptions: LiveThreadOption[];
   platform: PlatformCapabilities;
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
+  onLiveThreadSelect: (threadId: string) => void;
   onRefresh: () => Promise<void>;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
   onProviderRepairChange: (snapshot: ProviderRepairSnapshot) => void;
   providerRepair: ProviderRepairSnapshot;
   refreshing: boolean;
+  selectedLiveThreadId: string;
 }
 
 export function DashboardPage({
@@ -45,18 +49,21 @@ export function DashboardPage({
   floatingSettings,
   floatingVisible,
   liveRate,
+  liveThreadOptions,
   platform,
   onCodexHomeChange,
   onCodexHomeReset,
   onFloatingOpacityChange,
   onFloatingScaleChange,
   onFloatingUnreadEffectChange,
+  onLiveThreadSelect,
   onRefresh,
   onProviderRepairChange,
   onToggleFloating,
   onToggleStatusTray,
   providerRepair,
   refreshing,
+  selectedLiveThreadId,
 }: DashboardPageProps) {
   function openProviderRepair() {
     document.getElementById("provider-repair")?.scrollIntoView({
@@ -88,9 +95,12 @@ export function DashboardPage({
           onFloatingOpacityChange={onFloatingOpacityChange}
           onFloatingScaleChange={onFloatingScaleChange}
           onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
+          onLiveThreadSelect={onLiveThreadSelect}
           onToggleFloating={onToggleFloating}
           onToggleStatusTray={onToggleStatusTray}
+          liveThreadOptions={liveThreadOptions}
           platform={platform}
+          selectedLiveThreadId={selectedLiveThreadId}
           snapshot={liveRate}
         />
         <TokenActivitySection days={dashboard.activityDays} />

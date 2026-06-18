@@ -3,6 +3,7 @@ import {
   readAccountQuota,
   readDashboardSnapshot,
   readLiveRateSnapshot,
+  readLiveThreadOptions,
   readPlatformCapabilities,
   readPreciseDashboardSnapshot,
   resetCodexHome,
@@ -14,6 +15,7 @@ import type {
   CodexHomeStatus,
   DashboardSnapshot,
   LiveRateSnapshot,
+  LiveThreadOption,
   PlatformCapabilities,
   ProviderRepairSnapshot,
 } from "../types/dashboard";
@@ -26,7 +28,8 @@ export interface DashboardDataSource {
   readDashboardSnapshot: () => Promise<DashboardSnapshot>;
   readPreciseDashboardSnapshot: () => Promise<DashboardSnapshot>;
   readAccountQuota: () => Promise<AccountQuotaBundle>;
-  readLiveRateSnapshot: () => Promise<LiveRateSnapshot>;
+  readLiveRateSnapshot: (selectedThreadId?: string | null) => Promise<LiveRateSnapshot>;
+  readLiveThreadOptions: () => Promise<LiveThreadOption[]>;
   scanProviderRepair: () => Promise<ProviderRepairSnapshot>;
 }
 
@@ -39,5 +42,6 @@ export const dashboardDataSource: DashboardDataSource = {
   readPreciseDashboardSnapshot,
   readAccountQuota,
   readLiveRateSnapshot,
+  readLiveThreadOptions,
   scanProviderRepair,
 };

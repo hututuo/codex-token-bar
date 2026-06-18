@@ -150,11 +150,22 @@ export interface AccountQuotaBundle {
 export interface LiveRateSnapshot {
   scopeLabel: string;
   threadTitle: string;
+  selectedThreadId: string | null;
+  selectedThreadTitle: string;
+  selectedTokensPerSecond: number;
   tokensPerSecond: number;
   totalTokensToday: number;
   requestsToday: number;
   maxTokensPerSecond: number;
   preciseEnabled: boolean;
+}
+
+export interface LiveThreadOption {
+  id: string;
+  title: string;
+  subtitle: string;
+  updatedAt: string;
+  tokensUsed: number;
 }
 
 export interface FloatingPanelSnapshot {

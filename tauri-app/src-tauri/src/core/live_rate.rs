@@ -1,5 +1,5 @@
 use crate::core::unread;
-use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot};
+use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption};
 use rusqlite::{params, Connection, OpenFlags, Result};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -11,20 +11,31 @@ const WINDOW_SECONDS: f64 = 2.5;
 const MINIMUM_RATE_SPAN_SECONDS: f64 = 0.4;
 const MAX_TOKENS_PER_SECOND: f64 = 200.0;
 
-pub fn read_snapshot(codex_home: &Path) -> LiveRateSnapshot {
-    read_snapshot_result(codex_home).unwrap_or_else(|_| idle_snapshot(codex_home))
+pub fn read_snapshot(codex_home: &Path, selected_thread_id: Option<&str>) -> LiveRateSnapshot {
+    read_snapshot_result(codex_home, selected_thread_id)
+        .unwrap_or_else(|_| idle_snapshot(codex_home, selected_thread_id))
 }
 
 pub fn read_floating_snapshot(codex_home: &Path) -> FloatingPanelSnapshot {
-    let live = read_snapshot(codex_home);
+    let live = read_snapshot(codex_home, None);
     floating_from_live(codex_home, &live)
 }
 
-pub fn idle_snapshot(codex_home: &Path) -> LiveRateSnapshot {
+pub fn read_thread_options(codex_home: &Path) -> Vec<LiveThreadOption> {
+    read_thread_options_result(codex_home, 18).unwrap_or_default()
+}
+
+pub fn idle_snapshot(codex_home: &Path, selected_thread_id: Option<&str>) -> LiveRateSnapshot {
     let summary = read_usage_summary(codex_home).unwrap_or_default();
+    let selected_thread_title = selected_thread_id
+        .and_then(|thread_id| read_thread_title(codex_home, thread_id).ok().flatten())
+        .unwrap_or_else(|| "选择会话查看单会话速率".into());
     LiveRateSnapshot {
         scope_label: "全会话".into(),
         thread_title: "等待任意会话输出".into(),
+        selected_thread_id: selected_thread_id.map(ToOwned::to_owned),
+        selected_thread_title,
+        selected_tokens_per_second: 0.0,
         tokens_per_second: 0.0,
         total_tokens_today: summary.today_tokens,
         requests_today: summary.today_requests,
@@ -33,23 +44,38 @@ pub fn idle_snapshot(codex_home: &Path) -> LiveRateSnapshot {
     }
 }
 
-fn read_snapshot_result(codex_home: &Path) -> Result<LiveRateSnapshot> {
+fn read_snapshot_result(
+    codex_home: &Path,
+    selected_thread_id: Option<&str>,
+) -> Result<LiveRateSnapshot> {
     let now = current_time_seconds();
     let logs_connection = open_read_only(&codex_home.join("logs_2.sqlite"))?;
     logs_connection.busy_timeout(Duration::from_millis(100))?;
 
     let rows = read_recent_log_rows(&logs_connection, now - LOOKBACK_SECONDS)?;
-    let rollup = rollup_stream_rows(rows, now);
+    let rollup = rollup_stream_rows(&rows, now, None);
+    let selected_rollup = selected_thread_id
+        .map(|thread_id| rollup_stream_rows(&rows, now, Some(thread_id)))
+        .unwrap_or_else(|| LiveRateRollup {
+            tokens_per_second: 0.0,
+            latest_thread_id: None,
+        });
     let summary = read_usage_summary(codex_home).unwrap_or_default();
     let thread_title = rollup
         .latest_thread_id
         .as_deref()
         .and_then(|thread_id| read_thread_title(codex_home, thread_id).ok().flatten())
         .unwrap_or_else(|| "等待任意会话输出".into());
+    let selected_thread_title = selected_thread_id
+        .and_then(|thread_id| read_thread_title(codex_home, thread_id).ok().flatten())
+        .unwrap_or_else(|| "选择会话查看单会话速率".into());
 
     Ok(LiveRateSnapshot {
         scope_label: "全会话".into(),
         thread_title,
+        selected_thread_id: selected_thread_id.map(ToOwned::to_owned),
+        selected_thread_title,
+        selected_tokens_per_second: selected_rollup.tokens_per_second,
         tokens_per_second: rollup.tokens_per_second,
         total_tokens_today: summary.today_tokens,
         requests_today: summary.today_requests,
@@ -137,7 +163,11 @@ fn logs_ts_index_exists(connection: &Connection) -> bool {
         .is_ok()
 }
 
-fn rollup_stream_rows(rows: Vec<LogRow>, now: f64) -> LiveRateRollup {
+fn rollup_stream_rows(
+    rows: &[LogRow],
+    now: f64,
+    selected_thread_id: Option<&str>,
+) -> LiveRateRollup {
     let mut seen = HashSet::<String>::new();
     let mut text_by_key = HashMap::<String, String>::new();
     let mut tokens_by_key = HashMap::<String, u32>::new();
@@ -146,13 +176,18 @@ fn rollup_stream_rows(rows: Vec<LogRow>, now: f64) -> LiveRateRollup {
     let window_start = now - WINDOW_SECONDS;
 
     for row in rows {
-        let Some(event) = stream_event(&row) else {
+        let Some(event) = stream_event(row) else {
             continue;
         };
-        let Some(metric) = metric_event(event, &row) else {
+        let Some(metric) = metric_event(event, row) else {
             continue;
         };
-        let fingerprint = metric.fingerprint(&row);
+        if let Some(selected_thread_id) = selected_thread_id {
+            if metric.thread_id.as_deref() != Some(selected_thread_id) {
+                continue;
+            }
+        }
+        let fingerprint = metric.fingerprint(row);
         if !seen.insert(fingerprint) {
             continue;
         }
@@ -362,6 +397,73 @@ fn read_usage_summary(codex_home: &Path) -> Result<UsageSummary> {
     )
 }
 
+fn read_thread_options_result(codex_home: &Path, limit: usize) -> Result<Vec<LiveThreadOption>> {
+    let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
+    connection.busy_timeout(Duration::from_millis(100))?;
+
+    let archived_filter = if column_exists(&connection, "threads", "archived") {
+        "COALESCE(archived, 0) = 0"
+    } else {
+        "1 = 1"
+    };
+    let source_filter = if column_exists(&connection, "threads", "thread_source") {
+        "COALESCE(thread_source, 'user') != 'subagent'"
+    } else {
+        "1 = 1"
+    };
+    let sql = format!(
+        r#"
+        SELECT id, title, first_user_message, preview,
+               strftime(
+                 '%m/%d %H:%M',
+                 CASE
+                   WHEN COALESCE(updated_at_ms, updated_at) > 9999999999
+                     THEN COALESCE(updated_at_ms, updated_at) / 1000
+                   ELSE COALESCE(updated_at_ms, updated_at)
+                 END,
+                 'unixepoch',
+                 'localtime'
+               ) AS updated_label,
+               tokens_used
+        FROM threads
+        WHERE {archived_filter}
+          AND {source_filter}
+        ORDER BY COALESCE(updated_at_ms, updated_at * 1000) DESC
+        LIMIT ?1;
+        "#,
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params![limit as i64], |row| {
+        let id: String = row.get(0)?;
+        let title: String = row.get(1)?;
+        let first_message: String = row.get(2)?;
+        let preview: String = row.get(3)?;
+        let updated_at: String = row.get(4)?;
+        let tokens_used: i64 = row.get(5)?;
+        Ok(LiveThreadOption {
+            id,
+            title: best_thread_label(&[&title, &first_message, &preview]),
+            subtitle: best_thread_subtitle(&title, &first_message, &preview),
+            updated_at,
+            tokens_used: u64::try_from(tokens_used).unwrap_or(0),
+        })
+    })?;
+
+    rows.collect()
+}
+
+fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {
+    let Ok(mut statement) = connection.prepare(&format!("PRAGMA table_info({table})")) else {
+        return false;
+    };
+    let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(1)) else {
+        return false;
+    };
+
+    let exists = rows.filter_map(|row| row.ok()).any(|name| name == column);
+    exists
+}
+
 fn read_thread_title(codex_home: &Path, thread_id: &str) -> Result<Option<String>> {
     let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
     connection.busy_timeout(Duration::from_millis(100))?;
@@ -386,6 +488,25 @@ fn read_thread_title(codex_home: &Path, thread_id: &str) -> Result<Option<String
         }
     }
     Ok(None)
+}
+
+fn best_thread_label(values: &[&str]) -> String {
+    values
+        .iter()
+        .map(|value| compact_title(value))
+        .find(|value| !value.is_empty())
+        .unwrap_or_else(|| "无标题会话".into())
+}
+
+fn best_thread_subtitle(title: &str, first_message: &str, preview: &str) -> String {
+    let title = compact_title(title);
+    for value in [first_message, preview] {
+        let cleaned = compact_title(value);
+        if !cleaned.is_empty() && cleaned != title {
+            return cleaned;
+        }
+    }
+    "最近会话".into()
 }
 
 fn compact_title(value: &str) -> String {

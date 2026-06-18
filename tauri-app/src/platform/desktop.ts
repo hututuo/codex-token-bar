@@ -87,8 +87,10 @@ function setStatusTrayReadout(title: string, tooltip: string): Promise<boolean> 
   return invokePlatformCommand("set_status_tray_readout", false, { title, tooltip });
 }
 
-function startLiveRateStream(): Promise<boolean> {
-  return invokePlatformCommand("start_live_rate_stream", false);
+function startLiveRateStream(selectedThreadId?: string | null): Promise<boolean> {
+  return invokePlatformCommand("start_live_rate_stream", false, {
+    selectedThreadId: selectedThreadId || null,
+  });
 }
 
 function stopLiveRateStream(): Promise<boolean> {

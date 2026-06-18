@@ -1,7 +1,7 @@
 use crate::core::{live_rate, provider_repair, quota, quota_history, usage};
 use crate::models::{
     AccountQuotaBundle, DashboardSnapshot, FloatingPanelSnapshot, LiveRateSnapshot,
-    ProviderRepairSnapshot,
+    LiveThreadOption, ProviderRepairSnapshot,
 };
 use std::path::{Path, PathBuf};
 
@@ -10,7 +10,8 @@ pub trait DashboardDataSource {
     fn read_dashboard_snapshot(&self) -> DashboardSnapshot;
     fn read_precise_dashboard_snapshot(&self) -> DashboardSnapshot;
     fn read_account_quota(&self) -> Result<AccountQuotaBundle, String>;
-    fn read_live_rate_snapshot(&self) -> LiveRateSnapshot;
+    fn read_live_rate_snapshot(&self, selected_thread_id: Option<&str>) -> LiveRateSnapshot;
+    fn read_live_thread_options(&self) -> Vec<LiveThreadOption>;
     fn read_floating_snapshot(&self) -> FloatingPanelSnapshot;
     fn scan_provider_repair(&self) -> ProviderRepairSnapshot;
 }
@@ -49,8 +50,12 @@ impl DashboardDataSource for LocalCodexDataSource {
         quota::read_account_quota(self.codex_home())
     }
 
-    fn read_live_rate_snapshot(&self) -> LiveRateSnapshot {
-        live_rate::read_snapshot(self.codex_home())
+    fn read_live_rate_snapshot(&self, selected_thread_id: Option<&str>) -> LiveRateSnapshot {
+        live_rate::read_snapshot(self.codex_home(), selected_thread_id)
+    }
+
+    fn read_live_thread_options(&self) -> Vec<LiveThreadOption> {
+        live_rate::read_thread_options(self.codex_home())
     }
 
     fn read_floating_snapshot(&self) -> FloatingPanelSnapshot {

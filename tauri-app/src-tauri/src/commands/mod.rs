@@ -6,7 +6,7 @@ use crate::models::{
     AccountQuotaBundle, AppSettingsSnapshot, CodexHomeStatus, DashboardSnapshot,
     DisplaySurfaceSettingsSnapshot, FloatingPanelSnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, LiveRateSnapshot, PlatformCapabilities,
-    ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
+    LiveThreadOption, ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
 };
 use crate::platform;
 use std::{
@@ -25,6 +25,7 @@ pub struct LiveRateStreamState {
 }
 
 struct LiveRateStreamHandle {
+    selected_thread_id: Option<String>,
     stop_sender: mpsc::Sender<()>,
     join_handle: Option<JoinHandle<()>>,
 }
@@ -100,29 +101,43 @@ pub fn read_account_quota() -> Result<AccountQuotaBundle, String> {
 }
 
 #[tauri::command]
-pub fn read_live_rate_snapshot() -> Result<LiveRateSnapshot, String> {
-    Ok(local_source().read_live_rate_snapshot())
+pub fn read_live_rate_snapshot(
+    selected_thread_id: Option<String>,
+) -> Result<LiveRateSnapshot, String> {
+    Ok(local_source().read_live_rate_snapshot(selected_thread_id.as_deref()))
+}
+
+#[tauri::command]
+pub fn read_live_thread_options() -> Result<Vec<LiveThreadOption>, String> {
+    Ok(local_source().read_live_thread_options())
 }
 
 #[tauri::command]
 pub fn start_live_rate_stream(
     app: tauri::AppHandle,
     state: State<LiveRateStreamState>,
+    selected_thread_id: Option<String>,
 ) -> Result<bool, String> {
     let mut current = state.handle.lock().map_err(|error| error.to_string())?;
-    if current.is_some() {
+    if current
+        .as_ref()
+        .is_some_and(|handle| handle.selected_thread_id == selected_thread_id)
+    {
         return Ok(true);
     }
+    current.take();
 
     let (stop_sender, stop_receiver) = mpsc::channel::<()>();
     let codex_home = platform::default_codex_home();
+    let stream_selected_thread_id = selected_thread_id.clone();
     let join_handle = thread::Builder::new()
         .name("codex-token-bar-live-rate-stream".into())
         .spawn(move || {
             let source = LocalCodexDataSource::new(codex_home);
             let mut last_snapshot = None;
             loop {
-                let snapshot = source.read_live_rate_snapshot();
+                let snapshot =
+                    source.read_live_rate_snapshot(stream_selected_thread_id.as_deref());
                 if should_emit_live_rate(last_snapshot.as_ref(), &snapshot) {
                     let _ = app.emit(LIVE_RATE_SNAPSHOT_EVENT, &snapshot);
                     last_snapshot = Some(snapshot);
@@ -139,6 +154,7 @@ pub fn start_live_rate_stream(
         .map_err(|error| error.to_string())?;
 
     *current = Some(LiveRateStreamHandle {
+        selected_thread_id,
         stop_sender,
         join_handle: Some(join_handle),
     });
@@ -242,5 +258,8 @@ fn should_emit_live_rate(
         || previous.requests_today != current.requests_today
         || previous.thread_title != current.thread_title
         || previous.scope_label != current.scope_label
+        || previous.selected_thread_id != current.selected_thread_id
+        || previous.selected_thread_title != current.selected_thread_title
+        || (previous.selected_tokens_per_second - current.selected_tokens_per_second).abs() >= 0.05
         || previous.precise_enabled != current.precise_enabled
 }

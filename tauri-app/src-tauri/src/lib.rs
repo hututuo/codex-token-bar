@@ -24,6 +24,7 @@ pub fn run() {
             commands::read_dashboard_snapshot,
             commands::read_precise_dashboard_snapshot,
             commands::read_live_rate_snapshot,
+            commands::read_live_thread_options,
             commands::start_live_rate_stream,
             commands::stop_live_rate_stream,
             commands::scan_provider_repair,

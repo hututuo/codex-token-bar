@@ -5,6 +5,7 @@ import type {
   DashboardSnapshot,
   FloatingPanelSnapshot,
   LiveRateSnapshot,
+  LiveThreadOption,
   PlatformCapabilities,
   ProviderRepairActionResult,
   ProviderRepairBackupInfo,
@@ -204,12 +205,39 @@ export const mockAccountQuotaBundle: AccountQuotaBundle = {
 export const mockLiveRateSnapshot: LiveRateSnapshot = {
   scopeLabel: "全会话",
   threadTitle: "等待任意会话输出",
+  selectedThreadId: "mock-thread-1",
+  selectedThreadTitle: "Codex Token Bar 迁移方案",
+  selectedTokensPerSecond: 18.6,
   tokensPerSecond: 43.1,
   totalTokensToday: 61_461_000,
   requestsToday: 513,
   maxTokensPerSecond: 200,
   preciseEnabled: true,
 };
+
+export const mockLiveThreadOptions: LiveThreadOption[] = [
+  {
+    id: "mock-thread-1",
+    title: "Codex Token Bar 迁移方案",
+    subtitle: "主前端、Rust 后端和共享状态层",
+    updatedAt: "06/18 21:42",
+    tokensUsed: 1_214_321_980,
+  },
+  {
+    id: "mock-thread-2",
+    title: "悬浮窗视觉调整",
+    subtitle: "透明度、大小、未读提醒样式",
+    updatedAt: "06/18 20:55",
+    tokensUsed: 61_726_624,
+  },
+  {
+    id: "mock-thread-3",
+    title: "会话消失修复",
+    subtitle: "provider / index / backup",
+    updatedAt: "06/18 18:34",
+    tokensUsed: 15_474_759,
+  },
+];
 
 export const mockFloatingPanelSnapshot: FloatingPanelSnapshot = {
   tokensPerSecond: 43.1,

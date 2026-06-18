@@ -5,6 +5,7 @@ import type { ProviderRepairSnapshot } from "../types/dashboard";
 import {
   initialDashboardState,
   mergeLiveRate,
+  mergeLiveThreadOptions,
   mergePreciseDashboard,
   mergeQuota,
   pendingLiveRateSnapshot,
@@ -17,8 +18,9 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   const [state, setState] = useState<DashboardAppState>(initialDashboardState);
   const preciseLoadStarted = useRef(false);
   const quotaLoadStarted = useRef(false);
-  const liveRatePollStarted = useRef(false);
+  const liveThreadOptionsLoadStarted = useRef(false);
   const repairScanStarted = useRef(false);
+  const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -104,7 +106,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   }, [source, state.dashboard, state.loading]);
 
   useEffect(() => {
-    if (state.loading || liveRatePollStarted.current) {
+    if (state.loading) {
       return;
     }
 
@@ -112,7 +114,6 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     let liveRateInFlight = false;
     let streaming = false;
     let unlisten: (() => void) | null = null;
-    liveRatePollStarted.current = true;
 
     async function refreshLiveRate() {
       if (liveRateInFlight) {
@@ -121,7 +122,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
 
       liveRateInFlight = true;
       try {
-        const liveRate = await source.readLiveRateSnapshot();
+        const liveRate = await source.readLiveRateSnapshot(selectedLiveThreadId || null);
         if (!cancelled) {
           setState((current) => mergeLiveRate(current, liveRate));
         }
@@ -143,7 +144,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     });
 
     void refreshLiveRate();
-    void desktopPlatform.startLiveRateStream().then((started) => {
+    void desktopPlatform.startLiveRateStream(selectedLiveThreadId || null).then((started) => {
       if (cancelled) {
         if (started) {
           void desktopPlatform.stopLiveRateStream();
@@ -161,30 +162,54 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
 
     return () => {
       cancelled = true;
-      liveRatePollStarted.current = false;
       unlisten?.();
       if (streaming) {
         void desktopPlatform.stopLiveRateStream();
       }
       window.clearInterval(interval);
     };
-  }, [source, state.loading]);
+  }, [source, state.loading, selectedLiveThreadId]);
+
+  useEffect(() => {
+    if (state.dashboard === null || state.loading || liveThreadOptionsLoadStarted.current) {
+      return;
+    }
+
+    let cancelled = false;
+    liveThreadOptionsLoadStarted.current = true;
+
+    async function loadThreadOptions() {
+      const liveThreadOptions = await source.readLiveThreadOptions();
+      if (!cancelled) {
+        setState((current) => mergeLiveThreadOptions(current, liveThreadOptions));
+      }
+    }
+
+    void loadThreadOptions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [source, state.dashboard, state.loading]);
 
   async function reloadAll() {
     preciseLoadStarted.current = false;
     quotaLoadStarted.current = false;
+    liveThreadOptionsLoadStarted.current = false;
     repairScanStarted.current = false;
     setState((current) => ({ ...current, loading: true }));
     setState(await readInitialAppState(source));
   }
 
   async function updateCodexHome(path: string) {
+    setSelectedLiveThreadId("");
     setState((current) => ({ ...current, loading: true }));
     await source.setCodexHome(path);
     await reloadAll();
   }
 
   async function restoreAutoCodexHome() {
+    setSelectedLiveThreadId("");
     setState((current) => ({ ...current, loading: true }));
     await source.resetCodexHome();
     await reloadAll();
@@ -203,6 +228,8 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     updateCodexHome,
     restoreAutoCodexHome,
     updateProviderRepair,
+    selectedLiveThreadId,
+    setSelectedLiveThreadId,
   };
 }
 
@@ -217,6 +244,7 @@ async function readInitialAppState(source: DashboardDataSource): Promise<Dashboa
     platform,
     dashboard,
     liveRate: pendingLiveRateSnapshot(),
+    liveThreadOptions: [],
     repair: pendingRepairSnapshot(),
     loading: false,
   };

@@ -643,34 +643,74 @@ button {
 .session-row {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: 190px minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
   min-width: 0;
-  min-height: 28px;
+  min-height: 30px;
   padding: 4px 8px;
   font-size: 13px;
 }
 
-.session-row span {
+.session-title {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.session-title span,
+.session-title em {
   min-width: 0;
   overflow: hidden;
-  color: var(--text);
-  font-weight: 620;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.session-chip {
-  display: inline-flex;
+.session-title span {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.session-title em {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 620;
+}
+
+.session-row > strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.session-picker {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px;
   align-items: center;
-  justify-content: center;
+  min-width: 0;
+}
+
+.session-picker span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 660;
+  white-space: nowrap;
+}
+
+.session-picker select {
+  min-width: 0;
+  height: 24px;
   border: 0;
   border-radius: 7px;
   background: color-mix(in srgb, var(--panel) 60%, transparent);
-  padding: 5px 10px;
+  padding: 0 24px 0 8px;
   color: var(--text);
   cursor: pointer;
+  font-size: 11px;
   font-weight: 680;
 }
 

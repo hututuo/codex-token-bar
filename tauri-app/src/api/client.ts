@@ -6,6 +6,7 @@ import type {
   DashboardSnapshot,
   FloatingPanelSnapshot,
   LiveRateSnapshot,
+  LiveThreadOption,
   PlatformCapabilities,
   ProviderRepairActionResult,
   ProviderRepairBackupInfo,
@@ -18,6 +19,7 @@ import {
   mockDashboardSnapshot,
   mockFloatingPanelSnapshot,
   mockLiveRateSnapshot,
+  mockLiveThreadOptions,
   mockPlatformCapabilities,
   mockProviderRepairActionResult,
   mockProviderRepairBackups,
@@ -107,8 +109,24 @@ export function readAccountQuota(): Promise<AccountQuotaBundle> {
   return callCommand("read_account_quota", mockAccountQuotaBundle, undefined, 12_000);
 }
 
-export function readLiveRateSnapshot(): Promise<LiveRateSnapshot> {
-  return callCommand("read_live_rate_snapshot", mockLiveRateSnapshot, undefined, 1_500);
+export function readLiveRateSnapshot(selectedThreadId?: string | null): Promise<LiveRateSnapshot> {
+  const fallback =
+    selectedThreadId === undefined
+      ? mockLiveRateSnapshot
+      : {
+          ...mockLiveRateSnapshot,
+          selectedThreadId: selectedThreadId || null,
+        };
+  return callCommand(
+    "read_live_rate_snapshot",
+    fallback,
+    { selectedThreadId: selectedThreadId || null },
+    1_500,
+  );
+}
+
+export function readLiveThreadOptions(): Promise<LiveThreadOption[]> {
+  return callCommand("read_live_thread_options", mockLiveThreadOptions, undefined, 1_500);
 }
 
 export function readFloatingPanelSnapshot(): Promise<FloatingPanelSnapshot> {

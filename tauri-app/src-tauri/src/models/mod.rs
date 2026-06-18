@@ -245,11 +245,24 @@ pub struct CacheHitRankingItem {
 pub struct LiveRateSnapshot {
     pub scope_label: String,
     pub thread_title: String,
+    pub selected_thread_id: Option<String>,
+    pub selected_thread_title: String,
+    pub selected_tokens_per_second: f64,
     pub tokens_per_second: f64,
     pub total_tokens_today: u64,
     pub requests_today: u32,
     pub max_tokens_per_second: f64,
     pub precise_enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveThreadOption {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub updated_at: String,
+    pub tokens_used: u64,
 }
 
 #[derive(Debug, Serialize)]

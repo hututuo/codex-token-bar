@@ -1,5 +1,10 @@
 import type { CSSProperties } from "react";
-import type { FloatingUnreadEffect, LiveRateSnapshot, PlatformCapabilities } from "../types/dashboard";
+import type {
+  FloatingUnreadEffect,
+  LiveRateSnapshot,
+  LiveThreadOption,
+  PlatformCapabilities,
+} from "../types/dashboard";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { clamp, formatTokens } from "../utils/format";
 
@@ -15,9 +20,12 @@ interface LiveRateCardProps {
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
+  onLiveThreadSelect: (threadId: string) => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
+  liveThreadOptions: LiveThreadOption[];
   platform: PlatformCapabilities;
+  selectedLiveThreadId: string;
   snapshot: LiveRateSnapshot;
   statusTrayLiveTextEnabled: boolean;
 }
@@ -28,9 +36,12 @@ export function LiveRateCard({
   onFloatingOpacityChange,
   onFloatingScaleChange,
   onFloatingUnreadEffectChange,
+  onLiveThreadSelect,
   onToggleFloating,
   onToggleStatusTray,
+  liveThreadOptions,
   platform,
+  selectedLiveThreadId,
   snapshot,
   statusTrayLiveTextEnabled,
 }: LiveRateCardProps) {
@@ -48,6 +59,13 @@ export function LiveRateCard({
   const statusTrayButtonLabel = statusTrayAvailable
     ? `状态栏数字：${statusTrayLiveTextEnabled ? "开" : "关"}`
     : "状态栏待接入";
+  const hasSelectedThread = selectedLiveThreadId.length > 0;
+  const selectedThreadLabel = hasSelectedThread
+    ? snapshot.selectedThreadTitle
+    : "选择一个会话后显示单会话速度";
+  const selectedRateLabel = hasSelectedThread
+    ? `${snapshot.selectedTokensPerSecond.toFixed(1)} tok/s`
+    : "未选择";
 
   return (
     <section className="live-card" aria-label="实时速率">
@@ -95,9 +113,25 @@ export function LiveRateCard({
           </div>
 
           <div className="session-row">
-            <button className="session-chip" type="button">选中会话</button>
-            <span>{snapshot.threadTitle}</span>
-            <strong>{snapshot.preciseEnabled ? "精准 token 统计" : "估算 token 统计"}</strong>
+            <label className="session-picker">
+              <span>单会话</span>
+              <select
+                onChange={(event) => onLiveThreadSelect(event.currentTarget.value)}
+                value={selectedLiveThreadId}
+              >
+                <option value="">选择会话</option>
+                {liveThreadOptions.map((thread) => (
+                  <option key={thread.id} value={thread.id}>
+                    {thread.title} · {thread.updatedAt} · {formatTokens(thread.tokensUsed)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="session-title">
+              <span>{selectedThreadLabel}</span>
+              <em>{snapshot.threadTitle}</em>
+            </div>
+            <strong>{selectedRateLabel}</strong>
           </div>
         </div>
 

@@ -32,6 +32,8 @@ function DashboardApp() {
     updateCodexHome,
     restoreAutoCodexHome,
     updateProviderRepair,
+    selectedLiveThreadId,
+    setSelectedLiveThreadId,
   } = useDashboardData();
   const [floatingVisible, setFloatingVisible] = useState(true);
   const [floatingSettings, setFloatingSettings] = useState(DEFAULT_FLOATING_SETTINGS);
@@ -173,11 +175,13 @@ function DashboardApp() {
       floatingSettings={floatingSettings}
       floatingVisible={floatingVisible}
       liveRate={readyState.liveRate}
+      liveThreadOptions={readyState.liveThreadOptions}
       platform={readyState.platform}
       onRefresh={reloadAll}
       onFloatingOpacityChange={updateFloatingOpacity}
       onFloatingScaleChange={updateFloatingScale}
       onFloatingUnreadEffectChange={updateFloatingUnreadEffect}
+      onLiveThreadSelect={setSelectedLiveThreadId}
       onToggleFloating={toggleFloatingWindow}
       onToggleStatusTray={toggleStatusTrayLiveText}
       onCodexHomeChange={updateCodexHome}
@@ -185,6 +189,7 @@ function DashboardApp() {
       providerRepair={readyState.repair}
       onProviderRepairChange={updateProviderRepair}
       refreshing={state.loading}
+      selectedLiveThreadId={selectedLiveThreadId}
     />
   );
 }

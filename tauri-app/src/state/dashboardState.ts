@@ -3,6 +3,7 @@ import type {
   CodexHomeStatus,
   DashboardSnapshot,
   LiveRateSnapshot,
+  LiveThreadOption,
   PlatformCapabilities,
   ProviderRepairSnapshot,
   RecentUsagePoint,
@@ -13,6 +14,7 @@ export interface DashboardAppState {
   platform: PlatformCapabilities | null;
   dashboard: DashboardSnapshot | null;
   liveRate: LiveRateSnapshot | null;
+  liveThreadOptions: LiveThreadOption[];
   repair: ProviderRepairSnapshot | null;
   loading: boolean;
 }
@@ -22,6 +24,7 @@ export interface DashboardReadyState {
   platform: PlatformCapabilities;
   dashboard: DashboardSnapshot;
   liveRate: LiveRateSnapshot;
+  liveThreadOptions: LiveThreadOption[];
   repair: ProviderRepairSnapshot;
 }
 
@@ -30,6 +33,7 @@ export const initialDashboardState: DashboardAppState = {
   platform: pendingPlatformCapabilities(),
   dashboard: pendingDashboardSnapshot(),
   liveRate: pendingLiveRateSnapshot(),
+  liveThreadOptions: [],
   repair: pendingRepairSnapshot(),
   loading: true,
 };
@@ -38,6 +42,9 @@ export function pendingLiveRateSnapshot(): LiveRateSnapshot {
   return {
     scopeLabel: "全会话",
     threadTitle: "实时速率正在连接",
+    selectedThreadId: null,
+    selectedThreadTitle: "选择会话查看单会话速率",
+    selectedTokensPerSecond: 0,
     tokensPerSecond: 0,
     totalTokensToday: 0,
     requestsToday: 0,
@@ -78,6 +85,7 @@ export function readyDashboardState(state: DashboardAppState): DashboardReadySta
     platform: state.platform,
     dashboard: state.dashboard,
     liveRate: state.liveRate,
+    liveThreadOptions: state.liveThreadOptions,
     repair: state.repair,
   };
 }
@@ -122,6 +130,16 @@ export function mergeLiveRate(
   return {
     ...state,
     liveRate,
+  };
+}
+
+export function mergeLiveThreadOptions(
+  state: DashboardAppState,
+  liveThreadOptions: LiveThreadOption[],
+): DashboardAppState {
+  return {
+    ...state,
+    liveThreadOptions,
   };
 }
 
