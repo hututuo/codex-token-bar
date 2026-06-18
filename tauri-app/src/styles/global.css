@@ -548,6 +548,17 @@ input[type="range"] {
   margin-top: 12px;
 }
 
+.repair-status {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.repair-status--warn {
+  color: color-mix(in srgb, var(--orange) 72%, var(--text));
+}
+
 .repair-step {
   display: grid;
   gap: 5px;

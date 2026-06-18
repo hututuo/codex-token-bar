@@ -1,7 +1,6 @@
 use crate::models::{
     AccountInfo, ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats,
-    ProviderRepairStep, ProviderRepairSnapshot, QuotaLimit, QuotaSnapshot, RecentUsagePoint,
-    ResetCreditSummary,
+    QuotaLimit, QuotaSnapshot, RecentUsagePoint, ResetCreditSummary,
 };
 
 pub fn dashboard_snapshot() -> DashboardSnapshot {
@@ -65,40 +64,6 @@ pub fn dashboard_snapshot() -> DashboardSnapshot {
                 hit_rate: 0.86,
                 input_tokens: 540_000,
                 cached_tokens: 464_000,
-            },
-        ],
-    }
-}
-
-pub fn provider_repair_snapshot() -> ProviderRepairSnapshot {
-    ProviderRepairSnapshot {
-        detected_provider: "openai".into(),
-        session_files_found: 182,
-        inconsistent_count: 0,
-        steps: vec![
-            ProviderRepairStep {
-                label: "扫描".into(),
-                status: "未发现不一致".into(),
-                done: true,
-                healthy: true,
-            },
-            ProviderRepairStep {
-                label: "备份".into(),
-                status: "等待备份".into(),
-                done: false,
-                healthy: true,
-            },
-            ProviderRepairStep {
-                label: "修复".into(),
-                status: "未进行修复".into(),
-                done: false,
-                healthy: true,
-            },
-            ProviderRepairStep {
-                label: "验证".into(),
-                status: "未验证".into(),
-                done: false,
-                healthy: true,
             },
         ],
     }

@@ -1,0 +1,113 @@
+use super::*;
+use rusqlite::{params, Connection};
+use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[test]
+fn scan_uses_config_provider_and_counts_jsonl_sqlite_index_mismatches() {
+    let root = temp_root("provider-config");
+    fs::create_dir_all(root.join("sessions/2026/06")).unwrap();
+    fs::write(root.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    write_session(
+        &root.join("sessions/2026/06/openai.jsonl"),
+        "thread-openai",
+        "openai",
+    );
+    write_session(
+        &root.join("sessions/2026/06/old.jsonl"),
+        "thread-old",
+        "codex_local_access",
+    );
+    create_state_database(
+        &root,
+        &[("thread-old", "codex_local_access", 0), ("thread-openai", "openai", 0)],
+    );
+    fs::write(
+        root.join("session_index.jsonl"),
+        r#"{"id":"thread-old","thread_name":"old","updated_at":"2026-06-18T00:00:00Z"}"#,
+    )
+    .unwrap();
+
+    let snapshot = scan_provider_repair(&root);
+    assert_eq!(snapshot.detected_provider, "openai");
+    assert_eq!(snapshot.provider_source, "config.toml");
+    assert_eq!(snapshot.session_files_found, 2);
+    assert_eq!(snapshot.inconsistent_count, 3);
+    assert!(snapshot.status.contains("JSONL 1"));
+    assert!(snapshot.status.contains("SQLite 1"));
+    assert!(snapshot.status.contains("索引 1"));
+    assert!(!snapshot.steps[0].healthy);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scan_falls_back_to_latest_sqlite_provider_when_config_is_missing() {
+    let root = temp_root("provider-sqlite");
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    write_session(&root.join("sessions/old.jsonl"), "thread-old", "codex_local_access");
+    create_state_database(
+        &root,
+        &[("thread-old", "codex_local_access", 0), ("thread-new", "openai", 0)],
+    );
+    fs::write(
+        root.join("session_index.jsonl"),
+        r#"{"id":"thread-new","thread_name":"new","updated_at":"2026-06-18T00:00:00Z"}"#,
+    )
+    .unwrap();
+
+    let snapshot = scan_provider_repair(&root);
+    assert_eq!(snapshot.detected_provider, "openai");
+    assert_eq!(snapshot.provider_source, "SQLite 最新会话");
+    assert_eq!(snapshot.session_files_found, 1);
+    assert_eq!(snapshot.inconsistent_count, 2);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn temp_root(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "codex-token-bar-tauri-{label}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
+fn write_session(path: &Path, thread_id: &str, provider: &str) {
+    let line = format!(
+        r#"{{"type":"session_meta","payload":{{"id":"{thread_id}","model_provider":"{provider}"}}}}"#
+    );
+    fs::write(path, format!("{line}\n")).unwrap();
+}
+
+fn create_state_database(root: &Path, rows: &[(&str, &str, i64)]) {
+    let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                model_provider TEXT NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                updated_at_ms INTEGER
+            );
+            "#,
+        )
+        .unwrap();
+    for (index, (thread_id, provider, archived)) in rows.iter().enumerate() {
+        let updated = 1_781_760_000_000_i64 + index as i64;
+        connection
+            .execute(
+                r#"
+                INSERT INTO threads (id, model_provider, archived, updated_at, updated_at_ms)
+                VALUES (?1, ?2, ?3, ?4 / 1000, ?4);
+                "#,
+                params![thread_id, provider, archived, updated],
+            )
+            .unwrap();
+    }
+}

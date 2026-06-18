@@ -10,12 +10,17 @@ export function ProviderRepairCard({ snapshot }: ProviderRepairCardProps) {
       <div className="section-title-row">
         <div>
           <h2>会话消失修复</h2>
-          <span>provider {snapshot.detectedProvider} · {snapshot.sessionFilesFound} 个会话文件</span>
+          <span>
+            provider {snapshot.detectedProvider} · {snapshot.providerSource} · {snapshot.sessionFilesFound} 个会话文件
+          </span>
         </div>
         <button className="toolbar-button" type="button">
           打开修复
         </button>
       </div>
+      <p className={snapshot.inconsistentCount > 0 ? "repair-status repair-status--warn" : "repair-status"}>
+        {snapshot.status}
+      </p>
 
       <div className="repair-steps">
         {snapshot.steps.map((step, index) => (

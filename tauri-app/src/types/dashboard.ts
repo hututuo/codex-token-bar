@@ -108,7 +108,9 @@ export interface ProviderRepairStep {
 
 export interface ProviderRepairSnapshot {
   detectedProvider: string;
+  providerSource: string;
   sessionFilesFound: number;
   inconsistentCount: number;
+  status: string;
   steps: ProviderRepairStep[];
 }

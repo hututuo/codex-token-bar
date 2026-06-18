@@ -131,8 +131,10 @@ pub struct FloatingPanelSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderRepairSnapshot {
     pub detected_provider: String,
+    pub provider_source: String,
     pub session_files_found: u32,
     pub inconsistent_count: u32,
+    pub status: String,
     pub steps: Vec<ProviderRepairStep>,
 }
 

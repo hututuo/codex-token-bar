@@ -131,8 +131,10 @@ export const mockFloatingPanelSnapshot: FloatingPanelSnapshot = {
 
 export const mockProviderRepairSnapshot: ProviderRepairSnapshot = {
   detectedProvider: "openai",
+  providerSource: "mock",
   sessionFilesFound: 182,
   inconsistentCount: 0,
+  status: "示例扫描结果",
   steps: [
     { label: "扫描", status: "未发现不一致", done: true, healthy: true },
     { label: "备份", status: "等待备份", done: false, healthy: true },
