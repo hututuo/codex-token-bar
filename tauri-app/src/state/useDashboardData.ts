@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import {
   getCommandDiagnosticsSnapshot,
   subscribeCommandDiagnostics,
@@ -20,6 +20,7 @@ import {
 
 export function useDashboardData(source: DashboardDataSource = dashboardDataSource) {
   const [state, setState] = useState<DashboardAppState>(initialDashboardState);
+  const [fastSnapshotLoaded, setFastSnapshotLoaded] = useState(false);
   const preciseLoadStarted = useRef(false);
   const quotaLoadStarted = useRef(false);
   const forceNextQuotaLoad = useRef(false);
@@ -35,14 +36,13 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   useEffect(() => {
     let cancelled = false;
 
-    async function load() {
-      const nextState = await readInitialAppState(source);
-      if (!cancelled) {
-        setState(nextState);
-      }
-    }
-
-    void load();
+    setFastSnapshotLoaded(false);
+    void loadInitialAppStateInParts(
+      source,
+      () => cancelled,
+      (update) => setState(update),
+      () => setFastSnapshotLoaded(true),
+    );
 
     return () => {
       cancelled = true;
@@ -50,7 +50,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   }, [source]);
 
   useEffect(() => {
-    if (state.dashboard === null || state.loading || preciseLoadStarted.current) {
+    if (!fastSnapshotLoaded || state.dashboard === null || state.loading || preciseLoadStarted.current) {
       return;
     }
 
@@ -69,7 +69,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     return () => {
       cancelled = true;
     };
-  }, [source, state.dashboard, state.loading]);
+  }, [fastSnapshotLoaded, source, state.dashboard, state.loading]);
 
   useEffect(() => {
     if (state.dashboard === null || quotaLoadStarted.current) {
@@ -156,7 +156,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   }, [source, selectedLiveThreadId]);
 
   useEffect(() => {
-    if (state.dashboard === null || liveThreadOptionsLoadStarted.current) {
+    if (!fastSnapshotLoaded || state.dashboard === null || liveThreadOptionsLoadStarted.current) {
       return;
     }
 
@@ -175,15 +175,17 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     return () => {
       cancelled = true;
     };
-  }, [source, state.dashboard, state.loading]);
+  }, [fastSnapshotLoaded, source, state.dashboard, state.loading]);
 
   async function reloadAll() {
     preciseLoadStarted.current = false;
     quotaLoadStarted.current = false;
     forceNextQuotaLoad.current = true;
     liveThreadOptionsLoadStarted.current = false;
+    setFastSnapshotLoaded(false);
     setState((current) => ({ ...current, loading: true }));
     setState(await readInitialAppState(source));
+    setFastSnapshotLoaded(true);
   }
 
   async function updateCodexHome(path: string) {
@@ -216,6 +218,37 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     selectedLiveThreadId,
     setSelectedLiveThreadId,
   };
+}
+
+async function loadInitialAppStateInParts(
+  source: DashboardDataSource,
+  isCancelled: () => boolean,
+  setState: Dispatch<SetStateAction<DashboardAppState>>,
+  markFastSnapshotLoaded: () => void,
+) {
+  void source.getCodexHome().then((codexHome) => {
+    if (!isCancelled()) {
+      setState((current) => ({ ...current, codexHome }));
+    }
+  });
+
+  void source.readPlatformCapabilities().then((platform) => {
+    if (!isCancelled()) {
+      setState((current) => ({ ...current, platform }));
+    }
+  });
+
+  void source.readDashboardSnapshot().then((dashboard) => {
+    if (!isCancelled()) {
+      setState((current) => ({
+        ...current,
+        dashboard,
+        diagnostics: getCommandDiagnosticsSnapshot(),
+        loading: false,
+      }));
+      markFastSnapshotLoaded();
+    }
+  });
 }
 
 async function readInitialAppState(source: DashboardDataSource): Promise<DashboardAppState> {

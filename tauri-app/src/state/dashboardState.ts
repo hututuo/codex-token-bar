@@ -40,7 +40,7 @@ export const initialDashboardState: DashboardAppState = {
   liveThreadOptions: [],
   repair: pendingRepairSnapshot(),
   diagnostics: [],
-  loading: true,
+  loading: false,
 };
 
 export function pendingLiveRateSnapshot(): LiveRateSnapshot {
