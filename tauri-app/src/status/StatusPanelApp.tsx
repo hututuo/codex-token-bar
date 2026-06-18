@@ -3,14 +3,14 @@ import {
   readAccountQuota,
   readFloatingPanelSnapshot,
 } from "../api/client";
-import { mockAccountQuotaBundle, mockFloatingPanelSnapshot } from "../api/mock";
+import { emptyAccountQuotaBundle, emptyFloatingPanelSnapshot } from "../api/fallback";
 import { desktopPlatform } from "../platform/desktop";
 import type { AccountQuotaBundle, FloatingPanelSnapshot } from "../types/dashboard";
 import { compactQuotaLabel } from "../utils/quota";
 
 export function StatusPanelApp() {
-  const [snapshot, setSnapshot] = useState<FloatingPanelSnapshot>(mockFloatingPanelSnapshot);
-  const [quota, setQuota] = useState<AccountQuotaBundle>(mockAccountQuotaBundle);
+  const [snapshot, setSnapshot] = useState<FloatingPanelSnapshot>(emptyFloatingPanelSnapshot);
+  const [quota, setQuota] = useState<AccountQuotaBundle>(() => emptyAccountQuotaBundle());
   const [active, setActive] = useState(() => document.hasFocus());
   const quotaLabels = useMemo(() => ({
     fiveHour: compactQuotaLabel(quota.quota.fiveHour),

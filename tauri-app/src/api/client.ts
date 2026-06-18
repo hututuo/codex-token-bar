@@ -13,18 +13,16 @@ import type {
   ProviderRepairSnapshot,
 } from "../types/dashboard";
 import {
-  mockAccountQuotaBundle,
-  mockAppSettings,
-  mockCodexHome,
-  mockDashboardSnapshot,
-  mockFloatingPanelSnapshot,
-  mockLiveRateSnapshot,
-  mockLiveThreadOptions,
-  mockPlatformCapabilities,
-  mockProviderRepairActionResult,
-  mockProviderRepairBackups,
-  mockProviderRepairSnapshot,
-} from "./mock";
+  emptyAccountQuotaBundle,
+  emptyDashboardSnapshot,
+  emptyFloatingPanelSnapshot,
+  emptyLiveRateSnapshot,
+  fallbackAppSettings,
+  fallbackCodexHome,
+  fallbackPlatformCapabilities,
+  fallbackProviderRepairActionResult,
+  fallbackProviderRepairSnapshot,
+} from "./fallback";
 import { isTauriRuntimeAvailable, withTimeout } from "../platform/runtime";
 import type {
   DisplaySurfaceSettings,
@@ -66,93 +64,86 @@ function warnCommandFailure(command: string, error: unknown) {
 }
 
 export function getCodexHome(): Promise<CodexHomeStatus> {
-  return callCommand("get_codex_home", mockCodexHome);
+  return callCommand("get_codex_home", fallbackCodexHome);
 }
 
 export function setCodexHome(path: string): Promise<CodexHomeStatus> {
-  return callCommand("set_codex_home", { ...mockCodexHome, path, source: "manual" }, { path });
+  return callCommand("set_codex_home", { ...fallbackCodexHome, path, source: "manual" }, { path });
 }
 
 export function resetCodexHome(): Promise<CodexHomeStatus> {
-  return callCommand("reset_codex_home", mockCodexHome);
+  return callCommand("reset_codex_home", fallbackCodexHome);
 }
 
 export function readAppSettings(): Promise<AppSettingsSnapshot> {
-  return callCommand("read_app_settings", mockAppSettings);
+  return callCommand("read_app_settings", fallbackAppSettings);
 }
 
 export function saveFloatingSettings(settings: FloatingWindowSettings): Promise<AppSettingsSnapshot> {
-  return callCommand("save_floating_settings", mockAppSettings, { settings });
+  return callCommand("save_floating_settings", fallbackAppSettings, { settings });
 }
 
 export function saveFloatingPosition(position: FloatingWindowPosition): Promise<AppSettingsSnapshot> {
-  return callCommand("save_floating_position", mockAppSettings, { position });
+  return callCommand("save_floating_position", fallbackAppSettings, { position });
 }
 
 export function saveDisplaySurfaces(display: DisplaySurfaceSettings): Promise<AppSettingsSnapshot> {
-  return callCommand("save_display_surfaces", mockAppSettings, { display });
+  return callCommand("save_display_surfaces", fallbackAppSettings, { display });
 }
 
 export function readPlatformCapabilities(): Promise<PlatformCapabilities> {
-  return callCommand("read_platform_capabilities", mockPlatformCapabilities);
+  return callCommand("read_platform_capabilities", fallbackPlatformCapabilities);
 }
 
 export function readDashboardSnapshot(): Promise<DashboardSnapshot> {
-  return callCommand("read_dashboard_snapshot", mockDashboardSnapshot);
+  return callCommand("read_dashboard_snapshot", emptyDashboardSnapshot());
 }
 
 export function readPreciseDashboardSnapshot(): Promise<DashboardSnapshot> {
-  return callCommand("read_precise_dashboard_snapshot", mockDashboardSnapshot, undefined, 30_000);
+  return callCommand("read_precise_dashboard_snapshot", emptyDashboardSnapshot(), undefined, 30_000);
 }
 
 export function readAccountQuota(): Promise<AccountQuotaBundle> {
-  return callCommand("read_account_quota", mockAccountQuotaBundle, undefined, 12_000);
+  return callCommand("read_account_quota", emptyAccountQuotaBundle(), undefined, 12_000);
 }
 
 export function readLiveRateSnapshot(selectedThreadId?: string | null): Promise<LiveRateSnapshot> {
-  const fallback =
-    selectedThreadId === undefined
-      ? mockLiveRateSnapshot
-      : {
-          ...mockLiveRateSnapshot,
-          selectedThreadId: selectedThreadId || null,
-        };
   return callCommand(
     "read_live_rate_snapshot",
-    fallback,
+    emptyLiveRateSnapshot(selectedThreadId),
     { selectedThreadId: selectedThreadId || null },
     1_500,
   );
 }
 
 export function readLiveThreadOptions(): Promise<LiveThreadOption[]> {
-  return callCommand("read_live_thread_options", mockLiveThreadOptions, undefined, 1_500);
+  return callCommand("read_live_thread_options", [], undefined, 1_500);
 }
 
 export function readFloatingPanelSnapshot(): Promise<FloatingPanelSnapshot> {
-  return callCommand("read_floating_snapshot", mockFloatingPanelSnapshot, undefined, 1_500);
+  return callCommand("read_floating_snapshot", emptyFloatingPanelSnapshot, undefined, 1_500);
 }
 
 export function scanProviderRepair(): Promise<ProviderRepairSnapshot> {
-  return callCommand("scan_provider_repair", mockProviderRepairSnapshot, undefined, 20_000);
+  return callCommand("scan_provider_repair", fallbackProviderRepairSnapshot, undefined, 20_000);
 }
 
 export function listProviderBackups(): Promise<ProviderRepairBackupInfo[]> {
-  return callCommand("list_provider_backups", mockProviderRepairBackups, undefined, 20_000);
+  return callCommand("list_provider_backups", [], undefined, 20_000);
 }
 
 export function createProviderBackup(): Promise<ProviderRepairActionResult> {
-  return callCommand("create_provider_backup", mockProviderRepairActionResult, undefined, 60_000);
+  return callCommand("create_provider_backup", fallbackProviderRepairActionResult, undefined, 60_000);
 }
 
 export function syncProviderHistory(backupId: string): Promise<ProviderRepairActionResult> {
-  return callCommand("sync_provider_history", mockProviderRepairActionResult, { backupId }, 60_000);
+  return callCommand("sync_provider_history", fallbackProviderRepairActionResult, { backupId }, 60_000);
 }
 
 export function verifyProviderRepair(): Promise<ProviderRepairActionResult> {
-  return callCommand("verify_provider_repair", mockProviderRepairActionResult, undefined, 30_000);
+  return callCommand("verify_provider_repair", fallbackProviderRepairActionResult, undefined, 30_000);
 }
 
 export function rollbackProviderBackup(backupId: string): Promise<ProviderRepairActionResult> {
-  return callCommand("rollback_provider_backup", mockProviderRepairActionResult, { backupId }, 60_000);
+  return callCommand("rollback_provider_backup", fallbackProviderRepairActionResult, { backupId }, 60_000);
 }

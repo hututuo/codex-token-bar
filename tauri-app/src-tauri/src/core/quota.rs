@@ -757,8 +757,8 @@ mod tests {
 
     #[test]
     fn decodes_account_name_from_auth_jwt() {
-        let payload = URL_SAFE_NO_PAD.encode(r#"{"name":"来先生","email":"user@example.com"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(r#"{"name":"本地用户","email":"user@example.com"}"#);
         let decoded = decode_jwt_payload(&format!("header.{payload}.signature")).unwrap();
-        assert_eq!(decoded.get("name").and_then(Value::as_str), Some("来先生"));
+        assert_eq!(decoded.get("name").and_then(Value::as_str), Some("本地用户"));
     }
 }

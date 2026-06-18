@@ -352,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_dashboard_snapshot_is_zero_without_mock_usage() {
+    fn empty_dashboard_snapshot_is_zero_without_real_usage() {
         let snapshot = empty_dashboard_snapshot();
 
         assert_eq!(snapshot.account.display_name, "本地账户");

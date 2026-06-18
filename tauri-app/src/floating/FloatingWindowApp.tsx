@@ -1,6 +1,6 @@
 import { type CSSProperties, useEffect, useState } from "react";
-import { mockFloatingPanelSnapshot } from "../api/mock";
 import { readAccountQuota, readAppSettings, readFloatingPanelSnapshot } from "../api/client";
+import { emptyFloatingPanelSnapshot } from "../api/fallback";
 import { desktopPlatform } from "../platform/desktop";
 import type { FloatingPanelSnapshot } from "../types/dashboard";
 import { compactQuotaLabel } from "../utils/quota";
@@ -15,7 +15,7 @@ import { FloatingPanelSurface } from "./FloatingPanelPreview";
 import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
 
 export function FloatingWindowApp() {
-  const [snapshot, setSnapshot] = useState<FloatingPanelSnapshot>(mockFloatingPanelSnapshot);
+  const [snapshot, setSnapshot] = useState<FloatingPanelSnapshot>(emptyFloatingPanelSnapshot);
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   useFloatingWindowPlacement();
 
