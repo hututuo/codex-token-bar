@@ -3,12 +3,8 @@ import {
   useEffect,
   useMemo,
   useState,
-  type Dispatch,
-  type SetStateAction,
 } from "react";
 import {
-  getCommandDiagnosticsSnapshot,
-  recordStartupEvent,
   subscribeCommandDiagnostics,
 } from "../api/client";
 import { dashboardDataSource, type DashboardDataSource } from "../data/dashboardDataSource";
@@ -30,6 +26,7 @@ import {
   readyDashboardState,
   type DashboardAppState,
 } from "./dashboardState";
+import { loadInitialDashboardState } from "./loadInitialDashboardState";
 import { useDeferredDashboardLoads } from "./useDeferredDashboardLoads";
 import { useLiveRateFeed } from "./useLiveRateFeed";
 
@@ -72,12 +69,12 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     setFastSnapshotLoaded(false);
     setLoadGeneration((current) => current + 1);
     setForceNextQuotaLoad(false);
-    void loadInitialAppStateInParts(
+    void loadInitialDashboardState({
       source,
-      () => cancelled,
-      (update) => setState(update),
-      () => setFastSnapshotLoaded(true),
-    );
+      isCancelled: () => cancelled,
+      setState,
+      onFastSnapshotLoaded: () => setFastSnapshotLoaded(true),
+    });
 
     return () => {
       cancelled = true;
@@ -109,12 +106,12 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     setForceNextQuotaLoad(true);
     setFastSnapshotLoaded(false);
     setState((current) => ({ ...current, loading: true }));
-    await loadInitialAppStateInParts(
+    await loadInitialDashboardState({
       source,
-      () => false,
-      (update) => setState(update),
-      () => setFastSnapshotLoaded(true),
-    );
+      isCancelled: () => false,
+      setState,
+      onFastSnapshotLoaded: () => setFastSnapshotLoaded(true),
+    });
   }
 
   async function updateCodexHome(path: string) {
@@ -147,38 +144,4 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     selectedLiveThreadId,
     setSelectedLiveThreadId,
   };
-}
-
-async function loadInitialAppStateInParts(
-  source: DashboardDataSource,
-  isCancelled: () => boolean,
-  setState: Dispatch<SetStateAction<DashboardAppState>>,
-  markFastSnapshotLoaded: () => void,
-): Promise<void> {
-  void source.getCodexHome().then((codexHome) => {
-    if (!isCancelled()) {
-      setState((current) => ({ ...current, codexHome }));
-      void recordStartupEvent("codex home ready");
-    }
-  });
-
-  void source.readPlatformCapabilities().then((platform) => {
-    if (!isCancelled()) {
-      setState((current) => ({ ...current, platform }));
-      void recordStartupEvent("platform ready");
-    }
-  });
-
-  await source.readDashboardSnapshot().then((dashboard) => {
-    if (!isCancelled()) {
-      setState((current) => ({
-        ...current,
-        dashboard,
-        diagnostics: getCommandDiagnosticsSnapshot(),
-        loading: false,
-      }));
-      markFastSnapshotLoaded();
-      void recordStartupEvent("dashboard snapshot ready");
-    }
-  });
 }
