@@ -23,9 +23,11 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
         |row| row.get(0),
     )?;
     let stats = read_stats(&connection)?;
-    let mut activity_days = read_activity_days(&connection)?;
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_now = OffsetDateTime::now_utc().to_offset(local_offset);
+    let mut activity_days = empty_activity_days(local_now.date());
     quota_history::apply_activity_history(&mut activity_days);
-    let recent_usage_24h = read_recent_usage(&connection)?;
+    let recent_usage_24h = empty_recent_usage(local_now);
 
     Ok(DashboardSnapshot {
         generated_at,
@@ -116,148 +118,15 @@ fn read_stats(connection: &Connection) -> Result<DashboardStats> {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
 
-    let peak_day_tokens: i64 = connection.query_row(
-        r#"
-        SELECT COALESCE(MAX(day_tokens), 0)
-        FROM (
-            SELECT SUM(tokens_used) AS day_tokens
-            FROM threads
-            GROUP BY strftime('%Y-%m-%d', COALESCE(updated_at_ms, updated_at) / 1000, 'unixepoch', 'localtime')
-        );
-        "#,
-        [],
-        |row| row.get(0),
-    )?;
-
-    let active_days = read_active_days(connection)?;
-
     Ok(DashboardStats {
         total_tokens: to_u64(total_tokens),
-        peak_day_tokens: to_u64(peak_day_tokens),
+        peak_day_tokens: 0,
         peak_thread_tokens: to_u64(peak_thread_tokens),
-        current_streak_days: current_streak_days(&active_days),
-        longest_streak_days: longest_streak_days(&active_days),
-        total_calls: read_recent_calls(connection)?,
+        current_streak_days: 0,
+        longest_streak_days: 0,
+        total_calls: 0,
         total_threads: to_u32(total_threads),
     })
-}
-
-fn read_activity_days(connection: &Connection) -> Result<Vec<ActivityDay>> {
-    let mut statement = connection.prepare(
-        r#"
-        WITH RECURSIVE days(day) AS (
-            SELECT date('now', 'localtime', '-364 days')
-            UNION ALL
-            SELECT date(day, '+1 day') FROM days WHERE day < date('now', 'localtime')
-        )
-        SELECT days.day,
-               COALESCE(SUM(threads.tokens_used), 0) AS tokens,
-               COUNT(threads.id) AS calls
-        FROM days
-        LEFT JOIN threads
-          ON strftime('%Y-%m-%d', COALESCE(threads.updated_at_ms, threads.updated_at) / 1000, 'unixepoch', 'localtime') = days.day
-        GROUP BY days.day
-        ORDER BY days.day;
-        "#,
-    )?;
-
-    let rows = statement.query_map([], |row| {
-        let date: String = row.get(0)?;
-        let tokens: i64 = row.get(1)?;
-        let calls: i64 = row.get(2)?;
-        Ok(ActivityDay {
-            date,
-            tokens: to_u64(tokens),
-            calls: to_u32(calls),
-            cache_hit_rate: 0.0,
-            five_hour_remaining_percent: None,
-            seven_day_remaining_percent: None,
-        })
-    })?;
-
-    rows.collect()
-}
-
-fn read_recent_usage(connection: &Connection) -> Result<Vec<RecentUsagePoint>> {
-    let mut statement = connection.prepare(
-        r#"
-        WITH RECURSIVE bins(bin_epoch) AS (
-            SELECT CAST(CAST(strftime('%s', 'now', '-24 hours') AS INTEGER) / 300 AS INTEGER) * 300
-            UNION ALL
-            SELECT bin_epoch + 300
-            FROM bins
-            WHERE bin_epoch < CAST(CAST(strftime('%s', 'now') AS INTEGER) / 300 AS INTEGER) * 300
-        )
-        SELECT strftime('%H:%M', bins.bin_epoch, 'unixepoch', 'localtime') AS label,
-               COALESCE(SUM(threads.tokens_used), 0) AS tokens,
-               COUNT(threads.id) AS calls
-        FROM bins
-        LEFT JOIN threads
-          ON CAST((COALESCE(threads.updated_at_ms, threads.updated_at) / 1000) / 300 AS INTEGER) * 300 = bins.bin_epoch
-        GROUP BY bins.bin_epoch
-        ORDER BY bins.bin_epoch;
-        "#,
-    )?;
-
-    let rows = statement.query_map([], |row| {
-        let label: String = row.get(0)?;
-        let tokens: i64 = row.get(1)?;
-        let calls: i64 = row.get(2)?;
-        Ok(RecentUsagePoint {
-            label,
-            tokens: to_u64(tokens),
-            calls: to_u32(calls),
-            cache_hit_rate: None,
-            five_hour_remaining_percent: None,
-            seven_day_remaining_percent: None,
-        })
-    })?;
-
-    rows.collect()
-}
-
-fn read_active_days(connection: &Connection) -> Result<Vec<bool>> {
-    let days = read_activity_days(connection)?;
-    Ok(days.into_iter().map(|day| day.tokens > 0).collect())
-}
-
-fn read_recent_calls(connection: &Connection) -> Result<u32> {
-    let calls: i64 = connection.query_row(
-        r#"
-        SELECT COUNT(*)
-        FROM threads
-        WHERE COALESCE(updated_at_ms, updated_at) / 1000 >= strftime('%s', 'now', '-24 hours');
-        "#,
-        [],
-        |row| row.get(0),
-    )?;
-    Ok(to_u32(calls))
-}
-
-fn current_streak_days(active_days: &[bool]) -> u32 {
-    let mut streak = 0;
-    for active in active_days.iter().rev() {
-        if *active {
-            streak += 1;
-        } else if streak > 0 {
-            break;
-        }
-    }
-    streak
-}
-
-fn longest_streak_days(active_days: &[bool]) -> u32 {
-    let mut best = 0;
-    let mut current = 0;
-    for active in active_days {
-        if *active {
-            current += 1;
-            best = best.max(current);
-        } else {
-            current = 0;
-        }
-    }
-    best
 }
 
 fn placeholder_quota() -> QuotaSnapshot {
@@ -343,11 +212,15 @@ mod tests {
 
         let snapshot = dashboard_snapshot(&root).unwrap();
         assert_eq!(snapshot.stats.total_tokens, 300);
+        assert_eq!(snapshot.stats.peak_day_tokens, 0);
         assert_eq!(snapshot.stats.peak_thread_tokens, 180);
+        assert_eq!(snapshot.stats.current_streak_days, 0);
+        assert_eq!(snapshot.stats.longest_streak_days, 0);
+        assert_eq!(snapshot.stats.total_calls, 0);
         assert_eq!(snapshot.stats.total_threads, 2);
-        assert!(snapshot.activity_days.iter().any(|day| day.tokens == 300));
+        assert!(snapshot.activity_days.iter().all(|day| day.tokens == 0));
         assert_eq!(snapshot.recent_usage_24h.len(), 289);
-        assert!(snapshot.recent_usage_24h.iter().any(|point| point.tokens == 300));
+        assert!(snapshot.recent_usage_24h.iter().all(|point| point.tokens == 0));
 
         fs::remove_dir_all(root).unwrap();
     }
