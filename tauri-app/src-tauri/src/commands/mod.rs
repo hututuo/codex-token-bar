@@ -9,6 +9,34 @@ use crate::models::{
     ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
 };
 use crate::platform;
+use std::{
+    sync::{mpsc, Mutex},
+    thread::{self, JoinHandle},
+    time::Duration,
+};
+use tauri::{Emitter, State};
+
+const LIVE_RATE_SNAPSHOT_EVENT: &str = "live-rate-snapshot";
+const LIVE_RATE_STREAM_INTERVAL_MS: u64 = 250;
+
+#[derive(Default)]
+pub struct LiveRateStreamState {
+    handle: Mutex<Option<LiveRateStreamHandle>>,
+}
+
+struct LiveRateStreamHandle {
+    stop_sender: mpsc::Sender<()>,
+    join_handle: Option<JoinHandle<()>>,
+}
+
+impl Drop for LiveRateStreamHandle {
+    fn drop(&mut self) {
+        let _ = self.stop_sender.send(());
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
+        }
+    }
+}
 
 #[tauri::command]
 pub fn get_codex_home() -> Result<CodexHomeStatus, String> {
@@ -74,6 +102,54 @@ pub fn read_account_quota() -> Result<AccountQuotaBundle, String> {
 #[tauri::command]
 pub fn read_live_rate_snapshot() -> Result<LiveRateSnapshot, String> {
     Ok(local_source().read_live_rate_snapshot())
+}
+
+#[tauri::command]
+pub fn start_live_rate_stream(
+    app: tauri::AppHandle,
+    state: State<LiveRateStreamState>,
+) -> Result<bool, String> {
+    let mut current = state.handle.lock().map_err(|error| error.to_string())?;
+    if current.is_some() {
+        return Ok(true);
+    }
+
+    let (stop_sender, stop_receiver) = mpsc::channel::<()>();
+    let codex_home = platform::default_codex_home();
+    let join_handle = thread::Builder::new()
+        .name("codex-token-bar-live-rate-stream".into())
+        .spawn(move || {
+            let source = LocalCodexDataSource::new(codex_home);
+            let mut last_snapshot = None;
+            loop {
+                let snapshot = source.read_live_rate_snapshot();
+                if should_emit_live_rate(last_snapshot.as_ref(), &snapshot) {
+                    let _ = app.emit(LIVE_RATE_SNAPSHOT_EVENT, &snapshot);
+                    last_snapshot = Some(snapshot);
+                }
+
+                if stop_receiver
+                    .recv_timeout(Duration::from_millis(LIVE_RATE_STREAM_INTERVAL_MS))
+                    .is_ok()
+                {
+                    break;
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+
+    *current = Some(LiveRateStreamHandle {
+        stop_sender,
+        join_handle: Some(join_handle),
+    });
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn stop_live_rate_stream(state: State<LiveRateStreamState>) -> Result<bool, String> {
+    let mut current = state.handle.lock().map_err(|error| error.to_string())?;
+    current.take();
+    Ok(false)
 }
 
 #[tauri::command]
@@ -151,4 +227,20 @@ pub fn rollback_provider_backup(backup_id: String) -> Result<ProviderRepairActio
 
 fn local_source() -> LocalCodexDataSource {
     LocalCodexDataSource::new(platform::default_codex_home())
+}
+
+fn should_emit_live_rate(
+    previous: Option<&LiveRateSnapshot>,
+    current: &LiveRateSnapshot,
+) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+
+    (previous.tokens_per_second - current.tokens_per_second).abs() >= 0.05
+        || previous.total_tokens_today != current.total_tokens_today
+        || previous.requests_today != current.requests_today
+        || previous.thread_title != current.thread_title
+        || previous.scope_label != current.scope_label
+        || previous.precise_enabled != current.precise_enabled
 }

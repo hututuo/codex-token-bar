@@ -6,6 +6,7 @@ mod platform;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(commands::LiveRateStreamState::default())
         .setup(|app| {
             platform::setup_desktop_surfaces(app)?;
             Ok(())
@@ -23,6 +24,8 @@ pub fn run() {
             commands::read_dashboard_snapshot,
             commands::read_precise_dashboard_snapshot,
             commands::read_live_rate_snapshot,
+            commands::start_live_rate_stream,
+            commands::stop_live_rate_stream,
             commands::scan_provider_repair,
             commands::list_provider_backups,
             commands::create_provider_backup,

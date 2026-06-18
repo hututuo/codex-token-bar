@@ -4,6 +4,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { FLOATING_SETTINGS_EVENT } from "../floating/floatingSettings";
+import type { LiveRateSnapshot } from "../types/dashboard";
 import { isTauriRuntimeAvailable, withTimeout } from "./runtime";
 
 export type SurfaceMode = "dashboard" | "floating" | "status";
@@ -16,6 +17,7 @@ export interface DesktopPosition {
 type Unlisten = () => void;
 
 const FLOATING_WINDOW_HIDDEN_EVENT = "floating-window-hidden";
+const LIVE_RATE_SNAPSHOT_EVENT = "live-rate-snapshot";
 const PLATFORM_COMMAND_TIMEOUT_MS = 2_000;
 const WARNING_THROTTLE_MS = 5_000;
 const lastPlatformWarningAtByKey = new Map<string, number>();
@@ -37,6 +39,9 @@ export const desktopPlatform = {
   setFloatingWindowPosition,
   onFloatingWindowMoved,
   setStatusTrayReadout,
+  startLiveRateStream,
+  stopLiveRateStream,
+  onLiveRateSnapshot,
 };
 
 function getSurfaceMode(): SurfaceMode {
@@ -82,6 +87,14 @@ function setStatusTrayReadout(title: string, tooltip: string): Promise<boolean> 
   return invokePlatformCommand("set_status_tray_readout", false, { title, tooltip });
 }
 
+function startLiveRateStream(): Promise<boolean> {
+  return invokePlatformCommand("start_live_rate_stream", false);
+}
+
+function stopLiveRateStream(): Promise<boolean> {
+  return invokePlatformCommand("stop_live_rate_stream", false);
+}
+
 async function notifyFloatingWindowHidden(): Promise<boolean> {
   if (!isTauriRuntimeAvailable()) {
     return false;
@@ -98,6 +111,10 @@ async function notifyFloatingWindowHidden(): Promise<boolean> {
 
 function onFloatingWindowHidden(handler: () => void): Promise<Unlisten> {
   return listenToEvent(FLOATING_WINDOW_HIDDEN_EVENT, handler);
+}
+
+function onLiveRateSnapshot(handler: (snapshot: LiveRateSnapshot) => void): Promise<Unlisten> {
+  return listenToEvent<LiveRateSnapshot>(LIVE_RATE_SNAPSHOT_EVENT, handler);
 }
 
 async function publishFloatingSettings(settings: FloatingWindowSettings): Promise<boolean> {

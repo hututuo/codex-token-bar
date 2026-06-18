@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { dashboardDataSource, type DashboardDataSource } from "../data/dashboardDataSource";
+import { desktopPlatform } from "../platform/desktop";
 import type { ProviderRepairSnapshot } from "../types/dashboard";
 import {
   initialDashboardState,
@@ -109,6 +110,8 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
 
     let cancelled = false;
     let liveRateInFlight = false;
+    let streaming = false;
+    let unlisten: (() => void) | null = null;
     liveRatePollStarted.current = true;
 
     async function refreshLiveRate() {
@@ -127,13 +130,42 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
       }
     }
 
+    void desktopPlatform.onLiveRateSnapshot((liveRate) => {
+      if (!cancelled) {
+        setState((current) => mergeLiveRate(current, liveRate));
+      }
+    }).then((listener) => {
+      if (cancelled) {
+        listener();
+      } else {
+        unlisten = listener;
+      }
+    });
+
     void refreshLiveRate();
+    void desktopPlatform.startLiveRateStream().then((started) => {
+      if (cancelled) {
+        if (started) {
+          void desktopPlatform.stopLiveRateStream();
+        }
+        return;
+      }
+      streaming = started;
+    });
+
     const interval = window.setInterval(() => {
-      void refreshLiveRate();
-    }, 500);
+      if (!streaming) {
+        void refreshLiveRate();
+      }
+    }, 750);
 
     return () => {
       cancelled = true;
+      liveRatePollStarted.current = false;
+      unlisten?.();
+      if (streaming) {
+        void desktopPlatform.stopLiveRateStream();
+      }
       window.clearInterval(interval);
     };
   }, [source, state.loading]);
