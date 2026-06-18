@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AccountQuotaBundle,
+  AppSettingsSnapshot,
   CodexHomeStatus,
   DashboardSnapshot,
   FloatingPanelSnapshot,
@@ -12,6 +13,7 @@ import type {
 } from "../types/dashboard";
 import {
   mockAccountQuotaBundle,
+  mockAppSettings,
   mockCodexHome,
   mockDashboardSnapshot,
   mockFloatingPanelSnapshot,
@@ -22,6 +24,7 @@ import {
   mockProviderRepairSnapshot,
 } from "./mock";
 import { isTauriRuntimeAvailable, withTimeout } from "../platform/runtime";
+import type { FloatingWindowPosition, FloatingWindowSettings } from "../types/dashboard";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 4_000;
 const WARNING_THROTTLE_MS = 5_000;
@@ -66,6 +69,18 @@ export function setCodexHome(path: string): Promise<CodexHomeStatus> {
 
 export function resetCodexHome(): Promise<CodexHomeStatus> {
   return callCommand("reset_codex_home", mockCodexHome);
+}
+
+export function readAppSettings(): Promise<AppSettingsSnapshot> {
+  return callCommand("read_app_settings", mockAppSettings);
+}
+
+export function saveFloatingSettings(settings: FloatingWindowSettings): Promise<AppSettingsSnapshot> {
+  return callCommand("save_floating_settings", mockAppSettings, { settings });
+}
+
+export function saveFloatingPosition(position: FloatingWindowPosition): Promise<AppSettingsSnapshot> {
+  return callCommand("save_floating_position", mockAppSettings, { position });
 }
 
 export function readPlatformCapabilities(): Promise<PlatformCapabilities> {

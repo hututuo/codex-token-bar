@@ -1,5 +1,7 @@
-use crate::models::CodexHomeStatus;
-use serde_json::{json, Value};
+use crate::models::{
+    AppSettingsSnapshot, CodexHomeStatus, FloatingWindowPositionSnapshot,
+    FloatingWindowSettingsSnapshot,
+};
 use std::path::PathBuf;
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -48,15 +50,9 @@ pub fn default_codex_home_status() -> CodexHomeStatus {
 
 pub fn save_codex_home(path: &str) -> Result<CodexHomeStatus, String> {
     let path = normalize_user_path(path);
-    let settings = json!({
-        "codex_home": path.display().to_string()
-    });
-    let settings_path = settings_path();
-    if let Some(parent) = settings_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let bytes = serde_json::to_vec_pretty(&settings).map_err(|error| error.to_string())?;
-    std::fs::write(settings_path, bytes).map_err(|error| error.to_string())?;
+    let mut settings = read_app_settings();
+    settings.codex_home = Some(path.display().to_string());
+    write_app_settings(&settings)?;
     Ok(CodexHomeStatus {
         exists: path.exists(),
         path: path.display().to_string(),
@@ -65,11 +61,32 @@ pub fn save_codex_home(path: &str) -> Result<CodexHomeStatus, String> {
 }
 
 pub fn reset_codex_home() -> Result<CodexHomeStatus, String> {
-    let path = settings_path();
-    if path.exists() {
-        std::fs::remove_file(path).map_err(|error| error.to_string())?;
-    }
+    let mut settings = read_app_settings();
+    settings.codex_home = None;
+    write_app_settings(&settings)?;
     Ok(default_codex_home_status())
+}
+
+pub fn read_app_settings() -> AppSettingsSnapshot {
+    sanitize_app_settings(read_settings_file())
+}
+
+pub fn save_floating_settings(
+    floating_window: FloatingWindowSettingsSnapshot,
+) -> Result<AppSettingsSnapshot, String> {
+    let mut settings = read_app_settings();
+    settings.floating_window = sanitize_floating_settings(floating_window);
+    write_app_settings(&settings)?;
+    Ok(settings)
+}
+
+pub fn save_floating_position(
+    floating_position: FloatingWindowPositionSnapshot,
+) -> Result<AppSettingsSnapshot, String> {
+    let mut settings = read_app_settings();
+    settings.floating_position = sanitize_floating_position(Some(floating_position));
+    write_app_settings(&settings)?;
+    Ok(settings)
 }
 
 pub fn setup_desktop_surfaces(app: &tauri::App) -> tauri::Result<()> {
@@ -171,11 +188,74 @@ fn create_floating_window(app: &tauri::App) -> tauri::Result<()> {
 }
 
 fn saved_codex_home() -> Option<PathBuf> {
-    let value: Value = serde_json::from_slice(&std::fs::read(settings_path()).ok()?).ok()?;
-    value
-        .get("codex_home")
-        .and_then(Value::as_str)
-        .map(normalize_user_path)
+    read_app_settings().codex_home.as_deref().map(normalize_user_path)
+}
+
+fn read_settings_file() -> AppSettingsSnapshot {
+    std::fs::read(settings_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<AppSettingsSnapshot>(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn write_app_settings(settings: &AppSettingsSnapshot) -> Result<(), String> {
+    let settings_path = settings_path();
+    if let Some(parent) = settings_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let sanitized = sanitize_app_settings(settings.clone());
+    let bytes = serde_json::to_vec_pretty(&sanitized).map_err(|error| error.to_string())?;
+    std::fs::write(settings_path, bytes).map_err(|error| error.to_string())
+}
+
+fn sanitize_app_settings(mut settings: AppSettingsSnapshot) -> AppSettingsSnapshot {
+    settings.codex_home = settings.codex_home.and_then(|path| {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.into())
+        }
+    });
+    settings.floating_window = sanitize_floating_settings(settings.floating_window);
+    settings.floating_position = sanitize_floating_position(settings.floating_position);
+    settings
+}
+
+fn sanitize_floating_settings(
+    settings: FloatingWindowSettingsSnapshot,
+) -> FloatingWindowSettingsSnapshot {
+    FloatingWindowSettingsSnapshot {
+        opacity: clamp_f64(settings.opacity, 0.4, 1.0, 0.92),
+        scale: clamp_f64(settings.scale, 0.9, 1.38, 1.0),
+    }
+}
+
+fn clamp_f64(value: f64, minimum: f64, maximum: f64, fallback: f64) -> f64 {
+    if !value.is_finite() {
+        return fallback;
+    }
+
+    value.clamp(minimum, maximum)
+}
+
+fn sanitize_floating_position(
+    position: Option<FloatingWindowPositionSnapshot>,
+) -> Option<FloatingWindowPositionSnapshot> {
+    let position = position?;
+    if !is_valid_coordinate(position.x) || !is_valid_coordinate(position.y) {
+        return None;
+    }
+
+    Some(FloatingWindowPositionSnapshot {
+        x: position.x,
+        y: position.y,
+        saved_at: position.saved_at.filter(|value| *value > 0),
+    })
+}
+
+fn is_valid_coordinate(value: f64) -> bool {
+    value.is_finite() && value.abs() <= 20_000.0
 }
 
 fn normalize_user_path(path: &str) -> PathBuf {
@@ -210,4 +290,41 @@ fn home_dir() -> PathBuf {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_keep_legacy_codex_home_and_sanitize_floating_values() {
+        let raw = r#"{
+            "codex_home": "~/custom-codex",
+            "floatingWindow": {
+                "opacity": 1.4,
+                "scale": 0.2
+            }
+        }"#;
+
+        let settings: AppSettingsSnapshot = serde_json::from_str(raw).unwrap();
+        let sanitized = sanitize_app_settings(settings);
+
+        assert_eq!(sanitized.codex_home.as_deref(), Some("~/custom-codex"));
+        assert_eq!(sanitized.floating_window.opacity, 1.0);
+        assert_eq!(sanitized.floating_window.scale, 0.9);
+    }
+
+    #[test]
+    fn settings_drop_unreasonable_floating_position() {
+        let settings = AppSettingsSnapshot {
+            floating_position: Some(FloatingWindowPositionSnapshot {
+                x: 20_001.0,
+                y: 24.0,
+                saved_at: Some(1),
+            }),
+            ..AppSettingsSnapshot::default()
+        };
+
+        assert!(sanitize_app_settings(settings).floating_position.is_none());
+    }
 }

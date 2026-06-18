@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +30,51 @@ pub struct PlatformFeatureCapability {
     pub status: String,
     pub label: String,
     pub note: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettingsSnapshot {
+    #[serde(default, alias = "codex_home")]
+    pub codex_home: Option<String>,
+    #[serde(default)]
+    pub floating_window: FloatingWindowSettingsSnapshot,
+    #[serde(default)]
+    pub floating_position: Option<FloatingWindowPositionSnapshot>,
+}
+
+impl Default for AppSettingsSnapshot {
+    fn default() -> Self {
+        Self {
+            codex_home: None,
+            floating_window: FloatingWindowSettingsSnapshot::default(),
+            floating_position: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FloatingWindowSettingsSnapshot {
+    pub opacity: f64,
+    pub scale: f64,
+}
+
+impl Default for FloatingWindowSettingsSnapshot {
+    fn default() -> Self {
+        Self {
+            opacity: 0.92,
+            scale: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FloatingWindowPositionSnapshot {
+    pub x: f64,
+    pub y: f64,
+    pub saved_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]

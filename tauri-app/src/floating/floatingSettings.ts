@@ -1,35 +1,14 @@
-export interface FloatingWindowSettings {
-  opacity: number;
-  scale: number;
-}
+export type { FloatingWindowSettings } from "../types/dashboard";
+import type { FloatingWindowSettings } from "../types/dashboard";
 
 export const FLOATING_SETTINGS_EVENT = "floating-settings-changed";
 export const FLOATING_BASE_WIDTH = 296;
 export const FLOATING_BASE_HEIGHT = 112;
 
-const FLOATING_SETTINGS_KEY = "codex-token-bar-floating-settings-v1";
-
 export const DEFAULT_FLOATING_SETTINGS: FloatingWindowSettings = {
   opacity: 0.92,
   scale: 1,
 };
-
-export function readFloatingSettings(): FloatingWindowSettings {
-  try {
-    const raw = window.localStorage.getItem(FLOATING_SETTINGS_KEY);
-    if (raw === null) {
-      return DEFAULT_FLOATING_SETTINGS;
-    }
-
-    return sanitizeFloatingSettings(JSON.parse(raw) as Partial<FloatingWindowSettings>);
-  } catch {
-    return DEFAULT_FLOATING_SETTINGS;
-  }
-}
-
-export function writeFloatingSettings(settings: FloatingWindowSettings) {
-  window.localStorage.setItem(FLOATING_SETTINGS_KEY, JSON.stringify(sanitizeFloatingSettings(settings)));
-}
 
 export function sanitizeFloatingSettings(
   settings: Partial<FloatingWindowSettings>,

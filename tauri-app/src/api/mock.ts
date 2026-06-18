@@ -1,5 +1,6 @@
 import type {
   AccountQuotaBundle,
+  AppSettingsSnapshot,
   CodexHomeStatus,
   DashboardSnapshot,
   FloatingPanelSnapshot,
@@ -14,6 +15,15 @@ export const mockCodexHome: CodexHomeStatus = {
   path: "~/.codex",
   exists: true,
   source: "mock",
+};
+
+export const mockAppSettings: AppSettingsSnapshot = {
+  codexHome: null,
+  floatingWindow: {
+    opacity: 0.92,
+    scale: 1,
+  },
+  floatingPosition: null,
 };
 
 export const mockPlatformCapabilities: PlatformCapabilities = {

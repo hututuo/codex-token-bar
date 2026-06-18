@@ -1,7 +1,7 @@
 import { useEffect } from "react";
+import { readAppSettings, saveFloatingPosition } from "../api/client";
 import { desktopPlatform } from "../platform/desktop";
 
-const FLOATING_POSITION_KEY = "codex-token-bar-floating-position-v1";
 const MAX_REASONABLE_COORDINATE = 20_000;
 
 interface StoredFloatingPosition {
@@ -12,16 +12,23 @@ interface StoredFloatingPosition {
 
 export function useFloatingWindowPlacement() {
   useEffect(() => {
-    const storedPosition = readStoredPosition();
-    if (storedPosition !== null) {
-      void desktopPlatform.setFloatingWindowPosition(storedPosition);
-    }
-
     let disposed = false;
     let unlisten: (() => void) | null = null;
 
+    void readAppSettings().then((settings) => {
+      if (!disposed && isStoredPosition(settings.floatingPosition)) {
+        void desktopPlatform.setFloatingWindowPosition(settings.floatingPosition);
+      }
+    });
+
     void desktopPlatform.onFloatingWindowMoved((position) => {
-      writeStoredPosition(position.x, position.y);
+      if (isValidCoordinate(position.x) && isValidCoordinate(position.y)) {
+        void saveFloatingPosition({
+          x: position.x,
+          y: position.y,
+          savedAt: Date.now(),
+        });
+      }
     }).then((listener) => {
       if (disposed) {
         listener();
@@ -37,39 +44,9 @@ export function useFloatingWindowPlacement() {
   }, []);
 }
 
-function readStoredPosition(): StoredFloatingPosition | null {
-  try {
-    const raw = window.localStorage.getItem(FLOATING_POSITION_KEY);
-    if (raw === null) {
-      return null;
-    }
-
-    const parsed = JSON.parse(raw) as Partial<StoredFloatingPosition>;
-    if (!isValidCoordinate(parsed.x) || !isValidCoordinate(parsed.y)) {
-      return null;
-    }
-
-    return {
-      x: parsed.x,
-      y: parsed.y,
-      savedAt: typeof parsed.savedAt === "number" ? parsed.savedAt : Date.now(),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredPosition(x: number, y: number) {
-  if (!isValidCoordinate(x) || !isValidCoordinate(y)) {
-    return;
-  }
-
-  const payload: StoredFloatingPosition = {
-    x,
-    y,
-    savedAt: Date.now(),
-  };
-  window.localStorage.setItem(FLOATING_POSITION_KEY, JSON.stringify(payload));
+function isStoredPosition(value: unknown): value is StoredFloatingPosition {
+  const position = value as Partial<StoredFloatingPosition> | null;
+  return position !== null && isValidCoordinate(position.x) && isValidCoordinate(position.y);
 }
 
 function isValidCoordinate(value: unknown): value is number {

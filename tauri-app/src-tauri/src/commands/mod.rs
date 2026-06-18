@@ -3,8 +3,9 @@ use crate::core::{
     provider_repair,
 };
 use crate::models::{
-    AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, FloatingPanelSnapshot, LiveRateSnapshot,
-    PlatformCapabilities, ProviderRepairActionResult, ProviderRepairBackupInfo,
+    AccountQuotaBundle, AppSettingsSnapshot, CodexHomeStatus, DashboardSnapshot,
+    FloatingPanelSnapshot, FloatingWindowPositionSnapshot, FloatingWindowSettingsSnapshot,
+    LiveRateSnapshot, PlatformCapabilities, ProviderRepairActionResult, ProviderRepairBackupInfo,
     ProviderRepairSnapshot,
 };
 use crate::platform;
@@ -22,6 +23,25 @@ pub fn set_codex_home(path: String) -> Result<CodexHomeStatus, String> {
 #[tauri::command]
 pub fn reset_codex_home() -> Result<CodexHomeStatus, String> {
     platform::reset_codex_home()
+}
+
+#[tauri::command]
+pub fn read_app_settings() -> Result<AppSettingsSnapshot, String> {
+    Ok(platform::read_app_settings())
+}
+
+#[tauri::command]
+pub fn save_floating_settings(
+    settings: FloatingWindowSettingsSnapshot,
+) -> Result<AppSettingsSnapshot, String> {
+    platform::save_floating_settings(settings)
+}
+
+#[tauri::command]
+pub fn save_floating_position(
+    position: FloatingWindowPositionSnapshot,
+) -> Result<AppSettingsSnapshot, String> {
+    platform::save_floating_position(position)
 }
 
 #[tauri::command]

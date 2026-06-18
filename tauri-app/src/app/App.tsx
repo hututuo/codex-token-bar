@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { readAppSettings, saveFloatingSettings } from "../api/client";
 import { FloatingWindowApp } from "../floating/FloatingWindowApp";
 import {
-  readFloatingSettings,
+  DEFAULT_FLOATING_SETTINGS,
   sanitizeFloatingSettings,
-  writeFloatingSettings,
 } from "../floating/floatingSettings";
 import { DashboardPage } from "../pages/DashboardPage";
 import { desktopPlatform } from "../platform/desktop";
@@ -29,7 +29,8 @@ function DashboardApp() {
     updateProviderRepair,
   } = useDashboardData();
   const [floatingVisible, setFloatingVisible] = useState(true);
-  const [floatingSettings, setFloatingSettings] = useState(readFloatingSettings);
+  const [floatingSettings, setFloatingSettings] = useState(DEFAULT_FLOATING_SETTINGS);
+  const floatingSettingsLoaded = useRef(false);
   useStatusTray(state.liveRate, state.platform);
 
   useEffect(() => {
@@ -70,9 +71,27 @@ function DashboardApp() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
+    void readAppSettings().then((settings) => {
+      if (cancelled) {
+        return;
+      }
+      floatingSettingsLoaded.current = true;
+      setFloatingSettings(sanitizeFloatingSettings(settings.floatingWindow));
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const sanitized = sanitizeFloatingSettings(floatingSettings);
-    writeFloatingSettings(sanitized);
     void desktopPlatform.publishFloatingSettings(sanitized);
+    if (floatingSettingsLoaded.current) {
+      void saveFloatingSettings(sanitized);
+    }
   }, [floatingSettings]);
 
   async function toggleFloatingWindow() {

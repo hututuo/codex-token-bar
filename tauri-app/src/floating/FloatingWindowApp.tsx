@@ -1,13 +1,13 @@
 import { type CSSProperties, useEffect, useState } from "react";
 import { mockFloatingPanelSnapshot } from "../api/mock";
-import { readAccountQuota, readFloatingPanelSnapshot } from "../api/client";
+import { readAccountQuota, readAppSettings, readFloatingPanelSnapshot } from "../api/client";
 import { desktopPlatform } from "../platform/desktop";
 import type { FloatingPanelSnapshot } from "../types/dashboard";
 import { compactQuotaLabel } from "../utils/quota";
 import {
   FLOATING_BASE_HEIGHT,
   FLOATING_BASE_WIDTH,
-  readFloatingSettings,
+  DEFAULT_FLOATING_SETTINGS,
   sanitizeFloatingSettings,
   type FloatingWindowSettings,
 } from "./floatingSettings";
@@ -16,7 +16,7 @@ import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
 
 export function FloatingWindowApp() {
   const [snapshot, setSnapshot] = useState<FloatingPanelSnapshot>(mockFloatingPanelSnapshot);
-  const [settings, setSettings] = useState<FloatingWindowSettings>(readFloatingSettings);
+  const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   useFloatingWindowPlacement();
 
   useEffect(() => {
@@ -41,6 +41,20 @@ export function FloatingWindowApp() {
     return () => {
       disposed = true;
       unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void readAppSettings().then((settings) => {
+      if (!cancelled) {
+        setSettings(sanitizeFloatingSettings(settings.floatingWindow));
+      }
+    });
+
+    return () => {
+      cancelled = true;
     };
   }, []);
 

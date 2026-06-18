@@ -24,6 +24,23 @@ export interface PlatformFeatureCapability {
   note: string;
 }
 
+export interface FloatingWindowSettings {
+  opacity: number;
+  scale: number;
+}
+
+export interface AppSettingsSnapshot {
+  codexHome: string | null;
+  floatingWindow: FloatingWindowSettings;
+  floatingPosition: FloatingWindowPosition | null;
+}
+
+export interface FloatingWindowPosition {
+  x: number;
+  y: number;
+  savedAt?: number | null;
+}
+
 export interface AccountInfo {
   displayName: string;
   planLabel: string;
