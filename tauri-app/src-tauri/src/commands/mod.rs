@@ -59,9 +59,9 @@ pub fn reset_codex_home() -> Result<CodexHomeStatus, String> {
 
 #[tauri::command]
 pub fn read_app_settings() -> Result<AppSettingsSnapshot, String> {
-    startup_trace::mark("command read_app_settings start");
+    startup_trace::mark_once("command read_app_settings start");
     let result = platform::read_app_settings();
-    startup_trace::mark("command read_app_settings end");
+    startup_trace::mark_once("command read_app_settings end");
     result
 }
 
@@ -73,9 +73,9 @@ pub fn record_startup_event(label: String) -> Result<bool, String> {
 
 #[tauri::command]
 pub fn read_autostart_status(app: tauri::AppHandle) -> Result<AutostartStatus, String> {
-    startup_trace::mark("command read_autostart_status start");
+    startup_trace::mark_once("command read_autostart_status start");
     let result = platform::read_autostart_status(&app);
-    startup_trace::mark("command read_autostart_status end");
+    startup_trace::mark_once("command read_autostart_status end");
     Ok(result)
 }
 
@@ -136,9 +136,9 @@ pub fn read_precise_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
 
 #[tauri::command]
 pub fn read_account_quota(force_refresh: Option<bool>) -> Result<AccountQuotaBundle, String> {
-    startup_trace::mark("command read_account_quota start");
+    startup_trace::mark_once("command read_account_quota start");
     let result = local_source().read_account_quota(force_refresh.unwrap_or(false));
-    startup_trace::mark("command read_account_quota end");
+    startup_trace::mark_once("command read_account_quota end");
     result
 }
 
@@ -146,9 +146,9 @@ pub fn read_account_quota(force_refresh: Option<bool>) -> Result<AccountQuotaBun
 pub fn read_live_rate_snapshot(
     selected_thread_id: Option<String>,
 ) -> Result<LiveRateSnapshot, String> {
-    startup_trace::mark("command read_live_rate_snapshot start");
+    startup_trace::mark_once("command read_live_rate_snapshot start");
     let result = local_source().try_read_live_rate_snapshot(selected_thread_id.as_deref());
-    startup_trace::mark("command read_live_rate_snapshot end");
+    startup_trace::mark_once("command read_live_rate_snapshot end");
     result
 }
 
@@ -163,13 +163,13 @@ pub fn start_live_rate_stream(
     state: State<LiveRateStreamState>,
     selected_thread_id: Option<String>,
 ) -> Result<bool, String> {
-    startup_trace::mark("command start_live_rate_stream start");
+    startup_trace::mark_once("command start_live_rate_stream start");
     let mut current = state.handle.lock().map_err(|error| error.to_string())?;
     if current
         .as_ref()
         .is_some_and(|handle| handle.selected_thread_id == selected_thread_id)
     {
-        startup_trace::mark("command start_live_rate_stream end");
+        startup_trace::mark_once("command start_live_rate_stream end");
         return Ok(true);
     }
     current.take();
@@ -205,7 +205,7 @@ pub fn start_live_rate_stream(
         stop_sender,
         join_handle: Some(join_handle),
     });
-    startup_trace::mark("command start_live_rate_stream end");
+    startup_trace::mark_once("command start_live_rate_stream end");
     Ok(true)
 }
 
