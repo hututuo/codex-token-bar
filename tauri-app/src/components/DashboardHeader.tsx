@@ -142,6 +142,9 @@ function commandDisplayName(command: string): string {
   const knownNames: Record<string, string> = {
     "local:quota_history": "额度历史",
     "local:token_event_cache": "精确 token 缓存",
+    "local:jsonl_scan": "会话 JSONL 扫描",
+    "local:jsonl_file": "会话 JSONL 文件",
+    "local:thread_info": "会话标题索引",
     get_codex_home: "Codex 目录读取",
     read_platform_capabilities: "平台能力读取",
     read_dashboard_snapshot: "首页快速统计读取",

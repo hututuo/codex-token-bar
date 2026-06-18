@@ -131,12 +131,13 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
 
     let mut events = Vec::new();
     let mut warnings = Vec::new();
+    let session_files = jsonl_files(&sessions_root, &mut warnings);
     let mut cache = TokenEventCache::load(&mut warnings);
     let home_cache_key = codex_home_cache_key(codex_home);
     let home_cache = cache.home_cache_mut(&home_cache_key, codex_home);
     let mut seen_cache_keys = HashSet::new();
     let mut cache_changed = false;
-    for file in jsonl_files(&sessions_root) {
+    for file in session_files {
         let session_id = session_id_from_file(&file);
         let cache_key = file_cache_key(codex_home, &file);
         seen_cache_keys.insert(cache_key);
@@ -146,6 +147,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
             &mut home_cache.files,
             &mut cache_changed,
             codex_home,
+            &mut warnings,
         ));
     }
     if home_cache.retain_seen(&seen_cache_keys) {
@@ -158,7 +160,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     }
 
     if events.is_empty() {
-        return Err("No token_count events found".into());
+        return Err(no_token_events_error(&warnings));
     }
 
     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
@@ -171,7 +173,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     }
     let recent_usage_24h = recent_usage(&events, local_offset);
     let stats = stats(&events, &activity_days);
-    let cache_hit_ranking = cache_hit_ranking(&events, codex_home, local_offset);
+    let cache_hit_ranking = cache_hit_ranking(&events, codex_home, local_offset, &mut warnings);
 
     Ok(DashboardSnapshot {
         generated_at,
@@ -195,21 +197,73 @@ fn token_cache_warning(message: String) -> LocalDataWarning {
     }
 }
 
-fn jsonl_files(root: &Path) -> Vec<PathBuf> {
+fn jsonl_scan_warning(message: String) -> LocalDataWarning {
+    LocalDataWarning {
+        source: "jsonl_scan".into(),
+        message,
+    }
+}
+
+fn jsonl_file_warning(message: String) -> LocalDataWarning {
+    LocalDataWarning {
+        source: "jsonl_file".into(),
+        message,
+    }
+}
+
+fn thread_info_warning(message: String) -> LocalDataWarning {
+    LocalDataWarning {
+        source: "thread_info".into(),
+        message,
+    }
+}
+
+fn no_token_events_error(warnings: &[LocalDataWarning]) -> String {
+    if warnings.is_empty() {
+        return "No token_count events found".into();
+    }
+    let details = warnings
+        .iter()
+        .map(|warning| format!("{}: {}", warning.source, warning.message))
+        .collect::<Vec<_>>()
+        .join("；");
+    format!("No token_count events found；{details}")
+}
+
+fn jsonl_files(root: &Path, warnings: &mut Vec<LocalDataWarning>) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    collect_jsonl_files(root, &mut files);
+    collect_jsonl_files(root, &mut files, warnings);
     files
 }
 
-fn collect_jsonl_files(root: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
+fn collect_jsonl_files(root: &Path, files: &mut Vec<PathBuf>, warnings: &mut Vec<LocalDataWarning>) {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) => {
+            warnings.push(jsonl_scan_warning(format!(
+                "读取会话目录失败：{}（{}）",
+                root.display(),
+                error
+            )));
+            return;
+        }
     };
 
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                warnings.push(jsonl_scan_warning(format!(
+                    "读取会话目录项失败：{}（{}）",
+                    root.display(),
+                    error
+                )));
+                continue;
+            }
+        };
         let path = entry.path();
         if path.is_dir() {
-            collect_jsonl_files(&path, files);
+            collect_jsonl_files(&path, files, warnings);
         } else if path.extension().is_some_and(|extension| extension == "jsonl") {
             files.push(path);
         }
@@ -308,10 +362,11 @@ fn parse_session_file_cached(
     files: &mut HashMap<String, CachedSessionFile>,
     cache_changed: &mut bool,
     codex_home: &Path,
+    warnings: &mut Vec<LocalDataWarning>,
 ) -> Vec<TokenEvent> {
     let cache_key = file_cache_key(codex_home, file);
     let Some(signature) = file_signature(file) else {
-        return parse_session_file(file, session_id);
+        return parse_session_file(file, session_id, warnings);
     };
 
     if let Some(entry) = files.get(&cache_key) {
@@ -320,7 +375,7 @@ fn parse_session_file_cached(
         }
     }
 
-    let events = parse_session_file(file, session_id);
+    let events = parse_session_file(file, session_id, warnings);
     files.insert(
         cache_key,
         CachedSessionFile {
@@ -399,16 +454,35 @@ fn stable_path_fingerprint(value: &str) -> String {
     format!("{hash:016x}")
 }
 
-fn parse_session_file(file: &Path, session_id: &str) -> Vec<TokenEvent> {
-    let Ok(handle) = fs::File::open(file) else {
-        return Vec::new();
+fn parse_session_file(file: &Path, session_id: &str, warnings: &mut Vec<LocalDataWarning>) -> Vec<TokenEvent> {
+    let handle = match fs::File::open(file) {
+        Ok(handle) => handle,
+        Err(error) => {
+            warnings.push(jsonl_file_warning(format!(
+                "读取会话文件失败：{}（{}）",
+                file.display(),
+                error
+            )));
+            return Vec::new();
+        }
     };
     let reader = BufReader::new(handle);
     let fork_replay_cutoff = fork_replay_cutoff(file);
     let mut previous_total = None;
     let mut events = Vec::new();
 
-    for line in reader.lines().map_while(Result::ok) {
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(error) => {
+                warnings.push(jsonl_file_warning(format!(
+                    "读取会话文件中断：{}（{}）",
+                    file.display(),
+                    error
+                )));
+                break;
+            }
+        };
         if !line.contains("\"token_count\"") {
             continue;
         }
@@ -617,9 +691,9 @@ fn cache_hit_ranking(
     events: &[TokenEvent],
     codex_home: &Path,
     local_offset: UtcOffset,
+    warnings: &mut Vec<LocalDataWarning>,
 ) -> Vec<CacheHitRankingItem> {
     let minimum_input_tokens = 1_000;
-    let thread_info = read_thread_info(codex_home);
     let mut by_session: HashMap<&str, TokenAccumulator> = HashMap::new();
     let mut last_seen: HashMap<&str, OffsetDateTime> = HashMap::new();
 
@@ -635,20 +709,30 @@ fn cache_hit_ranking(
             .or_insert(event.timestamp);
     }
 
-    let mut rows: Vec<_> = by_session
+    let rows: Vec<_> = by_session
         .into_iter()
         .filter(|(_, usage)| usage.calls > 1 && usage.input_tokens >= minimum_input_tokens)
+        .map(|(session_id, usage)| (session_id.to_string(), usage))
+        .collect();
+
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    let thread_info = read_thread_info(codex_home, warnings);
+    let mut rows: Vec<_> = rows
+        .into_iter()
         .map(|(session_id, usage)| {
-            let info = thread_info.get(session_id);
+            let info = thread_info.get(&session_id);
             let updated_at = info
                 .and_then(|value| value.updated_at)
-                .or_else(|| last_seen.get(session_id).copied());
+                .or_else(|| last_seen.get(session_id.as_str()).copied());
             let title = info
                 .map(|value| value.title.clone())
                 .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| fallback_session_title(session_id));
+                .unwrap_or_else(|| fallback_session_title(&session_id));
             let uncached = usage.input_tokens.saturating_sub(usage.cached_input_tokens);
-            (session_id.to_string(), usage, title, updated_at, uncached)
+            (session_id, usage, title, updated_at, uncached)
         })
         .collect();
 
@@ -676,22 +760,38 @@ fn cache_hit_ranking(
         .collect()
 }
 
-fn read_thread_info(codex_home: &Path) -> HashMap<String, ThreadInfo> {
+fn read_thread_info(codex_home: &Path, warnings: &mut Vec<LocalDataWarning>) -> HashMap<String, ThreadInfo> {
     let db_path = codex_home.join("state_5.sqlite");
-    let Ok(connection) = sqlite::open_read_only(&db_path, StdDuration::from_secs(3)) else {
-        return HashMap::new();
+    let connection = match sqlite::open_read_only(&db_path, StdDuration::from_secs(3)) {
+        Ok(connection) => connection,
+        Err(error) => {
+            warnings.push(thread_info_warning(format!(
+                "读取会话标题索引失败：{}（{}）",
+                db_path.display(),
+                error
+            )));
+            return HashMap::new();
+        }
     };
 
-    let Ok(mut statement) = connection.prepare(
+    let mut statement = match connection.prepare(
         r#"
         SELECT id, title, first_user_message, preview, COALESCE(updated_at_ms, updated_at)
         FROM threads;
         "#,
-    ) else {
-        return HashMap::new();
+    ) {
+        Ok(statement) => statement,
+        Err(error) => {
+            warnings.push(thread_info_warning(format!(
+                "读取会话标题索引结构失败：{}（{}）",
+                db_path.display(),
+                error
+            )));
+            return HashMap::new();
+        }
     };
 
-    let Ok(rows) = statement.query_map([], |row| {
+    let rows = match statement.query_map([], |row| {
         let id: String = row.get(0)?;
         let title: Option<String> = row.get(1)?;
         let first_user_message: Option<String> = row.get(2)?;
@@ -705,8 +805,16 @@ fn read_thread_info(codex_home: &Path) -> HashMap<String, ThreadInfo> {
                 updated_at: updated_at.and_then(parse_thread_timestamp),
             },
         ))
-    }) else {
-        return HashMap::new();
+    }) {
+        Ok(rows) => rows,
+        Err(error) => {
+            warnings.push(thread_info_warning(format!(
+                "读取会话标题索引数据失败：{}（{}）",
+                db_path.display(),
+                error
+            )));
+            return HashMap::new();
+        }
     };
 
     rows.filter_map(Result::ok).collect()
