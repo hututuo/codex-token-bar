@@ -32,8 +32,8 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
     Ok(DashboardSnapshot {
         generated_at,
         account: AccountInfo {
-            display_name: "本地账户".into(),
-            plan_label: "Pro".into(),
+            display_name: "账户待读取".into(),
+            plan_label: "计划待读取".into(),
         },
         stats,
         quota: placeholder_quota(),

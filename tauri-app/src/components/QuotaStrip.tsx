@@ -65,7 +65,7 @@ export function QuotaStrip({ snapshot }: QuotaStripProps) {
     <section className="quota-strip" aria-label="账户额度">
       <div className="quota-plan">
         <span>本地账户额度</span>
-        <strong>PRO</strong>
+        <strong>本地读取</strong>
       </div>
       <QuotaBar quota={snapshot.fiveHour} />
       <QuotaBar quota={snapshot.sevenDay} />

@@ -57,8 +57,8 @@ export function emptyDashboardSnapshot(): DashboardSnapshot {
   return {
     generatedAt: now.toISOString(),
     account: {
-      displayName: "本地账户",
-      planLabel: "Pro",
+      displayName: "账户待读取",
+      planLabel: "计划待读取",
     },
     stats: {
       totalTokens: 0,
@@ -80,8 +80,8 @@ export function emptyDashboardSnapshot(): DashboardSnapshot {
 export function emptyAccountQuotaBundle(): AccountQuotaBundle {
   return {
     account: {
-      displayName: "本地账户",
-      planLabel: "Pro",
+      displayName: "账户待读取",
+      planLabel: "计划待读取",
     },
     quota: emptyQuotaSnapshot(),
     quotaHistory24h: emptyRecentUsage(new Date()).map((point) => ({

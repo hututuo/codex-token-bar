@@ -224,7 +224,7 @@ function pendingDashboardSnapshot(): DashboardSnapshot {
     generatedAt: new Date().toISOString(),
     account: {
       displayName: "读取中",
-      planLabel: "Pro",
+      planLabel: "计划待读取",
     },
     stats: {
       totalTokens: 0,
