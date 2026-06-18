@@ -1,4 +1,4 @@
-use crate::core::{live_rate, mock_data, provider_repair, quota, quota_history, usage};
+use crate::core::{live_rate, provider_repair, quota, quota_history, usage};
 use crate::models::{
     AccountQuotaBundle, DashboardSnapshot, FloatingPanelSnapshot, LiveRateSnapshot,
     ProviderRepairSnapshot,
@@ -32,7 +32,7 @@ impl DashboardDataSource for LocalCodexDataSource {
 
     fn read_dashboard_snapshot(&self) -> DashboardSnapshot {
         let mut snapshot = usage::state_sqlite::dashboard_snapshot(self.codex_home())
-            .unwrap_or_else(|_| mock_data::dashboard_snapshot());
+            .unwrap_or_else(|_| usage::state_sqlite::empty_dashboard_snapshot());
         quota_history::apply_recent_history(&mut snapshot.recent_usage_24h);
         snapshot
     }
@@ -40,7 +40,7 @@ impl DashboardDataSource for LocalCodexDataSource {
     fn read_precise_dashboard_snapshot(&self) -> DashboardSnapshot {
         let mut snapshot = usage::token_count_jsonl::dashboard_snapshot(self.codex_home())
             .or_else(|_| usage::state_sqlite::dashboard_snapshot(self.codex_home()))
-            .unwrap_or_else(|_| mock_data::dashboard_snapshot());
+            .unwrap_or_else(|_| usage::state_sqlite::empty_dashboard_snapshot());
         quota_history::apply_recent_history(&mut snapshot.recent_usage_24h);
         snapshot
     }
