@@ -55,13 +55,13 @@ export function pendingLiveRateSnapshot(): LiveRateSnapshot {
 
 export function pendingRepairSnapshot(): ProviderRepairSnapshot {
   return {
-    detectedProvider: "读取中",
-    providerSource: "后台扫描",
+    detectedProvider: "未扫描",
+    providerSource: "手动扫描",
     sessionFilesFound: 0,
     inconsistentCount: 0,
-    status: "会话修复正在后台扫描，不影响主页面打开。",
+    status: "会话修复尚未扫描。需要时点击扫描，应用不会在启动时自动读取修复范围。",
     steps: [
-      { label: "扫描", status: "后台扫描中", done: false, healthy: true },
+      { label: "扫描", status: "未扫描", done: false, healthy: true },
       { label: "备份", status: "未备份", done: false, healthy: true },
       { label: "修复", status: "未进行修复", done: false, healthy: true },
       { label: "验证", status: "未验证", done: false, healthy: true },
@@ -266,14 +266,20 @@ function pendingActivityDays() {
 }
 
 function pendingRecentUsage() {
-  return Array.from({ length: 48 }, (_, index) => ({
-    label: `${String(Math.floor(index / 2)).padStart(2, "0")}:00`,
-    tokens: 0,
-    calls: 0,
-    cacheHitRate: null,
-    fiveHourRemainingPercent: null,
-    sevenDayRemainingPercent: null,
-  }));
+  const now = new Date();
+  const end = Math.floor(now.getTime() / 300_000) * 300_000;
+  const start = end - 24 * 60 * 60 * 1_000;
+  return Array.from({ length: 289 }, (_, index) => {
+    const date = new Date(start + index * 300_000);
+    return {
+      label: `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`,
+      tokens: 0,
+      calls: 0,
+      cacheHitRate: null,
+      fiveHourRemainingPercent: null,
+      sevenDayRemainingPercent: null,
+    };
+  });
 }
 
 function mergeQuotaHistory(points: RecentUsagePoint[], quota: AccountQuotaBundle): RecentUsagePoint[] {

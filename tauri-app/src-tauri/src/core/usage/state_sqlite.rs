@@ -346,6 +346,7 @@ mod tests {
         assert_eq!(snapshot.stats.peak_thread_tokens, 180);
         assert_eq!(snapshot.stats.total_threads, 2);
         assert!(snapshot.activity_days.iter().any(|day| day.tokens == 300));
+        assert_eq!(snapshot.recent_usage_24h.len(), 289);
         assert!(snapshot.recent_usage_24h.iter().any(|point| point.tokens == 300));
 
         fs::remove_dir_all(root).unwrap();

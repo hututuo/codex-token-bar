@@ -10,7 +10,7 @@ use time::{OffsetDateTime, UtcOffset};
 const HEARTBEAT_SECONDS: f64 = 60.0 * 60.0;
 const RETENTION_DAYS: i64 = 45;
 const RECENT_INTERVAL_SECONDS: i64 = 5 * 60;
-const RECENT_BIN_COUNT: usize = 288;
+const RECENT_BIN_COUNT: usize = 289;
 const MAX_CARRY_GAP_SECONDS: f64 = 90.0 * 60.0;
 
 pub fn record_bundle(bundle: &AccountQuotaBundle) {
@@ -272,8 +272,8 @@ fn should_insert(row: &QuotaHistoryRow, latest: &QuotaHistoryRow, now: f64) -> b
 }
 
 fn make_recent_history(rows: Vec<QuotaHistoryRow>, count: usize) -> Vec<QuotaHistoryPoint> {
-    let now = now_unix();
-    let start = now - (count as f64) * RECENT_INTERVAL_SECONDS as f64;
+    let end = floor_to_recent_bin(now_unix());
+    let start = end - (count.saturating_sub(1) as f64) * RECENT_INTERVAL_SECONDS as f64;
     let sorted = sanitized_rows(rows);
     let mut row_index = 0;
     let mut latest: Option<QuotaHistoryRow> = None;
@@ -303,6 +303,11 @@ fn make_recent_history(rows: Vec<QuotaHistoryRow>, count: usize) -> Vec<QuotaHis
             }
         })
         .collect()
+}
+
+fn floor_to_recent_bin(timestamp: f64) -> f64 {
+    let interval = RECENT_INTERVAL_SECONDS as f64;
+    (timestamp / interval).floor() * interval
 }
 
 fn make_daily_history(rows: Vec<QuotaHistoryRow>) -> HashMap<String, DailyQuotaHistory> {

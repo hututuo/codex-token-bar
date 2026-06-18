@@ -19,7 +19,6 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   const preciseLoadStarted = useRef(false);
   const quotaLoadStarted = useRef(false);
   const liveThreadOptionsLoadStarted = useRef(false);
-  const repairScanStarted = useRef(false);
   const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
 
   useEffect(() => {
@@ -55,28 +54,6 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     }
 
     void loadPreciseSnapshot();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [source, state.dashboard, state.loading]);
-
-  useEffect(() => {
-    if (state.dashboard === null || state.loading || repairScanStarted.current) {
-      return;
-    }
-
-    let cancelled = false;
-    repairScanStarted.current = true;
-
-    async function loadProviderRepair() {
-      const repair = await source.scanProviderRepair();
-      if (!cancelled) {
-        setState((current) => ({ ...current, repair }));
-      }
-    }
-
-    void loadProviderRepair();
 
     return () => {
       cancelled = true;
@@ -196,7 +173,6 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     preciseLoadStarted.current = false;
     quotaLoadStarted.current = false;
     liveThreadOptionsLoadStarted.current = false;
-    repairScanStarted.current = false;
     setState((current) => ({ ...current, loading: true }));
     setState(await readInitialAppState(source));
   }

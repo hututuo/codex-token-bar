@@ -63,6 +63,30 @@ fn daily_history_groups_quota_samples_by_local_day() {
     let _ = std::fs::remove_file(path);
 }
 
+#[test]
+fn recent_history_uses_canonical_five_minute_axis() {
+    let path = temp_db_path("recent-axis");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let reset = now_unix() + 3_600.0;
+
+    database
+        .record(&bundle("tester", 0.20, reset as i64, 0.40, (reset + 500_000.0) as i64))
+        .unwrap();
+
+    let history = database.recent_history_24h(RECENT_BIN_COUNT).unwrap();
+    assert_eq!(history.len(), 289);
+    assert!(history
+        .iter()
+        .all(|point| point.label.len() == "00:00".len()));
+    for pair in history.windows(2) {
+        let left = minutes_since_midnight(&pair[0].label);
+        let right = minutes_since_midnight(&pair[1].label);
+        assert_eq!((right - left).rem_euclid(24 * 60), 5);
+    }
+
+    let _ = std::fs::remove_file(path);
+}
+
 fn bundle(
     name: &str,
     five_used: f64,
@@ -110,4 +134,9 @@ fn temp_db_path(label: &str) -> PathBuf {
             .unwrap()
             .as_nanos()
     ))
+}
+
+fn minutes_since_midnight(label: &str) -> i32 {
+    let (hour, minute) = label.split_once(':').unwrap();
+    hour.parse::<i32>().unwrap() * 60 + minute.parse::<i32>().unwrap()
 }

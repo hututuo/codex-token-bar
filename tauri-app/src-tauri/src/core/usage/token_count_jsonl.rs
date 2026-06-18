@@ -13,6 +13,9 @@ use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
 
+const RECENT_INTERVAL_SECONDS: i64 = 5 * 60;
+const RECENT_POINT_COUNT: i64 = 289;
+
 #[derive(Clone, Debug)]
 struct TokenEvent {
     timestamp: OffsetDateTime,
@@ -285,25 +288,25 @@ fn activity_days(events: &[TokenEvent], local_offset: UtcOffset) -> Vec<Activity
 }
 
 fn recent_usage(events: &[TokenEvent], local_offset: UtcOffset) -> Vec<RecentUsagePoint> {
-    let end = OffsetDateTime::now_utc();
-    let start = end - Duration::hours(24);
-    let interval_seconds = 5 * 60;
+    let now_epoch = OffsetDateTime::now_utc().unix_timestamp();
+    let end_bin = floor_to_recent_bin(now_epoch);
+    let start_bin = end_bin - 24 * 60 * 60;
     let mut grouped: HashMap<i64, TokenAccumulator> = HashMap::new();
 
     for event in events {
-        if event.timestamp < start || event.timestamp > end {
+        let bin_epoch = floor_to_recent_bin(event.timestamp.unix_timestamp());
+        if bin_epoch < start_bin || bin_epoch > end_bin {
             continue;
         }
-        let offset = (event.timestamp.unix_timestamp() - start.unix_timestamp()) / interval_seconds;
-        if (0..288).contains(&offset) {
-            grouped.entry(offset).or_default().add(event);
-        }
+        grouped.entry(bin_epoch).or_default().add(event);
     }
 
-    (0..288)
+    (0..RECENT_POINT_COUNT)
         .map(|offset| {
-            let bin_time = start + Duration::seconds(offset * interval_seconds);
-            let usage = grouped.remove(&offset).unwrap_or_default();
+            let bin_epoch = start_bin + offset * RECENT_INTERVAL_SECONDS;
+            let bin_time = OffsetDateTime::from_unix_timestamp(bin_epoch)
+                .unwrap_or_else(|_| OffsetDateTime::now_utc());
+            let usage = grouped.remove(&bin_epoch).unwrap_or_default();
             RecentUsagePoint {
                 label: format_time(bin_time.to_offset(local_offset)),
                 tokens: usage.tokens,
@@ -318,6 +321,10 @@ fn recent_usage(events: &[TokenEvent], local_offset: UtcOffset) -> Vec<RecentUsa
             }
         })
         .collect()
+}
+
+fn floor_to_recent_bin(timestamp: i64) -> i64 {
+    timestamp - timestamp.rem_euclid(RECENT_INTERVAL_SECONDS)
 }
 
 fn stats(events: &[TokenEvent], days: &[ActivityDay]) -> DashboardStats {
@@ -581,6 +588,7 @@ mod tests {
         assert_eq!(snapshot.stats.total_calls, 2);
         assert_eq!(snapshot.stats.total_threads, 1);
         assert!(snapshot.activity_days.iter().any(|day| day.tokens == 28));
+        assert_eq!(snapshot.recent_usage_24h.len(), 289);
 
         fs::remove_dir_all(root).unwrap();
     }
