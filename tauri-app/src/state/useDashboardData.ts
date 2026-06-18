@@ -11,7 +11,6 @@ import type {
   DashboardSnapshot,
   LiveRateSnapshot,
   LiveThreadOption,
-  ProviderRepairSnapshot,
 } from "../types/dashboard";
 import {
   initialDashboardState,
@@ -23,6 +22,7 @@ import {
   type DashboardAppState,
 } from "./dashboardState";
 import { loadInitialDashboardState } from "./loadInitialDashboardState";
+import { useDashboardActions } from "./useDashboardActions";
 import { useDeferredDashboardLoads } from "./useDeferredDashboardLoads";
 import { useLiveRateFeed } from "./useLiveRateFeed";
 
@@ -31,8 +31,21 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   const [fastSnapshotLoaded, setFastSnapshotLoaded] = useState(false);
   const [loadGeneration, setLoadGeneration] = useState(0);
   const [forceNextQuotaLoad, setForceNextQuotaLoad] = useState(false);
-  const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
   const commandDiagnostics = useCommandDiagnostics();
+  const {
+    reloadAll,
+    updateCodexHome,
+    restoreAutoCodexHome,
+    updateProviderRepair,
+    selectedLiveThreadId,
+    setSelectedLiveThreadId,
+  } = useDashboardActions({
+    source,
+    setState,
+    setFastSnapshotLoaded,
+    setLoadGeneration,
+    setForceNextQuotaLoad,
+  });
 
   const mergePreciseSnapshot = useCallback((precise: DashboardSnapshot) => {
     setState((current) => mergePreciseDashboard(current, precise));
@@ -95,37 +108,6 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     source,
     onSnapshot: mergeLiveRateSnapshot,
   });
-
-  async function reloadAll() {
-    setLoadGeneration((current) => current + 1);
-    setForceNextQuotaLoad(true);
-    setFastSnapshotLoaded(false);
-    setState((current) => ({ ...current, loading: true }));
-    await loadInitialDashboardState({
-      source,
-      isCancelled: () => false,
-      setState,
-      onFastSnapshotLoaded: () => setFastSnapshotLoaded(true),
-    });
-  }
-
-  async function updateCodexHome(path: string) {
-    setSelectedLiveThreadId("");
-    setState((current) => ({ ...current, loading: true }));
-    await source.setCodexHome(path);
-    await reloadAll();
-  }
-
-  async function restoreAutoCodexHome() {
-    setSelectedLiveThreadId("");
-    setState((current) => ({ ...current, loading: true }));
-    await source.resetCodexHome();
-    await reloadAll();
-  }
-
-  function updateProviderRepair(repair: ProviderRepairSnapshot) {
-    setState((current) => ({ ...current, repair }));
-  }
 
   const readyState = useMemo(() => readyDashboardState(state), [state]);
 

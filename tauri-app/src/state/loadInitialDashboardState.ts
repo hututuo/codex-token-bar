@@ -7,7 +7,10 @@ import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type { DashboardAppState } from "./dashboardState";
 
 interface InitialDashboardLoadOptions {
-  source: DashboardDataSource;
+  source: Pick<
+    DashboardDataSource,
+    "getCodexHome" | "readPlatformCapabilities" | "readDashboardSnapshot"
+  >;
   isCancelled: () => boolean;
   setState: Dispatch<SetStateAction<DashboardAppState>>;
   onFastSnapshotLoaded: () => void;
