@@ -15,7 +15,12 @@ import {
 import { DashboardPage } from "../pages/DashboardPage";
 import { SetupGuide } from "../components/SetupGuide";
 import { desktopPlatform } from "../platform/desktop";
-import { INACTIVE_DISPLAY_SURFACES, sanitizeDisplaySurfaces } from "../settings/displaySettings";
+import {
+  canUseFloatingWindow,
+  canUseStatusTrayLiveText,
+  INACTIVE_DISPLAY_SURFACES,
+  sanitizeDisplaySurfaces,
+} from "../settings/displaySettings";
 import { useDashboardData } from "../state/useDashboardData";
 import { StatusPanelApp } from "../status/StatusPanelApp";
 import { useStatusTray } from "../tray/useStatusTray";
@@ -53,10 +58,12 @@ function DashboardApp() {
   const [showSetupGuide, setShowSetupGuide] = useState(false);
   const floatingSettingsLoaded = useRef(false);
   const displaySettingsLoaded = useRef(false);
+  const floatingAvailable = canUseFloatingWindow(state.platform);
+  const statusTrayLiveTextAvailable = canUseStatusTrayLiveText(state.platform);
   useStatusTray(
     state.liveRate,
     state.platform,
-    displaySurfaces.statusTrayLiveTextEnabled,
+    displaySurfaces.statusTrayLiveTextEnabled && statusTrayLiveTextAvailable,
   );
 
   useEffect(() => {
@@ -123,18 +130,36 @@ function DashboardApp() {
       const display = sanitizeDisplaySurfaces(settings.displaySurfaces);
       setDisplaySurfaces(display);
       setShowSetupGuide(!settings.setupGuideCompleted);
-      setFloatingVisible(display.floatingWindowEnabled);
-      if (display.floatingWindowEnabled) {
-        void desktopPlatform.showFloatingWindow();
-      } else {
-        void desktopPlatform.hideFloatingWindow();
-      }
     });
 
     return () => {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!displaySettingsLoaded.current) {
+      return;
+    }
+
+    let cancelled = false;
+    const shouldShowFloating = displaySurfaces.floatingWindowEnabled && floatingAvailable;
+
+    async function applyFloatingPreference() {
+      const confirmed = shouldShowFloating
+        ? await desktopPlatform.showFloatingWindow()
+        : await desktopPlatform.hideFloatingWindow();
+      if (!cancelled) {
+        setFloatingVisible(shouldShowFloating && confirmed);
+      }
+    }
+
+    void applyFloatingPreference();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [displaySurfaces.floatingWindowEnabled, floatingAvailable]);
 
   useEffect(() => {
     const sanitized = sanitizeFloatingSettings(floatingSettings);
@@ -146,7 +171,7 @@ function DashboardApp() {
 
   async function toggleFloatingWindow() {
     const nextVisible = !floatingVisible;
-    if (readyState !== null && !readyState.platform.floatingWindow.available) {
+    if (!floatingAvailable) {
       setFloatingVisible(false);
       return;
     }
@@ -159,6 +184,9 @@ function DashboardApp() {
   }
 
   function toggleStatusTrayLiveText() {
+    if (!statusTrayLiveTextAvailable) {
+      return;
+    }
     updateDisplaySurfaces({
       statusTrayLiveTextEnabled: !displaySurfaces.statusTrayLiveTextEnabled,
     });

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { CacheHitRanking } from "../components/CacheHitRanking";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { LiveRateCard } from "../components/LiveRateCard";
@@ -73,6 +74,23 @@ export function DashboardPage({
   refreshing,
   selectedLiveThreadId,
 }: DashboardPageProps) {
+  const [analyticsReady, setAnalyticsReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const reveal = () => {
+      if (!cancelled) {
+        setAnalyticsReady(true);
+      }
+    };
+    const schedule = scheduleAfterFirstPaint(reveal);
+
+    return () => {
+      cancelled = true;
+      schedule.cancel();
+    };
+  }, []);
+
   function openProviderRepair() {
     document.getElementById("provider-repair")?.scrollIntoView({
       behavior: "smooth",
@@ -114,15 +132,37 @@ export function DashboardPage({
           selectedLiveThreadId={selectedLiveThreadId}
           snapshot={liveRate}
         />
-        <TokenActivitySection days={dashboard.activityDays} />
-        <RecentUsageChart points={dashboard.recentUsage24h} />
-        <CacheHitRanking items={dashboard.cacheHitRanking} />
-        <ProviderRepairCard
-          id="provider-repair"
-          onSnapshotChange={onProviderRepairChange}
-          snapshot={providerRepair}
-        />
+        {analyticsReady ? (
+          <>
+            <TokenActivitySection days={dashboard.activityDays} />
+            <RecentUsageChart points={dashboard.recentUsage24h} />
+            <CacheHitRanking items={dashboard.cacheHitRanking} />
+            <ProviderRepairCard
+              id="provider-repair"
+              onSnapshotChange={onProviderRepairChange}
+              snapshot={providerRepair}
+            />
+          </>
+        ) : (
+          <section className="analytics-boot" aria-label="图表区域正在准备">
+            <span>正在准备图表和排行...</span>
+          </section>
+        )}
       </section>
     </main>
   );
+}
+
+function scheduleAfterFirstPaint(callback: () => void) {
+  if (typeof window.requestIdleCallback === "function") {
+    const id = window.requestIdleCallback(callback, { timeout: 700 });
+    return {
+      cancel: () => window.cancelIdleCallback(id),
+    };
+  }
+
+  const id = window.setTimeout(callback, 160);
+  return {
+    cancel: () => window.clearTimeout(id),
+  };
 }

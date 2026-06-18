@@ -1,4 +1,5 @@
 import type { DisplaySurfaceSettings } from "../types/dashboard";
+import type { PlatformCapabilities } from "../types/dashboard";
 
 export const DEFAULT_DISPLAY_SURFACES: DisplaySurfaceSettings = {
   floatingWindowEnabled: true,
@@ -23,4 +24,21 @@ export function sanitizeDisplaySurfaces(
         ? settings.statusTrayLiveTextEnabled
         : DEFAULT_DISPLAY_SURFACES.statusTrayLiveTextEnabled,
   };
+}
+
+export function isPlatformCapabilitiesReady(platform: PlatformCapabilities | null): boolean {
+  return platform !== null && platform.platform !== "loading";
+}
+
+export function canUseFloatingWindow(platform: PlatformCapabilities | null): boolean {
+  return platform !== null && platform.platform !== "loading" && platform.floatingWindow.available;
+}
+
+export function canUseStatusTrayLiveText(platform: PlatformCapabilities | null): boolean {
+  return (
+    platform !== null &&
+    platform.platform !== "loading" &&
+    platform.statusTray.available &&
+    platform.statusTrayLiveText.available
+  );
 }

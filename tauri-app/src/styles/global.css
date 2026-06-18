@@ -749,6 +749,19 @@ button {
   padding: 9px;
 }
 
+.analytics-boot {
+  display: grid;
+  min-height: 178px;
+  margin-top: 10px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 640;
+}
+
 .live-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 330px;
