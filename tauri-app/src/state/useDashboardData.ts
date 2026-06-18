@@ -2,7 +2,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type Dispatch,
   type SetStateAction,
@@ -13,7 +12,13 @@ import {
   subscribeCommandDiagnostics,
 } from "../api/client";
 import { dashboardDataSource, type DashboardDataSource } from "../data/dashboardDataSource";
-import type { LiveRateSnapshot, ProviderRepairSnapshot } from "../types/dashboard";
+import type {
+  AccountQuotaBundle,
+  DashboardSnapshot,
+  LiveRateSnapshot,
+  LiveThreadOption,
+  ProviderRepairSnapshot,
+} from "../types/dashboard";
 import {
   initialDashboardState,
   mergeLiveRate,
@@ -25,19 +30,34 @@ import {
   readyDashboardState,
   type DashboardAppState,
 } from "./dashboardState";
+import { useDeferredDashboardLoads } from "./useDeferredDashboardLoads";
 import { useLiveRateFeed } from "./useLiveRateFeed";
 
 export function useDashboardData(source: DashboardDataSource = dashboardDataSource) {
   const [state, setState] = useState<DashboardAppState>(initialDashboardState);
   const [fastSnapshotLoaded, setFastSnapshotLoaded] = useState(false);
-  const preciseLoadStarted = useRef(false);
-  const quotaLoadStarted = useRef(false);
-  const forceNextQuotaLoad = useRef(false);
-  const liveThreadOptionsLoadStarted = useRef(false);
+  const [loadGeneration, setLoadGeneration] = useState(0);
+  const [forceNextQuotaLoad, setForceNextQuotaLoad] = useState(false);
   const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
+
+  const mergePreciseSnapshot = useCallback((precise: DashboardSnapshot) => {
+    setState((current) => mergePreciseDashboard(current, precise));
+  }, []);
+
+  const mergeQuotaSnapshot = useCallback((quota: AccountQuotaBundle) => {
+    setState((current) => mergeQuota(current, quota));
+  }, []);
 
   const mergeLiveRateSnapshot = useCallback((liveRate: LiveRateSnapshot) => {
     setState((current) => mergeLiveRate(current, liveRate));
+  }, []);
+
+  const mergeThreadOptions = useCallback((liveThreadOptions: LiveThreadOption[]) => {
+    setState((current) => mergeLiveThreadOptions(current, liveThreadOptions));
+  }, []);
+
+  const consumeForcedQuotaRefresh = useCallback(() => {
+    setForceNextQuotaLoad(false);
   }, []);
 
   useEffect(() => {
@@ -50,6 +70,8 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     let cancelled = false;
 
     setFastSnapshotLoaded(false);
+    setLoadGeneration((current) => current + 1);
+    setForceNextQuotaLoad(false);
     void loadInitialAppStateInParts(
       source,
       () => cancelled,
@@ -62,54 +84,18 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     };
   }, [source]);
 
-  useEffect(() => {
-    if (!fastSnapshotLoaded || state.dashboard === null || state.loading || preciseLoadStarted.current) {
-      return;
-    }
-
-    let cancelled = false;
-    preciseLoadStarted.current = true;
-
-    async function loadPreciseSnapshot() {
-      const precise = await source.readPreciseDashboardSnapshot();
-      if (!cancelled && precise !== null) {
-        setState((current) => mergePreciseDashboard(current, precise));
-      }
-    }
-
-    void loadPreciseSnapshot();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [fastSnapshotLoaded, source, state.dashboard, state.loading]);
-
-  useEffect(() => {
-    if (!fastSnapshotLoaded || state.dashboard === null || state.loading || quotaLoadStarted.current) {
-      return;
-    }
-
-    let cancelled = false;
-    quotaLoadStarted.current = true;
-    const delayMs = forceNextQuotaLoad.current ? 0 : 5_000;
-
-    async function loadQuota() {
-      const quota = await source.readAccountQuota(forceNextQuotaLoad.current);
-      forceNextQuotaLoad.current = false;
-      if (!cancelled && quota !== null) {
-        setState((current) => mergeQuota(current, quota));
-      }
-    }
-
-    const timer = window.setTimeout(() => {
-      void loadQuota();
-    }, delayMs);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [fastSnapshotLoaded, source, state.dashboard, state.loading]);
+  useDeferredDashboardLoads({
+    active: fastSnapshotLoaded,
+    dashboardReady: state.dashboard !== null,
+    loading: state.loading,
+    generation: loadGeneration,
+    forceQuotaRefresh: forceNextQuotaLoad,
+    source,
+    onPreciseDashboard: mergePreciseSnapshot,
+    onQuota: mergeQuotaSnapshot,
+    onLiveThreadOptions: mergeThreadOptions,
+    onForceQuotaRefreshConsumed: consumeForcedQuotaRefresh,
+  });
 
   useLiveRateFeed({
     active: fastSnapshotLoaded,
@@ -118,33 +104,9 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     onSnapshot: mergeLiveRateSnapshot,
   });
 
-  useEffect(() => {
-    if (!fastSnapshotLoaded || state.dashboard === null || liveThreadOptionsLoadStarted.current) {
-      return;
-    }
-
-    let cancelled = false;
-    liveThreadOptionsLoadStarted.current = true;
-
-    async function loadThreadOptions() {
-      const liveThreadOptions = await source.readLiveThreadOptions();
-      if (!cancelled) {
-        setState((current) => mergeLiveThreadOptions(current, liveThreadOptions));
-      }
-    }
-
-    void loadThreadOptions();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [fastSnapshotLoaded, source, state.dashboard, state.loading]);
-
   async function reloadAll() {
-    preciseLoadStarted.current = false;
-    quotaLoadStarted.current = false;
-    forceNextQuotaLoad.current = true;
-    liveThreadOptionsLoadStarted.current = false;
+    setLoadGeneration((current) => current + 1);
+    setForceNextQuotaLoad(true);
     setFastSnapshotLoaded(false);
     setState((current) => ({ ...current, loading: true }));
     await loadInitialAppStateInParts(
