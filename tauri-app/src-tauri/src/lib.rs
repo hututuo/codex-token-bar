@@ -23,6 +23,8 @@ pub fn run() {
             commands::read_live_rate_snapshot,
             commands::scan_provider_repair,
             commands::read_floating_snapshot,
+            commands::show_floating_window,
+            commands::hide_floating_window,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Codex Token Bar");

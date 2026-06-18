@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
+import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { mockFloatingPanelSnapshot } from "../api/mock";
-import { readAccountQuota, readFloatingPanelSnapshot } from "../api/client";
+import { hideFloatingWindow, readAccountQuota, readFloatingPanelSnapshot } from "../api/client";
 import type { FloatingPanelSnapshot } from "../types/dashboard";
 import { compactQuotaLabel } from "../utils/quota";
 import { FloatingPanelSurface } from "./FloatingPanelPreview";
@@ -68,7 +69,7 @@ export function FloatingWindowApp() {
     if (!("__TAURI_INTERNALS__" in window)) {
       return;
     }
-    void getCurrentWindow().hide();
+    void hideFloatingWindow().then(() => emit("floating-window-hidden"));
   }
 
   function startWindowDrag() {

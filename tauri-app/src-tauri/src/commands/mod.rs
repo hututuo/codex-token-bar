@@ -4,6 +4,7 @@ use crate::models::{
     ProviderRepairSnapshot,
 };
 use crate::platform;
+use tauri::Manager;
 
 #[tauri::command]
 pub fn get_codex_home() -> Result<CodexHomeStatus, String> {
@@ -45,6 +46,27 @@ pub fn read_live_rate_snapshot() -> Result<LiveRateSnapshot, String> {
 pub fn read_floating_snapshot() -> Result<FloatingPanelSnapshot, String> {
     let codex_home = platform::default_codex_home();
     Ok(live_rate::read_floating_snapshot(&codex_home))
+}
+
+#[tauri::command]
+pub fn show_floating_window(app: tauri::AppHandle) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("floating")
+        .ok_or_else(|| "floating window is not available".to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    window
+        .set_always_on_top(true)
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn hide_floating_window(app: tauri::AppHandle) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("floating")
+        .ok_or_else(|| "floating window is not available".to_string())?;
+    window.hide().map_err(|error| error.to_string())?;
+    Ok(false)
 }
 
 #[tauri::command]

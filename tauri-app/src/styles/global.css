@@ -368,23 +368,32 @@ button {
   white-space: nowrap;
 }
 
+.session-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel) 60%, transparent);
+  padding: 5px 11px;
+}
+
 .settings-panel {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  align-content: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
   padding: 12px;
 }
 
-.settings-panel label {
-  display: grid;
-  grid-column: 1 / -1;
-  grid-template-columns: 110px 1fr;
-  align-items: center;
-  gap: 10px;
+.settings-label,
+.settings-note {
   color: var(--muted);
   font-size: 13px;
   font-weight: 700;
+}
+
+.settings-note {
+  color: color-mix(in srgb, var(--text) 62%, var(--muted));
 }
 
 input[type="range"] {

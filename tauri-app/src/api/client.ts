@@ -55,6 +55,14 @@ export function readFloatingPanelSnapshot(): Promise<FloatingPanelSnapshot> {
   return callCommand("read_floating_snapshot", mockFloatingPanelSnapshot);
 }
 
+export function showFloatingWindow(): Promise<boolean> {
+  return callCommand("show_floating_window", true);
+}
+
+export function hideFloatingWindow(): Promise<boolean> {
+  return callCommand("hide_floating_window", false);
+}
+
 export function scanProviderRepair(): Promise<ProviderRepairSnapshot> {
   return callCommand("scan_provider_repair", mockProviderRepairSnapshot);
 }

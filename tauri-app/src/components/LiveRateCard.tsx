@@ -2,10 +2,12 @@ import type { LiveRateSnapshot } from "../types/dashboard";
 import { clamp, formatTokens } from "../utils/format";
 
 interface LiveRateCardProps {
+  floatingVisible: boolean;
+  onToggleFloating: () => void;
   snapshot: LiveRateSnapshot;
 }
 
-export function LiveRateCard({ snapshot }: LiveRateCardProps) {
+export function LiveRateCard({ floatingVisible, onToggleFloating, snapshot }: LiveRateCardProps) {
   const progress = clamp(snapshot.tokensPerSecond / snapshot.maxTokensPerSecond, 0, 1);
 
   return (
@@ -15,9 +17,6 @@ export function LiveRateCard({ snapshot }: LiveRateCardProps) {
           <h2>全会话实时速度</h2>
           <span>正在汇总全会话输出</span>
         </div>
-        <button className="toolbar-button" type="button">
-          重置整体速率
-        </button>
       </div>
 
       <div className="live-grid">
@@ -41,29 +40,18 @@ export function LiveRateCard({ snapshot }: LiveRateCardProps) {
             <span>今日请求</span>
           </div>
           <div className="session-row">
-            <button className="toolbar-button toolbar-button--wide" type="button">
-              选中会话
-            </button>
+            <span className="session-chip">选中会话</span>
             <span>{snapshot.threadTitle}</span>
             <strong>{snapshot.preciseEnabled ? "精准 token 统计" : "估算 token 统计"}</strong>
           </div>
         </div>
 
         <div className="settings-panel">
-          <button className="toolbar-button toolbar-button--wide" type="button">
-            显示：悬浮窗
+          <span className="settings-label">显示方式</span>
+          <button className="toolbar-button toolbar-button--wide" onClick={onToggleFloating} type="button">
+            悬浮窗：{floatingVisible ? "开启" : "关闭"}
           </button>
-          <button className="toolbar-button toolbar-button--wide" type="button">
-            状态栏
-          </button>
-          <label>
-            <span>悬浮窗透明度</span>
-            <input max="100" min="40" type="range" value="92" readOnly />
-          </label>
-          <label>
-            <span>悬浮窗大小</span>
-            <input max="138" min="90" type="range" value="104" readOnly />
-          </label>
+          <span className="settings-note">{floatingVisible ? "窗口已显示" : "窗口已隐藏"}</span>
         </div>
       </div>
     </section>

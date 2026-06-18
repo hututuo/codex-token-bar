@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   getCodexHome,
+  hideFloatingWindow,
   readAccountQuota,
   readDashboardSnapshot,
   readLiveRateSnapshot,
   readPreciseDashboardSnapshot,
   scanProviderRepair,
+  showFloatingWindow,
 } from "../api/client";
 import { FloatingWindowApp } from "../floating/FloatingWindowApp";
 import { DashboardPage } from "../pages/DashboardPage";
@@ -50,6 +53,7 @@ function DashboardApp() {
   const preciseLoadStarted = useRef(false);
   const quotaLoadStarted = useRef(false);
   const liveRatePollStarted = useRef(false);
+  const [floatingVisible, setFloatingVisible] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -154,6 +158,37 @@ function DashboardApp() {
     };
   }, [state.loading]);
 
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      return;
+    }
+
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+
+    void listen("floating-window-hidden", () => {
+      setFloatingVisible(false);
+    }).then((listener) => {
+      if (disposed) {
+        listener();
+      } else {
+        unlisten = listener;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  async function toggleFloatingWindow() {
+    const nextVisible = !floatingVisible;
+    setFloatingVisible(nextVisible);
+    const confirmed = nextVisible ? await showFloatingWindow() : await hideFloatingWindow();
+    setFloatingVisible(confirmed);
+  }
+
   const readyState = useMemo(() => {
     if (
       state.codexHome === null ||
@@ -184,7 +219,9 @@ function DashboardApp() {
     <DashboardPage
       codexHome={readyState.codexHome}
       dashboard={readyState.dashboard}
+      floatingVisible={floatingVisible}
       liveRate={readyState.liveRate}
+      onToggleFloating={toggleFloatingWindow}
       providerRepair={readyState.repair}
       refreshing={state.loading}
     />
