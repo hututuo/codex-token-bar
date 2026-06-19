@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import type { FloatingPanelSnapshot, FloatingUnreadEffect } from "../types/dashboard";
 
 interface FloatingPanelSurfaceProps {
@@ -18,12 +19,20 @@ function FloatingQuotaBar({ label, remainingPercent }: { label: string; remainin
   const fillPercent = clampPercent(remainingPercent);
 
   return (
-    <strong className="floating-quota-bar" aria-label={`${label}，剩余 ${Math.round(fillPercent)}%`}>
+    <span
+      className="floating-quota-bar"
+      role="meter"
+      aria-label={`${label}，剩余 ${Math.round(fillPercent)}%`}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(fillPercent)}
+      style={{ "--quota-fill": `${fillPercent}%` } as CSSProperties}
+    >
       <span className="floating-quota-track" aria-hidden="true">
-        <span className="floating-quota-fill" style={{ width: `${fillPercent}%` }} />
+        <span className="floating-quota-fill" />
       </span>
       <span className="floating-quota-label">{label}</span>
-    </strong>
+    </span>
   );
 }
 
