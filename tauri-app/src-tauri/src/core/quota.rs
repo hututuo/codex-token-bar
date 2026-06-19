@@ -3,12 +3,11 @@ use crate::models::{
     AccountInfo, AccountQuotaBundle, QuotaLimit, QuotaSnapshot, ResetCreditDetail,
     ResetCreditSummary,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use auth::{read_access_token, read_local_account_name};
+use codex_binary::find_codex_binary;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
@@ -19,6 +18,9 @@ use time::{OffsetDateTime, UtcOffset};
 
 const SUCCESS_CACHE_TTL: Duration = Duration::from_secs(180);
 const FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
+
+mod auth;
+mod codex_binary;
 
 static QUOTA_READ_CACHE: OnceLock<Mutex<Option<QuotaCacheEntry>>> = OnceLock::new();
 
@@ -686,148 +688,9 @@ fn short_identifier(id: &str) -> String {
     format!("{start}...{end}")
 }
 
-fn read_access_token(codex_home: &Path) -> Option<String> {
-    let auth = read_auth_json(codex_home)?;
-    let token = auth
-        .get("tokens")
-        .and_then(|tokens| tokens.get("access_token"))
-        .and_then(Value::as_str)?
-        .trim()
-        .to_string();
-    if token.is_empty() {
-        None
-    } else {
-        Some(token)
-    }
-}
-
-fn read_local_account_name(codex_home: &Path) -> Option<String> {
-    let auth = read_auth_json(codex_home)?;
-    let token = auth
-        .get("tokens")
-        .and_then(|tokens| tokens.get("id_token"))
-        .and_then(Value::as_str)?;
-    let payload = decode_jwt_payload(token)?;
-    ["name", "nickname", "preferred_username", "email"]
-        .iter()
-        .filter_map(|key| payload.get(*key).and_then(Value::as_str))
-        .map(str::trim)
-        .find(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn read_auth_json(codex_home: &Path) -> Option<Value> {
-    let data = std::fs::read(codex_home.join("auth.json")).ok()?;
-    serde_json::from_slice(&data).ok()
-}
-
-fn decode_jwt_payload(token: &str) -> Option<BTreeMap<String, Value>> {
-    let payload = token.split('.').nth(1)?;
-    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CodexBinaryPlatform {
-    Macos,
-    Windows,
-    Other,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum CodexBinaryCandidate {
-    Explicit(PathBuf),
-    PathCommand(&'static str),
-}
-
-fn find_codex_binary() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME");
-    let path_env = std::env::var_os("PATH");
-    let candidates = codex_binary_candidates(home.as_deref(), current_codex_binary_platform());
-    find_codex_binary_from(&candidates, path_env.as_deref(), |path| path.is_file())
-}
-
-fn current_codex_binary_platform() -> CodexBinaryPlatform {
-    if cfg!(target_os = "macos") {
-        CodexBinaryPlatform::Macos
-    } else if cfg!(target_os = "windows") {
-        CodexBinaryPlatform::Windows
-    } else {
-        CodexBinaryPlatform::Other
-    }
-}
-
-fn codex_binary_candidates(
-    home: Option<&OsStr>,
-    platform: CodexBinaryPlatform,
-) -> Vec<CodexBinaryCandidate> {
-    let mut candidates = Vec::new();
-    if platform == CodexBinaryPlatform::Macos {
-        candidates.push(CodexBinaryCandidate::Explicit(PathBuf::from(
-            "/Applications/Codex.app/Contents/Resources/codex",
-        )));
-        if let Some(home) = home {
-            candidates.push(CodexBinaryCandidate::Explicit(
-                Path::new(home)
-                    .join("Applications")
-                    .join("Codex.app")
-                    .join("Contents")
-                    .join("Resources")
-                    .join("codex"),
-            ));
-        }
-        candidates.push(CodexBinaryCandidate::Explicit(PathBuf::from(
-            "/opt/homebrew/bin/codex",
-        )));
-        candidates.push(CodexBinaryCandidate::Explicit(PathBuf::from(
-            "/usr/local/bin/codex",
-        )));
-    }
-
-    candidates.push(CodexBinaryCandidate::PathCommand(match platform {
-        CodexBinaryPlatform::Windows => "codex.exe",
-        CodexBinaryPlatform::Macos | CodexBinaryPlatform::Other => "codex",
-    }));
-    candidates
-}
-
-fn find_codex_binary_from<F>(
-    candidates: &[CodexBinaryCandidate],
-    path_env: Option<&OsStr>,
-    file_exists: F,
-) -> Option<PathBuf>
-where
-    F: Fn(&Path) -> bool,
-{
-    candidates.iter().find_map(|candidate| match candidate {
-        CodexBinaryCandidate::Explicit(path) if file_exists(path) => Some(path.clone()),
-        CodexBinaryCandidate::PathCommand(command)
-            if command_exists_in_path(command, path_env, &file_exists) =>
-        {
-            Some(PathBuf::from(command))
-        }
-        _ => None,
-    })
-}
-
-fn command_exists_in_path<F>(
-    command: &str,
-    path_env: Option<&OsStr>,
-    file_exists: &F,
-) -> bool
-where
-    F: Fn(&Path) -> bool,
-{
-    let Some(paths) = path_env else {
-        return false;
-    };
-    std::env::split_paths(paths).any(|path| file_exists(&path.join(command)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
 
     #[test]
     fn parses_rate_limits_by_limit_id() {
@@ -872,14 +735,6 @@ mod tests {
     }
 
     #[test]
-    fn decodes_account_name_from_auth_jwt() {
-        let payload =
-            URL_SAFE_NO_PAD.encode(r#"{"name":"本地用户","email":"local-account@codex.local"}"#);
-        let decoded = decode_jwt_payload(&format!("header.{payload}.signature")).unwrap();
-        assert_eq!(decoded.get("name").and_then(Value::as_str), Some("本地用户"));
-    }
-
-    #[test]
     fn quota_cache_uses_short_ttl_for_failures() {
         let failure = Err("network unavailable".to_string());
         assert_eq!(cache_ttl(&failure), FAILURE_CACHE_TTL);
@@ -907,65 +762,4 @@ mod tests {
         assert_eq!(cache_ttl(&success), SUCCESS_CACHE_TTL);
     }
 
-    #[test]
-    fn macos_codex_binary_candidates_include_app_bundle_brew_and_path_command() {
-        let candidates =
-            codex_binary_candidates(Some(OsStr::new("/Users/local")), CodexBinaryPlatform::Macos);
-
-        assert_eq!(
-            candidates,
-            vec![
-                CodexBinaryCandidate::Explicit(PathBuf::from(
-                    "/Applications/Codex.app/Contents/Resources/codex"
-                )),
-                CodexBinaryCandidate::Explicit(PathBuf::from(
-                    "/Users/local/Applications/Codex.app/Contents/Resources/codex"
-                )),
-                CodexBinaryCandidate::Explicit(PathBuf::from("/opt/homebrew/bin/codex")),
-                CodexBinaryCandidate::Explicit(PathBuf::from("/usr/local/bin/codex")),
-                CodexBinaryCandidate::PathCommand("codex"),
-            ]
-        );
-    }
-
-    #[test]
-    fn windows_codex_binary_candidates_use_exe_path_command() {
-        let candidates = codex_binary_candidates(None, CodexBinaryPlatform::Windows);
-
-        assert_eq!(
-            candidates,
-            vec![CodexBinaryCandidate::PathCommand("codex.exe")]
-        );
-    }
-
-    #[test]
-    fn codex_binary_resolution_prefers_existing_explicit_candidate() {
-        let candidates = vec![
-            CodexBinaryCandidate::Explicit(PathBuf::from("/missing/codex")),
-            CodexBinaryCandidate::Explicit(PathBuf::from(
-                "/Applications/Codex.app/Contents/Resources/codex",
-            )),
-            CodexBinaryCandidate::PathCommand("codex"),
-        ];
-        let expected = PathBuf::from("/Applications/Codex.app/Contents/Resources/codex");
-
-        let found = find_codex_binary_from(&candidates, None, |path| path == expected).unwrap();
-
-        assert_eq!(found, expected);
-    }
-
-    #[test]
-    fn codex_binary_resolution_finds_command_in_supplied_path() {
-        let command_dir = PathBuf::from("/tmp/codex-token-bar-bin");
-        let command_path = command_dir.join("codex");
-        let path_env = std::env::join_paths([OsString::from(command_dir.as_os_str())]).unwrap();
-        let candidates = vec![CodexBinaryCandidate::PathCommand("codex")];
-
-        let found = find_codex_binary_from(&candidates, Some(path_env.as_os_str()), |path| {
-            path == command_path
-        })
-        .unwrap();
-
-        assert_eq!(found, PathBuf::from("codex"));
-    }
 }
