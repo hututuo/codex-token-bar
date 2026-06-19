@@ -6,16 +6,23 @@ use crate::models::{
 };
 use rusqlite::{Connection, Result as SqlResult};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{OffsetDateTime, UtcOffset};
+
+mod session_files;
+
+use session_files::{
+    collect_jsonl_files, find_session_files, rewrite_session_provider, scan_session_providers,
+    SessionScan,
+};
 
 pub fn scan_provider_repair(codex_home: &Path) -> ProviderRepairSnapshot {
     match scan_provider_repair_result(codex_home) {
@@ -196,90 +203,6 @@ fn config_provider(codex_home: &Path) -> Option<String> {
         }
     }
     None
-}
-
-fn find_session_files(codex_home: &Path, include_archived: bool) -> Vec<PathBuf> {
-    let mut roots = vec![codex_home.join("sessions")];
-    if include_archived {
-        roots.push(codex_home.join("archived_sessions"));
-    }
-    let mut files = Vec::new();
-    for root in roots {
-        collect_jsonl_files(&root, &mut files);
-    }
-    files.sort();
-    files
-}
-
-fn collect_jsonl_files(root: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(metadata) = fs::metadata(root) else {
-        return;
-    };
-    if metadata.is_file() {
-        if root.extension().is_some_and(|extension| extension == "jsonl") {
-            files.push(root.to_path_buf());
-        }
-        return;
-    }
-
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        collect_jsonl_files(&entry.path(), files);
-    }
-}
-
-fn scan_session_providers(files: &[PathBuf]) -> SessionScan {
-    let mut provider_counts = HashMap::<String, u32>::new();
-    let mut invalid_files = 0;
-    let mut newest_provider = None;
-    let mut newest_modified = None;
-
-    for file in files {
-        match read_session_provider(file) {
-            Ok(Some(provider)) => {
-                *provider_counts.entry(provider.clone()).or_insert(0) += 1;
-                let modified = fs::metadata(file).and_then(|metadata| metadata.modified()).ok();
-                if newest_modified.is_none_or(|current| modified.is_some_and(|next| next > current)) {
-                    newest_modified = modified;
-                    newest_provider = Some(provider);
-                }
-            }
-            Ok(None) | Err(_) => invalid_files += 1,
-        }
-    }
-
-    SessionScan {
-        files_found: u32::try_from(files.len()).unwrap_or(u32::MAX),
-        provider_counts,
-        invalid_files,
-        newest_provider,
-    }
-}
-
-fn read_session_provider(file: &Path) -> Result<Option<String>, String> {
-    let file = fs::File::open(file).map_err(|error| error.to_string())?;
-    let mut reader = BufReader::new(file);
-    let mut line = String::new();
-    let read = reader
-        .read_line(&mut line)
-        .map_err(|error| error.to_string())?;
-    if read == 0 {
-        return Ok(None);
-    }
-
-    let value: Value = serde_json::from_str(line.trim_end()).map_err(|error| error.to_string())?;
-    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
-        return Ok(None);
-    }
-    let provider = value
-        .get("payload")
-        .and_then(|payload| payload.get("model_provider"))
-        .and_then(Value::as_str)
-        .unwrap_or("(missing)")
-        .to_string();
-    Ok(Some(provider))
 }
 
 fn scan_sqlite(codex_home: &Path) -> SqlResult<SQLiteScan> {
@@ -718,36 +641,6 @@ fn write_json_file(path: &Path, value: &Value) -> Result<(), String> {
     fs::write(path, bytes).map_err(|error| error.to_string())
 }
 
-fn rewrite_session_provider(file: &Path, target_provider: &str) -> Result<bool, String> {
-    let text = fs::read_to_string(file).map_err(|error| error.to_string())?;
-    let (first_line, rest) = match text.find('\n') {
-        Some(index) => (&text[..index], &text[index..]),
-        None => (text.as_str(), ""),
-    };
-    let mut value: Value = serde_json::from_str(first_line.trim_end())
-        .map_err(|error| format!("{}: {error}", file.display()))?;
-    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
-        return Ok(false);
-    }
-    let payload = value
-        .get_mut("payload")
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| format!("{} 缺少 session_meta.payload", file.display()))?;
-    if payload.get("model_provider").and_then(Value::as_str) == Some(target_provider) {
-        return Ok(false);
-    }
-    payload.insert("model_provider".into(), Value::String(target_provider.into()));
-    let first_line = serde_json::to_string(&value).map_err(|error| error.to_string())?;
-    write_atomic(file, format!("{first_line}{rest}").as_bytes())?;
-    Ok(true)
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let temp = path.with_extension("tmp-codex-token-bar");
-    fs::write(&temp, bytes).map_err(|error| error.to_string())?;
-    fs::rename(&temp, path).map_err(|error| error.to_string())
-}
-
 fn sync_sqlite_provider(codex_home: &Path, target_provider: &str) -> Result<u32, String> {
     let db_path = codex_home.join("state_5.sqlite");
     if !db_path.exists() {
@@ -870,23 +763,6 @@ struct ProviderRepairReport {
 struct TargetProvider {
     provider: String,
     source: String,
-}
-
-struct SessionScan {
-    files_found: u32,
-    provider_counts: HashMap<String, u32>,
-    invalid_files: u32,
-    newest_provider: Option<String>,
-}
-
-impl SessionScan {
-    fn count_provider_mismatches(&self, target_provider: &str) -> u32 {
-        self.provider_counts
-            .iter()
-            .filter(|(provider, _)| provider.as_str() != target_provider)
-            .map(|(_, count)| *count)
-            .sum()
-    }
 }
 
 #[derive(Default)]
