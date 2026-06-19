@@ -4,11 +4,17 @@ use rusqlite::{params_from_iter, Connection, Result as SqlResult};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+
+mod session_files;
+
+use session_files::{
+    contains_subagent_text, jsonl_files, session_meta_payload, value_contains_subagent,
+};
 
 const RECENT_COMPLETION_LOOKBACK_SECONDS: f64 = 30.0;
 const RECENT_COMPLETION_FILE_LIMIT: usize = 64;
@@ -242,47 +248,6 @@ fn scan_session_metas(
     }
 }
 
-fn jsonl_files(root: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    collect_jsonl_files(root, &mut files);
-    files
-}
-
-fn collect_jsonl_files(root: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_jsonl_files(&path, files);
-        } else if path.extension().is_some_and(|extension| extension == "jsonl") {
-            files.push(path);
-        }
-    }
-}
-
-fn session_meta_payload(file: &Path) -> Option<Value> {
-    let line = first_line(file)?;
-    let object: Value = serde_json::from_str(&line).ok()?;
-    if object.get("type")?.as_str()? != "session_meta" {
-        return None;
-    }
-    object.get("payload").cloned()
-}
-
-fn first_line(file: &Path) -> Option<String> {
-    let handle = fs::File::open(file).ok()?;
-    let mut reader = BufReader::new(handle.take(262_144));
-    let mut line = String::new();
-    let bytes = reader.read_line(&mut line).ok()?;
-    if bytes == 0 {
-        None
-    } else {
-        Some(line.trim_end_matches(['\r', '\n']).to_string())
-    }
-}
-
 fn count_recent_completed_user_tasks(codex_home: &Path) -> usize {
     let now = current_time_seconds();
     recent_session_files(&codex_home.join("sessions"), now)
@@ -435,22 +400,6 @@ fn system_time_seconds(value: SystemTime) -> Option<f64> {
         .duration_since(UNIX_EPOCH)
         .ok()
         .map(|duration| duration.as_secs_f64())
-}
-
-fn contains_subagent_text(value: &str) -> bool {
-    value.to_ascii_lowercase().contains("subagent")
-}
-
-fn value_contains_subagent(value: Option<&Value>) -> bool {
-    match value {
-        Some(Value::String(text)) => contains_subagent_text(text),
-        Some(Value::Array(items)) => items.iter().any(|item| value_contains_subagent(Some(item))),
-        Some(Value::Object(map)) => {
-            map.keys().any(|key| contains_subagent_text(key))
-                || map.values().any(|item| value_contains_subagent(Some(item)))
-        }
-        _ => false,
-    }
 }
 
 #[cfg(test)]
