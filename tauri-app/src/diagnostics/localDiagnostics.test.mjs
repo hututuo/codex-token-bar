@@ -31,3 +31,16 @@ test("real local-read failures still show in diagnostics", async () => {
   diagnostics.clearCommandFailure("read_dashboard_snapshot");
 });
 
+test("surface platform failures stay out of visible local-read diagnostics", async () => {
+  const diagnostics = await import("./localDiagnostics.ts");
+
+  diagnostics.clearCommandFailure("platform:command:show_floating_window");
+  diagnostics.recordCommandFailure("platform:command:show_floating_window", new Error("window already opened"));
+
+  assert.equal(
+    diagnostics
+      .getCommandDiagnosticsSnapshot()
+      .some((diagnostic) => diagnostic.command === "platform:command:show_floating_window"),
+    false,
+  );
+});

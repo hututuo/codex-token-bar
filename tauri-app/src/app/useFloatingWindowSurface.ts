@@ -50,11 +50,13 @@ export function useFloatingWindowSurface({
     const shouldShowFloating = enabled && available;
 
     async function applyFloatingPreference() {
-      const confirmed = shouldShowFloating
-        ? await desktopPlatform.showFloatingWindow()
-        : await desktopPlatform.hideFloatingWindow();
+      if (shouldShowFloating) {
+        await desktopPlatform.showFloatingWindow();
+      } else {
+        await desktopPlatform.hideFloatingWindow();
+      }
       if (!cancelled) {
-        setFloatingVisible(shouldShowFloating && confirmed);
+        setFloatingVisible(shouldShowFloating);
       }
     }
 
@@ -75,10 +77,12 @@ export function useFloatingWindowSurface({
 
     onPreferenceConfirmed(nextEnabled);
     setFloatingVisible(nextEnabled);
-    const confirmed = nextEnabled
-      ? await desktopPlatform.showFloatingWindow()
-      : await desktopPlatform.hideFloatingWindow();
-    setFloatingVisible(confirmed);
+    if (nextEnabled) {
+      await desktopPlatform.showFloatingWindow();
+    } else {
+      await desktopPlatform.hideFloatingWindow();
+    }
+    setFloatingVisible(nextEnabled);
   }, [available, enabled, onPreferenceConfirmed]);
 
   return {

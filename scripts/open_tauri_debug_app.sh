@@ -63,6 +63,14 @@ stop_legacy_built_app() {
   /usr/bin/pkill -f "$LEGACY_PROCESS_PATTERN" >/dev/null 2>&1 || true
 }
 
+stop_installed_app() {
+  # The installed Swift release shares the product name and can leave its own
+  # floating panel visible beside the Tauri debug app. Stop it before opening a
+  # debug build so visual checks never mix two different implementations.
+  /usr/bin/osascript -e 'tell application id "local.codex.token-bar" to quit' >/dev/null 2>&1 || true
+  /usr/bin/pkill -f "/Applications/Codex Token Bar.app/Contents/MacOS/CodexTokenBar" >/dev/null 2>&1 || true
+}
+
 stage_runnable_app() {
   if [[ ! -x "$BUILT_APP_BINARY" ]]; then
     echo "Debug app is missing. Run with --build first: $BUILT_APP_PATH" >&2
@@ -163,6 +171,7 @@ cleanup_old_run_bundles() {
 if [[ "$BUILD_FIRST" == "1" ]]; then
   stop_other_debug_apps
   stop_legacy_built_app
+  stop_installed_app
   (cd "$TAURI_DIR" && npm run tauri -- build --debug --bundles app)
   RUN_APP_PATH="$(stage_runnable_app)"
 elif ! RUN_APP_PATH="$(fresh_or_latest_runnable_app)"; then
@@ -183,6 +192,7 @@ fi
 
 existing_pids="$(/usr/bin/pgrep -f "$RUN_APP_BINARY" 2>/dev/null || true)"
 /bin/rm -f "$TRACE_LOG"
+stop_installed_app
 /usr/bin/open -n "$RUN_APP_PATH"
 
 opened_pid=""

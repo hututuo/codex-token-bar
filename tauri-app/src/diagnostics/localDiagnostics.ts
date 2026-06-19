@@ -1,5 +1,12 @@
 const WARNING_THROTTLE_MS = 5_000;
-const SILENT_FAILURE_COMMANDS = new Set(["record_startup_event"]);
+const SILENT_FAILURE_COMMANDS = new Set([
+  "record_startup_event",
+  "platform:command:show_floating_window",
+  "platform:command:hide_floating_window",
+  "platform:command:show_status_panel_window",
+  "platform:command:hide_status_panel_window",
+  "platform:command:set_status_tray_readout",
+]);
 
 const lastWarningAtByKey = new Map<string, number>();
 const diagnosticsByKey = new Map<string, CommandFailureDiagnostic>();
