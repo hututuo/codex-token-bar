@@ -28,17 +28,17 @@ function DashboardApp() {
   }, []);
 
   useEffect(() => {
-    let timeoutId = 0;
-    const frameId = window.requestAnimationFrame(() => {
-      timeoutId = window.setTimeout(() => {
+    let cancelled = false;
+
+    queueMicrotask(() => {
+      if (!cancelled) {
         setDashboardHydrated(true);
         void recordStartupEvent("dashboard hydrate full ui");
-      }, 0);
+      }
     });
 
     return () => {
-      window.cancelAnimationFrame(frameId);
-      window.clearTimeout(timeoutId);
+      cancelled = true;
     };
   }, []);
 

@@ -173,10 +173,16 @@ export function DashboardPage({
 }
 
 function scheduleAfterFirstPaint(callback: () => void) {
-  const timeoutId = window.setTimeout(callback, 120);
+  let cancelled = false;
+  queueMicrotask(() => {
+    if (!cancelled) {
+      callback();
+    }
+  });
+
   return {
     cancel: () => {
-      window.clearTimeout(timeoutId);
+      cancelled = true;
     },
   };
 }
