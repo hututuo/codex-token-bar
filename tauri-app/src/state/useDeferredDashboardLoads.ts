@@ -1,6 +1,8 @@
-import { useEffect, useRef } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type { AccountQuotaBundle, DashboardSnapshot, LiveThreadOption } from "../types/dashboard";
+import { useDeferredQuotaLoad } from "./useDeferredQuotaLoad";
+import { useLiveThreadOptionsLoad } from "./useLiveThreadOptionsLoad";
+import { usePreciseDashboardLoad } from "./usePreciseDashboardLoad";
 
 interface DeferredDashboardLoadsOptions {
   active: boolean;
@@ -30,64 +32,16 @@ export function useDeferredDashboardLoads({
   onLiveThreadOptions,
   onForceQuotaRefreshConsumed,
 }: DeferredDashboardLoadsOptions) {
-  const preciseGeneration = useRef<number | null>(null);
-  const quotaGeneration = useRef<number | null>(null);
-  const liveThreadOptionsGeneration = useRef<number | null>(null);
+  usePreciseDashboardLoad({
+    active,
+    dashboardReady,
+    generation,
+    loading,
+    onPreciseDashboard,
+    source,
+  });
 
-  useEffect(() => {
-    if (!active || !dashboardReady || loading || preciseGeneration.current === generation) {
-      return;
-    }
-
-    let cancelled = false;
-    preciseGeneration.current = generation;
-
-    async function loadPreciseSnapshot() {
-      const precise = await source.readPreciseDashboardSnapshot();
-      if (!cancelled && precise !== null) {
-        onPreciseDashboard(precise);
-      }
-    }
-
-    void loadPreciseSnapshot();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [active, dashboardReady, generation, loading, onPreciseDashboard, source]);
-
-  useEffect(() => {
-    if (!active || !dashboardReady || loading || quotaGeneration.current === generation) {
-      return;
-    }
-
-    let cancelled = false;
-    quotaGeneration.current = generation;
-    const shouldForceRefresh = forceQuotaRefresh;
-    const delayMs = shouldForceRefresh ? 0 : 5_000;
-
-    async function loadQuota() {
-      try {
-        const quota = await source.readAccountQuota(shouldForceRefresh);
-        if (!cancelled && quota !== null) {
-          onQuota(quota);
-        }
-      } finally {
-        if (shouldForceRefresh && !cancelled) {
-          onForceQuotaRefreshConsumed();
-        }
-      }
-    }
-
-    const timer = window.setTimeout(() => {
-      void loadQuota();
-    }, delayMs);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [
+  useDeferredQuotaLoad({
     active,
     dashboardReady,
     forceQuotaRefresh,
@@ -96,32 +50,14 @@ export function useDeferredDashboardLoads({
     onForceQuotaRefreshConsumed,
     onQuota,
     source,
-  ]);
+  });
 
-  useEffect(() => {
-    if (
-      !active ||
-      !dashboardReady ||
-      loading ||
-      liveThreadOptionsGeneration.current === generation
-    ) {
-      return;
-    }
-
-    let cancelled = false;
-    liveThreadOptionsGeneration.current = generation;
-
-    async function loadThreadOptions() {
-      const liveThreadOptions = await source.readLiveThreadOptions();
-      if (!cancelled) {
-        onLiveThreadOptions(liveThreadOptions);
-      }
-    }
-
-    void loadThreadOptions();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [active, dashboardReady, generation, loading, onLiveThreadOptions, source]);
+  useLiveThreadOptionsLoad({
+    active,
+    dashboardReady,
+    generation,
+    loading,
+    onLiveThreadOptions,
+    source,
+  });
 }
