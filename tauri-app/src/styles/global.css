@@ -1577,7 +1577,11 @@ input[type="range"]::-moz-range-thumb {
   min-width: 0;
   min-height: calc(20px * var(--floating-scale));
   border-radius: calc(7px * var(--floating-scale));
-  background: transparent;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(42, 105, 202, 0.14);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.86),
+    inset 0 -1px 2px rgba(31, 83, 154, 0.06);
   padding: 0 calc(8px * var(--floating-scale));
   overflow: hidden;
   font-size: calc(11.5px * var(--floating-scale));
@@ -1591,13 +1595,14 @@ input[type="range"]::-moz-range-thumb {
 
 .floating-quota-track {
   position: absolute;
-  inset: 0;
+  inset: calc(2px * var(--floating-scale));
   overflow: hidden;
-  border-radius: inherit;
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid rgba(42, 105, 202, 0.16);
+  border-radius: calc(5px * var(--floating-scale));
+  background: #ffffff;
   box-sizing: border-box;
-  box-shadow: inset 0 1px 2px rgba(16, 54, 105, 0.08);
+  box-shadow:
+    inset 0 1px 2px rgba(16, 54, 105, 0.08),
+    0 0 0 1px rgba(255, 255, 255, 0.72);
   z-index: 0;
 }
 
@@ -1605,7 +1610,7 @@ input[type="range"]::-moz-range-thumb {
   display: block;
   height: 100%;
   min-width: 0;
-  border-radius: inherit;
+  border-radius: calc(5px * var(--floating-scale));
   background: linear-gradient(90deg, #246fd9 0%, #438ce8 62%, #81bdff 100%);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.28),
