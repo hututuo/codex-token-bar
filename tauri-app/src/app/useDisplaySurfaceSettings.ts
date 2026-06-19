@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { saveDisplaySurfaces } from "../api/client";
-import { desktopPlatform } from "../platform/desktop";
 import {
   canUseFloatingWindow,
   canUseStatusTrayLiveText,
@@ -12,6 +11,7 @@ import type {
   DisplaySurfaceSettings,
   PlatformCapabilities,
 } from "../types/dashboard";
+import { useFloatingWindowSurface } from "./useFloatingWindowSurface";
 
 interface DisplaySurfaceSettingsOptions {
   platform: PlatformCapabilities | null;
@@ -28,7 +28,6 @@ export interface DisplaySurfaceSettingsState {
 export function useDisplaySurfaceSettings({
   platform,
 }: DisplaySurfaceSettingsOptions): DisplaySurfaceSettingsState {
-  const [floatingVisible, setFloatingVisible] = useState(false);
   const [displaySurfaces, setDisplaySurfaces] = useState(INACTIVE_DISPLAY_SURFACES);
   const displaySettingsLoaded = useRef(false);
   const floatingAvailable = canUseFloatingWindow(platform);
@@ -38,50 +37,6 @@ export function useDisplaySurfaceSettings({
     platform,
     displaySurfaces.statusTrayLiveTextEnabled && statusTrayLiveTextAvailable,
   );
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-
-    void desktopPlatform.onFloatingWindowHidden(() => {
-      setFloatingVisible(false);
-    }).then((listener) => {
-      if (disposed) {
-        listener();
-      } else {
-        unlisten = listener;
-      }
-    });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!displaySettingsLoaded.current) {
-      return;
-    }
-
-    let cancelled = false;
-    const shouldShowFloating = displaySurfaces.floatingWindowEnabled && floatingAvailable;
-
-    async function applyFloatingPreference() {
-      const confirmed = shouldShowFloating
-        ? await desktopPlatform.showFloatingWindow()
-        : await desktopPlatform.hideFloatingWindow();
-      if (!cancelled) {
-        setFloatingVisible(shouldShowFloating && confirmed);
-      }
-    }
-
-    void applyFloatingPreference();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [displaySurfaces.floatingWindowEnabled, floatingAvailable]);
 
   const updateDisplaySurfaces = useCallback((next: Partial<DisplaySurfaceSettings>) => {
     setDisplaySurfaces((current) => {
@@ -98,19 +53,16 @@ export function useDisplaySurfaceSettings({
     setDisplaySurfaces(sanitizeDisplaySurfaces(settings));
   }, []);
 
-  const toggleFloatingWindow = useCallback(async () => {
-    const nextVisible = !floatingVisible;
-    if (!floatingAvailable) {
-      setFloatingVisible(false);
-      return;
-    }
-    setFloatingVisible(nextVisible);
-    const confirmed = nextVisible
-      ? await desktopPlatform.showFloatingWindow()
-      : await desktopPlatform.hideFloatingWindow();
-    setFloatingVisible(confirmed);
-    updateDisplaySurfaces({ floatingWindowEnabled: confirmed });
-  }, [floatingAvailable, floatingVisible, updateDisplaySurfaces]);
+  const confirmFloatingPreference = useCallback((enabled: boolean) => {
+    updateDisplaySurfaces({ floatingWindowEnabled: enabled });
+  }, [updateDisplaySurfaces]);
+
+  const { floatingVisible, toggleFloatingWindow } = useFloatingWindowSurface({
+    available: floatingAvailable,
+    enabled: displaySurfaces.floatingWindowEnabled,
+    onPreferenceConfirmed: confirmFloatingPreference,
+    ready: displaySettingsLoaded.current,
+  });
 
   const toggleStatusTrayLiveText = useCallback(() => {
     if (!statusTrayLiveTextAvailable) {
