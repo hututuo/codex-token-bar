@@ -1,7 +1,7 @@
 use crate::core::{live_rate, provider_repair, quota, quota_history, unread, usage};
 use crate::models::{
-    AccountQuotaBundle, DashboardSnapshot, FloatingPanelSnapshot, LiveRateSnapshot,
-    LiveThreadOption, ProviderRepairSnapshot, UnreadSummary,
+    AccountQuotaBundle, DashboardSnapshot, LiveThreadOption, ProviderRepairSnapshot,
+    UnreadSummary,
 };
 use std::path::{Path, PathBuf};
 
@@ -10,13 +10,7 @@ pub trait DashboardDataSource {
     fn read_dashboard_snapshot(&self) -> Result<DashboardSnapshot, String>;
     fn read_precise_dashboard_snapshot(&self) -> Result<DashboardSnapshot, String>;
     fn read_account_quota(&self, force_refresh: bool) -> Result<AccountQuotaBundle, String>;
-    fn read_live_rate_snapshot(&self, selected_thread_id: Option<&str>) -> LiveRateSnapshot;
-    fn try_read_live_rate_snapshot(
-        &self,
-        selected_thread_id: Option<&str>,
-    ) -> Result<LiveRateSnapshot, String>;
     fn try_read_live_thread_options(&self) -> Result<Vec<LiveThreadOption>, String>;
-    fn read_floating_snapshot(&self) -> FloatingPanelSnapshot;
     fn read_unread_summary(&self) -> UnreadSummary;
     fn scan_provider_repair(&self) -> ProviderRepairSnapshot;
 }
@@ -57,24 +51,8 @@ impl DashboardDataSource for LocalCodexDataSource {
         quota::read_account_quota(self.codex_home(), force_refresh)
     }
 
-    fn read_live_rate_snapshot(&self, selected_thread_id: Option<&str>) -> LiveRateSnapshot {
-        live_rate::read_snapshot(self.codex_home(), selected_thread_id)
-    }
-
-    fn try_read_live_rate_snapshot(
-        &self,
-        selected_thread_id: Option<&str>,
-    ) -> Result<LiveRateSnapshot, String> {
-        live_rate::try_read_snapshot(self.codex_home(), selected_thread_id)
-            .map_err(|error| error.to_string())
-    }
-
     fn try_read_live_thread_options(&self) -> Result<Vec<LiveThreadOption>, String> {
         live_rate::try_read_thread_options(self.codex_home()).map_err(|error| error.to_string())
-    }
-
-    fn read_floating_snapshot(&self) -> FloatingPanelSnapshot {
-        live_rate::read_floating_snapshot(self.codex_home())
     }
 
     fn read_unread_summary(&self) -> UnreadSummary {

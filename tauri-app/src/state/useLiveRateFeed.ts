@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
-import { desktopPlatform } from "../platform/desktop";
 import type { LiveRateSnapshot } from "../types/dashboard";
 
 interface LiveRateFeedOptions {
@@ -29,8 +28,6 @@ export function useLiveRateFeed({
 
     let cancelled = false;
     let liveRateInFlight = false;
-    let streaming = false;
-    let unlisten: (() => void) | null = null;
     let startupTimer = 0;
     const selected = selectedThreadId || null;
 
@@ -50,43 +47,16 @@ export function useLiveRateFeed({
       }
     }
 
-    void desktopPlatform.onLiveRateSnapshot((liveRate) => {
-      if (!cancelled) {
-        onSnapshotRef.current(liveRate);
-      }
-    }).then((listener) => {
-      if (cancelled) {
-        listener();
-      } else {
-        unlisten = listener;
-      }
-    });
-
     startupTimer = window.setTimeout(() => {
       void refreshLiveRate();
-      void desktopPlatform.startLiveRateStream(selected).then((started) => {
-        if (cancelled) {
-          if (started) {
-            void desktopPlatform.stopLiveRateStream();
-          }
-          return;
-        }
-        streaming = started;
-      });
     }, 250);
 
     const interval = window.setInterval(() => {
-      if (!streaming) {
-        void refreshLiveRate();
-      }
-    }, 750);
+      void refreshLiveRate();
+    }, 500);
 
     return () => {
       cancelled = true;
-      unlisten?.();
-      if (streaming) {
-        void desktopPlatform.stopLiveRateStream();
-      }
       window.clearTimeout(startupTimer);
       window.clearInterval(interval);
     };

@@ -136,6 +136,48 @@ fn read_thread_options_works_with_minimal_thread_schema() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn monitor_reuses_snapshot_until_logs_change() {
+    let root = temp_root("live-rate-monitor-cache");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "共享监控会话", 300);
+    create_logs_database(&root, |connection, now| {
+        insert_log(
+            connection,
+            1,
+            "thread-a",
+            now,
+            "codex_api::sse::responses",
+            r#"SSE event: {"type":"response.output_text.delta","delta":"first stream text","item_id":"item-a","sequence_number":1}"#,
+        );
+    });
+
+    let monitor = LiveRateMonitorService::new(root.clone());
+    let first = monitor.snapshot(None);
+    let refreshes_after_first = monitor.test_refresh_count();
+    let second = monitor.snapshot(None);
+
+    assert_eq!(monitor.test_refresh_count(), refreshes_after_first);
+    assert_eq!(second.tokens_per_second, first.tokens_per_second);
+
+    {
+        let connection = Connection::open(root.join("logs_2.sqlite")).unwrap();
+        insert_log(
+            &connection,
+            2,
+            "thread-a",
+            current_time_seconds().floor() as i64,
+            "codex_api::sse::responses",
+            r#"SSE event: {"type":"response.output_text.delta","delta":"new stream text after change","item_id":"item-a","sequence_number":2}"#,
+        );
+    }
+
+    let _changed = monitor.snapshot(None);
+    assert_eq!(monitor.test_refresh_count(), refreshes_after_first + 1);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn temp_root(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "codex-token-bar-tauri-{label}-{}-{}",

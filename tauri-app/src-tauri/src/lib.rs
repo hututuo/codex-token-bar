@@ -6,7 +6,7 @@ mod platform;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(commands::live::LiveRateStreamState::default())
+        .manage(commands::live::LiveRateMonitorRegistry::default())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),

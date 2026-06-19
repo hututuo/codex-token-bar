@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use super::LocalDataWarning;
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveRateSnapshot {
     pub scope_label: String,

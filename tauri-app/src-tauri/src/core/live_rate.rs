@@ -4,6 +4,7 @@ use rusqlite::Result;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use logs::read_recent_log_rows;
+pub use monitor::LiveRateMonitorService;
 use state::{read_thread_options_result, read_thread_title, read_usage_summary, UsageSummary};
 use stream::{rollup_stream_rows, LiveRateRollup};
 
@@ -13,6 +14,7 @@ const MAX_TOKENS_PER_SECOND: f64 = 200.0;
 mod stream;
 mod state;
 mod logs;
+mod monitor;
 
 pub fn read_snapshot(codex_home: &Path, selected_thread_id: Option<&str>) -> LiveRateSnapshot {
     match try_read_snapshot(codex_home, selected_thread_id) {
@@ -33,11 +35,6 @@ pub fn try_read_snapshot(
     selected_thread_id: Option<&str>,
 ) -> Result<LiveRateSnapshot> {
     read_snapshot_result(codex_home, selected_thread_id)
-}
-
-pub fn read_floating_snapshot(codex_home: &Path) -> FloatingPanelSnapshot {
-    let live = read_snapshot(codex_home, None);
-    floating_from_live(codex_home, &live)
 }
 
 pub fn try_read_thread_options(codex_home: &Path) -> Result<Vec<LiveThreadOption>> {
@@ -107,7 +104,10 @@ fn read_snapshot_result(
     })
 }
 
-fn floating_from_live(codex_home: &Path, live: &LiveRateSnapshot) -> FloatingPanelSnapshot {
+pub fn read_floating_snapshot_from_live(
+    codex_home: &Path,
+    live: &LiveRateSnapshot,
+) -> FloatingPanelSnapshot {
     let mut warnings = Vec::new();
     let summary = read_usage_summary_or_default(codex_home, &mut warnings);
     let unread_summary = unread::read_unread_summary(codex_home);
