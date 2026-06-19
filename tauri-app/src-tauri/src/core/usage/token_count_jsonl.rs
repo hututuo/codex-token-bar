@@ -3,27 +3,20 @@ use crate::models::{
     AccountInfo, DashboardSnapshot, LocalDataWarning, QuotaLimit, QuotaSnapshot,
     ResetCreditSummary,
 };
-use std::collections::HashSet;
 use std::path::Path;
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
 mod aggregates;
+mod event_loader;
 mod ranking;
 mod session_files;
 mod session_parser;
 mod token_event_cache;
 
 use aggregates::{activity_days, recent_usage, stats};
+use event_loader::load_token_events;
 use ranking::cache_hit_ranking;
-use session_files::{jsonl_files, session_id_from_file};
-use token_event_cache::{
-    codex_home_cache_key, file_cache_key, parse_session_file_cached, token_cache_warning,
-    TokenEventCache,
-};
-
-#[cfg(test)]
-use token_event_cache::{CachedCodexHome, CachedFileSignature, CachedSessionFile, CachedTokenEvent};
 
 #[derive(Clone, Debug)]
 struct TokenEvent {
@@ -42,33 +35,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
 
     let mut events = Vec::new();
     let mut warnings = Vec::new();
-    let session_files = jsonl_files(&sessions_root, &mut warnings);
-    let mut cache = TokenEventCache::load(&mut warnings);
-    let home_cache_key = codex_home_cache_key(codex_home);
-    let home_cache = cache.home_cache_mut(&home_cache_key, codex_home);
-    let mut seen_cache_keys = HashSet::new();
-    let mut cache_changed = false;
-    for file in session_files {
-        let session_id = session_id_from_file(&file);
-        let cache_key = file_cache_key(codex_home, &file);
-        seen_cache_keys.insert(cache_key);
-        events.extend(parse_session_file_cached(
-            &file,
-            &session_id,
-            &mut home_cache.files,
-            &mut cache_changed,
-            codex_home,
-            &mut warnings,
-        ));
-    }
-    if home_cache.retain_seen(&seen_cache_keys) {
-        cache_changed = true;
-    }
-    if cache_changed {
-        if let Err(error) = cache.save() {
-            warnings.push(token_cache_warning(error));
-        }
-    }
+    events.extend(load_token_events(codex_home, &sessions_root, &mut warnings));
 
     if events.is_empty() {
         return Err(no_token_events_error(&warnings));
@@ -142,11 +109,15 @@ fn placeholder_quota() -> QuotaSnapshot {
 mod tests {
     use super::*;
     use rusqlite::Connection;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fs;
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use super::token_event_cache::{
+        codex_home_cache_key, CachedCodexHome, CachedFileSignature, CachedSessionFile,
+        CachedTokenEvent, TokenEventCache,
+    };
 
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
