@@ -26,7 +26,7 @@ function FloatingQuotaBar({ label, remainingPercent }: { label: string; remainin
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(fillPercent)}
-      style={{ "--quota-fill": `${fillPercent}%` } as CSSProperties}
+      style={{ "--quota-fill": fillPercent / 100 } as CSSProperties}
     >
       <span className="floating-quota-track" aria-hidden="true">
         <span className="floating-quota-fill" />

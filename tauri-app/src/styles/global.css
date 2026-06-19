@@ -1617,17 +1617,18 @@ input[type="range"]::-moz-range-thumb {
 
 .floating-quota-fill {
   position: absolute;
-  inset: calc(1px * var(--floating-scale)) auto calc(1px * var(--floating-scale)) calc(1px * var(--floating-scale));
+  inset: calc(1px * var(--floating-scale));
   display: block;
-  width: var(--quota-fill, 0%);
+  width: auto;
   min-width: 0;
-  max-width: calc(100% - calc(2px * var(--floating-scale)));
   border-radius: calc(4px * var(--floating-scale));
   background: linear-gradient(90deg, #1f6ed2 0%, #3d8fe8 58%, #6ebaff 100%);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.36),
     inset 0 -1px 0 rgba(26, 80, 157, 0.22);
-  transition: width 180ms ease-out;
+  transform: scaleX(var(--quota-fill, 0));
+  transform-origin: left center;
+  transition: transform 180ms ease-out;
 }
 
 .floating-quota-label {
