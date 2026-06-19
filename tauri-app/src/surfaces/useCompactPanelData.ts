@@ -121,9 +121,11 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
     () => ({
       ...rawSnapshot,
       fiveHourLabel: quotaLabels.fiveHour,
+      fiveHourRemainingPercent: quota.quota.fiveHour.remainingPercent,
       sevenDayLabel: quotaLabels.sevenDay,
+      sevenDayRemainingPercent: quota.quota.sevenDay.remainingPercent,
     }),
-    [quotaLabels, rawSnapshot],
+    [quota, quotaLabels, rawSnapshot],
   );
 
   return {

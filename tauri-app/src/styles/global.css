@@ -1568,10 +1568,12 @@ input[type="range"]::-moz-range-thumb {
   margin-top: calc(8px * var(--floating-scale));
 }
 
-.floating-quota strong {
+.floating-quota-bar {
+  position: relative;
   flex: 1;
   border-radius: calc(7px * var(--floating-scale));
-  background: #5d95ea;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(52, 109, 183, 0.14);
   padding: calc(4px * var(--floating-scale)) calc(8px * var(--floating-scale));
   overflow: hidden;
   font-size: calc(11.5px * var(--floating-scale));
@@ -1580,6 +1582,22 @@ input[type="range"]::-moz-range-thumb {
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.floating-quota-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2b73dc, #65a5f4);
+  opacity: 0.9;
+}
+
+.floating-quota-label {
+  position: relative;
+  z-index: 1;
+  color: #1f2d42;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.34);
 }
 
 .unread-effect {

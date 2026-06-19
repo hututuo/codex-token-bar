@@ -35,7 +35,9 @@ export const emptyFloatingPanelSnapshot: FloatingPanelSnapshot = {
   todayTokensLabel: "今 0",
   requestsLabel: "次 0",
   fiveHourLabel: "5h 待读取",
+  fiveHourRemainingPercent: 0,
   sevenDayLabel: "7d 待读取",
+  sevenDayRemainingPercent: 0,
   unread: false,
   unreadSummary: emptyUnreadSummary,
 };

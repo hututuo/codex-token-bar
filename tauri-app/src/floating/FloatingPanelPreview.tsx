@@ -7,6 +7,24 @@ interface FloatingPanelSurfaceProps {
   onDragStart?: () => void;
 }
 
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(100, Math.max(0, value * 100));
+}
+
+function FloatingQuotaBar({ label, remainingPercent }: { label: string; remainingPercent: number }) {
+  const fillPercent = clampPercent(remainingPercent);
+
+  return (
+    <strong className="floating-quota-bar" aria-label={`${label}，剩余 ${Math.round(fillPercent)}%`}>
+      <span className="floating-quota-fill" style={{ width: `${fillPercent}%` }} aria-hidden="true" />
+      <span className="floating-quota-label">{label}</span>
+    </strong>
+  );
+}
+
 export function FloatingPanelSurface({
   snapshot,
   unreadEffect = "ripple",
@@ -42,8 +60,8 @@ export function FloatingPanelSurface({
         <span>{snapshot.requestsLabel}</span>
       </div>
       <div className="floating-quota">
-        <strong>{snapshot.fiveHourLabel}</strong>
-        <strong>{snapshot.sevenDayLabel}</strong>
+        <FloatingQuotaBar label={snapshot.fiveHourLabel} remainingPercent={snapshot.fiveHourRemainingPercent} />
+        <FloatingQuotaBar label={snapshot.sevenDayLabel} remainingPercent={snapshot.sevenDayRemainingPercent} />
       </div>
     </aside>
   );
