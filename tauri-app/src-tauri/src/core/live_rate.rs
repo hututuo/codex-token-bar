@@ -1,16 +1,18 @@
 use crate::core::unread;
 use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, LocalDataWarning};
-use rusqlite::{params, Connection, Result};
+use rusqlite::Result;
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
+use logs::read_recent_log_rows;
 use state::{read_thread_options_result, read_thread_title, read_usage_summary, UsageSummary};
-use stream::{rollup_stream_rows, LiveRateRollup, LogRow};
+use stream::{rollup_stream_rows, LiveRateRollup};
 
 const LOOKBACK_SECONDS: f64 = 8.0;
 const MAX_TOKENS_PER_SECOND: f64 = 200.0;
 
 mod stream;
 mod state;
+mod logs;
 
 pub fn read_snapshot(codex_home: &Path, selected_thread_id: Option<&str>) -> LiveRateSnapshot {
     match try_read_snapshot(codex_home, selected_thread_id) {
@@ -72,9 +74,7 @@ fn read_snapshot_result(
 ) -> Result<LiveRateSnapshot> {
     let mut warnings = Vec::new();
     let now = current_time_seconds();
-    let logs_connection = open_read_only(&codex_home.join("logs_2.sqlite"))?;
-
-    let rows = read_recent_log_rows(&logs_connection, now - LOOKBACK_SECONDS)?;
+    let rows = read_recent_log_rows(codex_home, now - LOOKBACK_SECONDS)?;
     let rollup = rollup_stream_rows(&rows, now, None);
     let selected_rollup = selected_thread_id
         .map(|thread_id| rollup_stream_rows(&rows, now, Some(thread_id)))
@@ -182,71 +182,6 @@ fn read_thread_title_or_warn(
             None
         }
     }
-}
-
-fn read_recent_log_rows(connection: &Connection, since: f64) -> Result<Vec<LogRow>> {
-    let since_seconds = since.floor() as i64;
-    let index_hint = if logs_ts_index_exists(connection) {
-        " INDEXED BY idx_logs_ts"
-    } else {
-        ""
-    };
-    let sql = format!(
-        r#"
-        SELECT id, thread_id, ts, ts_nanos, target, COALESCE(feedback_log_body, '')
-        FROM (
-          SELECT id, thread_id, ts, ts_nanos, target, feedback_log_body
-          FROM logs{index_hint}
-          WHERE ts >= ?1
-          ORDER BY ts DESC, ts_nanos DESC, id DESC
-          LIMIT 5000
-        ) recent
-        WHERE
-          (
-            target = 'codex_api::sse::responses'
-            AND (
-              feedback_log_body LIKE 'SSE event:%'
-              OR feedback_log_body LIKE '%thread.id=%'
-              OR feedback_log_body LIKE '%thread_id=%'
-              OR feedback_log_body LIKE '%conversation.id=%'
-            )
-          )
-          OR (
-            target = 'codex_api::endpoint::responses_websocket'
-            AND feedback_log_body LIKE '%websocket event:%'
-          )
-        ORDER BY id ASC
-        LIMIT 2000;
-        "#,
-    );
-    let mut statement = connection.prepare(&sql)?;
-
-    let rows = statement.query_map(params![since_seconds], |row| {
-        Ok(LogRow {
-            id: row.get(0)?,
-            thread_id: row.get(1)?,
-            ts: row.get(2)?,
-            ts_nanos: row.get(3)?,
-            target: row.get(4)?,
-            feedback_log_body: row.get(5)?,
-        })
-    })?;
-
-    rows.collect()
-}
-
-fn logs_ts_index_exists(connection: &Connection) -> bool {
-    connection
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_logs_ts' LIMIT 1;",
-            [],
-            |_| Ok(()),
-        )
-        .is_ok()
-}
-
-fn open_read_only(path: &Path) -> Result<Connection> {
-    crate::core::sqlite::open_read_only(path, Duration::from_millis(100))
 }
 
 fn current_time_seconds() -> f64 {

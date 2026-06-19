@@ -1,5 +1,5 @@
 use super::*;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
