@@ -1,4 +1,5 @@
 const WARNING_THROTTLE_MS = 5_000;
+const SILENT_FAILURE_COMMANDS = new Set(["record_startup_event"]);
 
 const lastWarningAtByKey = new Map<string, number>();
 const diagnosticsByKey = new Map<string, CommandFailureDiagnostic>();
@@ -28,6 +29,10 @@ export function subscribeCommandDiagnostics(
 }
 
 export function recordCommandFailure(command: string, error: unknown) {
+  if (SILENT_FAILURE_COMMANDS.has(command)) {
+    return;
+  }
+
   const now = Date.now();
   const lastWarningAt = lastWarningAtByKey.get(command) ?? 0;
   if (now - lastWarningAt < WARNING_THROTTLE_MS) {
