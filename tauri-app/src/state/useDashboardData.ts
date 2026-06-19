@@ -18,7 +18,7 @@ import {
   mergeLiveThreadOptions,
   mergePreciseDashboard,
   mergeQuota,
-  readyDashboardState,
+  visibleDashboardState,
   type DashboardAppState,
 } from "./dashboardState";
 import { loadInitialDashboardState } from "./loadInitialDashboardState";
@@ -109,7 +109,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     onSnapshot: mergeLiveRateSnapshot,
   });
 
-  const readyState = useMemo(() => readyDashboardState(state), [state]);
+  const readyState = useMemo(() => visibleDashboardState(state), [state]);
 
   return {
     state,

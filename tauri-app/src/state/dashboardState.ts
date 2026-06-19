@@ -101,6 +101,14 @@ export function readyDashboardState(state: DashboardAppState): DashboardReadySta
   };
 }
 
+export function visibleDashboardState(state: DashboardAppState): DashboardReadyState {
+  return readyDashboardState(state) ?? pendingDashboardReadyState();
+}
+
+export function pendingDashboardReadyState(): DashboardReadyState {
+  return readyDashboardState(initialDashboardState) as DashboardReadyState;
+}
+
 export function mergePreciseDashboard(
   state: DashboardAppState,
   precise: DashboardSnapshot,

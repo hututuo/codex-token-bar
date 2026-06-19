@@ -128,22 +128,22 @@ pid_list_contains() {
   return 1
 }
 
-wait_for_dashboard_ready() {
+wait_for_dashboard_visible() {
   local pid="$1"
-  local ready=0
+  local visible=0
   local i
   for i in $(seq 1 80); do
     if ! /bin/kill -0 "$pid" >/dev/null 2>&1; then
       return 1
     fi
-    if [[ -f "$TRACE_LOG" ]] && /usr/bin/grep -q "frontend dashboard snapshot ready" "$TRACE_LOG"; then
-      ready=1
+    if [[ -f "$TRACE_LOG" ]] && /usr/bin/grep -q "frontend dashboard summary ui ready" "$TRACE_LOG"; then
+      visible=1
       break
     fi
     /bin/sleep 0.1
   done
 
-  [[ "$ready" == "1" ]]
+  [[ "$visible" == "1" ]]
 }
 
 cleanup_old_run_bundles() {
@@ -161,6 +161,7 @@ cleanup_old_run_bundles() {
 }
 
 if [[ "$BUILD_FIRST" == "1" ]]; then
+  stop_other_debug_apps
   stop_legacy_built_app
   (cd "$TAURI_DIR" && npm run tauri -- build --debug --bundles app)
   RUN_APP_PATH="$(stage_runnable_app)"
@@ -196,7 +197,7 @@ for _ in $(seq 1 120); do
 done
 
 if [[ -n "$opened_pid" ]]; then
-  if wait_for_dashboard_ready "$opened_pid"; then
+  if wait_for_dashboard_visible "$opened_pid"; then
     stop_other_debug_apps "$opened_pid"
     cleanup_old_run_bundles
     echo "Opened Codex Token Bar Tauri debug app."
@@ -204,7 +205,7 @@ if [[ -n "$opened_pid" ]]; then
     echo "PID: $opened_pid"
     exit 0
   fi
-  echo "Tauri debug app did not reach the dashboard-ready checkpoint: $RUN_APP_PATH" >&2
+  echo "Tauri debug app did not reach the dashboard-visible checkpoint: $RUN_APP_PATH" >&2
   exit 1
 fi
 

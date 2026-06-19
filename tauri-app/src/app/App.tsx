@@ -74,15 +74,6 @@ function DashboardApp() {
     };
   }, []);
 
-  if (readyState === null) {
-    return (
-      <main className="app-shell app-shell--loading">
-        <div className="loading-mark">CX</div>
-        <div className="loading-text">正在打开本地面板</div>
-      </main>
-    );
-  }
-
   return (
     <>
       <DashboardPage
