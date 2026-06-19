@@ -2,13 +2,13 @@ use crate::models::{
     ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
     ProviderRepairStep,
 };
-use std::fs;
 use std::path::{Path, PathBuf};
 
 mod backups;
-mod session_index;
 mod session_files;
+mod session_index;
 mod sqlite_state;
+mod target_provider;
 
 use backups::{
     backup_by_id, create_provider_backup_files, ensure_backup_matches_codex_home,
@@ -23,6 +23,7 @@ use session_files::{
     find_session_files, rewrite_session_provider, scan_session_providers, SessionScan,
 };
 use sqlite_state::{scan_sqlite, sync_sqlite_provider, SQLiteScan};
+use target_provider::{detect_target_provider, TargetProvider};
 
 pub fn scan_provider_repair(codex_home: &Path) -> ProviderRepairSnapshot {
     match scan_provider_repair_result(codex_home) {
@@ -121,58 +122,6 @@ fn scan_provider_repair_result(codex_home: &Path) -> Result<ProviderRepairReport
         index_missing,
         inconsistent_count,
     })
-}
-
-fn detect_target_provider(
-    codex_home: &Path,
-    sqlite_scan: &SQLiteScan,
-    session_scan: &SessionScan,
-) -> TargetProvider {
-    if let Some(provider) = config_provider(codex_home) {
-        return TargetProvider {
-            provider,
-            source: "config.toml".into(),
-        };
-    }
-    if let Some(provider) = sqlite_scan.latest_unarchived_provider.clone() {
-        return TargetProvider {
-            provider,
-            source: "SQLite 最新会话".into(),
-        };
-    }
-    if let Some(provider) = session_scan.newest_provider.clone() {
-        return TargetProvider {
-            provider,
-            source: "最新 JSONL".into(),
-        };
-    }
-    TargetProvider {
-        provider: "openai".into(),
-        source: "默认 openai".into(),
-    }
-}
-
-fn config_provider(codex_home: &Path) -> Option<String> {
-    let text = fs::read_to_string(codex_home.join("config.toml")).ok()?;
-    for raw_line in text.lines() {
-        let line = raw_line.split('#').next().unwrap_or("").trim();
-        let Some(value) = line.strip_prefix("model_provider") else {
-            continue;
-        };
-        let Some((_, assigned)) = value.split_once('=') else {
-            continue;
-        };
-        let trimmed = assigned.trim();
-        let provider = trimmed
-            .strip_prefix('"')
-            .and_then(|value| value.split('"').next())
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        if let Some(provider) = provider {
-            return Some(provider.to_string());
-        }
-    }
-    None
 }
 
 fn snapshot_from_report(report: ProviderRepairReport) -> ProviderRepairSnapshot {
@@ -296,11 +245,6 @@ struct ProviderRepairReport {
     session_mismatches: u32,
     index_missing: bool,
     inconsistent_count: u32,
-}
-
-struct TargetProvider {
-    provider: String,
-    source: String,
 }
 
 #[cfg(test)]
