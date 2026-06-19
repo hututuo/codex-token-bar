@@ -1577,11 +1577,11 @@ input[type="range"]::-moz-range-thumb {
   min-width: 0;
   min-height: calc(20px * var(--floating-scale));
   border-radius: calc(7px * var(--floating-scale));
-  background: #ffffff;
-  border: 1px solid rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.94);
   box-shadow:
-    inset 0 1px 2px rgba(22, 66, 128, 0.08),
-    0 1px 0 rgba(255, 255, 255, 0.62);
+    inset 0 1px 1px rgba(22, 66, 128, 0.05),
+    0 1px 0 rgba(255, 255, 255, 0.70);
   padding: 0 calc(7px * var(--floating-scale));
   overflow: hidden;
   font-size: calc(11.5px * var(--floating-scale));
@@ -1597,12 +1597,12 @@ input[type="range"]::-moz-range-thumb {
   position: absolute;
   inset: calc(2px * var(--floating-scale));
   overflow: hidden;
-  border-radius: inherit;
-  background: #ffffff;
+  border-radius: calc(5px * var(--floating-scale));
+  background: rgba(255, 255, 255, 0.98);
   box-sizing: border-box;
   box-shadow:
-    inset 0 0 0 1px rgba(27, 79, 145, 0.08),
-    inset 0 1px 2px rgba(20, 48, 91, 0.08);
+    inset 0 0 0 1px rgba(39, 93, 170, 0.10),
+    inset 0 1px 2px rgba(20, 48, 91, 0.10);
   z-index: 0;
 }
 
@@ -1617,16 +1617,16 @@ input[type="range"]::-moz-range-thumb {
 
 .floating-quota-fill {
   position: absolute;
-  inset: 0 auto 0 0;
+  inset: calc(1px * var(--floating-scale)) auto calc(1px * var(--floating-scale)) calc(1px * var(--floating-scale));
   display: block;
   width: var(--quota-fill, 0%);
   min-width: 0;
-  max-width: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #2374d7 0%, #4597ec 58%, #7cc2ff 100%);
+  max-width: calc(100% - calc(2px * var(--floating-scale)));
+  border-radius: calc(4px * var(--floating-scale));
+  background: linear-gradient(90deg, #1f6ed2 0%, #3d8fe8 58%, #6ebaff 100%);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.34),
-    inset 0 -1px 0 rgba(32, 91, 170, 0.18);
+    inset 0 1px 0 rgba(255, 255, 255, 0.36),
+    inset 0 -1px 0 rgba(26, 80, 157, 0.22);
   transition: width 180ms ease-out;
 }
 
