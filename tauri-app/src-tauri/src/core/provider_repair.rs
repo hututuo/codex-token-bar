@@ -4,24 +4,25 @@ use crate::models::{
     ProviderRepairStep,
 };
 use serde_json::{json, Value};
-use std::collections::HashSet;
 use std::fs;
-use std::fs::OpenOptions;
 use std::io::ErrorKind;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{OffsetDateTime, UtcOffset};
 
+mod session_index;
 mod session_files;
 mod sqlite_state;
 
+use session_index::{
+    latest_thread_index_missing, repair_session_index, scan_session_index, SessionIndexScan,
+};
 use session_files::{
     collect_jsonl_files, find_session_files, rewrite_session_provider, scan_session_providers,
     SessionScan,
 };
-use sqlite_state::{latest_thread_index_entry, scan_sqlite, sync_sqlite_provider, SQLiteScan};
+use sqlite_state::{scan_sqlite, sync_sqlite_provider, SQLiteScan};
 
 pub fn scan_provider_repair(codex_home: &Path) -> ProviderRepairSnapshot {
     match scan_provider_repair_result(codex_home) {
@@ -202,32 +203,6 @@ fn config_provider(codex_home: &Path) -> Option<String> {
         }
     }
     None
-}
-
-fn scan_session_index(codex_home: &Path) -> SessionIndexScan {
-    let path = codex_home.join("session_index.jsonl");
-    let Ok(text) = fs::read_to_string(path) else {
-        return SessionIndexScan::default();
-    };
-
-    let mut ids = HashSet::new();
-    let mut rows = 0;
-    for line in text.lines().filter(|line| !line.trim().is_empty()) {
-        rows += 1;
-        if let Ok(value) = serde_json::from_str::<Value>(line) {
-            if let Some(id) = value.get("id").and_then(Value::as_str) {
-                ids.insert(id.to_string());
-            }
-        }
-    }
-    SessionIndexScan { ids, rows }
-}
-
-fn latest_thread_index_missing(sqlite_scan: &SQLiteScan, session_index: &SessionIndexScan) -> bool {
-    sqlite_scan
-        .latest_unarchived_thread_id
-        .as_ref()
-        .is_some_and(|thread_id| !session_index.ids.contains(thread_id))
 }
 
 fn snapshot_from_report(report: ProviderRepairReport) -> ProviderRepairSnapshot {
@@ -533,30 +508,6 @@ fn write_json_file(path: &Path, value: &Value) -> Result<(), String> {
     fs::write(path, bytes).map_err(|error| error.to_string())
 }
 
-fn repair_session_index(codex_home: &Path) -> Result<bool, String> {
-    let sqlite = scan_sqlite(codex_home).map_err(|error| error.to_string())?;
-    let Some(thread_id) = sqlite.latest_unarchived_thread_id else {
-        return Ok(false);
-    };
-    let session_index = scan_session_index(codex_home);
-    if session_index.ids.contains(&thread_id) {
-        return Ok(false);
-    }
-    let entry = latest_thread_index_entry(codex_home, &thread_id)?;
-    let path = codex_home.join("session_index.jsonl");
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|error| error.to_string())?;
-    writeln!(file, "{}", serde_json::to_string(&entry).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?;
-    Ok(true)
-}
-
 fn timestamp_id() -> String {
     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
     OffsetDateTime::now_utc()
@@ -588,12 +539,6 @@ struct ProviderRepairReport {
 struct TargetProvider {
     provider: String,
     source: String,
-}
-
-#[derive(Default)]
-struct SessionIndexScan {
-    ids: HashSet<String>,
-    rows: u32,
 }
 
 #[cfg(test)]
