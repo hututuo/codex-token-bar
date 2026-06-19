@@ -1,12 +1,5 @@
 import { useEffect, useState } from "react";
-import { CacheHitRanking } from "../components/CacheHitRanking";
 import { DashboardHeader } from "../components/DashboardHeader";
-import { LiveRateCard } from "../components/LiveRateCard";
-import { ProviderRepairCard } from "../components/ProviderRepairCard";
-import { QuotaStrip } from "../components/QuotaStrip";
-import { RecentUsageChart } from "../components/RecentUsageChart";
-import { StatsStrip } from "../components/StatsStrip";
-import { TokenActivitySection } from "../components/TokenActivitySection";
 import { recordStartupEvent } from "../api/client";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import type {
@@ -21,6 +14,8 @@ import type {
   ProviderRepairSnapshot,
 } from "../types/dashboard";
 import type { CommandFailureDiagnostic } from "../api/client";
+import { DashboardAnalyticsSection } from "./dashboard/DashboardAnalyticsSection";
+import { DashboardSummarySection } from "./dashboard/DashboardSummarySection";
 
 interface DashboardPageProps {
   autostartStatus: AutostartStatus;
@@ -128,34 +123,28 @@ export function DashboardPage({
 
         {summaryReady ? (
           <>
-            <QuotaStrip snapshot={dashboard.quota} />
-            <StatsStrip stats={dashboard.stats} />
-            <LiveRateCard
+            <DashboardSummarySection
+              dashboard={dashboard}
+              displaySurfaces={displaySurfaces}
               floatingSettings={floatingSettings}
               floatingVisible={floatingVisible}
-              statusTrayLiveTextEnabled={displaySurfaces.statusTrayLiveTextEnabled}
+              liveRate={liveRate}
+              liveThreadOptions={liveThreadOptions}
               onFloatingOpacityChange={onFloatingOpacityChange}
               onFloatingScaleChange={onFloatingScaleChange}
               onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
               onLiveThreadSelect={onLiveThreadSelect}
               onToggleFloating={onToggleFloating}
               onToggleStatusTray={onToggleStatusTray}
-              liveThreadOptions={liveThreadOptions}
               platform={platform}
               selectedLiveThreadId={selectedLiveThreadId}
-              snapshot={liveRate}
             />
             {analyticsReady ? (
-              <>
-                <TokenActivitySection days={dashboard.activityDays} />
-                <RecentUsageChart points={dashboard.recentUsage24h} />
-                <CacheHitRanking items={dashboard.cacheHitRanking} />
-                <ProviderRepairCard
-                  id="provider-repair"
-                  onSnapshotChange={onProviderRepairChange}
-                  snapshot={providerRepair}
-                />
-              </>
+              <DashboardAnalyticsSection
+                dashboard={dashboard}
+                onProviderRepairChange={onProviderRepairChange}
+                providerRepair={providerRepair}
+              />
             ) : (
               <section className="analytics-boot" aria-label="图表区域正在准备">
                 <span>正在准备图表和排行...</span>
