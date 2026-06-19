@@ -4,18 +4,19 @@ use crate::models::{
     ResetCreditSummary,
 };
 use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
 mod aggregates;
 mod ranking;
+mod session_files;
 mod session_parser;
 mod token_event_cache;
 
 use aggregates::{activity_days, recent_usage, stats};
 use ranking::cache_hit_ranking;
+use session_files::{jsonl_files, session_id_from_file};
 use token_event_cache::{
     codex_home_cache_key, file_cache_key, parse_session_file_cached, token_cache_warning,
     TokenEventCache,
@@ -100,13 +101,6 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     })
 }
 
-fn jsonl_scan_warning(message: String) -> LocalDataWarning {
-    LocalDataWarning {
-        source: "jsonl_scan".into(),
-        message,
-    }
-}
-
 fn no_token_events_error(warnings: &[LocalDataWarning]) -> String {
     if warnings.is_empty() {
         return "No token_count events found".into();
@@ -117,53 +111,6 @@ fn no_token_events_error(warnings: &[LocalDataWarning]) -> String {
         .collect::<Vec<_>>()
         .join("；");
     format!("No token_count events found；{details}")
-}
-
-fn jsonl_files(root: &Path, warnings: &mut Vec<LocalDataWarning>) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    collect_jsonl_files(root, &mut files, warnings);
-    files
-}
-
-fn collect_jsonl_files(root: &Path, files: &mut Vec<PathBuf>, warnings: &mut Vec<LocalDataWarning>) {
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) => {
-            warnings.push(jsonl_scan_warning(format!(
-                "读取会话目录失败：{}（{}）",
-                root.display(),
-                error
-            )));
-            return;
-        }
-    };
-
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                warnings.push(jsonl_scan_warning(format!(
-                    "读取会话目录项失败：{}（{}）",
-                    root.display(),
-                    error
-                )));
-                continue;
-            }
-        };
-        let path = entry.path();
-        if path.is_dir() {
-            collect_jsonl_files(&path, files, warnings);
-        } else if path.extension().is_some_and(|extension| extension == "jsonl") {
-            files.push(path);
-        }
-    }
-}
-
-fn session_id_from_file(file: &Path) -> String {
-    let stem = file.file_stem().and_then(|value| value.to_str()).unwrap_or_default();
-    let parts: Vec<&str> = stem.split('-').collect();
-    let start = parts.len().saturating_sub(5);
-    parts[start..].join("-")
 }
 
 fn placeholder_quota() -> QuotaSnapshot {
@@ -196,7 +143,9 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
     use std::collections::HashMap;
+    use std::fs;
     use std::io::Write;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
