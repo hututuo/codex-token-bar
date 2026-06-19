@@ -1,6 +1,7 @@
 use super::*;
 use rusqlite::{params, Connection};
 use std::fs;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]

@@ -1,10 +1,8 @@
-use crate::models::{
-    ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
-    ProviderRepairStep,
-};
-use std::path::{Path, PathBuf};
+use crate::models::{ProviderRepairActionResult, ProviderRepairSnapshot};
+use std::path::Path;
 
 mod backups;
+mod report;
 mod session_files;
 mod session_index;
 mod sqlite_state;
@@ -16,14 +14,11 @@ use backups::{
 };
 #[cfg(test)]
 use backups::{codex_home_fingerprint, codex_home_identity};
-use session_index::{
-    latest_thread_index_missing, repair_session_index, scan_session_index, SessionIndexScan,
-};
-use session_files::{
-    find_session_files, rewrite_session_provider, scan_session_providers, SessionScan,
-};
+use report::{action_result, error_snapshot, snapshot_from_report, ProviderRepairReport};
+use session_index::{latest_thread_index_missing, repair_session_index, scan_session_index};
+use session_files::{find_session_files, rewrite_session_provider, scan_session_providers};
 use sqlite_state::{scan_sqlite, sync_sqlite_provider, SQLiteScan};
-use target_provider::{detect_target_provider, TargetProvider};
+use target_provider::detect_target_provider;
 
 pub fn scan_provider_repair(codex_home: &Path) -> ProviderRepairSnapshot {
     match scan_provider_repair_result(codex_home) {
@@ -122,129 +117,6 @@ fn scan_provider_repair_result(codex_home: &Path) -> Result<ProviderRepairReport
         index_missing,
         inconsistent_count,
     })
-}
-
-fn snapshot_from_report(report: ProviderRepairReport) -> ProviderRepairSnapshot {
-    let sqlite_mismatches = report.sqlite_scan.rows_to_repair(&report.target.provider);
-    let index_issue = u32::from(report.index_missing);
-    let status = if report.inconsistent_count == 0 {
-        format!(
-            "扫描完成：未发现不一致。SQLite {}，session_index {} 行。",
-            report.sqlite_scan.integrity, report.session_index.rows
-        )
-    } else {
-        format!(
-            "扫描完成：发现 {} 条不一致（JSONL {}，SQLite {}，异常文件 {}，索引 {}）。",
-            report.inconsistent_count,
-            report.session_mismatches,
-            sqlite_mismatches,
-            report.session_scan.invalid_files,
-            index_issue
-        )
-    };
-
-    ProviderRepairSnapshot {
-        detected_provider: report.target.provider.clone(),
-        provider_source: report.target.source.clone(),
-        session_files_found: report.session_scan.files_found,
-        inconsistent_count: report.inconsistent_count,
-        status,
-        steps: vec![
-            ProviderRepairStep {
-                label: "扫描".into(),
-                status: if report.inconsistent_count == 0 {
-                    "未发现不一致".into()
-                } else {
-                    format!("发现 {} 条不一致", report.inconsistent_count)
-                },
-                done: true,
-                healthy: report.inconsistent_count == 0,
-            },
-            ProviderRepairStep {
-                label: "备份".into(),
-                status: "未备份".into(),
-                done: false,
-                healthy: true,
-            },
-            ProviderRepairStep {
-                label: "修复".into(),
-                status: if report.inconsistent_count == 0 {
-                    "暂无需修复".into()
-                } else {
-                    "未进行修复".into()
-                },
-                done: false,
-                healthy: report.inconsistent_count == 0,
-            },
-            ProviderRepairStep {
-                label: "验证".into(),
-                status: "未验证".into(),
-                done: false,
-                healthy: report.inconsistent_count == 0,
-            },
-        ],
-    }
-}
-
-fn error_snapshot(codex_home: &Path, message: String) -> ProviderRepairSnapshot {
-    ProviderRepairSnapshot {
-        detected_provider: "openai".into(),
-        provider_source: "读取失败".into(),
-        session_files_found: 0,
-        inconsistent_count: 1,
-        status: format!("扫描失败：{message}"),
-        steps: vec![
-            ProviderRepairStep {
-                label: "扫描".into(),
-                status: format!("读取失败：{}", codex_home.display()),
-                done: true,
-                healthy: false,
-            },
-            ProviderRepairStep {
-                label: "备份".into(),
-                status: "未备份".into(),
-                done: false,
-                healthy: true,
-            },
-            ProviderRepairStep {
-                label: "修复".into(),
-                status: "未进行修复".into(),
-                done: false,
-                healthy: false,
-            },
-            ProviderRepairStep {
-                label: "验证".into(),
-                status: "未验证".into(),
-                done: false,
-                healthy: false,
-            },
-        ],
-    }
-}
-
-fn action_result(
-    snapshot: ProviderRepairSnapshot,
-    message: String,
-    backup: Option<ProviderRepairBackupInfo>,
-) -> ProviderRepairActionResult {
-    ProviderRepairActionResult {
-        snapshot,
-        message,
-        backup,
-        backups: list_provider_backups().unwrap_or_default(),
-    }
-}
-
-struct ProviderRepairReport {
-    #[allow(dead_code)]
-    codex_home: PathBuf,
-    target: TargetProvider,
-    session_scan: SessionScan,
-    sqlite_scan: SQLiteScan,
-    session_index: SessionIndexScan,
-    session_mismatches: u32,
-    index_missing: bool,
-    inconsistent_count: u32,
 }
 
 #[cfg(test)]
