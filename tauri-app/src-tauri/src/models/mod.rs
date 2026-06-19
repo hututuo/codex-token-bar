@@ -1,135 +1,15 @@
-use serde::{Deserialize, Serialize};
+mod platform;
+mod settings;
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexHomeStatus {
-    pub path: String,
-    pub exists: bool,
-    pub source: String,
-}
+pub use platform::{
+    AutostartStatus, CodexHomeStatus, PlatformCapabilities, PlatformFeatureCapability,
+};
+pub use settings::{
+    AppSettingsSnapshot, DisplaySurfaceSettingsSnapshot, FloatingWindowPositionSnapshot,
+    FloatingWindowSettingsSnapshot,
+};
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlatformCapabilities {
-    pub platform: String,
-    pub shell: String,
-    pub floating_window: PlatformFeatureCapability,
-    pub floating_transparency: PlatformFeatureCapability,
-    pub floating_drag: PlatformFeatureCapability,
-    pub floating_lock: PlatformFeatureCapability,
-    pub status_tray: PlatformFeatureCapability,
-    pub status_tray_live_text: PlatformFeatureCapability,
-    pub autostart: PlatformFeatureCapability,
-    pub notifications: PlatformFeatureCapability,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlatformFeatureCapability {
-    pub available: bool,
-    pub status: String,
-    pub label: String,
-    pub note: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AutostartStatus {
-    pub available: bool,
-    pub enabled: bool,
-    pub status: String,
-    pub message: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppSettingsSnapshot {
-    #[serde(default, alias = "codex_home")]
-    pub codex_home: Option<String>,
-    #[serde(default)]
-    pub floating_window: FloatingWindowSettingsSnapshot,
-    #[serde(default)]
-    pub floating_position: Option<FloatingWindowPositionSnapshot>,
-    #[serde(default)]
-    pub display_surfaces: DisplaySurfaceSettingsSnapshot,
-    #[serde(default)]
-    pub setup_guide_completed: bool,
-}
-
-impl Default for AppSettingsSnapshot {
-    fn default() -> Self {
-        Self {
-            codex_home: None,
-            floating_window: FloatingWindowSettingsSnapshot::default(),
-            floating_position: None,
-            display_surfaces: DisplaySurfaceSettingsSnapshot::default(),
-            setup_guide_completed: false,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FloatingWindowSettingsSnapshot {
-    #[serde(default = "default_floating_opacity")]
-    pub opacity: f64,
-    #[serde(default = "default_floating_scale")]
-    pub scale: f64,
-    #[serde(default = "default_floating_unread_effect")]
-    pub unread_effect: String,
-}
-
-impl Default for FloatingWindowSettingsSnapshot {
-    fn default() -> Self {
-        Self {
-            opacity: default_floating_opacity(),
-            scale: default_floating_scale(),
-            unread_effect: default_floating_unread_effect(),
-        }
-    }
-}
-
-fn default_floating_opacity() -> f64 {
-    0.92
-}
-
-fn default_floating_scale() -> f64 {
-    1.0
-}
-
-fn default_floating_unread_effect() -> String {
-    "ripple".into()
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FloatingWindowPositionSnapshot {
-    pub x: f64,
-    pub y: f64,
-    pub saved_at: Option<i64>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DisplaySurfaceSettingsSnapshot {
-    #[serde(default = "default_enabled")]
-    pub floating_window_enabled: bool,
-    #[serde(default = "default_enabled")]
-    pub status_tray_live_text_enabled: bool,
-}
-
-impl Default for DisplaySurfaceSettingsSnapshot {
-    fn default() -> Self {
-        Self {
-            floating_window_enabled: default_enabled(),
-            status_tray_live_text_enabled: default_enabled(),
-        }
-    }
-}
-
-fn default_enabled() -> bool {
-    true
-}
+use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
