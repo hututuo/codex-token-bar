@@ -11,7 +11,7 @@ import { LiveRateSettingsPanel } from "./liveRate/LiveRateSettingsPanel";
 
 interface LiveRateCardProps {
   floatingSettings: FloatingWindowSettings;
-  floatingVisible: boolean;
+  floatingEnabled: boolean;
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
@@ -27,7 +27,7 @@ interface LiveRateCardProps {
 
 export function LiveRateCard({
   floatingSettings,
-  floatingVisible,
+  floatingEnabled,
   onFloatingOpacityChange,
   onFloatingScaleChange,
   onFloatingUnreadEffectChange,
@@ -61,8 +61,8 @@ export function LiveRateCard({
         </div>
 
         <LiveRateSettingsPanel
+          floatingEnabled={floatingEnabled}
           floatingSettings={floatingSettings}
-          floatingVisible={floatingVisible}
           onFloatingOpacityChange={onFloatingOpacityChange}
           onFloatingScaleChange={onFloatingScaleChange}
           onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}

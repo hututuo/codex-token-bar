@@ -67,20 +67,22 @@ fn surface_setup_status_cell() -> &'static Mutex<SurfaceSetupStatus> {
 
 pub fn show_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {
     if app.get_webview_window("floating").is_none() {
-        create_floating_window(app).map_err(|error| {
-            let message = error.to_string();
-            set_floating_window_error(Some(message.clone()));
-            message
-        })?;
+        if let Err(error) = create_floating_window(app) {
+            if app.get_webview_window("floating").is_none() {
+                let message = error.to_string();
+                set_floating_window_error(Some(message.clone()));
+                return Err(message);
+            }
+        }
     }
     set_floating_window_error(None);
     let window = app
         .get_webview_window("floating")
         .ok_or_else(|| "floating window is not available".to_string())?;
     window.show().map_err(|error| error.to_string())?;
-    window
-        .set_always_on_top(true)
-        .map_err(|error| error.to_string())?;
+    if let Err(error) = window.set_always_on_top(true) {
+        startup_trace::mark(&format!("floating window always-on-top skipped: {error}"));
+    }
     Ok(true)
 }
 
@@ -244,6 +246,7 @@ fn create_floating_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     .focused(false)
     .always_on_top(true)
     .visible_on_all_workspaces(true)
+    .visible(false)
     .skip_taskbar(true)
     .shadow(false)
     .transparent(true)

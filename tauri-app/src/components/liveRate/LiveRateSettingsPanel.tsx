@@ -10,7 +10,7 @@ const UNREAD_EFFECT_OPTIONS: Array<{ value: FloatingUnreadEffect; label: string 
 
 interface LiveRateSettingsPanelProps {
   floatingSettings: FloatingWindowSettings;
-  floatingVisible: boolean;
+  floatingEnabled: boolean;
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
@@ -21,8 +21,8 @@ interface LiveRateSettingsPanelProps {
 }
 
 export function LiveRateSettingsPanel({
+  floatingEnabled,
   floatingSettings,
-  floatingVisible,
   onFloatingOpacityChange,
   onFloatingScaleChange,
   onFloatingUnreadEffectChange,
@@ -37,7 +37,7 @@ export function LiveRateSettingsPanel({
   const scaleFill = ((scalePercent - 90) / 48) * 100;
   const floatingAvailable = platform.floatingWindow.available;
   const floatingButtonLabel = floatingAvailable
-    ? `显示：${floatingVisible ? "悬浮窗" : "关闭"}`
+    ? `显示：${floatingEnabled ? "悬浮窗" : "关闭"}`
     : "悬浮窗待接入";
   const statusTrayAvailable = platform.statusTray.available;
   const statusTrayButtonLabel = statusTrayAvailable

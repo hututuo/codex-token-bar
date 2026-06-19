@@ -15,7 +15,6 @@ interface DashboardSummarySectionProps {
   dashboard: DashboardSnapshot;
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
-  floatingVisible: boolean;
   liveRate: LiveRateSnapshot;
   liveThreadOptions: LiveThreadOption[];
   onFloatingOpacityChange: (opacity: number) => void;
@@ -32,7 +31,6 @@ export function DashboardSummarySection({
   dashboard,
   displaySurfaces,
   floatingSettings,
-  floatingVisible,
   liveRate,
   liveThreadOptions,
   onFloatingOpacityChange,
@@ -49,8 +47,8 @@ export function DashboardSummarySection({
       <QuotaStrip snapshot={dashboard.quota} />
       <StatsStrip stats={dashboard.stats} />
       <LiveRateCard
+        floatingEnabled={displaySurfaces.floatingWindowEnabled}
         floatingSettings={floatingSettings}
-        floatingVisible={floatingVisible}
         statusTrayLiveTextEnabled={displaySurfaces.statusTrayLiveTextEnabled}
         onFloatingOpacityChange={onFloatingOpacityChange}
         onFloatingScaleChange={onFloatingScaleChange}

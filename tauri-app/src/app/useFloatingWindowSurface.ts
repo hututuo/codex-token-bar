@@ -66,19 +66,20 @@ export function useFloatingWindowSurface({
   }, [available, enabled, ready]);
 
   const toggleFloatingWindow = useCallback(async () => {
-    const nextVisible = !floatingVisible;
+    const nextEnabled = !enabled;
     if (!available) {
       setFloatingVisible(false);
+      onPreferenceConfirmed(false);
       return;
     }
 
-    setFloatingVisible(nextVisible);
-    const confirmed = nextVisible
+    onPreferenceConfirmed(nextEnabled);
+    setFloatingVisible(nextEnabled);
+    const confirmed = nextEnabled
       ? await desktopPlatform.showFloatingWindow()
       : await desktopPlatform.hideFloatingWindow();
     setFloatingVisible(confirmed);
-    onPreferenceConfirmed(confirmed);
-  }, [available, floatingVisible, onPreferenceConfirmed]);
+  }, [available, enabled, onPreferenceConfirmed]);
 
   return {
     floatingVisible,

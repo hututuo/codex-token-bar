@@ -1,14 +1,11 @@
-import type { CommandFailureDiagnostic } from "../api/client";
 import type { AccountInfo, AutostartStatus, CodexHomeStatus } from "../types/dashboard";
 import { CodexHomeEditor } from "./dashboardHeader/CodexHomeEditor";
-import { DiagnosticStrip } from "./dashboardHeader/DiagnosticStrip";
 import { useState } from "react";
 
 interface DashboardHeaderProps {
   account: AccountInfo;
   autostartStatus: AutostartStatus;
   codexHome: CodexHomeStatus;
-  diagnostics: CommandFailureDiagnostic[];
   generatedAt: string;
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
@@ -22,7 +19,6 @@ export function DashboardHeader({
   account,
   autostartStatus,
   codexHome,
-  diagnostics,
   generatedAt,
   onCodexHomeChange,
   onCodexHomeReset,
@@ -39,7 +35,6 @@ export function DashboardHeader({
     second: "2-digit",
   }).format(new Date(generatedAt));
   const sourceLabel = codexHome.source === "manual" ? "手动目录" : codexHome.exists ? "自动发现" : "等待选择";
-  const latestDiagnostic = diagnostics[0] ?? null;
 
   return (
     <header className="dashboard-header">
@@ -83,7 +78,6 @@ export function DashboardHeader({
           onDone={() => setEditingPath(false)}
         />
       ) : null}
-      {latestDiagnostic ? <DiagnosticStrip diagnostic={latestDiagnostic} /> : null}
     </header>
   );
 }

@@ -32,10 +32,8 @@ export function DashboardApp() {
         autostartStatus={shellSettings.autostartStatus}
         codexHome={readyState.codexHome}
         dashboard={readyState.dashboard}
-        diagnostics={readyState.diagnostics}
         displaySurfaces={shellSettings.displaySurfaces}
         floatingSettings={shellSettings.floatingSettings}
-        floatingVisible={shellSettings.floatingVisible}
         liveRate={readyState.liveRate}
         liveThreadOptions={readyState.liveThreadOptions}
         platform={readyState.platform}

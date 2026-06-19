@@ -11,7 +11,6 @@ import type {
   PlatformCapabilities,
   ProviderRepairSnapshot,
 } from "../types/dashboard";
-import type { CommandFailureDiagnostic } from "../api/client";
 import { DashboardAnalyticsSection } from "./dashboard/DashboardAnalyticsSection";
 import { DashboardSummarySection } from "./dashboard/DashboardSummarySection";
 import { useDashboardPageLifecycle } from "./dashboard/useDashboardPageLifecycle";
@@ -20,10 +19,8 @@ interface DashboardPageProps {
   autostartStatus: AutostartStatus;
   codexHome: CodexHomeStatus;
   dashboard: DashboardSnapshot;
-  diagnostics: CommandFailureDiagnostic[];
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
-  floatingVisible: boolean;
   liveRate: LiveRateSnapshot;
   liveThreadOptions: LiveThreadOption[];
   platform: PlatformCapabilities;
@@ -47,10 +44,8 @@ export function DashboardPage({
   autostartStatus,
   codexHome,
   dashboard,
-  diagnostics,
   displaySurfaces,
   floatingSettings,
-  floatingVisible,
   liveRate,
   liveThreadOptions,
   platform,
@@ -78,7 +73,6 @@ export function DashboardPage({
           account={dashboard.account}
           autostartStatus={autostartStatus}
           codexHome={codexHome}
-          diagnostics={diagnostics}
           generatedAt={dashboard.generatedAt}
           onCodexHomeChange={onCodexHomeChange}
           onCodexHomeReset={onCodexHomeReset}
@@ -94,7 +88,6 @@ export function DashboardPage({
               dashboard={dashboard}
               displaySurfaces={displaySurfaces}
               floatingSettings={floatingSettings}
-              floatingVisible={floatingVisible}
               liveRate={liveRate}
               liveThreadOptions={liveThreadOptions}
               onFloatingOpacityChange={onFloatingOpacityChange}
