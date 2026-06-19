@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   readAppSettings,
-  saveDisplaySurfaces,
   saveFloatingSettings,
   saveSetupGuideCompleted,
 } from "../api/client";
@@ -10,13 +9,6 @@ import {
   sanitizeFloatingSettings,
 } from "../floating/floatingSettings";
 import { desktopPlatform } from "../platform/desktop";
-import {
-  canUseFloatingWindow,
-  canUseStatusTrayLiveText,
-  INACTIVE_DISPLAY_SURFACES,
-  sanitizeDisplaySurfaces,
-} from "../settings/displaySettings";
-import { useStatusTray } from "../tray/useStatusTray";
 import type {
   AutostartStatus,
   DisplaySurfaceSettings,
@@ -25,6 +17,7 @@ import type {
   PlatformCapabilities,
 } from "../types/dashboard";
 import { useAutostartSettings } from "./useAutostartSettings";
+import { useDisplaySurfaceSettings } from "./useDisplaySurfaceSettings";
 
 interface DashboardShellSettingsOptions {
   dashboardHydrated: boolean;
@@ -50,40 +43,17 @@ export function useDashboardShellSettings({
   dashboardHydrated,
   platform,
 }: DashboardShellSettingsOptions): DashboardShellSettingsState {
-  const [floatingVisible, setFloatingVisible] = useState(false);
   const [floatingSettings, setFloatingSettings] = useState(DEFAULT_FLOATING_SETTINGS);
-  const [displaySurfaces, setDisplaySurfaces] = useState(INACTIVE_DISPLAY_SURFACES);
   const [showSetupGuide, setShowSetupGuide] = useState(false);
   const floatingSettingsLoaded = useRef(false);
-  const displaySettingsLoaded = useRef(false);
-  const floatingAvailable = canUseFloatingWindow(platform);
-  const statusTrayLiveTextAvailable = canUseStatusTrayLiveText(platform);
   const { autostartStatus, toggleAutostart } = useAutostartSettings({ dashboardHydrated });
-
-  useStatusTray(
-    platform,
-    displaySurfaces.statusTrayLiveTextEnabled && statusTrayLiveTextAvailable,
-  );
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-
-    void desktopPlatform.onFloatingWindowHidden(() => {
-      setFloatingVisible(false);
-    }).then((listener) => {
-      if (disposed) {
-        listener();
-      } else {
-        unlisten = listener;
-      }
-    });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
+  const {
+    applyDisplaySurfaces,
+    displaySurfaces,
+    floatingVisible,
+    toggleFloatingWindow,
+    toggleStatusTrayLiveText,
+  } = useDisplaySurfaceSettings({ platform });
 
   useEffect(() => {
     let cancelled = false;
@@ -93,40 +63,15 @@ export function useDashboardShellSettings({
         return;
       }
       floatingSettingsLoaded.current = true;
-      displaySettingsLoaded.current = true;
       setFloatingSettings(sanitizeFloatingSettings(settings.floatingWindow));
-      setDisplaySurfaces(sanitizeDisplaySurfaces(settings.displaySurfaces));
+      applyDisplaySurfaces(settings.displaySurfaces);
       setShowSetupGuide(!settings.setupGuideCompleted);
     });
 
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  useEffect(() => {
-    if (!displaySettingsLoaded.current) {
-      return;
-    }
-
-    let cancelled = false;
-    const shouldShowFloating = displaySurfaces.floatingWindowEnabled && floatingAvailable;
-
-    async function applyFloatingPreference() {
-      const confirmed = shouldShowFloating
-        ? await desktopPlatform.showFloatingWindow()
-        : await desktopPlatform.hideFloatingWindow();
-      if (!cancelled) {
-        setFloatingVisible(shouldShowFloating && confirmed);
-      }
-    }
-
-    void applyFloatingPreference();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [displaySurfaces.floatingWindowEnabled, floatingAvailable]);
+  }, [applyDisplaySurfaces]);
 
   useEffect(() => {
     const sanitized = sanitizeFloatingSettings(floatingSettings);
@@ -135,39 +80,6 @@ export function useDashboardShellSettings({
       void saveFloatingSettings(sanitized).catch(() => {});
     }
   }, [floatingSettings]);
-
-  async function toggleFloatingWindow() {
-    const nextVisible = !floatingVisible;
-    if (!floatingAvailable) {
-      setFloatingVisible(false);
-      return;
-    }
-    setFloatingVisible(nextVisible);
-    const confirmed = nextVisible
-      ? await desktopPlatform.showFloatingWindow()
-      : await desktopPlatform.hideFloatingWindow();
-    setFloatingVisible(confirmed);
-    updateDisplaySurfaces({ floatingWindowEnabled: confirmed });
-  }
-
-  function toggleStatusTrayLiveText() {
-    if (!statusTrayLiveTextAvailable) {
-      return;
-    }
-    updateDisplaySurfaces({
-      statusTrayLiveTextEnabled: !displaySurfaces.statusTrayLiveTextEnabled,
-    });
-  }
-
-  function updateDisplaySurfaces(next: Partial<DisplaySurfaceSettings>) {
-    setDisplaySurfaces((current) => {
-      const sanitized = sanitizeDisplaySurfaces({ ...current, ...next });
-      if (displaySettingsLoaded.current) {
-        void saveDisplaySurfaces(sanitized).catch(() => {});
-      }
-      return sanitized;
-    });
-  }
 
   function updateFloatingOpacity(opacity: number) {
     setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, opacity }));
