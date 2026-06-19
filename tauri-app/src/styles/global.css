@@ -1570,15 +1570,20 @@ input[type="range"]::-moz-range-thumb {
 
 .floating-quota-bar {
   position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex: 1;
+  min-width: 0;
+  min-height: calc(20px * var(--floating-scale));
   border-radius: calc(7px * var(--floating-scale));
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(43, 115, 220, 0.14);
-  padding: calc(4px * var(--floating-scale)) calc(8px * var(--floating-scale));
+  background: transparent;
+  padding: 0 calc(8px * var(--floating-scale));
   overflow: hidden;
   font-size: calc(11.5px * var(--floating-scale));
   font-weight: 660;
   line-height: 1;
+  isolation: isolate;
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1586,12 +1591,14 @@ input[type="range"]::-moz-range-thumb {
 
 .floating-quota-track {
   position: absolute;
-  inset: calc(2px * var(--floating-scale));
+  inset: 0;
   overflow: hidden;
-  border-radius: calc(5px * var(--floating-scale));
+  border-radius: inherit;
   background: rgba(255, 255, 255, 0.96);
-  border: 1px solid rgba(43, 115, 220, 0.10);
+  border: 1px solid rgba(42, 105, 202, 0.16);
   box-sizing: border-box;
+  box-shadow: inset 0 1px 2px rgba(16, 54, 105, 0.08);
+  z-index: 0;
 }
 
 .floating-quota-fill {
@@ -1599,14 +1606,21 @@ input[type="range"]::-moz-range-thumb {
   height: 100%;
   min-width: 0;
   border-radius: inherit;
-  background: linear-gradient(90deg, #236bd5 0%, #3f89e8 62%, #7cb8ff 100%);
+  background: linear-gradient(90deg, #246fd9 0%, #438ce8 62%, #81bdff 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -1px 0 rgba(35, 94, 176, 0.18);
+  transition: width 180ms ease-out;
 }
 
 .floating-quota-label {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   color: #1f2d42;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.34);
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.42);
 }
 
 .unread-effect {
