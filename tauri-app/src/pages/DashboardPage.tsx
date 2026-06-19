@@ -1,6 +1,4 @@
-import { useEffect, useState } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
-import { recordStartupEvent } from "../api/client";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import type {
   AutostartStatus,
@@ -16,6 +14,7 @@ import type {
 import type { CommandFailureDiagnostic } from "../api/client";
 import { DashboardAnalyticsSection } from "./dashboard/DashboardAnalyticsSection";
 import { DashboardSummarySection } from "./dashboard/DashboardSummarySection";
+import { useDashboardPageLifecycle } from "./dashboard/useDashboardPageLifecycle";
 
 interface DashboardPageProps {
   autostartStatus: AutostartStatus;
@@ -70,39 +69,7 @@ export function DashboardPage({
   refreshing,
   selectedLiveThreadId,
 }: DashboardPageProps) {
-  const [summaryReady] = useState(true);
-  const [analyticsReady, setAnalyticsReady] = useState(false);
-
-  useEffect(() => {
-    void recordStartupEvent("dashboard summary ui ready");
-  }, []);
-
-  useEffect(() => {
-    if (!summaryReady) {
-      return;
-    }
-
-    let cancelled = false;
-    const reveal = () => {
-      if (!cancelled) {
-        setAnalyticsReady(true);
-        void recordStartupEvent("dashboard analytics ui ready");
-      }
-    };
-    const schedule = scheduleAfterFirstPaint(reveal);
-
-    return () => {
-      cancelled = true;
-      schedule.cancel();
-    };
-  }, [summaryReady]);
-
-  function openProviderRepair() {
-    document.getElementById("provider-repair")?.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
-    });
-  }
+  const { analyticsReady, openProviderRepair, summaryReady } = useDashboardPageLifecycle();
 
   return (
     <main className="app-shell">
@@ -159,19 +126,4 @@ export function DashboardPage({
       </section>
     </main>
   );
-}
-
-function scheduleAfterFirstPaint(callback: () => void) {
-  let cancelled = false;
-  queueMicrotask(() => {
-    if (!cancelled) {
-      callback();
-    }
-  });
-
-  return {
-    cancel: () => {
-      cancelled = true;
-    },
-  };
 }
