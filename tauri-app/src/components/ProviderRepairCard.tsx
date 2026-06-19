@@ -12,6 +12,9 @@ import type {
   ProviderRepairBackupInfo,
   ProviderRepairSnapshot,
 } from "../types/dashboard";
+import { ProviderRepairActions } from "./providerRepair/ProviderRepairActions";
+import { ProviderRepairBackups } from "./providerRepair/ProviderRepairBackups";
+import { ProviderRepairSteps } from "./providerRepair/ProviderRepairSteps";
 
 interface ProviderRepairCardProps {
   id?: string;
@@ -107,81 +110,24 @@ export function ProviderRepairCard({ id, onSnapshotChange, snapshot }: ProviderR
         {message}
       </p>
 
-      <div className="repair-steps">
-        {snapshot.steps.map((step, index) => (
-          <div className={step.done ? "repair-step repair-step--done" : "repair-step"} key={step.label}>
-            <strong>{index + 1}</strong>
-            <span>{step.label}</span>
-            <em>{step.status}</em>
-          </div>
-        ))}
-      </div>
+      <ProviderRepairSteps steps={snapshot.steps} />
 
-      <div className="repair-actions">
-        <button disabled={busyAction !== null} onClick={runScan} type="button">
-          1 扫描
-        </button>
-        <button disabled={busyAction !== null} onClick={runBackup} type="button">
-          2 创建备份
-        </button>
-        <button disabled={busyAction !== null || !activeBackupId} onClick={runSync} type="button">
-          3 同步修复
-        </button>
-        <button disabled={busyAction !== null} onClick={runVerify} type="button">
-          4 验证
-        </button>
-      </div>
+      <ProviderRepairActions
+        activeBackupId={activeBackupId}
+        busy={busyAction !== null}
+        onBackup={runBackup}
+        onScan={runScan}
+        onSync={runSync}
+        onVerify={runVerify}
+      />
 
-      <div className="repair-backups">
-        <div className="repair-backups-head">
-          <strong>回滚备份</strong>
-          <span>{backups.length === 0 ? "暂无备份" : `${backups.length} 个备份`}</span>
-        </div>
-        <div className="repair-backup-list">
-          {backups.length === 0 ? (
-            <p>创建备份后，会在这里显示可回滚的时间点。</p>
-          ) : (
-            backups.map((backup, index) => (
-              <article
-                className={
-                  activeBackupId === backup.id ? "repair-backup repair-backup--active" : "repair-backup"
-                }
-                key={backup.id}
-              >
-                <button onClick={() => setActiveBackupId(backup.id)} type="button">
-                  <strong>#{backups.length - index}</strong>
-                  <span>{backup.createdAt}</span>
-                  <em>{backup.targetProvider}</em>
-                </button>
-                <small>
-                  JSONL {backup.sessionFiles} · SQLite {backup.stateDatabase ? "已备份" : "无"} · 索引{" "}
-                  {backup.sessionIndex ? "已备份" : "无"}
-                </small>
-                <small title={backup.codexHome}>目录 {compactCodexHome(backup.codexHome)}</small>
-                <button
-                  className="repair-rollback-button"
-                  disabled={busyAction !== null}
-                  onClick={() => runRollback(backup.id)}
-                  type="button"
-                >
-                  回滚
-                </button>
-              </article>
-            ))
-          )}
-        </div>
-      </div>
+      <ProviderRepairBackups
+        activeBackupId={activeBackupId}
+        backups={backups}
+        busy={busyAction !== null}
+        onRollback={runRollback}
+        onSelectBackup={setActiveBackupId}
+      />
     </section>
   );
-}
-
-function compactCodexHome(path: string) {
-  if (!path || path === "unknown") {
-    return "未知";
-  }
-  const parts = path.split(/[\\/]+/).filter(Boolean);
-  if (parts.length <= 2) {
-    return path;
-  }
-  return `.../${parts.slice(-2).join("/")}`;
 }
