@@ -107,6 +107,27 @@ latest_runnable_app() {
   return 1
 }
 
+fresh_or_latest_runnable_app() {
+  if [[ -x "$BUILT_APP_BINARY" ]]; then
+    stage_runnable_app
+    return 0
+  fi
+
+  latest_runnable_app
+}
+
+pid_list_contains() {
+  local needle="$1"
+  local haystack="$2"
+  local pid
+  for pid in $haystack; do
+    if [[ "$pid" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 wait_for_dashboard_ready() {
   local pid="$1"
   local ready=0
@@ -143,7 +164,7 @@ if [[ "$BUILD_FIRST" == "1" ]]; then
   stop_legacy_built_app
   (cd "$TAURI_DIR" && npm run tauri -- build --debug --bundles app)
   RUN_APP_PATH="$(stage_runnable_app)"
-elif ! RUN_APP_PATH="$(latest_runnable_app)"; then
+elif ! RUN_APP_PATH="$(fresh_or_latest_runnable_app)"; then
   RUN_APP_PATH="$(stage_runnable_app)"
 fi
 
@@ -159,15 +180,18 @@ if ! /usr/bin/codesign --verify --deep --strict --verbose=2 "$RUN_APP_PATH" >/de
   /usr/bin/codesign --force --deep --sign - "$RUN_APP_PATH"
 fi
 
+existing_pids="$(/usr/bin/pgrep -f "$RUN_APP_BINARY" 2>/dev/null || true)"
+/bin/rm -f "$TRACE_LOG"
 /usr/bin/open -n "$RUN_APP_PATH"
 
 opened_pid=""
 for _ in $(seq 1 120); do
-  pid="$(/usr/bin/pgrep -f "$RUN_APP_BINARY" | head -n 1 || true)"
-  if [[ -n "$pid" ]]; then
-    opened_pid="$pid"
-    break
-  fi
+  for pid in $(/usr/bin/pgrep -f "$RUN_APP_BINARY" 2>/dev/null || true); do
+    if ! pid_list_contains "$pid" "$existing_pids"; then
+      opened_pid="$pid"
+      break 2
+    fi
+  done
   /bin/sleep 0.1
 done
 
