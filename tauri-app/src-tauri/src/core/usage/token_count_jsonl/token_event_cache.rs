@@ -1,4 +1,4 @@
-use super::{parse_session_file, TokenEvent};
+use super::{session_parser::parse_session_file, TokenEvent};
 use crate::core::app_paths;
 use crate::models::LocalDataWarning;
 use serde::{Deserialize, Serialize};
