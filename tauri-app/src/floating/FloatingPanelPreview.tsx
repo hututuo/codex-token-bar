@@ -19,7 +19,9 @@ function FloatingQuotaBar({ label, remainingPercent }: { label: string; remainin
 
   return (
     <strong className="floating-quota-bar" aria-label={`${label}，剩余 ${Math.round(fillPercent)}%`}>
-      <span className="floating-quota-fill" style={{ width: `${fillPercent}%` }} aria-hidden="true" />
+      <span className="floating-quota-track" aria-hidden="true">
+        <span className="floating-quota-fill" style={{ width: `${fillPercent}%` }} />
+      </span>
       <span className="floating-quota-label">{label}</span>
     </strong>
   );
