@@ -1,14 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import {
   readAppSettings,
-  readAutostartStatus,
-  recordStartupEvent,
   saveDisplaySurfaces,
   saveFloatingSettings,
   saveSetupGuideCompleted,
-  setAutostartEnabled,
 } from "../api/client";
-import { fallbackAutostartStatus } from "../api/fallback";
 import {
   DEFAULT_FLOATING_SETTINGS,
   sanitizeFloatingSettings,
@@ -28,6 +24,7 @@ import type {
   FloatingWindowSettings,
   PlatformCapabilities,
 } from "../types/dashboard";
+import { useAutostartSettings } from "./useAutostartSettings";
 
 interface DashboardShellSettingsOptions {
   dashboardHydrated: boolean;
@@ -56,13 +53,12 @@ export function useDashboardShellSettings({
   const [floatingVisible, setFloatingVisible] = useState(false);
   const [floatingSettings, setFloatingSettings] = useState(DEFAULT_FLOATING_SETTINGS);
   const [displaySurfaces, setDisplaySurfaces] = useState(INACTIVE_DISPLAY_SURFACES);
-  const [autostartStatus, setAutostartStatus] = useState<AutostartStatus>(fallbackAutostartStatus);
-  const [autostartUpdating, setAutostartUpdating] = useState(false);
   const [showSetupGuide, setShowSetupGuide] = useState(false);
   const floatingSettingsLoaded = useRef(false);
   const displaySettingsLoaded = useRef(false);
   const floatingAvailable = canUseFloatingWindow(platform);
   const statusTrayLiveTextAvailable = canUseStatusTrayLiveText(platform);
+  const { autostartStatus, toggleAutostart } = useAutostartSettings({ dashboardHydrated });
 
   useStatusTray(
     platform,
@@ -88,27 +84,6 @@ export function useDashboardShellSettings({
       unlisten?.();
     };
   }, []);
-
-  useEffect(() => {
-    if (!dashboardHydrated) {
-      return;
-    }
-
-    let cancelled = false;
-    const timeoutId = window.setTimeout(() => {
-      void recordStartupEvent("autostart lazy read requested");
-      void readAutostartStatus().then((status) => {
-        if (!cancelled) {
-          setAutostartStatus(status);
-        }
-      });
-    }, 800);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeoutId);
-    };
-  }, [dashboardHydrated]);
 
   useEffect(() => {
     let cancelled = false;
@@ -182,23 +157,6 @@ export function useDashboardShellSettings({
     updateDisplaySurfaces({
       statusTrayLiveTextEnabled: !displaySurfaces.statusTrayLiveTextEnabled,
     });
-  }
-
-  async function toggleAutostart() {
-    if (autostartUpdating || !autostartStatus.available) {
-      return;
-    }
-
-    setAutostartUpdating(true);
-    try {
-      const next = await setAutostartEnabled(!autostartStatus.enabled);
-      setAutostartStatus(next);
-    } catch {
-      const refreshed = await readAutostartStatus();
-      setAutostartStatus(refreshed);
-    } finally {
-      setAutostartUpdating(false);
-    }
   }
 
   function updateDisplaySurfaces(next: Partial<DisplaySurfaceSettings>) {
