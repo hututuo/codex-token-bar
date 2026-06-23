@@ -319,11 +319,10 @@ struct TokenDisplayCard: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                     .frame(width: 64.scaled(by: displayScale), alignment: .leading)
-                    .offset(x: 3.scaled(by: displayScale), y: 1.5.scaled(by: displayScale))
+                    .offset(x: 3.scaled(by: displayScale))
                 Text("tok/s")
                     .font(.system(size: 8.6.scaled(by: displayScale), weight: .semibold))
                     .foregroundStyle(textPalette.secondaryColor)
-                    .offset(y: 2.scaled(by: displayScale))
             }
             .frame(height: FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale), alignment: .center)
 

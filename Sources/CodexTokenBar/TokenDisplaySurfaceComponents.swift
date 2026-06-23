@@ -219,9 +219,15 @@ struct TokenDisplayRateBar: View {
             let height = FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale)
             let statusHeight = 13.scaled(by: displayScale)
             let barHeight = 5.5.scaled(by: displayScale)
+            let statusBarGap = 4.scaled(by: displayScale)
+            let contentHeight = usageStatus == nil ? barHeight : statusHeight + statusBarGap + barHeight
+            let contentTop = max(0, (height - contentHeight) / 2)
             let barWidth = max(1, proxy.size.width)
             let fillWidth = max(3.scaled(by: displayScale), barWidth * fillFraction)
-            let barCenterY = 22.scaled(by: displayScale)
+            let statusCenterY = contentTop + statusHeight / 2
+            let barCenterY = usageStatus == nil
+                ? height / 2
+                : contentTop + statusHeight + statusBarGap + barHeight / 2
             let statusPalette = embeddedUsageStatusTextPalette ?? textPalette
 
             ZStack(alignment: .topLeading) {
@@ -233,7 +239,7 @@ struct TokenDisplayRateBar: View {
                         .minimumScaleFactor(0.86)
                         .truncationMode(.tail)
                         .frame(width: barWidth, height: statusHeight, alignment: .leading)
-                        .position(x: barWidth / 2, y: 7.5.scaled(by: displayScale))
+                        .position(x: barWidth / 2, y: statusCenterY)
                 }
 
                 ZStack(alignment: .leading) {

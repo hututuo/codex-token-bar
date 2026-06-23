@@ -234,28 +234,28 @@ struct FloatingPanelReadableTextPalette: Equatable, Sendable {
         if let fixedWhite {
             return fixedWhite
         }
-        return foregroundWhite(lightValue: 0.05, grayValue: 0.17, darkValue: 0.96)
+        return foregroundWhite(lightValue: 0.04, grayValue: 0.10, darkValue: 0.98)
     }
 
     var secondaryWhite: Double {
         if let fixedWhite {
             return fixedWhite
         }
-        return foregroundWhite(lightValue: 0.22, grayValue: 0.34, darkValue: 0.84)
+        return foregroundWhite(lightValue: 0.12, grayValue: 0.20, darkValue: 0.90)
     }
 
     var mutedWhite: Double {
         if let fixedWhite {
             return fixedWhite
         }
-        return foregroundWhite(lightValue: 0.32, grayValue: 0.42, darkValue: 0.76)
+        return foregroundWhite(lightValue: 0.16, grayValue: 0.26, darkValue: 0.84)
     }
 
     var dividerWhite: Double {
         if let fixedWhite {
             return fixedWhite
         }
-        return foregroundWhite(lightValue: 0.16, grayValue: 0.26, darkValue: 0.64)
+        return foregroundWhite(lightValue: 0.10, grayValue: 0.18, darkValue: 0.80)
     }
 
     var primaryColor: Color {
@@ -280,7 +280,7 @@ struct FloatingPanelReadableTextPalette: Equatable, Sendable {
         let whiteFamilyProgress = smoothStep(edge0: 0.50, edge1: 0.78, value: darkness)
         let familySwitch = darkness >= 0.455 ? 1.0 : 0.0
         let blackFamily = mix(lightValue, grayValue, blackFamilyProgress)
-        let whiteFamily = mix(max(0, darkValue - 0.14), darkValue, whiteFamilyProgress)
+        let whiteFamily = mix(max(0.78, darkValue - 0.07), darkValue, whiteFamilyProgress)
         let fullValue = mix(blackFamily, whiteFamily, familySwitch)
         return min(max(applyAutomaticStrength(to: fullValue), 0), 1)
     }
@@ -288,9 +288,9 @@ struct FloatingPanelReadableTextPalette: Equatable, Sendable {
     private func applyAutomaticStrength(to value: Double) -> Double {
         let strength = min(max(automaticStrength, 0), 1)
         if value < 0.5 {
-            return mix(0.26, value, strength)
+            return mix(0.18, value, strength)
         }
-        return mix(0.74, value, strength)
+        return mix(0.82, value, strength)
     }
 
     private func smoothStep(edge0: Double, edge1: Double, value: Double) -> Double {

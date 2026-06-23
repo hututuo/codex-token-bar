@@ -240,9 +240,13 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let justBeforeSwitch = FloatingPanelReadableTextPalette(backgroundLuminance: 0.546)
         let justAfterSwitch = FloatingPanelReadableTextPalette(backgroundLuminance: 0.544)
 
-        XCTAssertLessThan(justBeforeSwitch.primaryWhite, 0.24)
-        XCTAssertGreaterThan(justAfterSwitch.primaryWhite, 0.68)
-        XCTAssertGreaterThan(justAfterSwitch.primaryWhite - justBeforeSwitch.primaryWhite, 0.44)
+        XCTAssertLessThan(justBeforeSwitch.primaryWhite, 0.14)
+        XCTAssertLessThan(justBeforeSwitch.secondaryWhite, 0.24)
+        XCTAssertLessThan(justBeforeSwitch.mutedWhite, 0.30)
+        XCTAssertGreaterThan(justAfterSwitch.primaryWhite, 0.88)
+        XCTAssertGreaterThan(justAfterSwitch.secondaryWhite, 0.78)
+        XCTAssertGreaterThan(justAfterSwitch.mutedWhite, 0.72)
+        XCTAssertGreaterThan(justAfterSwitch.primaryWhite - justBeforeSwitch.primaryWhite, 0.70)
         XCTAssertFalse((0.35...0.65).contains(justBeforeSwitch.primaryWhite))
         XCTAssertFalse((0.35...0.65).contains(justAfterSwitch.primaryWhite))
     }
@@ -373,7 +377,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let standaloneStatusPalette = try XCTUnwrap(standalonePaletteSet.standaloneUsageStatusPalette)
 
         XCTAssertGreaterThan(embeddedStatusPalette.primaryWhite, ratePalette.primaryWhite)
-        XCTAssertGreaterThan(embeddedStatusPalette.primaryWhite - ratePalette.primaryWhite, 0.10)
+        XCTAssertGreaterThan(embeddedStatusPalette.primaryWhite - ratePalette.primaryWhite, 0.05)
         XCTAssertGreaterThan(standaloneStatusPalette.primaryWhite, 0.68)
         XCTAssertFalse((0.35...0.65).contains(standaloneStatusPalette.primaryWhite))
     }
@@ -553,9 +557,9 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
 
         XCTAssertLessThan(lightStrong.primaryWhite, lightWeak.primaryWhite)
-        XCTAssertLessThan(lightWeak.primaryWhite, 0.30)
+        XCTAssertLessThan(lightWeak.primaryWhite, 0.22)
         XCTAssertGreaterThan(darkStrong.primaryWhite, darkWeak.primaryWhite)
-        XCTAssertGreaterThan(darkWeak.primaryWhite, 0.70)
+        XCTAssertGreaterThan(darkWeak.primaryWhite, 0.78)
     }
 
     func testFloatingPanelTextWhiteSliderCoversFullBlackToWhiteRange() {
@@ -719,8 +723,11 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(surfaceSource.contains("@Environment(\\.tokenDisplayMetricTextPalettes) private var metricTextPalettes"))
         XCTAssertTrue(surfaceSource.contains("@Environment(\\.tokenDisplayEmbeddedUsageStatusTextPalette) private var embeddedUsageStatusTextPalette"))
         XCTAssertTrue(surfaceSource.contains("@Environment(\\.tokenDisplayStandaloneUsageStatusTextPalette) private var standaloneUsageStatusTextPalette"))
-        XCTAssertTrue(rateBar.contains("let barCenterY = 22.scaled(by: displayScale)"))
-        XCTAssertFalse(rateBar.contains("usageStatus == nil ? height / 2"))
+        XCTAssertTrue(rateBar.contains("let contentTop = max(0, (height - contentHeight) / 2)"))
+        XCTAssertTrue(rateBar.contains("let barCenterY = usageStatus == nil"))
+        XCTAssertFalse(rateBar.contains("let barCenterY = 22.scaled(by: displayScale)"))
+        XCTAssertFalse(surfaceSource.contains(".offset(x: 3.scaled(by: displayScale), y: 1.5.scaled(by: displayScale))"))
+        XCTAssertFalse(surfaceSource.contains(".offset(y: 2.scaled(by: displayScale))"))
         XCTAssertTrue(rateBar.contains("let statusPalette = embeddedUsageStatusTextPalette ?? textPalette"))
         XCTAssertTrue(standaloneLine.contains("size: 13.6.scaled(by: displayScale)"))
         XCTAssertTrue(standaloneLine.contains(".foregroundStyle(textPalette.primaryColor)"))
