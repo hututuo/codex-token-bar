@@ -7,6 +7,26 @@ struct CodexRadarStrip: View {
     let onRefresh: () -> Void
     let onShowDetails: () -> Void
 
+    struct ColumnWidths {
+        let window: CGFloat
+        let modelIQ: CGFloat
+        let quota: CGFloat
+        let environment: CGFloat
+    }
+
+    nonisolated static func columnWidths(totalWidth: CGFloat) -> ColumnWidths {
+        let clampedWidth = max(0, totalWidth)
+        let weights: (window: CGFloat, modelIQ: CGFloat, quota: CGFloat, environment: CGFloat) = (0.82, 1.08, 1.12, 0.98)
+        let totalWeight = weights.window + weights.modelIQ + weights.quota + weights.environment
+
+        return ColumnWidths(
+            window: clampedWidth * weights.window / totalWeight,
+            modelIQ: clampedWidth * weights.modelIQ / totalWeight,
+            quota: clampedWidth * weights.quota / totalWeight,
+            environment: clampedWidth * weights.environment / totalWeight
+        )
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -37,19 +57,19 @@ struct CodexRadarStrip: View {
             }
 
             GeometryReader { proxy in
-                let columnWidth = max(128, (proxy.size.width - 3) / 4)
+                let columnWidths = Self.columnWidths(totalWidth: proxy.size.width - 3)
                 HStack(spacing: 0) {
                     CodexRadarWindowBlock(snapshot: snapshot)
-                        .frame(width: columnWidth, height: 74, alignment: .leading)
+                        .frame(width: columnWidths.window, height: 74, alignment: .leading)
                     CodexRadarDivider()
                     CodexRadarModelIQBlock(snapshot: snapshot)
-                        .frame(width: columnWidth, height: 74, alignment: .leading)
+                        .frame(width: columnWidths.modelIQ, height: 74, alignment: .leading)
                     CodexRadarDivider()
                     CodexRadarQuotaBlock(snapshot: snapshot)
-                        .frame(width: columnWidth, height: 74, alignment: .leading)
+                        .frame(width: columnWidths.quota, height: 74, alignment: .leading)
                     CodexRadarDivider()
                     CodexRadarEnvironmentBlock(snapshot: snapshot)
-                        .frame(width: columnWidth, height: 74, alignment: .leading)
+                        .frame(width: columnWidths.environment, height: 74, alignment: .leading)
                 }
             }
             .frame(height: 74)

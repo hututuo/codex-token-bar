@@ -1,4 +1,5 @@
 import XCTest
+@testable import CodexTokenBar
 
 final class CodexRadarViewPlacementTests: XCTestCase {
     func testDashboardPlacesRadarStripAboveLiveRateView() throws {
@@ -26,5 +27,16 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         let source = try String(contentsOf: storeFile, encoding: .utf8)
 
         XCTAssertTrue(source.contains("refreshInterval: TimeInterval = 600"))
+    }
+
+    func testRadarStripMovesModelIQLeftOfEvenColumns() {
+        let widths = CodexRadarStrip.columnWidths(totalWidth: 800)
+        let evenColumnWidth = 800 / 4.0
+
+        XCTAssertLessThan(widths.window, widths.modelIQ)
+        XCTAssertLessThan(widths.window, evenColumnWidth)
+        XCTAssertLessThan(widths.window + 1, evenColumnWidth + 1)
+        XCTAssertGreaterThan(widths.modelIQ, evenColumnWidth)
+        XCTAssertEqual(widths.window + widths.modelIQ + widths.quota + widths.environment, 800, accuracy: 0.01)
     }
 }
