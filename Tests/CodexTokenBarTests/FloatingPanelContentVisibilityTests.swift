@@ -194,6 +194,24 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(paletteSource.contains("closeAction: closePaletteNow"))
     }
 
+    func testFloatingPanelPaletteMenuKeepsDraftColorsDuringPickerDrag() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let paletteMenu = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelPaletteMenu.swift")
+        let paletteSource = try String(contentsOf: paletteMenu, encoding: .utf8)
+
+        XCTAssertTrue(paletteSource.contains("@State private var startColorDraft"))
+        XCTAssertTrue(paletteSource.contains("@State private var endColorDraft"))
+        XCTAssertTrue(paletteSource.contains("ColorPicker(\"\", selection: draftColorBinding($startColorDraft, hex: $startHex)"))
+        XCTAssertTrue(paletteSource.contains("ColorPicker(\"\", selection: draftColorBinding($endColorDraft, hex: $endHex)"))
+        XCTAssertFalse(paletteSource.contains("ColorPicker(\"\", selection: colorBinding($startHex)"))
+        XCTAssertFalse(paletteSource.contains("ColorPicker(\"\", selection: colorBinding($endHex)"))
+        XCTAssertTrue(paletteSource.contains("draftColor.wrappedValue = newValue"))
+        XCTAssertTrue(paletteSource.contains("hex.wrappedValue = nextHex"))
+    }
+
     func testFloatingPanelPassesRadarSnapshotIntoRadarRow() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
