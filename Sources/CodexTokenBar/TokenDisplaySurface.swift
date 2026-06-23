@@ -36,6 +36,10 @@ private struct TokenDisplayTextPaletteKey: EnvironmentKey {
     static let defaultValue = FloatingPanelReadableTextPalette(backgroundLuminance: 0.88)
 }
 
+private struct TokenDisplayRowTextPalettesKey: EnvironmentKey {
+    static let defaultValue: [FloatingPanelContentGroup: FloatingPanelReadableTextPalette] = [:]
+}
+
 extension EnvironmentValues {
     var tokenDisplayScale: CGFloat {
         get { self[TokenDisplayScaleKey.self] }
@@ -45,6 +49,11 @@ extension EnvironmentValues {
     var tokenDisplayTextPalette: FloatingPanelReadableTextPalette {
         get { self[TokenDisplayTextPaletteKey.self] }
         set { self[TokenDisplayTextPaletteKey.self] = newValue }
+    }
+
+    var tokenDisplayRowTextPalettes: [FloatingPanelContentGroup: FloatingPanelReadableTextPalette] {
+        get { self[TokenDisplayRowTextPalettesKey.self] }
+        set { self[TokenDisplayRowTextPalettesKey.self] = newValue }
     }
 }
 
@@ -164,6 +173,7 @@ struct TokenDisplayCard: View {
     var onToggleLock: (() -> Void)? = nil
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
+    @Environment(\.tokenDisplayRowTextPalettes) private var rowTextPalettes
 
     var body: some View {
         GeometryReader { proxy in
@@ -178,26 +188,31 @@ struct TokenDisplayCard: View {
             VStack(alignment: .center, spacing: rowSpacing) {
                 if visibility.showRateAndBar {
                     rateRow
+                        .environment(\.tokenDisplayTextPalette, palette(for: .rateAndBar))
                         .frame(height: rateRowHeight, alignment: .center)
                 }
 
                 if visibility.showsStandaloneUsageStatus {
                     TokenDisplayUsageStatusLine(text: snapshot.compactUsageStatus)
+                        .environment(\.tokenDisplayTextPalette, palette(for: .usageStatus))
                         .frame(height: usageStatusRowHeight, alignment: .center)
                 }
 
                 if visibility.showMetrics {
                     metricRow
+                        .environment(\.tokenDisplayTextPalette, palette(for: .metrics))
                         .frame(height: metricRowHeight, alignment: .center)
                 }
 
                 if visibility.showQuota {
                     TokenQuotaMiniStrip(snapshot: snapshot.quota)
+                        .environment(\.tokenDisplayTextPalette, palette(for: .quota))
                         .frame(height: quotaRowHeight, alignment: .center)
                 }
 
                 if visibility.showRadar {
                     TokenDisplayRadarStrip(snapshot: radarSnapshot)
+                        .environment(\.tokenDisplayTextPalette, palette(for: .radar))
                         .frame(height: radarRowHeight, alignment: .center)
                 }
             }
@@ -215,6 +230,10 @@ struct TokenDisplayCard: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Codex Token Bar 悬浮窗")
         .accessibilityValue(accessibilitySummary)
+    }
+
+    private func palette(for group: FloatingPanelContentGroup) -> FloatingPanelReadableTextPalette {
+        rowTextPalettes[group] ?? textPalette
     }
 
     private var accessibilitySummary: String {

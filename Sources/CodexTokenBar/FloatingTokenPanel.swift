@@ -315,6 +315,17 @@ struct FloatingTokenPanelView: View {
             directionRaw: floatingPanelGradientDirection,
             styleRaw: floatingPanelGradientStyle
         )
+        let automaticTextPalettes = appearance.textPalettes(
+            panelSize: size,
+            scale: scale,
+            visibility: visibility
+        )
+        let textWhiteOverride = floatingPanelTextWhiteOverride >= 0 ? floatingPanelTextWhiteOverride : nil
+        let overridePalette = textWhiteOverride.map(FloatingPanelReadableTextPalette.init(fixedWhite:))
+        let baseTextPalette = overridePalette ?? automaticTextPalettes.controlPalette
+        let rowTextPalettes = overridePalette.map { palette in
+            Dictionary(uniqueKeysWithValues: FloatingPanelContentGroup.allCases.map { ($0, palette) })
+        } ?? automaticTextPalettes.rowPalettes
 
         return ZStack {
             TokenGlassBackground(
@@ -363,7 +374,8 @@ struct FloatingTokenPanelView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .zIndex(4)
         }
-        .environment(\.tokenDisplayTextPalette, FloatingPanelReadableTextPalette(fixedWhite: floatingPanelTextWhiteOverride))
+        .environment(\.tokenDisplayTextPalette, baseTextPalette)
+        .environment(\.tokenDisplayRowTextPalettes, rowTextPalettes)
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .animation(.easeInOut(duration: 0.18), value: unreadCount > 0)
