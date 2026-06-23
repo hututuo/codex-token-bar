@@ -180,6 +180,10 @@ fn create_floating_window_on_main_thread(app: &tauri::AppHandle) -> Result<(), S
 }
 
 fn toggle_status_panel_window(app: &tauri::AppHandle) {
+    if cfg!(target_os = "windows") {
+        return;
+    }
+
     if app.get_webview_window("status").is_none() {
         let _ = show_status_panel_window(app);
         return;
@@ -219,7 +223,7 @@ fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
         return Ok(());
     }
 
-    TrayIconBuilder::with_id(STATUS_TRAY_ID)
+    let mut builder = TrayIconBuilder::with_id(STATUS_TRAY_ID)
         .title("0.0/s")
         .tooltip("Codex Token Bar")
         .show_menu_on_left_click(false)
@@ -232,8 +236,13 @@ fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
             {
                 toggle_status_panel_window(tray.app_handle());
             }
-        })
-        .build(app)?;
+        });
+
+    if let Some(icon) = app.default_window_icon().map(|icon| icon.clone().to_owned()) {
+        builder = builder.icon(icon);
+    }
+
+    builder.build(app)?;
 
     Ok(())
 }
