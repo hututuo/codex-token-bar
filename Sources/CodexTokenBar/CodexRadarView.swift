@@ -671,6 +671,7 @@ private struct CodexRadarSeriesLineChart: View {
     var yDomain: ClosedRange<Double>? = nil
     var yTickValues: [Double]? = nil
     var highlightRange: ClosedRange<Double>? = nil
+    @State private var hoveredChartIndex: Int?
 
     private var visibleSeries: [(index: Int, series: CodexRadarChartSeries)] {
         series.enumerated().compactMap { index, series in
@@ -705,6 +706,7 @@ private struct CodexRadarSeriesLineChart: View {
             let xIndex = Dictionary(uniqueKeysWithValues: labels.enumerated().map { ($0.element, $0.offset) })
             let plot = CGRect(x: 48, y: 20, width: max(10, proxy.size.width - 58), height: max(10, proxy.size.height - 54))
             let step = plot.width / CGFloat(max(labels.count - 1, 1))
+            let activeIndex = hoveredChartIndex.flatMap { labels.indices.contains($0) ? $0 : nil }
 
             ZStack(alignment: .topLeading) {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -760,11 +762,41 @@ private struct CodexRadarSeriesLineChart: View {
                     }
                 }
 
-                ForEach(xMarkerIndices(count: labels.count), id: \.self) { index in
+                if let activeIndex {
+                    let x = plot.minX + CGFloat(activeIndex) * step
+                    Path { path in
+                        path.move(to: CGPoint(x: x, y: plot.minY))
+                        path.addLine(to: CGPoint(x: x, y: plot.maxY))
+                    }
+                    .stroke(AppTheme.accentBlue.opacity(0.36), style: StrokeStyle(lineWidth: 1, dash: [3, 5]))
+
+                    CodexRadarChartHoverBubble(
+                        dateLabel: displayLabels[safe: activeIndex] ?? labels[activeIndex],
+                        rows: hoverRows(at: activeIndex, labels: labels)
+                    )
+                    .chartBubblePlacement(tokenX: x, plot: plot)
+                    .zIndex(10)
+                }
+
+                HoverTrackingArea(
+                    onMove: { location in
+                        let plotLocation = CGPoint(x: location.x + plot.minX, y: location.y + plot.minY)
+                        hoveredChartIndex = hoverIndex(at: plotLocation, in: plot, step: step, count: labels.count)
+                    },
+                    onExit: {
+                        hoveredChartIndex = nil
+                    }
+                )
+                .frame(width: plot.width, height: plot.height)
+                .position(x: plot.midX, y: plot.midY)
+
+                ForEach(allXMarkerIndices(count: labels.count), id: \.self) { index in
                     Text(displayLabels[safe: index] ?? "")
-                        .font(.system(size: 9, weight: .medium))
+                        .font(.system(size: labels.count > 7 ? 8 : 9, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .rotationEffect(labels.count > 7 ? .degrees(-24) : .zero)
+                        .fixedSize(horizontal: true, vertical: false)
                         .position(x: plot.minX + CGFloat(index) * step, y: plot.maxY + 15)
                 }
 
@@ -838,12 +870,71 @@ private struct CodexRadarSeriesLineChart: View {
         }
     }
 
-    private func xMarkerIndices(count: Int) -> [Int] {
-        guard count > 0 else { return [] }
-        if count <= 5 {
-            return Array(0..<count)
+    private func allXMarkerIndices(count: Int) -> [Int] {
+        Array(0..<max(count, 0))
+    }
+
+    private func hoverIndex(at location: CGPoint, in plot: CGRect, step: CGFloat, count: Int) -> Int? {
+        guard count > 0, plot.contains(location) else { return nil }
+        let rawIndex = Int(round((location.x - plot.minX) / max(step, 1)))
+        return min(max(rawIndex, 0), count - 1)
+    }
+
+    private func hoverRows(at index: Int, labels: [String]) -> [CodexRadarChartHoverRow] {
+        guard let rawLabel = labels[safe: index] else { return [] }
+        return visibleSeries.compactMap { item in
+            guard let point = item.series.points.first(where: { $0.rawLabel == rawLabel }) else {
+                return nil
+            }
+            return CodexRadarChartHoverRow(
+                id: item.series.id,
+                label: item.series.label,
+                value: "\(valuePrefix)\(CodexRadarModelIQPoint.display(point.value, fractionDigits: 2))",
+                colorIndex: item.index
+            )
         }
-        return [0, count / 2, count - 1]
+    }
+}
+
+private struct CodexRadarChartHoverRow: Identifiable {
+    let id: String
+    let label: String
+    let value: String
+    let colorIndex: Int
+}
+
+private struct CodexRadarChartHoverBubble: View {
+    let dateLabel: String
+    let rows: [CodexRadarChartHoverRow]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(dateLabel)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            ForEach(rows) { row in
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(codexRadarSeriesColor(row.colorIndex))
+                        .frame(width: 7, height: 7)
+                    Text(compactModelLabel(row.label))
+                        .font(.system(size: 10, weight: .medium))
+                    Spacer(minLength: 8)
+                    Text(row.value)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(minWidth: 132, alignment: .leading)
+        .background(AppTheme.hoverBubble, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(AppTheme.borderStrong, lineWidth: 1)
+        )
     }
 }
 

@@ -68,4 +68,18 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("yAxisTitle:"))
         XCTAssertTrue(source.contains("selectedModelSeriesIDs"))
     }
+
+    func testRadarDetailChartsShowAllDatesAndHoverDetails() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let radarView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexRadarView.swift")
+        let source = try String(contentsOf: radarView, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("@State private var hoveredChartIndex"))
+        XCTAssertTrue(source.contains("allXMarkerIndices"))
+        XCTAssertTrue(source.contains("CodexRadarChartHoverBubble"))
+        XCTAssertTrue(source.contains("HoverTrackingArea("))
+    }
 }
