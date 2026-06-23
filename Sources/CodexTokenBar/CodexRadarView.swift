@@ -323,14 +323,33 @@ private struct CodexRadarDetailOverview: View {
 
 private struct CodexRadarIQDetail: View {
     let snapshot: CodexRadarSnapshot
+    @State private var selectedModelSeriesIDs: Set<String> = []
 
     var body: some View {
+        let modelSeries = snapshot.modelIQ.chartSeries
+        let activeIDs = activeSelectedIDs(for: modelSeries)
+
         CodexRadarDetailSection(title: "降智雷达", systemImage: "brain.head.profile") {
             CodexRadarDetailSubsection(title: "IQ 趋势") {
-                CodexRadarLineChart(
-                    points: snapshot.modelIQ.recentDays.map { ($0.date, $0.score) },
-                    color: AppTheme.accentCyan,
-                    valuePrefix: "IQ "
+                HStack(spacing: 5) {
+                    ForEach(Array(modelSeries.enumerated()), id: \.element.id) { index, series in
+                        ChartLineToggle(
+                            title: compactModelLabel(series.label),
+                            color: codexRadarSeriesColor(index),
+                            isOn: modelSelectionBinding(for: series.id, in: modelSeries)
+                        )
+                    }
+                }
+
+                CodexRadarSeriesLineChart(
+                    series: modelSeries,
+                    visibleSeriesIDs: activeIDs,
+                    xAxisTitle: "评测日期",
+                    yAxisTitle: "IQ 指数",
+                    valuePrefix: "IQ ",
+                    yDomain: 50...130,
+                    yTickValues: [120, 100, 80, 60],
+                    highlightRange: 90...110
                 )
                 .frame(height: 155)
             }
@@ -369,6 +388,35 @@ private struct CodexRadarIQDetail: View {
             }
         }
     }
+
+    private func activeSelectedIDs(for series: [CodexRadarChartSeries]) -> Set<String> {
+        let validIDs = Set(series.map(\.id))
+        let selected = selectedModelSeriesIDs.intersection(validIDs)
+        if !selected.isEmpty {
+            return selected
+        }
+        return Set(series.prefix(2).map(\.id))
+    }
+
+    private func modelSelectionBinding(for id: String, in series: [CodexRadarChartSeries]) -> Binding<Bool> {
+        Binding(
+            get: {
+                activeSelectedIDs(for: series).contains(id)
+            },
+            set: { isOn in
+                var next = activeSelectedIDs(for: series)
+                if isOn {
+                    next.insert(id)
+                } else {
+                    next.remove(id)
+                    if next.isEmpty {
+                        next.insert(id)
+                    }
+                }
+                selectedModelSeriesIDs = next
+            }
+        )
+    }
 }
 
 private struct CodexRadarQuotaDetail: View {
@@ -389,9 +437,23 @@ private struct CodexRadarQuotaDetail: View {
                 }
 
                 CodexRadarDetailSubsection(title: "20x 5h 趋势") {
-                    CodexRadarLineChart(
-                        points: quotaRadar.trend.map { ($0.date, $0.fiveHour20x) },
-                        color: AppTheme.accentOrange,
+                    CodexRadarSeriesLineChart(
+                        series: [
+                            CodexRadarChartSeries(
+                                id: "quota-20x-5h",
+                                label: "20x Pro 5h",
+                                points: quotaRadar.trend.map {
+                                    CodexRadarChartPoint(
+                                        rawLabel: $0.date,
+                                        xLabel: CodexRadarChartPoint.shortDateLabel($0.date),
+                                        value: $0.fiveHour20x
+                                    )
+                                }
+                            )
+                        ],
+                        visibleSeriesIDs: ["quota-20x-5h"],
+                        xAxisTitle: "日期",
+                        yAxisTitle: "美元额度",
                         valuePrefix: "$"
                     )
                     .frame(height: 155)
@@ -600,19 +662,49 @@ private struct CodexRadarSignalList: View {
     }
 }
 
-private struct CodexRadarLineChart: View {
-    let points: [(String, Double)]
-    let color: Color
+private struct CodexRadarSeriesLineChart: View {
+    let series: [CodexRadarChartSeries]
+    let visibleSeriesIDs: Set<String>
+    let xAxisTitle: String
+    let yAxisTitle: String
     let valuePrefix: String
+    var yDomain: ClosedRange<Double>? = nil
+    var yTickValues: [Double]? = nil
+    var highlightRange: ClosedRange<Double>? = nil
+
+    private var visibleSeries: [(index: Int, series: CodexRadarChartSeries)] {
+        series.enumerated().compactMap { index, series in
+            visibleSeriesIDs.contains(series.id) ? (index, series) : nil
+        }
+    }
+
+    private var xLabels: [String] {
+        var seen = Set<String>()
+        var labels: [String] = []
+        for point in visibleSeries.flatMap(\.series.points) {
+            guard !seen.contains(point.rawLabel) else { continue }
+            seen.insert(point.rawLabel)
+            labels.append(point.rawLabel)
+        }
+        return labels
+    }
+
+    private var xDisplayLabels: [String] {
+        xLabels.map(CodexRadarChartPoint.shortDateLabel)
+    }
+
+    private var values: [Double] {
+        visibleSeries.flatMap(\.series.points).map(\.value)
+    }
 
     var body: some View {
         GeometryReader { proxy in
-            let values = points.map(\.1)
-            let minValue = values.min() ?? 0
-            let maxValue = values.max() ?? 1
-            let range = max(maxValue - minValue, 1)
-            let plot = CGRect(x: 0, y: 18, width: proxy.size.width, height: max(10, proxy.size.height - 42))
-            let step = plot.width / CGFloat(max(points.count - 1, 1))
+            let axis = valueAxis(values: values)
+            let labels = xLabels
+            let displayLabels = xDisplayLabels
+            let xIndex = Dictionary(uniqueKeysWithValues: labels.enumerated().map { ($0.element, $0.offset) })
+            let plot = CGRect(x: 48, y: 20, width: max(10, proxy.size.width - 58), height: max(10, proxy.size.height - 54))
+            let step = plot.width / CGFloat(max(labels.count - 1, 1))
 
             ZStack(alignment: .topLeading) {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -620,48 +712,138 @@ private struct CodexRadarLineChart: View {
                     .frame(width: plot.width, height: plot.height)
                     .offset(x: plot.minX, y: plot.minY)
 
-                ForEach(0..<3, id: \.self) { index in
-                    let y = plot.minY + CGFloat(index) * plot.height / 2
+                if let highlightRange {
+                    let upper = yPosition(for: highlightRange.upperBound, axis: axis, plot: plot)
+                    let lower = yPosition(for: highlightRange.lowerBound, axis: axis, plot: plot)
+                    Rectangle()
+                        .fill(AppTheme.accentCyan.opacity(0.075))
+                        .frame(width: plot.width, height: max(1, lower - upper))
+                        .offset(x: plot.minX, y: upper)
+                }
+
+                ForEach(axis.tickValues, id: \.self) { tick in
+                    let y = yPosition(for: tick, axis: axis, plot: plot)
                     Path { path in
                         path.move(to: CGPoint(x: plot.minX, y: y))
                         path.addLine(to: CGPoint(x: plot.maxX, y: y))
                     }
                     .stroke(AppTheme.grid, style: StrokeStyle(lineWidth: 1, dash: [4, 8]))
+
+                    Text("\(valuePrefix)\(CodexRadarModelIQPoint.display(tick, fractionDigits: 2))")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 42, alignment: .trailing)
+                        .position(x: plot.minX - 25, y: y)
                 }
 
-                Path { path in
-                    for (index, point) in points.enumerated() {
-                        let x = plot.minX + CGFloat(index) * step
-                        let y = plot.maxY - CGFloat((point.1 - minValue) / range) * plot.height
-                        if index == 0 {
-                            path.move(to: CGPoint(x: x, y: y))
-                        } else {
-                            path.addLine(to: CGPoint(x: x, y: y))
+                ForEach(visibleSeries, id: \.series.id) { item in
+                    let points = chartPoints(for: item.series, xIndex: xIndex, axis: axis, plot: plot, step: step)
+                    let color = codexRadarSeriesColor(item.index)
+
+                    Path { path in
+                        for (index, point) in points.enumerated() {
+                            if index == 0 {
+                                path.move(to: point)
+                            } else {
+                                path.addLine(to: point)
+                            }
                         }
                     }
+                    .stroke(color, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+
+                    ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                        Circle()
+                            .fill(AppTheme.calloutBackground)
+                            .frame(width: 5.5, height: 5.5)
+                            .overlay(Circle().stroke(color, lineWidth: 1.4))
+                            .position(point)
+                    }
                 }
-                .stroke(color, style: StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round))
+
+                ForEach(xMarkerIndices(count: labels.count), id: \.self) { index in
+                    Text(displayLabels[safe: index] ?? "")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .position(x: plot.minX + CGFloat(index) * step, y: plot.maxY + 15)
+                }
 
                 HStack {
-                    Text("\(valuePrefix)\(CodexRadarModelIQPoint.display(maxValue, fractionDigits: 2))")
+                    Text("Y: \(yAxisTitle)")
                     Spacer()
-                    Text("\(valuePrefix)\(CodexRadarModelIQPoint.display(minValue, fractionDigits: 2))")
+                    Text("X: \(xAxisTitle)")
                 }
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
-                .offset(y: plot.maxY + 8)
-
-                HStack {
-                    Text(points.first?.0 ?? "")
-                    Spacer()
-                    Text(points.last?.0 ?? "")
-                }
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
+                .frame(width: plot.width)
+                .offset(x: plot.minX, y: 0)
             }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Codex 雷达趋势图")
+    }
+
+    private struct ValueAxis {
+        let minValue: Double
+        let maxValue: Double
+        let tickValues: [Double]
+    }
+
+    private func valueAxis(values: [Double]) -> ValueAxis {
+        if let yDomain {
+            return ValueAxis(
+                minValue: yDomain.lowerBound,
+                maxValue: yDomain.upperBound,
+                tickValues: yTickValues ?? evenlySpacedTicks(min: yDomain.lowerBound, max: yDomain.upperBound)
+            )
+        }
+
+        let minData = values.min() ?? 0
+        let maxData = values.max() ?? 1
+        let rawRange = max(maxData - minData, 1)
+        let paddedMin = max(0, minData - rawRange * 0.12)
+        let paddedMax = maxData + rawRange * 0.12
+        let niceMin = floor(paddedMin / 10) * 10
+        let niceMax = ceil(paddedMax / 10) * 10
+        return ValueAxis(minValue: niceMin, maxValue: niceMax, tickValues: evenlySpacedTicks(min: niceMin, max: niceMax))
+    }
+
+    private func evenlySpacedTicks(min: Double, max: Double) -> [Double] {
+        let count = 4
+        guard max > min else { return [max] }
+        return (0..<count).map { index in
+            max - (max - min) * Double(index) / Double(count - 1)
+        }
+    }
+
+    private func yPosition(for value: Double, axis: ValueAxis, plot: CGRect) -> CGFloat {
+        let range = max(axis.maxValue - axis.minValue, 1)
+        let clamped = min(max(value, axis.minValue), axis.maxValue)
+        return plot.maxY - CGFloat((clamped - axis.minValue) / range) * plot.height
+    }
+
+    private func chartPoints(
+        for series: CodexRadarChartSeries,
+        xIndex: [String: Int],
+        axis: ValueAxis,
+        plot: CGRect,
+        step: CGFloat
+    ) -> [CGPoint] {
+        series.points.compactMap { point in
+            guard let index = xIndex[point.rawLabel] else { return nil }
+            return CGPoint(
+                x: plot.minX + CGFloat(index) * step,
+                y: yPosition(for: point.value, axis: axis, plot: plot)
+            )
+        }
+    }
+
+    private func xMarkerIndices(count: Int) -> [Int] {
+        guard count > 0 else { return [] }
+        if count <= 5 {
+            return Array(0..<count)
+        }
+        return [0, count / 2, count - 1]
     }
 }
 
@@ -804,6 +986,23 @@ private struct CodexRadarArticleList: View {
             }
         }
     }
+}
+
+private func codexRadarSeriesColor(_ index: Int) -> Color {
+    let colors: [Color] = [
+        AppTheme.accentCyan,
+        AppTheme.accentOrange,
+        AppTheme.accentBlue,
+        .green.opacity(0.88),
+        .purple.opacity(0.90)
+    ]
+    return colors[index % colors.count]
+}
+
+private func compactModelLabel(_ label: String) -> String {
+    label
+        .replacingOccurrences(of: "GPT-", with: "")
+        .replacingOccurrences(of: " ", with: "-")
 }
 
 private func probabilityText(_ percent: Int?) -> String {

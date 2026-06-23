@@ -53,4 +53,19 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("private struct CodexRadarTableContainer"))
         XCTAssertTrue(source.contains("CodexRadarTableContainer"))
     }
+
+    func testRadarDetailChartsUseAxesAndSelectableModelSeries() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let radarView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexRadarView.swift")
+        let source = try String(contentsOf: radarView, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("CodexRadarSeriesLineChart("))
+        XCTAssertTrue(source.contains("ChartLineToggle("))
+        XCTAssertTrue(source.contains("xAxisTitle:"))
+        XCTAssertTrue(source.contains("yAxisTitle:"))
+        XCTAssertTrue(source.contains("selectedModelSeriesIDs"))
+    }
 }

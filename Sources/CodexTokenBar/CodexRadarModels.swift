@@ -137,8 +137,66 @@ struct CodexRadarModelIQ: Decodable, Equatable, Sendable {
                 let rhsIndex = order.firstIndex(of: rhs.label) ?? Int.max
                 if lhsIndex == rhsIndex { return lhs.label < rhs.label }
                 return lhsIndex < rhsIndex
-            }
+        }
         return [latestRow] + comparisonRows
+    }
+
+    var chartSeries: [CodexRadarChartSeries] {
+        let latestSeries = CodexRadarChartSeries(
+            id: latest.modelSeriesID,
+            label: latest.modelDisplayName,
+            points: (recentDays.isEmpty ? [latest] : recentDays).map(CodexRadarChartPoint.init)
+        )
+        let comparisonSeries = comparisons
+            .map { comparison -> CodexRadarChartSeries in
+                CodexRadarChartSeries(
+                    id: "\(comparison.value.model)-\(comparison.value.reasoningEffort)",
+                    label: comparison.value.label,
+                    points: (comparison.value.recentDays.isEmpty ? [comparison.value.latest] : comparison.value.recentDays).map(CodexRadarChartPoint.init)
+                )
+            }
+            .sorted { lhs, rhs in
+                let order = ["GPT-5.5 high", "GPT-5.5 medium", "GPT-5.4 xhigh"]
+                let lhsIndex = order.firstIndex(of: lhs.label) ?? Int.max
+                let rhsIndex = order.firstIndex(of: rhs.label) ?? Int.max
+                if lhsIndex == rhsIndex { return lhs.label < rhs.label }
+                return lhsIndex < rhsIndex
+            }
+        return [latestSeries] + comparisonSeries
+    }
+}
+
+struct CodexRadarChartSeries: Equatable, Sendable, Identifiable {
+    let id: String
+    let label: String
+    let points: [CodexRadarChartPoint]
+}
+
+struct CodexRadarChartPoint: Equatable, Sendable, Identifiable {
+    var id: String { xLabel }
+
+    let rawLabel: String
+    let xLabel: String
+    let value: Double
+
+    init(rawLabel: String, xLabel: String, value: Double) {
+        self.rawLabel = rawLabel
+        self.xLabel = xLabel
+        self.value = value
+    }
+
+    init(point: CodexRadarModelIQPoint) {
+        self.init(rawLabel: point.date, xLabel: Self.shortDateLabel(point.date), value: point.score)
+    }
+
+    static func shortDateLabel(_ raw: String) -> String {
+        let trimmed = raw.replacingOccurrences(of: "2026-06-", with: "6.")
+            .replacingOccurrences(of: "-am", with: " am")
+            .replacingOccurrences(of: "-pm", with: " pm")
+        if trimmed.hasPrefix("2026-") {
+            return String(trimmed.dropFirst(5))
+        }
+        return trimmed
     }
 }
 
@@ -181,6 +239,10 @@ struct CodexRadarModelIQPoint: Decodable, Equatable, Sendable, Identifiable {
             return modelText
         }
         return "\(modelText) \(reasoningEffort)"
+    }
+
+    var modelSeriesID: String {
+        "\(model ?? "model")-\(reasoningEffort ?? "default")"
     }
 
     var scoreDisplayText: String {

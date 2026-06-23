@@ -58,6 +58,22 @@ final class CodexRadarModelsTests: XCTestCase {
         XCTAssertEqual(items.last?.title, "速蹬窗口开启：500 万用户庆祝重置")
     }
 
+    func testModelIQBuildsSelectableMultiModelChartSeries() throws {
+        let snapshot = try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: Data(Self.sampleJSON.utf8))
+
+        let series = snapshot.modelIQ.chartSeries
+
+        XCTAssertEqual(series.map(\.label), [
+            "GPT-5.5 xhigh",
+            "GPT-5.5 high",
+            "GPT-5.5 medium",
+            "GPT-5.4 xhigh"
+        ])
+        XCTAssertEqual(series.first?.points.map(\.xLabel), ["6.22 pm", "6.23"])
+        XCTAssertEqual(series.first?.points.map(\.value), [50, 125])
+        XCTAssertEqual(series.dropFirst().first?.points.map(\.value), [62.5, 87.5])
+    }
+
     private static let sampleJSON = """
     {
       "schema_version": "2.0",
@@ -185,7 +201,36 @@ final class CodexRadarModelsTests: XCTestCase {
               "valid_tasks": 12,
               "cost_usd": 31.423183
             },
-            "recent_days": []
+            "recent_days": [
+              {
+                "date": "2026-06-22-pm",
+                "score": 62.5,
+                "status": "red",
+                "passed": 5,
+                "tasks": 12,
+                "invalid": 0,
+                "total_tokens": 30279872,
+                "input_tokens": 30046951,
+                "cached_input_tokens": 28154624,
+                "output_tokens": 232921,
+                "wall_seconds": 3757,
+                "wall_time_human": "1小时3分"
+              },
+              {
+                "date": "2026-06-23",
+                "score": 87.5,
+                "status": "yellow",
+                "passed": 7,
+                "tasks": 12,
+                "invalid": 0,
+                "total_tokens": 30939960,
+                "input_tokens": 30702185,
+                "cached_input_tokens": 28715776,
+                "output_tokens": 237775,
+                "wall_seconds": 3049,
+                "wall_time_human": "51分钟"
+              }
+            ]
           },
           "gpt_55_medium": {
             "label": "GPT-5.5 medium",
