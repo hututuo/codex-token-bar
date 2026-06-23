@@ -54,8 +54,8 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         !showRateAndBar && showUsageStatus
     }
 
-    var needsSingleElementTopInset: Bool {
-        layoutGroups.count == 1
+    var needsTopControlInset: Bool {
+        !showUsageStatus && !layoutGroups.isEmpty
     }
 
     func shows(_ group: FloatingPanelContentGroup) -> Bool {

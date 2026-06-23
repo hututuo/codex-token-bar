@@ -163,7 +163,7 @@ struct TokenDisplayCard: View {
             let metricRowHeight = FloatingTokenPanelMetrics.metricRowHeight.scaled(by: displayScale)
             let quotaRowHeight = FloatingTokenPanelMetrics.quotaRowHeight.scaled(by: displayScale)
             let radarRowHeight = FloatingTokenPanelMetrics.radarRowHeight.scaled(by: displayScale)
-            let topSafetyInset = visibility.needsSingleElementTopInset ? FloatingTokenPanelMetrics.singleElementTopInset.scaled(by: displayScale) : 0
+            let topSafetyInset = visibility.needsTopControlInset ? FloatingTokenPanelMetrics.singleElementTopInset.scaled(by: displayScale) : 0
 
             VStack(alignment: .center, spacing: rowSpacing) {
                 if visibility.showRateAndBar {

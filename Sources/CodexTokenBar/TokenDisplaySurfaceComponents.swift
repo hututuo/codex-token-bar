@@ -126,36 +126,44 @@ struct TokenDisplayRadarStrip: View {
 
     var body: some View {
         let latest = snapshot?.modelIQ.latest
-        HStack(spacing: 6.scaled(by: displayScale)) {
-            HStack(spacing: 4.scaled(by: displayScale)) {
-                Image(systemName: "bolt.badge.clock")
-                    .font(.system(size: 8.6.scaled(by: displayScale), weight: .bold))
-                Text("建议 \(snapshot?.recommendedAction ?? "--")")
-                Text("24h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))")
-                Text("48h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))")
+        HStack(spacing: 7.scaled(by: displayScale)) {
+            VStack(alignment: .leading, spacing: 2.scaled(by: displayScale)) {
+                Text("动作 \(snapshot?.recommendedAction ?? "--")")
+                    .font(.system(size: 9.3.scaled(by: displayScale), weight: .bold))
+                Text("24h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))  48h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))")
+                    .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.78))
             }
+            .lineLimit(1)
+            .minimumScaleFactor(0.74)
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Rectangle()
                 .fill(Color.white.opacity(0.18))
-                .frame(width: 1, height: 14.scaled(by: displayScale))
+                .frame(width: 1, height: 19.scaled(by: displayScale))
 
-            HStack(alignment: .lastTextBaseline, spacing: 5.scaled(by: displayScale)) {
-                Image(systemName: "brain.head.profile")
-                    .font(.system(size: 8.6.scaled(by: displayScale), weight: .bold))
-                Text(latest?.scoreDisplayText ?? "IQ --")
-                    .font(.system(size: 10.2.scaled(by: displayScale), weight: .bold, design: .rounded))
+            VStack(alignment: .trailing, spacing: 1.scaled(by: displayScale)) {
+                HStack(alignment: .lastTextBaseline, spacing: 3.scaled(by: displayScale)) {
+                    Text(latest?.scoreDisplayText ?? "IQ --")
+                        .font(.system(size: 11.8.scaled(by: displayScale), weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                    Text(latest?.modelDisplayName ?? "模型 --")
+                        .font(.system(size: 7.7.scaled(by: displayScale), weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.66)
+                }
+                Text("\(tokenDisplayRadarIQText(snapshot, effort: "high"))  \(tokenDisplayRadarIQText(snapshot, effort: "xhigh"))")
+                    .font(.system(size: 8.1.scaled(by: displayScale), weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.72))
                     .monospacedDigit()
-                Text(latest?.modelDisplayName ?? "模型 --")
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
             }
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .font(.system(size: 8.8.scaled(by: displayScale), weight: .semibold))
         .foregroundStyle(Color.white.opacity(0.86))
         .lineLimit(1)
-        .minimumScaleFactor(0.74)
+        .minimumScaleFactor(0.72)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Codex 雷达")
         .accessibilityValue(accessibilityText)
@@ -170,6 +178,17 @@ struct TokenDisplayRadarStrip: View {
 private func tokenDisplayRadarProbabilityText(_ percent: Int?) -> String {
     guard let percent else { return "--" }
     return "\(percent)%"
+}
+
+private func tokenDisplayRadarIQText(_ snapshot: CodexRadarSnapshot?, effort: String) -> String {
+    let label = effort == "xhigh" ? "X high" : effort
+    guard let row = snapshot?.modelIQ.comparisonRows.first(where: { row in
+        row.point.reasoningEffort?.caseInsensitiveCompare(effort) == .orderedSame
+            || row.label.localizedCaseInsensitiveContains(effort)
+    }) else {
+        return "\(label) --"
+    }
+    return "\(label) \(CodexRadarModelIQPoint.display(row.point.score))"
 }
 
 struct TokenDisplayRateBar: View {

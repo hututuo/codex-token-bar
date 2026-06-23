@@ -74,20 +74,45 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertLessThan(hiddenSize.width, FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).width)
     }
 
-    func testSingleVisibleElementAddsTopSafetyInsetForWindowControls() {
-        let visibility = FloatingPanelContentVisibility(
+    func testTopSafetyInsetOnlyAppearsWhenUsageStatusIsHidden() {
+        let rateOnlyWithoutUsageStatus = FloatingPanelContentVisibility(
+            showRateAndBar: true,
+            showUsageStatus: false,
+            showMetrics: false,
+            showQuota: false,
+            showRadar: false
+        )
+        let statusOnlyWithUsageStatus = FloatingPanelContentVisibility(
             showRateAndBar: false,
             showUsageStatus: true,
             showMetrics: false,
             showQuota: false,
             showRadar: false
         )
-        let expectedHeight = FloatingTokenPanelMetrics.verticalPadding * 2
+        let radarOnlyWithoutUsageStatus = FloatingPanelContentVisibility(
+            showRateAndBar: false,
+            showUsageStatus: false,
+            showMetrics: false,
+            showQuota: false,
+            showRadar: true
+        )
+        let rateOnlyHeight = FloatingTokenPanelMetrics.verticalPadding * 2
             + FloatingTokenPanelMetrics.singleElementTopInset
-            + FloatingTokenPanelMetrics.usageStatusRowHeight
+            + FloatingTokenPanelMetrics.rateRowHeight
+        let statusOnlyHeight = max(
+            FloatingTokenPanelMetrics.minimumControlSize.height,
+            FloatingTokenPanelMetrics.verticalPadding * 2 + FloatingTokenPanelMetrics.usageStatusRowHeight
+        )
+        let radarOnlyHeight = FloatingTokenPanelMetrics.verticalPadding * 2
+            + FloatingTokenPanelMetrics.singleElementTopInset
+            + FloatingTokenPanelMetrics.radarRowHeight
 
-        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: visibility).height, expectedHeight, accuracy: 0.001)
-        XCTAssertTrue(visibility.needsSingleElementTopInset)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: rateOnlyWithoutUsageStatus).height, rateOnlyHeight, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: statusOnlyWithUsageStatus).height, statusOnlyHeight, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: radarOnlyWithoutUsageStatus).height, radarOnlyHeight, accuracy: 0.001)
+        XCTAssertTrue(rateOnlyWithoutUsageStatus.needsTopControlInset)
+        XCTAssertFalse(statusOnlyWithUsageStatus.needsTopControlInset)
+        XCTAssertTrue(radarOnlyWithoutUsageStatus.needsTopControlInset)
     }
 
     func testFloatingPanelSettingsExposeFiveContentToggles() throws {
@@ -131,8 +156,13 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(surfaceSource.contains("if visibility.showRadar"))
         XCTAssertTrue(surfaceSource.contains("TokenDisplayRadarStrip(snapshot: radarSnapshot)"))
         XCTAssertTrue(componentsSource.contains("struct TokenDisplayRadarStrip"))
-        XCTAssertTrue(componentsSource.contains("建议 \\(snapshot?.recommendedAction"))
+        XCTAssertTrue(componentsSource.contains("动作 \\(snapshot?.recommendedAction"))
+        XCTAssertTrue(componentsSource.contains("24h \\(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))  48h \\(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))"))
+        XCTAssertTrue(componentsSource.contains("alignment: .leading, spacing: 2.scaled(by: displayScale)"))
+        XCTAssertTrue(componentsSource.contains("alignment: .trailing, spacing: 1.scaled(by: displayScale)"))
         XCTAssertTrue(componentsSource.contains("latest?.scoreDisplayText"))
+        XCTAssertTrue(componentsSource.contains("tokenDisplayRadarIQText(snapshot, effort: \"high\")"))
+        XCTAssertTrue(componentsSource.contains("tokenDisplayRadarIQText(snapshot, effort: \"xhigh\")"))
     }
 
     func testUsageStatusRendersOnRateBarAndStandaloneTextHasNoBackground() throws {

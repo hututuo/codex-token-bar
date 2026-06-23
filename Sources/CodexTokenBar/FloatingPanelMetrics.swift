@@ -12,7 +12,7 @@ enum FloatingTokenPanelMetrics {
     static let usageStatusRowHeight: CGFloat = 11
     static let metricRowHeight: CGFloat = 13
     static let quotaRowHeight: CGFloat = 16.5
-    static let radarRowHeight: CGFloat = 22
+    static let radarRowHeight: CGFloat = 26
     static let defaultScale = 1.0
     static let scaleRange = 0.75...2.0
 
@@ -71,7 +71,7 @@ enum FloatingTokenPanelMetrics {
 
         let contentWidth = groups.map(rowWidth(for:)).max() ?? 0
         let width = max(minimumControlSize.width, horizontalPadding * 2 + contentWidth)
-        let topInset = visibility.needsSingleElementTopInset ? singleElementTopInset : 0
+        let topInset = visibility.needsTopControlInset ? singleElementTopInset : 0
         let computedHeight = max(minimumControlSize.height, verticalPadding * 2 + topInset + contentHeight(visibility: visibility))
         let height = visibility == .default ? baseSize.height : computedHeight
         return NSSize(width: width, height: height)
