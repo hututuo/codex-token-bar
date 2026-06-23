@@ -86,6 +86,65 @@ struct TurnCacheUsage: Codable, Identifiable {
     let userPrompt: String
     let assistantResponse: String
     let breakdown: TokenCacheBreakdown
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case sessionID
+        case sessionTitle
+        case timestamp
+        case turnIndexInSession
+        case userPrompt
+        case assistantResponse
+        case breakdown
+    }
+
+    init(
+        id: String,
+        sessionID: String,
+        sessionTitle: String,
+        timestamp: Date,
+        turnIndexInSession: Int,
+        userPrompt: String,
+        assistantResponse: String,
+        breakdown: TokenCacheBreakdown
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.sessionTitle = sessionTitle
+        self.timestamp = timestamp
+        self.turnIndexInSession = turnIndexInSession
+        self.userPrompt = userPrompt
+        self.assistantResponse = assistantResponse
+        self.breakdown = breakdown
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        sessionTitle = try container.decode(String.self, forKey: .sessionTitle)
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        turnIndexInSession = try container.decode(Int.self, forKey: .turnIndexInSession)
+        userPrompt = try container.decodeIfPresent(String.self, forKey: .userPrompt) ?? ""
+        assistantResponse = try container.decodeIfPresent(String.self, forKey: .assistantResponse) ?? ""
+        breakdown = try container.decode(TokenCacheBreakdown.self, forKey: .breakdown)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encode(sessionTitle, forKey: .sessionTitle)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encode(turnIndexInSession, forKey: .turnIndexInSession)
+        if !userPrompt.isEmpty {
+            try container.encode(userPrompt, forKey: .userPrompt)
+        }
+        if !assistantResponse.isEmpty {
+            try container.encode(assistantResponse, forKey: .assistantResponse)
+        }
+        try container.encode(breakdown, forKey: .breakdown)
+    }
 }
 
 struct TokenCacheUsage: Codable {

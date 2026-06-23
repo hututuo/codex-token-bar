@@ -6,7 +6,10 @@ import XCTest
 final class CodexUsageStoreTests: XCTestCase {
     func testVisibleDashboardRefreshesFasterThanCompactOnlySurfaces() throws {
         let testFile = URL(fileURLWithPath: #filePath)
-        let projectRoot = testFile.deletingLastPathComponent().deletingLastPathComponent()
+        let projectRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
         let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
         let source = try String(contentsOf: dashboardView, encoding: .utf8)
 
