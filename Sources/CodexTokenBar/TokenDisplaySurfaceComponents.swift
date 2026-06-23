@@ -107,7 +107,7 @@ struct TokenDisplayUsageStatusLine: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 12.2.scaled(by: displayScale), weight: .semibold))
+            .font(.system(size: 13.6.scaled(by: displayScale), weight: .semibold))
             .foregroundStyle(Color.white.opacity(0.88))
             .lineLimit(1)
             .minimumScaleFactor(0.82)
@@ -118,6 +118,58 @@ struct TokenDisplayUsageStatusLine: View {
             .accessibilityLabel("趣味化余量")
             .accessibilityValue(text)
     }
+}
+
+struct TokenDisplayRadarStrip: View {
+    let snapshot: CodexRadarSnapshot?
+    @Environment(\.tokenDisplayScale) private var displayScale
+
+    var body: some View {
+        let latest = snapshot?.modelIQ.latest
+        HStack(spacing: 6.scaled(by: displayScale)) {
+            HStack(spacing: 4.scaled(by: displayScale)) {
+                Image(systemName: "bolt.badge.clock")
+                    .font(.system(size: 8.6.scaled(by: displayScale), weight: .bold))
+                Text("建议 \(snapshot?.recommendedAction ?? "--")")
+                Text("24h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))")
+                Text("48h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.18))
+                .frame(width: 1, height: 14.scaled(by: displayScale))
+
+            HStack(alignment: .lastTextBaseline, spacing: 5.scaled(by: displayScale)) {
+                Image(systemName: "brain.head.profile")
+                    .font(.system(size: 8.6.scaled(by: displayScale), weight: .bold))
+                Text(latest?.scoreDisplayText ?? "IQ --")
+                    .font(.system(size: 10.2.scaled(by: displayScale), weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                Text(latest?.modelDisplayName ?? "模型 --")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .font(.system(size: 8.8.scaled(by: displayScale), weight: .semibold))
+        .foregroundStyle(Color.white.opacity(0.86))
+        .lineLimit(1)
+        .minimumScaleFactor(0.74)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Codex 雷达")
+        .accessibilityValue(accessibilityText)
+    }
+
+    private var accessibilityText: String {
+        guard let snapshot else { return "等待读取" }
+        return "建议 \(snapshot.recommendedAction)，24 小时概率 \(snapshot.prediction.probability24hPercent)%，48 小时概率 \(snapshot.prediction.probability48hPercent)%，\(snapshot.modelIQ.latest.scoreDisplayText)"
+    }
+}
+
+private func tokenDisplayRadarProbabilityText(_ percent: Int?) -> String {
+    guard let percent else { return "--" }
+    return "\(percent)%"
 }
 
 struct TokenDisplayRateBar: View {

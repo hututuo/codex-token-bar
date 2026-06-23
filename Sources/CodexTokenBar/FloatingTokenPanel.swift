@@ -143,6 +143,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         store: CodexUsageStore,
         monitor: LiveRateMonitor,
         quota: AccountQuotaStore,
+        radar: CodexRadarStore,
         taskCompletionMonitor: TaskCompletionMonitor,
         scale: Double,
         visibility: FloatingPanelContentVisibility,
@@ -160,6 +161,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                     store: store,
                     monitor: monitor,
                     quota: quota,
+                    radar: radar,
                     taskCompletionMonitor: taskCompletionMonitor,
                     visibility: visibility,
                     isLocked: isLocked,
@@ -206,6 +208,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 store: store,
                 monitor: monitor,
                 quota: quota,
+                radar: radar,
                 taskCompletionMonitor: taskCompletionMonitor,
                 visibility: visibility,
                 isLocked: isLocked,
@@ -279,6 +282,7 @@ struct FloatingTokenPanelView: View {
     @ObservedObject var store: CodexUsageStore
     @ObservedObject var monitor: LiveRateMonitor
     @ObservedObject var quota: AccountQuotaStore
+    @ObservedObject var radar: CodexRadarStore
     @ObservedObject var taskCompletionMonitor: TaskCompletionMonitor
     let visibility: FloatingPanelContentVisibility
     let isLocked: Bool
@@ -329,6 +333,7 @@ struct FloatingTokenPanelView: View {
             }
             TokenDisplayCard(
                 snapshot: TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota),
+                radarSnapshot: radar.snapshot,
                 visibility: visibility,
                 onClose: nil,
                 lockState: nil,

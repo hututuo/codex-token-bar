@@ -1,16 +1,18 @@
 import AppKit
 
 enum FloatingTokenPanelMetrics {
-    static let baseSize = NSSize(width: 258, height: 88)
+    static let baseSize = NSSize(width: 258, height: 112)
     static let minimumControlSize = NSSize(width: 72, height: 34)
     static let baseCornerRadius: CGFloat = 14
     static let horizontalPadding: CGFloat = 10
     static let verticalPadding: CGFloat = 7
+    static let singleElementTopInset: CGFloat = 10
     static let rowSpacing: CGFloat = 4
     static let rateRowHeight: CGFloat = 30
     static let usageStatusRowHeight: CGFloat = 11
     static let metricRowHeight: CGFloat = 13
     static let quotaRowHeight: CGFloat = 16.5
+    static let radarRowHeight: CGFloat = 22
     static let defaultScale = 1.0
     static let scaleRange = 0.75...2.0
 
@@ -47,12 +49,14 @@ enum FloatingTokenPanelMetrics {
             return metricRowHeight
         case .quota:
             return quotaRowHeight
+        case .radar:
+            return radarRowHeight
         }
     }
 
     static func rowWidth(for group: FloatingPanelContentGroup) -> CGFloat {
         switch group {
-        case .rateAndBar, .quota:
+        case .rateAndBar, .quota, .radar:
             return baseSize.width - horizontalPadding * 2
         case .usageStatus:
             return 174
@@ -67,7 +71,8 @@ enum FloatingTokenPanelMetrics {
 
         let contentWidth = groups.map(rowWidth(for:)).max() ?? 0
         let width = max(minimumControlSize.width, horizontalPadding * 2 + contentWidth)
-        let computedHeight = max(minimumControlSize.height, verticalPadding * 2 + contentHeight(visibility: visibility))
+        let topInset = visibility.needsSingleElementTopInset ? singleElementTopInset : 0
+        let computedHeight = max(minimumControlSize.height, verticalPadding * 2 + topInset + contentHeight(visibility: visibility))
         let height = visibility == .default ? baseSize.height : computedHeight
         return NSSize(width: width, height: height)
     }

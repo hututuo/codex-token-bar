@@ -5,6 +5,7 @@ enum FloatingPanelContentGroup: String, CaseIterable, Identifiable {
     case usageStatus
     case metrics
     case quota
+    case radar
 
     var id: String { rawValue }
 }
@@ -14,18 +15,21 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
     static let usageStatusKey = "floatingPanelShowUsageStatus"
     static let metricsKey = "floatingPanelShowMetrics"
     static let quotaKey = "floatingPanelShowQuota"
+    static let radarKey = "floatingPanelShowRadar"
 
     static let `default` = FloatingPanelContentVisibility(
         showRateAndBar: true,
         showUsageStatus: true,
         showMetrics: true,
-        showQuota: true
+        showQuota: true,
+        showRadar: true
     )
 
     var showRateAndBar: Bool
     var showUsageStatus: Bool
     var showMetrics: Bool
     var showQuota: Bool
+    var showRadar: Bool
 
     var visibleGroups: [FloatingPanelContentGroup] {
         FloatingPanelContentGroup.allCases.filter(shows)
@@ -50,6 +54,10 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         !showRateAndBar && showUsageStatus
     }
 
+    var needsSingleElementTopInset: Bool {
+        layoutGroups.count == 1
+    }
+
     func shows(_ group: FloatingPanelContentGroup) -> Bool {
         switch group {
         case .rateAndBar:
@@ -60,6 +68,8 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
             return showMetrics
         case .quota:
             return showQuota
+        case .radar:
+            return showRadar
         }
     }
 }

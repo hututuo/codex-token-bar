@@ -119,6 +119,7 @@ struct FloatingPanelContentSettings: View {
     @AppStorage(FloatingPanelContentVisibility.usageStatusKey) private var showUsageStatus = FloatingPanelContentVisibility.default.showUsageStatus
     @AppStorage(FloatingPanelContentVisibility.metricsKey) private var showMetrics = FloatingPanelContentVisibility.default.showMetrics
     @AppStorage(FloatingPanelContentVisibility.quotaKey) private var showQuota = FloatingPanelContentVisibility.default.showQuota
+    @AppStorage(FloatingPanelContentVisibility.radarKey) private var showRadar = FloatingPanelContentVisibility.default.showRadar
 
     var body: some View {
         HStack(spacing: 5) {
@@ -144,6 +145,12 @@ struct FloatingPanelContentSettings: View {
                 title: "5h/7d",
                 systemImage: "chart.bar.fill",
                 isOn: $showQuota
+            )
+
+            DisplaySurfaceToggleButton(
+                title: "Radar",
+                systemImage: "dot.radiowaves.left.and.right",
+                isOn: $showRadar
             )
         }
         .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)

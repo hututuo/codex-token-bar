@@ -10,6 +10,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(visibility.shows(.usageStatus))
         XCTAssertTrue(visibility.shows(.metrics))
         XCTAssertTrue(visibility.shows(.quota))
+        XCTAssertTrue(visibility.shows(.radar))
     }
 
     func testAdaptiveSizeShrinksWhenOnlyUsageStatusIsVisible() {
@@ -20,7 +21,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 showRateAndBar: false,
                 showUsageStatus: true,
                 showMetrics: false,
-                showQuota: false
+                showQuota: false,
+                showRadar: false
             )
         )
 
@@ -33,7 +35,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let expectedHeight = FloatingTokenPanelMetrics.rateRowHeight
             + FloatingTokenPanelMetrics.metricRowHeight
             + FloatingTokenPanelMetrics.quotaRowHeight
-            + FloatingTokenPanelMetrics.rowSpacing * 2
+            + FloatingTokenPanelMetrics.radarRowHeight
+            + FloatingTokenPanelMetrics.rowSpacing * 3
 
         XCTAssertEqual(height, expectedHeight, accuracy: 0.001)
     }
@@ -43,7 +46,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             showRateAndBar: false,
             showUsageStatus: true,
             showMetrics: false,
-            showQuota: false
+            showQuota: false,
+            showRadar: false
         )
 
         XCTAssertEqual(
@@ -60,7 +64,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 showRateAndBar: false,
                 showUsageStatus: false,
                 showMetrics: false,
-                showQuota: false
+                showQuota: false,
+                showRadar: false
             )
         )
 
@@ -69,7 +74,23 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertLessThan(hiddenSize.width, FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).width)
     }
 
-    func testFloatingPanelSettingsExposeFourContentToggles() throws {
+    func testSingleVisibleElementAddsTopSafetyInsetForWindowControls() {
+        let visibility = FloatingPanelContentVisibility(
+            showRateAndBar: false,
+            showUsageStatus: true,
+            showMetrics: false,
+            showQuota: false,
+            showRadar: false
+        )
+        let expectedHeight = FloatingTokenPanelMetrics.verticalPadding * 2
+            + FloatingTokenPanelMetrics.singleElementTopInset
+            + FloatingTokenPanelMetrics.usageStatusRowHeight
+
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: visibility).height, expectedHeight, accuracy: 0.001)
+        XCTAssertTrue(visibility.needsSingleElementTopInset)
+    }
+
+    func testFloatingPanelSettingsExposeFiveContentToggles() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -84,8 +105,34 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.usageStatusKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.metricsKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.quotaKey)"))
+        XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.radarKey)"))
         XCTAssertTrue(dashboardSource.contains("@AppStorage(FloatingPanelContentVisibility.rateAndBarKey)"))
         XCTAssertTrue(dashboardSource.contains("visibility: floatingPanelContentVisibility"))
+    }
+
+    func testFloatingPanelPassesRadarSnapshotIntoRadarRow() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let dashboard = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
+        let floatingPanel = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingTokenPanel.swift")
+        let surface = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurface.swift")
+        let components = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurfaceComponents.swift")
+
+        let dashboardSource = try String(contentsOf: dashboard, encoding: .utf8)
+        let floatingPanelSource = try String(contentsOf: floatingPanel, encoding: .utf8)
+        let surfaceSource = try String(contentsOf: surface, encoding: .utf8)
+        let componentsSource = try String(contentsOf: components, encoding: .utf8)
+
+        XCTAssertTrue(dashboardSource.contains("radar: radarStore"))
+        XCTAssertTrue(floatingPanelSource.contains("@ObservedObject var radar: CodexRadarStore"))
+        XCTAssertTrue(floatingPanelSource.contains("radarSnapshot: radar.snapshot"))
+        XCTAssertTrue(surfaceSource.contains("if visibility.showRadar"))
+        XCTAssertTrue(surfaceSource.contains("TokenDisplayRadarStrip(snapshot: radarSnapshot)"))
+        XCTAssertTrue(componentsSource.contains("struct TokenDisplayRadarStrip"))
+        XCTAssertTrue(componentsSource.contains("建议 \\(snapshot?.recommendedAction"))
+        XCTAssertTrue(componentsSource.contains("latest?.scoreDisplayText"))
     }
 
     func testUsageStatusRendersOnRateBarAndStandaloneTextHasNoBackground() throws {
@@ -131,7 +178,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
 
         XCTAssertTrue(rateBar.contains("let barCenterY = 22.scaled(by: displayScale)"))
         XCTAssertFalse(rateBar.contains("usageStatus == nil ? height / 2"))
-        XCTAssertTrue(standaloneLine.contains("size: 12.2.scaled(by: displayScale)"))
+        XCTAssertTrue(standaloneLine.contains("size: 13.6.scaled(by: displayScale)"))
         XCTAssertTrue(standaloneLine.contains("Color.white.opacity(0.88)"))
         XCTAssertTrue(rateBar.contains("Color.white.opacity(0.88)"))
     }

@@ -147,6 +147,7 @@ struct TokenDisplaySnapshot {
 
 struct TokenDisplayCard: View {
     let snapshot: TokenDisplaySnapshot
+    let radarSnapshot: CodexRadarSnapshot?
     let visibility: FloatingPanelContentVisibility
     let onClose: (() -> Void)?
     var lockState: TokenDisplayLockState? = nil
@@ -161,6 +162,8 @@ struct TokenDisplayCard: View {
             let usageStatusRowHeight = FloatingTokenPanelMetrics.usageStatusRowHeight.scaled(by: displayScale)
             let metricRowHeight = FloatingTokenPanelMetrics.metricRowHeight.scaled(by: displayScale)
             let quotaRowHeight = FloatingTokenPanelMetrics.quotaRowHeight.scaled(by: displayScale)
+            let radarRowHeight = FloatingTokenPanelMetrics.radarRowHeight.scaled(by: displayScale)
+            let topSafetyInset = visibility.needsSingleElementTopInset ? FloatingTokenPanelMetrics.singleElementTopInset.scaled(by: displayScale) : 0
 
             VStack(alignment: .center, spacing: rowSpacing) {
                 if visibility.showRateAndBar {
@@ -182,8 +185,15 @@ struct TokenDisplayCard: View {
                     TokenQuotaMiniStrip(snapshot: snapshot.quota)
                         .frame(height: quotaRowHeight, alignment: .center)
                 }
+
+                if visibility.showRadar {
+                    TokenDisplayRadarStrip(snapshot: radarSnapshot)
+                        .frame(height: radarRowHeight, alignment: .center)
+                }
             }
-            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
+            .frame(width: proxy.size.width, height: max(0, proxy.size.height - topSafetyInset), alignment: .center)
+            .padding(.top, topSafetyInset)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
             .overlay(alignment: .topLeading) {
                 cardLockButton
             }
@@ -215,6 +225,14 @@ struct TokenDisplayCard: View {
         }
         if visibility.showQuota, let sevenDay = snapshot.quota.sevenDay {
             parts.append("7 天额度剩余 \(sevenDay.remainingPercent)%，\(sevenDay.accessibleResetText) 重置")
+        }
+        if visibility.showRadar {
+            if let radarSnapshot {
+                parts.append("雷达建议 \(radarSnapshot.recommendedAction)")
+                parts.append(radarSnapshot.modelIQ.latest.scoreDisplayText)
+            } else {
+                parts.append("雷达等待读取")
+            }
         }
         return parts.isEmpty ? "未显示内容" : parts.joined(separator: "；")
     }

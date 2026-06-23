@@ -31,6 +31,7 @@ struct DashboardView: View {
     @AppStorage(FloatingPanelContentVisibility.usageStatusKey) private var floatingPanelShowUsageStatus = FloatingPanelContentVisibility.default.showUsageStatus
     @AppStorage(FloatingPanelContentVisibility.metricsKey) private var floatingPanelShowMetrics = FloatingPanelContentVisibility.default.showMetrics
     @AppStorage(FloatingPanelContentVisibility.quotaKey) private var floatingPanelShowQuota = FloatingPanelContentVisibility.default.showQuota
+    @AppStorage(FloatingPanelContentVisibility.radarKey) private var floatingPanelShowRadar = FloatingPanelContentVisibility.default.showRadar
     @AppStorage("setupGuideCompletedV01") private var setupGuideCompleted = false
     @State private var showingProviderSync = false
     @State private var showingSetupGuide = false
@@ -459,7 +460,8 @@ struct DashboardView: View {
             showRateAndBar: floatingPanelShowRateAndBar,
             showUsageStatus: floatingPanelShowUsageStatus,
             showMetrics: floatingPanelShowMetrics,
-            showQuota: floatingPanelShowQuota
+            showQuota: floatingPanelShowQuota,
+            showRadar: floatingPanelShowRadar
         )
     }
 
@@ -517,6 +519,7 @@ struct DashboardView: View {
                 store: store,
                 monitor: liveMonitor,
                 quota: quotaStore,
+                radar: radarStore,
                 taskCompletionMonitor: taskCompletionMonitor,
                 scale: effectiveFloatingPanelScale,
                 visibility: floatingPanelContentVisibility,
