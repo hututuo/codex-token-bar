@@ -9,6 +9,7 @@ struct DashboardView: View {
     @StateObject private var store = CodexUsageStore()
     @StateObject private var quotaStore = AccountQuotaStore()
     @StateObject private var quotaHistoryStore = QuotaHistoryStore()
+    @StateObject private var radarStore = CodexRadarStore()
     @StateObject private var providerSyncStore = ProviderSyncStore()
     @State private var taskCompletionMonitor = TaskCompletionMonitor()
     @State private var liveMonitor = LiveRateMonitor()
@@ -30,6 +31,7 @@ struct DashboardView: View {
     @State private var showingProviderSync = false
     @State private var showingSetupGuide = false
     @State private var showingResetCreditDetails = false
+    @State private var showingCodexRadarDetails = false
     @State private var showingInterfaceScaleMenu = false
     @State private var showingPaletteMenu = false
     @State private var showingUnreadEffectMenu = false
@@ -94,6 +96,31 @@ struct DashboardView: View {
                         .frame(width: min(560, max(460, proxy.size.width - 108)))
                         .frame(maxHeight: max(360, proxy.size.height - 90))
                         .padding(.top, 78)
+                    }
+                }
+                .zIndex(9)
+            }
+
+            if showingCodexRadarDetails {
+                GeometryReader { proxy in
+                    ZStack(alignment: .top) {
+                        AppTheme.pageBackground.opacity(0.34)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                showingCodexRadarDetails = false
+                            }
+
+                        CodexRadarDetailCard(
+                            snapshot: radarStore.snapshot,
+                            feedItems: radarStore.feedItems,
+                            status: radarStore.status,
+                            isRefreshing: radarStore.isRefreshing,
+                            onRefresh: radarStore.refresh,
+                            onClose: { showingCodexRadarDetails = false }
+                        )
+                        .frame(width: min(900, max(680, proxy.size.width - 108)))
+                        .frame(maxHeight: max(520, proxy.size.height - 90))
+                        .padding(.top, 58)
                     }
                 }
                 .zIndex(9)
@@ -178,6 +205,7 @@ struct DashboardView: View {
         .animation(.easeInOut(duration: 0.18), value: store.isInitialLoading)
         .onExitCommand {
             showingResetCreditDetails = false
+            showingCodexRadarDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
             showingInterfaceScaleMenu = false
@@ -188,6 +216,7 @@ struct DashboardView: View {
             quotaStore.setHistoryStore(quotaHistoryStore)
             quotaHistoryStore.start()
             quotaStore.start()
+            radarStore.start()
             taskCompletionMonitor.start(dataSource: store.currentDataSource)
             updateTokenDisplaySurface()
             updateUsageRefreshCadence()
@@ -228,6 +257,7 @@ struct DashboardView: View {
             closePaletteMenu()
             showingUnreadEffectMenu = false
             showingResetCreditDetails = false
+            showingCodexRadarDetails = false
         }
         .onChange(of: showingPaletteMenu) {
             guard showingPaletteMenu else { return }
@@ -248,11 +278,13 @@ struct DashboardView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in
             showingResetCreditDetails = false
+            showingCodexRadarDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
             showingInterfaceScaleMenu = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            showingCodexRadarDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
             showingInterfaceScaleMenu = false
@@ -333,6 +365,14 @@ struct DashboardView: View {
 
             StatStrip(stats: store.snapshot.stats)
 
+            CodexRadarStrip(
+                snapshot: radarStore.snapshot,
+                status: radarStore.status,
+                isRefreshing: radarStore.isRefreshing,
+                onRefresh: radarStore.refresh,
+                onShowDetails: { showingCodexRadarDetails = true }
+            )
+
             LiveRateView(
                 monitor: liveMonitor,
                 floatingPanelEnabled: $floatingPanelEnabled,
@@ -383,6 +423,7 @@ struct DashboardView: View {
     private func refreshAllData() {
         store.refresh()
         quotaStore.refresh()
+        radarStore.refresh()
         if showingProviderSync {
             providerSyncStore.scan(dataSource: store.currentDataSource)
         }
