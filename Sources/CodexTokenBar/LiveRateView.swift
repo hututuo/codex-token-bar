@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 private enum LiveRatePanelLayout {
-    static let contentHeight: CGFloat = 106
+    static let contentHeight: CGFloat = 132
     static let contentSpacing: CGFloat = 12
 }
 

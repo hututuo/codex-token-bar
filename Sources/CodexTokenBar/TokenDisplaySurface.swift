@@ -147,6 +147,7 @@ struct TokenDisplaySnapshot {
 
 struct TokenDisplayCard: View {
     let snapshot: TokenDisplaySnapshot
+    let visibility: FloatingPanelContentVisibility
     let onClose: (() -> Void)?
     var lockState: TokenDisplayLockState? = nil
     var lockTargetDescription: String? = nil
@@ -155,25 +156,34 @@ struct TokenDisplayCard: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let rowSpacing = 4.scaled(by: displayScale)
-            let rateRowHeight = 30.scaled(by: displayScale)
-            let metricRowHeight = 13.scaled(by: displayScale)
-            let quotaRowHeight = 16.5.scaled(by: displayScale)
-            let fixedContentHeight = rateRowHeight + metricRowHeight + quotaRowHeight + rowSpacing * 2
-            let topInset = max(0, (proxy.size.height - fixedContentHeight) / 2)
+            let rowSpacing = FloatingTokenPanelMetrics.rowSpacing.scaled(by: displayScale)
+            let rateRowHeight = FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale)
+            let usageStatusRowHeight = FloatingTokenPanelMetrics.usageStatusRowHeight.scaled(by: displayScale)
+            let metricRowHeight = FloatingTokenPanelMetrics.metricRowHeight.scaled(by: displayScale)
+            let quotaRowHeight = FloatingTokenPanelMetrics.quotaRowHeight.scaled(by: displayScale)
 
             VStack(alignment: .center, spacing: rowSpacing) {
-                rateRow
-                    .frame(height: rateRowHeight, alignment: .center)
+                if visibility.showRateAndBar {
+                    rateRow
+                        .frame(height: rateRowHeight, alignment: .center)
+                }
 
-                metricRow
-                    .frame(height: metricRowHeight, alignment: .center)
+                if visibility.showUsageStatus {
+                    TokenDisplayUsageStatusLine(text: snapshot.compactUsageStatus)
+                        .frame(height: usageStatusRowHeight, alignment: .center)
+                }
 
-                TokenQuotaMiniStrip(snapshot: snapshot.quota)
-                    .frame(height: quotaRowHeight, alignment: .center)
+                if visibility.showMetrics {
+                    metricRow
+                        .frame(height: metricRowHeight, alignment: .center)
+                }
+
+                if visibility.showQuota {
+                    TokenQuotaMiniStrip(snapshot: snapshot.quota)
+                        .frame(height: quotaRowHeight, alignment: .center)
+                }
             }
-            .padding(.top, topInset)
-            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
             .overlay(alignment: .topLeading) {
                 cardLockButton
             }
@@ -188,24 +198,29 @@ struct TokenDisplayCard: View {
     }
 
     private var accessibilitySummary: String {
-        var parts = [
-            String(format: "实时速率 %.1f token 每秒", snapshot.rate),
-            "累计 \(snapshot.consumedTokens.abbreviatedTokens) token",
-            "今天 \(snapshot.todayTokens.abbreviatedTokens) token",
-            "今天 \(snapshot.todayRequests) 次请求",
-            snapshot.compactUsageStatus
-        ]
-        if let fiveHour = snapshot.quota.fiveHour {
+        var parts: [String] = []
+        if visibility.showRateAndBar {
+            parts.append(String(format: "实时速率 %.1f token 每秒", snapshot.rate))
+        }
+        if visibility.showMetrics {
+            parts.append("累计 \(snapshot.consumedTokens.abbreviatedTokens) token")
+            parts.append("今天 \(snapshot.todayTokens.abbreviatedTokens) token")
+            parts.append("今天 \(snapshot.todayRequests) 次请求")
+        }
+        if visibility.showUsageStatus {
+            parts.append(snapshot.compactUsageStatus)
+        }
+        if visibility.showQuota, let fiveHour = snapshot.quota.fiveHour {
             parts.append("5 小时额度剩余 \(fiveHour.remainingPercent)%，\(fiveHour.accessibleResetText) 重置")
         }
-        if let sevenDay = snapshot.quota.sevenDay {
+        if visibility.showQuota, let sevenDay = snapshot.quota.sevenDay {
             parts.append("7 天额度剩余 \(sevenDay.remainingPercent)%，\(sevenDay.accessibleResetText) 重置")
         }
-        return parts.joined(separator: "；")
+        return parts.isEmpty ? "未显示内容" : parts.joined(separator: "；")
     }
 
     private var rateRow: some View {
-        HStack(alignment: .center, spacing: 9.scaled(by: displayScale)) {
+        HStack(alignment: .center, spacing: 8.scaled(by: displayScale)) {
             HStack(alignment: .lastTextBaseline, spacing: 4.scaled(by: displayScale)) {
                 Text(String(format: "%.1f", snapshot.rate))
                     .font(.system(size: 20.scaled(by: displayScale), weight: .semibold, design: .rounded))
@@ -213,21 +228,16 @@ struct TokenDisplayCard: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                     .frame(width: 64.scaled(by: displayScale), alignment: .leading)
-                    .offset(x: 3.scaled(by: displayScale), y: 3.scaled(by: displayScale))
+                    .offset(x: 3.scaled(by: displayScale), y: 1.5.scaled(by: displayScale))
                 Text("tok/s")
                     .font(.system(size: 8.6.scaled(by: displayScale), weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .offset(y: 3.5.scaled(by: displayScale))
+                    .offset(y: 2.scaled(by: displayScale))
             }
-            .frame(height: 30.scaled(by: displayScale), alignment: .center)
+            .frame(height: FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale), alignment: .center)
 
             TokenDisplayRateBar(
-                rate: snapshot.rate,
-                usageStatus: snapshot.compactUsageStatus,
-                lockState: nil,
-                lockTargetDescription: nil,
-                onToggleLock: nil,
-                onClose: nil
+                rate: snapshot.rate
             )
             .frame(maxWidth: .infinity, alignment: .trailing)
         }

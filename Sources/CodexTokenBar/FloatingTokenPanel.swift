@@ -145,6 +145,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         quota: AccountQuotaStore,
         taskCompletionMonitor: TaskCompletionMonitor,
         scale: Double,
+        visibility: FloatingPanelContentVisibility,
         isLocked: Bool,
         onToggleLock: @escaping () -> Void,
         onClose: @escaping () -> Void
@@ -160,6 +161,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                     monitor: monitor,
                     quota: quota,
                     taskCompletionMonitor: taskCompletionMonitor,
+                    visibility: visibility,
                     isLocked: isLocked,
                     lockTargetDescription: lockTargetDescription,
                     onToggleLock: { [weak self] in
@@ -170,7 +172,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                     }
                 )
             )
-            let initialSize = FloatingTokenPanelMetrics.size(scale: scale)
+            let initialSize = FloatingTokenPanelMetrics.size(scale: scale, visibility: visibility)
             hostingController.view.frame = NSRect(origin: .zero, size: initialSize)
             hostingController.view.autoresizingMask = [.width, .height]
 
@@ -205,6 +207,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 monitor: monitor,
                 quota: quota,
                 taskCompletionMonitor: taskCompletionMonitor,
+                visibility: visibility,
                 isLocked: isLocked,
                 lockTargetDescription: lockTargetDescription,
                 onToggleLock: { [weak self] in
@@ -217,16 +220,16 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         }
 
         let wasPresented = isPresented
-        updateSize(scale: scale)
+        updateSize(scale: scale, visibility: visibility)
         updateLockState(isLocked, force: !wasPresented)
         panel?.orderFrontRegardless()
         isPresented = true
     }
 
-    func updateSize(scale: Double) {
+    func updateSize(scale: Double, visibility: FloatingPanelContentVisibility) {
         guard let panel else { return }
         isProgrammaticPanelMove = true
-        resizePanel(panel, scale: scale)
+        resizePanel(panel, scale: scale, visibility: visibility)
         panel.contentView?.layer?.cornerRadius = FloatingTokenPanelMetrics.cornerRadius(scale: scale)
         saveLockedOrigin(panel.frame.origin)
         refreshLockedAnchorOffsetForCurrentFrame()
@@ -277,6 +280,7 @@ struct FloatingTokenPanelView: View {
     @ObservedObject var monitor: LiveRateMonitor
     @ObservedObject var quota: AccountQuotaStore
     @ObservedObject var taskCompletionMonitor: TaskCompletionMonitor
+    let visibility: FloatingPanelContentVisibility
     let isLocked: Bool
     var lockTargetDescription: String?
     let onToggleLock: () -> Void
@@ -298,7 +302,7 @@ struct FloatingTokenPanelView: View {
             && floatingPanelUnreadPreviewUntil > Date.timeIntervalSinceReferenceDate
         let shouldShowUnreadEffect = unreadEffect != .off && (unreadCount > 0 || isPreviewingUnreadEffect)
         let scale = FloatingTokenPanelMetrics.clampedScale(floatingPanelScale)
-        let size = FloatingTokenPanelMetrics.size(scale: floatingPanelScale)
+        let size = FloatingTokenPanelMetrics.size(scale: floatingPanelScale, visibility: visibility)
         let cornerRadius = FloatingTokenPanelMetrics.cornerRadius(scale: floatingPanelScale)
         let appearance = FloatingPanelAppearance(
             startHex: floatingPanelGradientStartHex,
@@ -325,6 +329,7 @@ struct FloatingTokenPanelView: View {
             }
             TokenDisplayCard(
                 snapshot: TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota),
+                visibility: visibility,
                 onClose: nil,
                 lockState: nil,
                 lockTargetDescription: nil,
@@ -366,10 +371,10 @@ struct FloatingTokenPanelView: View {
 }
 
 @MainActor
-func resizePanel(_ panel: NSPanel, scale: Double) {
+func resizePanel(_ panel: NSPanel, scale: Double, visibility: FloatingPanelContentVisibility) {
     let previousFrame = panel.frame
     let topLeft = NSPoint(x: previousFrame.minX, y: previousFrame.maxY)
-    let targetSize = FloatingTokenPanelMetrics.size(scale: scale)
+    let targetSize = FloatingTokenPanelMetrics.size(scale: scale, visibility: visibility)
     let targetFrame = anchoredPanelFrame(for: panel, size: targetSize, topLeft: topLeft)
     panel.contentViewController?.view.frame = NSRect(origin: .zero, size: targetSize)
     panel.contentMinSize = targetSize

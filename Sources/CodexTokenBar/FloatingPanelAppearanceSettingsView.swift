@@ -29,60 +29,66 @@ struct FloatingPanelAppearanceSettings: View {
     @Binding var isUnreadEffectMenuPresented: Bool
 
     var body: some View {
-        HStack(alignment: .center, spacing: 9) {
-            VStack(spacing: 4) {
-                FloatingPanelPaletteControl(
-                    startHex: $startHex,
-                    endHex: $endHex,
-                    directionRaw: $directionRaw,
-                    styleRaw: $styleRaw,
-                    isPresented: $isPaletteMenuPresented,
-                    willOpen: {
-                        isUnreadEffectMenuPresented = false
-                    }
-                )
-                .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
-
-                FloatingUnreadEffectPicker(
-                    selection: normalizedUnreadEffectBinding,
-                    isPresented: $isUnreadEffectMenuPresented,
-                    willOpen: {
-                        isPaletteMenuPresented = false
-                    }
-                )
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .center, spacing: 9) {
+                VStack(spacing: 4) {
+                    FloatingPanelPaletteControl(
+                        startHex: $startHex,
+                        endHex: $endHex,
+                        directionRaw: $directionRaw,
+                        styleRaw: $styleRaw,
+                        isPresented: $isPaletteMenuPresented,
+                        willOpen: {
+                            isUnreadEffectMenuPresented = false
+                        }
+                    )
                     .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
+
+                    FloatingUnreadEffectPicker(
+                        selection: normalizedUnreadEffectBinding,
+                        isPresented: $isUnreadEffectMenuPresented,
+                        willOpen: {
+                            isPaletteMenuPresented = false
+                        }
+                    )
+                        .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
+                }
+                .frame(width: 76, alignment: .leading)
+                .zIndex(2)
+
+                VStack(spacing: 0) {
+                    CompactFloatingSlider(
+                        title: "透明度",
+                        systemImage: "circle.lefthalf.filled",
+                        value: $floatingPanelOpacity,
+                        range: 0.45...0.98,
+                        displayValue: "\(Int((floatingPanelOpacity * 100).rounded()))%",
+                        showsBackground: false
+                    )
+
+                    AppearanceSliderDivider()
+
+                    CompactFloatingSlider(
+                        title: "大小",
+                        systemImage: "arrow.up.left.and.arrow.down.right",
+                        value: $floatingPanelScale,
+                        range: FloatingTokenPanelMetrics.scaleRange,
+                        displayValue: "\(Int((floatingPanelScale * 100).rounded()))%",
+                        showsBackground: false
+                    )
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .zIndex(1)
             }
-            .frame(width: 76, alignment: .leading)
-            .zIndex(2)
+            .frame(height: 56)
 
-            VStack(spacing: 0) {
-                CompactFloatingSlider(
-                    title: "透明度",
-                    systemImage: "circle.lefthalf.filled",
-                    value: $floatingPanelOpacity,
-                    range: 0.45...0.98,
-                    displayValue: "\(Int((floatingPanelOpacity * 100).rounded()))%",
-                    showsBackground: false
-                )
-
-                AppearanceSliderDivider()
-
-                CompactFloatingSlider(
-                    title: "大小",
-                    systemImage: "arrow.up.left.and.arrow.down.right",
-                    value: $floatingPanelScale,
-                    range: FloatingTokenPanelMetrics.scaleRange,
-                    displayValue: "\(Int((floatingPanelScale * 100).rounded()))%",
-                    showsBackground: false
-                )
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 2)
-            .zIndex(1)
+            FloatingPanelContentSettings()
+                .frame(height: 24)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 56)
+        .frame(height: 85)
         .padding(.horizontal, 7)
         .padding(.vertical, 4)
         .background(
@@ -106,6 +112,42 @@ struct FloatingPanelAppearanceSettings: View {
         )
     }
 
+}
+
+struct FloatingPanelContentSettings: View {
+    @AppStorage(FloatingPanelContentVisibility.rateAndBarKey) private var showRateAndBar = FloatingPanelContentVisibility.default.showRateAndBar
+    @AppStorage(FloatingPanelContentVisibility.usageStatusKey) private var showUsageStatus = FloatingPanelContentVisibility.default.showUsageStatus
+    @AppStorage(FloatingPanelContentVisibility.metricsKey) private var showMetrics = FloatingPanelContentVisibility.default.showMetrics
+    @AppStorage(FloatingPanelContentVisibility.quotaKey) private var showQuota = FloatingPanelContentVisibility.default.showQuota
+
+    var body: some View {
+        HStack(spacing: 5) {
+            DisplaySurfaceToggleButton(
+                title: "速率",
+                systemImage: "speedometer",
+                isOn: $showRateAndBar
+            )
+
+            DisplaySurfaceToggleButton(
+                title: "余量",
+                systemImage: "sparkles",
+                isOn: $showUsageStatus
+            )
+
+            DisplaySurfaceToggleButton(
+                title: "总今次",
+                systemImage: "number",
+                isOn: $showMetrics
+            )
+
+            DisplaySurfaceToggleButton(
+                title: "5h/7d",
+                systemImage: "chart.bar.fill",
+                isOn: $showQuota
+            )
+        }
+        .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
+    }
 }
 
 private struct FloatingAppearanceMiniButtonLabel: View {
@@ -232,4 +274,3 @@ struct FloatingPanelPaletteControl: View {
         .accessibilityHint("调整悬浮窗背景渐变颜色、方向和类型")
     }
 }
-

@@ -27,6 +27,10 @@ struct DashboardView: View {
     @AppStorage(FloatingPanelAppearance.directionKey) private var floatingPanelGradientDirection = FloatingPanelAppearance.defaultDirection
     @AppStorage(FloatingPanelAppearance.styleKey) private var floatingPanelGradientStyle = FloatingPanelAppearance.defaultStyle
     @AppStorage(FloatingPanelAppearance.unreadEffectKey) private var floatingPanelUnreadEffect = FloatingPanelAppearance.defaultUnreadEffect
+    @AppStorage(FloatingPanelContentVisibility.rateAndBarKey) private var floatingPanelShowRateAndBar = FloatingPanelContentVisibility.default.showRateAndBar
+    @AppStorage(FloatingPanelContentVisibility.usageStatusKey) private var floatingPanelShowUsageStatus = FloatingPanelContentVisibility.default.showUsageStatus
+    @AppStorage(FloatingPanelContentVisibility.metricsKey) private var floatingPanelShowMetrics = FloatingPanelContentVisibility.default.showMetrics
+    @AppStorage(FloatingPanelContentVisibility.quotaKey) private var floatingPanelShowQuota = FloatingPanelContentVisibility.default.showQuota
     @AppStorage("setupGuideCompletedV01") private var setupGuideCompleted = false
     @State private var showingProviderSync = false
     @State private var showingSetupGuide = false
@@ -235,6 +239,9 @@ struct DashboardView: View {
             updateUsageRefreshCadence()
         }
         .onChange(of: floatingPanelScale) {
+            updateTokenDisplaySurface()
+        }
+        .onChange(of: floatingPanelContentVisibility) {
             updateTokenDisplaySurface()
         }
         .onChange(of: interfaceScaleAutoEnabled) {
@@ -447,6 +454,15 @@ struct DashboardView: View {
         )
     }
 
+    private var floatingPanelContentVisibility: FloatingPanelContentVisibility {
+        FloatingPanelContentVisibility(
+            showRateAndBar: floatingPanelShowRateAndBar,
+            showUsageStatus: floatingPanelShowUsageStatus,
+            showMetrics: floatingPanelShowMetrics,
+            showQuota: floatingPanelShowQuota
+        )
+    }
+
     private func centeredInterfaceScaleCardFrame(
         in proxy: GeometryProxy,
         width: CGFloat,
@@ -503,6 +519,7 @@ struct DashboardView: View {
                 quota: quotaStore,
                 taskCompletionMonitor: taskCompletionMonitor,
                 scale: effectiveFloatingPanelScale,
+                visibility: floatingPanelContentVisibility,
                 isLocked: floatingPanelLocked,
                 onToggleLock: {
                     floatingPanelLocked.toggle()

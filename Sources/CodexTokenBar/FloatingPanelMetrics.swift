@@ -2,9 +2,15 @@ import AppKit
 
 enum FloatingTokenPanelMetrics {
     static let baseSize = NSSize(width: 258, height: 88)
+    static let minimumControlSize = NSSize(width: 72, height: 34)
     static let baseCornerRadius: CGFloat = 14
     static let horizontalPadding: CGFloat = 10
     static let verticalPadding: CGFloat = 7
+    static let rowSpacing: CGFloat = 2.5
+    static let rateRowHeight: CGFloat = 26
+    static let usageStatusRowHeight: CGFloat = 11
+    static let metricRowHeight: CGFloat = 13
+    static let quotaRowHeight: CGFloat = 16.5
     static let defaultScale = 1.0
     static let scaleRange = 0.75...2.0
 
@@ -13,8 +19,56 @@ enum FloatingTokenPanelMetrics {
     }
 
     static func size(scale: Double) -> NSSize {
+        size(scale: scale, visibility: .default)
+    }
+
+    static func size(scale: Double, visibility: FloatingPanelContentVisibility) -> NSSize {
         let clamped = clampedScale(scale)
-        return NSSize(width: baseSize.width * clamped, height: baseSize.height * clamped)
+        let unscaled = unscaledSize(visibility: visibility)
+        return NSSize(width: ceil(unscaled.width * clamped), height: ceil(unscaled.height * clamped))
+    }
+
+    static func contentHeight(visibility: FloatingPanelContentVisibility) -> CGFloat {
+        let groups = visibility.visibleGroups
+        guard !groups.isEmpty else { return 0 }
+        let rowHeights = groups.reduce(CGFloat.zero) { partial, group in
+            partial + rowHeight(for: group)
+        }
+        return rowHeights + rowSpacing * CGFloat(max(groups.count - 1, 0))
+    }
+
+    static func rowHeight(for group: FloatingPanelContentGroup) -> CGFloat {
+        switch group {
+        case .rateAndBar:
+            return rateRowHeight
+        case .usageStatus:
+            return usageStatusRowHeight
+        case .metrics:
+            return metricRowHeight
+        case .quota:
+            return quotaRowHeight
+        }
+    }
+
+    static func rowWidth(for group: FloatingPanelContentGroup) -> CGFloat {
+        switch group {
+        case .rateAndBar, .quota:
+            return baseSize.width - horizontalPadding * 2
+        case .usageStatus:
+            return 174
+        case .metrics:
+            return 218
+        }
+    }
+
+    private static func unscaledSize(visibility: FloatingPanelContentVisibility) -> NSSize {
+        let groups = visibility.visibleGroups
+        guard !groups.isEmpty else { return minimumControlSize }
+
+        let contentWidth = groups.map(rowWidth(for:)).max() ?? 0
+        let width = max(minimumControlSize.width, horizontalPadding * 2 + contentWidth)
+        let height = max(minimumControlSize.height, verticalPadding * 2 + contentHeight(visibility: visibility))
+        return NSSize(width: width, height: height)
     }
 
     static func cornerRadius(scale: Double) -> CGFloat {

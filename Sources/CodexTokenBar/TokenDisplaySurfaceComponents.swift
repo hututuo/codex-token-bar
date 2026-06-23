@@ -101,13 +101,39 @@ struct TokenQuotaMiniSegment: View {
     }
 }
 
+struct TokenDisplayUsageStatusLine: View {
+    let text: String
+    @Environment(\.tokenDisplayScale) private var displayScale
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 9.2.scaled(by: displayScale), weight: .semibold))
+            .foregroundStyle(.secondary.opacity(0.92))
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .truncationMode(.tail)
+            .padding(.horizontal, 6.scaled(by: displayScale))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .background(
+                Capsule()
+                    .fill(floatingStatusBackground)
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("趣味化余量")
+            .accessibilityValue(text)
+    }
+
+    private var floatingStatusBackground: Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                ? NSColor.white.withAlphaComponent(0.10)
+                : NSColor.white.withAlphaComponent(0.48)
+        })
+    }
+}
+
 struct TokenDisplayRateBar: View {
     let rate: Double
-    let usageStatus: String
-    let lockState: TokenDisplayLockState?
-    let lockTargetDescription: String?
-    let onToggleLock: (() -> Void)?
-    let onClose: (() -> Void)?
     @Environment(\.tokenDisplayScale) private var displayScale
     @AppStorage(TokenRateScaleSettings.key) private var tokenRateFullScale = TokenRateScaleSettings.defaultValue
 
@@ -116,106 +142,33 @@ struct TokenDisplayRateBar: View {
         return CGFloat(min(max(rate, 0), scale) / scale)
     }
 
-    private var controlHitSize: CGFloat {
-        max(30, 24.scaled(by: displayScale))
-    }
-
-    private var leadingControlInset: CGFloat {
-        lockState != nil && onToggleLock != nil ? 13.scaled(by: displayScale) : 0
-    }
-
-    private var trailingControlInset: CGFloat {
-        onClose != nil ? 11.scaled(by: displayScale) : 0
-    }
-
-    private var lockHelpText: String {
-        guard lockState == .locked else {
-            return TokenDisplayLockState.unlocked.helpText
-        }
-        if let lockTargetDescription, !lockTargetDescription.isEmpty {
-            return "已锁定到 \(lockTargetDescription)"
-        }
-        return TokenDisplayLockState.locked.helpText
-    }
-
     var body: some View {
         GeometryReader { proxy in
-            let height = 30.scaled(by: displayScale)
-            let statusHeight = 13.scaled(by: displayScale)
-            let barHeight = 5.scaled(by: displayScale)
-            let contentDrop = 3.5.scaled(by: displayScale)
-            let statusTextDrop = contentDrop + 2.scaled(by: displayScale)
-            let barTop = 18.scaled(by: displayScale) + contentDrop
-            let leadingInset = leadingControlInset
-            let trailingInset = trailingControlInset
-            let contentWidth = max(1, proxy.size.width - leadingInset - trailingInset)
-            let barWidth = max(1, proxy.size.width - trailingInset)
+            let barHeight = 5.5.scaled(by: displayScale)
+            let barWidth = max(1, proxy.size.width)
             let fillWidth = max(3.scaled(by: displayScale), barWidth * fillFraction)
 
-            ZStack(alignment: .topLeading) {
-                Text(usageStatus)
-                    .font(.system(size: 10.2.scaled(by: displayScale), weight: .semibold))
-                    .foregroundStyle(.secondary.opacity(0.92))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.86)
-                    .truncationMode(.tail)
-                    .frame(width: contentWidth, height: statusHeight, alignment: .leading)
-                    .position(x: leadingInset + contentWidth / 2, y: statusHeight / 2 + statusTextDrop)
-
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(floatingTrackColor)
-                        .overlay(Capsule().stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
-                    Capsule()
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.cyan.opacity(0.98), Color.blue.opacity(0.92)],
-                                startPoint: .bottom,
-                                endPoint: .top
-                            )
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(floatingTrackColor)
+                    .overlay(Capsule().stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.cyan.opacity(0.98), Color.blue.opacity(0.92)],
+                            startPoint: .bottom,
+                            endPoint: .top
                         )
-                        .frame(width: fillWidth)
-                }
-                .frame(width: barWidth, height: barHeight, alignment: .leading)
-                .position(x: barWidth / 2, y: barTop + barHeight / 2)
-
-                controls
-                    .frame(width: proxy.size.width, height: height, alignment: .topLeading)
+                    )
+                    .frame(width: fillWidth)
             }
-            .frame(width: proxy.size.width, height: height, alignment: .topLeading)
+            .frame(width: barWidth, height: barHeight, alignment: .leading)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
         }
-        .frame(height: 30.scaled(by: displayScale), alignment: .top)
-    }
-
-    @ViewBuilder
-    private var controls: some View {
-        ZStack(alignment: .topLeading) {
-            if let lockState, let onToggleLock {
-                Button(action: onToggleLock) {
-                    Image(systemName: lockState.systemImage)
-                        .font(.system(size: 7.8.scaled(by: displayScale), weight: .bold))
-                        .foregroundStyle(.primary.opacity(0.88))
-                        .frame(width: controlHitSize, height: controlHitSize, alignment: .center)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(lockHelpText)
-                .position(x: 4.5.scaled(by: displayScale), y: 3.5.scaled(by: displayScale))
-            }
-
-            if let onClose {
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 7.8.scaled(by: displayScale), weight: .bold))
-                        .foregroundStyle(.secondary.opacity(0.76))
-                        .frame(width: controlHitSize, height: controlHitSize, alignment: .center)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                .offset(x: 7.scaled(by: displayScale), y: -5.scaled(by: displayScale))
-            }
-        }
+        .frame(height: FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale), alignment: .center)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("实时速率条")
+        .accessibilityValue(String(format: "%.1f token 每秒", rate))
     }
 
     private var floatingTrackColor: Color {
