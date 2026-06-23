@@ -36,11 +36,25 @@ final class CodexUsageAnalyzer {
             throw NSError(domain: "CodexTokenBar", code: 5, userInfo: [NSLocalizedDescriptionKey: "\(dataSource.displayPath)/sessions not found"])
         }
 
+        let sessionFiles = jsonlFiles(under: sessionsRoot)
+        let signature = sessionTreeSignature(for: sessionFiles)
+        if let cached = Self.sessionEventCache.snapshot(for: dataSource.codexHome.path, signature: signature) {
+            return DashboardSnapshot(
+                stats: cached.stats,
+                dailyUsage: cached.dailyUsage,
+                recentBins: cached.recentBins,
+                hourlyUsage: cached.hourlyUsage,
+                pluginUsage: cached.pluginUsage,
+                cacheUsage: cached.cacheUsage,
+                generatedAt: Date()
+            )
+        }
+
         var events: [TokenEvent] = []
         var sessionIDsWithEvents = Set<String>()
         let metadata = loadThreadMetadata()
 
-        for file in jsonlFiles(under: sessionsRoot) {
+        for file in sessionFiles {
             let sessionID = sessionID(from: file)
             let sessionEvents = parseSession(file: file, sessionID: sessionID)
             if !sessionEvents.isEmpty {
@@ -74,7 +88,7 @@ final class CodexUsageAnalyzer {
             totalSkillsUsed: metadata.plugins.count
         )
 
-        return DashboardSnapshot(
+        let snapshot = DashboardSnapshot(
             stats: stats,
             dailyUsage: daily,
             recentBins: recentBins,
@@ -83,5 +97,9 @@ final class CodexUsageAnalyzer {
             cacheUsage: cacheUsage,
             generatedAt: Date()
         )
+        Self.sessionEventCache.recordSnapshotBuildForTesting()
+        Self.sessionEventCache.storeSnapshot(snapshot, for: dataSource.codexHome.path, signature: signature)
+        Self.sessionEventCache.flushPersistentCache()
+        return snapshot
     }
 }

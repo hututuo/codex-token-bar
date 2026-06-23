@@ -7,6 +7,8 @@ final class CodexUsageAnalyzerTests: XCTestCase {
     override func setUpWithError() throws {
         try super.setUpWithError()
         setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+        CodexUsageAnalyzer.clearUsageCachesForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
     }
 
     override func tearDownWithError() throws {
@@ -195,6 +197,34 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertTrue(snapshot.cacheUsage.turns.contains { turn in
             turn.userPrompt == "spaced user prompt" && turn.assistantResponse == "spaced assistant answer"
         })
+    }
+
+    func testPreciseJSONLScanReusesCachedSnapshotWhenInputsAreUnchanged() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-incremental"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date()
+
+        let lines = [
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-60),
+                total: Usage(input: 100, cachedInput: 30, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 30, output: 20, reasoning: 0, total: 120)
+            )
+        ]
+        try lines.joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let first = try analyzer.load()
+        let buildCountAfterFirstLoad = CodexUsageAnalyzer.preciseSnapshotBuildCountForTesting
+        let second = try analyzer.load()
+
+        XCTAssertEqual(first.stats.totalTokens, 120)
+        XCTAssertEqual(second.stats.totalTokens, 120)
+        XCTAssertGreaterThanOrEqual(buildCountAfterFirstLoad, 1)
+        XCTAssertEqual(CodexUsageAnalyzer.preciseSnapshotBuildCountForTesting, buildCountAfterFirstLoad)
     }
 
     func testSQLiteReasoningUsesExactReasoningEffortColumn() throws {

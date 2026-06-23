@@ -13,27 +13,27 @@ struct TokenEvent: Identifiable {
     let assistantResponse: String
 }
 
-struct DayUsage: Identifiable, Equatable {
+struct DayUsage: Codable, Identifiable, Equatable {
     var id: Date { date }
     let date: Date
     let tokens: Int
     let calls: Int
 }
 
-struct BinUsage: Identifiable, Equatable {
+struct BinUsage: Codable, Identifiable, Equatable {
     var id: Date { start }
     let start: Date
     let tokens: Int
     let calls: Int
 }
 
-struct PluginUsage: Identifiable {
+struct PluginUsage: Codable, Identifiable {
     var id: String { name }
     let name: String
     let runs: Int
 }
 
-struct TokenCacheBreakdown: Equatable {
+struct TokenCacheBreakdown: Codable, Equatable {
     let inputTokens: Int
     let cachedInputTokens: Int
     let outputTokens: Int
@@ -64,20 +64,20 @@ struct TokenCacheBreakdown: Equatable {
     )
 }
 
-struct TokenCacheBucket: Identifiable, Equatable {
+struct TokenCacheBucket: Codable, Identifiable, Equatable {
     var id: Date { start }
     let start: Date
     let breakdown: TokenCacheBreakdown
 }
 
-struct SessionCacheUsage: Identifiable {
+struct SessionCacheUsage: Codable, Identifiable {
     let id: String
     let title: String
     let lastUpdated: Date?
     let breakdown: TokenCacheBreakdown
 }
 
-struct TurnCacheUsage: Identifiable {
+struct TurnCacheUsage: Codable, Identifiable {
     let id: String
     let sessionID: String
     let sessionTitle: String
@@ -88,7 +88,7 @@ struct TurnCacheUsage: Identifiable {
     let breakdown: TokenCacheBreakdown
 }
 
-struct TokenCacheUsage {
+struct TokenCacheUsage: Codable {
     let total: TokenCacheBreakdown
     let daily: [TokenCacheBucket]
     let hourly: [TokenCacheBucket]
@@ -145,7 +145,7 @@ extension Sequence where Element == TokenCacheBreakdown {
     }
 }
 
-struct DashboardStats {
+struct DashboardStats: Codable {
     let totalTokens: Int
     let peakDayTokens: Int
     let peakThreadTokens: Int
@@ -165,7 +165,7 @@ extension Double {
     }
 }
 
-struct DashboardSnapshot {
+struct DashboardSnapshot: Codable {
     let stats: DashboardStats
     let dailyUsage: [DayUsage]
     let recentBins: [BinUsage]

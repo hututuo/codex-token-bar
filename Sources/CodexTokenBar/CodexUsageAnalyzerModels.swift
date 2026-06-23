@@ -1,10 +1,15 @@
 import Foundation
 
 extension CodexUsageAnalyzer {
-    struct SessionCacheKey: Equatable {
+    struct SessionCacheKey: Codable, Equatable {
         let path: String
         let size: UInt64
         let modifiedAt: TimeInterval
+    }
+
+    struct SessionTreeSignature: Codable, Equatable {
+        let files: [SessionCacheKey]
+        let stateDatabase: SessionCacheKey?
     }
 
     final class SessionEventCache: @unchecked Sendable {
@@ -14,6 +19,7 @@ extension CodexUsageAnalyzer {
         private struct PersistentCache: Codable {
             let version: Int
             let entries: [PersistentEntry]
+            let snapshots: [PersistentSnapshot]?
         }
 
         private struct PersistentEntry: Codable {
@@ -35,10 +41,19 @@ extension CodexUsageAnalyzer {
             let assistantResponseDigest: String?
         }
 
+        private struct PersistentSnapshot: Codable {
+            let root: String
+            let signature: SessionTreeSignature
+            let snapshot: DashboardSnapshot
+        }
+
         private let lock = NSLock()
         private var storage: [String: (key: SessionCacheKey, events: [TokenEvent])] = [:]
+        private var snapshotStorage: [String: (signature: SessionTreeSignature, snapshot: DashboardSnapshot)] = [:]
+        private var snapshotBuildCount = 0
         private var didLoadPersistentCache = false
         private var isDirty = false
+        private var isSnapshotDirty = false
 
         func events(for path: String, key: SessionCacheKey) -> [TokenEvent]? {
             loadPersistentCacheIfNeeded()
@@ -56,14 +71,61 @@ extension CodexUsageAnalyzer {
             lock.unlock()
         }
 
+        func snapshot(for root: String, signature: SessionTreeSignature) -> DashboardSnapshot? {
+            loadPersistentCacheIfNeeded()
+            lock.lock()
+            defer { lock.unlock() }
+            guard let cached = snapshotStorage[root], cached.signature == signature else {
+                return nil
+            }
+            return cached.snapshot
+        }
+
+        func storeSnapshot(_ snapshot: DashboardSnapshot, for root: String, signature: SessionTreeSignature) {
+            lock.lock()
+            snapshotStorage[root] = (signature, snapshot)
+            isSnapshotDirty = true
+            lock.unlock()
+        }
+
+        func recordSnapshotBuildForTesting() {
+            lock.lock()
+            snapshotBuildCount += 1
+            lock.unlock()
+        }
+
+        var snapshotBuildCountForTesting: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return snapshotBuildCount
+        }
+
+        func resetSnapshotBuildCountForTesting() {
+            lock.lock()
+            snapshotBuildCount = 0
+            lock.unlock()
+        }
+
+        func clearForTesting() {
+            lock.lock()
+            storage.removeAll()
+            snapshotStorage.removeAll()
+            snapshotBuildCount = 0
+            didLoadPersistentCache = false
+            isDirty = false
+            isSnapshotDirty = false
+            lock.unlock()
+        }
+
         func flushPersistentCache() {
             lock.lock()
             if CodexUsageAnalyzer.isPersistentSessionEventCacheDisabled {
                 isDirty = false
+                isSnapshotDirty = false
                 lock.unlock()
                 return
             }
-            guard isDirty else {
+            guard isDirty || isSnapshotDirty else {
                 lock.unlock()
                 return
             }
@@ -87,7 +149,15 @@ extension CodexUsageAnalyzer {
                     }
                 )
             }
+            let snapshots = snapshotStorage.map { root, value in
+                PersistentSnapshot(
+                    root: root,
+                    signature: value.signature,
+                    snapshot: Self.sanitizedSnapshotForPersistence(value.snapshot)
+                )
+            }
             isDirty = false
+            isSnapshotDirty = false
             lock.unlock()
 
             guard let cacheURL = Self.cacheURL else { return }
@@ -97,7 +167,11 @@ extension CodexUsageAnalyzer {
                     at: cacheURL.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                let cache = PersistentCache(version: Self.persistentCacheVersion, entries: entries)
+                let cache = PersistentCache(
+                    version: Self.persistentCacheVersion,
+                    entries: entries,
+                    snapshots: snapshots
+                )
                 let data = try JSONEncoder().encode(cache)
                 try data.write(to: cacheURL, options: [.atomic])
             } catch {
@@ -152,6 +226,10 @@ extension CodexUsageAnalyzer {
             for (path, value) in loaded where storage[path] == nil {
                 storage[path] = value
             }
+
+            for snapshot in cache.snapshots ?? [] where snapshotStorage[snapshot.root] == nil {
+                snapshotStorage[snapshot.root] = (snapshot.signature, snapshot.snapshot)
+            }
         }
 
         private static var cacheURL: URL? {
@@ -194,11 +272,55 @@ extension CodexUsageAnalyzer {
             }
             return String(format: "%016llx", hash)
         }
+
+        private static func sanitizedSnapshotForPersistence(_ snapshot: DashboardSnapshot) -> DashboardSnapshot {
+            let sanitizedTurns = snapshot.cacheUsage.turns.map { turn in
+                TurnCacheUsage(
+                    id: turn.id,
+                    sessionID: turn.sessionID,
+                    sessionTitle: turn.sessionTitle,
+                    timestamp: turn.timestamp,
+                    turnIndexInSession: turn.turnIndexInSession,
+                    userPrompt: "",
+                    assistantResponse: "",
+                    breakdown: turn.breakdown
+                )
+            }
+            let sanitizedCacheUsage = TokenCacheUsage(
+                total: snapshot.cacheUsage.total,
+                daily: snapshot.cacheUsage.daily,
+                hourly: snapshot.cacheUsage.hourly,
+                recentBins: snapshot.cacheUsage.recentBins,
+                sessions: snapshot.cacheUsage.sessions,
+                turns: sanitizedTurns
+            )
+            return DashboardSnapshot(
+                stats: snapshot.stats,
+                dailyUsage: snapshot.dailyUsage,
+                recentBins: snapshot.recentBins,
+                hourlyUsage: snapshot.hourlyUsage,
+                pluginUsage: snapshot.pluginUsage,
+                cacheUsage: sanitizedCacheUsage,
+                generatedAt: snapshot.generatedAt
+            )
+        }
     }
 
     static let sessionEventCache = SessionEventCache()
     static var isPersistentSessionEventCacheDisabled: Bool {
         ProcessInfo.processInfo.environment["CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE"] == "1"
+    }
+
+    static var preciseSnapshotBuildCountForTesting: Int {
+        sessionEventCache.snapshotBuildCountForTesting
+    }
+
+    static func resetPreciseSnapshotBuildCountForTesting() {
+        sessionEventCache.resetSnapshotBuildCountForTesting()
+    }
+
+    static func clearUsageCachesForTesting() {
+        sessionEventCache.clearForTesting()
     }
 
     struct OfficialThreadSummary {

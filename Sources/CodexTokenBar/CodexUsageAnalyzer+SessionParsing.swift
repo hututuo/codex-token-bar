@@ -20,6 +20,15 @@ extension CodexUsageAnalyzer {
         file.deletingPathExtension().lastPathComponent.split(separator: "-").suffix(5).joined(separator: "-")
     }
 
+    func sessionTreeSignature(for files: [URL]) -> SessionTreeSignature {
+        SessionTreeSignature(
+            files: files
+                .compactMap(sessionCacheKey(for:))
+                .sorted { $0.path < $1.path },
+            stateDatabase: sessionCacheKey(for: dataSource.stateDatabase)
+        )
+    }
+
     func parseSession(file: URL, sessionID: String) -> [TokenEvent] {
         let cacheKey = sessionCacheKey(for: file)
         if let cacheKey {

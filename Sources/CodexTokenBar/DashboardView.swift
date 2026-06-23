@@ -485,7 +485,7 @@ struct DashboardView: View {
 
     private func updateUsageRefreshCadence() {
         let onlyCompactSurfaceVisible = (floatingPanelEnabled || statusBarPanelEnabled) && !hasVisibleDashboardWindow()
-        store.setRefreshInterval(onlyCompactSurfaceVisible ? 180 : 300)
+        store.setRefreshInterval(onlyCompactSurfaceVisible ? 300 : 180)
     }
     private func hasVisibleDashboardWindow() -> Bool {
         guard !NSApp.isHidden else { return false }
