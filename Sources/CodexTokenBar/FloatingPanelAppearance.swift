@@ -158,6 +158,8 @@ struct FloatingPanelBackgroundSample: Equatable, Sendable {
 struct FloatingPanelTextPaletteSet: Equatable {
     let controlPalette: FloatingPanelReadableTextPalette
     let rowPalettes: [FloatingPanelContentGroup: FloatingPanelReadableTextPalette]
+    let radarActionPalette: FloatingPanelReadableTextPalette?
+    let radarModelPalette: FloatingPanelReadableTextPalette?
 }
 
 struct FloatingPanelReadableTextPalette: Equatable, Sendable {
@@ -194,28 +196,28 @@ struct FloatingPanelReadableTextPalette: Equatable, Sendable {
         if let fixedWhite {
             return fixedWhite
         }
-        return foregroundWhite(lightValue: 0.06, grayValue: 0.52, darkValue: 0.96)
+        return foregroundWhite(lightValue: 0.05, grayValue: 0.17, darkValue: 0.96)
     }
 
     var secondaryWhite: Double {
         if let fixedWhite {
             return fixedWhite
         }
-        return foregroundWhite(lightValue: 0.26, grayValue: 0.58, darkValue: 0.82)
+        return foregroundWhite(lightValue: 0.22, grayValue: 0.34, darkValue: 0.84)
     }
 
     var mutedWhite: Double {
         if let fixedWhite {
             return fixedWhite
         }
-        return foregroundWhite(lightValue: 0.38, grayValue: 0.62, darkValue: 0.72)
+        return foregroundWhite(lightValue: 0.32, grayValue: 0.42, darkValue: 0.76)
     }
 
     var dividerWhite: Double {
         if let fixedWhite {
             return fixedWhite
         }
-        return foregroundWhite(lightValue: 0.24, grayValue: 0.44, darkValue: 0.64)
+        return foregroundWhite(lightValue: 0.16, grayValue: 0.26, darkValue: 0.64)
     }
 
     var primaryColor: Color {
@@ -236,10 +238,12 @@ struct FloatingPanelReadableTextPalette: Equatable, Sendable {
 
     private func foregroundWhite(lightValue: Double, grayValue: Double, darkValue: Double) -> Double {
         let darkness = 1 - backgroundLuminance
-        let grayProgress = smoothStep(edge0: 0.0, edge1: 0.40, value: darkness)
-        let whiteProgress = smoothStep(edge0: 0.42, edge1: 0.56, value: darkness)
-        let grayAdjusted = mix(lightValue, grayValue, grayProgress)
-        return min(max(mix(grayAdjusted, darkValue, whiteProgress), 0), 1)
+        let blackFamilyProgress = smoothStep(edge0: 0.22, edge1: 0.44, value: darkness)
+        let whiteFamilyProgress = smoothStep(edge0: 0.50, edge1: 0.78, value: darkness)
+        let familySwitch = smoothStep(edge0: 0.455, edge1: 0.49, value: darkness)
+        let blackFamily = mix(lightValue, grayValue, blackFamilyProgress)
+        let whiteFamily = mix(max(0, darkValue - 0.14), darkValue, whiteFamilyProgress)
+        return min(max(mix(blackFamily, whiteFamily, familySwitch), 0), 1)
     }
 
     private func smoothStep(edge0: Double, edge1: Double, value: Double) -> Double {
@@ -338,6 +342,7 @@ struct FloatingPanelAppearance: Equatable {
     func textPalettes(
         panelSize: NSSize,
         scale: CGFloat,
+        opacity: Double = 0.88,
         visibility: FloatingPanelContentVisibility
     ) -> FloatingPanelTextPaletteSet {
         let panelRect = CGRect(
@@ -352,16 +357,24 @@ struct FloatingPanelAppearance: Equatable {
             width: panelRect.width,
             height: min(panelRect.height, max(20, 24 * max(scale, 0.1)))
         )
-        let rowPalettes = Dictionary(uniqueKeysWithValues: rowRects(
+        let rows = rowRects(
             panelSize: panelRect.size,
             scale: scale,
             visibility: visibility
-        ).map { group, rect in
-            (group, palette(in: rect, panelSize: panelRect.size))
+        )
+        let rowPalettes = Dictionary(uniqueKeysWithValues: rows.map { group, rect in
+            (group, palette(in: rect, panelSize: panelRect.size, opacity: opacity))
         })
+        let radarRegionPalettes = rows
+            .first { group, _ in group == .radar }
+            .map { _, rect in
+                radarPalettes(in: rect, panelSize: panelRect.size, scale: scale, opacity: opacity)
+            }
         return FloatingPanelTextPaletteSet(
-            controlPalette: palette(in: controlRect, panelSize: panelRect.size),
-            rowPalettes: rowPalettes
+            controlPalette: palette(in: controlRect, panelSize: panelRect.size, opacity: opacity),
+            rowPalettes: rowPalettes,
+            radarActionPalette: radarRegionPalettes?.action,
+            radarModelPalette: radarRegionPalettes?.model
         )
     }
 
@@ -423,23 +436,60 @@ struct FloatingPanelAppearance: Equatable {
         }
     }
 
-    private func palette(in rect: CGRect, panelSize: CGSize) -> FloatingPanelReadableTextPalette {
+    private func palette(in rect: CGRect, panelSize: CGSize, opacity: Double) -> FloatingPanelReadableTextPalette {
         FloatingPanelReadableTextPalette(
-            backgroundSamples: backgroundSamples(in: rect, panelSize: panelSize)
+            backgroundSamples: backgroundSamples(in: rect, panelSize: panelSize, opacity: opacity)
         )
     }
 
-    private func backgroundSamples(in rect: CGRect, panelSize: CGSize) -> [FloatingPanelBackgroundSample] {
+    private func radarPalettes(
+        in rect: CGRect,
+        panelSize: CGSize,
+        scale: CGFloat,
+        opacity: Double
+    ) -> (action: FloatingPanelReadableTextPalette, model: FloatingPanelReadableTextPalette) {
+        let scale = max(scale, 0.1)
+        let spacing = 7 * scale
+        let dividerWidth = 1 * scale
+        let columnWidth = max(1, (rect.width - spacing * 2 - dividerWidth) / 2)
+        let actionRect = CGRect(
+            x: rect.minX,
+            y: rect.minY,
+            width: columnWidth,
+            height: rect.height
+        )
+        let modelRect = CGRect(
+            x: rect.maxX - columnWidth,
+            y: rect.minY,
+            width: columnWidth,
+            height: rect.height
+        )
+        return (
+            action: palette(in: actionRect, panelSize: panelSize, opacity: opacity),
+            model: palette(in: modelRect, panelSize: panelSize, opacity: opacity)
+        )
+    }
+
+    private func backgroundSamples(in rect: CGRect, panelSize: CGSize, opacity: Double) -> [FloatingPanelBackgroundSample] {
         let xFactors: [CGFloat] = [0.18, 0.50, 0.82]
         let yFactors: [CGFloat] = [0.24, 0.50, 0.76]
         return xFactors.flatMap { xFactor in
             yFactors.map { yFactor in
                 let x = min(max((rect.minX + rect.width * xFactor) / max(panelSize.width, 1), 0), 1)
                 let y = min(max((rect.minY + rect.height * yFactor) / max(panelSize.height, 1), 0), 1)
-                let rgb = gradientRGB(at: CGPoint(x: x, y: y))
+                let rgb = visibleBackgroundRGB(at: CGPoint(x: x, y: y), opacity: opacity)
                 return FloatingPanelBackgroundSample(red: rgb.red, green: rgb.green, blue: rgb.blue)
             }
         }
+    }
+
+    private func visibleBackgroundRGB(at normalizedPoint: CGPoint, opacity: Double) -> FloatingPanelRGB {
+        let gradientOpacity = min(0.96, max(0.62, opacity + 0.04))
+        let gradient = gradientRGB(at: normalizedPoint)
+        let glassBase = endRGB.mixed(with: gradient, progress: gradientOpacity)
+        let sheenProgress = min(max((normalizedPoint.x + normalizedPoint.y) / 2, 0), 1)
+        let sheenOpacity = 0.16 + (0.02 - 0.16) * Double(sheenProgress)
+        return glassBase.mixed(with: .white, progress: sheenOpacity)
     }
 
     private func gradientRGB(at normalizedPoint: CGPoint) -> FloatingPanelRGB {
@@ -498,6 +548,7 @@ private struct FloatingPanelRGB {
     let blue: Double
 
     static let fallback = FloatingPanelRGB(red: 0.86, green: 0.93, blue: 1.0)
+    static let white = FloatingPanelRGB(red: 1, green: 1, blue: 1)
 
     init(red: Double, green: Double, blue: Double) {
         self.red = red

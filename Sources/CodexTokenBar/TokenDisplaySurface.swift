@@ -40,6 +40,14 @@ private struct TokenDisplayRowTextPalettesKey: EnvironmentKey {
     static let defaultValue: [FloatingPanelContentGroup: FloatingPanelReadableTextPalette] = [:]
 }
 
+private struct TokenDisplayRadarActionTextPaletteKey: EnvironmentKey {
+    static let defaultValue: FloatingPanelReadableTextPalette? = nil
+}
+
+private struct TokenDisplayRadarModelTextPaletteKey: EnvironmentKey {
+    static let defaultValue: FloatingPanelReadableTextPalette? = nil
+}
+
 extension EnvironmentValues {
     var tokenDisplayScale: CGFloat {
         get { self[TokenDisplayScaleKey.self] }
@@ -54,6 +62,16 @@ extension EnvironmentValues {
     var tokenDisplayRowTextPalettes: [FloatingPanelContentGroup: FloatingPanelReadableTextPalette] {
         get { self[TokenDisplayRowTextPalettesKey.self] }
         set { self[TokenDisplayRowTextPalettesKey.self] = newValue }
+    }
+
+    var tokenDisplayRadarActionTextPalette: FloatingPanelReadableTextPalette? {
+        get { self[TokenDisplayRadarActionTextPaletteKey.self] }
+        set { self[TokenDisplayRadarActionTextPaletteKey.self] = newValue }
+    }
+
+    var tokenDisplayRadarModelTextPalette: FloatingPanelReadableTextPalette? {
+        get { self[TokenDisplayRadarModelTextPaletteKey.self] }
+        set { self[TokenDisplayRadarModelTextPaletteKey.self] = newValue }
     }
 }
 

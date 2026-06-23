@@ -74,7 +74,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertLessThan(hiddenSize.width, FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).width)
     }
 
-    func testFloatingPanelReadableTextPaletteKeepsGrayBandNarrow() {
+    func testFloatingPanelReadableTextPaletteCompressesGrayBandIntoBlackOrWhiteFamilies() {
         let lightAppearance = FloatingPanelAppearance(
             startHex: "#FFFFFF",
             endHex: "#E6F4FF",
@@ -107,13 +107,13 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
 
         XCTAssertLessThan(lightPalette.primaryWhite, 0.18)
         XCTAssertGreaterThan(lightPalette.secondaryWhite, lightPalette.primaryWhite)
-        XCTAssertGreaterThan(grayBandPalette.primaryWhite, 0.42)
-        XCTAssertLessThan(grayBandPalette.primaryWhite, 0.68)
-        XCTAssertGreaterThan(outerBandPalette.primaryWhite, 0.84)
+        XCTAssertLessThan(grayBandPalette.primaryWhite, 0.24)
+        XCTAssertGreaterThan(grayBandPalette.secondaryWhite, grayBandPalette.primaryWhite)
+        XCTAssertGreaterThan(outerBandPalette.primaryWhite, 0.80)
         XCTAssertLessThan(outerBandPalette.secondaryWhite, outerBandPalette.primaryWhite)
         XCTAssertGreaterThan(darkPalette.primaryWhite, 0.82)
         XCTAssertLessThan(darkPalette.secondaryWhite, darkPalette.primaryWhite)
-        XCTAssertGreaterThan(outerBandPalette.primaryWhite - grayBandPalette.primaryWhite, 0.18)
+        XCTAssertGreaterThan(outerBandPalette.primaryWhite - grayBandPalette.primaryWhite, 0.56)
     }
 
     func testFloatingPanelReadableTextPaletteAdaptsFromBackgroundSamples() {
@@ -134,7 +134,49 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertGreaterThan(saturatedPalette.primaryWhite, 0.86)
         XCTAssertGreaterThan(grayBandPalette.primaryWhite, lightPalette.primaryWhite)
         XCTAssertLessThan(grayBandPalette.primaryWhite, saturatedPalette.primaryWhite)
-        XCTAssertLessThan(grayBandPalette.primaryWhite, 0.74)
+        XCTAssertLessThan(grayBandPalette.primaryWhite, 0.24)
+    }
+
+    func testFloatingPanelSamplesVisibleGlassCompositingForPaleRadarArea() throws {
+        let appearance = FloatingPanelAppearance(
+            startHex: "#2459FF",
+            endHex: "#FFFFFF",
+            directionRaw: FloatingPanelGradientDirection.topLeadingToBottomTrailing.rawValue,
+            styleRaw: FloatingPanelGradientStyle.linear.rawValue
+        )
+        let paletteSet = appearance.textPalettes(
+            panelSize: FloatingTokenPanelMetrics.size(scale: 1, visibility: .default),
+            scale: 1,
+            opacity: 0.88,
+            visibility: .default
+        )
+
+        let radarPalette = try XCTUnwrap(paletteSet.rowPalettes[.radar])
+
+        XCTAssertLessThan(radarPalette.primaryWhite, 0.24)
+        XCTAssertLessThan(radarPalette.secondaryWhite, 0.40)
+    }
+
+    func testFloatingPanelSamplesRadarActionAndModelRegionsSeparately() throws {
+        let appearance = FloatingPanelAppearance(
+            startHex: "#FFFFFF",
+            endHex: "#07111F",
+            directionRaw: FloatingPanelGradientDirection.leadingToTrailing.rawValue,
+            styleRaw: FloatingPanelGradientStyle.linear.rawValue
+        )
+        let paletteSet = appearance.textPalettes(
+            panelSize: FloatingTokenPanelMetrics.size(scale: 1, visibility: .default),
+            scale: 1,
+            opacity: 0.88,
+            visibility: .default
+        )
+
+        let actionPalette = try XCTUnwrap(paletteSet.radarActionPalette)
+        let modelPalette = try XCTUnwrap(paletteSet.radarModelPalette)
+
+        XCTAssertLessThan(actionPalette.primaryWhite, 0.24)
+        XCTAssertGreaterThan(modelPalette.primaryWhite, 0.80)
+        XCTAssertGreaterThan(modelPalette.primaryWhite - actionPalette.primaryWhite, 0.56)
     }
 
     func testFloatingPanelSamplesDifferentRowsFromTheActualGradientArea() throws {
@@ -147,6 +189,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let paletteSet = appearance.textPalettes(
             panelSize: FloatingTokenPanelMetrics.size(scale: 1, visibility: .default),
             scale: 1,
+            opacity: 0.88,
             visibility: .default
         )
 

@@ -126,17 +126,21 @@ struct TokenDisplayRadarStrip: View {
     let snapshot: CodexRadarSnapshot?
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
+    @Environment(\.tokenDisplayRadarActionTextPalette) private var actionTextPalette
+    @Environment(\.tokenDisplayRadarModelTextPalette) private var modelTextPalette
 
     var body: some View {
         let latest = snapshot?.modelIQ.latest
+        let actionPalette = actionTextPalette ?? textPalette
+        let modelPalette = modelTextPalette ?? textPalette
         HStack(spacing: 7.scaled(by: displayScale)) {
             VStack(alignment: .leading, spacing: 2.scaled(by: displayScale)) {
                 Text("动作 \(snapshot?.recommendedAction ?? "--")")
                     .font(.system(size: 9.3.scaled(by: displayScale), weight: .bold))
-                    .foregroundStyle(textPalette.primaryColor)
+                    .foregroundStyle(actionPalette.primaryColor)
                 Text("24h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))  48h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))")
                     .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
-                    .foregroundStyle(textPalette.secondaryColor)
+                    .foregroundStyle(actionPalette.secondaryColor)
             }
             .lineLimit(1)
             .minimumScaleFactor(0.74)
@@ -150,17 +154,17 @@ struct TokenDisplayRadarStrip: View {
                 HStack(alignment: .lastTextBaseline, spacing: 3.scaled(by: displayScale)) {
                     Text(latest?.scoreDisplayText ?? "IQ --")
                         .font(.system(size: 11.8.scaled(by: displayScale), weight: .bold, design: .rounded))
-                        .foregroundStyle(textPalette.primaryColor)
+                        .foregroundStyle(modelPalette.primaryColor)
                         .monospacedDigit()
                     Text(latest?.modelDisplayName ?? "模型 --")
                         .font(.system(size: 7.7.scaled(by: displayScale), weight: .semibold))
-                        .foregroundStyle(textPalette.primaryColor)
+                        .foregroundStyle(modelPalette.primaryColor)
                         .lineLimit(1)
                         .minimumScaleFactor(0.66)
                 }
                 Text("\(tokenDisplayRadarIQText(snapshot, effort: "high"))  \(tokenDisplayRadarIQText(snapshot, effort: "xhigh"))")
                     .font(.system(size: 8.1.scaled(by: displayScale), weight: .semibold))
-                    .foregroundStyle(textPalette.secondaryColor)
+                    .foregroundStyle(modelPalette.secondaryColor)
                     .monospacedDigit()
             }
             .lineLimit(1)
