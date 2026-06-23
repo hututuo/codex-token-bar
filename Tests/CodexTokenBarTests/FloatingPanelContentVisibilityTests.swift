@@ -163,6 +163,16 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(componentsSource.contains("latest?.scoreDisplayText"))
         XCTAssertTrue(componentsSource.contains("tokenDisplayRadarIQText(snapshot, effort: \"high\")"))
         XCTAssertTrue(componentsSource.contains("tokenDisplayRadarIQText(snapshot, effort: \"xhigh\")"))
+
+        let radarStrip = try XCTUnwrap(sourceBlock(
+            named: "TokenDisplayRadarStrip",
+            in: componentsSource,
+            endingBefore: "private func tokenDisplayRadarProbabilityText"
+        ))
+        XCTAssertTrue(radarStrip.contains("Text(\"动作 \\(snapshot?.recommendedAction ?? \"--\")\")"))
+        XCTAssertTrue(radarStrip.contains(".foregroundStyle(Color.black.opacity(0.88))"))
+        XCTAssertTrue(radarStrip.contains("Text(latest?.scoreDisplayText ?? \"IQ --\")"))
+        XCTAssertTrue(radarStrip.contains(".foregroundStyle(Color.black.opacity(0.9))"))
     }
 
     func testUsageStatusRendersOnRateBarAndStandaloneTextHasNoBackground() throws {
@@ -188,7 +198,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertFalse(standaloneLine.contains("Capsule()"))
     }
 
-    func testRateBarKeepsTrackPositionWhenUsageStatusIsHiddenAndUsesBrighterText() throws {
+    func testStandaloneUsageStatusIsBlackButRateBarStatusStaysWhite() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -209,7 +219,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(rateBar.contains("let barCenterY = 22.scaled(by: displayScale)"))
         XCTAssertFalse(rateBar.contains("usageStatus == nil ? height / 2"))
         XCTAssertTrue(standaloneLine.contains("size: 13.6.scaled(by: displayScale)"))
-        XCTAssertTrue(standaloneLine.contains("Color.white.opacity(0.88)"))
+        XCTAssertTrue(standaloneLine.contains("Color.black.opacity(0.88)"))
         XCTAssertTrue(rateBar.contains("Color.white.opacity(0.88)"))
     }
 

@@ -108,7 +108,7 @@ struct TokenDisplayUsageStatusLine: View {
     var body: some View {
         Text(text)
             .font(.system(size: 13.6.scaled(by: displayScale), weight: .semibold))
-            .foregroundStyle(Color.white.opacity(0.88))
+            .foregroundStyle(Color.black.opacity(0.88))
             .lineLimit(1)
             .minimumScaleFactor(0.82)
             .truncationMode(.tail)
@@ -130,6 +130,7 @@ struct TokenDisplayRadarStrip: View {
             VStack(alignment: .leading, spacing: 2.scaled(by: displayScale)) {
                 Text("动作 \(snapshot?.recommendedAction ?? "--")")
                     .font(.system(size: 9.3.scaled(by: displayScale), weight: .bold))
+                    .foregroundStyle(Color.black.opacity(0.88))
                 Text("24h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))  48h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))")
                     .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
                     .foregroundStyle(Color.white.opacity(0.78))
@@ -146,9 +147,11 @@ struct TokenDisplayRadarStrip: View {
                 HStack(alignment: .lastTextBaseline, spacing: 3.scaled(by: displayScale)) {
                     Text(latest?.scoreDisplayText ?? "IQ --")
                         .font(.system(size: 11.8.scaled(by: displayScale), weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.black.opacity(0.9))
                         .monospacedDigit()
                     Text(latest?.modelDisplayName ?? "模型 --")
                         .font(.system(size: 7.7.scaled(by: displayScale), weight: .semibold))
+                        .foregroundStyle(Color.black.opacity(0.82))
                         .lineLimit(1)
                         .minimumScaleFactor(0.66)
                 }
