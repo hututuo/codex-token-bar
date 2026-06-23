@@ -14,7 +14,7 @@ enum FloatingPanelContentGroup: String, CaseIterable, Identifiable {
         case .rateAndBar:
             return "速率"
         case .usageStatus:
-            return "余量"
+            return "趣味话"
         case .metrics:
             return "总今次"
         case .quota:
@@ -36,6 +36,15 @@ enum FloatingPanelContentGroup: String, CaseIterable, Identifiable {
             return "chart.bar.fill"
         case .radar:
             return "dot.radiowaves.left.and.right"
+        }
+    }
+
+    var settingsSubtitle: String? {
+        switch self {
+        case .usageStatus:
+            return "与速率相邻会吸附，分开时居中"
+        default:
+            return nil
         }
     }
 }
@@ -75,26 +84,39 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
     }
 
     var layoutGroups: [FloatingPanelContentGroup] {
-        groupOrder.filter { group in
+        let groups = visibleGroups
+        guard embedsUsageStatusInRateRow else { return groups }
+
+        var didAppendAttachedRateRow = false
+        return groups.compactMap { group in
             switch group {
-            case .usageStatus:
-                return showsStandaloneUsageStatus
+            case .rateAndBar, .usageStatus:
+                guard !didAppendAttachedRateRow else { return nil }
+                didAppendAttachedRateRow = true
+                return .rateAndBar
             default:
-                return shows(group)
+                return group
             }
         }
     }
 
     var embedsUsageStatusInRateRow: Bool {
-        showRateAndBar && showUsageStatus
+        guard showRateAndBar,
+              showUsageStatus,
+              let rateIndex = visibleGroups.firstIndex(of: .rateAndBar),
+              let usageIndex = visibleGroups.firstIndex(of: .usageStatus)
+        else { return false }
+
+        return abs(rateIndex - usageIndex) == 1
     }
 
     var showsStandaloneUsageStatus: Bool {
-        !showRateAndBar && showUsageStatus
+        showUsageStatus && !embedsUsageStatusInRateRow
     }
 
     var needsTopControlInset: Bool {
-        !showUsageStatus && !layoutGroups.isEmpty
+        guard let firstGroup = layoutGroups.first else { return false }
+        return firstGroup != .rateAndBar && firstGroup != .usageStatus
     }
 
     func shows(_ group: FloatingPanelContentGroup) -> Bool {

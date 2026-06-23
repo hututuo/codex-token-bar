@@ -212,7 +212,7 @@ struct DashboardView: View {
         .overlayPreferenceValue(FloatingPanelContentSettingsButtonBoundsKey.self) { anchor in
             GeometryReader { proxy in
                 if showingContentSettingsMenu {
-                    let cardFrame = floatingSettingsCardFrame(in: proxy, anchor: anchor, width: 312, estimatedHeight: 258)
+                    let cardFrame = floatingSettingsCardFrame(in: proxy, anchor: anchor, width: 312, estimatedHeight: 272)
 
                     ZStack(alignment: .topLeading) {
                         Color.clear

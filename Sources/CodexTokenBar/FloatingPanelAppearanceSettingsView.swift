@@ -267,10 +267,20 @@ private struct FloatingPanelContentSettingsRow: View {
                 .foregroundStyle(AppTheme.accentBlue)
                 .frame(width: 16)
 
-            Text(group.title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(group.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                if let settingsSubtitle = group.settingsSubtitle {
+                    Text(settingsSubtitle)
+                        .font(.system(size: 8.6, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                }
+            }
 
             Spacer(minLength: 8)
 
@@ -281,7 +291,7 @@ private struct FloatingPanelContentSettingsRow: View {
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 6)
-        .frame(minHeight: 32)
+        .frame(minHeight: group.settingsSubtitle == nil ? 32 : 39)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isDropTarget ? AppTheme.accentBlue.opacity(0.12) : AppTheme.calloutOptionBackground)

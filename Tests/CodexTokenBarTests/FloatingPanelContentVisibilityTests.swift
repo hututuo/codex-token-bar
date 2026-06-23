@@ -41,6 +41,51 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(height, expectedHeight, accuracy: 0.001)
     }
 
+    func testUsageStatusEmbedsOnlyWhenAdjacentToRateRow() {
+        let adjacentAfterRate = FloatingPanelContentVisibility(
+            showRateAndBar: true,
+            showUsageStatus: true,
+            showMetrics: true,
+            showQuota: true,
+            showRadar: true,
+            groupOrder: [.rateAndBar, .usageStatus, .metrics, .quota, .radar]
+        )
+        let adjacentBeforeRate = FloatingPanelContentVisibility(
+            showRateAndBar: true,
+            showUsageStatus: true,
+            showMetrics: true,
+            showQuota: true,
+            showRadar: true,
+            groupOrder: [.usageStatus, .rateAndBar, .metrics, .quota, .radar]
+        )
+        let separatedAfterRate = FloatingPanelContentVisibility(
+            showRateAndBar: true,
+            showUsageStatus: true,
+            showMetrics: true,
+            showQuota: true,
+            showRadar: true,
+            groupOrder: [.rateAndBar, .metrics, .usageStatus, .quota, .radar]
+        )
+        let separatedBeforeRate = FloatingPanelContentVisibility(
+            showRateAndBar: true,
+            showUsageStatus: true,
+            showMetrics: true,
+            showQuota: true,
+            showRadar: true,
+            groupOrder: [.usageStatus, .metrics, .rateAndBar, .quota, .radar]
+        )
+
+        XCTAssertTrue(adjacentAfterRate.embedsUsageStatusInRateRow)
+        XCTAssertTrue(adjacentBeforeRate.embedsUsageStatusInRateRow)
+        XCTAssertEqual(adjacentAfterRate.layoutGroups, [.rateAndBar, .metrics, .quota, .radar])
+        XCTAssertEqual(adjacentBeforeRate.layoutGroups, [.rateAndBar, .metrics, .quota, .radar])
+
+        XCTAssertFalse(separatedAfterRate.embedsUsageStatusInRateRow)
+        XCTAssertFalse(separatedBeforeRate.embedsUsageStatusInRateRow)
+        XCTAssertEqual(separatedAfterRate.layoutGroups, [.rateAndBar, .metrics, .usageStatus, .quota, .radar])
+        XCTAssertEqual(separatedBeforeRate.layoutGroups, [.usageStatus, .metrics, .rateAndBar, .quota, .radar])
+    }
+
     func testUsageStatusUsesStandaloneRowOnlyWhenRateIsHidden() {
         let visibility = FloatingPanelContentVisibility(
             showRateAndBar: false,
@@ -344,7 +389,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertGreaterThan(ratePalette.primaryWhite - radarPalette.primaryWhite, 0.45)
     }
 
-    func testTopSafetyInsetOnlyAppearsWhenUsageStatusIsHidden() {
+    func testTopSafetyInsetOnlyAppearsWhenFirstRenderedGroupNeedsControlClearance() {
         let rateOnlyWithoutUsageStatus = FloatingPanelContentVisibility(
             showRateAndBar: true,
             showUsageStatus: false,
@@ -366,8 +411,15 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             showQuota: false,
             showRadar: true
         )
+        let metricsFirstWithUsageStatusLater = FloatingPanelContentVisibility(
+            showRateAndBar: false,
+            showUsageStatus: true,
+            showMetrics: true,
+            showQuota: false,
+            showRadar: false,
+            groupOrder: [.metrics, .usageStatus, .rateAndBar, .quota, .radar]
+        )
         let rateOnlyHeight = FloatingTokenPanelMetrics.verticalPadding * 2
-            + FloatingTokenPanelMetrics.singleElementTopInset
             + FloatingTokenPanelMetrics.rateRowHeight
         let statusOnlyHeight = max(
             FloatingTokenPanelMetrics.minimumControlSize.height,
@@ -380,9 +432,10 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: rateOnlyWithoutUsageStatus).height, rateOnlyHeight, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: statusOnlyWithUsageStatus).height, statusOnlyHeight, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: radarOnlyWithoutUsageStatus).height, radarOnlyHeight, accuracy: 0.001)
-        XCTAssertTrue(rateOnlyWithoutUsageStatus.needsTopControlInset)
+        XCTAssertFalse(rateOnlyWithoutUsageStatus.needsTopControlInset)
         XCTAssertFalse(statusOnlyWithUsageStatus.needsTopControlInset)
         XCTAssertTrue(radarOnlyWithoutUsageStatus.needsTopControlInset)
+        XCTAssertTrue(metricsFirstWithUsageStatusLater.needsTopControlInset)
     }
 
     func testFloatingPanelSettingsExposeFiveContentToggles() throws {
@@ -391,9 +444,11 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let settingsView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelAppearanceSettingsView.swift")
+        let visibilityModel = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelContentVisibility.swift")
         let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
         let liveRateView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateView.swift")
         let settingsSource = try String(contentsOf: settingsView, encoding: .utf8)
+        let visibilitySource = try String(contentsOf: visibilityModel, encoding: .utf8)
         let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
         let liveRateSource = try String(contentsOf: liveRateView, encoding: .utf8)
         let liveRateControls = try XCTUnwrap(sourceBlock(
@@ -415,6 +470,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(settingsSource.contains("Image(systemName: \"line.3.horizontal\")"))
         XCTAssertTrue(settingsSource.contains("struct FloatingPanelContentDragHandle"))
         XCTAssertTrue(settingsSource.contains("struct FloatingPanelContentDropDelegate"))
+        XCTAssertTrue(settingsSource.contains("settingsSubtitle"))
+        XCTAssertTrue(visibilitySource.contains("与速率相邻会吸附"))
         XCTAssertTrue(settingsSource.contains(".onDrag {"))
         XCTAssertTrue(settingsSource.contains(".onDrop(of:"))
         XCTAssertFalse(settingsSource.contains(".draggable(group.rawValue)"))
