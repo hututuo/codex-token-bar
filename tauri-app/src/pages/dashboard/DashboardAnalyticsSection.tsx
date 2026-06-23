@@ -1,26 +1,22 @@
 import { CacheHitRanking } from "../../components/CacheHitRanking";
-import { ProviderRepairCard } from "../../components/ProviderRepairCard";
 import { RecentUsageChart } from "../../components/RecentUsageChart";
 import { TokenActivitySection } from "../../components/TokenActivitySection";
-import type { DashboardSnapshot, ProviderRepairSnapshot } from "../../types/dashboard";
+import type { DashboardSnapshot } from "../../types/dashboard";
 
 interface DashboardAnalyticsSectionProps {
   dashboard: DashboardSnapshot;
-  onProviderRepairChange: (snapshot: ProviderRepairSnapshot) => void;
-  providerRepair: ProviderRepairSnapshot;
 }
 
-export function DashboardAnalyticsSection({
-  dashboard,
-  onProviderRepairChange,
-  providerRepair,
-}: DashboardAnalyticsSectionProps) {
+export function DashboardAnalyticsSection({ dashboard }: DashboardAnalyticsSectionProps) {
   return (
     <>
       <TokenActivitySection days={dashboard.activityDays} />
-      <RecentUsageChart points={dashboard.recentUsage24h} />
+      <RecentUsageChart
+        recentUsage24h={dashboard.recentUsage24h}
+        recentUsage7d={dashboard.recentUsage7d}
+        recentUsage30d={dashboard.recentUsage30d}
+      />
       <CacheHitRanking items={dashboard.cacheHitRanking} />
-      <ProviderRepairCard id="provider-repair" onSnapshotChange={onProviderRepairChange} snapshot={providerRepair} />
     </>
   );
 }

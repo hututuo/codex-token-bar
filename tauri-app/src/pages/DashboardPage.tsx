@@ -9,7 +9,6 @@ import type {
   LiveRateSnapshot,
   LiveThreadOption,
   PlatformCapabilities,
-  ProviderRepairSnapshot,
 } from "../types/dashboard";
 import { DashboardAnalyticsSection } from "./dashboard/DashboardAnalyticsSection";
 import { DashboardSummarySection } from "./dashboard/DashboardSummarySection";
@@ -29,13 +28,12 @@ interface DashboardPageProps {
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
+  onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
   onLiveThreadSelect: (threadId: string) => void;
   onRefresh: () => Promise<void>;
   onToggleAutostart: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
-  onProviderRepairChange: (snapshot: ProviderRepairSnapshot) => void;
-  providerRepair: ProviderRepairSnapshot;
   refreshing: boolean;
   selectedLiveThreadId: string;
 }
@@ -54,17 +52,16 @@ export function DashboardPage({
   onFloatingOpacityChange,
   onFloatingScaleChange,
   onFloatingUnreadEffectChange,
+  onFloatingGradientChange,
   onLiveThreadSelect,
   onRefresh,
-  onProviderRepairChange,
   onToggleAutostart,
   onToggleFloating,
   onToggleStatusTray,
-  providerRepair,
   refreshing,
   selectedLiveThreadId,
 }: DashboardPageProps) {
-  const { analyticsReady, openProviderRepair, summaryReady } = useDashboardPageLifecycle();
+  const { analyticsReady, summaryReady } = useDashboardPageLifecycle();
 
   return (
     <main className="app-shell">
@@ -76,7 +73,6 @@ export function DashboardPage({
           generatedAt={dashboard.generatedAt}
           onCodexHomeChange={onCodexHomeChange}
           onCodexHomeReset={onCodexHomeReset}
-          onOpenProviderRepair={openProviderRepair}
           onRefresh={onRefresh}
           onToggleAutostart={onToggleAutostart}
           refreshing={refreshing}
@@ -90,9 +86,10 @@ export function DashboardPage({
               floatingSettings={floatingSettings}
               liveRate={liveRate}
               liveThreadOptions={liveThreadOptions}
-              onFloatingOpacityChange={onFloatingOpacityChange}
-              onFloatingScaleChange={onFloatingScaleChange}
-              onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
+          onFloatingOpacityChange={onFloatingOpacityChange}
+          onFloatingScaleChange={onFloatingScaleChange}
+          onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
+          onFloatingGradientChange={onFloatingGradientChange}
               onLiveThreadSelect={onLiveThreadSelect}
               onToggleFloating={onToggleFloating}
               onToggleStatusTray={onToggleStatusTray}
@@ -100,11 +97,7 @@ export function DashboardPage({
               selectedLiveThreadId={selectedLiveThreadId}
             />
             {analyticsReady ? (
-              <DashboardAnalyticsSection
-                dashboard={dashboard}
-                onProviderRepairChange={onProviderRepairChange}
-                providerRepair={providerRepair}
-              />
+              <DashboardAnalyticsSection dashboard={dashboard} />
             ) : (
               <section className="analytics-boot" aria-label="图表区域正在准备">
                 <span>正在准备图表和排行...</span>

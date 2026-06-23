@@ -13,7 +13,6 @@ interface SetupGuideProps {
   autostartStatus: AutostartStatus;
   codexHome: CodexHomeStatus;
   displaySurfaces: DisplaySurfaceSettings;
-  floatingVisible: boolean;
   platform: PlatformCapabilities;
   statusTrayLiveTextEnabled: boolean;
   onCodexHomeChange: (path: string) => Promise<void>;
@@ -28,7 +27,6 @@ export function SetupGuide({
   autostartStatus,
   codexHome,
   displaySurfaces,
-  floatingVisible,
   platform,
   statusTrayLiveTextEnabled,
   onCodexHomeChange,
@@ -40,6 +38,8 @@ export function SetupGuide({
 }: SetupGuideProps) {
   const [closing, setClosing] = useState(false);
   const [completionError, setCompletionError] = useState<string | null>(null);
+  const statusTrayLiveTextAvailable =
+    platform.statusTray.available && platform.statusTrayLiveText.available;
 
   async function completeGuide() {
     setClosing(true);
@@ -74,7 +74,7 @@ export function SetupGuide({
           <SetupStep index="2" title="显示面" status="可同时开启">
             <div className="setup-toggle-row">
               <SetupToggle
-                active={floatingVisible}
+                active={displaySurfaces.floatingWindowEnabled}
                 disabled={!platform.floatingWindow.available}
                 label="悬浮窗"
                 note={platform.floatingWindow.note}
@@ -83,11 +83,23 @@ export function SetupGuide({
               />
               <SetupToggle
                 active={statusTrayLiveTextEnabled}
-                disabled={!platform.statusTray.available}
-                label="状态栏数字"
-                note={platform.statusTray.note}
+                disabled={!statusTrayLiveTextAvailable}
+                label={statusTrayLiveTextAvailable ? "状态栏数字" : "托盘图标"}
+                note={
+                  statusTrayLiveTextAvailable
+                    ? platform.statusTrayLiveText.note
+                    : platform.statusTray.note
+                }
                 onClick={onToggleStatusTray}
-                valueLabel={displaySurfaces.statusTrayLiveTextEnabled ? "开" : "关"}
+                valueLabel={
+                  statusTrayLiveTextAvailable
+                    ? displaySurfaces.statusTrayLiveTextEnabled
+                      ? "开"
+                      : "关"
+                    : platform.statusTray.available
+                      ? "已启用"
+                      : "待接入"
+                }
               />
             </div>
           </SetupStep>

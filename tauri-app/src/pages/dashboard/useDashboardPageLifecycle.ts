@@ -31,16 +31,8 @@ export function useDashboardPageLifecycle() {
 
   return {
     analyticsReady,
-    openProviderRepair,
     summaryReady,
   };
-}
-
-function openProviderRepair() {
-  document.getElementById("provider-repair")?.scrollIntoView({
-    behavior: "smooth",
-    block: "start",
-  });
 }
 
 function scheduleAfterFirstPaint(callback: () => void) {

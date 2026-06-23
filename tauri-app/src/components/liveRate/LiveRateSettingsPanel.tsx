@@ -11,6 +11,7 @@ const UNREAD_EFFECT_OPTIONS: Array<{ value: FloatingUnreadEffect; label: string 
 interface LiveRateSettingsPanelProps {
   floatingSettings: FloatingWindowSettings;
   floatingEnabled: boolean;
+  onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
@@ -23,6 +24,7 @@ interface LiveRateSettingsPanelProps {
 export function LiveRateSettingsPanel({
   floatingEnabled,
   floatingSettings,
+  onFloatingGradientChange,
   onFloatingOpacityChange,
   onFloatingScaleChange,
   onFloatingUnreadEffectChange,
@@ -39,10 +41,13 @@ export function LiveRateSettingsPanel({
   const floatingButtonLabel = floatingAvailable
     ? `显示：${floatingEnabled ? "悬浮窗" : "关闭"}`
     : "悬浮窗待接入";
-  const statusTrayAvailable = platform.statusTray.available;
-  const statusTrayButtonLabel = statusTrayAvailable
+  const statusTrayLiveTextAvailable =
+    platform.statusTray.available && platform.statusTrayLiveText.available;
+  const statusTrayButtonLabel = statusTrayLiveTextAvailable
     ? `状态栏数字：${statusTrayLiveTextEnabled ? "开" : "关"}`
-    : "状态栏待接入";
+    : platform.statusTray.available
+      ? "托盘图标已启用"
+      : "状态栏待接入";
 
   return (
     <div className="settings-panel">
@@ -60,9 +65,13 @@ export function LiveRateSettingsPanel({
           </button>
           <button
             className="live-toggle-button"
-            disabled={!statusTrayAvailable}
+            disabled={!statusTrayLiveTextAvailable}
             onClick={onToggleStatusTray}
-            title={platform.statusTrayLiveText.note}
+            title={
+              statusTrayLiveTextAvailable
+                ? platform.statusTrayLiveText.note
+                : platform.statusTray.note
+            }
             type="button"
           >
             {statusTrayButtonLabel}
@@ -107,6 +116,39 @@ export function LiveRateSettingsPanel({
             </button>
           ))}
         </div>
+      </div>
+      <div className="floating-palette" aria-label="悬浮窗渐变调色盘">
+        <span>调色盘</span>
+        <input
+          aria-label="渐变起始颜色"
+          onChange={(event) => onFloatingGradientChange({ gradientStart: event.currentTarget.value })}
+          type="color"
+          value={floatingSettings.gradientStart}
+        />
+        <input
+          aria-label="渐变结束颜色"
+          onChange={(event) => onFloatingGradientChange({ gradientEnd: event.currentTarget.value })}
+          type="color"
+          value={floatingSettings.gradientEnd}
+        />
+        <select
+          aria-label="渐变方向"
+          onChange={(event) => onFloatingGradientChange({ gradientDirection: event.currentTarget.value as FloatingWindowSettings["gradientDirection"] })}
+          value={floatingSettings.gradientDirection}
+        >
+          <option value="135deg">斜向</option>
+          <option value="90deg">横向</option>
+          <option value="180deg">纵向</option>
+          <option value="45deg">反斜</option>
+        </select>
+        <select
+          aria-label="渐变类型"
+          onChange={(event) => onFloatingGradientChange({ gradientType: event.currentTarget.value as FloatingWindowSettings["gradientType"] })}
+          value={floatingSettings.gradientType}
+        >
+          <option value="linear">线性</option>
+          <option value="radial">柔光</option>
+        </select>
       </div>
     </div>
   );

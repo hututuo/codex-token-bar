@@ -15,6 +15,7 @@ interface LiveRateCardProps {
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
+  onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
   onLiveThreadSelect: (threadId: string) => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
@@ -31,6 +32,7 @@ export function LiveRateCard({
   onFloatingOpacityChange,
   onFloatingScaleChange,
   onFloatingUnreadEffectChange,
+  onFloatingGradientChange,
   onLiveThreadSelect,
   onToggleFloating,
   onToggleStatusTray,
@@ -66,6 +68,7 @@ export function LiveRateCard({
           onFloatingOpacityChange={onFloatingOpacityChange}
           onFloatingScaleChange={onFloatingScaleChange}
           onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
+          onFloatingGradientChange={onFloatingGradientChange}
           onToggleFloating={onToggleFloating}
           onToggleStatusTray={onToggleStatusTray}
           platform={platform}

@@ -4,9 +4,9 @@ import type { MonthMarker } from "./types";
 export function buildCalendarDays(days: ActivityDay[]): ActivityDay[] {
   const byDate = new Map(days.map((day) => [day.date, day]));
   const end = latestActivityDate(days) ?? new Date();
-  const start = addDays(end, -370);
+  const start = addDays(end, -364);
 
-  return Array.from({ length: 371 }, (_, index) => {
+  return Array.from({ length: 365 }, (_, index) => {
     const date = formatDateKey(addDays(start, index));
     return byDate.get(date) ?? emptyActivityDay(date);
   });

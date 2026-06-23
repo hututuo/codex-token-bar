@@ -9,7 +9,6 @@ interface DashboardHeaderProps {
   generatedAt: string;
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
-  onOpenProviderRepair: () => void;
   onRefresh: () => Promise<void>;
   onToggleAutostart: () => void;
   refreshing: boolean;
@@ -22,7 +21,6 @@ export function DashboardHeader({
   generatedAt,
   onCodexHomeChange,
   onCodexHomeReset,
-  onOpenProviderRepair,
   onRefresh,
   onToggleAutostart,
   refreshing,
@@ -55,9 +53,6 @@ export function DashboardHeader({
         </button>
         <button className="toolbar-button" onClick={() => setEditingPath((value) => !value)} type="button">
           {editingPath ? "收起目录" : "更改目录"}
-        </button>
-        <button className="toolbar-button" onClick={onOpenProviderRepair} type="button">
-          会话消失修复
         </button>
         <button
           className={autostartStatus.enabled ? "toolbar-button is-active" : "toolbar-button"}

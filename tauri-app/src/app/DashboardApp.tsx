@@ -17,7 +17,6 @@ export function DashboardApp() {
     reloadAll,
     updateCodexHome,
     restoreAutoCodexHome,
-    updateProviderRepair,
     selectedLiveThreadId,
     setSelectedLiveThreadId,
   } = useDashboardData();
@@ -38,17 +37,16 @@ export function DashboardApp() {
         liveThreadOptions={readyState.liveThreadOptions}
         platform={readyState.platform}
         onRefresh={reloadAll}
-        onFloatingOpacityChange={shellSettings.updateFloatingOpacity}
-        onFloatingScaleChange={shellSettings.updateFloatingScale}
-        onFloatingUnreadEffectChange={shellSettings.updateFloatingUnreadEffect}
+          onFloatingOpacityChange={shellSettings.updateFloatingOpacity}
+          onFloatingScaleChange={shellSettings.updateFloatingScale}
+          onFloatingUnreadEffectChange={shellSettings.updateFloatingUnreadEffect}
+          onFloatingGradientChange={shellSettings.updateFloatingGradient}
         onLiveThreadSelect={setSelectedLiveThreadId}
         onToggleFloating={shellSettings.toggleFloatingWindow}
         onToggleStatusTray={shellSettings.toggleStatusTrayLiveText}
         onCodexHomeChange={updateCodexHome}
         onCodexHomeReset={restoreAutoCodexHome}
         onToggleAutostart={shellSettings.toggleAutostart}
-        providerRepair={readyState.repair}
-        onProviderRepairChange={updateProviderRepair}
         refreshing={state.loading}
         selectedLiveThreadId={selectedLiveThreadId}
       />
@@ -57,7 +55,6 @@ export function DashboardApp() {
           codexHome={readyState.codexHome}
           autostartStatus={shellSettings.autostartStatus}
           displaySurfaces={shellSettings.displaySurfaces}
-          floatingVisible={shellSettings.floatingVisible}
           platform={readyState.platform}
           statusTrayLiveTextEnabled={shellSettings.displaySurfaces.statusTrayLiveTextEnabled}
           onCodexHomeChange={updateCodexHome}

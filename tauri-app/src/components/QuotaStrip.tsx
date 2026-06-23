@@ -33,8 +33,16 @@ function ResetCreditItem({ credit }: { credit: ResetCreditDetail }) {
           <dd>{credit.issuedAt}</dd>
         </div>
         <div>
+          <dt>类型</dt>
+          <dd>{credit.resetType}</dd>
+        </div>
+        <div>
           <dt>到期</dt>
           <dd>{credit.expiresAt}</dd>
+        </div>
+        <div>
+          <dt>兑换开始</dt>
+          <dd>{credit.redeemStartedAt}</dd>
         </div>
         <div>
           <dt>使用</dt>
@@ -45,8 +53,16 @@ function ResetCreditItem({ credit }: { credit: ResetCreditDetail }) {
           <dd>{credit.source}</dd>
         </div>
         <div>
+          <dt>说明</dt>
+          <dd>{credit.detailNote}</dd>
+        </div>
+        <div>
           <dt>关联用户</dt>
           <dd>{credit.associatedUser}</dd>
+        </div>
+        <div>
+          <dt>头像</dt>
+          <dd>{credit.profileImageUrl}</dd>
         </div>
         <div>
           <dt>短 ID</dt>

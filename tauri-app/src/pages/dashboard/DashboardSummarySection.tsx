@@ -20,6 +20,7 @@ interface DashboardSummarySectionProps {
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
+  onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
   onLiveThreadSelect: (threadId: string) => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
@@ -36,6 +37,7 @@ export function DashboardSummarySection({
   onFloatingOpacityChange,
   onFloatingScaleChange,
   onFloatingUnreadEffectChange,
+  onFloatingGradientChange,
   onLiveThreadSelect,
   onToggleFloating,
   onToggleStatusTray,
@@ -50,9 +52,10 @@ export function DashboardSummarySection({
         floatingEnabled={displaySurfaces.floatingWindowEnabled}
         floatingSettings={floatingSettings}
         statusTrayLiveTextEnabled={displaySurfaces.statusTrayLiveTextEnabled}
-        onFloatingOpacityChange={onFloatingOpacityChange}
-        onFloatingScaleChange={onFloatingScaleChange}
-        onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
+      onFloatingOpacityChange={onFloatingOpacityChange}
+      onFloatingScaleChange={onFloatingScaleChange}
+      onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
+      onFloatingGradientChange={onFloatingGradientChange}
         onLiveThreadSelect={onLiveThreadSelect}
         onToggleFloating={onToggleFloating}
         onToggleStatusTray={onToggleStatusTray}
