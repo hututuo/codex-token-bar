@@ -32,6 +32,7 @@ struct DashboardView: View {
     @AppStorage(FloatingPanelContentVisibility.metricsKey) private var floatingPanelShowMetrics = FloatingPanelContentVisibility.default.showMetrics
     @AppStorage(FloatingPanelContentVisibility.quotaKey) private var floatingPanelShowQuota = FloatingPanelContentVisibility.default.showQuota
     @AppStorage(FloatingPanelContentVisibility.radarKey) private var floatingPanelShowRadar = FloatingPanelContentVisibility.default.showRadar
+    @AppStorage(FloatingPanelContentVisibility.orderKey) private var floatingPanelContentOrderRaw = FloatingPanelContentVisibility.defaultOrderRaw
     @AppStorage("setupGuideCompletedV01") private var setupGuideCompleted = false
     @State private var showingProviderSync = false
     @State private var showingSetupGuide = false
@@ -40,6 +41,7 @@ struct DashboardView: View {
     @State private var showingInterfaceScaleMenu = false
     @State private var showingPaletteMenu = false
     @State private var showingUnreadEffectMenu = false
+    @State private var showingContentSettingsMenu = false
 
     init(
         loginItemStore: LoginItemStore,
@@ -207,12 +209,36 @@ struct DashboardView: View {
                 }
             }
         }
+        .overlayPreferenceValue(FloatingPanelContentSettingsButtonBoundsKey.self) { anchor in
+            GeometryReader { proxy in
+                if showingContentSettingsMenu {
+                    let cardFrame = floatingSettingsCardFrame(in: proxy, anchor: anchor, width: 312, estimatedHeight: 258)
+
+                    ZStack(alignment: .topLeading) {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                showingContentSettingsMenu = false
+                            }
+
+                        FloatingPanelContentSettingsMenu(
+                            closeAction: { showingContentSettingsMenu = false }
+                        )
+                        .frame(width: cardFrame.width)
+                        .offset(x: cardFrame.minX, y: cardFrame.minY)
+                    }
+                    .zIndex(10)
+                    .transition(.identity)
+                }
+            }
+        }
         .animation(.easeInOut(duration: 0.18), value: store.isInitialLoading)
         .onExitCommand {
             showingResetCreditDetails = false
             showingCodexRadarDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
+            showingContentSettingsMenu = false
             showingInterfaceScaleMenu = false
         }
         .onAppear {
@@ -264,16 +290,27 @@ struct DashboardView: View {
             guard showingInterfaceScaleMenu else { return }
             closePaletteMenu()
             showingUnreadEffectMenu = false
+            showingContentSettingsMenu = false
             showingResetCreditDetails = false
             showingCodexRadarDetails = false
         }
         .onChange(of: showingPaletteMenu) {
             guard showingPaletteMenu else { return }
             showingInterfaceScaleMenu = false
+            showingContentSettingsMenu = false
         }
         .onChange(of: showingUnreadEffectMenu) {
             guard showingUnreadEffectMenu else { return }
             showingInterfaceScaleMenu = false
+            showingContentSettingsMenu = false
+        }
+        .onChange(of: showingContentSettingsMenu) {
+            guard showingContentSettingsMenu else { return }
+            closePaletteMenu()
+            showingUnreadEffectMenu = false
+            showingInterfaceScaleMenu = false
+            showingResetCreditDetails = false
+            showingCodexRadarDetails = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didHideNotification)) { _ in
             updateUsageRefreshCadence()
@@ -289,12 +326,14 @@ struct DashboardView: View {
             showingCodexRadarDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
+            showingContentSettingsMenu = false
             showingInterfaceScaleMenu = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             showingCodexRadarDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
+            showingContentSettingsMenu = false
             showingInterfaceScaleMenu = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMiniaturizeNotification)) { _ in
@@ -395,7 +434,8 @@ struct DashboardView: View {
                 floatingPanelGradientStyle: $floatingPanelGradientStyle,
                 floatingPanelUnreadEffect: $floatingPanelUnreadEffect,
                 showingPaletteMenu: $showingPaletteMenu,
-                showingUnreadEffectMenu: $showingUnreadEffectMenu
+                showingUnreadEffectMenu: $showingUnreadEffectMenu,
+                showingContentSettingsMenu: $showingContentSettingsMenu
             )
 
             ActivitySection(
@@ -461,7 +501,8 @@ struct DashboardView: View {
             showUsageStatus: floatingPanelShowUsageStatus,
             showMetrics: floatingPanelShowMetrics,
             showQuota: floatingPanelShowQuota,
-            showRadar: floatingPanelShowRadar
+            showRadar: floatingPanelShowRadar,
+            groupOrder: FloatingPanelContentVisibility.order(from: floatingPanelContentOrderRaw)
         )
     }
 

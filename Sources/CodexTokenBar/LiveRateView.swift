@@ -21,6 +21,7 @@ struct LiveRateView: View {
     @Binding var floatingPanelUnreadEffect: String
     @Binding var showingPaletteMenu: Bool
     @Binding var showingUnreadEffectMenu: Bool
+    @Binding var showingContentSettingsMenu: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -45,7 +46,8 @@ struct LiveRateView: View {
                         floatingPanelGradientStyle: $floatingPanelGradientStyle,
                         floatingPanelUnreadEffect: $floatingPanelUnreadEffect,
                         showingPaletteMenu: $showingPaletteMenu,
-                        showingUnreadEffectMenu: $showingUnreadEffectMenu
+                        showingUnreadEffectMenu: $showingUnreadEffectMenu,
+                        showingContentSettingsMenu: $showingContentSettingsMenu
                     )
                     .frame(width: columnWidth, height: LiveRatePanelLayout.contentHeight)
                 }
@@ -214,6 +216,7 @@ struct LiveRateControls: View {
     @Binding var floatingPanelUnreadEffect: String
     @Binding var showingPaletteMenu: Bool
     @Binding var showingUnreadEffectMenu: Bool
+    @Binding var showingContentSettingsMenu: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -236,6 +239,15 @@ struct LiveRateControls: View {
                     title: "精确 token 统计",
                     systemImage: "number",
                     isOn: $preciseTokenCountingEnabled
+                )
+                .frame(maxWidth: .infinity, minHeight: 24)
+
+                FloatingPanelContentSettingsButton(
+                    isPresented: $showingContentSettingsMenu,
+                    willOpen: {
+                        showingPaletteMenu = false
+                        showingUnreadEffectMenu = false
+                    }
                 )
                 .frame(maxWidth: .infinity, minHeight: 24)
             }

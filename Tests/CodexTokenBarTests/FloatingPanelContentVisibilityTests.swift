@@ -57,6 +57,37 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
     }
 
+    func testFloatingPanelLayoutGroupsFollowStoredOrder() {
+        let decoded = FloatingPanelContentVisibility.order(from: "radar,metrics,rateAndBar,unknown,radar")
+        XCTAssertEqual(decoded, [.radar, .metrics, .rateAndBar, .usageStatus, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.encodedOrder(decoded), "radar,metrics,rateAndBar,usageStatus,quota")
+
+        let visibility = FloatingPanelContentVisibility(
+            showRateAndBar: true,
+            showUsageStatus: true,
+            showMetrics: true,
+            showQuota: true,
+            showRadar: true,
+            groupOrder: [.radar, .metrics, .rateAndBar, .usageStatus, .quota]
+        )
+
+        XCTAssertEqual(visibility.visibleGroups, [.radar, .metrics, .rateAndBar, .usageStatus, .quota])
+        XCTAssertEqual(visibility.layoutGroups, [.radar, .metrics, .rateAndBar, .quota])
+    }
+
+    func testFloatingPanelContentOrderKeepsStandaloneUsageStatusInOrder() {
+        let visibility = FloatingPanelContentVisibility(
+            showRateAndBar: false,
+            showUsageStatus: true,
+            showMetrics: true,
+            showQuota: false,
+            showRadar: false,
+            groupOrder: [.metrics, .usageStatus, .rateAndBar, .quota, .radar]
+        )
+
+        XCTAssertEqual(visibility.layoutGroups, [.metrics, .usageStatus])
+    }
+
     func testAdaptiveSizeKeepsControlsReachableWhenAllGroupsAreHidden() {
         let hiddenSize = FloatingTokenPanelMetrics.size(
             scale: 1,
@@ -317,17 +348,36 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             .deletingLastPathComponent()
         let settingsView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelAppearanceSettingsView.swift")
         let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
+        let liveRateView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateView.swift")
         let settingsSource = try String(contentsOf: settingsView, encoding: .utf8)
         let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
+        let liveRateSource = try String(contentsOf: liveRateView, encoding: .utf8)
+        let liveRateControls = try XCTUnwrap(sourceBlock(
+            named: "LiveRateControls",
+            in: liveRateSource,
+            endingBefore: "private struct LiveRateResetButton"
+        ))
 
-        XCTAssertTrue(settingsSource.contains("FloatingPanelContentSettings("))
+        XCTAssertFalse(settingsSource.contains("FloatingPanelContentSettings()"))
+        XCTAssertTrue(settingsSource.contains("struct FloatingPanelContentSettingsButton"))
+        XCTAssertTrue(settingsSource.contains("struct FloatingPanelContentSettingsMenu"))
+        XCTAssertTrue(settingsSource.contains("FloatingPanelContentSettingsButtonBoundsKey"))
+        XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.orderKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.rateAndBarKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.usageStatusKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.metricsKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.quotaKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.radarKey)"))
+        XCTAssertTrue(settingsSource.contains("Image(systemName: \"line.3.horizontal\")"))
+        XCTAssertTrue(settingsSource.contains(".draggable(group.rawValue)"))
+        XCTAssertTrue(settingsSource.contains(".dropDestination(for: String.self)"))
         XCTAssertTrue(dashboardSource.contains("@AppStorage(FloatingPanelContentVisibility.rateAndBarKey)"))
+        XCTAssertTrue(dashboardSource.contains("@AppStorage(FloatingPanelContentVisibility.orderKey)"))
+        XCTAssertTrue(dashboardSource.contains(".overlayPreferenceValue(FloatingPanelContentSettingsButtonBoundsKey.self)"))
+        XCTAssertTrue(dashboardSource.contains("FloatingPanelContentSettingsMenu("))
         XCTAssertTrue(dashboardSource.contains("visibility: floatingPanelContentVisibility"))
+        XCTAssertTrue(liveRateControls.contains("DisplaySurfaceToggleButton(\n                    title: \"精确 token 统计\""))
+        XCTAssertTrue(liveRateControls.contains("FloatingPanelContentSettingsButton("))
     }
 
     func testFloatingPanelSettingsExposeTextWhiteSlider() throws {

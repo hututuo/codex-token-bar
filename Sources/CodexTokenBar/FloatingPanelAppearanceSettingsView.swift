@@ -17,6 +17,14 @@ struct FloatingPanelPaletteButtonBoundsKey: PreferenceKey {
     }
 }
 
+struct FloatingPanelContentSettingsButtonBoundsKey: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
 struct FloatingPanelAppearanceSettings: View {
     @Binding var floatingPanelOpacity: Double
     @Binding var floatingPanelScale: Double
@@ -30,77 +38,71 @@ struct FloatingPanelAppearanceSettings: View {
     @AppStorage(FloatingPanelAppearance.textWhiteOverrideKey) private var floatingPanelTextWhiteOverride = FloatingPanelAppearance.defaultTextWhiteOverride
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .center, spacing: 9) {
-                VStack(spacing: 4) {
-                    FloatingPanelPaletteControl(
-                        startHex: $startHex,
-                        endHex: $endHex,
-                        directionRaw: $directionRaw,
-                        styleRaw: $styleRaw,
-                        isPresented: $isPaletteMenuPresented,
-                        willOpen: {
-                            isUnreadEffectMenuPresented = false
-                        }
-                    )
+        HStack(alignment: .center, spacing: 9) {
+            VStack(spacing: 4) {
+                FloatingPanelPaletteControl(
+                    startHex: $startHex,
+                    endHex: $endHex,
+                    directionRaw: $directionRaw,
+                    styleRaw: $styleRaw,
+                    isPresented: $isPaletteMenuPresented,
+                    willOpen: {
+                        isUnreadEffectMenuPresented = false
+                    }
+                )
+                .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
+
+                FloatingUnreadEffectPicker(
+                    selection: normalizedUnreadEffectBinding,
+                    isPresented: $isUnreadEffectMenuPresented,
+                    willOpen: {
+                        isPaletteMenuPresented = false
+                    }
+                )
                     .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
-
-                    FloatingUnreadEffectPicker(
-                        selection: normalizedUnreadEffectBinding,
-                        isPresented: $isUnreadEffectMenuPresented,
-                        willOpen: {
-                            isPaletteMenuPresented = false
-                        }
-                    )
-                        .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
-                }
-                .frame(width: 76, alignment: .leading)
-                .zIndex(2)
-
-                VStack(spacing: 0) {
-                    CompactFloatingSlider(
-                        title: "透明度",
-                        systemImage: "circle.lefthalf.filled",
-                        value: $floatingPanelOpacity,
-                        range: 0.45...0.98,
-                        displayValue: "\(Int((floatingPanelOpacity * 100).rounded()))%",
-                        showsBackground: false
-                    )
-
-                    AppearanceSliderDivider()
-
-                    CompactFloatingSlider(
-                        title: "大小",
-                        systemImage: "arrow.up.left.and.arrow.down.right",
-                        value: $floatingPanelScale,
-                        range: FloatingTokenPanelMetrics.scaleRange,
-                        displayValue: "\(Int((floatingPanelScale * 100).rounded()))%",
-                        showsBackground: false
-                    )
-
-                    AppearanceSliderDivider()
-
-                    CompactFloatingSlider(
-                        title: "字体",
-                        systemImage: "textformat",
-                        value: $floatingPanelTextWhiteOverride,
-                        range: -1...1,
-                        displayValue: FloatingPanelTextTonePreference.displayText(for: floatingPanelTextWhiteOverride),
-                        showsBackground: false
-                    )
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 2)
-                .zIndex(1)
             }
-            .frame(height: 78)
+            .frame(width: 76, alignment: .leading)
+            .zIndex(2)
 
-            FloatingPanelContentSettings()
-                .frame(height: 24)
+            VStack(spacing: 0) {
+                CompactFloatingSlider(
+                    title: "透明度",
+                    systemImage: "circle.lefthalf.filled",
+                    value: $floatingPanelOpacity,
+                    range: 0.45...0.98,
+                    displayValue: "\(Int((floatingPanelOpacity * 100).rounded()))%",
+                    showsBackground: false
+                )
+
+                AppearanceSliderDivider()
+
+                CompactFloatingSlider(
+                    title: "大小",
+                    systemImage: "arrow.up.left.and.arrow.down.right",
+                    value: $floatingPanelScale,
+                    range: FloatingTokenPanelMetrics.scaleRange,
+                    displayValue: "\(Int((floatingPanelScale * 100).rounded()))%",
+                    showsBackground: false
+                )
+
+                AppearanceSliderDivider()
+
+                CompactFloatingSlider(
+                    title: "字体",
+                    systemImage: "textformat",
+                    value: $floatingPanelTextWhiteOverride,
+                    range: -1...1,
+                    displayValue: FloatingPanelTextTonePreference.displayText(for: floatingPanelTextWhiteOverride),
+                    showsBackground: false
+                )
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .zIndex(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 107)
+        .frame(height: 86)
         .padding(.horizontal, 7)
         .padding(.vertical, 4)
         .background(
@@ -126,46 +128,176 @@ struct FloatingPanelAppearanceSettings: View {
 
 }
 
-struct FloatingPanelContentSettings: View {
+struct FloatingPanelContentSettingsButton: View {
+    @Binding var isPresented: Bool
+    let willOpen: () -> Void
+
+    var body: some View {
+        Button {
+            if !isPresented {
+                willOpen()
+            }
+            isPresented.toggle()
+        } label: {
+            FloatingAppearanceMiniButtonLabel(
+                title: "选项设置",
+                systemImage: "slider.horizontal.3",
+                showsChevron: true,
+                isAccent: false
+            )
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .anchorPreference(key: FloatingPanelContentSettingsButtonBoundsKey.self, value: .bounds) { anchor in
+            anchor
+        }
+        .help("选择悬浮窗显示内容并拖动排序")
+        .accessibilityLabel("选项设置")
+        .accessibilityHint("打开悬浮窗显示内容和排序设置")
+    }
+}
+
+struct FloatingPanelContentSettingsMenu: View {
     @AppStorage(FloatingPanelContentVisibility.rateAndBarKey) private var showRateAndBar = FloatingPanelContentVisibility.default.showRateAndBar
     @AppStorage(FloatingPanelContentVisibility.usageStatusKey) private var showUsageStatus = FloatingPanelContentVisibility.default.showUsageStatus
     @AppStorage(FloatingPanelContentVisibility.metricsKey) private var showMetrics = FloatingPanelContentVisibility.default.showMetrics
     @AppStorage(FloatingPanelContentVisibility.quotaKey) private var showQuota = FloatingPanelContentVisibility.default.showQuota
     @AppStorage(FloatingPanelContentVisibility.radarKey) private var showRadar = FloatingPanelContentVisibility.default.showRadar
+    @AppStorage(FloatingPanelContentVisibility.orderKey) private var orderRaw = FloatingPanelContentVisibility.defaultOrderRaw
+    @State private var dropTarget: FloatingPanelContentGroup?
+    let closeAction: () -> Void
 
     var body: some View {
-        HStack(spacing: 5) {
-            DisplaySurfaceToggleButton(
-                title: "速率",
-                systemImage: "speedometer",
-                isOn: $showRateAndBar
-            )
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Label("选项设置", systemImage: "slider.horizontal.3")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary)
 
-            DisplaySurfaceToggleButton(
-                title: "余量",
-                systemImage: "sparkles",
-                isOn: $showUsageStatus
-            )
+                Spacer(minLength: 8)
 
-            DisplaySurfaceToggleButton(
-                title: "总今次",
-                systemImage: "number",
-                isOn: $showMetrics
-            )
+                Button(action: closeAction) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("关闭")
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
 
-            DisplaySurfaceToggleButton(
-                title: "5h/7d",
-                systemImage: "chart.bar.fill",
-                isOn: $showQuota
-            )
+            Rectangle()
+                .fill(AppTheme.border.opacity(0.58))
+                .frame(height: 1)
 
-            DisplaySurfaceToggleButton(
-                title: "Radar",
-                systemImage: "dot.radiowaves.left.and.right",
-                isOn: $showRadar
-            )
+            VStack(spacing: 2) {
+                ForEach(orderedGroups) { group in
+                    FloatingPanelContentSettingsRow(
+                        group: group,
+                        isOn: isOnBinding(for: group),
+                        isDropTarget: dropTarget == group
+                    )
+                    .draggable(group.rawValue)
+                    .dropDestination(for: String.self) { values, location in
+                        guard let rawValue = values.first,
+                              let dragged = FloatingPanelContentGroup(rawValue: rawValue)
+                        else { return false }
+                        move(dragged, relativeTo: group, insertAfter: location.y > 16)
+                        return true
+                    } isTargeted: { isTargeted in
+                        dropTarget = isTargeted ? group : nil
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
         }
-        .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(AppTheme.solidControlBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(AppTheme.border.opacity(0.58), lineWidth: 1)
+        )
+    }
+
+    private var orderedGroups: [FloatingPanelContentGroup] {
+        FloatingPanelContentVisibility.order(from: orderRaw)
+    }
+
+    private func move(_ dragged: FloatingPanelContentGroup, relativeTo target: FloatingPanelContentGroup, insertAfter: Bool) {
+        guard dragged != target else { return }
+        var order = orderedGroups
+        guard let sourceIndex = order.firstIndex(of: dragged) else { return }
+        order.remove(at: sourceIndex)
+        let targetIndex = order.firstIndex(of: target) ?? order.count
+        let insertionIndex = insertAfter ? min(targetIndex + 1, order.count) : targetIndex
+        order.insert(dragged, at: insertionIndex)
+        orderRaw = FloatingPanelContentVisibility.encodedOrder(order)
+    }
+
+    private func isOnBinding(for group: FloatingPanelContentGroup) -> Binding<Bool> {
+        switch group {
+        case .rateAndBar:
+            return $showRateAndBar
+        case .usageStatus:
+            return $showUsageStatus
+        case .metrics:
+            return $showMetrics
+        case .quota:
+            return $showQuota
+        case .radar:
+            return $showRadar
+        }
+    }
+}
+
+private struct FloatingPanelContentSettingsRow: View {
+    let group: FloatingPanelContentGroup
+    @Binding var isOn: Bool
+    let isDropTarget: Bool
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary.opacity(0.72))
+                .frame(width: 16)
+
+            Image(systemName: group.systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(AppTheme.accentBlue)
+                .frame(width: 16)
+
+            Text(group.title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            Toggle("", isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .frame(minHeight: 32)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isDropTarget ? AppTheme.accentBlue.opacity(0.12) : AppTheme.calloutOptionBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(isDropTarget ? AppTheme.accentBlue.opacity(0.34) : AppTheme.border.opacity(0.42), lineWidth: 1)
+        )
     }
 }
 
