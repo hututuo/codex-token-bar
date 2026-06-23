@@ -162,21 +162,49 @@ struct FloatingPanelTextPaletteSet: Equatable {
     let radarModelPalette: FloatingPanelReadableTextPalette?
 }
 
+struct FloatingPanelTextTonePreference: Equatable, Sendable {
+    let automaticStrength: Double
+    let manualWhite: Double?
+
+    static func mode(for sliderValue: Double) -> FloatingPanelTextTonePreference {
+        let clamped = min(max(sliderValue, -1), 1)
+        if clamped < 0 {
+            return FloatingPanelTextTonePreference(
+                automaticStrength: abs(clamped),
+                manualWhite: nil
+            )
+        }
+        return FloatingPanelTextTonePreference(
+            automaticStrength: 1,
+            manualWhite: clamped
+        )
+    }
+
+    static func displayText(for sliderValue: Double) -> String {
+        let clamped = min(max(sliderValue, -1), 1)
+        let percent = Int((abs(clamped) * 100).rounded())
+        return clamped < 0 ? "自动 \(percent)%" : "手动 \(percent)%"
+    }
+}
+
 struct FloatingPanelReadableTextPalette: Equatable, Sendable {
     let backgroundLuminance: Double
     let fixedWhite: Double?
+    let automaticStrength: Double
 
     init(backgroundLuminance: Double) {
         self.backgroundLuminance = min(max(backgroundLuminance, 0), 1)
         fixedWhite = nil
+        automaticStrength = 1
     }
 
     init(fixedWhite: Double) {
         backgroundLuminance = 0.5
         self.fixedWhite = min(max(fixedWhite, 0), 1)
+        automaticStrength = 1
     }
 
-    init(backgroundSamples: [FloatingPanelBackgroundSample]) {
+    init(backgroundSamples: [FloatingPanelBackgroundSample], automaticStrength: Double = 1) {
         let samples = backgroundSamples.isEmpty
             ? [FloatingPanelBackgroundSample(red: 0.86, green: 0.93, blue: 1.0)]
             : backgroundSamples
@@ -190,6 +218,7 @@ struct FloatingPanelReadableTextPalette: Equatable, Sendable {
         let contrastAdjustedDarkness = min(max(visualDarkness * 0.82 + whiteContrastHelp * 0.18, 0), 1)
         backgroundLuminance = 1 - contrastAdjustedDarkness
         fixedWhite = nil
+        self.automaticStrength = min(max(automaticStrength, 0), 1)
     }
 
     var primaryWhite: Double {
@@ -243,7 +272,16 @@ struct FloatingPanelReadableTextPalette: Equatable, Sendable {
         let familySwitch = smoothStep(edge0: 0.455, edge1: 0.49, value: darkness)
         let blackFamily = mix(lightValue, grayValue, blackFamilyProgress)
         let whiteFamily = mix(max(0, darkValue - 0.14), darkValue, whiteFamilyProgress)
-        return min(max(mix(blackFamily, whiteFamily, familySwitch), 0), 1)
+        let fullValue = mix(blackFamily, whiteFamily, familySwitch)
+        return min(max(applyAutomaticStrength(to: fullValue), 0), 1)
+    }
+
+    private func applyAutomaticStrength(to value: Double) -> Double {
+        let strength = min(max(automaticStrength, 0), 1)
+        if value < 0.5 {
+            return mix(0.26, value, strength)
+        }
+        return mix(0.74, value, strength)
     }
 
     private func smoothStep(edge0: Double, edge1: Double, value: Double) -> Double {
@@ -343,6 +381,7 @@ struct FloatingPanelAppearance: Equatable {
         panelSize: NSSize,
         scale: CGFloat,
         opacity: Double = 0.88,
+        automaticStrength: Double = 1,
         visibility: FloatingPanelContentVisibility
     ) -> FloatingPanelTextPaletteSet {
         let panelRect = CGRect(
@@ -363,15 +402,15 @@ struct FloatingPanelAppearance: Equatable {
             visibility: visibility
         )
         let rowPalettes = Dictionary(uniqueKeysWithValues: rows.map { group, rect in
-            (group, palette(in: rect, panelSize: panelRect.size, opacity: opacity))
+            (group, palette(in: rect, panelSize: panelRect.size, opacity: opacity, automaticStrength: automaticStrength))
         })
         let radarRegionPalettes = rows
             .first { group, _ in group == .radar }
             .map { _, rect in
-                radarPalettes(in: rect, panelSize: panelRect.size, scale: scale, opacity: opacity)
+                radarPalettes(in: rect, panelSize: panelRect.size, scale: scale, opacity: opacity, automaticStrength: automaticStrength)
             }
         return FloatingPanelTextPaletteSet(
-            controlPalette: palette(in: controlRect, panelSize: panelRect.size, opacity: opacity),
+            controlPalette: palette(in: controlRect, panelSize: panelRect.size, opacity: opacity, automaticStrength: automaticStrength),
             rowPalettes: rowPalettes,
             radarActionPalette: radarRegionPalettes?.action,
             radarModelPalette: radarRegionPalettes?.model
@@ -436,9 +475,15 @@ struct FloatingPanelAppearance: Equatable {
         }
     }
 
-    private func palette(in rect: CGRect, panelSize: CGSize, opacity: Double) -> FloatingPanelReadableTextPalette {
+    private func palette(
+        in rect: CGRect,
+        panelSize: CGSize,
+        opacity: Double,
+        automaticStrength: Double
+    ) -> FloatingPanelReadableTextPalette {
         FloatingPanelReadableTextPalette(
-            backgroundSamples: backgroundSamples(in: rect, panelSize: panelSize, opacity: opacity)
+            backgroundSamples: backgroundSamples(in: rect, panelSize: panelSize, opacity: opacity),
+            automaticStrength: automaticStrength
         )
     }
 
@@ -446,7 +491,8 @@ struct FloatingPanelAppearance: Equatable {
         in rect: CGRect,
         panelSize: CGSize,
         scale: CGFloat,
-        opacity: Double
+        opacity: Double,
+        automaticStrength: Double
     ) -> (action: FloatingPanelReadableTextPalette, model: FloatingPanelReadableTextPalette) {
         let scale = max(scale, 0.1)
         let spacing = 7 * scale
@@ -465,8 +511,8 @@ struct FloatingPanelAppearance: Equatable {
             height: rect.height
         )
         return (
-            action: palette(in: actionRect, panelSize: panelSize, opacity: opacity),
-            model: palette(in: modelRect, panelSize: panelSize, opacity: opacity)
+            action: palette(in: actionRect, panelSize: panelSize, opacity: opacity, automaticStrength: automaticStrength),
+            model: palette(in: modelRect, panelSize: panelSize, opacity: opacity, automaticStrength: automaticStrength)
         )
     }
 

@@ -275,11 +275,53 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelAppearance.textWhiteOverrideKey)"))
         XCTAssertTrue(settingsSource.contains("title: \"字体\""))
         XCTAssertTrue(settingsSource.contains("range: -1...1"))
-        XCTAssertTrue(settingsSource.contains("floatingPanelTextWhiteOverride < 0 ? \"自动\""))
+        XCTAssertTrue(settingsSource.contains("FloatingPanelTextTonePreference.displayText(for: floatingPanelTextWhiteOverride)"))
         XCTAssertTrue(floatingPanelSource.contains("@AppStorage(FloatingPanelAppearance.textWhiteOverrideKey)"))
-        XCTAssertTrue(floatingPanelSource.contains("let textWhiteOverride = floatingPanelTextWhiteOverride >= 0 ? floatingPanelTextWhiteOverride : nil"))
+        XCTAssertTrue(floatingPanelSource.contains("let textTone = FloatingPanelTextTonePreference.mode(for: floatingPanelTextWhiteOverride)"))
+        XCTAssertTrue(floatingPanelSource.contains("automaticStrength: textTone.automaticStrength"))
+        XCTAssertTrue(floatingPanelSource.contains("let overridePalette = textTone.manualWhite.map(FloatingPanelReadableTextPalette.init(fixedWhite:))"))
         XCTAssertTrue(floatingPanelSource.contains("appearance.textPalettes("))
         XCTAssertFalse(floatingPanelSource.contains(".environment(\\.tokenDisplayTextPalette, FloatingPanelReadableTextPalette(fixedWhite: floatingPanelTextWhiteOverride))"))
+    }
+
+    func testFloatingPanelTextTonePreferenceSplitsAutoAndManualOnOneSlider() throws {
+        let strongAuto = FloatingPanelTextTonePreference.mode(for: -1)
+        let weakAuto = FloatingPanelTextTonePreference.mode(for: -0.25)
+        let manualBlack = FloatingPanelTextTonePreference.mode(for: 0)
+        let manualWhite = FloatingPanelTextTonePreference.mode(for: 1)
+
+        XCTAssertNil(strongAuto.manualWhite)
+        XCTAssertEqual(strongAuto.automaticStrength, 1, accuracy: 0.001)
+        XCTAssertNil(weakAuto.manualWhite)
+        XCTAssertEqual(weakAuto.automaticStrength, 0.25, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(manualBlack.manualWhite), 0, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(manualWhite.manualWhite), 1, accuracy: 0.001)
+        XCTAssertEqual(FloatingPanelTextTonePreference.displayText(for: -0.65), "自动 65%")
+        XCTAssertEqual(FloatingPanelTextTonePreference.displayText(for: 0.42), "手动 42%")
+    }
+
+    func testFloatingPanelAutomaticTextStrengthStaysInBlackOrWhiteFamilies() {
+        let lightStrong = FloatingPanelReadableTextPalette(
+            backgroundSamples: [FloatingPanelBackgroundSample(red: 0.94, green: 0.96, blue: 1)],
+            automaticStrength: 1
+        )
+        let lightWeak = FloatingPanelReadableTextPalette(
+            backgroundSamples: [FloatingPanelBackgroundSample(red: 0.94, green: 0.96, blue: 1)],
+            automaticStrength: 0
+        )
+        let darkStrong = FloatingPanelReadableTextPalette(
+            backgroundSamples: [FloatingPanelBackgroundSample(red: 0.05, green: 0.08, blue: 0.12)],
+            automaticStrength: 1
+        )
+        let darkWeak = FloatingPanelReadableTextPalette(
+            backgroundSamples: [FloatingPanelBackgroundSample(red: 0.05, green: 0.08, blue: 0.12)],
+            automaticStrength: 0
+        )
+
+        XCTAssertLessThan(lightStrong.primaryWhite, lightWeak.primaryWhite)
+        XCTAssertLessThan(lightWeak.primaryWhite, 0.30)
+        XCTAssertGreaterThan(darkStrong.primaryWhite, darkWeak.primaryWhite)
+        XCTAssertGreaterThan(darkWeak.primaryWhite, 0.70)
     }
 
     func testFloatingPanelTextWhiteSliderCoversFullBlackToWhiteRange() {
@@ -354,7 +396,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(componentsSource.contains("动作 \\(snapshot?.recommendedAction"))
         XCTAssertTrue(componentsSource.contains("24h \\(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))  48h \\(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))"))
         XCTAssertTrue(componentsSource.contains("alignment: .leading, spacing: 2.scaled(by: displayScale)"))
-        XCTAssertTrue(componentsSource.contains("alignment: .trailing, spacing: 1.scaled(by: displayScale)"))
+        XCTAssertTrue(componentsSource.contains("alignment: .leading, spacing: 1.scaled(by: displayScale)"))
         XCTAssertTrue(componentsSource.contains("latest?.scoreDisplayText"))
         XCTAssertTrue(componentsSource.contains("tokenDisplayRadarIQText(snapshot, effort: \"high\")"))
         XCTAssertTrue(componentsSource.contains("tokenDisplayRadarIQText(snapshot, effort: \"xhigh\")"))
@@ -365,9 +407,10 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             endingBefore: "private func tokenDisplayRadarProbabilityText"
         ))
         XCTAssertTrue(radarStrip.contains("Text(\"动作 \\(snapshot?.recommendedAction ?? \"--\")\")"))
-        XCTAssertTrue(radarStrip.contains(".foregroundStyle(textPalette.primaryColor)"))
+        XCTAssertTrue(radarStrip.contains(".foregroundStyle(actionPalette.primaryColor)"))
         XCTAssertTrue(radarStrip.contains("Text(latest?.scoreDisplayText ?? \"IQ --\")"))
-        XCTAssertTrue(radarStrip.contains(".foregroundStyle(textPalette.primaryColor)"))
+        XCTAssertTrue(radarStrip.contains(".foregroundStyle(modelPalette.primaryColor)"))
+        XCTAssertFalse(radarStrip.contains("alignment: .trailing"))
     }
 
     func testUsageStatusRendersOnRateBarAndStandaloneTextHasNoBackground() throws {
@@ -427,8 +470,9 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             endingBefore: "struct TokenDisplayUsageStatusLine"
         ))
 
-        XCTAssertTrue(floatingPanelSource.contains("let textWhiteOverride = floatingPanelTextWhiteOverride >= 0 ? floatingPanelTextWhiteOverride : nil"))
+        XCTAssertTrue(floatingPanelSource.contains("let textTone = FloatingPanelTextTonePreference.mode(for: floatingPanelTextWhiteOverride)"))
         XCTAssertTrue(floatingPanelSource.contains("appearance.textPalettes("))
+        XCTAssertTrue(floatingPanelSource.contains("automaticStrength: textTone.automaticStrength"))
         XCTAssertTrue(floatingPanelSource.contains(".environment(\\.tokenDisplayTextPalette, baseTextPalette)"))
         XCTAssertTrue(floatingPanelSource.contains(".environment(\\.tokenDisplayRowTextPalettes, rowTextPalettes)"))
         XCTAssertTrue(controlsSource.contains("@Environment(\\.tokenDisplayTextPalette) private var textPalette"))

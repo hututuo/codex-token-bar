@@ -85,7 +85,7 @@ struct FloatingPanelAppearanceSettings: View {
                         systemImage: "textformat",
                         value: $floatingPanelTextWhiteOverride,
                         range: -1...1,
-                        displayValue: floatingPanelTextWhiteOverride < 0 ? "自动" : "\(Int((floatingPanelTextWhiteOverride * 100).rounded()))%",
+                        displayValue: FloatingPanelTextTonePreference.displayText(for: floatingPanelTextWhiteOverride),
                         showsBackground: false
                     )
                 }

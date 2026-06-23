@@ -2,6 +2,18 @@ import XCTest
 @testable import CodexTokenBar
 
 final class FloatingUnreadEffectsTests: XCTestCase {
+    func testRippleEffectDoesNotDrawEdgeGlowHighlight() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let rippleEffect = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingUnreadRippleEffect.swift")
+        let source = try String(contentsOf: rippleEffect, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("drawEdgeContact"))
+        XCTAssertFalse(source.contains("drawEdgeGlow"))
+    }
+
     func testDefaultRippleSizeKeepsRetinaBackingScaleWithinBudget() throws {
         let frameCount = FloatingUnreadFrameBudget.frameCount(
             cycleDuration: 3.25,

@@ -150,7 +150,7 @@ struct TokenDisplayRadarStrip: View {
                 .fill(textPalette.dividerColor)
                 .frame(width: 1, height: 19.scaled(by: displayScale))
 
-            VStack(alignment: .trailing, spacing: 1.scaled(by: displayScale)) {
+            VStack(alignment: .leading, spacing: 1.scaled(by: displayScale)) {
                 HStack(alignment: .lastTextBaseline, spacing: 3.scaled(by: displayScale)) {
                     Text(latest?.scoreDisplayText ?? "IQ --")
                         .font(.system(size: 11.8.scaled(by: displayScale), weight: .bold, design: .rounded))
@@ -169,7 +169,7 @@ struct TokenDisplayRadarStrip: View {
             }
             .lineLimit(1)
             .minimumScaleFactor(0.72)
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .foregroundStyle(textPalette.primaryColor)
         .lineLimit(1)

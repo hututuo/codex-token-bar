@@ -315,14 +315,15 @@ struct FloatingTokenPanelView: View {
             directionRaw: floatingPanelGradientDirection,
             styleRaw: floatingPanelGradientStyle
         )
+        let textTone = FloatingPanelTextTonePreference.mode(for: floatingPanelTextWhiteOverride)
         let automaticTextPalettes = appearance.textPalettes(
             panelSize: size,
             scale: scale,
             opacity: floatingPanelOpacity,
+            automaticStrength: textTone.automaticStrength,
             visibility: visibility
         )
-        let textWhiteOverride = floatingPanelTextWhiteOverride >= 0 ? floatingPanelTextWhiteOverride : nil
-        let overridePalette = textWhiteOverride.map(FloatingPanelReadableTextPalette.init(fixedWhite:))
+        let overridePalette = textTone.manualWhite.map(FloatingPanelReadableTextPalette.init(fixedWhite:))
         let baseTextPalette = overridePalette ?? automaticTextPalettes.controlPalette
         let rowTextPalettes = overridePalette.map { palette in
             Dictionary(uniqueKeysWithValues: FloatingPanelContentGroup.allCases.map { ($0, palette) })
