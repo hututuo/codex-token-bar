@@ -242,7 +242,7 @@ struct CodexRadarDetailCard: View {
 
             ScrollView {
                 if let snapshot {
-                    VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 14) {
                         CodexRadarDetailOverview(snapshot: snapshot)
                         CodexRadarIQDetail(snapshot: snapshot)
                         CodexRadarQuotaDetail(snapshot: snapshot)
@@ -277,37 +277,45 @@ private struct CodexRadarDetailOverview: View {
 
     var body: some View {
         CodexRadarDetailSection(title: "速蹬窗口与预测", systemImage: "bolt.badge.clock") {
-            CodexRadarKeyValueGrid(rows: [
-                ("窗口状态", snapshot.window.message),
-                ("建议动作", snapshot.recommendedAction),
-                ("24h 概率", probabilityText(snapshot.prediction.probability24hPercent)),
-                ("48h 概率", probabilityText(snapshot.prediction.probability48hPercent)),
-                ("预计窗口", snapshot.prediction.expectedWindow),
-                ("范围", snapshot.window.scope),
-                ("上次关闭", snapshot.window.closedAt ?? "--"),
-                ("来源", snapshot.window.sourceUrl ?? "--")
-            ])
+            CodexRadarDetailSubsection(title: "窗口摘要") {
+                CodexRadarKeyValueGrid(rows: [
+                    ("窗口状态", snapshot.window.message),
+                    ("建议动作", snapshot.recommendedAction),
+                    ("24h 概率", probabilityText(snapshot.prediction.probability24hPercent)),
+                    ("48h 概率", probabilityText(snapshot.prediction.probability48hPercent)),
+                    ("预计窗口", snapshot.prediction.expectedWindow),
+                    ("范围", snapshot.window.scope),
+                    ("上次关闭", snapshot.window.closedAt ?? "--"),
+                    ("来源", snapshot.window.sourceUrl ?? "--")
+                ])
+            }
 
-            Text(snapshot.prediction.summary)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            CodexRadarDetailSubsection(title: "预测说明") {
+                Text(snapshot.prediction.summary)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
-            HStack(alignment: .top, spacing: 14) {
-                CodexRadarSignalList(title: "积极信号", items: snapshot.prediction.positiveSignals)
-                CodexRadarSignalList(title: "降温信号", items: snapshot.prediction.negativeSignals)
+            CodexRadarDetailSubsection(title: "信号拆分") {
+                HStack(alignment: .top, spacing: 12) {
+                    CodexRadarSignalList(title: "积极信号", items: snapshot.prediction.positiveSignals)
+                    CodexRadarSignalList(title: "降温信号", items: snapshot.prediction.negativeSignals)
+                }
             }
 
             if let tibo = snapshot.tiboPresence, tibo.shouldDisplay == true {
-                CodexRadarKeyValueGrid(rows: [
-                    ("Tibo 位置/时区", tibo.locationLabelZh ?? "--"),
-                    ("概率", probabilityText(Int(((tibo.probability ?? 0) * 100).rounded()))),
-                    ("置信度", tibo.confidence ?? "--"),
-                    ("观察数", "\(tibo.observationsConsidered ?? 0)")
-                ])
-                Text(tibo.safetyNoteZh ?? "")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                CodexRadarDetailSubsection(title: "Tibo 观察") {
+                    CodexRadarKeyValueGrid(rows: [
+                        ("Tibo 位置/时区", tibo.locationLabelZh ?? "--"),
+                        ("概率", probabilityText(Int(((tibo.probability ?? 0) * 100).rounded()))),
+                        ("置信度", tibo.confidence ?? "--"),
+                        ("观察数", "\(tibo.observationsConsidered ?? 0)")
+                    ])
+                    Text(tibo.safetyNoteZh ?? "")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -318,41 +326,47 @@ private struct CodexRadarIQDetail: View {
 
     var body: some View {
         CodexRadarDetailSection(title: "降智雷达", systemImage: "brain.head.profile") {
-            CodexRadarLineChart(
-                points: snapshot.modelIQ.recentDays.map { ($0.date, $0.score) },
-                color: AppTheme.accentCyan,
-                valuePrefix: "IQ "
-            )
-            .frame(height: 155)
+            CodexRadarDetailSubsection(title: "IQ 趋势") {
+                CodexRadarLineChart(
+                    points: snapshot.modelIQ.recentDays.map { ($0.date, $0.score) },
+                    color: AppTheme.accentCyan,
+                    valuePrefix: "IQ "
+                )
+                .frame(height: 155)
+            }
 
-            CodexRadarTable(
-                headers: ["模型", "IQ", "通过", "状态", "费用", "耗时", "Tokens"],
-                rows: snapshot.modelIQ.comparisonRows.map { row in
-                    [
-                        row.label,
-                        CodexRadarModelIQPoint.display(row.point.score),
-                        row.point.passRatioText,
-                        row.point.status,
-                        row.point.costDisplayText,
-                        row.point.wallTimeHuman,
-                        row.point.totalTokensDisplayText
-                    ]
-                }
-            )
+            CodexRadarDetailSubsection(title: "模型对比") {
+                CodexRadarTable(
+                    headers: ["模型", "IQ", "通过", "状态", "费用", "耗时", "Tokens"],
+                    rows: snapshot.modelIQ.comparisonRows.map { row in
+                        [
+                            row.label,
+                            CodexRadarModelIQPoint.display(row.point.score),
+                            row.point.passRatioText,
+                            row.point.status,
+                            row.point.costDisplayText,
+                            row.point.wallTimeHuman,
+                            row.point.totalTokensDisplayText
+                        ]
+                    }
+                )
+            }
 
-            CodexRadarTable(
-                headers: ["日期", "IQ", "通过", "状态", "耗时", "Tokens"],
-                rows: snapshot.modelIQ.recentDays.map { point in
-                    [
-                        point.date,
-                        CodexRadarModelIQPoint.display(point.score),
-                        point.passRatioText,
-                        point.status,
-                        point.wallTimeHuman,
-                        point.totalTokensDisplayText
-                    ]
-                }
-            )
+            CodexRadarDetailSubsection(title: "近日日志") {
+                CodexRadarTable(
+                    headers: ["日期", "IQ", "通过", "状态", "耗时", "Tokens"],
+                    rows: snapshot.modelIQ.recentDays.map { point in
+                        [
+                            point.date,
+                            CodexRadarModelIQPoint.display(point.score),
+                            point.passRatioText,
+                            point.status,
+                            point.wallTimeHuman,
+                            point.totalTokensDisplayText
+                        ]
+                    }
+                )
+            }
         }
     }
 }
@@ -363,42 +377,50 @@ private struct CodexRadarQuotaDetail: View {
     var body: some View {
         CodexRadarDetailSection(title: "预估额度", systemImage: "gauge.with.dots.needle.67percent") {
             if let quotaRadar = snapshot.modelIQ.quotaRadar {
-                CodexRadarKeyValueGrid(rows: [
-                    ("依据窗口", quotaRadar.basisWindowLabel),
-                    ("本轮成本", "$\(CodexRadarModelIQPoint.display(quotaRadar.costUsd, fractionDigits: 2))"),
-                    ("本轮 tokens", "\(CodexRadarModelIQPoint.display(Double(quotaRadar.totalTokens) / 1_000_000, fractionDigits: 2))M"),
-                    ("原始变化", "\(quotaRadar.rawDelta)%"),
-                    ("修正变化", "\(quotaRadar.adjustedDelta)%"),
-                    ("rate", "$\(CodexRadarModelIQPoint.display(quotaRadar.rate, fractionDigits: 4))")
-                ])
+                CodexRadarDetailSubsection(title: "额度基准") {
+                    CodexRadarKeyValueGrid(rows: [
+                        ("依据窗口", quotaRadar.basisWindowLabel),
+                        ("本轮成本", "$\(CodexRadarModelIQPoint.display(quotaRadar.costUsd, fractionDigits: 2))"),
+                        ("本轮 tokens", "\(CodexRadarModelIQPoint.display(Double(quotaRadar.totalTokens) / 1_000_000, fractionDigits: 2))M"),
+                        ("原始变化", "\(quotaRadar.rawDelta)%"),
+                        ("修正变化", "\(quotaRadar.adjustedDelta)%"),
+                        ("rate", "$\(CodexRadarModelIQPoint.display(quotaRadar.rate, fractionDigits: 4))")
+                    ])
+                }
 
-                CodexRadarLineChart(
-                    points: quotaRadar.trend.map { ($0.date, $0.fiveHour20x) },
-                    color: AppTheme.accentOrange,
-                    valuePrefix: "$"
-                )
-                .frame(height: 155)
+                CodexRadarDetailSubsection(title: "20x 5h 趋势") {
+                    CodexRadarLineChart(
+                        points: quotaRadar.trend.map { ($0.date, $0.fiveHour20x) },
+                        color: AppTheme.accentOrange,
+                        valuePrefix: "$"
+                    )
+                    .frame(height: 155)
+                }
 
-                CodexRadarTable(
-                    headers: ["套餐", "5h", "7d", "依据"],
-                    rows: quotaRadar.rowsForDisplay.map { row in
-                        [row.tier, row.fiveHourDisplayText, row.sevenDayDisplayText, row.basis]
-                    }
-                )
+                CodexRadarDetailSubsection(title: "套餐预估") {
+                    CodexRadarTable(
+                        headers: ["套餐", "5h", "7d", "依据"],
+                        rows: quotaRadar.rowsForDisplay.map { row in
+                            [row.tier, row.fiveHourDisplayText, row.sevenDayDisplayText, row.basis]
+                        }
+                    )
+                }
 
-                CodexRadarTable(
-                    headers: ["日期", "20x 5h", "20x 7d", "5x 5h", "Plus 5h", "依据"],
-                    rows: quotaRadar.trend.map { point in
-                        [
-                            point.date,
-                            "$\(CodexRadarModelIQPoint.display(point.fiveHour20x, fractionDigits: 2))",
-                            "$\(CodexRadarModelIQPoint.display(point.sevenDay20x, fractionDigits: 2))",
-                            "$\(CodexRadarModelIQPoint.display(point.fiveHour5x, fractionDigits: 2))",
-                            "$\(CodexRadarModelIQPoint.display(point.fiveHourPlus, fractionDigits: 2))",
-                            point.basisWindowLabel
-                        ]
-                    }
-                )
+                CodexRadarDetailSubsection(title: "趋势明细") {
+                    CodexRadarTable(
+                        headers: ["日期", "20x 5h", "20x 7d", "5x 5h", "Plus 5h", "依据"],
+                        rows: quotaRadar.trend.map { point in
+                            [
+                                point.date,
+                                "$\(CodexRadarModelIQPoint.display(point.fiveHour20x, fractionDigits: 2))",
+                                "$\(CodexRadarModelIQPoint.display(point.sevenDay20x, fractionDigits: 2))",
+                                "$\(CodexRadarModelIQPoint.display(point.fiveHour5x, fractionDigits: 2))",
+                                "$\(CodexRadarModelIQPoint.display(point.fiveHourPlus, fractionDigits: 2))",
+                                point.basisWindowLabel
+                            ]
+                        }
+                    )
+                }
             } else {
                 Text("暂无额度雷达数据")
                     .font(.system(size: 12))
@@ -415,16 +437,20 @@ private struct CodexRadarEnvironmentDetail: View {
     var body: some View {
         let environment = snapshot.codexEnvironment
         CodexRadarDetailSection(title: "环境压力与资讯", systemImage: "waveform.path.ecg") {
-            CodexRadarKeyValueGrid(rows: [
-                ("官方动态 24h", "\(environment.officialUpdates24h)"),
-                ("社区提及 24h", "\(environment.communityMentions24h)"),
-                ("异常/限额反馈", "\(environment.issueOrLimitAnomalies24h)"),
-                ("Status 事故", "\(environment.statusIncidents24h)"),
-                ("抱怨压力", environment.complaintPressure),
-                ("RSS", snapshot.links.rss)
-            ])
+            CodexRadarDetailSubsection(title: "压力指标") {
+                CodexRadarKeyValueGrid(rows: [
+                    ("官方动态 24h", "\(environment.officialUpdates24h)"),
+                    ("社区提及 24h", "\(environment.communityMentions24h)"),
+                    ("异常/限额反馈", "\(environment.issueOrLimitAnomalies24h)"),
+                    ("Status 事故", "\(environment.statusIncidents24h)"),
+                    ("抱怨压力", environment.complaintPressure),
+                    ("RSS", snapshot.links.rss)
+                ])
+            }
 
-            CodexRadarRoleCountsView(roleCounts: environment.roleCounts)
+            CodexRadarDetailSubsection(title: "角色分布") {
+                CodexRadarRoleCountsView(roleCounts: environment.roleCounts)
+            }
 
             CodexRadarArticleList(title: "官方动态", items: environment.officialNews.map {
                 CodexRadarArticleRow(title: $0.titleZh ?? "Codex 官方动态", subtitle: "@\($0.account ?? "--") · \($0.summaryEn ?? $0.text ?? "")", url: $0.url)
@@ -481,12 +507,52 @@ private struct CodexRadarDetailSection<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label(title, systemImage: systemImage)
-                .font(.system(size: 15, weight: .semibold))
+        VStack(alignment: .leading, spacing: 13) {
+            HStack(spacing: 9) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(AppTheme.accentBlue)
+                    .frame(width: 26, height: 26)
+                    .background(AppTheme.selectedControlBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+
+                Spacer(minLength: 8)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                content
+            }
+        }
+        .padding(13)
+        .background(AppTheme.calloutOptionBackground.opacity(0.58), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(AppTheme.borderStrong.opacity(0.56), lineWidth: 1)
+        )
+    }
+}
+
+private struct CodexRadarDetailSubsection<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+
             content
         }
-        .padding(.bottom, 4)
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.calloutBackground, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(AppTheme.borderStrong.opacity(0.42), lineWidth: 1)
+        )
     }
 }
 
@@ -505,6 +571,9 @@ private struct CodexRadarKeyValueGrid: View {
                         .lineLimit(2)
                         .truncationMode(.middle)
                 }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(AppTheme.insetBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
     }
@@ -525,7 +594,9 @@ private struct CodexRadarSignalList: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.insetBackground.opacity(0.48), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 }
 
@@ -599,35 +670,77 @@ private struct CodexRadarTable: View {
     let rows: [[String]]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 0) {
-                ForEach(headers, id: \.self) { header in
-                    Text(header)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .padding(.vertical, 6)
-
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                HStack(spacing: 0) {
-                    ForEach(Array(row.enumerated()), id: \.offset) { _, value in
-                        Text(value)
-                            .font(.system(size: 11, weight: .medium))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+        CodexRadarTableContainer {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 8) {
+                    ForEach(headers, id: \.self) { header in
+                        Text(header)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                .padding(.vertical, 6)
-                .overlay(alignment: .top) {
-                    Rectangle()
-                        .fill(AppTheme.border)
-                        .frame(height: 1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(AppTheme.calloutHeaderBackground)
+
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                    HStack(spacing: 8) {
+                        ForEach(Array(row.enumerated()), id: \.offset) { _, value in
+                            Text(value)
+                                .font(.system(size: 11, weight: .medium))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(index.isMultiple(of: 2) ? Color.clear : AppTheme.insetBackground.opacity(0.45))
+                    .overlay(alignment: .top) {
+                        Rectangle()
+                            .fill(AppTheme.border)
+                            .frame(height: 1)
+                    }
                 }
             }
         }
+    }
+}
+
+private struct CodexRadarTableContainer<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content
+            .background(AppTheme.calloutBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(AppTheme.borderStrong.opacity(0.46), lineWidth: 1)
+            )
+            .padding(.top, 1)
+    }
+}
+
+private struct CodexRadarArticlePanel<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+            content
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.calloutBackground, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(AppTheme.borderStrong.opacity(0.42), lineWidth: 1)
+        )
     }
 }
 
@@ -635,12 +748,15 @@ private struct CodexRadarRoleCountsView: View {
     let roleCounts: [String: Int]
 
     var body: some View {
-        HStack(spacing: 8) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 118), spacing: 8)], alignment: .leading, spacing: 8) {
             ForEach(roleCounts.sorted(by: { $0.value > $1.value }), id: \.key) { role, count in
                 Text("\(role): \(count)")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(AppTheme.insetBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
     }
@@ -658,15 +774,14 @@ private struct CodexRadarArticleList: View {
     let items: [CodexRadarArticleRow]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
+        CodexRadarArticlePanel(title: title) {
             if items.isEmpty {
                 Text("暂无")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .padding(.vertical, 2)
             } else {
-                ForEach(items.prefix(4)) { item in
+                ForEach(Array(items.prefix(4).enumerated()), id: \.element.id) { index, item in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(item.title)
                             .font(.system(size: 11, weight: .semibold))
@@ -681,7 +796,10 @@ private struct CodexRadarArticleList: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
-                    .padding(.vertical, 2)
+                    .padding(.vertical, 7)
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppTheme.insetBackground.opacity(index.isMultiple(of: 2) ? 0.42 : 0.24), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
             }
         }
