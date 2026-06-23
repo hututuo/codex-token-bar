@@ -206,6 +206,7 @@ struct TokenDisplayRateBar: View {
     let usageStatus: String?
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
+    @Environment(\.tokenDisplayEmbeddedUsageStatusTextPalette) private var embeddedUsageStatusTextPalette
     @AppStorage(TokenRateScaleSettings.key) private var tokenRateFullScale = TokenRateScaleSettings.defaultValue
 
     private var fillFraction: CGFloat {
@@ -221,12 +222,13 @@ struct TokenDisplayRateBar: View {
             let barWidth = max(1, proxy.size.width)
             let fillWidth = max(3.scaled(by: displayScale), barWidth * fillFraction)
             let barCenterY = 22.scaled(by: displayScale)
+            let statusPalette = embeddedUsageStatusTextPalette ?? textPalette
 
             ZStack(alignment: .topLeading) {
                 if let usageStatus {
                     Text(usageStatus)
                         .font(.system(size: 10.2.scaled(by: displayScale), weight: .semibold))
-                        .foregroundStyle(textPalette.primaryColor)
+                        .foregroundStyle(statusPalette.primaryColor)
                         .lineLimit(1)
                         .minimumScaleFactor(0.86)
                         .truncationMode(.tail)

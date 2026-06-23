@@ -1,10 +1,6 @@
 import AppKit
 import SwiftUI
 
-private enum TokenDisplayLayout {
-    static let metricOutset: CGFloat = 9
-}
-
 enum TokenDisplayLockState {
     case unlocked
     case locked
@@ -48,6 +44,18 @@ private struct TokenDisplayRadarModelTextPaletteKey: EnvironmentKey {
     static let defaultValue: FloatingPanelReadableTextPalette? = nil
 }
 
+private struct TokenDisplayMetricTextPalettesKey: EnvironmentKey {
+    static let defaultValue: [FloatingPanelMetricTextRegion: FloatingPanelReadableTextPalette] = [:]
+}
+
+private struct TokenDisplayEmbeddedUsageStatusTextPaletteKey: EnvironmentKey {
+    static let defaultValue: FloatingPanelReadableTextPalette? = nil
+}
+
+private struct TokenDisplayStandaloneUsageStatusTextPaletteKey: EnvironmentKey {
+    static let defaultValue: FloatingPanelReadableTextPalette? = nil
+}
+
 extension EnvironmentValues {
     var tokenDisplayScale: CGFloat {
         get { self[TokenDisplayScaleKey.self] }
@@ -72,6 +80,21 @@ extension EnvironmentValues {
     var tokenDisplayRadarModelTextPalette: FloatingPanelReadableTextPalette? {
         get { self[TokenDisplayRadarModelTextPaletteKey.self] }
         set { self[TokenDisplayRadarModelTextPaletteKey.self] = newValue }
+    }
+
+    var tokenDisplayMetricTextPalettes: [FloatingPanelMetricTextRegion: FloatingPanelReadableTextPalette] {
+        get { self[TokenDisplayMetricTextPalettesKey.self] }
+        set { self[TokenDisplayMetricTextPalettesKey.self] = newValue }
+    }
+
+    var tokenDisplayEmbeddedUsageStatusTextPalette: FloatingPanelReadableTextPalette? {
+        get { self[TokenDisplayEmbeddedUsageStatusTextPaletteKey.self] }
+        set { self[TokenDisplayEmbeddedUsageStatusTextPaletteKey.self] = newValue }
+    }
+
+    var tokenDisplayStandaloneUsageStatusTextPalette: FloatingPanelReadableTextPalette? {
+        get { self[TokenDisplayStandaloneUsageStatusTextPaletteKey.self] }
+        set { self[TokenDisplayStandaloneUsageStatusTextPaletteKey.self] = newValue }
     }
 }
 
@@ -192,6 +215,9 @@ struct TokenDisplayCard: View {
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
     @Environment(\.tokenDisplayRowTextPalettes) private var rowTextPalettes
+    @Environment(\.tokenDisplayMetricTextPalettes) private var metricTextPalettes
+    @Environment(\.tokenDisplayEmbeddedUsageStatusTextPalette) private var embeddedUsageStatusTextPalette
+    @Environment(\.tokenDisplayStandaloneUsageStatusTextPalette) private var standaloneUsageStatusTextPalette
 
     var body: some View {
         GeometryReader { proxy in
@@ -212,7 +238,7 @@ struct TokenDisplayCard: View {
 
                 if visibility.showsStandaloneUsageStatus {
                     TokenDisplayUsageStatusLine(text: snapshot.compactUsageStatus)
-                        .environment(\.tokenDisplayTextPalette, palette(for: .usageStatus))
+                        .environment(\.tokenDisplayTextPalette, standaloneUsageStatusTextPalette ?? palette(for: .usageStatus))
                         .frame(height: usageStatusRowHeight, alignment: .center)
                 }
 
@@ -252,6 +278,10 @@ struct TokenDisplayCard: View {
 
     private func palette(for group: FloatingPanelContentGroup) -> FloatingPanelReadableTextPalette {
         rowTextPalettes[group] ?? textPalette
+    }
+
+    private func metricPalette(for region: FloatingPanelMetricTextRegion) -> FloatingPanelReadableTextPalette {
+        metricTextPalettes[region] ?? palette(for: .metrics)
     }
 
     private var accessibilitySummary: String {
@@ -306,6 +336,7 @@ struct TokenDisplayCard: View {
                 rate: snapshot.rate,
                 usageStatus: visibility.embedsUsageStatusInRateRow ? snapshot.compactUsageStatus : nil
             )
+            .environment(\.tokenDisplayEmbeddedUsageStatusTextPalette, embeddedUsageStatusTextPalette)
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .frame(maxWidth: .infinity, alignment: .center)
@@ -359,10 +390,13 @@ struct TokenDisplayCard: View {
     private var metricRow: some View {
         HStack(spacing: 6.scaled(by: displayScale)) {
             TokenDisplayMetric(label: "总", value: snapshot.consumedTokens.abbreviatedTokens)
-                .offset(x: -TokenDisplayLayout.metricOutset.scaled(by: displayScale))
+                .environment(\.tokenDisplayTextPalette, metricPalette(for: .total))
+                .offset(x: -FloatingTokenPanelMetrics.metricOutset.scaled(by: displayScale))
             TokenDisplayMetric(label: "今", value: snapshot.todayTokens.abbreviatedTokens)
+                .environment(\.tokenDisplayTextPalette, metricPalette(for: .today))
             TokenDisplayMetric(label: "次", value: "\(snapshot.todayRequests)")
-                .offset(x: TokenDisplayLayout.metricOutset.scaled(by: displayScale))
+                .environment(\.tokenDisplayTextPalette, metricPalette(for: .requests))
+                .offset(x: FloatingTokenPanelMetrics.metricOutset.scaled(by: displayScale))
         }
         .frame(maxWidth: .infinity, alignment: .center)
     }

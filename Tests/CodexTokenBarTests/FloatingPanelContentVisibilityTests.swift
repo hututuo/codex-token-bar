@@ -179,6 +179,74 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertGreaterThan(modelPalette.primaryWhite - actionPalette.primaryWhite, 0.56)
     }
 
+    func testFloatingPanelSamplesMetricRegionsSeparately() throws {
+        let appearance = FloatingPanelAppearance(
+            startHex: "#FFFFFF",
+            endHex: "#07111F",
+            directionRaw: FloatingPanelGradientDirection.leadingToTrailing.rawValue,
+            styleRaw: FloatingPanelGradientStyle.linear.rawValue
+        )
+        let paletteSet = appearance.textPalettes(
+            panelSize: FloatingTokenPanelMetrics.size(scale: 1, visibility: .default),
+            scale: 1,
+            opacity: 0.88,
+            visibility: .default
+        )
+
+        let totalPalette = try XCTUnwrap(paletteSet.metricPalettes[.total])
+        let todayPalette = try XCTUnwrap(paletteSet.metricPalettes[.today])
+        let requestsPalette = try XCTUnwrap(paletteSet.metricPalettes[.requests])
+
+        XCTAssertLessThan(totalPalette.primaryWhite, 0.24)
+        XCTAssertGreaterThan(requestsPalette.primaryWhite, 0.80)
+        XCTAssertGreaterThan(todayPalette.primaryWhite, totalPalette.primaryWhite)
+        XCTAssertGreaterThan(requestsPalette.primaryWhite - totalPalette.primaryWhite, 0.56)
+    }
+
+    func testFloatingPanelSamplesBothUsageStatusStylesSeparately() throws {
+        let appearance = FloatingPanelAppearance(
+            startHex: "#FFFFFF",
+            endHex: "#07111F",
+            directionRaw: FloatingPanelGradientDirection.leadingToTrailing.rawValue,
+            styleRaw: FloatingPanelGradientStyle.linear.rawValue
+        )
+        let embeddedVisibility = FloatingPanelContentVisibility(
+            showRateAndBar: true,
+            showUsageStatus: true,
+            showMetrics: false,
+            showQuota: false,
+            showRadar: false
+        )
+        let standaloneVisibility = FloatingPanelContentVisibility(
+            showRateAndBar: false,
+            showUsageStatus: true,
+            showMetrics: false,
+            showQuota: false,
+            showRadar: false
+        )
+        let embeddedPaletteSet = appearance.textPalettes(
+            panelSize: FloatingTokenPanelMetrics.size(scale: 1, visibility: embeddedVisibility),
+            scale: 1,
+            opacity: 0.88,
+            visibility: embeddedVisibility
+        )
+        let standalonePaletteSet = appearance.textPalettes(
+            panelSize: FloatingTokenPanelMetrics.size(scale: 1, visibility: standaloneVisibility),
+            scale: 1,
+            opacity: 0.88,
+            visibility: standaloneVisibility
+        )
+
+        let ratePalette = try XCTUnwrap(embeddedPaletteSet.rowPalettes[.rateAndBar])
+        let embeddedStatusPalette = try XCTUnwrap(embeddedPaletteSet.embeddedUsageStatusPalette)
+        let standaloneStatusPalette = try XCTUnwrap(standalonePaletteSet.standaloneUsageStatusPalette)
+
+        XCTAssertGreaterThan(embeddedStatusPalette.primaryWhite, ratePalette.primaryWhite)
+        XCTAssertGreaterThan(embeddedStatusPalette.primaryWhite - ratePalette.primaryWhite, 0.18)
+        XCTAssertGreaterThan(standaloneStatusPalette.primaryWhite, 0.24)
+        XCTAssertLessThan(standaloneStatusPalette.primaryWhite, 0.80)
+    }
+
     func testFloatingPanelSamplesDifferentRowsFromTheActualGradientArea() throws {
         let appearance = FloatingPanelAppearance(
             startHex: "#07111F",
@@ -475,14 +543,21 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(floatingPanelSource.contains("automaticStrength: textTone.automaticStrength"))
         XCTAssertTrue(floatingPanelSource.contains(".environment(\\.tokenDisplayTextPalette, baseTextPalette)"))
         XCTAssertTrue(floatingPanelSource.contains(".environment(\\.tokenDisplayRowTextPalettes, rowTextPalettes)"))
+        XCTAssertTrue(floatingPanelSource.contains(".environment(\\.tokenDisplayMetricTextPalettes, metricTextPalettes)"))
+        XCTAssertTrue(floatingPanelSource.contains(".environment(\\.tokenDisplayEmbeddedUsageStatusTextPalette, embeddedUsageStatusTextPalette)"))
+        XCTAssertTrue(floatingPanelSource.contains(".environment(\\.tokenDisplayStandaloneUsageStatusTextPalette, standaloneUsageStatusTextPalette)"))
         XCTAssertTrue(controlsSource.contains("@Environment(\\.tokenDisplayTextPalette) private var textPalette"))
         XCTAssertTrue(surfaceSource.contains("@Environment(\\.tokenDisplayTextPalette) private var textPalette"))
         XCTAssertTrue(surfaceSource.contains("@Environment(\\.tokenDisplayRowTextPalettes) private var rowTextPalettes"))
+        XCTAssertTrue(surfaceSource.contains("@Environment(\\.tokenDisplayMetricTextPalettes) private var metricTextPalettes"))
+        XCTAssertTrue(surfaceSource.contains("@Environment(\\.tokenDisplayEmbeddedUsageStatusTextPalette) private var embeddedUsageStatusTextPalette"))
+        XCTAssertTrue(surfaceSource.contains("@Environment(\\.tokenDisplayStandaloneUsageStatusTextPalette) private var standaloneUsageStatusTextPalette"))
         XCTAssertTrue(rateBar.contains("let barCenterY = 22.scaled(by: displayScale)"))
         XCTAssertFalse(rateBar.contains("usageStatus == nil ? height / 2"))
+        XCTAssertTrue(rateBar.contains("let statusPalette = embeddedUsageStatusTextPalette ?? textPalette"))
         XCTAssertTrue(standaloneLine.contains("size: 13.6.scaled(by: displayScale)"))
         XCTAssertTrue(standaloneLine.contains(".foregroundStyle(textPalette.primaryColor)"))
-        XCTAssertTrue(rateBar.contains(".foregroundStyle(textPalette.primaryColor)"))
+        XCTAssertTrue(rateBar.contains(".foregroundStyle(statusPalette.primaryColor)"))
         XCTAssertTrue(metric.contains(".foregroundStyle(textPalette.secondaryColor)"))
         XCTAssertTrue(metric.contains(".foregroundStyle(textPalette.primaryColor)"))
         XCTAssertFalse(quotaSegment.contains("tokenDisplayTextPalette"))

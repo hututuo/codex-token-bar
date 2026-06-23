@@ -328,6 +328,11 @@ struct FloatingTokenPanelView: View {
         let rowTextPalettes = overridePalette.map { palette in
             Dictionary(uniqueKeysWithValues: FloatingPanelContentGroup.allCases.map { ($0, palette) })
         } ?? automaticTextPalettes.rowPalettes
+        let metricTextPalettes = overridePalette.map { palette in
+            Dictionary(uniqueKeysWithValues: FloatingPanelMetricTextRegion.allCases.map { ($0, palette) })
+        } ?? automaticTextPalettes.metricPalettes
+        let embeddedUsageStatusTextPalette = overridePalette ?? automaticTextPalettes.embeddedUsageStatusPalette
+        let standaloneUsageStatusTextPalette = overridePalette ?? automaticTextPalettes.standaloneUsageStatusPalette
         let radarActionTextPalette = overridePalette ?? automaticTextPalettes.radarActionPalette
         let radarModelTextPalette = overridePalette ?? automaticTextPalettes.radarModelPalette
 
@@ -380,6 +385,9 @@ struct FloatingTokenPanelView: View {
         }
         .environment(\.tokenDisplayTextPalette, baseTextPalette)
         .environment(\.tokenDisplayRowTextPalettes, rowTextPalettes)
+        .environment(\.tokenDisplayMetricTextPalettes, metricTextPalettes)
+        .environment(\.tokenDisplayEmbeddedUsageStatusTextPalette, embeddedUsageStatusTextPalette)
+        .environment(\.tokenDisplayStandaloneUsageStatusTextPalette, standaloneUsageStatusTextPalette)
         .environment(\.tokenDisplayRadarActionTextPalette, radarActionTextPalette)
         .environment(\.tokenDisplayRadarModelTextPalette, radarModelTextPalette)
         .frame(width: size.width, height: size.height, alignment: .topLeading)

@@ -13,6 +13,7 @@ enum FloatingTokenPanelMetrics {
     static let metricRowHeight: CGFloat = 13
     static let quotaRowHeight: CGFloat = 16.5
     static let radarRowHeight: CGFloat = 26
+    static let metricOutset: CGFloat = 9
     static let defaultScale = 1.0
     static let scaleRange = 0.75...2.0
 

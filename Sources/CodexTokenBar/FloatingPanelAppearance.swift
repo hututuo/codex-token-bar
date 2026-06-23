@@ -158,8 +158,17 @@ struct FloatingPanelBackgroundSample: Equatable, Sendable {
 struct FloatingPanelTextPaletteSet: Equatable {
     let controlPalette: FloatingPanelReadableTextPalette
     let rowPalettes: [FloatingPanelContentGroup: FloatingPanelReadableTextPalette]
+    let metricPalettes: [FloatingPanelMetricTextRegion: FloatingPanelReadableTextPalette]
+    let embeddedUsageStatusPalette: FloatingPanelReadableTextPalette?
+    let standaloneUsageStatusPalette: FloatingPanelReadableTextPalette?
     let radarActionPalette: FloatingPanelReadableTextPalette?
     let radarModelPalette: FloatingPanelReadableTextPalette?
+}
+
+enum FloatingPanelMetricTextRegion: String, CaseIterable, Sendable {
+    case total
+    case today
+    case requests
 }
 
 struct FloatingPanelTextTonePreference: Equatable, Sendable {
@@ -409,9 +418,35 @@ struct FloatingPanelAppearance: Equatable {
             .map { _, rect in
                 radarPalettes(in: rect, panelSize: panelRect.size, scale: scale, opacity: opacity, automaticStrength: automaticStrength)
             }
+        let metricRegionPalettes = rows
+            .first { group, _ in group == .metrics }
+            .map { _, rect in
+                metricPalettes(in: rect, panelSize: panelRect.size, scale: scale, opacity: opacity, automaticStrength: automaticStrength)
+            } ?? [:]
+        let embeddedStatusPalette: FloatingPanelReadableTextPalette?
+        if visibility.embedsUsageStatusInRateRow,
+           let rateRow = rows.first(where: { group, _ in group == .rateAndBar }) {
+            embeddedStatusPalette = embeddedUsageStatusTextPalette(
+                in: rateRow.1,
+                panelSize: panelRect.size,
+                scale: scale,
+                opacity: opacity,
+                automaticStrength: automaticStrength
+            )
+        } else {
+            embeddedStatusPalette = nil
+        }
+        let standaloneStatusPalette = rows
+            .first { group, _ in group == .usageStatus }
+            .map { _, rect in
+                standaloneUsageStatusTextPalette(in: rect, panelSize: panelRect.size, scale: scale, opacity: opacity, automaticStrength: automaticStrength)
+            }
         return FloatingPanelTextPaletteSet(
             controlPalette: palette(in: controlRect, panelSize: panelRect.size, opacity: opacity, automaticStrength: automaticStrength),
             rowPalettes: rowPalettes,
+            metricPalettes: metricRegionPalettes,
+            embeddedUsageStatusPalette: embeddedStatusPalette,
+            standaloneUsageStatusPalette: standaloneStatusPalette,
             radarActionPalette: radarRegionPalettes?.action,
             radarModelPalette: radarRegionPalettes?.model
         )
@@ -514,6 +549,94 @@ struct FloatingPanelAppearance: Equatable {
             action: palette(in: actionRect, panelSize: panelSize, opacity: opacity, automaticStrength: automaticStrength),
             model: palette(in: modelRect, panelSize: panelSize, opacity: opacity, automaticStrength: automaticStrength)
         )
+    }
+
+    private func metricPalettes(
+        in rect: CGRect,
+        panelSize: CGSize,
+        scale: CGFloat,
+        opacity: Double,
+        automaticStrength: Double
+    ) -> [FloatingPanelMetricTextRegion: FloatingPanelReadableTextPalette] {
+        let scale = max(scale, 0.1)
+        let spacing = 6 * scale
+        let slotWidth = max(1, (rect.width - spacing * 2) / 3)
+        let offsets: [FloatingPanelMetricTextRegion: CGFloat] = [
+            .total: -FloatingTokenPanelMetrics.metricOutset * scale,
+            .today: 0,
+            .requests: FloatingTokenPanelMetrics.metricOutset * scale,
+        ]
+        return Dictionary(uniqueKeysWithValues: FloatingPanelMetricTextRegion.allCases.enumerated().map { index, region in
+            let slotX = rect.minX + CGFloat(index) * (slotWidth + spacing)
+            let offset = offsets[region] ?? 0
+            let regionRect = clampedRect(
+                CGRect(
+                    x: slotX + offset,
+                    y: rect.minY,
+                    width: slotWidth,
+                    height: rect.height
+                ),
+                inside: rect
+            )
+            return (
+                region,
+                palette(in: regionRect, panelSize: panelSize, opacity: opacity, automaticStrength: automaticStrength)
+            )
+        })
+    }
+
+    private func embeddedUsageStatusTextPalette(
+        in rect: CGRect,
+        panelSize: CGSize,
+        scale: CGFloat,
+        opacity: Double,
+        automaticStrength: Double
+    ) -> FloatingPanelReadableTextPalette {
+        let scale = max(scale, 0.1)
+        let leftRateBlockWidth = min(rect.width - 1, max(82 * scale, rect.width * 0.38))
+        let statusRect = CGRect(
+            x: rect.minX + leftRateBlockWidth,
+            y: rect.minY,
+            width: max(1, rect.width - leftRateBlockWidth),
+            height: min(rect.height, 13 * scale)
+        )
+        return palette(
+            in: clampedRect(statusRect, inside: rect),
+            panelSize: panelSize,
+            opacity: opacity,
+            automaticStrength: automaticStrength
+        )
+    }
+
+    private func standaloneUsageStatusTextPalette(
+        in rect: CGRect,
+        panelSize: CGSize,
+        scale: CGFloat,
+        opacity: Double,
+        automaticStrength: Double
+    ) -> FloatingPanelReadableTextPalette {
+        let scale = max(scale, 0.1)
+        let textWidth = min(rect.width, FloatingTokenPanelMetrics.rowWidth(for: .usageStatus) * scale)
+        let statusRect = CGRect(
+            x: rect.midX - textWidth / 2,
+            y: rect.minY,
+            width: max(1, textWidth),
+            height: rect.height
+        )
+        return palette(
+            in: clampedRect(statusRect, inside: rect),
+            panelSize: panelSize,
+            opacity: opacity,
+            automaticStrength: automaticStrength
+        )
+    }
+
+    private func clampedRect(_ candidate: CGRect, inside bounds: CGRect) -> CGRect {
+        let minX = min(max(candidate.minX, bounds.minX), max(bounds.minX, bounds.maxX - 1))
+        let minY = min(max(candidate.minY, bounds.minY), max(bounds.minY, bounds.maxY - 1))
+        let maxX = min(max(candidate.maxX, minX + 1), bounds.maxX)
+        let maxY = min(max(candidate.maxY, minY + 1), bounds.maxY)
+        return CGRect(x: minX, y: minY, width: max(1, maxX - minX), height: max(1, maxY - minY))
     }
 
     private func backgroundSamples(in rect: CGRect, panelSize: CGSize, opacity: Double) -> [FloatingPanelBackgroundSample] {
