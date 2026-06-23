@@ -278,7 +278,7 @@ struct FloatingPanelReadableTextPalette: Equatable, Sendable {
         let darkness = 1 - backgroundLuminance
         let blackFamilyProgress = smoothStep(edge0: 0.22, edge1: 0.44, value: darkness)
         let whiteFamilyProgress = smoothStep(edge0: 0.50, edge1: 0.78, value: darkness)
-        let familySwitch = smoothStep(edge0: 0.455, edge1: 0.49, value: darkness)
+        let familySwitch = darkness >= 0.455 ? 1.0 : 0.0
         let blackFamily = mix(lightValue, grayValue, blackFamilyProgress)
         let whiteFamily = mix(max(0, darkValue - 0.14), darkValue, whiteFamilyProgress)
         let fullValue = mix(blackFamily, whiteFamily, familySwitch)

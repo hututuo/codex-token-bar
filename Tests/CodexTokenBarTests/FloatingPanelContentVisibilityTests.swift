@@ -236,6 +236,17 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertGreaterThan(outerBandPalette.primaryWhite - grayBandPalette.primaryWhite, 0.56)
     }
 
+    func testFloatingPanelReadableTextPaletteJumpsBetweenBlackAndWhiteFamiliesWithoutMiddleGray() {
+        let justBeforeSwitch = FloatingPanelReadableTextPalette(backgroundLuminance: 0.546)
+        let justAfterSwitch = FloatingPanelReadableTextPalette(backgroundLuminance: 0.544)
+
+        XCTAssertLessThan(justBeforeSwitch.primaryWhite, 0.24)
+        XCTAssertGreaterThan(justAfterSwitch.primaryWhite, 0.68)
+        XCTAssertGreaterThan(justAfterSwitch.primaryWhite - justBeforeSwitch.primaryWhite, 0.44)
+        XCTAssertFalse((0.35...0.65).contains(justBeforeSwitch.primaryWhite))
+        XCTAssertFalse((0.35...0.65).contains(justAfterSwitch.primaryWhite))
+    }
+
     func testFloatingPanelReadableTextPaletteAdaptsFromBackgroundSamples() {
         let lightPalette = FloatingPanelReadableTextPalette(backgroundSamples: [
             FloatingPanelBackgroundSample(red: 1, green: 1, blue: 1),
@@ -362,9 +373,9 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let standaloneStatusPalette = try XCTUnwrap(standalonePaletteSet.standaloneUsageStatusPalette)
 
         XCTAssertGreaterThan(embeddedStatusPalette.primaryWhite, ratePalette.primaryWhite)
-        XCTAssertGreaterThan(embeddedStatusPalette.primaryWhite - ratePalette.primaryWhite, 0.18)
-        XCTAssertGreaterThan(standaloneStatusPalette.primaryWhite, 0.24)
-        XCTAssertLessThan(standaloneStatusPalette.primaryWhite, 0.80)
+        XCTAssertGreaterThan(embeddedStatusPalette.primaryWhite - ratePalette.primaryWhite, 0.10)
+        XCTAssertGreaterThan(standaloneStatusPalette.primaryWhite, 0.68)
+        XCTAssertFalse((0.35...0.65).contains(standaloneStatusPalette.primaryWhite))
     }
 
     func testFloatingPanelSamplesDifferentRowsFromTheActualGradientArea() throws {
