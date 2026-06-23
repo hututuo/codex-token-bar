@@ -7,7 +7,6 @@ struct FloatingPanelPaletteMenu: View {
     @Binding var directionRaw: String
     @Binding var styleRaw: String
     let closeAction: () -> Void
-    @State private var scheduledClose: DispatchWorkItem?
 
     var body: some View {
         SettingsCalloutContainer(
@@ -69,7 +68,6 @@ struct FloatingPanelPaletteMenu: View {
                 endHex = FloatingPanelAppearance.defaultEndHex
                 directionRaw = FloatingPanelAppearance.defaultDirection
                 styleRaw = FloatingPanelAppearance.defaultStyle
-                closePaletteSoon()
             } label: {
                 Label("恢复默认", systemImage: "arrow.counterclockwise")
                     .font(.system(size: 11, weight: .semibold))
@@ -84,21 +82,7 @@ struct FloatingPanelPaletteMenu: View {
             )
         }
         .frame(width: 338, alignment: .leading)
-        .onChange(of: startHex) { _, _ in
-            schedulePaletteClose(after: 0.85)
-        }
-        .onChange(of: endHex) { _, _ in
-            schedulePaletteClose(after: 0.85)
-        }
-        .onChange(of: directionRaw) { _, _ in
-            closePaletteSoon()
-        }
-        .onChange(of: styleRaw) { _, _ in
-            closePaletteSoon()
-        }
         .onDisappear {
-            scheduledClose?.cancel()
-            scheduledClose = nil
             NSColorPanel.shared.close()
         }
     }
@@ -138,22 +122,7 @@ struct FloatingPanelPaletteMenu: View {
         )
     }
 
-    private func schedulePaletteClose(after delay: TimeInterval) {
-        scheduledClose?.cancel()
-        let work = DispatchWorkItem {
-            closePaletteNow()
-        }
-        scheduledClose = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    }
-
-    private func closePaletteSoon() {
-        schedulePaletteClose(after: 0.12)
-    }
-
     private func closePaletteNow() {
-        scheduledClose?.cancel()
-        scheduledClose = nil
         NSColorPanel.shared.close()
         closeAction()
     }

@@ -74,7 +74,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertLessThan(hiddenSize.width, FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).width)
     }
 
-    func testFloatingPanelReadableTextToneTracksGradientBrightness() {
+    func testFloatingPanelReadableTextPaletteKeepsGrayBandNarrow() {
         let lightAppearance = FloatingPanelAppearance(
             startHex: "#FFFFFF",
             endHex: "#E6F4FF",
@@ -87,9 +87,33 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             directionRaw: FloatingPanelGradientDirection.topLeadingToBottomTrailing.rawValue,
             styleRaw: FloatingPanelGradientStyle.linear.rawValue
         )
+        let grayBandAppearance = FloatingPanelAppearance(
+            startHex: "#999999",
+            endHex: "#999999",
+            directionRaw: FloatingPanelGradientDirection.topLeadingToBottomTrailing.rawValue,
+            styleRaw: FloatingPanelGradientStyle.linear.rawValue
+        )
+        let outerBandAppearance = FloatingPanelAppearance(
+            startHex: "#777777",
+            endHex: "#777777",
+            directionRaw: FloatingPanelGradientDirection.topLeadingToBottomTrailing.rawValue,
+            styleRaw: FloatingPanelGradientStyle.linear.rawValue
+        )
 
-        XCTAssertEqual(lightAppearance.readableTextTone, .darkText)
-        XCTAssertEqual(darkAppearance.readableTextTone, .lightText)
+        let lightPalette = lightAppearance.readableTextPalette
+        let darkPalette = darkAppearance.readableTextPalette
+        let grayBandPalette = grayBandAppearance.readableTextPalette
+        let outerBandPalette = outerBandAppearance.readableTextPalette
+
+        XCTAssertLessThan(lightPalette.primaryWhite, 0.18)
+        XCTAssertGreaterThan(lightPalette.secondaryWhite, lightPalette.primaryWhite)
+        XCTAssertGreaterThan(grayBandPalette.primaryWhite, 0.42)
+        XCTAssertLessThan(grayBandPalette.primaryWhite, 0.68)
+        XCTAssertGreaterThan(outerBandPalette.primaryWhite, 0.84)
+        XCTAssertLessThan(outerBandPalette.secondaryWhite, outerBandPalette.primaryWhite)
+        XCTAssertGreaterThan(darkPalette.primaryWhite, 0.82)
+        XCTAssertLessThan(darkPalette.secondaryWhite, darkPalette.primaryWhite)
+        XCTAssertGreaterThan(outerBandPalette.primaryWhite - grayBandPalette.primaryWhite, 0.18)
     }
 
     func testTopSafetyInsetOnlyAppearsWhenUsageStatusIsHidden() {
@@ -153,6 +177,23 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(dashboardSource.contains("visibility: floatingPanelContentVisibility"))
     }
 
+    func testFloatingPanelPaletteMenuDoesNotAutoDismissWhileEditing() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let paletteMenu = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelPaletteMenu.swift")
+        let paletteSource = try String(contentsOf: paletteMenu, encoding: .utf8)
+
+        XCTAssertFalse(paletteSource.contains(".onChange(of: startHex)"))
+        XCTAssertFalse(paletteSource.contains(".onChange(of: endHex)"))
+        XCTAssertFalse(paletteSource.contains(".onChange(of: directionRaw)"))
+        XCTAssertFalse(paletteSource.contains(".onChange(of: styleRaw)"))
+        XCTAssertFalse(paletteSource.contains("schedulePaletteClose"))
+        XCTAssertFalse(paletteSource.contains("closePaletteSoon"))
+        XCTAssertTrue(paletteSource.contains("closeAction: closePaletteNow"))
+    }
+
     func testFloatingPanelPassesRadarSnapshotIntoRadarRow() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -188,9 +229,9 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             endingBefore: "private func tokenDisplayRadarProbabilityText"
         ))
         XCTAssertTrue(radarStrip.contains("Text(\"动作 \\(snapshot?.recommendedAction ?? \"--\")\")"))
-        XCTAssertTrue(radarStrip.contains(".foregroundStyle(textTone.primaryColor)"))
+        XCTAssertTrue(radarStrip.contains(".foregroundStyle(textPalette.primaryColor)"))
         XCTAssertTrue(radarStrip.contains("Text(latest?.scoreDisplayText ?? \"IQ --\")"))
-        XCTAssertTrue(radarStrip.contains(".foregroundStyle(textTone.primaryColor)"))
+        XCTAssertTrue(radarStrip.contains(".foregroundStyle(textPalette.primaryColor)"))
     }
 
     func testUsageStatusRendersOnRateBarAndStandaloneTextHasNoBackground() throws {
@@ -250,17 +291,17 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             endingBefore: "struct TokenDisplayUsageStatusLine"
         ))
 
-        XCTAssertTrue(floatingPanelSource.contains(".environment(\\.tokenDisplayTextTone, appearance.readableTextTone)"))
-        XCTAssertTrue(controlsSource.contains("@Environment(\\.tokenDisplayTextTone) private var textTone"))
-        XCTAssertTrue(surfaceSource.contains("@Environment(\\.tokenDisplayTextTone) private var textTone"))
+        XCTAssertTrue(floatingPanelSource.contains(".environment(\\.tokenDisplayTextPalette, appearance.readableTextPalette)"))
+        XCTAssertTrue(controlsSource.contains("@Environment(\\.tokenDisplayTextPalette) private var textPalette"))
+        XCTAssertTrue(surfaceSource.contains("@Environment(\\.tokenDisplayTextPalette) private var textPalette"))
         XCTAssertTrue(rateBar.contains("let barCenterY = 22.scaled(by: displayScale)"))
         XCTAssertFalse(rateBar.contains("usageStatus == nil ? height / 2"))
         XCTAssertTrue(standaloneLine.contains("size: 13.6.scaled(by: displayScale)"))
-        XCTAssertTrue(standaloneLine.contains(".foregroundStyle(textTone.primaryColor)"))
-        XCTAssertTrue(rateBar.contains(".foregroundStyle(textTone.primaryColor)"))
-        XCTAssertTrue(metric.contains(".foregroundStyle(textTone.secondaryColor)"))
-        XCTAssertTrue(metric.contains(".foregroundStyle(textTone.primaryColor)"))
-        XCTAssertFalse(quotaSegment.contains("tokenDisplayTextTone"))
+        XCTAssertTrue(standaloneLine.contains(".foregroundStyle(textPalette.primaryColor)"))
+        XCTAssertTrue(rateBar.contains(".foregroundStyle(textPalette.primaryColor)"))
+        XCTAssertTrue(metric.contains(".foregroundStyle(textPalette.secondaryColor)"))
+        XCTAssertTrue(metric.contains(".foregroundStyle(textPalette.primaryColor)"))
+        XCTAssertFalse(quotaSegment.contains("tokenDisplayTextPalette"))
         XCTAssertTrue(quotaSegment.contains(".foregroundStyle(.primary.opacity(0.82))"))
     }
 

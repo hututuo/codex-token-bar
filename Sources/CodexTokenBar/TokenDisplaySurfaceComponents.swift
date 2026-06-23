@@ -4,7 +4,7 @@ import SwiftUI
 struct TokenQuotaMiniStrip: View {
     let snapshot: AccountQuotaSnapshot
     @Environment(\.tokenDisplayScale) private var displayScale
-    @Environment(\.tokenDisplayTextTone) private var textTone
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     var body: some View {
         GeometryReader { proxy in
@@ -21,7 +21,7 @@ struct TokenQuotaMiniStrip: View {
                 if !snapshot.isAvailable {
                     Text("额度 --")
                         .font(.system(size: 9.2.scaled(by: displayScale), weight: .semibold))
-                        .foregroundStyle(textTone.secondaryColor)
+                        .foregroundStyle(textPalette.secondaryColor)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
@@ -105,12 +105,12 @@ struct TokenQuotaMiniSegment: View {
 struct TokenDisplayUsageStatusLine: View {
     let text: String
     @Environment(\.tokenDisplayScale) private var displayScale
-    @Environment(\.tokenDisplayTextTone) private var textTone
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     var body: some View {
         Text(text)
             .font(.system(size: 13.6.scaled(by: displayScale), weight: .semibold))
-            .foregroundStyle(textTone.primaryColor)
+            .foregroundStyle(textPalette.primaryColor)
             .lineLimit(1)
             .minimumScaleFactor(0.82)
             .truncationMode(.tail)
@@ -125,7 +125,7 @@ struct TokenDisplayUsageStatusLine: View {
 struct TokenDisplayRadarStrip: View {
     let snapshot: CodexRadarSnapshot?
     @Environment(\.tokenDisplayScale) private var displayScale
-    @Environment(\.tokenDisplayTextTone) private var textTone
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     var body: some View {
         let latest = snapshot?.modelIQ.latest
@@ -133,41 +133,41 @@ struct TokenDisplayRadarStrip: View {
             VStack(alignment: .leading, spacing: 2.scaled(by: displayScale)) {
                 Text("动作 \(snapshot?.recommendedAction ?? "--")")
                     .font(.system(size: 9.3.scaled(by: displayScale), weight: .bold))
-                    .foregroundStyle(textTone.primaryColor)
+                    .foregroundStyle(textPalette.primaryColor)
                 Text("24h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))  48h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))")
                     .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
-                    .foregroundStyle(textTone.secondaryColor)
+                    .foregroundStyle(textPalette.secondaryColor)
             }
             .lineLimit(1)
             .minimumScaleFactor(0.74)
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Rectangle()
-                .fill(textTone.dividerColor)
+                .fill(textPalette.dividerColor)
                 .frame(width: 1, height: 19.scaled(by: displayScale))
 
             VStack(alignment: .trailing, spacing: 1.scaled(by: displayScale)) {
                 HStack(alignment: .lastTextBaseline, spacing: 3.scaled(by: displayScale)) {
                     Text(latest?.scoreDisplayText ?? "IQ --")
                         .font(.system(size: 11.8.scaled(by: displayScale), weight: .bold, design: .rounded))
-                        .foregroundStyle(textTone.primaryColor)
+                        .foregroundStyle(textPalette.primaryColor)
                         .monospacedDigit()
                     Text(latest?.modelDisplayName ?? "模型 --")
                         .font(.system(size: 7.7.scaled(by: displayScale), weight: .semibold))
-                        .foregroundStyle(textTone.primaryColor)
+                        .foregroundStyle(textPalette.primaryColor)
                         .lineLimit(1)
                         .minimumScaleFactor(0.66)
                 }
                 Text("\(tokenDisplayRadarIQText(snapshot, effort: "high"))  \(tokenDisplayRadarIQText(snapshot, effort: "xhigh"))")
                     .font(.system(size: 8.1.scaled(by: displayScale), weight: .semibold))
-                    .foregroundStyle(textTone.secondaryColor)
+                    .foregroundStyle(textPalette.secondaryColor)
                     .monospacedDigit()
             }
             .lineLimit(1)
             .minimumScaleFactor(0.72)
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .foregroundStyle(textTone.primaryColor)
+        .foregroundStyle(textPalette.primaryColor)
         .lineLimit(1)
         .minimumScaleFactor(0.72)
         .accessibilityElement(children: .ignore)
@@ -201,7 +201,7 @@ struct TokenDisplayRateBar: View {
     let rate: Double
     let usageStatus: String?
     @Environment(\.tokenDisplayScale) private var displayScale
-    @Environment(\.tokenDisplayTextTone) private var textTone
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
     @AppStorage(TokenRateScaleSettings.key) private var tokenRateFullScale = TokenRateScaleSettings.defaultValue
 
     private var fillFraction: CGFloat {
@@ -222,7 +222,7 @@ struct TokenDisplayRateBar: View {
                 if let usageStatus {
                     Text(usageStatus)
                         .font(.system(size: 10.2.scaled(by: displayScale), weight: .semibold))
-                        .foregroundStyle(textTone.primaryColor)
+                        .foregroundStyle(textPalette.primaryColor)
                         .lineLimit(1)
                         .minimumScaleFactor(0.86)
                         .truncationMode(.tail)
@@ -276,17 +276,17 @@ struct TokenDisplayMetric: View {
     let label: String
     let value: String
     @Environment(\.tokenDisplayScale) private var displayScale
-    @Environment(\.tokenDisplayTextTone) private var textTone
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     var body: some View {
         HStack(spacing: 3.scaled(by: displayScale)) {
             Text(label)
                 .font(.system(size: 9.4.scaled(by: displayScale), weight: .medium))
-                .foregroundStyle(textTone.secondaryColor)
+                .foregroundStyle(textPalette.secondaryColor)
                 .lineLimit(1)
             Text(value)
                 .font(.system(size: 9.4.scaled(by: displayScale), weight: .semibold))
-                .foregroundStyle(textTone.primaryColor)
+                .foregroundStyle(textPalette.primaryColor)
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)

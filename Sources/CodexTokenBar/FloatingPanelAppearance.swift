@@ -98,44 +98,63 @@ enum FloatingPanelUnreadEffect: String, CaseIterable, Identifiable {
     }
 }
 
-enum FloatingPanelReadableTextTone: Equatable, Sendable {
-    case darkText
-    case lightText
+struct FloatingPanelReadableTextPalette: Equatable, Sendable {
+    let backgroundLuminance: Double
+
+    init(backgroundLuminance: Double) {
+        self.backgroundLuminance = min(max(backgroundLuminance, 0), 1)
+    }
+
+    var primaryWhite: Double {
+        foregroundWhite(lightValue: 0.06, grayValue: 0.52, darkValue: 0.96)
+    }
+
+    var secondaryWhite: Double {
+        foregroundWhite(lightValue: 0.26, grayValue: 0.58, darkValue: 0.82)
+    }
+
+    var mutedWhite: Double {
+        foregroundWhite(lightValue: 0.38, grayValue: 0.62, darkValue: 0.72)
+    }
+
+    var dividerWhite: Double {
+        foregroundWhite(lightValue: 0.24, grayValue: 0.44, darkValue: 0.64)
+    }
 
     var primaryColor: Color {
-        switch self {
-        case .darkText:
-            return Color.black.opacity(0.90)
-        case .lightText:
-            return Color.white.opacity(0.92)
-        }
+        Color(white: primaryWhite, opacity: 0.96)
     }
 
     var secondaryColor: Color {
-        switch self {
-        case .darkText:
-            return Color.black.opacity(0.68)
-        case .lightText:
-            return Color.white.opacity(0.76)
-        }
+        Color(white: secondaryWhite, opacity: 0.88)
     }
 
     var mutedColor: Color {
-        switch self {
-        case .darkText:
-            return Color.black.opacity(0.54)
-        case .lightText:
-            return Color.white.opacity(0.62)
-        }
+        Color(white: mutedWhite, opacity: 0.76)
     }
 
     var dividerColor: Color {
-        switch self {
-        case .darkText:
-            return Color.black.opacity(0.18)
-        case .lightText:
-            return Color.white.opacity(0.20)
+        Color(white: dividerWhite, opacity: 0.34)
+    }
+
+    private func foregroundWhite(lightValue: Double, grayValue: Double, darkValue: Double) -> Double {
+        let darkness = 1 - backgroundLuminance
+        let grayProgress = smoothStep(edge0: 0.0, edge1: 0.40, value: darkness)
+        let whiteProgress = smoothStep(edge0: 0.42, edge1: 0.56, value: darkness)
+        let grayAdjusted = mix(lightValue, grayValue, grayProgress)
+        return min(max(mix(grayAdjusted, darkValue, whiteProgress), 0), 1)
+    }
+
+    private func smoothStep(edge0: Double, edge1: Double, value: Double) -> Double {
+        guard edge0 != edge1 else {
+            return value < edge0 ? 0 : 1
         }
+        let progress = min(max((value - edge0) / (edge1 - edge0), 0), 1)
+        return progress * progress * (3 - 2 * progress)
+    }
+
+    private func mix(_ from: Double, _ to: Double, _ progress: Double) -> Double {
+        from + (to - from) * progress
     }
 }
 
@@ -194,8 +213,8 @@ struct FloatingPanelAppearance: Equatable {
         return Color.white.opacity(0.50)
     }
 
-    var readableTextTone: FloatingPanelReadableTextTone {
-        averagedRGB.luminance > 0.58 ? .darkText : .lightText
+    var readableTextPalette: FloatingPanelReadableTextPalette {
+        FloatingPanelReadableTextPalette(backgroundLuminance: averagedRGB.luminance)
     }
 
     private var averagedRGB: FloatingPanelRGB {

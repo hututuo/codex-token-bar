@@ -362,7 +362,7 @@ struct FloatingTokenPanelView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .zIndex(4)
         }
-        .environment(\.tokenDisplayTextTone, appearance.readableTextTone)
+        .environment(\.tokenDisplayTextPalette, appearance.readableTextPalette)
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .animation(.easeInOut(duration: 0.18), value: unreadCount > 0)
