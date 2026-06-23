@@ -1,5 +1,8 @@
 use crate::core::startup_trace;
-use std::sync::{Mutex, OnceLock};
+use std::{
+    sync::{mpsc, Mutex, OnceLock},
+    time::Duration,
+};
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     webview::PageLoadEvent,
@@ -35,6 +38,16 @@ pub fn setup_desktop_surfaces(app: &tauri::App) -> tauri::Result<()> {
     create_dashboard_window(app.handle())?;
     startup_trace::mark("dashboard window create end");
 
+    if cfg!(target_os = "windows") {
+        startup_trace::mark("floating setup create start");
+        if let Err(error) = create_floating_window(app.handle()) {
+            let message = error.to_string();
+            eprintln!("Codex Token Bar: floating window setup failed: {message}");
+            status.floating_window_error = Some(message);
+        }
+        startup_trace::mark("floating setup create end");
+    }
+
     startup_trace::mark("status tray create start");
     if let Err(error) = create_status_tray(app) {
         let message = error.to_string();
@@ -66,23 +79,38 @@ fn surface_setup_status_cell() -> &'static Mutex<SurfaceSetupStatus> {
 }
 
 pub fn show_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {
+    startup_trace::mark("floating window show start");
     if app.get_webview_window("floating").is_none() {
-        if let Err(error) = create_floating_window(app) {
+        if cfg!(target_os = "windows") {
+            let message = "Windows 悬浮窗未在启动阶段完成初始化".to_string();
+            startup_trace::mark(&format!("floating window missing on windows: {message}"));
+            set_floating_window_error(Some(message.clone()));
+            return Err(message);
+        }
+        startup_trace::mark("floating window create start");
+        if let Err(error) = create_floating_window_on_main_thread(app) {
             if app.get_webview_window("floating").is_none() {
-                let message = error.to_string();
+                let message = error;
+                startup_trace::mark(&format!("floating window create failed: {message}"));
                 set_floating_window_error(Some(message.clone()));
                 return Err(message);
             }
         }
+        startup_trace::mark("floating window create end");
     }
     set_floating_window_error(None);
     let window = app
         .get_webview_window("floating")
         .ok_or_else(|| "floating window is not available".to_string())?;
-    window.show().map_err(|error| error.to_string())?;
+    window.show().map_err(|error| {
+        let message = error.to_string();
+        startup_trace::mark(&format!("floating window show failed: {message}"));
+        message
+    })?;
     if let Err(error) = window.set_always_on_top(true) {
         startup_trace::mark(&format!("floating window always-on-top skipped: {error}"));
     }
+    startup_trace::mark("floating window show end");
     Ok(true)
 }
 
@@ -129,6 +157,26 @@ pub fn hide_status_panel_window(app: &tauri::AppHandle) -> Result<bool, String> 
     };
     window.hide().map_err(|error| error.to_string())?;
     Ok(false)
+}
+
+fn create_floating_window_on_main_thread(app: &tauri::AppHandle) -> Result<(), String> {
+    let (tx, rx) = mpsc::channel();
+    let app_for_call = app.clone();
+    let app_for_window = app.clone();
+    startup_trace::mark("floating window main dispatch start");
+    app_for_call
+        .run_on_main_thread(move || {
+            startup_trace::mark("floating window build on main start");
+            let result =
+                create_floating_window(&app_for_window).map_err(|error| error.to_string());
+            startup_trace::mark("floating window build on main end");
+            let _ = tx.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+    startup_trace::mark("floating window main dispatch end");
+
+    rx.recv_timeout(Duration::from_secs(3))
+        .map_err(|_| "创建悬浮窗超时".to_string())?
 }
 
 fn toggle_status_panel_window(app: &tauri::AppHandle) {
@@ -225,7 +273,7 @@ fn create_floating_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         return Ok(());
     }
 
-    WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app,
         "floating",
         WebviewUrl::App("/index.html?surface=floating".into()),
@@ -241,16 +289,29 @@ fn create_floating_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         FLOATING_WINDOW_HEIGHT * FLOATING_WINDOW_MAX_SCALE,
     )
     .position(48.0, 86.0)
-    .decorations(false)
     .resizable(false)
     .focused(false)
-    .always_on_top(true)
-    .visible_on_all_workspaces(true)
-    .visible(false)
-    .skip_taskbar(true)
-    .shadow(false)
-    .transparent(true)
-    .build()?;
+    .visible(false);
+
+    if cfg!(target_os = "windows") {
+        builder
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .shadow(false)
+            .transparent(true)
+            .build()?;
+        return Ok(());
+    }
+
+    builder
+        .decorations(false)
+        .always_on_top(true)
+        .visible_on_all_workspaces(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .transparent(true)
+        .build()?;
 
     Ok(())
 }

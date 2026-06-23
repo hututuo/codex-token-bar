@@ -72,9 +72,9 @@ fn floating_window_capability(
             "悬浮窗",
             "macOS 调试实现已接通；Windows 会复用同一 UI，再补平台窗口行为。",
         ),
-        DesktopPlatform::Windows => pending(
+        DesktopPlatform::Windows => ready(
             "悬浮窗",
-            "共享 UI 已完成，透明、置顶、拖动和多屏行为需要在 Windows 真机验收。",
+            "Windows 真机已接入基础悬浮窗；透明、拖动和多屏细节继续验收。",
         ),
         DesktopPlatform::Linux | DesktopPlatform::Other => {
             unavailable("悬浮窗", "当前平台暂未接入桌面悬浮窗。")
@@ -217,12 +217,12 @@ mod tests {
     }
 
     #[test]
-    fn windows_capabilities_keep_platform_surfaces_pending_until_true_implementation() {
+    fn windows_capabilities_enable_basic_floating_window_only() {
         let capabilities =
             platform_capabilities_for(DesktopPlatform::Windows, SurfaceSetupStatus::default());
 
         assert_eq!(capabilities.platform, "windows");
-        assert_pending(&capabilities.floating_window);
+        assert_ready(&capabilities.floating_window);
         assert_pending(&capabilities.floating_transparency);
         assert_pending(&capabilities.floating_drag);
         assert_pending(&capabilities.status_tray);
