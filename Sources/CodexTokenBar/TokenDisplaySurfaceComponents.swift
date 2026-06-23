@@ -107,33 +107,22 @@ struct TokenDisplayUsageStatusLine: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 9.2.scaled(by: displayScale), weight: .semibold))
-            .foregroundStyle(.secondary.opacity(0.92))
+            .font(.system(size: 12.2.scaled(by: displayScale), weight: .semibold))
+            .foregroundStyle(Color.white.opacity(0.88))
             .lineLimit(1)
             .minimumScaleFactor(0.82)
             .truncationMode(.tail)
             .padding(.horizontal, 6.scaled(by: displayScale))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .background(
-                Capsule()
-                    .fill(floatingStatusBackground)
-            )
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("趣味化余量")
             .accessibilityValue(text)
-    }
-
-    private var floatingStatusBackground: Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                ? NSColor.white.withAlphaComponent(0.10)
-                : NSColor.white.withAlphaComponent(0.48)
-        })
     }
 }
 
 struct TokenDisplayRateBar: View {
     let rate: Double
+    let usageStatus: String?
     @Environment(\.tokenDisplayScale) private var displayScale
     @AppStorage(TokenRateScaleSettings.key) private var tokenRateFullScale = TokenRateScaleSettings.defaultValue
 
@@ -144,26 +133,43 @@ struct TokenDisplayRateBar: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let height = FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale)
+            let statusHeight = 13.scaled(by: displayScale)
             let barHeight = 5.5.scaled(by: displayScale)
             let barWidth = max(1, proxy.size.width)
             let fillWidth = max(3.scaled(by: displayScale), barWidth * fillFraction)
+            let barCenterY = 22.scaled(by: displayScale)
 
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(floatingTrackColor)
-                    .overlay(Capsule().stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.cyan.opacity(0.98), Color.blue.opacity(0.92)],
-                            startPoint: .bottom,
-                            endPoint: .top
+            ZStack(alignment: .topLeading) {
+                if let usageStatus {
+                    Text(usageStatus)
+                        .font(.system(size: 10.2.scaled(by: displayScale), weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.88))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.86)
+                        .truncationMode(.tail)
+                        .frame(width: barWidth, height: statusHeight, alignment: .leading)
+                        .position(x: barWidth / 2, y: 7.5.scaled(by: displayScale))
+                }
+
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(floatingTrackColor)
+                        .overlay(Capsule().stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.cyan.opacity(0.98), Color.blue.opacity(0.92)],
+                                startPoint: .bottom,
+                                endPoint: .top
+                            )
                         )
-                    )
-                    .frame(width: fillWidth)
+                        .frame(width: fillWidth)
+                }
+                .frame(width: barWidth, height: barHeight, alignment: .leading)
+                .position(x: barWidth / 2, y: barCenterY)
             }
-            .frame(width: barWidth, height: barHeight, alignment: .leading)
-            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
+            .frame(width: proxy.size.width, height: height, alignment: .topLeading)
         }
         .frame(height: FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale), alignment: .center)
         .accessibilityElement(children: .ignore)

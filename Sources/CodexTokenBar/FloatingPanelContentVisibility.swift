@@ -31,6 +31,25 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         FloatingPanelContentGroup.allCases.filter(shows)
     }
 
+    var layoutGroups: [FloatingPanelContentGroup] {
+        FloatingPanelContentGroup.allCases.filter { group in
+            switch group {
+            case .usageStatus:
+                return showsStandaloneUsageStatus
+            default:
+                return shows(group)
+            }
+        }
+    }
+
+    var embedsUsageStatusInRateRow: Bool {
+        showRateAndBar && showUsageStatus
+    }
+
+    var showsStandaloneUsageStatus: Bool {
+        !showRateAndBar && showUsageStatus
+    }
+
     func shows(_ group: FloatingPanelContentGroup) -> Bool {
         switch group {
         case .rateAndBar:

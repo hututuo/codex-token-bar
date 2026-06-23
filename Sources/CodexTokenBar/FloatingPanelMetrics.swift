@@ -6,8 +6,8 @@ enum FloatingTokenPanelMetrics {
     static let baseCornerRadius: CGFloat = 14
     static let horizontalPadding: CGFloat = 10
     static let verticalPadding: CGFloat = 7
-    static let rowSpacing: CGFloat = 2.5
-    static let rateRowHeight: CGFloat = 26
+    static let rowSpacing: CGFloat = 4
+    static let rateRowHeight: CGFloat = 30
     static let usageStatusRowHeight: CGFloat = 11
     static let metricRowHeight: CGFloat = 13
     static let quotaRowHeight: CGFloat = 16.5
@@ -29,7 +29,7 @@ enum FloatingTokenPanelMetrics {
     }
 
     static func contentHeight(visibility: FloatingPanelContentVisibility) -> CGFloat {
-        let groups = visibility.visibleGroups
+        let groups = visibility.layoutGroups
         guard !groups.isEmpty else { return 0 }
         let rowHeights = groups.reduce(CGFloat.zero) { partial, group in
             partial + rowHeight(for: group)
@@ -62,12 +62,13 @@ enum FloatingTokenPanelMetrics {
     }
 
     private static func unscaledSize(visibility: FloatingPanelContentVisibility) -> NSSize {
-        let groups = visibility.visibleGroups
+        let groups = visibility.layoutGroups
         guard !groups.isEmpty else { return minimumControlSize }
 
         let contentWidth = groups.map(rowWidth(for:)).max() ?? 0
         let width = max(minimumControlSize.width, horizontalPadding * 2 + contentWidth)
-        let height = max(minimumControlSize.height, verticalPadding * 2 + contentHeight(visibility: visibility))
+        let computedHeight = max(minimumControlSize.height, verticalPadding * 2 + contentHeight(visibility: visibility))
+        let height = visibility == .default ? baseSize.height : computedHeight
         return NSSize(width: width, height: height)
     }
 

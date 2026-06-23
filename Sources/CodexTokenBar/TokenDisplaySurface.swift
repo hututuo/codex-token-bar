@@ -168,7 +168,7 @@ struct TokenDisplayCard: View {
                         .frame(height: rateRowHeight, alignment: .center)
                 }
 
-                if visibility.showUsageStatus {
+                if visibility.showsStandaloneUsageStatus {
                     TokenDisplayUsageStatusLine(text: snapshot.compactUsageStatus)
                         .frame(height: usageStatusRowHeight, alignment: .center)
                 }
@@ -237,7 +237,8 @@ struct TokenDisplayCard: View {
             .frame(height: FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale), alignment: .center)
 
             TokenDisplayRateBar(
-                rate: snapshot.rate
+                rate: snapshot.rate,
+                usageStatus: visibility.embedsUsageStatusInRateRow ? snapshot.compactUsageStatus : nil
             )
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
