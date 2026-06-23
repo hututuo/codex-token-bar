@@ -177,6 +177,36 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(dashboardSource.contains("visibility: floatingPanelContentVisibility"))
     }
 
+    func testFloatingPanelSettingsExposeTextWhiteSlider() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let settingsView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelAppearanceSettingsView.swift")
+        let floatingPanel = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingTokenPanel.swift")
+        let settingsSource = try String(contentsOf: settingsView, encoding: .utf8)
+        let floatingPanelSource = try String(contentsOf: floatingPanel, encoding: .utf8)
+
+        XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelAppearance.textWhiteOverrideKey)"))
+        XCTAssertTrue(settingsSource.contains("title: \"字体\""))
+        XCTAssertTrue(settingsSource.contains("range: 0...1"))
+        XCTAssertTrue(floatingPanelSource.contains("@AppStorage(FloatingPanelAppearance.textWhiteOverrideKey)"))
+        XCTAssertTrue(floatingPanelSource.contains("FloatingPanelReadableTextPalette(fixedWhite: floatingPanelTextWhiteOverride)"))
+    }
+
+    func testFloatingPanelTextWhiteSliderCoversFullBlackToWhiteRange() {
+        let blackPalette = FloatingPanelReadableTextPalette(fixedWhite: 0)
+        let midPalette = FloatingPanelReadableTextPalette(fixedWhite: 0.5)
+        let whitePalette = FloatingPanelReadableTextPalette(fixedWhite: 1)
+
+        XCTAssertEqual(blackPalette.primaryWhite, 0, accuracy: 0.001)
+        XCTAssertEqual(blackPalette.secondaryWhite, 0, accuracy: 0.001)
+        XCTAssertEqual(midPalette.primaryWhite, 0.5, accuracy: 0.001)
+        XCTAssertEqual(whitePalette.primaryWhite, 1, accuracy: 0.001)
+        XCTAssertEqual(FloatingPanelReadableTextPalette(fixedWhite: -0.3).primaryWhite, 0, accuracy: 0.001)
+        XCTAssertEqual(FloatingPanelReadableTextPalette(fixedWhite: 1.3).primaryWhite, 1, accuracy: 0.001)
+    }
+
     func testFloatingPanelPaletteMenuDoesNotAutoDismissWhileEditing() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -309,7 +339,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             endingBefore: "struct TokenDisplayUsageStatusLine"
         ))
 
-        XCTAssertTrue(floatingPanelSource.contains(".environment(\\.tokenDisplayTextPalette, appearance.readableTextPalette)"))
+        XCTAssertTrue(floatingPanelSource.contains(".environment(\\.tokenDisplayTextPalette, FloatingPanelReadableTextPalette(fixedWhite: floatingPanelTextWhiteOverride))"))
         XCTAssertTrue(controlsSource.contains("@Environment(\\.tokenDisplayTextPalette) private var textPalette"))
         XCTAssertTrue(surfaceSource.contains("@Environment(\\.tokenDisplayTextPalette) private var textPalette"))
         XCTAssertTrue(rateBar.contains("let barCenterY = 22.scaled(by: displayScale)"))

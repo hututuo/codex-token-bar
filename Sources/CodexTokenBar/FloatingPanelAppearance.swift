@@ -100,25 +100,44 @@ enum FloatingPanelUnreadEffect: String, CaseIterable, Identifiable {
 
 struct FloatingPanelReadableTextPalette: Equatable, Sendable {
     let backgroundLuminance: Double
+    let fixedWhite: Double?
 
     init(backgroundLuminance: Double) {
         self.backgroundLuminance = min(max(backgroundLuminance, 0), 1)
+        fixedWhite = nil
+    }
+
+    init(fixedWhite: Double) {
+        backgroundLuminance = 0.5
+        self.fixedWhite = min(max(fixedWhite, 0), 1)
     }
 
     var primaryWhite: Double {
-        foregroundWhite(lightValue: 0.06, grayValue: 0.52, darkValue: 0.96)
+        if let fixedWhite {
+            return fixedWhite
+        }
+        return foregroundWhite(lightValue: 0.06, grayValue: 0.52, darkValue: 0.96)
     }
 
     var secondaryWhite: Double {
-        foregroundWhite(lightValue: 0.26, grayValue: 0.58, darkValue: 0.82)
+        if let fixedWhite {
+            return fixedWhite
+        }
+        return foregroundWhite(lightValue: 0.26, grayValue: 0.58, darkValue: 0.82)
     }
 
     var mutedWhite: Double {
-        foregroundWhite(lightValue: 0.38, grayValue: 0.62, darkValue: 0.72)
+        if let fixedWhite {
+            return fixedWhite
+        }
+        return foregroundWhite(lightValue: 0.38, grayValue: 0.62, darkValue: 0.72)
     }
 
     var dividerWhite: Double {
-        foregroundWhite(lightValue: 0.24, grayValue: 0.44, darkValue: 0.64)
+        if let fixedWhite {
+            return fixedWhite
+        }
+        return foregroundWhite(lightValue: 0.24, grayValue: 0.44, darkValue: 0.64)
     }
 
     var primaryColor: Color {
@@ -165,12 +184,14 @@ struct FloatingPanelAppearance: Equatable {
     static let styleKey = "floatingPanelGradientStyle"
     static let unreadEffectKey = "floatingPanelUnreadEffect"
     static let unreadPreviewUntilKey = "floatingPanelUnreadPreviewUntil"
+    static let textWhiteOverrideKey = "floatingPanelTextWhiteOverride"
 
     static let defaultStartHex = "#E6F4FF"
     static let defaultEndHex = "#D4E8FF"
     static let defaultDirection = FloatingPanelGradientDirection.topLeadingToBottomTrailing.rawValue
     static let defaultStyle = FloatingPanelGradientStyle.linear.rawValue
     static let defaultUnreadEffect = FloatingPanelUnreadEffect.ripple.rawValue
+    static let defaultTextWhiteOverride = 0.5
 
     var startHex: String
     var endHex: String

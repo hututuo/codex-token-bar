@@ -296,6 +296,7 @@ struct FloatingTokenPanelView: View {
     @AppStorage(FloatingPanelAppearance.styleKey) private var floatingPanelGradientStyle = FloatingPanelAppearance.defaultStyle
     @AppStorage(FloatingPanelAppearance.unreadEffectKey) private var floatingPanelUnreadEffect = FloatingPanelAppearance.defaultUnreadEffect
     @AppStorage(FloatingPanelAppearance.unreadPreviewUntilKey) private var floatingPanelUnreadPreviewUntil = 0.0
+    @AppStorage(FloatingPanelAppearance.textWhiteOverrideKey) private var floatingPanelTextWhiteOverride = FloatingPanelAppearance.defaultTextWhiteOverride
     let onClose: () -> Void
 
     var body: some View {
@@ -362,7 +363,7 @@ struct FloatingTokenPanelView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .zIndex(4)
         }
-        .environment(\.tokenDisplayTextPalette, appearance.readableTextPalette)
+        .environment(\.tokenDisplayTextPalette, FloatingPanelReadableTextPalette(fixedWhite: floatingPanelTextWhiteOverride))
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .animation(.easeInOut(duration: 0.18), value: unreadCount > 0)

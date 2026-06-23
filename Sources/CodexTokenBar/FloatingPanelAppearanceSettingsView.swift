@@ -27,6 +27,7 @@ struct FloatingPanelAppearanceSettings: View {
     @Binding var unreadEffectRaw: String
     @Binding var isPaletteMenuPresented: Bool
     @Binding var isUnreadEffectMenuPresented: Bool
+    @AppStorage(FloatingPanelAppearance.textWhiteOverrideKey) private var floatingPanelTextWhiteOverride = FloatingPanelAppearance.defaultTextWhiteOverride
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -76,19 +77,30 @@ struct FloatingPanelAppearanceSettings: View {
                         displayValue: "\(Int((floatingPanelScale * 100).rounded()))%",
                         showsBackground: false
                     )
+
+                    AppearanceSliderDivider()
+
+                    CompactFloatingSlider(
+                        title: "字体",
+                        systemImage: "textformat",
+                        value: $floatingPanelTextWhiteOverride,
+                        range: 0...1,
+                        displayValue: "\(Int((floatingPanelTextWhiteOverride * 100).rounded()))%",
+                        showsBackground: false
+                    )
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2)
                 .zIndex(1)
             }
-            .frame(height: 56)
+            .frame(height: 78)
 
             FloatingPanelContentSettings()
                 .frame(height: 24)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 85)
+        .frame(height: 107)
         .padding(.horizontal, 7)
         .padding(.vertical, 4)
         .background(
