@@ -1,9 +1,14 @@
-use crate::core::quota_history;
+use crate::core::{app_paths, quota_history};
 use crate::models::{
     AccountInfo, DashboardSnapshot, LocalDataWarning, QuotaLimit, QuotaSnapshot,
     ResetCreditSummary,
 };
-use std::path::Path;
+#[cfg(test)]
+use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
@@ -16,9 +21,24 @@ mod session_parser;
 mod tests;
 mod token_event_cache;
 
-use aggregates::{activity_days, recent_usage, stats};
-use event_loader::load_token_events;
+use aggregates::{activity_days, recent_usage, recent_usage_30d, recent_usage_7d, stats};
+use event_loader::load_token_events_from_files;
 use ranking::cache_hit_ranking;
+use session_files::jsonl_files;
+use token_event_cache::{file_cache_key, file_signature, CachedFileSignature};
+
+static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<Option<CachedDashboardAggregate>>> =
+    OnceLock::new();
+static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLock::new();
+#[cfg(test)]
+static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct TokenUsageSummary {
+    pub total_tokens: u64,
+    pub today_tokens: u64,
+    pub today_requests: u32,
+}
 
 #[derive(Clone, Debug)]
 struct TokenEvent {
@@ -35,15 +55,23 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         return Err(format!("{} not found", sessions_root.display()));
     }
 
-    let mut events = Vec::new();
     let mut warnings = Vec::new();
-    events.extend(load_token_events(codex_home, &sessions_root, &mut warnings));
+    let session_files = jsonl_files(&sessions_root, &mut warnings);
+    let signature = dashboard_scan_signature(codex_home, &session_files);
+    if let Some(snapshot) = cached_dashboard_snapshot(&signature) {
+        return Ok(snapshot_with_generated_at(snapshot));
+    }
+
+    let mut events = Vec::new();
+    events.extend(load_token_events_from_files(codex_home, session_files, &mut warnings));
 
     if events.is_empty() {
         return Err(no_token_events_error(&warnings));
     }
 
+    record_dashboard_aggregate_build_for_testing(codex_home);
     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let summary = usage_summary_from_events(&events, local_offset);
     let generated_at = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
@@ -52,10 +80,12 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         warnings.push(quota_history::warning(error));
     }
     let recent_usage_24h = recent_usage(&events, local_offset);
+    let recent_usage_7d = recent_usage_7d(&events, local_offset);
+    let recent_usage_30d = recent_usage_30d(&events, local_offset);
     let stats = stats(&events, &activity_days);
     let cache_hit_ranking = cache_hit_ranking(&events, codex_home, local_offset, &mut warnings);
 
-    Ok(DashboardSnapshot {
+    let snapshot = DashboardSnapshot {
         generated_at,
         account: AccountInfo {
             display_name: "账户待读取".into(),
@@ -65,9 +95,55 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         quota: placeholder_quota(),
         activity_days,
         recent_usage_24h,
+        recent_usage_7d,
+        recent_usage_30d,
         cache_hit_ranking,
         warnings,
-    })
+    };
+    store_dashboard_aggregate(signature, Some(snapshot.clone()), summary);
+    Ok(snapshot)
+}
+
+pub fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
+    let sessions_root = codex_home.join("sessions");
+    if !sessions_root.exists() {
+        return Err(format!("{} not found", sessions_root.display()));
+    }
+
+    let mut events = Vec::new();
+    let mut warnings = Vec::new();
+    let session_files = jsonl_files(&sessions_root, &mut warnings);
+    let signature = dashboard_scan_signature(codex_home, &session_files);
+    if let Some(summary) = cached_usage_summary(&signature) {
+        return Ok(summary);
+    }
+
+    events.extend(load_token_events_from_files(codex_home, session_files, &mut warnings));
+
+    if events.is_empty() {
+        return Err(no_token_events_error(&warnings));
+    }
+
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let summary = usage_summary_from_events(&events, local_offset);
+    store_usage_summary(signature, summary.clone());
+
+    Ok(summary)
+}
+
+fn usage_summary_from_events(events: &[TokenEvent], local_offset: UtcOffset) -> TokenUsageSummary {
+    let today = OffsetDateTime::now_utc().to_offset(local_offset).date();
+    let mut summary = TokenUsageSummary::default();
+
+    for event in events {
+        summary.total_tokens = summary.total_tokens.saturating_add(event.tokens);
+        if event.timestamp.to_offset(local_offset).date() == today {
+            summary.today_tokens = summary.today_tokens.saturating_add(event.tokens);
+            summary.today_requests = summary.today_requests.saturating_add(1);
+        }
+    }
+
+    summary
 }
 
 fn no_token_events_error(warnings: &[LocalDataWarning]) -> String {
@@ -105,4 +181,227 @@ fn placeholder_quota() -> QuotaSnapshot {
         },
         pace_label: "额度待读取".into(),
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CachedDashboardAggregate {
+    signature: DashboardScanSignature,
+    snapshot: Option<DashboardSnapshot>,
+    summary: TokenUsageSummary,
+}
+
+#[derive(Clone, Debug)]
+struct CachedUsageSummary {
+    signature: DashboardScanSignature,
+    summary: TokenUsageSummary,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct DashboardScanSignature {
+    codex_home: PathBuf,
+    session_files: Vec<SessionFileSignature>,
+    state_database: Option<CachedFileSignature>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct SessionFileSignature {
+    cache_key: String,
+    signature: CachedFileSignature,
+}
+
+fn dashboard_scan_signature(codex_home: &Path, session_files: &[PathBuf]) -> DashboardScanSignature {
+    let mut file_signatures = session_files
+        .iter()
+        .filter_map(|file| {
+            Some(SessionFileSignature {
+                cache_key: file_cache_key(codex_home, file),
+                signature: file_signature(file)?,
+            })
+        })
+        .collect::<Vec<_>>();
+    file_signatures.sort_by(|left, right| left.cache_key.cmp(&right.cache_key));
+
+    DashboardScanSignature {
+        codex_home: codex_home.to_path_buf(),
+        session_files: file_signatures,
+        state_database: file_signature(&codex_home.join("state_5.sqlite")),
+    }
+}
+
+fn cached_dashboard_snapshot(signature: &DashboardScanSignature) -> Option<DashboardSnapshot> {
+    let cache = DASHBOARD_AGGREGATE_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached) = guard.as_ref() {
+            if &cached.signature == signature {
+                if let Some(snapshot) = cached.snapshot.clone() {
+                    return Some(snapshot);
+                }
+            }
+        }
+    }
+
+    let cached = load_persistent_dashboard_aggregate()?;
+    if &cached.signature == signature {
+        store_dashboard_aggregate(
+            cached.signature.clone(),
+            cached.snapshot.clone(),
+            cached.summary.clone(),
+        );
+        cached.snapshot
+    } else {
+        None
+    }
+}
+
+fn store_dashboard_aggregate(
+    signature: DashboardScanSignature,
+    snapshot: Option<DashboardSnapshot>,
+    summary: TokenUsageSummary,
+) {
+    let cache = DASHBOARD_AGGREGATE_CACHE.get_or_init(|| Mutex::new(None));
+    let aggregate = CachedDashboardAggregate {
+        signature,
+        snapshot,
+        summary,
+    };
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(aggregate.clone());
+    }
+    save_persistent_dashboard_aggregate(&aggregate);
+}
+
+fn cached_usage_summary(signature: &DashboardScanSignature) -> Option<TokenUsageSummary> {
+    let cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached) = guard.as_ref() {
+            if &cached.signature == signature {
+                return Some(cached.summary.clone());
+            }
+        }
+    }
+
+    if let Some(cached) = load_persistent_dashboard_aggregate() {
+        if &cached.signature == signature {
+            store_dashboard_aggregate(
+                cached.signature.clone(),
+                cached.snapshot.clone(),
+                cached.summary.clone(),
+            );
+            return Some(cached.summary);
+        }
+    }
+
+    None
+}
+
+fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSummary) {
+    let cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(CachedUsageSummary {
+            signature: signature.clone(),
+            summary: summary.clone(),
+        });
+    }
+
+    let snapshot = DASHBOARD_AGGREGATE_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard
+                .as_ref()
+                .filter(|cached| cached.signature == signature)
+                .and_then(|cached| cached.snapshot.clone())
+        });
+    store_dashboard_aggregate(signature, snapshot, summary);
+}
+
+fn load_persistent_dashboard_aggregate() -> Option<CachedDashboardAggregate> {
+    let path = app_paths::token_aggregate_cache_path()?;
+    let data = fs::read(path).ok()?;
+    serde_json::from_slice::<PersistentDashboardAggregateCache>(&data)
+        .ok()
+        .and_then(|cache| {
+            (cache.version == 1).then_some(CachedDashboardAggregate {
+                signature: cache.signature,
+                snapshot: cache.snapshot,
+                summary: cache.summary,
+            })
+        })
+}
+
+fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) {
+    let Some(path) = app_paths::token_aggregate_cache_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        if fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    let payload = PersistentDashboardAggregateCache {
+        version: 1,
+        signature: aggregate.signature.clone(),
+        snapshot: aggregate.snapshot.clone(),
+        summary: aggregate.summary.clone(),
+    };
+    let Ok(data) = serde_json::to_vec(&payload) else {
+        return;
+    };
+    let temp_path = path.with_extension("json.tmp");
+    if fs::write(&temp_path, data).is_ok() {
+        let _ = fs::rename(temp_path, path);
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistentDashboardAggregateCache {
+    version: u32,
+    signature: DashboardScanSignature,
+    snapshot: Option<DashboardSnapshot>,
+    summary: TokenUsageSummary,
+}
+
+fn snapshot_with_generated_at(mut snapshot: DashboardSnapshot) -> DashboardSnapshot {
+    snapshot.generated_at = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
+    snapshot
+}
+
+fn record_dashboard_aggregate_build_for_testing(_codex_home: &Path) {
+    #[cfg(test)]
+    {
+        let counts = DASHBOARD_AGGREGATE_BUILD_COUNT.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Ok(mut counts) = counts.lock() {
+            *counts.entry(_codex_home.to_path_buf()).or_default() += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+pub(super) fn reset_dashboard_aggregate_build_count_for_testing() {
+    let counts = DASHBOARD_AGGREGATE_BUILD_COUNT.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut counts) = counts.lock() {
+        counts.clear();
+    }
+    let cache = DASHBOARD_AGGREGATE_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = cache.lock() {
+        *guard = None;
+    }
+    let summary_cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = summary_cache.lock() {
+        *guard = None;
+    }
+}
+
+#[cfg(test)]
+pub(super) fn dashboard_aggregate_build_count_for_testing(codex_home: &Path) -> usize {
+    let counts = DASHBOARD_AGGREGATE_BUILD_COUNT.get_or_init(|| Mutex::new(HashMap::new()));
+    counts
+        .lock()
+        .ok()
+        .and_then(|counts| counts.get(codex_home).copied())
+        .unwrap_or(0)
 }

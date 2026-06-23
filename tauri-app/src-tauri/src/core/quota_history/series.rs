@@ -45,22 +45,32 @@ pub(super) fn make_recent_history(
     rows: Vec<QuotaHistoryRow>,
     count: usize,
 ) -> Vec<QuotaHistoryPoint> {
-    let end = floor_to_recent_bin(now_unix());
-    let start = end - (count.saturating_sub(1) as f64) * RECENT_INTERVAL_SECONDS as f64;
+    make_interval_history(rows, count, RECENT_INTERVAL_SECONDS)
+}
+
+pub(super) fn make_interval_history(
+    rows: Vec<QuotaHistoryRow>,
+    count: usize,
+    interval_seconds: i64,
+) -> Vec<QuotaHistoryPoint> {
+    let interval_seconds = interval_seconds.max(RECENT_INTERVAL_SECONDS);
+    let end = floor_to_bin(now_unix(), interval_seconds);
+    let start = end - (count.saturating_sub(1) as f64) * interval_seconds as f64;
     let sorted = sanitized_rows(rows);
     let mut row_index = 0;
     let mut latest: Option<QuotaHistoryRow> = None;
 
     (0..count)
         .map(|index| {
-            let bin_start = start + index as f64 * RECENT_INTERVAL_SECONDS as f64;
-            let end = bin_start + RECENT_INTERVAL_SECONDS as f64;
+            let bin_start = start + index as f64 * interval_seconds as f64;
+            let end = bin_start + interval_seconds as f64;
             while row_index < sorted.len() && sorted[row_index].created_at <= end {
                 latest = Some(sorted[row_index].clone());
                 row_index += 1;
             }
             QuotaHistoryPoint {
                 label: format_unix_time(bin_start),
+                start_unix: bin_start.round() as i64,
                 five_hour_remaining_percent: quota_remaining(
                     latest.as_ref(),
                     end,
@@ -105,17 +115,116 @@ pub(super) fn make_daily_history(
 
 pub(super) fn sanitized_rows(rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow> {
     let mut last_by_account: HashMap<String, QuotaHistoryRow> = HashMap::new();
-    rows.into_iter()
+    let normalized = rows.into_iter()
         .map(|row| {
             let normalized = row.normalized_after(last_by_account.get(&row.account_key));
             last_by_account.insert(row.account_key.clone(), normalized.clone());
             normalized
         })
-        .collect()
+        .collect();
+    suppress_recovered_full_usage_spikes(normalized)
 }
 
-fn floor_to_recent_bin(timestamp: f64) -> f64 {
-    let interval = RECENT_INTERVAL_SECONDS as f64;
+fn suppress_recovered_full_usage_spikes(mut rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow> {
+    suppress_recovered_full_usage_spikes_for_window(
+        &mut rows,
+        |row| row.five_hour_used_percent,
+        |row| row.five_hour_resets_at,
+        |row, value| row.five_hour_used_percent = value,
+    );
+    suppress_recovered_full_usage_spikes_for_window(
+        &mut rows,
+        |row| row.seven_day_used_percent,
+        |row| row.seven_day_resets_at,
+        |row, value| row.seven_day_used_percent = value,
+    );
+    rows
+}
+
+fn suppress_recovered_full_usage_spikes_for_window(
+    rows: &mut [QuotaHistoryRow],
+    used: impl Fn(&QuotaHistoryRow) -> Option<i32> + Copy,
+    reset: impl Fn(&QuotaHistoryRow) -> Option<f64> + Copy,
+    mut set_used: impl FnMut(&mut QuotaHistoryRow, Option<i32>),
+) {
+    let mut index = 0;
+    while index < rows.len() {
+        let Some(current_used) = used(&rows[index]) else {
+            index += 1;
+            continue;
+        };
+        if current_used < 95 {
+            index += 1;
+            continue;
+        }
+
+        let current_account = rows[index].account_key.clone();
+        let current_reset = reset(&rows[index]);
+        let mut end = index + 1;
+        while end < rows.len()
+            && rows[end].account_key == current_account
+            && same_reset(reset(&rows[end]), current_reset)
+            && used(&rows[end]).is_some_and(|value| value >= 95)
+        {
+            end += 1;
+        }
+
+        let previous = previous_same_cycle_low(rows, index, &current_account, current_reset, used, reset);
+        let next = next_same_cycle_low(rows, end, &current_account, current_reset, used, reset);
+        if let (Some(previous_used), Some(next_used)) = (previous, next) {
+            let recovered_floor = previous_used.max(next_used);
+            if current_used - recovered_floor >= 20 {
+                for row in &mut rows[index..end] {
+                    set_used(row, Some(previous_used));
+                }
+            }
+        }
+
+        index = end;
+    }
+}
+
+fn previous_same_cycle_low(
+    rows: &[QuotaHistoryRow],
+    index: usize,
+    account_key: &str,
+    reset_at: Option<f64>,
+    used: impl Fn(&QuotaHistoryRow) -> Option<i32> + Copy,
+    reset: impl Fn(&QuotaHistoryRow) -> Option<f64> + Copy,
+) -> Option<i32> {
+    rows[..index]
+        .iter()
+        .rev()
+        .find(|row| row.account_key == account_key && same_reset(reset(row), reset_at))
+        .and_then(used)
+        .filter(|value| *value <= 80)
+}
+
+fn next_same_cycle_low(
+    rows: &[QuotaHistoryRow],
+    index: usize,
+    account_key: &str,
+    reset_at: Option<f64>,
+    used: impl Fn(&QuotaHistoryRow) -> Option<i32> + Copy,
+    reset: impl Fn(&QuotaHistoryRow) -> Option<f64> + Copy,
+) -> Option<i32> {
+    rows[index..]
+        .iter()
+        .find(|row| row.account_key == account_key && same_reset(reset(row), reset_at))
+        .and_then(used)
+        .filter(|value| *value <= 80)
+}
+
+fn same_reset(left: Option<f64>, right: Option<f64>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => (left - right).abs() < 1.0,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn floor_to_bin(timestamp: f64, interval_seconds: i64) -> f64 {
+    let interval = interval_seconds as f64;
     (timestamp / interval).floor() * interval
 }
 

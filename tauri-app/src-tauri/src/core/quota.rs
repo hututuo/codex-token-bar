@@ -12,7 +12,7 @@ use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const SUCCESS_CACHE_TTL: Duration = Duration::from_secs(180);
+const SUCCESS_CACHE_TTL: Duration = Duration::from_secs(60);
 const FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
 
 mod auth;
@@ -38,10 +38,7 @@ pub fn read_account_quota(codex_home: &Path, force_refresh: bool) -> Result<Acco
                 return match &entry.result {
                     Ok(bundle) => {
                         let mut cached = bundle.clone();
-                        match quota_history::recent_history_24h() {
-                            Ok(history) => cached.quota_history_24h = history,
-                            Err(error) => cached.warnings.push(quota_history::warning(error)),
-                        }
+                        refresh_quota_histories(&mut cached);
                         Ok(cached)
                     }
                     Err(error) => Err(error.clone()),
@@ -86,15 +83,14 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
                 account: account_info(codex_home, Some(&quota)),
                 quota,
                 quota_history_24h: Vec::new(),
+                quota_history_7d: Vec::new(),
+                quota_history_30d: Vec::new(),
                 warnings: Vec::new(),
             };
             if let Err(error) = quota_history::record_bundle(&bundle) {
                 bundle.warnings.push(quota_history::warning(error));
             }
-            match quota_history::recent_history_24h() {
-                Ok(history) => bundle.quota_history_24h = history,
-                Err(error) => bundle.warnings.push(quota_history::warning(error)),
-            }
+            refresh_quota_histories(&mut bundle);
             bundle
         }
         Err(error) => return Err(format!("额度读取失败：{error}")),
@@ -110,6 +106,21 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
     }
 
     Ok(bundle)
+}
+
+fn refresh_quota_histories(bundle: &mut AccountQuotaBundle) {
+    match quota_history::recent_history_24h() {
+        Ok(history) => bundle.quota_history_24h = history,
+        Err(error) => bundle.warnings.push(quota_history::warning(error)),
+    }
+    match quota_history::recent_history_7d() {
+        Ok(history) => bundle.quota_history_7d = history,
+        Err(error) => bundle.warnings.push(quota_history::warning(error)),
+    }
+    match quota_history::recent_history_30d() {
+        Ok(history) => bundle.quota_history_30d = history,
+        Err(error) => bundle.warnings.push(quota_history::warning(error)),
+    }
 }
 
 pub fn account_info(codex_home: &Path, quota: Option<&QuotaSnapshot>) -> AccountInfo {
@@ -264,6 +275,8 @@ mod tests {
             },
             quota,
             quota_history_24h: Vec::new(),
+            quota_history_7d: Vec::new(),
+            quota_history_30d: Vec::new(),
             warnings: Vec::new(),
         });
         assert_eq!(cache_ttl(&success), SUCCESS_CACHE_TTL);

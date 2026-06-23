@@ -159,61 +159,48 @@ fn format_time(date: OffsetDateTime) -> String {
 }
 
 fn pace_label(seven_day: &QuotaLimit) -> String {
-    let expected = expected_remaining_from_reset(&seven_day.resets_at, "7d");
+    let expected = expected_remaining_from_reset_unix(seven_day.resets_at_unix, 7 * 24 * 60);
     let Some(expected) = expected else {
         return "额度已更新".into();
     };
     let remaining = (seven_day.remaining_percent * 100.0).round() as i32;
     let delta = remaining - expected;
+    let hours_left = hours_until(seven_day.resets_at_unix);
+
+    if hours_left.is_some_and(|hours| hours <= 24.0) && delta >= 8 {
+        return format!("最后一天，可以冲（多 {delta}%）");
+    }
     if delta <= -20 {
-        format!("使劲蹬，低 {}%", delta.abs())
-    } else if delta < -5 {
-        format!("慢一点，低 {}%", delta.abs())
+        format!("用得太快，先省着（低 {}%）", delta.abs())
+    } else if delta <= -10 {
+        format!("用得偏快，慢一点（低 {}%）", delta.abs())
+    } else if delta < -3 {
+        format!("略快，贴线用（低 {}%）", delta.abs())
     } else if delta >= 20 {
-        format!("余量充足，多 {delta}%")
-    } else if delta > 0 {
-        format!("节奏稳，多 {delta}%")
+        format!("余量很足，使劲蹬（多 {delta}%）")
+    } else if delta >= 8 {
+        format!("节奏很好，可以冲（多 {delta}%）")
+    } else if delta > 3 {
+        format!("略有余量（多 {delta}%）")
     } else if delta < 0 {
-        format!("贴线偏快，低 {}%", delta.abs())
+        format!("贴近均速，稍快 {}%", delta.abs())
     } else {
-        "正好贴线".into()
+        "正好贴着均速线".into()
     }
 }
 
-fn expected_remaining_from_reset(reset_text: &str, label: &str) -> Option<i32> {
-    let duration_minutes = match label {
-        "5h" => 300.0,
-        "7d" => 10_080.0,
-        _ => return None,
-    };
-    if reset_text == "待读取" || reset_text == "--:--" {
-        return None;
-    }
-    // The compact 7d reset label may omit the time, so the pace label is a best-effort hint.
-    if label == "7d" && !reset_text.contains(':') {
-        return None;
-    }
-    let parts = reset_text.split(':').collect::<Vec<_>>();
-    if parts.len() != 2 {
-        return None;
-    }
-    let hour = parts[0].parse::<i64>().ok()?;
-    let minute = parts[1].parse::<i64>().ok()?;
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-    let now = OffsetDateTime::now_utc().to_offset(local_offset);
-    let reset_today = now
-        .date()
-        .with_hms(hour as u8, minute as u8, 0)
-        .ok()?
-        .assume_offset(local_offset);
-    let reset = if reset_today < now {
-        reset_today + time::Duration::days(1)
-    } else {
-        reset_today
-    };
-    let remaining_minutes = (reset - now).whole_minutes().max(0) as f64;
-    let elapsed = ((duration_minutes - remaining_minutes) / duration_minutes).clamp(0.0, 1.0);
-    Some((100.0 - elapsed * 100.0).round() as i32)
+fn expected_remaining_from_reset_unix(reset_unix: Option<i64>, duration_minutes: i64) -> Option<i32> {
+    let reset_unix = reset_unix?;
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let remaining_minutes = ((reset_unix - now).max(0) / 60).min(duration_minutes) as f64;
+    let expected = remaining_minutes / duration_minutes as f64 * 100.0;
+    Some(expected.round() as i32)
+}
+
+fn hours_until(reset_unix: Option<i64>) -> Option<f64> {
+    let reset_unix = reset_unix?;
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    Some(((reset_unix - now).max(0) as f64) / 3600.0)
 }
 
 #[cfg(test)]
@@ -239,5 +226,31 @@ mod tests {
         assert_eq!(quota.five_hour.label, "5h");
         assert!((quota.five_hour.used_percent - 0.25).abs() < 0.001);
         assert!((quota.seven_day.remaining_percent - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn pace_label_warns_when_seven_day_usage_is_too_fast() {
+        let seven_day = QuotaLimit {
+            label: "7d".into(),
+            remaining_percent: 0.70,
+            used_percent: 0.30,
+            resets_at: "7d".into(),
+            resets_at_unix: Some(OffsetDateTime::now_utc().unix_timestamp() + 7 * 24 * 60 * 60),
+        };
+
+        assert!(pace_label(&seven_day).starts_with("用得太快，先省着"));
+    }
+
+    #[test]
+    fn pace_label_encourages_when_seven_day_has_extra_room() {
+        let seven_day = QuotaLimit {
+            label: "7d".into(),
+            remaining_percent: 1.0,
+            used_percent: 0.0,
+            resets_at: "7d".into(),
+            resets_at_unix: Some(OffsetDateTime::now_utc().unix_timestamp() + 5 * 24 * 60 * 60),
+        };
+
+        assert!(pace_label(&seven_day).starts_with("余量很足，使劲蹬"));
     }
 }

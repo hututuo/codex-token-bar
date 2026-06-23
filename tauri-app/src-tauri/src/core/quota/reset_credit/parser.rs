@@ -36,6 +36,10 @@ pub(super) fn parse_reset_credit_summary(value: &Value) -> ResetCreditSummary {
 fn parse_reset_credit_detail(value: &Value, index: usize) -> ResetCreditDetail {
     let status_raw = text_from_keys(value, &["status"]).unwrap_or_else(|| "unknown".into());
     let status = human_reset_status(&status_raw, value);
+    let title = text_from_keys(value, &["title", "name", "label"])
+        .unwrap_or_else(|| format!("重置卡 {}", index + 1));
+    let reset_type = text_from_keys(value, &["reset_type", "resetType", "type", "kind"])
+        .unwrap_or_else(|| "未提供".into());
     let issued_at = time_from_keys(
         value,
         &[
@@ -48,6 +52,15 @@ fn parse_reset_credit_detail(value: &Value, index: usize) -> ResetCreditDetail {
         ],
     );
     let expires_at = time_from_keys(value, &["expires_at", "expiresAt", "expiration", "expires"]);
+    let redeem_started_at = time_from_keys(
+        value,
+        &[
+            "redeem_started_at",
+            "redeemStartedAt",
+            "redeem_start_at",
+            "redeemStartAt",
+        ],
+    );
     let redeemed_at = {
         let value = time_from_keys(value, &["redeemed_at", "redeemedAt", "used_at", "usedAt"]);
         if value == "未提供" && status != "已使用" {
@@ -59,6 +72,31 @@ fn parse_reset_credit_detail(value: &Value, index: usize) -> ResetCreditDetail {
     let source = text_from_keys(value, &["source", "grant_source", "grantSource", "origin", "reason"])
         .unwrap_or_else(|| "未提供".into());
     let associated_user = associated_user_label(value).unwrap_or_else(|| "未提供".into());
+    let detail_note = text_from_keys(
+        value,
+        &[
+            "description",
+            "detail",
+            "details",
+            "note",
+            "reason",
+            "grant_reason",
+            "grantReason",
+        ],
+    )
+    .unwrap_or_else(|| "未提供".into());
+    let profile_image_url = text_from_keys(
+        value,
+        &[
+            "profile_image_url",
+            "profileImageUrl",
+            "avatar_url",
+            "avatarUrl",
+            "image_url",
+            "imageUrl",
+        ],
+    )
+    .unwrap_or_else(|| "未提供".into());
     let short_id = text_from_keys(
         value,
         &["id", "credit_id", "creditId", "reset_credit_id", "resetCreditId"],
@@ -67,20 +105,26 @@ fn parse_reset_credit_detail(value: &Value, index: usize) -> ResetCreditDetail {
     .unwrap_or_else(|| "未提供".into());
     let summary = [
         format!("状态 {status}"),
+        format!("类型 {reset_type}"),
         format!("到期 {expires_at}"),
         format!("关联 {associated_user}"),
+        format!("说明 {detail_note}"),
     ]
     .join(" · ");
 
     ResetCreditDetail {
-        title: format!("重置卡 {}", index + 1),
+        title,
         status,
         summary,
+        reset_type,
         issued_at,
         expires_at,
+        redeem_started_at,
         redeemed_at,
         source,
+        detail_note,
         associated_user,
+        profile_image_url,
         short_id,
     }
 }
@@ -113,6 +157,8 @@ fn associated_user_label(value: &Value) -> Option<String> {
             "email",
             "user_id",
             "userId",
+            "profile_user_id",
+            "profileUserId",
             "account_id",
             "accountId",
         ],
@@ -193,6 +239,8 @@ fn labels_from_array(value: &Value) -> Option<String> {
                         "id",
                         "user_id",
                         "userId",
+                        "profile_user_id",
+                        "profileUserId",
                         "account_id",
                         "accountId",
                     ],
@@ -248,23 +296,33 @@ mod tests {
     #[test]
     fn parses_reset_credit_detail_into_human_fields() {
         let credit = json!({
+            "title": "每周重置卡",
             "status": "available",
+            "reset_type": "weekly",
             "created_at": "2026-06-12T01:00:00Z",
             "expires_at": "2026-06-20T01:00:00Z",
+            "redeem_started_at": "2026-06-13T01:00:00Z",
             "source": "system_grant",
-            "associatedUsers": [{ "email": "local-account@codex.local" }],
+            "reason": "weekly_reset_credit",
+            "profile_image_url": "https://example.com/avatar.png",
+            "associatedUsers": [{ "profile_user_id": "user_123" }],
             "id": "reset-credit-abcdef123456"
         });
 
         let detail = parse_reset_credit_detail(&credit, 0);
-        assert_eq!(detail.title, "重置卡 1");
+        assert_eq!(detail.title, "每周重置卡");
         assert_eq!(detail.status, "可用");
+        assert_eq!(detail.reset_type, "weekly");
         assert_eq!(detail.redeemed_at, "未使用");
         assert_eq!(detail.source, "system_grant");
-        assert_eq!(detail.associated_user, "local-account@codex.local");
+        assert_eq!(detail.detail_note, "weekly_reset_credit");
+        assert_eq!(detail.associated_user, "user_123");
+        assert_eq!(detail.profile_image_url, "https://example.com/avatar.png");
         assert_eq!(detail.short_id, "reset-...3456");
         assert!(detail.issued_at.starts_with("2026-06-12 "));
         assert!(detail.expires_at.starts_with("2026-06-20 "));
+        assert!(detail.redeem_started_at.starts_with("2026-06-13 "));
+        assert!(detail.summary.contains("类型 weekly"));
     }
 
     #[test]

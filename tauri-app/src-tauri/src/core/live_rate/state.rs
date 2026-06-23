@@ -4,7 +4,7 @@ use rusqlite::{params, Connection, Result};
 use std::path::Path;
 use std::time::Duration;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct UsageSummary {
     pub(super) total_tokens: u64,
     pub(super) today_tokens: u64,

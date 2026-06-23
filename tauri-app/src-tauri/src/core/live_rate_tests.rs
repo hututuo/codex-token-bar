@@ -1,7 +1,10 @@
 use super::*;
 use rusqlite::{params, Connection};
 use std::fs;
+use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 #[test]
 fn read_snapshot_counts_recent_stream_deltas() {
@@ -117,6 +120,26 @@ fn read_snapshot_keeps_idle_state_with_warning_when_logs_database_is_missing() {
         .warnings
         .iter()
         .any(|warning| warning.source == "live_rate_stream"));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn floating_snapshot_uses_precise_token_summary_when_available() {
+    let root = temp_root("live-rate-precise-summary");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
+    create_logs_database(&root, |_connection, _now| {});
+    write_token_session(&root, 1_000, 40);
+
+    let snapshot = read_snapshot(&root, None);
+    assert_eq!(snapshot.total_tokens_today, 40);
+    assert_eq!(snapshot.requests_today, 1);
+
+    let floating = read_floating_snapshot_from_live(&root, &snapshot);
+    assert_eq!(floating.total_tokens_label, "总 1040");
+    assert_eq!(floating.today_tokens_label, "今 40");
+    assert_eq!(floating.requests_label, "次 1");
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -257,6 +280,27 @@ where
         .unwrap();
     let now = current_time_seconds().floor() as i64;
     write_rows(&connection, now);
+}
+
+fn write_token_session(root: &Path, yesterday_tokens: u64, today_tokens: u64) {
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let now = OffsetDateTime::now_utc();
+    let yesterday = now - time::Duration::days(1);
+    let file = session_dir.join("rollout-019eaaaa-bbbb-cccc-dddd-eeeeffffffff.jsonl");
+    let mut output = fs::File::create(file).unwrap();
+    writeln!(
+        output,
+        r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":{yesterday_tokens}}}}}}}}}"#,
+        yesterday.format(&Rfc3339).unwrap()
+    )
+    .unwrap();
+    writeln!(
+        output,
+        r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":{today_tokens}}}}}}}}}"#,
+        now.format(&Rfc3339).unwrap()
+    )
+    .unwrap();
 }
 
 fn insert_log(

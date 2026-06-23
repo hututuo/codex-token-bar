@@ -27,7 +27,9 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
     if let Err(error) = quota_history::apply_activity_history(&mut activity_days) {
         warnings.push(quota_history::warning(error));
     }
-    let recent_usage_24h = empty_recent_usage(local_now);
+    let recent_usage_24h = empty_recent_usage(local_now, 5 * 60, 289);
+    let recent_usage_7d = empty_recent_usage(local_now, 60 * 60, 7 * 24);
+    let recent_usage_30d = empty_recent_usage(local_now, 6 * 60 * 60, 30 * 4);
 
     Ok(DashboardSnapshot {
         generated_at,
@@ -39,6 +41,8 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
         quota: placeholder_quota(),
         activity_days,
         recent_usage_24h,
+        recent_usage_7d,
+        recent_usage_30d,
         cache_hit_ranking: Vec::<CacheHitRankingItem>::new(),
         warnings,
     })
@@ -58,19 +62,27 @@ fn empty_activity_days(today: Date) -> Vec<ActivityDay> {
         .collect()
 }
 
-fn empty_recent_usage(now: OffsetDateTime) -> Vec<RecentUsagePoint> {
+fn empty_recent_usage(
+    now: OffsetDateTime,
+    interval_seconds: i64,
+    point_count: i64,
+) -> Vec<RecentUsagePoint> {
     let now_epoch = now.unix_timestamp();
-    let end_bin = now_epoch - now_epoch.rem_euclid(300);
-    let start_bin = end_bin - 24 * 60 * 60;
-    (0..=288)
+    let end_bin = now_epoch - now_epoch.rem_euclid(interval_seconds);
+    let start_bin = end_bin - (point_count.saturating_sub(1)) * interval_seconds;
+    (0..point_count)
         .map(|index| {
-            let timestamp = OffsetDateTime::from_unix_timestamp(start_bin + index * 300)
+            let bin_epoch = start_bin + index * interval_seconds;
+            let timestamp = OffsetDateTime::from_unix_timestamp(bin_epoch)
                 .unwrap_or(now)
                 .to_offset(now.offset());
             RecentUsagePoint {
                 label: format_time(timestamp),
+                start_unix: bin_epoch,
                 tokens: 0,
                 calls: 0,
+                input_tokens: 0,
+                cached_input_tokens: 0,
                 cache_hit_rate: None,
                 five_hour_remaining_percent: None,
                 seven_day_remaining_percent: None,
@@ -194,7 +206,11 @@ mod tests {
         assert_eq!(snapshot.stats.total_threads, 2);
         assert!(snapshot.activity_days.iter().all(|day| day.tokens == 0));
         assert_eq!(snapshot.recent_usage_24h.len(), 289);
+        assert_eq!(snapshot.recent_usage_7d.len(), 168);
+        assert_eq!(snapshot.recent_usage_30d.len(), 120);
         assert!(snapshot.recent_usage_24h.iter().all(|point| point.tokens == 0));
+        assert!(snapshot.recent_usage_7d.iter().all(|point| point.tokens == 0));
+        assert!(snapshot.recent_usage_30d.iter().all(|point| point.tokens == 0));
 
         fs::remove_dir_all(root).unwrap();
     }

@@ -1,4 +1,4 @@
-use super::session_files::{jsonl_files, session_id_from_file};
+use super::session_files::session_id_from_file;
 use super::token_event_cache::{
     codex_home_cache_key, file_cache_key, parse_session_file_cached, token_cache_warning,
     TokenEventCache,
@@ -6,14 +6,13 @@ use super::token_event_cache::{
 use super::TokenEvent;
 use crate::models::LocalDataWarning;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-pub(super) fn load_token_events(
+pub(super) fn load_token_events_from_files(
     codex_home: &Path,
-    sessions_root: &Path,
+    session_files: Vec<PathBuf>,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Vec<TokenEvent> {
-    let session_files = jsonl_files(sessions_root, warnings);
     let mut cache = TokenEventCache::load(warnings);
     let home_cache_key = codex_home_cache_key(codex_home);
     let home_cache = cache.home_cache_mut(&home_cache_key, codex_home);

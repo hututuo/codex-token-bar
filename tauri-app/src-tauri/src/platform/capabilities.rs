@@ -126,9 +126,9 @@ fn status_tray_capability(
 
     match platform {
         DesktopPlatform::Macos => ready("状态栏", "macOS 状态栏调试实现可用，已接入独立弹出面板。"),
-        DesktopPlatform::Windows => pending(
+        DesktopPlatform::Windows => ready(
             "系统托盘",
-            "共享弹出面板已完成，Windows 托盘定位和图标行为留到真机实现。",
+            "Windows 系统托盘图标已接入；弹出面板和实时数字后续用动态图标/面板方案单独实现。",
         ),
         DesktopPlatform::Linux | DesktopPlatform::Other => {
             unavailable("系统托盘", "当前平台暂未接入托盘入口。")
@@ -225,7 +225,7 @@ mod tests {
         assert_ready(&capabilities.floating_window);
         assert_pending(&capabilities.floating_transparency);
         assert_pending(&capabilities.floating_drag);
-        assert_pending(&capabilities.status_tray);
+        assert_ready(&capabilities.status_tray);
         assert_pending(&capabilities.status_tray_live_text);
         assert_ready(&capabilities.autostart);
     }

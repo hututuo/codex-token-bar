@@ -76,22 +76,55 @@ pub(super) fn rows_since(
     connection: &Connection,
     age_seconds: f64,
 ) -> SqlResult<Vec<QuotaHistoryRow>> {
-    let Some(account_key) = latest_account_key(connection)? else {
+    let Some(filter) = latest_account_filter(connection)? else {
         return Ok(Vec::new());
     };
     let cutoff = now_unix() - age_seconds;
-    query_rows(
-        connection,
-        r#"
-        SELECT created_at, account_key, plan_type, limit_name, account_name,
-               five_hour_used_percent, five_hour_resets_at,
-               seven_day_used_percent, seven_day_resets_at, status
-        FROM quota_snapshots
-        WHERE account_key = ?1 AND created_at >= ?2
-        ORDER BY created_at ASC;
-        "#,
-        params![account_key, cutoff],
-    )
+    if let Some(account_name) = filter.account_name.as_ref().filter(|value| !value.trim().is_empty()) {
+        query_rows(
+            connection,
+            r#"
+            SELECT created_at, account_key, plan_type, limit_name, account_name,
+                   five_hour_used_percent, five_hour_resets_at,
+                   seven_day_used_percent, seven_day_resets_at, status
+            FROM quota_snapshots
+            WHERE created_at >= ?1
+              AND (
+                account_key = ?2
+                OR (
+                  account_name = ?3
+                  AND (?4 IS NULL OR lower(coalesce(plan_type, '')) = lower(?4))
+                  AND (
+                    ?5 IS NULL
+                    OR limit_name = ?5
+                    OR (?5 = 'codex' AND coalesce(limit_name, '') = '')
+                  )
+                )
+              )
+            ORDER BY created_at ASC;
+            "#,
+            params![
+                cutoff,
+                filter.account_key,
+                account_name,
+                filter.plan_type,
+                filter.limit_name
+            ],
+        )
+    } else {
+        query_rows(
+            connection,
+            r#"
+            SELECT created_at, account_key, plan_type, limit_name, account_name,
+                   five_hour_used_percent, five_hour_resets_at,
+                   seven_day_used_percent, seven_day_resets_at, status
+            FROM quota_snapshots
+            WHERE account_key = ?1 AND created_at >= ?2
+            ORDER BY created_at ASC;
+            "#,
+            params![filter.account_key, cutoff],
+        )
+    }
 }
 
 pub(super) fn prune(connection: &Connection, now: f64) -> SqlResult<()> {
@@ -103,12 +136,31 @@ pub(super) fn prune(connection: &Connection, now: f64) -> SqlResult<()> {
     Ok(())
 }
 
-fn latest_account_key(connection: &Connection) -> SqlResult<Option<String>> {
+struct AccountHistoryFilter {
+    account_key: String,
+    plan_type: Option<String>,
+    limit_name: Option<String>,
+    account_name: Option<String>,
+}
+
+fn latest_account_filter(connection: &Connection) -> SqlResult<Option<AccountHistoryFilter>> {
     connection
         .query_row(
-            "SELECT account_key FROM quota_snapshots ORDER BY created_at DESC LIMIT 1;",
+            r#"
+            SELECT account_key, plan_type, limit_name, account_name
+            FROM quota_snapshots
+            ORDER BY created_at DESC
+            LIMIT 1;
+            "#,
             [],
-            |row| row.get(0),
+            |row| {
+                Ok(AccountHistoryFilter {
+                    account_key: row.get(0)?,
+                    plan_type: row.get(1)?,
+                    limit_name: row.get(2)?,
+                    account_name: row.get(3)?,
+                })
+            },
         )
         .optional()
 }

@@ -201,7 +201,7 @@ impl CachedTokenEvent {
     }
 }
 
-fn file_signature(file: &Path) -> Option<CachedFileSignature> {
+pub(super) fn file_signature(file: &Path) -> Option<CachedFileSignature> {
     let metadata = fs::metadata(file).ok()?;
     let modified = metadata.modified().ok()?;
     let modified_millis = modified.duration_since(UNIX_EPOCH).ok()?.as_millis();

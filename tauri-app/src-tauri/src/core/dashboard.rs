@@ -33,17 +33,13 @@ impl DashboardDataSource for LocalCodexDataSource {
     fn read_dashboard_snapshot(&self) -> Result<DashboardSnapshot, String> {
         let mut snapshot = usage::state_sqlite::dashboard_snapshot(self.codex_home())
             .map_err(|error| error.to_string())?;
-        if let Err(error) = quota_history::apply_recent_history(&mut snapshot.recent_usage_24h) {
-            snapshot.warnings.push(quota_history::warning(error));
-        }
+        apply_recent_quota_history(&mut snapshot);
         Ok(snapshot)
     }
 
     fn read_precise_dashboard_snapshot(&self) -> Result<DashboardSnapshot, String> {
         let mut snapshot = usage::token_count_jsonl::dashboard_snapshot(self.codex_home())?;
-        if let Err(error) = quota_history::apply_recent_history(&mut snapshot.recent_usage_24h) {
-            snapshot.warnings.push(quota_history::warning(error));
-        }
+        apply_recent_quota_history(&mut snapshot);
         Ok(snapshot)
     }
 
@@ -61,5 +57,17 @@ impl DashboardDataSource for LocalCodexDataSource {
 
     fn scan_provider_repair(&self) -> ProviderRepairSnapshot {
         provider_repair::scan_provider_repair(self.codex_home())
+    }
+}
+
+fn apply_recent_quota_history(snapshot: &mut DashboardSnapshot) {
+    for result in [
+        quota_history::apply_recent_history(&mut snapshot.recent_usage_24h),
+        quota_history::apply_recent_history_7d(&mut snapshot.recent_usage_7d),
+        quota_history::apply_recent_history_30d(&mut snapshot.recent_usage_30d),
+    ] {
+        if let Err(error) = result {
+            snapshot.warnings.push(quota_history::warning(error));
+        }
     }
 }

@@ -1,8 +1,8 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{AccountInfo, LocalDataWarning, QuotaSnapshot};
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardSnapshot {
     pub generated_at: String,
@@ -11,11 +11,13 @@ pub struct DashboardSnapshot {
     pub quota: QuotaSnapshot,
     pub activity_days: Vec<ActivityDay>,
     pub recent_usage_24h: Vec<RecentUsagePoint>,
+    pub recent_usage_7d: Vec<RecentUsagePoint>,
+    pub recent_usage_30d: Vec<RecentUsagePoint>,
     pub cache_hit_ranking: Vec<CacheHitRankingItem>,
     pub warnings: Vec<LocalDataWarning>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardStats {
     pub total_tokens: u64,
@@ -27,7 +29,7 @@ pub struct DashboardStats {
     pub total_threads: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityDay {
     pub date: String,
@@ -38,18 +40,21 @@ pub struct ActivityDay {
     pub seven_day_remaining_percent: Option<f64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecentUsagePoint {
     pub label: String,
+    pub start_unix: i64,
     pub tokens: u64,
     pub calls: u32,
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
     pub cache_hit_rate: Option<f64>,
     pub five_hour_remaining_percent: Option<f64>,
     pub seven_day_remaining_percent: Option<f64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheHitRankingItem {
     pub rank: u32,

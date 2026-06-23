@@ -6,6 +6,10 @@ use time::{Date, Duration, OffsetDateTime, UtcOffset};
 
 const RECENT_INTERVAL_SECONDS: i64 = 5 * 60;
 const RECENT_POINT_COUNT: i64 = 289;
+const HOURLY_INTERVAL_SECONDS: i64 = 60 * 60;
+const SEVEN_DAY_POINT_COUNT: i64 = 7 * 24;
+const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
+const THIRTY_DAY_POINT_COUNT: i64 = 30 * 4;
 
 #[derive(Default)]
 pub(super) struct TokenAccumulator {
@@ -66,29 +70,60 @@ pub(super) fn recent_usage(
     events: &[TokenEvent],
     local_offset: UtcOffset,
 ) -> Vec<RecentUsagePoint> {
+    usage_series(events, local_offset, RECENT_INTERVAL_SECONDS, RECENT_POINT_COUNT)
+}
+
+pub(super) fn recent_usage_7d(
+    events: &[TokenEvent],
+    local_offset: UtcOffset,
+) -> Vec<RecentUsagePoint> {
+    usage_series(events, local_offset, HOURLY_INTERVAL_SECONDS, SEVEN_DAY_POINT_COUNT)
+}
+
+pub(super) fn recent_usage_30d(
+    events: &[TokenEvent],
+    local_offset: UtcOffset,
+) -> Vec<RecentUsagePoint> {
+    usage_series(
+        events,
+        local_offset,
+        SIX_HOUR_INTERVAL_SECONDS,
+        THIRTY_DAY_POINT_COUNT,
+    )
+}
+
+fn usage_series(
+    events: &[TokenEvent],
+    local_offset: UtcOffset,
+    interval_seconds: i64,
+    point_count: i64,
+) -> Vec<RecentUsagePoint> {
     let now_epoch = OffsetDateTime::now_utc().unix_timestamp();
-    let end_bin = floor_to_recent_bin(now_epoch);
-    let start_bin = end_bin - 24 * 60 * 60;
+    let end_bin = floor_to_bin(now_epoch, interval_seconds);
+    let start_bin = end_bin - (point_count.saturating_sub(1)) * interval_seconds;
     let mut grouped: HashMap<i64, TokenAccumulator> = HashMap::new();
 
     for event in events {
-        let bin_epoch = floor_to_recent_bin(event.timestamp.unix_timestamp());
+        let bin_epoch = floor_to_bin(event.timestamp.unix_timestamp(), interval_seconds);
         if bin_epoch < start_bin || bin_epoch > end_bin {
             continue;
         }
         grouped.entry(bin_epoch).or_default().add(event);
     }
 
-    (0..RECENT_POINT_COUNT)
+    (0..point_count)
         .map(|offset| {
-            let bin_epoch = start_bin + offset * RECENT_INTERVAL_SECONDS;
+            let bin_epoch = start_bin + offset * interval_seconds;
             let bin_time = OffsetDateTime::from_unix_timestamp(bin_epoch)
                 .unwrap_or_else(|_| OffsetDateTime::now_utc());
             let usage = grouped.remove(&bin_epoch).unwrap_or_default();
             RecentUsagePoint {
                 label: format_time(bin_time.to_offset(local_offset)),
+                start_unix: bin_epoch,
                 tokens: usage.tokens,
                 calls: usage.calls,
+                input_tokens: usage.input_tokens,
+                cached_input_tokens: usage.cached_input_tokens,
                 cache_hit_rate: if usage.input_tokens > 0 {
                     Some(usage.cache_hit_rate())
                 } else {
@@ -123,8 +158,8 @@ pub(super) fn stats(events: &[TokenEvent], days: &[ActivityDay]) -> DashboardSta
     }
 }
 
-fn floor_to_recent_bin(timestamp: i64) -> i64 {
-    timestamp - timestamp.rem_euclid(RECENT_INTERVAL_SECONDS)
+fn floor_to_bin(timestamp: i64, interval_seconds: i64) -> i64 {
+    timestamp - timestamp.rem_euclid(interval_seconds)
 }
 
 fn current_streak_days(days: &[ActivityDay]) -> u32 {

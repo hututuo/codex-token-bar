@@ -1,8 +1,9 @@
-use crate::core::unread;
+use crate::core::{unread, usage::token_count_jsonl};
 use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, LocalDataWarning};
 use rusqlite::Result;
-use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use logs::read_recent_log_rows;
 pub use monitor::LiveRateMonitorService;
 use state::{read_thread_options_result, read_thread_title, read_usage_summary, UsageSummary};
@@ -10,6 +11,16 @@ use stream::{rollup_stream_rows, LiveRateRollup};
 
 const LOOKBACK_SECONDS: f64 = 8.0;
 const MAX_TOKENS_PER_SECOND: f64 = 200.0;
+const PRECISE_USAGE_SUMMARY_TTL: Duration = Duration::from_secs(30);
+
+#[derive(Clone)]
+struct CachedPreciseUsageSummary {
+    codex_home: PathBuf,
+    summary: UsageSummary,
+    refreshed_at: Instant,
+}
+
+static PRECISE_USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedPreciseUsageSummary>>> = OnceLock::new();
 
 mod stream;
 mod state;
@@ -46,7 +57,7 @@ fn idle_snapshot_with_warnings(
     selected_thread_id: Option<&str>,
     mut warnings: Vec<LocalDataWarning>,
 ) -> LiveRateSnapshot {
-    let summary = read_usage_summary_or_default(codex_home, &mut warnings);
+    let summary = read_precise_usage_summary_or_fallback(codex_home, &mut warnings);
     let selected_thread_title = selected_thread_id
         .and_then(|thread_id| read_thread_title_or_warn(codex_home, thread_id, &mut warnings))
         .unwrap_or_else(|| "选择会话查看单会话速率".into());
@@ -79,7 +90,7 @@ fn read_snapshot_result(
             tokens_per_second: 0.0,
             latest_thread_id: None,
         });
-    let summary = read_usage_summary_or_default(codex_home, &mut warnings);
+    let summary = read_precise_usage_summary_or_fallback(codex_home, &mut warnings);
     let thread_title = rollup
         .latest_thread_id
         .as_deref()
@@ -109,15 +120,11 @@ pub fn read_floating_snapshot_from_live(
     live: &LiveRateSnapshot,
 ) -> FloatingPanelSnapshot {
     let mut warnings = Vec::new();
-    let summary = read_usage_summary_or_default(codex_home, &mut warnings);
+    let summary = read_precise_usage_summary_or_fallback(codex_home, &mut warnings);
     let unread_summary = unread::read_unread_summary(codex_home);
     FloatingPanelSnapshot {
         tokens_per_second: live.tokens_per_second,
-        trend_label: if live.tokens_per_second > 0.05 {
-            "输出中".into()
-        } else {
-            "待输出".into()
-        },
+        trend_label: String::new(),
         total_tokens_label: format!("总 {}", compact_tokens(summary.total_tokens)),
         today_tokens_label: format!("今 {}", compact_tokens(live.total_tokens_today)),
         requests_label: format!("次 {}", live.requests_today),
@@ -162,6 +169,47 @@ fn read_usage_summary_or_default(
                 error
             )));
             UsageSummary::default()
+        }
+    }
+}
+
+fn read_precise_usage_summary_or_fallback(
+    codex_home: &Path,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> UsageSummary {
+    let now = Instant::now();
+    let cache = PRECISE_USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached) = guard.as_ref() {
+            if cached.codex_home == codex_home && now.duration_since(cached.refreshed_at) <= PRECISE_USAGE_SUMMARY_TTL {
+                return cached.summary.clone();
+            }
+        }
+    }
+
+    match token_count_jsonl::usage_summary(codex_home) {
+        Ok(summary) => {
+            let summary = UsageSummary {
+                total_tokens: summary.total_tokens,
+                today_tokens: summary.today_tokens,
+                today_requests: summary.today_requests,
+            };
+            if let Ok(mut guard) = cache.lock() {
+                *guard = Some(CachedPreciseUsageSummary {
+                    codex_home: codex_home.to_path_buf(),
+                    summary: summary.clone(),
+                    refreshed_at: now,
+                });
+            }
+            summary
+        }
+        Err(error) => {
+            warnings.push(live_rate_summary_warning(format!(
+                "读取精确 token 汇总失败，已退回会话索引：{}（{}）",
+                codex_home.join("sessions").display(),
+                error
+            )));
+            read_usage_summary_or_default(codex_home, warnings)
         }
     }
 }

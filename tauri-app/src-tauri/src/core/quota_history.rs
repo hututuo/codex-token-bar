@@ -14,7 +14,7 @@ mod database;
 mod series;
 
 use database::{ensure_schema, insert_row, latest_trusted_row, prune, recent_rows, rows_since};
-use series::{make_daily_history, make_recent_history, DailyQuotaHistory};
+use series::{make_daily_history, make_interval_history, make_recent_history, DailyQuotaHistory};
 
 #[cfg(test)]
 use series::format_date;
@@ -40,13 +40,41 @@ pub fn recent_history_24h() -> Result<Vec<QuotaHistoryPoint>, String> {
         .map_err(|error| format!("读取 24 小时额度历史失败：{error}"))
 }
 
+pub fn recent_history_7d() -> Result<Vec<QuotaHistoryPoint>, String> {
+    QuotaHistoryDatabase::default()?
+        .recent_history(7 * 24, 60 * 60)
+        .map_err(|error| format!("读取 7 天额度历史失败：{error}"))
+}
+
+pub fn recent_history_30d() -> Result<Vec<QuotaHistoryPoint>, String> {
+    QuotaHistoryDatabase::default()?
+        .recent_history(30 * 4, 6 * 60 * 60)
+        .map_err(|error| format!("读取 30 天额度历史失败：{error}"))
+}
+
 pub fn apply_recent_history(points: &mut [RecentUsagePoint]) -> Result<(), String> {
+    apply_recent_history_with_interval(points, 5 * 60, "24 小时")
+}
+
+pub fn apply_recent_history_7d(points: &mut [RecentUsagePoint]) -> Result<(), String> {
+    apply_recent_history_with_interval(points, 60 * 60, "7 天")
+}
+
+pub fn apply_recent_history_30d(points: &mut [RecentUsagePoint]) -> Result<(), String> {
+    apply_recent_history_with_interval(points, 6 * 60 * 60, "30 天")
+}
+
+fn apply_recent_history_with_interval(
+    points: &mut [RecentUsagePoint],
+    interval_seconds: i64,
+    label: &str,
+) -> Result<(), String> {
     if points.is_empty() {
         return Ok(());
     }
     let history = QuotaHistoryDatabase::default()?
-        .recent_history_24h(points.len())
-        .map_err(|error| format!("读取 24 小时额度历史失败：{error}"))?;
+        .recent_history(points.len(), interval_seconds)
+        .map_err(|error| format!("读取 {label}额度历史失败：{error}"))?;
     overlay_history(points, &history);
     Ok(())
 }
@@ -68,7 +96,14 @@ pub fn apply_activity_history(days: &mut [ActivityDay]) -> Result<(), String> {
 }
 
 pub fn overlay_history(points: &mut [RecentUsagePoint], history: &[QuotaHistoryPoint]) {
-    for (point, quota) in points.iter_mut().zip(history.iter()) {
+    let history_by_start: HashMap<i64, &QuotaHistoryPoint> = history
+        .iter()
+        .map(|point| (point.start_unix, point))
+        .collect();
+    for point in points.iter_mut() {
+        let Some(quota) = history_by_start.get(&point.start_unix) else {
+            continue;
+        };
         point.five_hour_remaining_percent = quota.five_hour_remaining_percent;
         point.seven_day_remaining_percent = quota.seven_day_remaining_percent;
     }
@@ -115,10 +150,17 @@ impl QuotaHistoryDatabase {
     }
 
     fn recent_history_24h(&self, count: usize) -> SqlResult<Vec<QuotaHistoryPoint>> {
+        self.recent_history(count, 5 * 60)
+    }
+
+    fn recent_history(&self, count: usize, interval_seconds: i64) -> SqlResult<Vec<QuotaHistoryPoint>> {
         let connection = self.open()?;
         ensure_schema(&connection)?;
         let rows = recent_rows(&connection)?;
-        Ok(make_recent_history(rows, count.max(1)))
+        Ok(match interval_seconds {
+            300 => make_recent_history(rows, count.max(1)),
+            _ => make_interval_history(rows, count.max(1), interval_seconds),
+        })
     }
 
     fn daily_history(&self, day_count: usize) -> SqlResult<HashMap<String, DailyQuotaHistory>> {
@@ -209,11 +251,23 @@ fn normalized_used_percent(
         (Some(current_reset), Some(previous_reset), Some(previous_used))
             if same_reset_window(current_reset, previous_reset) =>
         {
+            if should_accept_full_usage_spike_recovery(current_used, previous_used) {
+                return Some(current_used);
+            }
             Some(current_used.max(previous_used))
         }
-        (None, None, Some(previous_used)) => Some(current_used.max(previous_used)),
+        (None, None, Some(previous_used)) => {
+            if should_accept_full_usage_spike_recovery(current_used, previous_used) {
+                return Some(current_used);
+            }
+            Some(current_used.max(previous_used))
+        }
         _ => Some(current_used),
     }
+}
+
+fn should_accept_full_usage_spike_recovery(current_used: i32, previous_used: i32) -> bool {
+    previous_used >= 95 && previous_used - current_used >= 20
 }
 
 fn same_reset_window(left: f64, right: f64) -> bool {

@@ -9,6 +9,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -32,6 +34,32 @@ fn parses_token_count_totals_as_deltas() {
     assert_eq!(snapshot.stats.total_threads, 1);
     assert!(snapshot.activity_days.iter().any(|day| day.tokens == 28));
     assert_eq!(snapshot.recent_usage_24h.len(), 289);
+    assert_eq!(snapshot.recent_usage_7d.len(), 168);
+    assert_eq!(snapshot.recent_usage_30d.len(), 120);
+    assert_eq!(
+        snapshot
+            .recent_usage_7d
+            .iter()
+            .map(|point| point.input_tokens)
+            .sum::<u64>(),
+        20
+    );
+    assert_eq!(
+        snapshot
+            .recent_usage_7d
+            .iter()
+            .map(|point| point.cached_input_tokens)
+            .sum::<u64>(),
+        5
+    );
+    assert!(snapshot
+        .recent_usage_7d
+        .windows(2)
+        .all(|window| window[1].start_unix - window[0].start_unix == 60 * 60));
+    assert!(snapshot
+        .recent_usage_30d
+        .windows(2)
+        .all(|window| window[1].start_unix - window[0].start_unix == 6 * 60 * 60));
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -53,6 +81,36 @@ fn skips_fork_replay_window() {
 
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 20);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn usage_summary_counts_today_from_token_events_not_thread_updated_at() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let now = OffsetDateTime::now_utc();
+    let yesterday = now - time::Duration::days(1);
+    let file = session_dir.join("rollout-019eaaaa-bbbb-cccc-dddd-eeeeffffffff.jsonl");
+    write_lines(
+        &file,
+        &[
+            &format!(
+                r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":1000}}}}}}}}"#,
+                yesterday.format(&Rfc3339).unwrap()
+            ),
+            &format!(
+                r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":40}}}}}}}}"#,
+                now.format(&Rfc3339).unwrap()
+            ),
+        ],
+    );
+
+    let summary = usage_summary(&root).unwrap();
+    assert_eq!(summary.total_tokens, 1040);
+    assert_eq!(summary.today_tokens, 40);
+    assert_eq!(summary.today_requests, 1);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -88,6 +146,33 @@ fn ranks_sessions_by_low_cache_hit_rate_with_thread_titles() {
     assert_eq!(snapshot.cache_hit_ranking[0].cached_tokens, 500);
     assert!(snapshot.cache_hit_ranking[0].hit_rate < snapshot.cache_hit_ranking[1].hit_rate);
     assert!(snapshot.cache_hit_ranking[0].subtitle.contains("2 轮"));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dashboard_snapshot_reuses_cached_aggregate_when_session_signatures_are_unchanged() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let session_id = "019eaaaa-bbbb-cccc-dddd-incremental";
+    write_lines(
+        &session_dir.join(format!("rollout-{session_id}.jsonl")),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    reset_dashboard_aggregate_build_count_for_testing();
+
+    let first = dashboard_snapshot(&root).unwrap();
+    let build_count_after_first_load = dashboard_aggregate_build_count_for_testing(&root);
+    let second = dashboard_snapshot(&root).unwrap();
+
+    assert_eq!(first.stats.total_tokens, 120);
+    assert_eq!(second.stats.total_tokens, 120);
+    assert!(build_count_after_first_load >= 1);
+    assert_eq!(
+        dashboard_aggregate_build_count_for_testing(&root),
+        build_count_after_first_load
+    );
 
     fs::remove_dir_all(root).unwrap();
 }

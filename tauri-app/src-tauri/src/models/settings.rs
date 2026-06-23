@@ -36,6 +36,14 @@ pub struct FloatingWindowSettingsSnapshot {
     pub scale: f64,
     #[serde(default = "default_floating_unread_effect")]
     pub unread_effect: String,
+    #[serde(default = "default_floating_gradient_start")]
+    pub gradient_start: String,
+    #[serde(default = "default_floating_gradient_end")]
+    pub gradient_end: String,
+    #[serde(default = "default_floating_gradient_direction")]
+    pub gradient_direction: String,
+    #[serde(default = "default_floating_gradient_type")]
+    pub gradient_type: String,
 }
 
 impl Default for FloatingWindowSettingsSnapshot {
@@ -44,6 +52,10 @@ impl Default for FloatingWindowSettingsSnapshot {
             opacity: default_floating_opacity(),
             scale: default_floating_scale(),
             unread_effect: default_floating_unread_effect(),
+            gradient_start: default_floating_gradient_start(),
+            gradient_end: default_floating_gradient_end(),
+            gradient_direction: default_floating_gradient_direction(),
+            gradient_type: default_floating_gradient_type(),
         }
     }
 }
@@ -58,6 +70,22 @@ fn default_floating_scale() -> f64 {
 
 fn default_floating_unread_effect() -> String {
     "ripple".into()
+}
+
+fn default_floating_gradient_start() -> String {
+    "#ffffff".into()
+}
+
+fn default_floating_gradient_end() -> String {
+    "#daefff".into()
+}
+
+fn default_floating_gradient_direction() -> String {
+    "135deg".into()
+}
+
+fn default_floating_gradient_type() -> String {
+    "linear".into()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
