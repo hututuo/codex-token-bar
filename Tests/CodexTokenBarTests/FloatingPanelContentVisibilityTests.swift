@@ -88,6 +88,50 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(visibility.layoutGroups, [.metrics, .usageStatus])
     }
 
+    func testTokenDisplayCardRendersRowsFromVisibilityLayoutOrder() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let surface = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurface.swift")
+        let surfaceSource = try String(contentsOf: surface, encoding: .utf8)
+        let card = try XCTUnwrap(sourceBlock(
+            named: "TokenDisplayCard",
+            in: surfaceSource,
+            endingBefore: "private func palette"
+        ))
+
+        XCTAssertTrue(card.contains("ForEach(visibility.layoutGroups)"))
+        XCTAssertFalse(card.contains("if visibility.showRateAndBar {"))
+        XCTAssertFalse(card.contains("if visibility.showMetrics {"))
+        XCTAssertFalse(card.contains("if visibility.showQuota {"))
+        XCTAssertFalse(card.contains("if visibility.showRadar {"))
+    }
+
+    func testFloatingPanelContentOrderReordersAroundDropTargetWithoutDuplicates() {
+        let order: [FloatingPanelContentGroup] = [.rateAndBar, .usageStatus, .metrics, .quota, .radar]
+
+        XCTAssertEqual(
+            FloatingPanelContentVisibility.reorderedOrder(
+                order,
+                moving: .rateAndBar,
+                relativeTo: .metrics,
+                placement: .after
+            ),
+            [.usageStatus, .metrics, .rateAndBar, .quota, .radar]
+        )
+
+        XCTAssertEqual(
+            FloatingPanelContentVisibility.reorderedOrder(
+                order,
+                moving: .radar,
+                relativeTo: .usageStatus,
+                placement: .before
+            ),
+            [.rateAndBar, .radar, .usageStatus, .metrics, .quota]
+        )
+    }
+
     func testAdaptiveSizeKeepsControlsReachableWhenAllGroupsAreHidden() {
         let hiddenSize = FloatingTokenPanelMetrics.size(
             scale: 1,
@@ -369,8 +413,12 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.quotaKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.radarKey)"))
         XCTAssertTrue(settingsSource.contains("Image(systemName: \"line.3.horizontal\")"))
-        XCTAssertTrue(settingsSource.contains(".draggable(group.rawValue)"))
-        XCTAssertTrue(settingsSource.contains(".dropDestination(for: String.self)"))
+        XCTAssertTrue(settingsSource.contains("struct FloatingPanelContentDragHandle"))
+        XCTAssertTrue(settingsSource.contains("struct FloatingPanelContentDropDelegate"))
+        XCTAssertTrue(settingsSource.contains(".onDrag {"))
+        XCTAssertTrue(settingsSource.contains(".onDrop(of:"))
+        XCTAssertFalse(settingsSource.contains(".draggable(group.rawValue)"))
+        XCTAssertFalse(settingsSource.contains(".dropDestination(for: String.self)"))
         XCTAssertTrue(dashboardSource.contains("@AppStorage(FloatingPanelContentVisibility.rateAndBarKey)"))
         XCTAssertTrue(dashboardSource.contains("@AppStorage(FloatingPanelContentVisibility.orderKey)"))
         XCTAssertTrue(dashboardSource.contains(".overlayPreferenceValue(FloatingPanelContentSettingsButtonBoundsKey.self)"))
@@ -542,7 +590,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let componentsSource = try String(contentsOf: components, encoding: .utf8)
 
         XCTAssertTrue(surfaceSource.contains("usageStatus: visibility.embedsUsageStatusInRateRow ? snapshot.compactUsageStatus : nil"))
-        XCTAssertTrue(surfaceSource.contains("if visibility.showsStandaloneUsageStatus"))
+        XCTAssertTrue(surfaceSource.contains("ForEach(visibility.layoutGroups)"))
+        XCTAssertTrue(surfaceSource.contains("case .usageStatus:"))
         XCTAssertTrue(componentsSource.contains("let usageStatus: String?"))
 
         let standaloneLine = try XCTUnwrap(sourceBlock(

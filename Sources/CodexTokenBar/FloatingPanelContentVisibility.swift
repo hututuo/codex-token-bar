@@ -40,6 +40,11 @@ enum FloatingPanelContentGroup: String, CaseIterable, Identifiable {
     }
 }
 
+enum FloatingPanelContentDropPlacement {
+    case before
+    case after
+}
+
 struct FloatingPanelContentVisibility: Equatable, Sendable {
     static let rateAndBarKey = "floatingPanelShowRateAndBar"
     static let usageStatusKey = "floatingPanelShowUsageStatus"
@@ -125,5 +130,30 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         order(from: groups.map(\.rawValue).joined(separator: ","))
             .map(\.rawValue)
             .joined(separator: ",")
+    }
+
+    static func reorderedOrder(
+        _ currentOrder: [FloatingPanelContentGroup],
+        moving dragged: FloatingPanelContentGroup,
+        relativeTo target: FloatingPanelContentGroup,
+        placement: FloatingPanelContentDropPlacement
+    ) -> [FloatingPanelContentGroup] {
+        var order = order(from: encodedOrder(currentOrder))
+        guard dragged != target,
+              order.contains(dragged),
+              order.contains(target)
+        else { return order }
+
+        order.removeAll { $0 == dragged }
+        guard let targetIndex = order.firstIndex(of: target) else { return order }
+        let insertionIndex: Int
+        switch placement {
+        case .before:
+            insertionIndex = targetIndex
+        case .after:
+            insertionIndex = min(targetIndex + 1, order.count)
+        }
+        order.insert(dragged, at: insertionIndex)
+        return order
     }
 }

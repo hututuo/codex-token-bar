@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct FloatingUnreadEffectButtonBoundsKey: PreferenceKey {
     static let defaultValue: Anchor<CGRect>? = nil
@@ -166,6 +167,7 @@ struct FloatingPanelContentSettingsMenu: View {
     @AppStorage(FloatingPanelContentVisibility.radarKey) private var showRadar = FloatingPanelContentVisibility.default.showRadar
     @AppStorage(FloatingPanelContentVisibility.orderKey) private var orderRaw = FloatingPanelContentVisibility.defaultOrderRaw
     @State private var dropTarget: FloatingPanelContentGroup?
+    @State private var draggingGroup: FloatingPanelContentGroup?
     let closeAction: () -> Void
 
     var body: some View {
@@ -200,18 +202,17 @@ struct FloatingPanelContentSettingsMenu: View {
                     FloatingPanelContentSettingsRow(
                         group: group,
                         isOn: isOnBinding(for: group),
-                        isDropTarget: dropTarget == group
+                        isDropTarget: dropTarget == group,
+                        draggingGroup: $draggingGroup
                     )
-                    .draggable(group.rawValue)
-                    .dropDestination(for: String.self) { values, location in
-                        guard let rawValue = values.first,
-                              let dragged = FloatingPanelContentGroup(rawValue: rawValue)
-                        else { return false }
-                        move(dragged, relativeTo: group, insertAfter: location.y > 16)
-                        return true
-                    } isTargeted: { isTargeted in
-                        dropTarget = isTargeted ? group : nil
-                    }
+                    .onDrop(of: [UTType.text.identifier],
+                        delegate: FloatingPanelContentDropDelegate(
+                            target: group,
+                            orderRaw: $orderRaw,
+                            draggingGroup: $draggingGroup,
+                            dropTarget: $dropTarget
+                        )
+                    )
                 }
             }
             .padding(.horizontal, 8)
@@ -229,17 +230,6 @@ struct FloatingPanelContentSettingsMenu: View {
 
     private var orderedGroups: [FloatingPanelContentGroup] {
         FloatingPanelContentVisibility.order(from: orderRaw)
-    }
-
-    private func move(_ dragged: FloatingPanelContentGroup, relativeTo target: FloatingPanelContentGroup, insertAfter: Bool) {
-        guard dragged != target else { return }
-        var order = orderedGroups
-        guard let sourceIndex = order.firstIndex(of: dragged) else { return }
-        order.remove(at: sourceIndex)
-        let targetIndex = order.firstIndex(of: target) ?? order.count
-        let insertionIndex = insertAfter ? min(targetIndex + 1, order.count) : targetIndex
-        order.insert(dragged, at: insertionIndex)
-        orderRaw = FloatingPanelContentVisibility.encodedOrder(order)
     }
 
     private func isOnBinding(for group: FloatingPanelContentGroup) -> Binding<Bool> {
@@ -262,13 +252,15 @@ private struct FloatingPanelContentSettingsRow: View {
     let group: FloatingPanelContentGroup
     @Binding var isOn: Bool
     let isDropTarget: Bool
+    @Binding var draggingGroup: FloatingPanelContentGroup?
 
     var body: some View {
         HStack(spacing: 9) {
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary.opacity(0.72))
-                .frame(width: 16)
+            FloatingPanelContentDragHandle()
+                .onDrag {
+                    draggingGroup = group
+                    return NSItemProvider(object: group.rawValue as NSString)
+                }
 
             Image(systemName: group.systemImage)
                 .font(.system(size: 11, weight: .semibold))
@@ -298,6 +290,67 @@ private struct FloatingPanelContentSettingsRow: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(isDropTarget ? AppTheme.accentBlue.opacity(0.34) : AppTheme.border.opacity(0.42), lineWidth: 1)
         )
+    }
+}
+
+private struct FloatingPanelContentDragHandle: View {
+    var body: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary.opacity(0.72))
+            .frame(width: 20, height: 24)
+            .contentShape(Rectangle())
+            .help("拖动排序")
+            .accessibilityLabel("拖动排序")
+    }
+}
+
+private struct FloatingPanelContentDropDelegate: DropDelegate {
+    let target: FloatingPanelContentGroup
+    @Binding var orderRaw: String
+    @Binding var draggingGroup: FloatingPanelContentGroup?
+    @Binding var dropTarget: FloatingPanelContentGroup?
+
+    func validateDrop(info: DropInfo) -> Bool {
+        draggingGroup != nil
+    }
+
+    func dropEntered(info: DropInfo) {
+        guard let dragged = draggingGroup,
+              dragged != target
+        else { return }
+
+        let order = FloatingPanelContentVisibility.order(from: orderRaw)
+        guard let sourceIndex = order.firstIndex(of: dragged),
+              let targetIndex = order.firstIndex(of: target)
+        else { return }
+
+        dropTarget = target
+        let placement: FloatingPanelContentDropPlacement = sourceIndex < targetIndex ? .after : .before
+        let reordered = FloatingPanelContentVisibility.reorderedOrder(
+            order,
+            moving: dragged,
+            relativeTo: target,
+            placement: placement
+        )
+        guard reordered != order else { return }
+        orderRaw = FloatingPanelContentVisibility.encodedOrder(reordered)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        if dropTarget == target {
+            dropTarget = nil
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dropTarget = nil
+        draggingGroup = nil
+        return true
     }
 }
 

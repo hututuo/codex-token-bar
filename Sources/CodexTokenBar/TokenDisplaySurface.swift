@@ -230,34 +230,29 @@ struct TokenDisplayCard: View {
             let topSafetyInset = visibility.needsTopControlInset ? FloatingTokenPanelMetrics.singleElementTopInset.scaled(by: displayScale) : 0
 
             VStack(alignment: .center, spacing: rowSpacing) {
-                if visibility.showRateAndBar {
-                    rateRow
-                        .environment(\.tokenDisplayTextPalette, palette(for: .rateAndBar))
-                        .frame(height: rateRowHeight, alignment: .center)
-                }
-
-                if visibility.showsStandaloneUsageStatus {
-                    TokenDisplayUsageStatusLine(text: snapshot.compactUsageStatus)
-                        .environment(\.tokenDisplayTextPalette, standaloneUsageStatusTextPalette ?? palette(for: .usageStatus))
-                        .frame(height: usageStatusRowHeight, alignment: .center)
-                }
-
-                if visibility.showMetrics {
-                    metricRow
-                        .environment(\.tokenDisplayTextPalette, palette(for: .metrics))
-                        .frame(height: metricRowHeight, alignment: .center)
-                }
-
-                if visibility.showQuota {
-                    TokenQuotaMiniStrip(snapshot: snapshot.quota)
-                        .environment(\.tokenDisplayTextPalette, palette(for: .quota))
-                        .frame(height: quotaRowHeight, alignment: .center)
-                }
-
-                if visibility.showRadar {
-                    TokenDisplayRadarStrip(snapshot: radarSnapshot)
-                        .environment(\.tokenDisplayTextPalette, palette(for: .radar))
-                        .frame(height: radarRowHeight, alignment: .center)
+                ForEach(visibility.layoutGroups) { group in
+                    switch group {
+                    case .rateAndBar:
+                        rateRow
+                            .environment(\.tokenDisplayTextPalette, palette(for: .rateAndBar))
+                            .frame(height: rateRowHeight, alignment: .center)
+                    case .usageStatus:
+                        TokenDisplayUsageStatusLine(text: snapshot.compactUsageStatus)
+                            .environment(\.tokenDisplayTextPalette, standaloneUsageStatusTextPalette ?? palette(for: .usageStatus))
+                            .frame(height: usageStatusRowHeight, alignment: .center)
+                    case .metrics:
+                        metricRow
+                            .environment(\.tokenDisplayTextPalette, palette(for: .metrics))
+                            .frame(height: metricRowHeight, alignment: .center)
+                    case .quota:
+                        TokenQuotaMiniStrip(snapshot: snapshot.quota)
+                            .environment(\.tokenDisplayTextPalette, palette(for: .quota))
+                            .frame(height: quotaRowHeight, alignment: .center)
+                    case .radar:
+                        TokenDisplayRadarStrip(snapshot: radarSnapshot)
+                            .environment(\.tokenDisplayTextPalette, palette(for: .radar))
+                            .frame(height: radarRowHeight, alignment: .center)
+                    }
                 }
             }
             .frame(width: proxy.size.width, height: max(0, proxy.size.height - topSafetyInset), alignment: .center)
