@@ -9,6 +9,7 @@ interface DeferredDashboardLoadsOptions {
   dashboardReady: boolean;
   loading: boolean;
   generation: number;
+  quotaGeneration: number;
   forceQuotaRefresh: boolean;
   source: Pick<
     DashboardDataSource,
@@ -25,6 +26,7 @@ export function useDeferredDashboardLoads({
   dashboardReady,
   loading,
   generation,
+  quotaGeneration,
   forceQuotaRefresh,
   source,
   onPreciseDashboard,
@@ -45,7 +47,7 @@ export function useDeferredDashboardLoads({
     active,
     dashboardReady,
     forceQuotaRefresh,
-    generation,
+    generation: quotaGeneration,
     loading,
     onForceQuotaRefreshConsumed,
     onQuota,

@@ -1,8 +1,5 @@
 import type { Dispatch, SetStateAction } from "react";
-import {
-  getCommandDiagnosticsSnapshot,
-  recordStartupEvent,
-} from "../api/client";
+import { recordStartupEvent } from "../api/client";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type { DashboardAppState } from "./dashboardState";
 
@@ -41,7 +38,6 @@ export async function loadInitialDashboardState({
       setState((current) => ({
         ...current,
         dashboard,
-        diagnostics: getCommandDiagnosticsSnapshot(),
         loading: false,
       }));
       onFastSnapshotLoaded();

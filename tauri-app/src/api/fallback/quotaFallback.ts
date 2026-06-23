@@ -27,17 +27,35 @@ export function emptyQuotaSnapshot(): QuotaSnapshot {
 }
 
 export function emptyAccountQuotaBundle(): AccountQuotaBundle {
+  const now = new Date();
+  const emptyQuotaHistory24h = emptyRecentUsage(now).map((point) => ({
+    label: point.label,
+    startUnix: point.startUnix,
+    fiveHourRemainingPercent: null,
+    sevenDayRemainingPercent: null,
+  }));
+  const emptyQuotaHistory7d = emptyRecentUsage(now, 60 * 60 * 1_000, 7 * 24).map((point) => ({
+    label: point.label,
+    startUnix: point.startUnix,
+    fiveHourRemainingPercent: null,
+    sevenDayRemainingPercent: null,
+  }));
+  const emptyQuotaHistory30d = emptyRecentUsage(now, 6 * 60 * 60 * 1_000, 30 * 4).map((point) => ({
+    label: point.label,
+    startUnix: point.startUnix,
+    fiveHourRemainingPercent: null,
+    sevenDayRemainingPercent: null,
+  }));
+
   return {
     account: {
       displayName: "账户待读取",
       planLabel: "计划待读取",
     },
     quota: emptyQuotaSnapshot(),
-    quotaHistory24h: emptyRecentUsage(new Date()).map((point) => ({
-      label: point.label,
-      fiveHourRemainingPercent: null,
-      sevenDayRemainingPercent: null,
-    })),
+    quotaHistory24h: emptyQuotaHistory24h,
+    quotaHistory7d: emptyQuotaHistory7d,
+    quotaHistory30d: emptyQuotaHistory30d,
     warnings: [],
   };
 }

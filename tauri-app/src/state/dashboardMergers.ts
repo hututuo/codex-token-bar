@@ -3,6 +3,7 @@ import type {
   DashboardSnapshot,
   LiveRateSnapshot,
   LiveThreadOption,
+  QuotaHistoryPoint,
   RecentUsagePoint,
 } from "../types/dashboard";
 import type { DashboardAppState } from "./dashboardState";
@@ -34,7 +35,9 @@ export function mergeQuota(state: DashboardAppState, quota: AccountQuotaBundle):
           ...state.dashboard,
           account: quota.account,
           quota: quota.quota,
-          recentUsage24h: mergeQuotaHistory(state.dashboard.recentUsage24h, quota),
+          recentUsage24h: mergeQuotaHistory(state.dashboard.recentUsage24h, quota.quotaHistory24h),
+          recentUsage7d: mergeQuotaHistory(state.dashboard.recentUsage7d, quota.quotaHistory7d),
+          recentUsage30d: mergeQuotaHistory(state.dashboard.recentUsage30d, quota.quotaHistory30d),
           warnings: mergeWarnings(state.dashboard.warnings, quota.warnings),
         };
   return {
@@ -63,13 +66,14 @@ export function mergeLiveThreadOptions(
   };
 }
 
-function mergeQuotaHistory(points: RecentUsagePoint[], quota: AccountQuotaBundle): RecentUsagePoint[] {
-  if (quota.quotaHistory24h.length === 0) {
+function mergeQuotaHistory(points: RecentUsagePoint[], historyPoints: QuotaHistoryPoint[]): RecentUsagePoint[] {
+  if (historyPoints.length === 0) {
     return points;
   }
 
-  return points.map((point, index) => {
-    const history = quota.quotaHistory24h[index];
+  const historyByStart = new Map(historyPoints.map((point) => [point.startUnix, point]));
+  return points.map((point) => {
+    const history = historyByStart.get(point.startUnix);
     if (history === undefined) {
       return point;
     }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { desktopPlatform } from "../platform/desktop";
 
 interface FloatingWindowSurfaceOptions {
@@ -20,13 +20,22 @@ export function useFloatingWindowSurface({
   ready,
 }: FloatingWindowSurfaceOptions): FloatingWindowSurfaceState {
   const [floatingVisible, setFloatingVisible] = useState(false);
+  const settingsReadyRef = useRef(false);
+  const enabledPreferenceRef = useRef(false);
+
+  settingsReadyRef.current = ready;
+  enabledPreferenceRef.current = enabled;
 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
 
     void desktopPlatform.onFloatingWindowHidden(() => {
+      if (!settingsReadyRef.current || !enabledPreferenceRef.current) {
+        return;
+      }
       setFloatingVisible(false);
+      onPreferenceConfirmed(false);
     }).then((listener) => {
       if (disposed) {
         listener();
@@ -39,7 +48,7 @@ export function useFloatingWindowSurface({
       disposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [onPreferenceConfirmed]);
 
   useEffect(() => {
     if (!ready) {
@@ -50,13 +59,11 @@ export function useFloatingWindowSurface({
     const shouldShowFloating = enabled && available;
 
     async function applyFloatingPreference() {
-      if (shouldShowFloating) {
-        await desktopPlatform.showFloatingWindow();
-      } else {
-        await desktopPlatform.hideFloatingWindow();
-      }
+      const nextVisible = shouldShowFloating
+        ? await desktopPlatform.showFloatingWindow()
+        : await desktopPlatform.hideFloatingWindow();
       if (!cancelled) {
-        setFloatingVisible(shouldShowFloating);
+        setFloatingVisible(nextVisible);
       }
     }
 
@@ -75,14 +82,11 @@ export function useFloatingWindowSurface({
       return;
     }
 
-    onPreferenceConfirmed(nextEnabled);
-    setFloatingVisible(nextEnabled);
-    if (nextEnabled) {
-      await desktopPlatform.showFloatingWindow();
-    } else {
-      await desktopPlatform.hideFloatingWindow();
-    }
-    setFloatingVisible(nextEnabled);
+    const nextVisible = nextEnabled
+      ? await desktopPlatform.showFloatingWindow()
+      : await desktopPlatform.hideFloatingWindow();
+    onPreferenceConfirmed(nextVisible);
+    setFloatingVisible(nextVisible);
   }, [available, enabled, onPreferenceConfirmed]);
 
   return {

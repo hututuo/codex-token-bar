@@ -21,6 +21,7 @@ interface DashboardActionsOptions {
   setState: Dispatch<SetStateAction<DashboardAppState>>;
   setFastSnapshotLoaded: Dispatch<SetStateAction<boolean>>;
   setLoadGeneration: Dispatch<SetStateAction<number>>;
+  setQuotaLoadGeneration: Dispatch<SetStateAction<number>>;
   setForceNextQuotaLoad: Dispatch<SetStateAction<boolean>>;
 }
 
@@ -29,12 +30,14 @@ export function useDashboardActions({
   setState,
   setFastSnapshotLoaded,
   setLoadGeneration,
+  setQuotaLoadGeneration,
   setForceNextQuotaLoad,
 }: DashboardActionsOptions) {
   const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
 
   const reloadAll = useCallback(async () => {
     setLoadGeneration((current) => current + 1);
+    setQuotaLoadGeneration((current) => current + 1);
     setForceNextQuotaLoad(true);
     setFastSnapshotLoaded(false);
     setState((current) => ({ ...current, loading: true }));
@@ -48,6 +51,7 @@ export function useDashboardActions({
     setFastSnapshotLoaded,
     setForceNextQuotaLoad,
     setLoadGeneration,
+    setQuotaLoadGeneration,
     setState,
     source,
   ]);

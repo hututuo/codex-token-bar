@@ -15,6 +15,7 @@ export interface QuotaLimit {
 
 export interface QuotaHistoryPoint {
   label: string;
+  startUnix: number;
   fiveHourRemainingPercent: number | null;
   sevenDayRemainingPercent: number | null;
 }
@@ -29,11 +30,15 @@ export interface ResetCreditDetail {
   title: string;
   status: string;
   summary: string;
+  resetType: string;
   issuedAt: string;
   expiresAt: string;
+  redeemStartedAt: string;
   redeemedAt: string;
   source: string;
+  detailNote: string;
   associatedUser: string;
+  profileImageUrl: string;
   shortId: string;
 }
 
@@ -48,5 +53,7 @@ export interface AccountQuotaBundle {
   account: AccountInfo;
   quota: QuotaSnapshot;
   quotaHistory24h: QuotaHistoryPoint[];
+  quotaHistory7d: QuotaHistoryPoint[];
+  quotaHistory30d: QuotaHistoryPoint[];
   warnings: LocalDataWarning[];
 }

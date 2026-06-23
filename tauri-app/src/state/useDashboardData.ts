@@ -5,7 +5,6 @@ import {
   useState,
 } from "react";
 import { dashboardDataSource, type DashboardDataSource } from "../data/dashboardDataSource";
-import { useCommandDiagnostics } from "../diagnostics/useCommandDiagnostics";
 import type {
   AccountQuotaBundle,
   DashboardSnapshot,
@@ -26,12 +25,24 @@ import { useDashboardActions } from "./useDashboardActions";
 import { useDeferredDashboardLoads } from "./useDeferredDashboardLoads";
 import { useLiveRateFeed } from "./useLiveRateFeed";
 
+const DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
+const DASHBOARD_BACKGROUND_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const QUOTA_AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
+
+function dashboardIsVisible() {
+  if (typeof document === "undefined") {
+    return true;
+  }
+  return document.visibilityState !== "hidden";
+}
+
 export function useDashboardData(source: DashboardDataSource = dashboardDataSource) {
   const [state, setState] = useState<DashboardAppState>(initialDashboardState);
   const [fastSnapshotLoaded, setFastSnapshotLoaded] = useState(false);
   const [loadGeneration, setLoadGeneration] = useState(0);
+  const [quotaLoadGeneration, setQuotaLoadGeneration] = useState(0);
   const [forceNextQuotaLoad, setForceNextQuotaLoad] = useState(false);
-  const commandDiagnostics = useCommandDiagnostics();
+  const [dashboardVisible, setDashboardVisible] = useState(dashboardIsVisible);
   const {
     reloadAll,
     updateCodexHome,
@@ -44,6 +55,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     setState,
     setFastSnapshotLoaded,
     setLoadGeneration,
+    setQuotaLoadGeneration,
     setForceNextQuotaLoad,
   });
 
@@ -68,14 +80,11 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   }, []);
 
   useEffect(() => {
-    setState((current) => ({ ...current, diagnostics: commandDiagnostics }));
-  }, [commandDiagnostics]);
-
-  useEffect(() => {
     let cancelled = false;
 
     setFastSnapshotLoaded(false);
     setLoadGeneration((current) => current + 1);
+    setQuotaLoadGeneration((current) => current + 1);
     setForceNextQuotaLoad(false);
     void loadInitialDashboardState({
       source,
@@ -89,11 +98,60 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     };
   }, [source]);
 
+  const dashboardReady = state.dashboard !== null;
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    const handleVisibilityChange = () => {
+      setDashboardVisible(dashboardIsVisible());
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!fastSnapshotLoaded || !dashboardReady || state.loading) {
+      return;
+    }
+
+    const intervalMs = dashboardVisible
+      ? DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS
+      : DASHBOARD_BACKGROUND_AUTO_REFRESH_INTERVAL_MS;
+    const interval = window.setInterval(() => {
+      setLoadGeneration((current) => current + 1);
+    }, intervalMs);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [dashboardReady, dashboardVisible, fastSnapshotLoaded, state.loading]);
+
+  useEffect(() => {
+    if (!fastSnapshotLoaded || !dashboardReady || state.loading) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      setQuotaLoadGeneration((current) => current + 1);
+    }, QUOTA_AUTO_REFRESH_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [dashboardReady, fastSnapshotLoaded, state.loading]);
+
   useDeferredDashboardLoads({
     active: fastSnapshotLoaded,
-    dashboardReady: state.dashboard !== null,
+    dashboardReady,
     loading: state.loading,
     generation: loadGeneration,
+    quotaGeneration: quotaLoadGeneration,
     forceQuotaRefresh: forceNextQuotaLoad,
     source,
     onPreciseDashboard: mergePreciseSnapshot,

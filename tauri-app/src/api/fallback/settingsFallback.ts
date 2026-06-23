@@ -6,6 +6,10 @@ export const fallbackAppSettings: AppSettingsSnapshot = {
     opacity: 0.92,
     scale: 1,
     unreadEffect: "ripple",
+    gradientStart: "#ffffff",
+    gradientEnd: "#daefff",
+    gradientDirection: "135deg",
+    gradientType: "linear",
   },
   floatingPosition: null,
   displaySurfaces: {

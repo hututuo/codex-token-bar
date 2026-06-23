@@ -22,8 +22,11 @@ export interface ActivityDay {
 
 export interface RecentUsagePoint {
   label: string;
+  startUnix: number;
   tokens: number;
   calls: number;
+  inputTokens: number;
+  cachedInputTokens: number;
   cacheHitRate: number | null;
   fiveHourRemainingPercent: number | null;
   sevenDayRemainingPercent: number | null;
@@ -45,6 +48,8 @@ export interface DashboardSnapshot {
   quota: QuotaSnapshot;
   activityDays: ActivityDay[];
   recentUsage24h: RecentUsagePoint[];
+  recentUsage7d: RecentUsagePoint[];
+  recentUsage30d: RecentUsagePoint[];
   cacheHitRanking: CacheHitRankingItem[];
   warnings: LocalDataWarning[];
 }

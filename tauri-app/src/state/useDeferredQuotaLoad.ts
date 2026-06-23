@@ -31,9 +31,10 @@ export function useDeferredQuotaLoad({
     }
 
     let cancelled = false;
+    const isFirstQuotaLoad = quotaGeneration.current === null;
     quotaGeneration.current = generation;
     const shouldForceRefresh = forceQuotaRefresh;
-    const delayMs = shouldForceRefresh ? 0 : 5_000;
+    const delayMs = shouldForceRefresh || !isFirstQuotaLoad ? 0 : 5_000;
 
     async function loadQuota() {
       try {

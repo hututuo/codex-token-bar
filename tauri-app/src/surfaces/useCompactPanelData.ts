@@ -24,7 +24,7 @@ export interface CompactPanelData {
 
 const DEFAULT_SNAPSHOT_INTERVAL_MS = 500;
 const DEFAULT_QUOTA_INITIAL_DELAY_MS = 8_000;
-const DEFAULT_QUOTA_INTERVAL_MS = 180_000;
+const DEFAULT_QUOTA_INTERVAL_MS = 60_000;
 
 export function useCompactPanelData(options: CompactPanelDataOptions = {}): CompactPanelData {
   const active = options.active ?? true;
@@ -53,13 +53,20 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
   );
 
   const snapshot = useMemo(
-    () => ({
-      ...rawSnapshot,
-      fiveHourLabel: quotaLabels.fiveHour,
-      fiveHourRemainingPercent: quota.quota.fiveHour.remainingPercent,
-      sevenDayLabel: quotaLabels.sevenDay,
-      sevenDayRemainingPercent: quota.quota.sevenDay.remainingPercent,
-    }),
+    () => {
+      const compactPaceLabel = quota.quota.paceLabel && quota.quota.paceLabel !== "额度待读取"
+        ? quota.quota.paceLabel
+        : rawSnapshot.trendLabel;
+
+      return {
+        ...rawSnapshot,
+        trendLabel: compactPaceLabel,
+        fiveHourLabel: quotaLabels.fiveHour,
+        fiveHourRemainingPercent: quota.quota.fiveHour.remainingPercent,
+        sevenDayLabel: quotaLabels.sevenDay,
+        sevenDayRemainingPercent: quota.quota.sevenDay.remainingPercent,
+      };
+    },
     [quota, quotaLabels, rawSnapshot],
   );
 

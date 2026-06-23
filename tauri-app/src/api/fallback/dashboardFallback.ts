@@ -22,6 +22,8 @@ export function emptyDashboardSnapshot(): DashboardSnapshot {
     quota: emptyQuotaSnapshot(),
     activityDays: emptyActivityDays(now),
     recentUsage24h: emptyRecentUsage(now),
+    recentUsage7d: emptyRecentUsage(now, 60 * 60 * 1_000, 7 * 24),
+    recentUsage30d: emptyRecentUsage(now, 6 * 60 * 60 * 1_000, 30 * 4),
     cacheHitRanking: [],
     warnings: [],
   };

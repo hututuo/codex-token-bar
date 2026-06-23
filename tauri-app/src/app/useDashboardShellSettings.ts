@@ -37,6 +37,7 @@ export interface DashboardShellSettingsState {
   updateFloatingOpacity: (opacity: number) => void;
   updateFloatingScale: (scale: number) => void;
   updateFloatingUnreadEffect: (unreadEffect: FloatingUnreadEffect) => void;
+  updateFloatingGradient: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
 }
 
 export function useDashboardShellSettings({
@@ -93,6 +94,12 @@ export function useDashboardShellSettings({
     setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, unreadEffect }));
   }
 
+  function updateFloatingGradient(
+    patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>,
+  ) {
+    setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, ...patch }));
+  }
+
   async function completeSetupGuide() {
     const settings = await saveSetupGuideCompleted(true);
     if (!settings.setupGuideCompleted) {
@@ -114,5 +121,6 @@ export function useDashboardShellSettings({
     updateFloatingOpacity,
     updateFloatingScale,
     updateFloatingUnreadEffect,
+    updateFloatingGradient,
   };
 }
