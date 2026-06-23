@@ -98,6 +98,47 @@ enum FloatingPanelUnreadEffect: String, CaseIterable, Identifiable {
     }
 }
 
+enum FloatingPanelReadableTextTone: Equatable, Sendable {
+    case darkText
+    case lightText
+
+    var primaryColor: Color {
+        switch self {
+        case .darkText:
+            return Color.black.opacity(0.90)
+        case .lightText:
+            return Color.white.opacity(0.92)
+        }
+    }
+
+    var secondaryColor: Color {
+        switch self {
+        case .darkText:
+            return Color.black.opacity(0.68)
+        case .lightText:
+            return Color.white.opacity(0.76)
+        }
+    }
+
+    var mutedColor: Color {
+        switch self {
+        case .darkText:
+            return Color.black.opacity(0.54)
+        case .lightText:
+            return Color.white.opacity(0.62)
+        }
+    }
+
+    var dividerColor: Color {
+        switch self {
+        case .darkText:
+            return Color.black.opacity(0.18)
+        case .lightText:
+            return Color.white.opacity(0.20)
+        }
+    }
+}
+
 struct FloatingPanelAppearance: Equatable {
     static let startHexKey = "floatingPanelGradientStartHex"
     static let endHexKey = "floatingPanelGradientEndHex"
@@ -153,6 +194,9 @@ struct FloatingPanelAppearance: Equatable {
         return Color.white.opacity(0.50)
     }
 
+    var readableTextTone: FloatingPanelReadableTextTone {
+        averagedRGB.luminance > 0.58 ? .darkText : .lightText
+    }
 
     private var averagedRGB: FloatingPanelRGB {
         let start = FloatingPanelRGB(hex: startHex) ?? FloatingPanelRGB(hex: Self.defaultStartHex) ?? .fallback

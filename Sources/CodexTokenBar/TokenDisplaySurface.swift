@@ -32,10 +32,19 @@ private struct TokenDisplayScaleKey: EnvironmentKey {
     static let defaultValue: CGFloat = 1
 }
 
+private struct TokenDisplayTextToneKey: EnvironmentKey {
+    static let defaultValue: FloatingPanelReadableTextTone = .darkText
+}
+
 extension EnvironmentValues {
     var tokenDisplayScale: CGFloat {
         get { self[TokenDisplayScaleKey.self] }
         set { self[TokenDisplayScaleKey.self] = newValue }
+    }
+
+    var tokenDisplayTextTone: FloatingPanelReadableTextTone {
+        get { self[TokenDisplayTextToneKey.self] }
+        set { self[TokenDisplayTextToneKey.self] = newValue }
     }
 }
 
@@ -154,6 +163,7 @@ struct TokenDisplayCard: View {
     var lockTargetDescription: String? = nil
     var onToggleLock: (() -> Void)? = nil
     @Environment(\.tokenDisplayScale) private var displayScale
+    @Environment(\.tokenDisplayTextTone) private var textTone
 
     var body: some View {
         GeometryReader { proxy in
@@ -242,6 +252,7 @@ struct TokenDisplayCard: View {
             HStack(alignment: .lastTextBaseline, spacing: 4.scaled(by: displayScale)) {
                 Text(String(format: "%.1f", snapshot.rate))
                     .font(.system(size: 20.scaled(by: displayScale), weight: .semibold, design: .rounded))
+                    .foregroundStyle(textTone.primaryColor)
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
@@ -249,7 +260,7 @@ struct TokenDisplayCard: View {
                     .offset(x: 3.scaled(by: displayScale), y: 1.5.scaled(by: displayScale))
                 Text("tok/s")
                     .font(.system(size: 8.6.scaled(by: displayScale), weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(textTone.secondaryColor)
                     .offset(y: 2.scaled(by: displayScale))
             }
             .frame(height: FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale), alignment: .center)
@@ -269,7 +280,7 @@ struct TokenDisplayCard: View {
             Button(action: onToggleLock) {
                 Image(systemName: lockState.systemImage)
                     .font(.system(size: 7.8.scaled(by: displayScale), weight: .bold))
-                    .foregroundStyle(.primary.opacity(0.9))
+                    .foregroundStyle(textTone.primaryColor)
                     .frame(width: 26.scaled(by: displayScale), height: 22.scaled(by: displayScale), alignment: .center)
                     .contentShape(Rectangle())
             }
@@ -287,7 +298,7 @@ struct TokenDisplayCard: View {
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 7.8.scaled(by: displayScale), weight: .bold))
-                    .foregroundStyle(.secondary.opacity(0.78))
+                    .foregroundStyle(textTone.secondaryColor)
                     .frame(width: 22.scaled(by: displayScale), height: 20.scaled(by: displayScale), alignment: .center)
                     .contentShape(Rectangle())
             }
