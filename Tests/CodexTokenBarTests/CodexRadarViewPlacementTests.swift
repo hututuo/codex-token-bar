@@ -96,4 +96,16 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("CodexRadarQuotaWindowSelector"))
         XCTAssertTrue(source.contains("quotaRadar.chartSeries(for: selectedQuotaWindow)"))
     }
+
+    func testQuotaWindowSelectorUsesFullSegmentHitTargets() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let radarView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexRadarView.swift")
+        let source = try String(contentsOf: radarView, encoding: .utf8)
+
+        XCTAssertTrue(source.contains(".frame(width: 46, height: 26)"))
+        XCTAssertTrue(source.contains(".contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))"))
+    }
 }

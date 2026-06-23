@@ -710,11 +710,12 @@ private struct CodexRadarQuotaWindowSelector: View {
                     Text(window.shortTitle)
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(selection == window ? AppTheme.accentBlue : .secondary)
-                        .frame(width: 34, height: 22)
+                        .frame(width: 46, height: 26)
                         .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .fill(selection == window ? AppTheme.accentBlue.opacity(0.12) : Color.clear)
                         )
+                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("额度窗口 \(window.title)")
