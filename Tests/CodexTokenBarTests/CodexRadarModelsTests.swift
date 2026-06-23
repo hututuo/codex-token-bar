@@ -74,6 +74,22 @@ final class CodexRadarModelsTests: XCTestCase {
         XCTAssertEqual(series.dropFirst().first?.points.map(\.value), [62.5, 87.5])
     }
 
+    func testQuotaRadarBuildsWindowAndTierChartSeries() throws {
+        let snapshot = try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: Data(Self.sampleJSON.utf8))
+        let quotaRadar = try XCTUnwrap(snapshot.modelIQ.quotaRadar)
+
+        let fiveHourSeries = quotaRadar.chartSeries(for: .fiveHour)
+        let sevenDaySeries = quotaRadar.chartSeries(for: .sevenDay)
+
+        XCTAssertEqual(fiveHourSeries.map(\.label), ["Plus", "5x Pro", "20x Pro"])
+        XCTAssertEqual(fiveHourSeries.first?.points.map(\.value), [15.17, 13.83])
+        XCTAssertEqual(fiveHourSeries.last?.points.map(\.value), [303.36, 276.66])
+        XCTAssertEqual(sevenDaySeries.map(\.label), ["Plus", "5x Pro", "20x Pro"])
+        XCTAssertEqual(sevenDaySeries.first?.points.map(\.value).first ?? 0, 91.008, accuracy: 0.001)
+        XCTAssertEqual(sevenDaySeries.dropFirst().first?.points.map(\.value).last ?? 0, 414.9825, accuracy: 0.001)
+        XCTAssertEqual(sevenDaySeries.last?.points.map(\.value), [1820.16, 1659.93])
+    }
+
     private static let sampleJSON = """
     {
       "schema_version": "2.0",

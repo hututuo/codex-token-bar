@@ -200,6 +200,27 @@ struct CodexRadarChartPoint: Equatable, Sendable, Identifiable {
     }
 }
 
+enum CodexRadarQuotaWindow: String, CaseIterable, Identifiable, Sendable {
+    case fiveHour
+    case sevenDay
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fiveHour: "5 小时"
+        case .sevenDay: "7 天"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .fiveHour: "5h"
+        case .sevenDay: "7d"
+        }
+    }
+}
+
 struct CodexRadarModelIQComparison: Decodable, Equatable, Sendable {
     let label: String
     let model: String
@@ -311,6 +332,50 @@ struct CodexRadarQuotaRadar: Decodable, Equatable, Sendable {
             return lhsIndex < rhsIndex
         }
     }
+
+    func chartSeries(for window: CodexRadarQuotaWindow) -> [CodexRadarChartSeries] {
+        [
+            CodexRadarChartSeries(
+                id: "quota-plus",
+                label: "Plus",
+                points: trend.map { point in
+                    CodexRadarChartPoint(
+                        rawLabel: point.date,
+                        xLabel: CodexRadarChartPoint.shortDateLabel(point.date),
+                        value: point.value(for: window, tier: .plus)
+                    )
+                }
+            ),
+            CodexRadarChartSeries(
+                id: "quota-5x",
+                label: "5x Pro",
+                points: trend.map { point in
+                    CodexRadarChartPoint(
+                        rawLabel: point.date,
+                        xLabel: CodexRadarChartPoint.shortDateLabel(point.date),
+                        value: point.value(for: window, tier: .fiveX)
+                    )
+                }
+            ),
+            CodexRadarChartSeries(
+                id: "quota-20x",
+                label: "20x Pro",
+                points: trend.map { point in
+                    CodexRadarChartPoint(
+                        rawLabel: point.date,
+                        xLabel: CodexRadarChartPoint.shortDateLabel(point.date),
+                        value: point.value(for: window, tier: .twentyX)
+                    )
+                }
+            )
+        ]
+    }
+}
+
+private enum CodexRadarQuotaTier {
+    case plus
+    case fiveX
+    case twentyX
 }
 
 struct CodexRadarQuotaRow: Decodable, Equatable, Sendable, Identifiable {
@@ -348,6 +413,23 @@ struct CodexRadarQuotaTrendPoint: Decodable, Equatable, Sendable, Identifiable {
     let offset: Int
     let costUsd: Double
     let totalTokens: Int
+
+    fileprivate func value(for window: CodexRadarQuotaWindow, tier: CodexRadarQuotaTier) -> Double {
+        switch (window, tier) {
+        case (.fiveHour, .plus):
+            return fiveHourPlus
+        case (.fiveHour, .fiveX):
+            return fiveHour5x
+        case (.fiveHour, .twentyX):
+            return fiveHour20x
+        case (.sevenDay, .plus):
+            return sevenDay20x / 20
+        case (.sevenDay, .fiveX):
+            return sevenDay20x / 4
+        case (.sevenDay, .twentyX):
+            return sevenDay20x
+        }
+    }
 
     private enum CodingKeys: String, CodingKey {
         case date

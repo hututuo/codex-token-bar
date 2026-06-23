@@ -421,10 +421,15 @@ private struct CodexRadarIQDetail: View {
 
 private struct CodexRadarQuotaDetail: View {
     let snapshot: CodexRadarSnapshot
+    @State private var selectedQuotaWindow: CodexRadarQuotaWindow = .fiveHour
+    @State private var selectedQuotaTierIDs: Set<String> = ["quota-plus", "quota-5x", "quota-20x"]
 
     var body: some View {
         CodexRadarDetailSection(title: "预估额度", systemImage: "gauge.with.dots.needle.67percent") {
             if let quotaRadar = snapshot.modelIQ.quotaRadar {
+                let quotaSeries = quotaRadar.chartSeries(for: selectedQuotaWindow)
+                let activeTierIDs = activeSelectedTierIDs(for: quotaSeries)
+
                 CodexRadarDetailSubsection(title: "额度基准") {
                     CodexRadarKeyValueGrid(rows: [
                         ("依据窗口", quotaRadar.basisWindowLabel),
@@ -436,24 +441,26 @@ private struct CodexRadarQuotaDetail: View {
                     ])
                 }
 
-                CodexRadarDetailSubsection(title: "20x 5h 趋势") {
+                CodexRadarDetailSubsection(title: "\(selectedQuotaWindow.title) 额度趋势") {
+                    HStack(alignment: .center, spacing: 10) {
+                        CodexRadarQuotaWindowSelector(selection: $selectedQuotaWindow)
+
+                        HStack(spacing: 5) {
+                            ForEach(Array(quotaSeries.enumerated()), id: \.element.id) { index, series in
+                                ChartLineToggle(
+                                    title: series.label,
+                                    color: codexRadarSeriesColor(index),
+                                    isOn: quotaTierSelectionBinding(for: series.id, in: quotaSeries)
+                                )
+                            }
+                        }
+                    }
+
                     CodexRadarSeriesLineChart(
-                        series: [
-                            CodexRadarChartSeries(
-                                id: "quota-20x-5h",
-                                label: "20x Pro 5h",
-                                points: quotaRadar.trend.map {
-                                    CodexRadarChartPoint(
-                                        rawLabel: $0.date,
-                                        xLabel: CodexRadarChartPoint.shortDateLabel($0.date),
-                                        value: $0.fiveHour20x
-                                    )
-                                }
-                            )
-                        ],
-                        visibleSeriesIDs: ["quota-20x-5h"],
+                        series: quotaSeries,
+                        visibleSeriesIDs: activeTierIDs,
                         xAxisTitle: "日期",
-                        yAxisTitle: "美元额度",
+                        yAxisTitle: "\(selectedQuotaWindow.title)美元额度",
                         valuePrefix: "$"
                     )
                     .frame(height: 155)
@@ -489,6 +496,35 @@ private struct CodexRadarQuotaDetail: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func activeSelectedTierIDs(for series: [CodexRadarChartSeries]) -> Set<String> {
+        let validIDs = Set(series.map(\.id))
+        let selected = selectedQuotaTierIDs.intersection(validIDs)
+        if !selected.isEmpty {
+            return selected
+        }
+        return validIDs
+    }
+
+    private func quotaTierSelectionBinding(for id: String, in series: [CodexRadarChartSeries]) -> Binding<Bool> {
+        Binding(
+            get: {
+                activeSelectedTierIDs(for: series).contains(id)
+            },
+            set: { isOn in
+                var next = activeSelectedTierIDs(for: series)
+                if isOn {
+                    next.insert(id)
+                } else {
+                    next.remove(id)
+                    if next.isEmpty {
+                        next.insert(id)
+                    }
+                }
+                selectedQuotaTierIDs = next
+            }
+        )
     }
 }
 
@@ -659,6 +695,38 @@ private struct CodexRadarSignalList: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.insetBackground.opacity(0.48), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+}
+
+private struct CodexRadarQuotaWindowSelector: View {
+    @Binding var selection: CodexRadarQuotaWindow
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(CodexRadarQuotaWindow.allCases) { window in
+                Button {
+                    selection = window
+                } label: {
+                    Text(window.shortTitle)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(selection == window ? AppTheme.accentBlue : .secondary)
+                        .frame(width: 34, height: 22)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(selection == window ? AppTheme.accentBlue.opacity(0.12) : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("额度窗口 \(window.title)")
+                .accessibilityValue(selection == window ? "已选择" : "未选择")
+            }
+        }
+        .padding(3)
+        .background(AppTheme.raisedBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(AppTheme.border, lineWidth: 1)
+        )
     }
 }
 

@@ -82,4 +82,18 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("CodexRadarChartHoverBubble"))
         XCTAssertTrue(source.contains("HoverTrackingArea("))
     }
+
+    func testQuotaChartHasWindowAndTierSelectors() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let radarView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexRadarView.swift")
+        let source = try String(contentsOf: radarView, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("selectedQuotaWindow"))
+        XCTAssertTrue(source.contains("selectedQuotaTierIDs"))
+        XCTAssertTrue(source.contains("CodexRadarQuotaWindowSelector"))
+        XCTAssertTrue(source.contains("quotaRadar.chartSeries(for: selectedQuotaWindow)"))
+    }
 }
