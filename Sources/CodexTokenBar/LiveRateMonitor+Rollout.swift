@@ -74,17 +74,7 @@ extension LiveRateMonitor {
         }
 
         if recordType == "event_msg", payloadType == "agent_message" {
-            let text = payload["message"] as? String ?? ""
-            guard !text.isEmpty else { return [] }
-            return [
-                RolloutMetricEvent(
-                    timestamp: timestamp,
-                    key: keyPrefix,
-                    category: .visibleText,
-                    text: text,
-                    rollingOnly: true
-                )
-            ]
+            return []
         }
 
         if recordType == "response_item", payloadType == "message",

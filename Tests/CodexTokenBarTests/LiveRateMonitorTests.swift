@@ -67,6 +67,21 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertTrue(monitorSource.contains("await readRolloutUpdates(now:"))
     }
 
+    func testRolloutParserDoesNotCountAgentMessageDuplicateAsInstantRollingOutput() {
+        let text = String(repeating: "streamed answer ", count: 200)
+        let lines = [
+            rolloutAgentMessageLine(timestamp: "2026-06-24T13:00:00.000Z", message: text),
+            rolloutAssistantResponseItemLine(timestamp: "2026-06-24T13:00:00.010Z", id: "msg-1", text: text)
+        ]
+
+        let events = LiveRateMonitor.rolloutEvents(fromLines: lines)
+
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.text, text)
+        XCTAssertEqual(events.first?.category, .visibleText)
+        XCTAssertEqual(events.first?.rollingOnly, false)
+    }
+
     private func makeDatabaseURL() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("LiveRateMonitorTests-\(UUID().uuidString)", isDirectory: true)
@@ -90,5 +105,39 @@ final class LiveRateMonitorTests: XCTestCase {
                 .text(body)
             ]
         )
+    }
+
+    private func rolloutAgentMessageLine(timestamp: String, message: String) -> String {
+        jsonLine([
+            "timestamp": timestamp,
+            "type": "event_msg",
+            "payload": [
+                "type": "agent_message",
+                "message": message
+            ]
+        ])
+    }
+
+    private func rolloutAssistantResponseItemLine(timestamp: String, id: String, text: String) -> String {
+        jsonLine([
+            "timestamp": timestamp,
+            "type": "response_item",
+            "payload": [
+                "type": "message",
+                "id": id,
+                "role": "assistant",
+                "content": [
+                    [
+                        "type": "output_text",
+                        "text": text
+                    ]
+                ]
+            ]
+        ])
+    }
+
+    private func jsonLine(_ object: [String: Any]) -> String {
+        let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return String(data: data, encoding: .utf8)!
     }
 }
