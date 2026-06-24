@@ -259,7 +259,10 @@ final class LiveRateMonitor: ObservableObject {
             }.value
 
             guard !globalRows.isEmpty else {
-                updateSnapshots(now: now)
+                let processedRolloutEvents = await readRolloutUpdates(now: now)
+                if !processedRolloutEvents {
+                    updateSnapshots(now: now)
+                }
                 return
             }
             lastPollProcessedRows = true
@@ -273,6 +276,38 @@ final class LiveRateMonitor: ObservableObject {
             updateSnapshots(now: Date().timeIntervalSince1970)
         } catch {
             snapshot.status = "读取日志失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func readRolloutUpdates(now: TimeInterval) async -> Bool {
+        guard !threadOptions.isEmpty else { return false }
+        let options = threadOptions
+        let offsets = rolloutOffsets
+
+        do {
+            let reads = try await Task.detached(priority: .utility) {
+                try Self.rolloutReads(options: options, offsets: offsets)
+            }.value
+            var processedEvents = false
+
+            for read in reads {
+                rolloutOffsets[read.path] = read.newOffset
+                guard !read.events.isEmpty else { continue }
+                processedEvents = true
+                add(events: read.events, threadID: read.threadID, to: &totalRate)
+                if read.threadID == threadID {
+                    add(events: read.events, threadID: read.threadID, to: &selectedRate)
+                }
+            }
+
+            guard processedEvents else { return false }
+            lastPollProcessedRows = true
+            extendFastPolling(from: now)
+            updateSnapshots(now: Date().timeIntervalSince1970)
+            return true
+        } catch {
+            snapshot.status = "读取会话流失败：\(error.localizedDescription)"
+            return false
         }
     }
 

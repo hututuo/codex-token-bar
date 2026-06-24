@@ -56,6 +56,17 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertTrue(fingerprints.contains("d"))
     }
 
+    func testPollReadsRolloutJsonlWhenSqliteStreamHasNoNewRows() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let monitorSourceURL = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateMonitor.swift")
+        let monitorSource = try String(contentsOf: monitorSourceURL, encoding: .utf8)
+
+        XCTAssertTrue(monitorSource.contains("await readRolloutUpdates(now:"))
+    }
+
     private func makeDatabaseURL() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("LiveRateMonitorTests-\(UUID().uuidString)", isDirectory: true)
