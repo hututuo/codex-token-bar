@@ -39,7 +39,9 @@ extension LiveRateMonitor {
 
     nonisolated static func rolloutEvents(fromLines lines: [String]) -> [RolloutMetricEvent] {
         var callStarts: [String: TimeInterval] = [:]
-        return lines.flatMap { rolloutEvents(fromLine: $0, callStarts: &callStarts) }
+        return suppressDuplicateVisibleMessages(
+            lines.flatMap { rolloutEvents(fromLine: $0, callStarts: &callStarts) }
+        )
     }
 
     nonisolated static func rolloutEvents(fromLine line: String) -> [RolloutMetricEvent] {
@@ -74,7 +76,16 @@ extension LiveRateMonitor {
         }
 
         if recordType == "event_msg", payloadType == "agent_message" {
-            return []
+            let text = payload["message"] as? String ?? ""
+            guard !text.isEmpty else { return [] }
+            return [
+                RolloutMetricEvent(
+                    timestamp: timestamp,
+                    key: "agent:\(timestamp):\(text.hashValue)",
+                    category: .visibleText,
+                    text: text
+                )
+            ]
         }
 
         if recordType == "response_item", payloadType == "message",
@@ -131,6 +142,18 @@ extension LiveRateMonitor {
         }
 
         return []
+    }
+
+    nonisolated private static func suppressDuplicateVisibleMessages(_ events: [RolloutMetricEvent]) -> [RolloutMetricEvent] {
+        var seen: [String: TimeInterval] = [:]
+        return events.filter { event in
+            guard event.category == .visibleText, !event.text.isEmpty else { return true }
+            if let previous = seen[event.text], event.timestamp - previous <= 10 {
+                return false
+            }
+            seen[event.text] = event.timestamp
+            return true
+        }
     }
 
     nonisolated static func parseTimestamp(_ text: String?) -> TimeInterval {

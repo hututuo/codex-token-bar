@@ -92,6 +92,34 @@ final class RateAccumulatorTests: XCTestCase {
         XCTAssertEqual(accumulator.rollingRate(now: 20.5, windowSeconds: 2.5, minimumSpan: 0.4), 0, accuracy: 0.001)
     }
 
+    func testDuplicateVisibleCompletionFromAgentAndMessageCountsOnce() {
+        var accumulator = RateAccumulator(resetsOnNewItem: false)
+        let text = "可以，先按这个修。"
+
+        accumulator.addDistributed(
+            text: text,
+            category: .visibleText,
+            key: "thread:agent-message:visibleText",
+            startTimestamp: nil,
+            endingAt: 20,
+            windowSeconds: 2.5,
+            estimator: { $0.count }
+        )
+        accumulator.addDistributed(
+            text: text,
+            category: .visibleText,
+            key: "thread:response-item:visibleText",
+            startTimestamp: nil,
+            endingAt: 20.2,
+            windowSeconds: 2.5,
+            estimator: { $0.count }
+        )
+
+        XCTAssertEqual(accumulator.breakdown.visibleText, text.count)
+        XCTAssertEqual(accumulator.outputTokens, text.count)
+        XCTAssertEqual(accumulator.outputCharacters, text.count)
+    }
+
     func testExactModelOutputOverridesModelGeneratedEstimateWhenLarger() {
         var accumulator = RateAccumulator(resetsOnNewItem: false)
 

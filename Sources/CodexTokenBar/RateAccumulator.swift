@@ -7,6 +7,7 @@ struct RateAccumulator {
     private static let minimumCompletionPayloadSeconds: TimeInterval = 1
     private static let maximumCompletionPayloadSeconds: TimeInterval = 30
     private static let distributionStepSeconds: TimeInterval = 0.5
+    private static let duplicateVisibleCompletionSeconds: TimeInterval = 10
 
     let resetsOnNewItem: Bool
     private(set) var breakdown = LiveTokenBreakdown()
@@ -18,6 +19,7 @@ struct RateAccumulator {
     private var firstDeltaAt: TimeInterval?
     private var lastDeltaAt: TimeInterval?
     private var rollingDeltas: [(time: TimeInterval, tokens: Int)] = []
+    private var recentVisibleCompletions: [String: TimeInterval] = [:]
 
     init(resetsOnNewItem: Bool) {
         self.resetsOnNewItem = resetsOnNewItem
@@ -37,6 +39,7 @@ struct RateAccumulator {
         firstDeltaAt = nil
         lastDeltaAt = nil
         rollingDeltas.removeAll()
+        recentVisibleCompletions.removeAll()
     }
 
     mutating func add(
@@ -74,6 +77,9 @@ struct RateAccumulator {
         windowSeconds: TimeInterval,
         estimator: (String) -> Int
     ) {
+        guard !shouldSuppressDuplicateVisibleCompletion(text: text, category: category, key: key, at: timestamp) else {
+            return
+        }
         let tokens = estimator(text)
         outputCharacters += text.count
         add(tokens: tokens, category: category, key: key, at: timestamp, windowSeconds: windowSeconds)
@@ -107,6 +113,9 @@ struct RateAccumulator {
         windowSeconds: TimeInterval,
         estimator: (String) -> Int
     ) {
+        guard !shouldSuppressDuplicateVisibleCompletion(text: text, category: category, key: key, at: timestamp) else {
+            return
+        }
         let tokens = estimator(text)
         outputCharacters += text.count
         addDistributed(tokens: tokens, category: category, key: key, startTimestamp: startTimestamp, endingAt: timestamp, windowSeconds: windowSeconds)
@@ -231,6 +240,29 @@ struct RateAccumulator {
             Self.maximumCompletionPayloadSeconds,
             max(Self.minimumCompletionPayloadSeconds, Double(tokens) / Self.completionPayloadTokensPerSecond)
         )
+    }
+
+    private mutating func shouldSuppressDuplicateVisibleCompletion(
+        text: String,
+        category: LiveTokenCategory,
+        key: String,
+        at timestamp: TimeInterval
+    ) -> Bool {
+        guard category == .visibleText, !text.isEmpty else { return false }
+        recentVisibleCompletions = recentVisibleCompletions.filter { timestamp - $0.value <= Self.duplicateVisibleCompletionSeconds }
+        let fingerprint = "\(scopePrefix(from: key)):\(text)"
+        if let previous = recentVisibleCompletions[fingerprint],
+           timestamp - previous <= Self.duplicateVisibleCompletionSeconds {
+            return true
+        }
+        recentVisibleCompletions[fingerprint] = timestamp
+        return false
+    }
+
+    private func scopePrefix(from key: String) -> String {
+        key.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            .first
+            .map(String.init) ?? key
     }
 }
 

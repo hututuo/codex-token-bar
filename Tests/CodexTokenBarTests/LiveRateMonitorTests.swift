@@ -82,6 +82,18 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(events.first?.rollingOnly, false)
     }
 
+    func testRolloutParserCountsCompleteAgentMessageWhileAssistantItemIsStillBuffered() {
+        let text = "可以，先按这个修。"
+        let events = LiveRateMonitor.rolloutEvents(fromLines: [
+            rolloutAgentMessageLine(timestamp: "2026-06-24T13:00:00.000Z", message: text)
+        ])
+
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.text, text)
+        XCTAssertEqual(events.first?.category, .visibleText)
+        XCTAssertEqual(events.first?.rollingOnly, false)
+    }
+
     private func makeDatabaseURL() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("LiveRateMonitorTests-\(UUID().uuidString)", isDirectory: true)
