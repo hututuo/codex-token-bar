@@ -44,6 +44,8 @@ final class QuotaHistoryStore: ObservableObject {
 }
 
 private struct QuotaHistoryRow {
+    private static let resetGraceInterval: TimeInterval = 2 * 60
+
     let createdAt: Date
     let accountKey: String
     let planType: String?
@@ -87,6 +89,40 @@ private struct QuotaHistoryRow {
             sevenDayResetsAt: sevenDayResetsAt,
             status: status
         )
+    }
+
+    func replacing(fiveHourUsedPercent: Int? = nil, sevenDayUsedPercent: Int? = nil) -> QuotaHistoryRow {
+        QuotaHistoryRow(
+            createdAt: createdAt,
+            accountKey: accountKey,
+            planType: planType,
+            limitName: limitName,
+            accountName: accountName,
+            fiveHourUsedPercent: fiveHourUsedPercent ?? self.fiveHourUsedPercent,
+            fiveHourResetsAt: fiveHourResetsAt,
+            sevenDayUsedPercent: sevenDayUsedPercent ?? self.sevenDayUsedPercent,
+            sevenDayResetsAt: sevenDayResetsAt,
+            status: status
+        )
+    }
+
+    func isSameFiveHourCycle(as other: QuotaHistoryRow) -> Bool {
+        Self.isSameObservedCycle(lhs: fiveHourResetsAt, rhs: other.fiveHourResetsAt)
+    }
+
+    func isSameSevenDayCycle(as other: QuotaHistoryRow) -> Bool {
+        Self.isSameObservedCycle(lhs: sevenDayResetsAt, rhs: other.sevenDayResetsAt)
+    }
+
+    private static func isSameObservedCycle(lhs: Date?, rhs: Date?) -> Bool {
+        switch (lhs, rhs) {
+        case let (lhs?, rhs?):
+            return abs(lhs.timeIntervalSince(rhs)) <= resetGraceInterval
+        case (nil, nil):
+            return true
+        case (_?, nil), (nil, _?):
+            return false
+        }
     }
 }
 
@@ -197,11 +233,62 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
 
     private static func sanitizedRows(_ rows: [QuotaHistoryRow]) -> [QuotaHistoryRow] {
         var lastByAccount: [String: QuotaHistoryRow] = [:]
-        return rows.map { row in
+        return suppressRecoveredFullUsageSpikes(rows).map { row in
             let normalized = row.normalized(after: lastByAccount[row.accountKey])
             lastByAccount[row.accountKey] = normalized
             return normalized
         }
+    }
+
+    private static func suppressRecoveredFullUsageSpikes(_ rows: [QuotaHistoryRow]) -> [QuotaHistoryRow] {
+        rows.enumerated().map { index, row in
+            let fiveHour = recoveredFullUsageReplacement(
+                in: rows,
+                at: index,
+                current: row.fiveHourUsedPercent,
+                previousValue: { $0.fiveHourUsedPercent },
+                futureValue: { $0.fiveHourUsedPercent },
+                sameCycle: { row.isSameFiveHourCycle(as: $0) }
+            )
+            let sevenDay = recoveredFullUsageReplacement(
+                in: rows,
+                at: index,
+                current: row.sevenDayUsedPercent,
+                previousValue: { $0.sevenDayUsedPercent },
+                futureValue: { $0.sevenDayUsedPercent },
+                sameCycle: { row.isSameSevenDayCycle(as: $0) }
+            )
+            return row.replacing(fiveHourUsedPercent: fiveHour, sevenDayUsedPercent: sevenDay)
+        }
+    }
+
+    private static func recoveredFullUsageReplacement(
+        in rows: [QuotaHistoryRow],
+        at index: Int,
+        current: Int?,
+        previousValue: (QuotaHistoryRow) -> Int?,
+        futureValue: (QuotaHistoryRow) -> Int?,
+        sameCycle: (QuotaHistoryRow) -> Bool
+    ) -> Int? {
+        guard let current, current >= 95 else { return current }
+
+        let previous = rows[..<index]
+            .reversed()
+            .first { $0.accountKey == rows[index].accountKey && sameCycle($0) }
+            .flatMap(previousValue)
+        let recovered = rows[(index + 1)...]
+            .first { candidate in
+                candidate.accountKey == rows[index].accountKey
+                    && sameCycle(candidate)
+                    && (futureValue(candidate) ?? current) <= current - 20
+            }
+            .flatMap(futureValue)
+
+        guard let recovered else { return current }
+        if let previous, previous < 95 {
+            return previous
+        }
+        return recovered
     }
 
     private static func row(from quota: AccountQuotaSnapshot, createdAt: Date) -> QuotaHistoryRow {
