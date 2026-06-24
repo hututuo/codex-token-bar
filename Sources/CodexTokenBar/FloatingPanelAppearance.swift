@@ -321,28 +321,28 @@ struct FloatingPanelReadableTextPalette: Equatable, Sendable {
         if let fixedWhite {
             return fixedWhite
         }
-        return foregroundWhite(lightValue: 0.04, grayValue: 0.10, darkValue: 0.98)
+        return foregroundWhite(lightValue: 0.00, grayValue: 0.15, darkValue: 1.00)
     }
 
     var secondaryWhite: Double {
         if let fixedWhite {
             return fixedWhite
         }
-        return foregroundWhite(lightValue: 0.12, grayValue: 0.20, darkValue: 0.90)
+        return foregroundWhite(lightValue: 0.08, grayValue: 0.23, darkValue: 0.92)
     }
 
     var mutedWhite: Double {
         if let fixedWhite {
             return fixedWhite
         }
-        return foregroundWhite(lightValue: 0.16, grayValue: 0.26, darkValue: 0.84)
+        return foregroundWhite(lightValue: 0.12, grayValue: 0.27, darkValue: 0.86)
     }
 
     var dividerWhite: Double {
         if let fixedWhite {
             return fixedWhite
         }
-        return foregroundWhite(lightValue: 0.10, grayValue: 0.18, darkValue: 0.80)
+        return foregroundWhite(lightValue: 0.06, grayValue: 0.20, darkValue: 0.82)
     }
 
     var primaryColor: Color {
@@ -367,7 +367,7 @@ struct FloatingPanelReadableTextPalette: Equatable, Sendable {
         let whiteFamilyProgress = smoothStep(edge0: 0.50, edge1: 0.78, value: darkness)
         let familySwitch = usesAutomaticWhiteFamily ? 1.0 : 0.0
         let blackFamily = mix(lightValue, grayValue, blackFamilyProgress)
-        let whiteFamily = mix(max(0.78, darkValue - 0.07), darkValue, whiteFamilyProgress)
+        let whiteFamily = mix(max(0.78, darkValue - 0.07), min(darkValue, 1), whiteFamilyProgress)
         let fullValue = mix(blackFamily, whiteFamily, familySwitch)
         return min(max(applyAutomaticStrength(to: fullValue), 0), 1)
     }

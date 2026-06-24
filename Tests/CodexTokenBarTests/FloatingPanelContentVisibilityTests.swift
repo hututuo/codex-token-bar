@@ -239,8 +239,10 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     func testFloatingPanelReadableTextPaletteJumpsBetweenBlackAndWhiteFamiliesWithoutMiddleGray() {
         let justBeforeSwitch = FloatingPanelReadableTextPalette(backgroundLuminance: 0.546)
         let justAfterSwitch = FloatingPanelReadableTextPalette(backgroundLuminance: 0.544)
+        let lightestBackground = FloatingPanelReadableTextPalette(backgroundLuminance: 1)
+        let darkestBackground = FloatingPanelReadableTextPalette(backgroundLuminance: 0)
 
-        XCTAssertLessThan(justBeforeSwitch.primaryWhite, 0.14)
+        XCTAssertLessThanOrEqual(justBeforeSwitch.primaryWhite, 0.15)
         XCTAssertLessThan(justBeforeSwitch.secondaryWhite, 0.24)
         XCTAssertLessThan(justBeforeSwitch.mutedWhite, 0.30)
         XCTAssertGreaterThan(justAfterSwitch.primaryWhite, 0.88)
@@ -249,6 +251,12 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertGreaterThan(justAfterSwitch.primaryWhite - justBeforeSwitch.primaryWhite, 0.70)
         XCTAssertFalse((0.35...0.65).contains(justBeforeSwitch.primaryWhite))
         XCTAssertFalse((0.35...0.65).contains(justAfterSwitch.primaryWhite))
+        XCTAssertEqual(lightestBackground.primaryWhite, 0, accuracy: 0.001)
+        XCTAssertEqual(lightestBackground.secondaryWhite, 0.08, accuracy: 0.001)
+        XCTAssertEqual(lightestBackground.mutedWhite, 0.12, accuracy: 0.001)
+        XCTAssertEqual(darkestBackground.primaryWhite, 1, accuracy: 0.001)
+        XCTAssertEqual(darkestBackground.secondaryWhite, 0.92, accuracy: 0.001)
+        XCTAssertEqual(darkestBackground.mutedWhite, 0.86, accuracy: 0.001)
     }
 
     func testFloatingPanelReadableTextPaletteAdaptsFromBackgroundSamples() {
