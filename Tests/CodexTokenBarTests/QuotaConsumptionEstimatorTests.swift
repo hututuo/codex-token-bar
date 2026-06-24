@@ -83,6 +83,51 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(selection.sevenDay.impliedWindowBudgetUSD), 275.25, accuracy: 0.0001)
     }
 
+    func testPreparedDataUsesCumulativeQuotaDropAcrossClickedRange() throws {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let bins = [
+            BinUsage(start: start, tokens: 10, calls: 1),
+            BinUsage(start: start.addingTimeInterval(300), tokens: 20, calls: 1),
+            BinUsage(start: start.addingTimeInterval(600), tokens: 30, calls: 1),
+            BinUsage(start: start.addingTimeInterval(900), tokens: 40, calls: 1)
+        ]
+        let cache = Array(repeating: TokenCacheBreakdown(
+            inputTokens: 100_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 100_000,
+            calls: 1
+        ), count: 4)
+        let prepared = RecentChartPreparedData(
+            range: .twentyFourHours,
+            bins: bins,
+            bucketInterval: 300,
+            maxTokens: 40,
+            maxCalls: 1,
+            tokenTotal: 100,
+            callTotal: 4,
+            recentCacheBreakdown: cache.combined,
+            cacheBreakdowns: cache,
+            carriedCacheHitRates: [0, 0, 0, 0],
+            fiveHourRemainingPercents: [80, 75, 78, 70],
+            sevenDayRemainingPercents: [90, 88, 89, 86],
+            latestFiveHourRemaining: 70,
+            latestSevenDayRemaining: 86,
+            hasCacheCalls: true,
+            hasFiveHourQuota: true,
+            hasSevenDayQuota: true,
+            markerIndices: [0, 1, 2, 3]
+        )
+
+        let selection = try XCTUnwrap(prepared.quotaConsumptionSelection(startIndex: 0, endIndex: 3, priceCard: .officialAPI(.gpt55)))
+
+        XCTAssertEqual(selection.fiveHour.quotaDropPercent, 13, accuracy: 0.0001)
+        XCTAssertEqual(selection.sevenDay.quotaDropPercent, 5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(selection.fiveHour.impliedWindowBudgetUSD), 15.3846, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(selection.sevenDay.impliedWindowBudgetUSD), 40.0, accuracy: 0.0001)
+    }
+
     func testSelectionStatePreviewsOnHoverThenPinsEndOnSecondClick() {
         var state = RecentChartConsumptionSelectionState()
 

@@ -89,8 +89,20 @@ enum QuotaConsumptionEstimator {
         quotaEndPercent: Double?,
         priceCard: QuotaConsumptionPriceCard
     ) -> QuotaConsumptionEstimate {
+        estimate(
+            breakdown: breakdown,
+            quotaDropPercent: max((quotaStartPercent ?? 0) - (quotaEndPercent ?? 0), 0),
+            priceCard: priceCard
+        )
+    }
+
+    static func estimate(
+        breakdown: TokenCacheBreakdown,
+        quotaDropPercent: Double?,
+        priceCard: QuotaConsumptionPriceCard
+    ) -> QuotaConsumptionEstimate {
         let selectedCost = priceCard.costUSD(for: breakdown)
-        let drop = max((quotaStartPercent ?? 0) - (quotaEndPercent ?? 0), 0)
+        let drop = max(quotaDropPercent ?? 0, 0)
         let confidence: QuotaConsumptionConfidence
         let impliedBudget: Double?
 
@@ -185,10 +197,8 @@ extension RecentChartPreparedData {
         let breakdown = (lower...upper)
             .map { cacheBreakdowns[safe: $0] ?? .empty }
             .combined
-        let fiveHourStart = firstQuotaValue(fiveHourRemainingPercents, lower: lower, upper: upper)
-        let fiveHourEnd = lastQuotaValue(fiveHourRemainingPercents, lower: lower, upper: upper)
-        let sevenDayStart = firstQuotaValue(sevenDayRemainingPercents, lower: lower, upper: upper)
-        let sevenDayEnd = lastQuotaValue(sevenDayRemainingPercents, lower: lower, upper: upper)
+        let fiveHourDrop = cumulativeQuotaDrop(fiveHourRemainingPercents, lower: lower, upper: upper)
+        let sevenDayDrop = cumulativeQuotaDrop(sevenDayRemainingPercents, lower: lower, upper: upper)
 
         return QuotaConsumptionSelection(
             startIndex: lower,
@@ -200,24 +210,24 @@ extension RecentChartPreparedData {
             breakdown: breakdown,
             fiveHour: QuotaConsumptionEstimator.estimate(
                 breakdown: breakdown,
-                quotaStartPercent: fiveHourStart,
-                quotaEndPercent: fiveHourEnd,
+                quotaDropPercent: fiveHourDrop,
                 priceCard: priceCard
             ),
             sevenDay: QuotaConsumptionEstimator.estimate(
                 breakdown: breakdown,
-                quotaStartPercent: sevenDayStart,
-                quotaEndPercent: sevenDayEnd,
+                quotaDropPercent: sevenDayDrop,
                 priceCard: priceCard
             )
         )
     }
 
-    private func firstQuotaValue(_ values: [Double?], lower: Int, upper: Int) -> Double? {
-        values[lower...upper].compactMap { $0 }.first
-    }
+    private func cumulativeQuotaDrop(_ values: [Double?], lower: Int, upper: Int) -> Double? {
+        let availableValues = values[lower...upper].compactMap { $0 }
+        guard availableValues.count >= 2 else { return nil }
 
-    private func lastQuotaValue(_ values: [Double?], lower: Int, upper: Int) -> Double? {
-        values[lower...upper].compactMap { $0 }.last
+        return zip(availableValues, availableValues.dropFirst())
+            .reduce(0) { partial, pair in
+                partial + max(pair.0 - pair.1, 0)
+            }
     }
 }
