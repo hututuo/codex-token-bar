@@ -43,6 +43,12 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(height, expectedHeight, accuracy: 0.001)
     }
 
+    func testDefaultFloatingPanelUsesTighterVerticalRhythm() {
+        XCTAssertEqual(FloatingTokenPanelMetrics.rowSpacing, 2.5, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.metricRowHeight, 12, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 92, accuracy: 0.001)
+    }
+
     func testUsageStatusEmbedsOnlyWhenAdjacentToRateRow() {
         let adjacentAfterRate = FloatingPanelContentVisibility(
             showRateAndBar: true,

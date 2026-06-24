@@ -7,10 +7,10 @@ enum FloatingTokenPanelMetrics {
     static let horizontalPadding: CGFloat = 10
     static let verticalPadding: CGFloat = 7
     static let singleElementTopInset: CGFloat = 10
-    static let rowSpacing: CGFloat = 4
+    static let rowSpacing: CGFloat = 2.5
     static let rateRowHeight: CGFloat = 30
     static let usageStatusRowHeight: CGFloat = 11
-    static let metricRowHeight: CGFloat = 13
+    static let metricRowHeight: CGFloat = 12
     static let quotaRowHeight: CGFloat = 16.5
     static let radarRowHeight: CGFloat = 26
     static let metricOutset: CGFloat = 9
