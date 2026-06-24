@@ -90,15 +90,21 @@ private struct QuotaHistoryRow {
     }
 }
 
-private final class QuotaHistoryDatabase: @unchecked Sendable {
-    private let fileManager = FileManager.default
+final class QuotaHistoryDatabase: @unchecked Sendable {
+    private let fileManager: FileManager
+    private let databaseURL: URL?
     private let heartbeatInterval: TimeInterval = 60 * 60
     private let retentionDays = 45
     private let recentInterval: TimeInterval = 5 * 60
     private let maxCarryGap: TimeInterval = 90 * 60
 
-    func record(_ quota: AccountQuotaSnapshot) throws {
-        let now = Date()
+    init(databaseURL: URL? = nil, fileManager: FileManager = .default) {
+        self.databaseURL = databaseURL
+        self.fileManager = fileManager
+    }
+
+    func record(_ quota: AccountQuotaSnapshot, createdAt: Date = Date()) throws {
+        let now = createdAt
         let row = Self.row(from: quota, createdAt: now)
 
         try withDatabase { database in
@@ -124,11 +130,11 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
         }
     }
 
-    func loadSnapshot() throws -> QuotaHistorySnapshot {
+    func loadSnapshot(now: Date = Date()) throws -> QuotaHistorySnapshot {
         try withDatabase { database in
             try ensureSchema(database)
-            let rows = try recentRows(database: database)
-            return Self.makeSnapshot(rows: rows, recentInterval: recentInterval, maxCarryGap: maxCarryGap)
+            let rows = try recentRows(database: database, now: now)
+            return Self.makeSnapshot(rows: rows, recentInterval: recentInterval, maxCarryGap: maxCarryGap, now: now)
         }
     }
 
@@ -142,9 +148,8 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
         return now.timeIntervalSince(latest.createdAt) >= heartbeatInterval
     }
 
-    private static func makeSnapshot(rows: [QuotaHistoryRow], recentInterval: TimeInterval, maxCarryGap: TimeInterval) -> QuotaHistorySnapshot {
+    private static func makeSnapshot(rows: [QuotaHistoryRow], recentInterval: TimeInterval, maxCarryGap: TimeInterval, now: Date = Date()) -> QuotaHistorySnapshot {
         let calendar = Calendar.current
-        let now = Date()
         guard let recentStart = calendar.date(byAdding: .hour, value: -24, to: now) else {
             return .empty
         }
@@ -354,9 +359,25 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
         return Self.sanitizedRows(Array(rawRows.reversed())).last
     }
 
-    private func recentRows(database: SQLiteDatabaseConnection) throws -> [QuotaHistoryRow] {
-        guard let accountKey = try latestAccountKey(database: database) else { return [] }
-        let cutoff = Date().addingTimeInterval(-31 * 24 * 60 * 60).timeIntervalSince1970
+    private func recentRows(database: SQLiteDatabaseConnection, now: Date = Date()) throws -> [QuotaHistoryRow] {
+        guard let latest = try latestHistoryRow(database: database) else { return [] }
+        let cutoff = now.addingTimeInterval(-31 * 24 * 60 * 60).timeIntervalSince1970
+        guard let accountName = Self.normalizedIdentityText(latest.accountName),
+              let planType = Self.normalizedIdentityText(latest.planType) else {
+            return try rows(
+                database: database,
+                sql: """
+                SELECT created_at, account_key, plan_type, limit_name, account_name,
+                       five_hour_used_percent, five_hour_resets_at,
+                       seven_day_used_percent, seven_day_resets_at, status
+                FROM quota_snapshots
+                WHERE account_key = ? AND created_at >= ?
+                ORDER BY created_at ASC;
+                """,
+                bindings: [.text(latest.accountKey), .double(cutoff)]
+            )
+        }
+        let limitName = Self.normalizedLimitName(latest.limitName)
         return try rows(
             database: database,
             sql: """
@@ -364,23 +385,50 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
                    five_hour_used_percent, five_hour_resets_at,
                    seven_day_used_percent, seven_day_resets_at, status
             FROM quota_snapshots
-            WHERE account_key = ? AND created_at >= ?
+            WHERE created_at >= ?
+              AND (
+                account_key = ?
+                OR (
+                  lower(trim(account_name)) = ?
+                  AND lower(trim(plan_type)) = ?
+                  AND (
+                    lower(trim(COALESCE(limit_name, ''))) = ?
+                    OR (
+                      lower(trim(COALESCE(limit_name, ''))) IN ('', 'codex')
+                      AND ? IN ('', 'codex')
+                    )
+                  )
+                )
+              )
             ORDER BY created_at ASC;
             """,
-            bindings: [.text(accountKey), .double(cutoff)]
+            bindings: [
+                .double(cutoff),
+                .text(latest.accountKey),
+                .text(accountName),
+                .text(planType),
+                .text(limitName),
+                .text(limitName)
+            ]
         )
     }
 
-    private func latestAccountKey(database: SQLiteDatabaseConnection) throws -> String? {
-        let sql = "SELECT account_key FROM quota_snapshots ORDER BY created_at DESC LIMIT 1;"
-        return try database.readRows(sql) { statement in
-            statement.text(0)
-        }
-        .compactMap { $0 }
+    private func latestHistoryRow(database: SQLiteDatabaseConnection) throws -> QuotaHistoryRow? {
+        try rows(
+            database: database,
+            sql: """
+            SELECT created_at, account_key, plan_type, limit_name, account_name,
+                   five_hour_used_percent, five_hour_resets_at,
+                   seven_day_used_percent, seven_day_resets_at, status
+            FROM quota_snapshots
+            ORDER BY created_at DESC
+            LIMIT 1;
+            """
+        )
         .first
     }
 
-    private func rows(database: SQLiteDatabaseConnection, sql: String, bindings: [SQLiteBinding]) throws -> [QuotaHistoryRow] {
+    private func rows(database: SQLiteDatabaseConnection, sql: String, bindings: [SQLiteBinding] = []) throws -> [QuotaHistoryRow] {
         try database.readRows(sql, bindings: bindings) { statement in
             QuotaHistoryRow(
                 createdAt: statement.date(0) ?? Date(timeIntervalSince1970: 0),
@@ -404,7 +452,7 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
     }
 
     private func withDatabase<T>(_ work: (SQLiteDatabaseConnection) throws -> T) throws -> T {
-        guard let url = Self.databaseURL else {
+        guard let url = databaseURL ?? Self.defaultDatabaseURL else {
             throw NSError(domain: "CodexTokenBar", code: 1001, userInfo: [NSLocalizedDescriptionKey: "Unable to locate Application Support"])
         }
         let driver = SQLiteDatabaseDriver(
@@ -425,7 +473,7 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
         try database.execute("ALTER TABLE quota_snapshots ADD COLUMN \(name) \(definition);")
     }
 
-    private static var databaseURL: URL? {
+    private static var defaultDatabaseURL: URL? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("CodexTokenBar", isDirectory: true)
             .appendingPathComponent("quota-history.sqlite")
@@ -438,5 +486,14 @@ private final class QuotaHistoryDatabase: @unchecked Sendable {
                 return trimmed.isEmpty ? nil : trimmed
             }
         return parts.isEmpty ? "default" : parts.joined(separator: "|")
+    }
+
+    private static func normalizedIdentityText(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed.lowercased()
+    }
+
+    private static func normalizedLimitName(_ value: String?) -> String {
+        normalizedIdentityText(value) ?? ""
     }
 }
