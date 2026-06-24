@@ -21,15 +21,13 @@ Codex Token Bar 是一个本地优先的 macOS SwiftUI 应用，用来从本地 
   <img src="Assets/DashboardPreview.png" alt="Codex Token Bar 主界面截图" width="100%">
 </p>
 
-<p align="center">
-  <img src="Assets/FloatingPanelPreview.png" alt="悬浮实时 token 速率窗口" width="420">
-</p>
-
-<p align="center">
-  <img src="Assets/ResetCreditDetailPreview.png" alt="重置卡详情截图" width="32%">
-  <img src="Assets/CodexRadarDetailPreview.png" alt="Codex 雷达详情截图" width="32%">
-  <img src="Assets/ActivityChartPreview.png" alt="最近 24 小时 token 活动截图" width="32%">
-</p>
+<table align="center">
+  <tr>
+    <td align="center"><img src="Assets/ResetCreditDetailPreview.png" alt="重置卡详情截图" height="260"></td>
+    <td align="center"><img src="Assets/CodexRadarDetailPreview.png" alt="Codex 雷达详情截图" height="260"></td>
+    <td align="center"><img src="Assets/ActivityChartPreview.png" alt="最近 24 小时 token 活动截图" height="260"></td>
+  </tr>
+</table>
 
 ## 亮点
 
@@ -172,15 +170,13 @@ Codex Token Bar is a local-first macOS SwiftUI app for reading local Codex logs,
   <img src="Assets/DashboardPreview.png" alt="Codex Token Bar dashboard screenshot" width="100%">
 </p>
 
-<p align="center">
-  <img src="Assets/FloatingPanelPreview.png" alt="Floating live token-rate panel" width="420">
-</p>
-
-<p align="center">
-  <img src="Assets/ResetCreditDetailPreview.png" alt="Reset credit detail screenshot" width="32%">
-  <img src="Assets/CodexRadarDetailPreview.png" alt="Codex Radar detail screenshot" width="32%">
-  <img src="Assets/ActivityChartPreview.png" alt="Recent 24-hour token activity screenshot" width="32%">
-</p>
+<table align="center">
+  <tr>
+    <td align="center"><img src="Assets/ResetCreditDetailPreview.png" alt="Reset credit detail screenshot" height="260"></td>
+    <td align="center"><img src="Assets/CodexRadarDetailPreview.png" alt="Codex Radar detail screenshot" height="260"></td>
+    <td align="center"><img src="Assets/ActivityChartPreview.png" alt="Recent 24-hour token activity screenshot" height="260"></td>
+  </tr>
+</table>
 
 ## Highlights
 
