@@ -314,6 +314,36 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertGreaterThan(modelPalette.primaryWhite - actionPalette.primaryWhite, 0.56)
     }
 
+    func testFloatingPanelPullsBackSingleNearBoundaryWhiteRegionForUnifiedTone() throws {
+        let appearance = FloatingPanelAppearance(
+            startHex: "#FAF9FF",
+            endHex: "#0058DF",
+            directionRaw: FloatingPanelGradientDirection.topLeadingToBottomTrailing.rawValue,
+            styleRaw: FloatingPanelGradientStyle.linear.rawValue
+        )
+        let visibility = FloatingPanelContentVisibility(
+            showRateAndBar: true,
+            showUsageStatus: true,
+            showMetrics: true,
+            showQuota: true,
+            showRadar: true,
+            groupOrder: [.usageStatus, .rateAndBar, .metrics, .radar, .quota]
+        )
+        let paletteSet = appearance.textPalettes(
+            panelSize: FloatingTokenPanelMetrics.size(scale: 1.14, visibility: visibility),
+            scale: 1.14,
+            opacity: 0.98,
+            visibility: visibility
+        )
+
+        let requestsPalette = try XCTUnwrap(paletteSet.metricPalettes[.requests])
+        let radarModelPalette = try XCTUnwrap(paletteSet.radarModelPalette)
+
+        XCTAssertLessThan(requestsPalette.primaryWhite, 0.24)
+        XCTAssertLessThan(radarModelPalette.primaryWhite, 0.24)
+        XCTAssertLessThan(abs(radarModelPalette.primaryWhite - requestsPalette.primaryWhite), 0.08)
+    }
+
     func testFloatingPanelSamplesMetricRegionsSeparately() throws {
         let appearance = FloatingPanelAppearance(
             startHex: "#FFFFFF",

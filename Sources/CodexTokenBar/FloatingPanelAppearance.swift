@@ -163,6 +163,93 @@ struct FloatingPanelTextPaletteSet: Equatable {
     let standaloneUsageStatusPalette: FloatingPanelReadableTextPalette?
     let radarActionPalette: FloatingPanelReadableTextPalette?
     let radarModelPalette: FloatingPanelReadableTextPalette?
+
+    func harmonizedForUnifiedAutomaticTone() -> FloatingPanelTextPaletteSet {
+        var rowPalettes = rowPalettes
+        var metricPalettes = metricPalettes
+        var embeddedUsageStatusPalette = embeddedUsageStatusPalette
+        var standaloneUsageStatusPalette = standaloneUsageStatusPalette
+        var radarActionPalette = radarActionPalette
+        var radarModelPalette = radarModelPalette
+
+        let slots: [FloatingPanelTextPaletteSlot] = [
+            rowPalettes[.rateAndBar].map { _ in .row(.rateAndBar) },
+            embeddedUsageStatusPalette.map { _ in .embeddedUsageStatus },
+            standaloneUsageStatusPalette.map { _ in .standaloneUsageStatus },
+        ].compactMap(\.self)
+            + FloatingPanelMetricTextRegion.allCases.compactMap { region in
+                metricPalettes[region].map { _ in .metric(region) }
+            }
+            + [
+                radarActionPalette.map { _ in .radarAction },
+                radarModelPalette.map { _ in .radarModel },
+            ].compactMap(\.self)
+
+        guard slots.count > 1 else { return self }
+
+        func palette(for slot: FloatingPanelTextPaletteSlot) -> FloatingPanelReadableTextPalette? {
+            switch slot {
+            case .row(let group):
+                return rowPalettes[group]
+            case .metric(let region):
+                return metricPalettes[region]
+            case .embeddedUsageStatus:
+                return embeddedUsageStatusPalette
+            case .standaloneUsageStatus:
+                return standaloneUsageStatusPalette
+            case .radarAction:
+                return radarActionPalette
+            case .radarModel:
+                return radarModelPalette
+            }
+        }
+
+        let whiteSlots = slots.filter { slot in
+            palette(for: slot)?.usesAutomaticWhiteFamily == true
+        }
+        guard whiteSlots.count == 1,
+              let isolatedSlot = whiteSlots.first,
+              let isolatedPalette = palette(for: isolatedSlot),
+              isolatedPalette.isNearAutomaticWhiteFamilyBoundary
+        else {
+            return self
+        }
+
+        let snappedPalette = isolatedPalette.snappedBackFromIsolatedWhite()
+        switch isolatedSlot {
+        case .row(let group):
+            rowPalettes[group] = snappedPalette
+        case .metric(let region):
+            metricPalettes[region] = snappedPalette
+        case .embeddedUsageStatus:
+            embeddedUsageStatusPalette = snappedPalette
+        case .standaloneUsageStatus:
+            standaloneUsageStatusPalette = snappedPalette
+        case .radarAction:
+            radarActionPalette = snappedPalette
+        case .radarModel:
+            radarModelPalette = snappedPalette
+        }
+
+        return FloatingPanelTextPaletteSet(
+            controlPalette: controlPalette,
+            rowPalettes: rowPalettes,
+            metricPalettes: metricPalettes,
+            embeddedUsageStatusPalette: embeddedUsageStatusPalette,
+            standaloneUsageStatusPalette: standaloneUsageStatusPalette,
+            radarActionPalette: radarActionPalette,
+            radarModelPalette: radarModelPalette
+        )
+    }
+}
+
+private enum FloatingPanelTextPaletteSlot {
+    case row(FloatingPanelContentGroup)
+    case metric(FloatingPanelMetricTextRegion)
+    case embeddedUsageStatus
+    case standaloneUsageStatus
+    case radarAction
+    case radarModel
 }
 
 enum FloatingPanelMetricTextRegion: String, CaseIterable, Sendable {
@@ -201,10 +288,10 @@ struct FloatingPanelReadableTextPalette: Equatable, Sendable {
     let fixedWhite: Double?
     let automaticStrength: Double
 
-    init(backgroundLuminance: Double) {
+    init(backgroundLuminance: Double, automaticStrength: Double = 1) {
         self.backgroundLuminance = min(max(backgroundLuminance, 0), 1)
         fixedWhite = nil
-        automaticStrength = 1
+        self.automaticStrength = min(max(automaticStrength, 0), 1)
     }
 
     init(fixedWhite: Double) {
@@ -275,15 +362,38 @@ struct FloatingPanelReadableTextPalette: Equatable, Sendable {
     }
 
     private func foregroundWhite(lightValue: Double, grayValue: Double, darkValue: Double) -> Double {
-        let darkness = 1 - backgroundLuminance
+        let darkness = automaticDarkness
         let blackFamilyProgress = smoothStep(edge0: 0.22, edge1: 0.44, value: darkness)
         let whiteFamilyProgress = smoothStep(edge0: 0.50, edge1: 0.78, value: darkness)
-        let familySwitch = darkness >= 0.455 ? 1.0 : 0.0
+        let familySwitch = usesAutomaticWhiteFamily ? 1.0 : 0.0
         let blackFamily = mix(lightValue, grayValue, blackFamilyProgress)
         let whiteFamily = mix(max(0.78, darkValue - 0.07), darkValue, whiteFamilyProgress)
         let fullValue = mix(blackFamily, whiteFamily, familySwitch)
         return min(max(applyAutomaticStrength(to: fullValue), 0), 1)
     }
+
+    private var automaticDarkness: Double {
+        1 - backgroundLuminance
+    }
+
+    fileprivate var usesAutomaticWhiteFamily: Bool {
+        fixedWhite == nil && automaticDarkness >= Self.whiteFamilySwitchDarkness
+    }
+
+    fileprivate var isNearAutomaticWhiteFamilyBoundary: Bool {
+        usesAutomaticWhiteFamily && automaticDarkness <= Self.isolatedWhiteSnapBackMaxDarkness
+    }
+
+    fileprivate func snappedBackFromIsolatedWhite() -> FloatingPanelReadableTextPalette {
+        FloatingPanelReadableTextPalette(
+            backgroundLuminance: 1 - Self.isolatedWhiteSnapBackTargetDarkness,
+            automaticStrength: automaticStrength
+        )
+    }
+
+    private static let whiteFamilySwitchDarkness = 0.455
+    private static let isolatedWhiteSnapBackMaxDarkness = 0.51
+    private static let isolatedWhiteSnapBackTargetDarkness = 0.44
 
     private func applyAutomaticStrength(to value: Double) -> Double {
         let strength = min(max(automaticStrength, 0), 1)
@@ -449,7 +559,7 @@ struct FloatingPanelAppearance: Equatable {
             standaloneUsageStatusPalette: standaloneStatusPalette,
             radarActionPalette: radarRegionPalettes?.action,
             radarModelPalette: radarRegionPalettes?.model
-        )
+        ).harmonizedForUnifiedAutomaticTone()
     }
 
     private var averagedRGB: FloatingPanelRGB {
