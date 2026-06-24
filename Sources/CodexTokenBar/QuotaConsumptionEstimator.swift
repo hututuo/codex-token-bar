@@ -131,6 +131,44 @@ struct QuotaConsumptionSelection: Equatable {
     let sevenDay: QuotaConsumptionEstimate
 }
 
+struct RecentChartConsumptionSelectionState: Equatable {
+    private(set) var startIndex: Int?
+    private(set) var fixedEndIndex: Int?
+
+    mutating func click(index: Int, validCount: Int) {
+        guard validCount > 0, (0..<validCount).contains(index) else { return }
+        if startIndex == nil || fixedEndIndex != nil {
+            startIndex = index
+            fixedEndIndex = nil
+        } else {
+            fixedEndIndex = index
+        }
+    }
+
+    mutating func reset() {
+        startIndex = nil
+        fixedEndIndex = nil
+    }
+
+    mutating func clamp(validCount: Int) {
+        guard validCount > 0 else {
+            reset()
+            return
+        }
+        if let startIndex, !(0..<validCount).contains(startIndex) {
+            reset()
+            return
+        }
+        if let fixedEndIndex, !(0..<validCount).contains(fixedEndIndex) {
+            self.fixedEndIndex = nil
+        }
+    }
+
+    func activeEndIndex(hoveredIndex: Int?, fallbackEndIndex: Int) -> Int? {
+        fixedEndIndex ?? hoveredIndex ?? startIndex ?? fallbackEndIndex
+    }
+}
+
 extension RecentChartPreparedData {
     func quotaConsumptionSelection(
         startIndex: Int,

@@ -142,7 +142,7 @@ struct RecentUsageChart: View {
     @AppStorage("recentChartShowSevenDayQuota") private var showSevenDayQuota = true
     @AppStorage("recentChartQuotaEstimateModel") private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt55.rawValue
     @State private var hoveredIndex: Int?
-    @State private var selectedConsumptionStartIndex: Int?
+    @State private var consumptionSelectionState = RecentChartConsumptionSelectionState()
     @State var preparedData: RecentChartPreparedData
 
     init(
@@ -184,7 +184,7 @@ struct RecentUsageChart: View {
                 Text(selectedRange.subtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                Text(selectedRange == .twentyFourHours ? "点击曲线设起点，移动到结束点估算本段消耗与 5h/7d 总额度。" : "额度估算仅在 24h 视图按 5 分钟粒度计算。")
+                Text(selectedRange == .twentyFourHours ? "第一下定起点，移动实时预览，第二下固定终点；第三下重新选择。" : "额度估算仅在 24h 视图按 5 分钟粒度计算。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary.opacity(0.86))
             }
@@ -381,7 +381,7 @@ struct RecentUsageChart: View {
                               let clickedIndex = hoverIndex(at: plotLocation, in: plot, step: step),
                               preparedData.bins.indices.contains(clickedIndex) else { return }
                         hoveredIndex = clickedIndex
-                        selectedConsumptionStartIndex = clickedIndex
+                        consumptionSelectionState.click(index: clickedIndex, validCount: preparedData.bins.count)
                     },
                     onExit: {
                         hoveredIndex = nil
@@ -432,7 +432,7 @@ struct RecentUsageChart: View {
         }
         .onChange(of: selectedRangeRaw) { _, _ in
             hoveredIndex = nil
-            selectedConsumptionStartIndex = nil
+            consumptionSelectionState.reset()
             refreshPreparedData()
         }
     }
@@ -487,10 +487,14 @@ struct RecentUsageChart: View {
 
     private var activeConsumptionSelection: QuotaConsumptionSelection? {
         guard selectedRange == .twentyFourHours,
-              let startIndex = selectedConsumptionStartIndex,
+              let startIndex = consumptionSelectionState.startIndex,
               !preparedData.bins.isEmpty else { return nil }
         let fallbackEnd = preparedData.bins.index(before: preparedData.bins.endIndex)
-        let endIndex = hoveredIndex.flatMap { preparedData.bins.indices.contains($0) ? $0 : nil } ?? fallbackEnd
+        let validHover = hoveredIndex.flatMap { preparedData.bins.indices.contains($0) ? $0 : nil }
+        let endIndex = consumptionSelectionState.activeEndIndex(
+            hoveredIndex: validHover,
+            fallbackEndIndex: fallbackEnd
+        ) ?? fallbackEnd
         return preparedData.quotaConsumptionSelection(
             startIndex: startIndex,
             endIndex: endIndex,
@@ -500,12 +504,9 @@ struct RecentUsageChart: View {
 
     private func clampConsumptionSelection() {
         guard selectedRange == .twentyFourHours else {
-            selectedConsumptionStartIndex = nil
+            consumptionSelectionState.reset()
             return
         }
-        guard let selectedConsumptionStartIndex else { return }
-        if !preparedData.bins.indices.contains(selectedConsumptionStartIndex) {
-            self.selectedConsumptionStartIndex = nil
-        }
+        consumptionSelectionState.clamp(validCount: preparedData.bins.count)
     }
 }

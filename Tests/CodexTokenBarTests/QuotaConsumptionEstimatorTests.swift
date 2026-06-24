@@ -83,12 +83,36 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(selection.sevenDay.impliedWindowBudgetUSD), 275.25, accuracy: 0.0001)
     }
 
+    func testSelectionStatePreviewsOnHoverThenPinsEndOnSecondClick() {
+        var state = RecentChartConsumptionSelectionState()
+
+        state.click(index: 4, validCount: 10)
+
+        XCTAssertEqual(state.startIndex, 4)
+        XCTAssertNil(state.fixedEndIndex)
+        XCTAssertEqual(state.activeEndIndex(hoveredIndex: 7, fallbackEndIndex: 9), 7)
+
+        state.click(index: 7, validCount: 10)
+
+        XCTAssertEqual(state.startIndex, 4)
+        XCTAssertEqual(state.fixedEndIndex, 7)
+        XCTAssertEqual(state.activeEndIndex(hoveredIndex: 9, fallbackEndIndex: 9), 7)
+
+        state.click(index: 2, validCount: 10)
+
+        XCTAssertEqual(state.startIndex, 2)
+        XCTAssertNil(state.fixedEndIndex)
+        XCTAssertEqual(state.activeEndIndex(hoveredIndex: 5, fallbackEndIndex: 9), 5)
+    }
+
     func testRecentUsageChartExposesClickToEstimateQuotaUI() throws {
         let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
         let componentSource = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChartComponents.swift", encoding: .utf8)
+        let estimatorSource = try String(contentsOfFile: "Sources/CodexTokenBar/QuotaConsumptionEstimator.swift", encoding: .utf8)
 
         XCTAssertTrue(source.contains("@AppStorage(\"recentChartQuotaEstimateModel\")"))
-        XCTAssertTrue(source.contains("selectedConsumptionStartIndex"))
+        XCTAssertTrue(source.contains("consumptionSelectionState"))
+        XCTAssertTrue(estimatorSource.contains("fixedEndIndex"))
         XCTAssertTrue(source.contains("quotaConsumptionSelection("))
         XCTAssertTrue(source.contains("onClick:"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateModelSelector"))
