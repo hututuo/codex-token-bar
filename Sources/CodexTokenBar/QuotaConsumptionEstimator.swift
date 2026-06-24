@@ -1,0 +1,185 @@
+import Foundation
+
+enum QuotaConsumptionConfidence: Equatable {
+    case measured
+    case insufficientQuotaMovement
+    case noTokenUsage
+}
+
+enum OfficialAPIPriceModel: String, CaseIterable, Identifiable {
+    case gpt55
+    case gpt54
+    case gpt54Mini
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .gpt55: "GPT-5.5"
+        case .gpt54: "GPT-5.4"
+        case .gpt54Mini: "GPT-5.4 mini"
+        }
+    }
+
+    var inputUSDPerMillion: Double {
+        switch self {
+        case .gpt55: 5.00
+        case .gpt54: 2.50
+        case .gpt54Mini: 0.75
+        }
+    }
+
+    var cachedInputUSDPerMillion: Double {
+        switch self {
+        case .gpt55: 0.50
+        case .gpt54: 0.25
+        case .gpt54Mini: 0.075
+        }
+    }
+
+    var outputUSDPerMillion: Double {
+        switch self {
+        case .gpt55: 30.00
+        case .gpt54: 15.00
+        case .gpt54Mini: 4.50
+        }
+    }
+}
+
+enum QuotaConsumptionPriceCard: Equatable {
+    case officialAPI(OfficialAPIPriceModel)
+
+    var title: String {
+        switch self {
+        case .officialAPI(let model):
+            "官方 API · \(model.title)"
+        }
+    }
+
+    func costUSD(for breakdown: TokenCacheBreakdown) -> Double {
+        switch self {
+        case .officialAPI(let model):
+            let cachedInput = max(0, min(breakdown.cachedInputTokens, breakdown.inputTokens))
+            let uncachedInput = max(0, breakdown.inputTokens - cachedInput)
+            return (
+                Double(uncachedInput) * model.inputUSDPerMillion
+                + Double(cachedInput) * model.cachedInputUSDPerMillion
+                + Double(breakdown.outputTokens) * model.outputUSDPerMillion
+            ) / 1_000_000
+        }
+    }
+}
+
+struct QuotaConsumptionEstimate: Equatable {
+    let selectedCostUSD: Double
+    let impliedWindowBudgetUSD: Double?
+    let quotaDropPercent: Double
+    let inputTokens: Int
+    let cachedInputTokens: Int
+    let outputTokens: Int
+    let calls: Int
+    let cacheHitRate: Double
+    let confidence: QuotaConsumptionConfidence
+}
+
+enum QuotaConsumptionEstimator {
+    static func estimate(
+        breakdown: TokenCacheBreakdown,
+        quotaStartPercent: Double?,
+        quotaEndPercent: Double?,
+        priceCard: QuotaConsumptionPriceCard
+    ) -> QuotaConsumptionEstimate {
+        let selectedCost = priceCard.costUSD(for: breakdown)
+        let drop = max((quotaStartPercent ?? 0) - (quotaEndPercent ?? 0), 0)
+        let confidence: QuotaConsumptionConfidence
+        let impliedBudget: Double?
+
+        if breakdown.totalTokens <= 0 && breakdown.inputTokens <= 0 && breakdown.outputTokens <= 0 {
+            confidence = .noTokenUsage
+            impliedBudget = nil
+        } else if drop <= 0.0001 {
+            confidence = .insufficientQuotaMovement
+            impliedBudget = nil
+        } else {
+            confidence = .measured
+            impliedBudget = selectedCost / (drop / 100)
+        }
+
+        return QuotaConsumptionEstimate(
+            selectedCostUSD: selectedCost,
+            impliedWindowBudgetUSD: impliedBudget,
+            quotaDropPercent: drop,
+            inputTokens: breakdown.inputTokens,
+            cachedInputTokens: breakdown.cachedInputTokens,
+            outputTokens: breakdown.outputTokens,
+            calls: breakdown.calls,
+            cacheHitRate: breakdown.cacheHitRate,
+            confidence: confidence
+        )
+    }
+}
+
+struct QuotaConsumptionSelection: Equatable {
+    let startIndex: Int
+    let endIndex: Int
+    let bucketCount: Int
+    let startDate: Date
+    let endDate: Date
+    let priceCard: QuotaConsumptionPriceCard
+    let breakdown: TokenCacheBreakdown
+    let fiveHour: QuotaConsumptionEstimate
+    let sevenDay: QuotaConsumptionEstimate
+}
+
+extension RecentChartPreparedData {
+    func quotaConsumptionSelection(
+        startIndex: Int,
+        endIndex: Int,
+        priceCard: QuotaConsumptionPriceCard
+    ) -> QuotaConsumptionSelection? {
+        guard range == .twentyFourHours, !bins.isEmpty else { return nil }
+        let lower = max(0, min(startIndex, endIndex))
+        let upper = min(bins.count - 1, max(startIndex, endIndex))
+        guard lower <= upper,
+              let start = bins[safe: lower]?.start,
+              let endStart = bins[safe: upper]?.start else { return nil }
+
+        let breakdown = (lower...upper)
+            .map { cacheBreakdowns[safe: $0] ?? .empty }
+            .combined
+        let fiveHourStart = firstQuotaValue(fiveHourRemainingPercents, lower: lower, upper: upper)
+        let fiveHourEnd = lastQuotaValue(fiveHourRemainingPercents, lower: lower, upper: upper)
+        let sevenDayStart = firstQuotaValue(sevenDayRemainingPercents, lower: lower, upper: upper)
+        let sevenDayEnd = lastQuotaValue(sevenDayRemainingPercents, lower: lower, upper: upper)
+
+        return QuotaConsumptionSelection(
+            startIndex: lower,
+            endIndex: upper,
+            bucketCount: upper - lower + 1,
+            startDate: start,
+            endDate: endStart.addingTimeInterval(bucketInterval),
+            priceCard: priceCard,
+            breakdown: breakdown,
+            fiveHour: QuotaConsumptionEstimator.estimate(
+                breakdown: breakdown,
+                quotaStartPercent: fiveHourStart,
+                quotaEndPercent: fiveHourEnd,
+                priceCard: priceCard
+            ),
+            sevenDay: QuotaConsumptionEstimator.estimate(
+                breakdown: breakdown,
+                quotaStartPercent: sevenDayStart,
+                quotaEndPercent: sevenDayEnd,
+                priceCard: priceCard
+            )
+        )
+    }
+
+    private func firstQuotaValue(_ values: [Double?], lower: Int, upper: Int) -> Double? {
+        values[lower...upper].compactMap { $0 }.first
+    }
+
+    private func lastQuotaValue(_ values: [Double?], lower: Int, upper: Int) -> Double? {
+        values[lower...upper].compactMap { $0 }.last
+    }
+}

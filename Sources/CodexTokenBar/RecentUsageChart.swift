@@ -140,7 +140,9 @@ struct RecentUsageChart: View {
     @AppStorage("recentChartShowCacheHitRate") private var showCacheHitRate = true
     @AppStorage("recentChartShowFiveHourQuota") private var showFiveHourQuota = true
     @AppStorage("recentChartShowSevenDayQuota") private var showSevenDayQuota = true
+    @AppStorage("recentChartQuotaEstimateModel") private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt55.rawValue
     @State private var hoveredIndex: Int?
+    @State private var selectedConsumptionStartIndex: Int?
     @State var preparedData: RecentChartPreparedData
 
     init(
@@ -182,6 +184,12 @@ struct RecentUsageChart: View {
                 Text(selectedRange.subtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+                RecentChartQuotaEstimatePanel(
+                    selection: activeConsumptionSelection,
+                    selectedModel: selectedQuotaEstimateModelBinding,
+                    isEnabled: selectedRange == .twentyFourHours
+                )
+                .padding(.top, 4)
             }
 
             Spacer()
@@ -214,6 +222,7 @@ struct RecentUsageChart: View {
             let chartBins = preparedData.bins
             let step = plot.width / CGFloat(max(chartBins.count - 1, 1))
             let activeIndex = hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
+            let consumptionSelection = activeConsumptionSelection
             let plotData = RecentChartPlotData(bins: chartBins, prepared: preparedData, plot: plot, step: step)
 
             ZStack(alignment: .topLeading) {
@@ -227,6 +236,21 @@ struct RecentUsageChart: View {
                     )
                     .frame(width: plot.width, height: plot.height)
                     .offset(x: plot.minX, y: plot.minY)
+
+                if let consumptionSelection {
+                    let lowerX = plot.minX + CGFloat(consumptionSelection.startIndex) * step
+                    let upperX = plot.minX + CGFloat(consumptionSelection.endIndex) * step
+                    Rectangle()
+                        .fill(AppTheme.accentBlue.opacity(0.10))
+                        .frame(width: max(abs(upperX - lowerX), 2), height: plot.height)
+                        .position(x: (lowerX + upperX) / 2, y: plot.midY)
+
+                    Path { path in
+                        path.move(to: CGPoint(x: lowerX, y: plot.minY))
+                        path.addLine(to: CGPoint(x: lowerX, y: plot.maxY))
+                    }
+                    .stroke(AppTheme.accentBlue.opacity(0.55), style: StrokeStyle(lineWidth: 1.2, dash: [4, 5]))
+                }
 
                 ForEach(0..<4, id: \.self) { line in
                     let y = plot.minY + CGFloat(line) * plot.height / 3
@@ -344,6 +368,17 @@ struct RecentUsageChart: View {
                         )
                         hoveredIndex = hoverIndex(at: plotLocation, in: plot, step: step)
                     },
+                    onClick: { location in
+                        let plotLocation = CGPoint(
+                            x: location.x + plot.minX,
+                            y: location.y + plot.minY
+                        )
+                        guard selectedRange == .twentyFourHours,
+                              let clickedIndex = hoverIndex(at: plotLocation, in: plot, step: step),
+                              preparedData.bins.indices.contains(clickedIndex) else { return }
+                        hoveredIndex = clickedIndex
+                        selectedConsumptionStartIndex = clickedIndex
+                    },
                     onExit: {
                         hoveredIndex = nil
                     }
@@ -373,6 +408,7 @@ struct RecentUsageChart: View {
         .frame(maxWidth: 980)
         .onAppear(perform: refreshPreparedData)
         .onChange(of: bins) { _, _ in
+            clampConsumptionSelection()
             refreshPreparedData()
         }
         .onChange(of: hourlyBins) { _, _ in
@@ -392,6 +428,7 @@ struct RecentUsageChart: View {
         }
         .onChange(of: selectedRangeRaw) { _, _ in
             hoveredIndex = nil
+            selectedConsumptionStartIndex = nil
             refreshPreparedData()
         }
     }
@@ -430,6 +467,41 @@ struct RecentUsageChart: View {
             quotaRecentBins: quotaRecentBins,
             quotaHourlyBins: quotaHourlyBins
         )
+        clampConsumptionSelection()
     }
 
+    private var selectedQuotaEstimateModel: OfficialAPIPriceModel {
+        OfficialAPIPriceModel(rawValue: quotaEstimateModelRaw) ?? .gpt55
+    }
+
+    private var selectedQuotaEstimateModelBinding: Binding<OfficialAPIPriceModel> {
+        Binding(
+            get: { selectedQuotaEstimateModel },
+            set: { quotaEstimateModelRaw = $0.rawValue }
+        )
+    }
+
+    private var activeConsumptionSelection: QuotaConsumptionSelection? {
+        guard selectedRange == .twentyFourHours,
+              let startIndex = selectedConsumptionStartIndex,
+              !preparedData.bins.isEmpty else { return nil }
+        let fallbackEnd = preparedData.bins.index(before: preparedData.bins.endIndex)
+        let endIndex = hoveredIndex.flatMap { preparedData.bins.indices.contains($0) ? $0 : nil } ?? fallbackEnd
+        return preparedData.quotaConsumptionSelection(
+            startIndex: startIndex,
+            endIndex: endIndex,
+            priceCard: .officialAPI(selectedQuotaEstimateModel)
+        )
+    }
+
+    private func clampConsumptionSelection() {
+        guard selectedRange == .twentyFourHours else {
+            selectedConsumptionStartIndex = nil
+            return
+        }
+        guard let selectedConsumptionStartIndex else { return }
+        if !preparedData.bins.indices.contains(selectedConsumptionStartIndex) {
+            self.selectedConsumptionStartIndex = nil
+        }
+    }
 }
