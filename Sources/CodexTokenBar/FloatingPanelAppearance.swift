@@ -444,8 +444,8 @@ struct FloatingPanelAppearance: Equatable {
     static let unreadPreviewUntilKey = "floatingPanelUnreadPreviewUntil"
     static let textWhiteOverrideKey = "floatingPanelTextWhiteOverrideV2"
 
-    static let defaultStartHex = "#E6F4FF"
-    static let defaultEndHex = "#D4E8FF"
+    static let defaultStartHex = "#FAF9FF"
+    static let defaultEndHex = "#00C2EF"
     static let defaultDirection = FloatingPanelGradientDirection.topLeadingToBottomTrailing.rawValue
     static let defaultStyle = FloatingPanelGradientStyle.linear.rawValue
     static let defaultUnreadEffect = FloatingPanelUnreadEffect.ripple.rawValue

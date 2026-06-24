@@ -61,7 +61,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
     static let quotaKey = "floatingPanelShowQuota"
     static let radarKey = "floatingPanelShowRadar"
     static let orderKey = "floatingPanelContentOrderV01"
-    static let defaultOrder = FloatingPanelContentGroup.allCases
+    static let defaultOrder: [FloatingPanelContentGroup] = [.rateAndBar, .usageStatus, .metrics, .radar, .quota]
     static let defaultOrderRaw = encodedOrder(defaultOrder)
 
     static let `default` = FloatingPanelContentVisibility(

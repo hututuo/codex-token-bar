@@ -5,7 +5,9 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     func testDefaultVisibilityShowsAllFloatingPanelGroups() {
         let visibility = FloatingPanelContentVisibility.default
 
-        XCTAssertEqual(visibility.visibleGroups, FloatingPanelContentGroup.allCases)
+        XCTAssertEqual(visibility.visibleGroups, [.rateAndBar, .usageStatus, .metrics, .radar, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrder, [.rateAndBar, .usageStatus, .metrics, .radar, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrderRaw, "rateAndBar,usageStatus,metrics,radar,quota")
         XCTAssertTrue(visibility.shows(.rateAndBar))
         XCTAssertTrue(visibility.shows(.usageStatus))
         XCTAssertTrue(visibility.shows(.metrics))
