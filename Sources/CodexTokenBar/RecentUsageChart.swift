@@ -184,18 +184,18 @@ struct RecentUsageChart: View {
                 Text(selectedRange.subtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                RecentChartQuotaEstimatePanel(
-                    selection: activeConsumptionSelection,
-                    selectedModel: selectedQuotaEstimateModelBinding,
-                    isEnabled: selectedRange == .twentyFourHours
-                )
-                .padding(.top, 4)
+                Text(selectedRange == .twentyFourHours ? "点击曲线设起点，移动到结束点估算本段消耗与 5h/7d 总额度。" : "额度估算仅在 24h 视图按 5 分钟粒度计算。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary.opacity(0.86))
             }
 
             Spacer()
 
             VStack(alignment: .trailing, spacing: 7) {
-                RecentChartRangeSelector(selection: selectedRangeBinding)
+                HStack(spacing: 8) {
+                    RecentChartQuotaEstimateModelSelector(selectedModel: selectedQuotaEstimateModelBinding)
+                    RecentChartRangeSelector(selection: selectedRangeBinding)
+                }
 
                 HStack(spacing: 14) {
                     ChartLegend(color: .blue, label: "Token", value: preparedData.tokenTotal.abbreviatedTokens)
@@ -250,6 +250,10 @@ struct RecentUsageChart: View {
                         path.addLine(to: CGPoint(x: lowerX, y: plot.maxY))
                     }
                     .stroke(AppTheme.accentBlue.opacity(0.55), style: StrokeStyle(lineWidth: 1.2, dash: [4, 5]))
+
+                    RecentChartQuotaEstimateOverlay(selection: consumptionSelection)
+                        .position(x: plot.minX + 190, y: plot.minY + 49)
+                        .zIndex(12)
                 }
 
                 ForEach(0..<4, id: \.self) { line in

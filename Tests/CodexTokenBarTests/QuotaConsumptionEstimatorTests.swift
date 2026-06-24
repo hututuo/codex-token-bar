@@ -91,8 +91,10 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(source.contains("selectedConsumptionStartIndex"))
         XCTAssertTrue(source.contains("quotaConsumptionSelection("))
         XCTAssertTrue(source.contains("onClick:"))
-        XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimatePanel"))
-        XCTAssertTrue(componentSource.contains("点击 24h 曲线选择起点"))
+        XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateModelSelector"))
+        XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateOverlay"))
+        XCTAssertTrue(componentSource.contains("本段消耗"))
+        XCTAssertTrue(componentSource.contains("反推总额度"))
         XCTAssertTrue(componentSource.contains("官方 API"))
     }
 }

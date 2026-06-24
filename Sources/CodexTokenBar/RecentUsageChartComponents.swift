@@ -90,77 +90,83 @@ struct ChartLineToggle: View {
     }
 }
 
-struct RecentChartQuotaEstimatePanel: View {
-    let selection: QuotaConsumptionSelection?
+struct RecentChartQuotaEstimateModelSelector: View {
     @Binding var selectedModel: OfficialAPIPriceModel
-    let isEnabled: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Text("官方 API")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            ForEach(OfficialAPIPriceModel.allCases) { model in
+                Button {
+                    selectedModel = model
+                } label: {
+                    Text(model.shortTitle)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(selectedModel == model ? AppTheme.accentBlue : .secondary)
+                        .frame(width: 34, height: 22)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(selectedModel == model ? AppTheme.accentBlue.opacity(0.12) : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("官方 API 定价 \(model.title)")
+                .accessibilityValue(selectedModel == model ? "已选择" : "未选择")
+            }
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 3)
+        .padding(.vertical, 3)
+        .background(AppTheme.raisedBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(AppTheme.border, lineWidth: 1)
+        )
+    }
+}
+
+struct RecentChartQuotaEstimateOverlay: View {
+    let selection: QuotaConsumptionSelection
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                Label("额度估算", systemImage: "point.topleft.down.curvedto.point.bottomright.up")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(isEnabled ? .primary : .secondary)
-
-                HStack(spacing: 4) {
-                    ForEach(OfficialAPIPriceModel.allCases) { model in
-                        Button {
-                            selectedModel = model
-                        } label: {
-                            Text(model.shortTitle)
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(selectedModel == model ? AppTheme.accentBlue : .secondary)
-                                .padding(.horizontal, 6)
-                                .frame(height: 18)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(selectedModel == model ? AppTheme.accentBlue.opacity(0.12) : Color.clear)
-                                )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(2)
-                .background(AppTheme.raisedBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-
-                Text("官方 API")
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("本段消耗")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(selection.breakdown.costText(selection.priceCard))
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(AppTheme.accentBlue)
+                Text(selection.timeRangeText)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
+                Text("命中 \(selection.breakdown.cacheHitRate.percentString)")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(AppTheme.accentCyan)
             }
 
-            Text(isEnabled ? "点击 24h 曲线选择起点，移动到结束点估算 5h/7d 额度。" : "切到 24h 后可按区间估算额度。")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-
-            if let selection {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        Text(selection.timeRangeText)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                        Text("API \(selection.breakdown.costText(selection.priceCard))")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(AppTheme.accentBlue)
-                        Text("命中 \(selection.breakdown.cacheHitRate.percentString)")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(AppTheme.accentCyan)
-                    }
-
-                    HStack(spacing: 6) {
-                        QuotaEstimateChip(title: "5h", estimate: selection.fiveHour, color: .purple)
-                        QuotaEstimateChip(title: "7d", estimate: selection.sevenDay, color: .green)
-                    }
-                }
+            HStack(spacing: 7) {
+                Text("反推总额度")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                QuotaEstimateChip(title: "5h", estimate: selection.fiveHour, color: .purple)
+                QuotaEstimateChip(title: "7d", estimate: selection.sevenDay, color: .green)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: 430, alignment: .leading)
-        .background(AppTheme.raisedBackground.opacity(isEnabled ? 0.88 : 0.55), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(width: 380, alignment: .leading)
+        .background(AppTheme.hoverBubble.opacity(0.96), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(AppTheme.border, lineWidth: 1)
+                .stroke(AppTheme.borderStrong, lineWidth: 1)
         )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("额度估算")
+        .accessibilityValue("本段消耗 \(selection.breakdown.costText(selection.priceCard))，5 小时 \(selection.fiveHour.accessibilityText)，7 天 \(selection.sevenDay.accessibilityText)")
     }
 }
 
@@ -192,7 +198,7 @@ private struct QuotaEstimateChip: View {
     private var detail: String {
         switch estimate.confidence {
         case .measured:
-            return "降 \(estimate.quotaDropPercent.oneDecimalPercent) · \(estimate.budgetText)"
+            return "\(estimate.budgetText) · 降 \(estimate.quotaDropPercent.oneDecimalPercent)"
         case .insufficientQuotaMovement:
             return "下降太小"
         case .noTokenUsage:
@@ -224,6 +230,17 @@ private extension QuotaConsumptionSelection {
 }
 
 private extension QuotaConsumptionEstimate {
+    var accessibilityText: String {
+        switch confidence {
+        case .measured:
+            return "反推总额度 \(budgetText)，下降 \(quotaDropPercent.oneDecimalPercent)"
+        case .insufficientQuotaMovement:
+            return "额度下降太小，不能反推"
+        case .noTokenUsage:
+            return "没有 token 用量"
+        }
+    }
+
     var budgetText: String {
         guard let impliedWindowBudgetUSD else { return "--" }
         return "$\(Self.moneyString(impliedWindowBudgetUSD))"
