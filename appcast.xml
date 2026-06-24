@@ -3,6 +3,63 @@
     <channel>
         <title>Codex Token Bar</title>
         <item>
+            <title>0.6.0</title>
+            <pubDate>Wed, 24 Jun 2026 12:48:08 +0800</pubDate>
+            <sparkle:version>600</sparkle:version>
+            <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Token Bar v0.6.0
+
+这次是一次比较大的功能更新：Codex Token Bar 接入了 Codex 雷达站，并把推荐动作、模型 IQ、主模型建议和额度预估带进主界面与悬浮窗。同时，悬浮窗、重置卡详情和 README 预览也一起更新。
+
+## 更新亮点
+
+- 接入 Codex 雷达站：主界面新增 `Codex 雷达 codexradar.com` 信息区，可以看到建议动作、24h / 48h 概率、今日主模型、IQ 分数、环境压力和额度预估。
+- 新增雷达详情卡片：把 IQ 趋势、模型对比、额度预估、Tibo 观察、近日日志等信息整理到一个中央详情视图，并用曲线图和表格展示可对比数据。
+- 悬浮窗同步雷达信息：小窗可以显示建议动作、24h / 48h 概率、今日主模型 IQ、其他模型对比，以及 5h / 7d 额度进度。
+- 主模型选择更聪明：优先选择 IQ 分数最高的模型；如果分数相同，优先推荐消耗更低的模型。
+- 悬浮窗模块可配置：速率与速率条、趣味化余量、总/今/次调用、5h / 7d 额度和雷达信息都可以开关、排序，并随内容自适应大小。
+- 改进悬浮窗文字可读性：文字颜色会根据背景亮度自动调整，同时减少中间灰色区域，让浅色和深色背景上都更清楚。
+- 重置卡详情增强：现在可以清楚看到每张重置卡的到期日期、剩余时间、发放来源、兑换状态和关联用户。
+- README 预览图更新：换成新界面的主界面、悬浮窗、雷达详情、重置卡详情和最近 24 小时曲线截图。
+
+## 更新说明
+
+- 雷达站数据默认每 10 分钟刷新一次，来自公开 JSON 订阅；App 会在主界面标明来源。
+- 本地 token、缓存命中、会话统计和重置卡信息仍然来自本机 Codex 数据与本地账号接口。
+- Codex Token Bar 仍然不会上传 prompt、输出、日志、会话内容或账号额度。
+- Sparkle 更新仍然需要用户确认，不会在后台静默替换 App。
+- 当前构建仍是 ad-hoc 签名，尚未 Apple notarize。如果 macOS 提示“未知开发者”，请从官方 Release 下载并校验 SHA256 后再打开。
+
+---
+
+## English
+
+This is a major feature update. Codex Token Bar now integrates Codex Radar, bringing suggested actions, model IQ, recommended models, and quota estimates into both the dashboard and the floating panel. The floating panel, reset-credit details, and README screenshots were updated as well.
+
+## Highlights
+
+- Adds Codex Radar integration: the dashboard now includes a `Codex 雷达 codexradar.com` section with suggested action, 24h / 48h probabilities, today's primary model, IQ score, environment pressure, and quota estimates.
+- Adds a Radar detail card: IQ trends, model comparisons, quota estimates, Tibo observations, and recent logs are organized into a central detail view with charts and tables.
+- Syncs Radar data into the floating panel: the small window can show suggested action, 24h / 48h probabilities, today's primary model IQ, other model comparisons, and 5h / 7d quota progress.
+- Improves primary model selection: the app prefers the highest IQ score, and when scores tie it recommends the lower-cost model.
+- Makes floating-panel modules configurable: speed, speed bar, playful quota hint, total/today/current calls, 5h / 7d quota, and Radar information can be toggled, reordered, and auto-sized.
+- Improves floating-panel text readability: text tone adapts to background brightness while reducing the muddy gray middle range.
+- Enhances reset-credit details: each reset credit now clearly shows expiry date, remaining time, grant source, redemption status, and linked user.
+- Refreshes README screenshots with the new dashboard, floating panel, Radar detail, reset-credit detail, and recent 24-hour chart.
+
+## Update Notes
+
+- Radar data refreshes every 10 minutes by default and comes from the public JSON feed. The dashboard credits the source.
+- Local token usage, cache hit rates, session statistics, and reset-credit data still come from local Codex files and local account endpoints.
+- Codex Token Bar still does not upload prompts, outputs, logs, conversation content, or quota data.
+- Sparkle updates still require user confirmation; the app does not silently replace itself in the background.
+- The app remains ad-hoc signed and is not Apple notarized. Verify the SHA256 checksum before opening if macOS warns about an unidentified developer.
+]]></description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.6.0/CodexTokenBar-v0.6.0-macos-arm64.app.zip" length="5862345" type="application/octet-stream" sparkle:edSignature="/AeSmrjaoyDFTHTCqA6WiSmxjboOWQhZz/WB2Tvp+QoJ0oS3kcq+U9pXSnziOIMfZKF6SmKTwCs6kG7I4PqUAQ=="/>
+        </item>
+        <item>
             <title>0.5.2</title>
             <pubDate>Thu, 18 Jun 2026 13:07:57 +0800</pubDate>
             <sparkle:version>502</sparkle:version>

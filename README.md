@@ -15,7 +15,7 @@
   </tr>
 </table>
 
-Codex Token Bar 是一个本地优先的 macOS SwiftUI 应用，用来从本地 Codex 日志和账号接口查看 token 用量、实时输出速度、缓存命中率、Codex 额度和重置卡详情。
+Codex Token Bar 是一个本地优先的 macOS SwiftUI 应用，用来从本地 Codex 日志、账号接口和 Codex 雷达站查看 token 用量、实时输出速度、缓存命中率、Codex 额度、推荐模型、IQ 趋势和重置卡详情。
 
 <p align="center">
   <img src="Assets/DashboardPreview.png" alt="Codex Token Bar 主界面截图" width="100%">
@@ -25,12 +25,20 @@ Codex Token Bar 是一个本地优先的 macOS SwiftUI 应用，用来从本地 
   <img src="Assets/FloatingPanelPreview.png" alt="悬浮实时 token 速率窗口" width="420">
 </p>
 
+<p align="center">
+  <img src="Assets/ResetCreditDetailPreview.png" alt="重置卡详情截图" width="32%">
+  <img src="Assets/CodexRadarDetailPreview.png" alt="Codex 雷达详情截图" width="32%">
+  <img src="Assets/ActivityChartPreview.png" alt="最近 24 小时 token 活动截图" width="32%">
+</p>
+
 ## 亮点
 
 - 全会话实时 token 速率，支持悬浮窗、透明度、缩放和单会话下钻。
+- 接入 Codex 雷达站：在主界面和悬浮窗里显示建议动作、24h / 48h 概率、今日主模型、IQ 分数、模型对比和环境压力。
+- 速蹬窗口：把雷达站的建议动作、主模型 IQ、5h / 7d 额度和本地实时速度放进一个可锁定、可排序、可自适应大小的小窗口。
 - 年度 token 热力图、最近 24 小时 5 分钟粒度曲线、缓存命中率曲线和缓存排行。
-- Codex 5h / 7d 额度显示、本地轻量历史记录和“使劲蹬”等节奏提示。
-- 重置卡详情：显示可用重置机会、每张卡的状态、来源、发放时间、到期时间和使用记录。
+- Codex 5h / 7d 额度显示、本地轻量历史记录、雷达站额度预估和“使劲蹬”等节奏提示。
+- 重置卡详情：显示可用重置机会、每张卡的状态、来源、发放时间、到期时间、剩余时间和使用记录。
 - “会话消失修复”向导：扫描、备份、修复、验证和多备份回滚。
 - 本地优先：读取 `~/.codex` 本地数据，不上传 prompt、输出、日志或账号额度。
 - Sparkle 更新检查：菜单栏 `Codex Token Bar -> 检查更新...`。
@@ -39,9 +47,15 @@ Codex Token Bar 是一个本地优先的 macOS SwiftUI 应用，用来从本地 
 
 Codex 的本地日志里已经有很多有用信息，但平时很难快速看清“今天用了多少”“现在输出多快”“缓存是不是命中”“额度够不够烧”。这个应用把这些本地数据整理成一个轻量 dashboard，并提供一个不挡视线的小悬浮窗。
 
+## 特色：Codex 雷达站
+
+Codex Token Bar 可以读取 [codexradar.com](https://codexradar.com/) 提供的 JSON 订阅，把雷达站信息整理进主界面和悬浮窗。你可以直接看到当前建议动作、24h / 48h 概率、今日主模型、IQ 分数、其他模型对比、Plus / 5x Pro / 20x Pro 的 5h 与 7d 预估额度，以及带曲线和表格的详细信息。
+
+默认每 10 分钟刷新一次。雷达数据来自公开订阅，主界面会标明 `Codex 雷达 codexradar.com` 作为来源。
+
 ## 特色：重置卡详情
 
-Codex Token Bar 会读取 Codex 自己使用的本地账号接口，把“重置机会 / 重置卡”展示成可读详情。你可以看到当前有几张可用重置卡、每张卡是否可用、什么时候发放、什么时候到期、是否已经开始兑换或使用完成，以及来源说明。
+Codex Token Bar 会读取 Codex 自己使用的本地账号接口，把“重置机会 / 重置卡”展示成可读详情。你可以看到当前有几张可用重置卡、每张卡是否可用、什么时候发放、明确的到期日期、还剩多久到期、是否已经开始兑换或使用完成，以及来源说明。
 
 这个功能是只读的：应用只展示信息，不会调用消耗重置卡的接口，也不会上传账号额度或会话内容。
 
@@ -49,12 +63,12 @@ Codex Token Bar 会读取 Codex 自己使用的本地账号接口，把“重置
 
 推荐从 [GitHub Releases](https://github.com/hututuo/codex-token-bar/releases/latest) 下载最新 `.dmg`：
 
-1. 下载 `CodexTokenBar-v0.5.1-macos-arm64.dmg` 和 `SHA256SUMS-v0.5.1.txt`。
+1. 下载 `CodexTokenBar-v0.6.0-macos-arm64.dmg` 和 `SHA256SUMS-v0.6.0.txt`。
 2. 可选校验：
 
 ```bash
-shasum -a 256 CodexTokenBar-v0.5.1-macos-arm64.dmg
-cat SHA256SUMS-v0.5.1.txt
+shasum -a 256 CodexTokenBar-v0.6.0-macos-arm64.dmg
+cat SHA256SUMS-v0.6.0.txt
 ```
 
 3. 打开 DMG，把 `Codex Token Bar.app` 拖到 Applications。
@@ -139,7 +153,7 @@ scripts/package_app.sh debug
 
 ```bash
 SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
-  scripts/build_release.sh v0.5.1
+  scripts/build_release.sh v0.6.0
 ```
 
 发布脚本会生成 `.app`、DMG、Sparkle zip、兼容安装 zip、`SHA256SUMS` 和 `appcast.xml`。私钥文件不要提交到 Git。
@@ -152,7 +166,7 @@ MIT
 
 ## English
 
-Codex Token Bar is a local-first macOS SwiftUI app for reading local Codex logs and account endpoints to show token usage, live output speed, cache hit rates, Codex quota, and reset-credit details.
+Codex Token Bar is a local-first macOS SwiftUI app for reading local Codex logs, account endpoints, and the Codex Radar feed to show token usage, live output speed, cache hit rates, Codex quota, recommended models, IQ trends, and reset-credit details.
 
 <p align="center">
   <img src="Assets/DashboardPreview.png" alt="Codex Token Bar dashboard screenshot" width="100%">
@@ -162,12 +176,20 @@ Codex Token Bar is a local-first macOS SwiftUI app for reading local Codex logs 
   <img src="Assets/FloatingPanelPreview.png" alt="Floating live token-rate panel" width="420">
 </p>
 
+<p align="center">
+  <img src="Assets/ResetCreditDetailPreview.png" alt="Reset credit detail screenshot" width="32%">
+  <img src="Assets/CodexRadarDetailPreview.png" alt="Codex Radar detail screenshot" width="32%">
+  <img src="Assets/ActivityChartPreview.png" alt="Recent 24-hour token activity screenshot" width="32%">
+</p>
+
 ## Highlights
 
 - Live all-session token speed with a compact floating panel, opacity, scaling, and session drill-down.
+- Codex Radar integration: show suggested action, 24h / 48h probabilities, today's primary model, IQ score, model comparison, and environment pressure in both the dashboard and floating panel.
+- Floating pace panel: combines Radar action, model IQ, 5h / 7d quota, and local live speed in a lockable, reorderable, auto-sizing window.
 - Yearly token heatmap, 5-minute recent activity chart, cache hit-rate curve, and cache hit ranking.
-- Codex 5h / 7d quota display with lightweight local history and compact pace hints.
-- Reset credit details: see available reset credits, status, source, grant time, expiry time, and redemption history for each credit.
+- Codex 5h / 7d quota display with lightweight local history, Radar quota estimates, and compact pace hints.
+- Reset credit details: see available reset credits, status, source, grant time, expiry time, remaining time, and redemption history for each credit.
 - Session disappearance repair wizard with scan, backup, repair, verify, and rollback list.
 - Local-first: reads local `~/.codex` data and does not upload prompts, outputs, logs, or quota data.
 - Sparkle update checking from `Codex Token Bar -> Check for Updates...`.
@@ -176,9 +198,15 @@ Codex Token Bar is a local-first macOS SwiftUI app for reading local Codex logs 
 
 Codex already writes useful local usage data, but it is hard to see the current speed, daily burn, cache behavior, and quota pace at a glance. Codex Token Bar turns those local files into a small dashboard and an unobtrusive floating meter.
 
+## Feature: Codex Radar
+
+Codex Token Bar can read the public JSON feed from [codexradar.com](https://codexradar.com/) and bring Radar data into the dashboard and floating panel. You can see the current suggested action, 24h / 48h probabilities, today's primary model, IQ scores, other model comparisons, Plus / 5x Pro / 20x Pro 5h and 7d quota estimates, plus detailed charts and tables.
+
+The Radar feed refreshes every 10 minutes by default. The dashboard credits the source as `Codex 雷达 codexradar.com`.
+
 ## Feature: Reset Credit Details
 
-Codex Token Bar reads the same local account endpoint used by Codex and turns reset credits into a readable detail view. You can see how many reset credits are available, whether each credit is usable, when it was granted, when it expires, whether redemption has started or completed, and the human-readable source note.
+Codex Token Bar reads the same local account endpoint used by Codex and turns reset credits into a readable detail view. You can see how many reset credits are available, whether each credit is usable, when it was granted, the exact expiry date, how much time remains, whether redemption has started or completed, and the human-readable source note.
 
 This feature is read-only: the app displays the information but never calls the endpoint that consumes a reset credit, and it does not upload quota data or conversation content.
 
@@ -186,12 +214,12 @@ This feature is read-only: the app displays the information but never calls the 
 
 Download the latest `.dmg` from [GitHub Releases](https://github.com/hututuo/codex-token-bar/releases/latest):
 
-1. Download `CodexTokenBar-v0.5.1-macos-arm64.dmg` and `SHA256SUMS-v0.5.1.txt`.
+1. Download `CodexTokenBar-v0.6.0-macos-arm64.dmg` and `SHA256SUMS-v0.6.0.txt`.
 2. Optionally verify:
 
 ```bash
-shasum -a 256 CodexTokenBar-v0.5.1-macos-arm64.dmg
-cat SHA256SUMS-v0.5.1.txt
+shasum -a 256 CodexTokenBar-v0.6.0-macos-arm64.dmg
+cat SHA256SUMS-v0.6.0.txt
 ```
 
 3. Open the DMG and drag `Codex Token Bar.app` to Applications.
@@ -270,7 +298,7 @@ Release assets:
 
 ```bash
 SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
-  scripts/build_release.sh v0.5.1
+  scripts/build_release.sh v0.6.0
 ```
 
 The release script produces the app bundle, DMG, Sparkle zip, compatibility zip, `SHA256SUMS`, and `appcast.xml`. Never commit the private key file.
