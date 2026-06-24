@@ -48,6 +48,7 @@ private struct QuotaHistoryRow {
 
     let createdAt: Date
     let accountKey: String
+    let source: String?
     let planType: String?
     let limitName: String?
     let accountName: String?
@@ -70,6 +71,7 @@ private struct QuotaHistoryRow {
         return QuotaHistoryRow(
             createdAt: createdAt,
             accountKey: accountKey,
+            source: source,
             planType: planType,
             limitName: limitName,
             accountName: accountName,
@@ -95,6 +97,7 @@ private struct QuotaHistoryRow {
         QuotaHistoryRow(
             createdAt: createdAt,
             accountKey: accountKey,
+            source: source,
             planType: planType,
             limitName: limitName,
             accountName: accountName,
@@ -270,7 +273,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         futureValue: (QuotaHistoryRow) -> Int?,
         sameCycle: (QuotaHistoryRow) -> Bool
     ) -> Int? {
-        guard let current, current >= 95 else { return current }
+        guard let current else { return current }
 
         let previous = rows[..<index]
             .reversed()
@@ -285,6 +288,9 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             .flatMap(futureValue)
 
         guard let recovered else { return current }
+        if let previous, current < 95, current - previous < 20 {
+            return current
+        }
         if let previous, previous < 95 {
             return previous
         }
@@ -292,11 +298,13 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     }
 
     private static func row(from quota: AccountQuotaSnapshot, createdAt: Date) -> QuotaHistoryRow {
-        QuotaHistoryRow(
+        let canonical = canonicalCodexIdentity(for: quota)
+        return QuotaHistoryRow(
             createdAt: createdAt,
-            accountKey: Self.accountKey(for: quota),
-            planType: quota.planType,
-            limitName: quota.limitName,
+            accountKey: Self.accountKey(for: quota, canonical: canonical),
+            source: "swift",
+            planType: canonical?.planType ?? quota.planType,
+            limitName: canonical?.limitName ?? quota.limitName,
             accountName: quota.accountName,
             fiveHourUsedPercent: quota.fiveHour?.usedPercent,
             fiveHourResetsAt: quota.fiveHour?.resetsAt,
@@ -391,6 +399,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at REAL NOT NULL,
                 account_key TEXT NOT NULL,
+                source TEXT,
                 plan_type TEXT,
                 limit_name TEXT,
                 account_name TEXT,
@@ -402,6 +411,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             );
             """
         )
+        try ensureColumn("source", definition: "TEXT", database: database)
         try ensureColumn("five_hour_resets_at", definition: "REAL", database: database)
         try ensureColumn("seven_day_resets_at", definition: "REAL", database: database)
         try database.execute("CREATE INDEX IF NOT EXISTS idx_quota_snapshots_created_at ON quota_snapshots(created_at);")
@@ -411,14 +421,15 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     private func insert(_ row: QuotaHistoryRow, database: SQLiteDatabaseConnection) throws {
         let sql = """
         INSERT INTO quota_snapshots (
-            created_at, account_key, plan_type, limit_name, account_name,
+            created_at, account_key, source, plan_type, limit_name, account_name,
             five_hour_used_percent, five_hour_resets_at,
             seven_day_used_percent, seven_day_resets_at, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         try database.execute(sql, bindings: [
             .date(row.createdAt),
             .text(row.accountKey),
+            .optionalText(row.source),
             .optionalText(row.planType),
             .optionalText(row.limitName),
             .optionalText(row.accountName),
@@ -435,7 +446,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             database: database,
             sql: """
             SELECT created_at, account_key, plan_type, limit_name, account_name,
-                   five_hour_used_percent, five_hour_resets_at,
+                   source, five_hour_used_percent, five_hour_resets_at,
                    seven_day_used_percent, seven_day_resets_at, status
             FROM quota_snapshots
             WHERE account_key = ?
@@ -455,7 +466,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 database: database,
                 sql: """
                 SELECT created_at, account_key, plan_type, limit_name, account_name,
-                       five_hour_used_percent, five_hour_resets_at,
+                       source, five_hour_used_percent, five_hour_resets_at,
                        seven_day_used_percent, seven_day_resets_at, status
                 FROM quota_snapshots
                 WHERE account_key = ? AND created_at >= ?
@@ -469,7 +480,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             database: database,
             sql: """
             SELECT created_at, account_key, plan_type, limit_name, account_name,
-                   five_hour_used_percent, five_hour_resets_at,
+                   source, five_hour_used_percent, five_hour_resets_at,
                    seven_day_used_percent, seven_day_resets_at, status
             FROM quota_snapshots
             WHERE created_at >= ?
@@ -505,7 +516,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             database: database,
             sql: """
             SELECT created_at, account_key, plan_type, limit_name, account_name,
-                   five_hour_used_percent, five_hour_resets_at,
+                   source, five_hour_used_percent, five_hour_resets_at,
                    seven_day_used_percent, seven_day_resets_at, status
             FROM quota_snapshots
             ORDER BY created_at DESC
@@ -520,14 +531,15 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             QuotaHistoryRow(
                 createdAt: statement.date(0) ?? Date(timeIntervalSince1970: 0),
                 accountKey: statement.text(1) ?? "default",
+                source: statement.text(5),
                 planType: statement.text(2),
                 limitName: statement.text(3),
                 accountName: statement.text(4),
-                fiveHourUsedPercent: statement.int(5),
-                fiveHourResetsAt: statement.date(6),
-                sevenDayUsedPercent: statement.int(7),
-                sevenDayResetsAt: statement.date(8),
-                status: statement.text(9) ?? ""
+                fiveHourUsedPercent: statement.int(6),
+                fiveHourResetsAt: statement.date(7),
+                sevenDayUsedPercent: statement.int(8),
+                sevenDayResetsAt: statement.date(9),
+                status: statement.text(10) ?? ""
             )
         }
     }
@@ -566,13 +578,20 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             .appendingPathComponent("quota-history.sqlite")
     }
 
-    private static func accountKey(for quota: AccountQuotaSnapshot) -> String {
-        let parts = [quota.accountName, quota.planType, quota.limitName]
+    private static func accountKey(for quota: AccountQuotaSnapshot, canonical: (planType: String, limitName: String)? = nil) -> String {
+        let parts = [quota.accountName, canonical?.planType ?? quota.planType, canonical?.limitName ?? quota.limitName]
             .compactMap { value -> String? in
                 let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 return trimmed.isEmpty ? nil : trimmed
             }
         return parts.isEmpty ? "default" : parts.joined(separator: "|")
+    }
+
+    private static func canonicalCodexIdentity(for quota: AccountQuotaSnapshot) -> (planType: String, limitName: String)? {
+        let limitName = normalizedLimitName(quota.limitName)
+        guard limitName.isEmpty || limitName == "codex" else { return nil }
+        guard normalizedIdentityText(quota.planType) != nil else { return nil }
+        return ("Pro", "codex")
     }
 
     private static func normalizedIdentityText(_ value: String?) -> String? {

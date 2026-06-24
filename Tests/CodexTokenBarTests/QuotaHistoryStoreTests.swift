@@ -21,19 +21,25 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let codexTime = now.addingTimeInterval(-15 * 60)
 
         try database.record(snapshot(
-            usedPercent: 12,
-            reset: reset,
-            planType: "pro",
-            limitName: nil,
-            at: legacyTime
-        ), createdAt: legacyTime)
-        try database.record(snapshot(
             usedPercent: 13,
             reset: reset,
             planType: "Pro",
             limitName: "codex",
             at: codexTime
         ), createdAt: codexTime)
+        try insertRawSnapshot(
+            databaseURL: url,
+            createdAt: legacyTime,
+            accountKey: "来先生|pro",
+            source: "legacy",
+            planType: "pro",
+            limitName: nil,
+            accountName: "来先生",
+            fiveHourUsedPercent: 12,
+            fiveHourResetsAt: reset,
+            sevenDayUsedPercent: 40,
+            sevenDayResetsAt: reset.addingTimeInterval(4 * 24 * 60 * 60)
+        )
 
         let loaded = try database.loadSnapshot(now: now)
         let recentValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
@@ -70,6 +76,41 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertTrue(recentValues.contains(87))
     }
 
+    func testSwiftWritesCanonicalCodexAccountKeyAndSource() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+
+        try database.record(snapshot(
+            usedPercent: 12,
+            reset: now.addingTimeInterval(3 * 60 * 60),
+            planType: "pro",
+            limitName: nil,
+            at: now
+        ), createdAt: now)
+
+        let driver = SQLiteDatabaseDriver(url: url)
+        let columns = try driver.readRows("PRAGMA table_info(quota_snapshots);") { statement in
+            statement.text(1) ?? ""
+        }
+        let rows = try driver.readRows(
+            "SELECT account_key, plan_type, limit_name, source FROM quota_snapshots ORDER BY id ASC;"
+        ) { statement in
+            (
+                accountKey: statement.text(0),
+                planType: statement.text(1),
+                limitName: statement.text(2),
+                source: statement.text(3)
+            )
+        }
+
+        XCTAssertTrue(columns.contains("source"))
+        XCTAssertEqual(rows.first?.accountKey, "来先生|Pro|codex")
+        XCTAssertEqual(rows.first?.planType, "Pro")
+        XCTAssertEqual(rows.first?.limitName, "codex")
+        XCTAssertEqual(rows.first?.source, "swift")
+    }
+
     func testRecentHistorySuppressesRecoveredFiveHourFullUsageSpikeAcrossMergedAccountKeys() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
@@ -88,6 +129,24 @@ final class QuotaHistoryStoreTests: XCTestCase {
 
         XCTAssertFalse(recentValues.contains(0), "recovered full-usage spike should not create a 5h quota pit")
         XCTAssertGreaterThanOrEqual(recentValues.min() ?? 100, 98)
+    }
+
+    func testRecentHistoryDropsSameCycleQuotaJumpAcrossSources() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let reset = now.addingTimeInterval(3 * 60 * 60)
+
+        try database.record(snapshot(usedPercent: 10, reset: reset, planType: "Pro", limitName: "codex", at: now.addingTimeInterval(-20 * 60)), createdAt: now.addingTimeInterval(-20 * 60))
+        try database.record(snapshot(usedPercent: 11, reset: reset, planType: "pro", limitName: nil, at: now.addingTimeInterval(-15 * 60)), createdAt: now.addingTimeInterval(-15 * 60))
+        try database.record(snapshot(usedPercent: 45, reset: reset, planType: "Pro", limitName: "codex", at: now.addingTimeInterval(-10 * 60)), createdAt: now.addingTimeInterval(-10 * 60))
+        try database.record(snapshot(usedPercent: 12, reset: reset, planType: "pro", limitName: nil, at: now.addingTimeInterval(-5 * 60)), createdAt: now.addingTimeInterval(-5 * 60))
+
+        let loaded = try database.loadSnapshot(now: now)
+        let recentValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
+
+        XCTAssertFalse(recentValues.contains(55), "same-cycle quota jumps from another source should not create a false 5h pit")
+        XCTAssertGreaterThanOrEqual(recentValues.min() ?? 100, 88)
     }
 
     func testRecentHistorySuppressesRecoveredSevenDayFullUsageSpike() throws {
@@ -134,5 +193,43 @@ final class QuotaHistoryStoreTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         temporaryDirectories.append(directory)
         return directory.appendingPathComponent("quota-history.sqlite")
+    }
+
+    private func insertRawSnapshot(
+        databaseURL: URL,
+        createdAt: Date,
+        accountKey: String,
+        source: String?,
+        planType: String?,
+        limitName: String?,
+        accountName: String?,
+        fiveHourUsedPercent: Int,
+        fiveHourResetsAt: Date,
+        sevenDayUsedPercent: Int,
+        sevenDayResetsAt: Date
+    ) throws {
+        let driver = SQLiteDatabaseDriver(url: databaseURL)
+        try driver.execute(
+            """
+            INSERT INTO quota_snapshots (
+                created_at, account_key, source, plan_type, limit_name, account_name,
+                five_hour_used_percent, five_hour_resets_at,
+                seven_day_used_percent, seven_day_resets_at, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            bindings: [
+                .date(createdAt),
+                .text(accountKey),
+                .optionalText(source),
+                .optionalText(planType),
+                .optionalText(limitName),
+                .optionalText(accountName),
+                .int(fiveHourUsedPercent),
+                .date(fiveHourResetsAt),
+                .int(sevenDayUsedPercent),
+                .date(sevenDayResetsAt),
+                .text("legacy")
+            ]
+        )
     }
 }
