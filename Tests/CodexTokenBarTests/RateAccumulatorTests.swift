@@ -62,17 +62,34 @@ final class RateAccumulatorTests: XCTestCase {
 
         accumulator.addDistributed(
             tokens: 110,
-            category: .toolOutput,
-            key: "tool-call",
+            category: .visibleText,
+            key: "message",
             startTimestamp: nil,
             endingAt: 20,
             windowSeconds: 2.5
         )
 
-        XCTAssertEqual(accumulator.breakdown.toolOutput, 110)
+        XCTAssertEqual(accumulator.breakdown.visibleText, 110)
         XCTAssertEqual(accumulator.outputTokens, 110)
         XCTAssertGreaterThan(accumulator.rollingRate(now: 20.5, windowSeconds: 2.5, minimumSpan: 0.4), 0)
         XCTAssertLessThan(accumulator.rollingRate(now: 20.5, windowSeconds: 2.5, minimumSpan: 0.4), 110)
+    }
+
+    func testToolOutputPayloadDoesNotDriveLiveRollingRate() {
+        var accumulator = RateAccumulator(resetsOnNewItem: false)
+
+        accumulator.addDistributed(
+            tokens: 2_200,
+            category: .toolOutput,
+            key: "tool-output",
+            startTimestamp: 10,
+            endingAt: 20,
+            windowSeconds: 2.5
+        )
+
+        XCTAssertEqual(accumulator.breakdown.toolOutput, 2_200)
+        XCTAssertEqual(accumulator.outputTokens, 2_200)
+        XCTAssertEqual(accumulator.rollingRate(now: 20.5, windowSeconds: 2.5, minimumSpan: 0.4), 0, accuracy: 0.001)
     }
 
     func testExactModelOutputOverridesModelGeneratedEstimateWhenLarger() {

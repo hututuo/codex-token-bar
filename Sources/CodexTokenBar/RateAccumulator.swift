@@ -122,6 +122,7 @@ struct RateAccumulator {
         guard tokens > 0 else { return }
         currentKey = key
         addToBreakdown(tokens: tokens, category: category)
+        guard category.contributesToLiveRate else { return }
         if firstDeltaAt == nil {
             firstDeltaAt = timestamp
         }
@@ -146,6 +147,7 @@ struct RateAccumulator {
         guard deltaTokens > 0 else { return }
 
         addToBreakdown(tokens: deltaTokens, category: category)
+        guard category.contributesToLiveRate else { return }
 
         let estimatedDuration = estimatedDistributionDuration(tokens: deltaTokens)
         let start: TimeInterval
@@ -229,5 +231,16 @@ struct RateAccumulator {
             Self.maximumCompletionPayloadSeconds,
             max(Self.minimumCompletionPayloadSeconds, Double(tokens) / Self.completionPayloadTokensPerSecond)
         )
+    }
+}
+
+private extension LiveTokenCategory {
+    var contributesToLiveRate: Bool {
+        switch self {
+        case .visibleText, .toolArguments, .patchInput, .reasoning:
+            return true
+        case .patchApplied, .toolOutput:
+            return false
+        }
     }
 }
