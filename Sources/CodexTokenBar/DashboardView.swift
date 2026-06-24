@@ -280,6 +280,9 @@ struct DashboardView: View {
         .onChange(of: floatingPanelLocked) {
             updateTokenDisplaySurface()
         }
+        .onReceive(radarStore.$snapshot) { _ in
+            syncFloatingPanelRadarSnapshot()
+        }
         .onChange(of: store.dataSourceLabel) {
             taskCompletionMonitor.start(dataSource: store.currentDataSource)
         }
@@ -583,6 +586,11 @@ struct DashboardView: View {
         } else {
             statusBarPanel.close()
         }
+    }
+
+    private func syncFloatingPanelRadarSnapshot() {
+        guard floatingPanelEnabled else { return }
+        updateTokenDisplaySurface()
     }
 
     private func updateUsageRefreshCadence() {

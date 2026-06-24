@@ -301,7 +301,7 @@ struct TokenDisplayCard: View {
         if visibility.showRadar {
             if let radarSnapshot {
                 parts.append("雷达建议 \(radarSnapshot.recommendedAction)")
-                parts.append(radarSnapshot.modelIQ.latest.scoreDisplayText)
+                parts.append(radarSnapshot.modelIQ.primaryModelRow.point.scoreDisplayText)
             } else {
                 parts.append("雷达等待读取")
             }

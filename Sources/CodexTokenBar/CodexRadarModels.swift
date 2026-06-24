@@ -127,6 +127,20 @@ struct CodexRadarModelIQ: Decodable, Equatable, Sendable {
     let quotaRadar: CodexRadarQuotaRadar?
     let quotaCheck: CodexRadarQuotaCheck?
 
+    var primaryModelRow: CodexRadarModelIQComparisonRow {
+        allCurrentRows.sorted(by: isPreferredPrimaryModel).first
+            ?? CodexRadarModelIQComparisonRow(label: latest.modelDisplayName, point: latest)
+    }
+
+    var secondaryModelRows: [CodexRadarModelIQComparisonRow] {
+        let primary = primaryModelRow
+        return allCurrentRows
+            .filter { row in
+                row.point.modelSeriesID != primary.point.modelSeriesID
+            }
+            .sorted(by: isPreferredPrimaryModel)
+    }
+
     var comparisonRows: [CodexRadarModelIQComparisonRow] {
         let latestRow = CodexRadarModelIQComparisonRow(label: latest.modelDisplayName, point: latest)
         let comparisonRows = comparisons
@@ -161,8 +175,58 @@ struct CodexRadarModelIQ: Decodable, Equatable, Sendable {
                 let rhsIndex = order.firstIndex(of: rhs.label) ?? Int.max
                 if lhsIndex == rhsIndex { return lhs.label < rhs.label }
                 return lhsIndex < rhsIndex
-            }
+        }
         return [latestSeries] + comparisonSeries
+    }
+
+    private var allCurrentRows: [CodexRadarModelIQComparisonRow] {
+        [CodexRadarModelIQComparisonRow(label: latest.modelDisplayName, point: latest)]
+            + comparisons.map { CodexRadarModelIQComparisonRow(label: $0.value.label, point: $0.value.latest) }
+    }
+
+    private func isPreferredPrimaryModel(
+        _ lhs: CodexRadarModelIQComparisonRow,
+        over rhs: CodexRadarModelIQComparisonRow
+    ) -> Bool {
+        if lhs.point.score != rhs.point.score {
+            return lhs.point.score > rhs.point.score
+        }
+
+        switch (lhs.point.costUsd, rhs.point.costUsd) {
+        case let (lhsCost?, rhsCost?) where lhsCost != rhsCost:
+            return lhsCost < rhsCost
+        case (.some, nil):
+            return true
+        case (nil, .some):
+            return false
+        default:
+            break
+        }
+
+        let lhsEffortRank = Self.reasoningEffortCostRank(lhs.point.reasoningEffort)
+        let rhsEffortRank = Self.reasoningEffortCostRank(rhs.point.reasoningEffort)
+        if lhsEffortRank != rhsEffortRank {
+            return lhsEffortRank < rhsEffortRank
+        }
+
+        return lhs.label < rhs.label
+    }
+
+    private static func reasoningEffortCostRank(_ effort: String?) -> Int {
+        switch effort?.lowercased() {
+        case "minimal":
+            return 0
+        case "low":
+            return 1
+        case "medium":
+            return 2
+        case "high":
+            return 3
+        case "xhigh":
+            return 4
+        default:
+            return Int.max
+        }
     }
 }
 

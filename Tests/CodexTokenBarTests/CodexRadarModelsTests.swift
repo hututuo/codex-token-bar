@@ -13,6 +13,8 @@ final class CodexRadarModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.prediction.probability48hPercent, 30)
         XCTAssertEqual(snapshot.modelIQ.latest.modelDisplayName, "GPT-5.5 xhigh")
         XCTAssertEqual(snapshot.modelIQ.latest.scoreDisplayText, "IQ 125")
+        XCTAssertEqual(snapshot.modelIQ.primaryModelRow.label, "GPT-5.5 xhigh")
+        XCTAssertEqual(snapshot.modelIQ.primaryModelRow.point.scoreDisplayText, "IQ 125")
         XCTAssertEqual(snapshot.modelIQ.comparisonRows.map(\.label), [
             "GPT-5.5 xhigh",
             "GPT-5.5 high",
@@ -27,6 +29,58 @@ final class CodexRadarModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.modelIQ.quotaRadar?.rowsForDisplay.first?.fiveHourDisplayText, "$13.83")
         XCTAssertEqual(snapshot.modelIQ.quotaRadar?.trend.last?.fiveHour20x, 276.66)
         XCTAssertEqual(snapshot.codexEnvironment.roleCounts["market_motive"], 38)
+    }
+
+    func testPrimaryModelUsesHighestCurrentComparisonInsteadOfRawLatest() {
+        let xhigh = Self.modelIQPoint(score: 87.5, reasoningEffort: "xhigh")
+        let high = Self.modelIQPoint(score: 100, reasoningEffort: "high")
+        let modelIQ = CodexRadarModelIQ(
+            latest: xhigh,
+            recentDays: [xhigh],
+            comparisons: [
+                "gpt_55_high": CodexRadarModelIQComparison(
+                    label: "GPT-5.5 high",
+                    model: "gpt-5.5",
+                    reasoningEffort: "high",
+                    latest: high,
+                    recentDays: [high]
+                )
+            ],
+            quotaCalibration: nil,
+            quotaRadar: nil,
+            quotaCheck: nil
+        )
+
+        XCTAssertEqual(modelIQ.latest.reasoningEffort, "xhigh")
+        XCTAssertEqual(modelIQ.primaryModelRow.label, "GPT-5.5 high")
+        XCTAssertEqual(modelIQ.primaryModelRow.point.reasoningEffort, "high")
+        XCTAssertEqual(modelIQ.primaryModelRow.point.scoreDisplayText, "IQ 100")
+        XCTAssertEqual(modelIQ.secondaryModelRows.map(\.label), ["GPT-5.5 xhigh"])
+    }
+
+    func testPrimaryModelUsesLowerCostWhenHighAndXHighScoresTie() {
+        let xhigh = Self.modelIQPoint(score: 100, reasoningEffort: "xhigh", costUsd: 37)
+        let high = Self.modelIQPoint(score: 100, reasoningEffort: "high", costUsd: 29)
+        let modelIQ = CodexRadarModelIQ(
+            latest: xhigh,
+            recentDays: [xhigh],
+            comparisons: [
+                "gpt_55_high": CodexRadarModelIQComparison(
+                    label: "GPT-5.5 high",
+                    model: "gpt-5.5",
+                    reasoningEffort: "high",
+                    latest: high,
+                    recentDays: [high]
+                )
+            ],
+            quotaCalibration: nil,
+            quotaRadar: nil,
+            quotaCheck: nil
+        )
+
+        XCTAssertEqual(modelIQ.primaryModelRow.label, "GPT-5.5 high")
+        XCTAssertEqual(modelIQ.primaryModelRow.point.reasoningEffort, "high")
+        XCTAssertEqual(modelIQ.secondaryModelRows.map(\.label), ["GPT-5.5 xhigh"])
     }
 
     func testReaderDecodesPayloadFromInjectedTransport() async throws {
@@ -88,6 +142,31 @@ final class CodexRadarModelsTests: XCTestCase {
         XCTAssertEqual(sevenDaySeries.first?.points.map(\.value).first ?? 0, 91.008, accuracy: 0.001)
         XCTAssertEqual(sevenDaySeries.dropFirst().first?.points.map(\.value).last ?? 0, 414.9825, accuracy: 0.001)
         XCTAssertEqual(sevenDaySeries.last?.points.map(\.value), [1820.16, 1659.93])
+    }
+
+    private static func modelIQPoint(
+        score: Double,
+        reasoningEffort: String,
+        costUsd: Double = 10
+    ) -> CodexRadarModelIQPoint {
+        CodexRadarModelIQPoint(
+            date: "2026-06-24-am",
+            score: score,
+            status: score >= 100 ? "green" : "yellow",
+            passed: Int(score / 12.5),
+            tasks: 12,
+            invalid: 0,
+            totalTokens: 1_000_000,
+            inputTokens: 900_000,
+            cachedInputTokens: 800_000,
+            outputTokens: 100_000,
+            wallSeconds: 1200,
+            wallTimeHuman: "20分钟",
+            model: "gpt-5.5",
+            reasoningEffort: reasoningEffort,
+            validTasks: 12,
+            costUsd: costUsd
+        )
     }
 
     private static let sampleJSON = """

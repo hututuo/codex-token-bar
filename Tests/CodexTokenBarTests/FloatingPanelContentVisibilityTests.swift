@@ -675,9 +675,9 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(componentsSource.contains("24h \\(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))  48h \\(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))"))
         XCTAssertTrue(componentsSource.contains("alignment: .leading, spacing: 2.scaled(by: displayScale)"))
         XCTAssertTrue(componentsSource.contains("alignment: .leading, spacing: 1.scaled(by: displayScale)"))
-        XCTAssertTrue(componentsSource.contains("latest?.scoreDisplayText"))
-        XCTAssertTrue(componentsSource.contains("tokenDisplayRadarIQText(snapshot, effort: \"high\")"))
-        XCTAssertTrue(componentsSource.contains("tokenDisplayRadarIQText(snapshot, effort: \"xhigh\")"))
+        XCTAssertTrue(componentsSource.contains("primary?.scoreDisplayText"))
+        XCTAssertTrue(componentsSource.contains("tokenDisplayRadarSecondaryIQText(snapshot)"))
+        XCTAssertTrue(componentsSource.contains("private func tokenDisplayRadarSecondaryIQText"))
 
         let radarStrip = try XCTUnwrap(sourceBlock(
             named: "TokenDisplayRadarStrip",
@@ -686,9 +686,35 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         ))
         XCTAssertTrue(radarStrip.contains("Text(\"动作 \\(snapshot?.recommendedAction ?? \"--\")\")"))
         XCTAssertTrue(radarStrip.contains(".foregroundStyle(actionPalette.primaryColor)"))
-        XCTAssertTrue(radarStrip.contains("Text(latest?.scoreDisplayText ?? \"IQ --\")"))
+        XCTAssertTrue(radarStrip.contains("let primary = snapshot?.modelIQ.primaryModelRow.point"))
+        XCTAssertTrue(radarStrip.contains("Text(primary?.scoreDisplayText ?? \"IQ --\")"))
+        XCTAssertTrue(radarStrip.contains("tokenDisplayRadarSecondaryIQText(snapshot)"))
+        XCTAssertTrue(componentsSource.contains("snapshot?.modelIQ.secondaryModelRows.prefix(2)"))
         XCTAssertTrue(radarStrip.contains(".foregroundStyle(modelPalette.primaryColor)"))
         XCTAssertFalse(radarStrip.contains("alignment: .trailing"))
+    }
+
+    func testFloatingPanelRefreshesRadarRowWhenRadarStorePublishesNewSnapshot() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let dashboard = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
+
+        let dashboardSource = try String(contentsOf: dashboard, encoding: .utf8)
+
+        XCTAssertTrue(dashboardSource.contains(".onReceive(radarStore.$snapshot)"))
+        XCTAssertTrue(dashboardSource.contains("syncFloatingPanelRadarSnapshot()"))
+        guard let syncStart = dashboardSource.range(of: "private func syncFloatingPanelRadarSnapshot()")?.lowerBound,
+              let syncEnd = dashboardSource[syncStart...].range(of: "private func updateUsageRefreshCadence")?.lowerBound
+        else {
+            XCTFail("DashboardView must keep floating radar sync next to display surface updates")
+            return
+        }
+
+        let syncMethod = String(dashboardSource[syncStart..<syncEnd])
+        XCTAssertTrue(syncMethod.contains("guard floatingPanelEnabled else { return }"))
+        XCTAssertTrue(syncMethod.contains("updateTokenDisplaySurface()"))
     }
 
     func testUsageStatusRendersOnRateBarAndStandaloneTextHasNoBackground() throws {

@@ -130,7 +130,7 @@ struct TokenDisplayRadarStrip: View {
     @Environment(\.tokenDisplayRadarModelTextPalette) private var modelTextPalette
 
     var body: some View {
-        let latest = snapshot?.modelIQ.latest
+        let primary = snapshot?.modelIQ.primaryModelRow.point
         let actionPalette = actionTextPalette ?? textPalette
         let modelPalette = modelTextPalette ?? textPalette
         HStack(spacing: 7.scaled(by: displayScale)) {
@@ -152,17 +152,17 @@ struct TokenDisplayRadarStrip: View {
 
             VStack(alignment: .leading, spacing: 1.scaled(by: displayScale)) {
                 HStack(alignment: .lastTextBaseline, spacing: 3.scaled(by: displayScale)) {
-                    Text(latest?.scoreDisplayText ?? "IQ --")
+                    Text(primary?.scoreDisplayText ?? "IQ --")
                         .font(.system(size: 11.8.scaled(by: displayScale), weight: .bold, design: .rounded))
                         .foregroundStyle(modelPalette.primaryColor)
                         .monospacedDigit()
-                    Text(latest?.modelDisplayName ?? "模型 --")
+                    Text(primary?.modelDisplayName ?? "模型 --")
                         .font(.system(size: 7.7.scaled(by: displayScale), weight: .semibold))
                         .foregroundStyle(modelPalette.primaryColor)
                         .lineLimit(1)
                         .minimumScaleFactor(0.66)
                 }
-                Text("\(tokenDisplayRadarIQText(snapshot, effort: "high"))  \(tokenDisplayRadarIQText(snapshot, effort: "xhigh"))")
+                Text(tokenDisplayRadarSecondaryIQText(snapshot))
                     .font(.system(size: 8.1.scaled(by: displayScale), weight: .semibold))
                     .foregroundStyle(modelPalette.secondaryColor)
                     .monospacedDigit()
@@ -181,7 +181,7 @@ struct TokenDisplayRadarStrip: View {
 
     private var accessibilityText: String {
         guard let snapshot else { return "等待读取" }
-        return "建议 \(snapshot.recommendedAction)，24 小时概率 \(snapshot.prediction.probability24hPercent)%，48 小时概率 \(snapshot.prediction.probability48hPercent)%，\(snapshot.modelIQ.latest.scoreDisplayText)"
+        return "建议 \(snapshot.recommendedAction)，24 小时概率 \(snapshot.prediction.probability24hPercent)%，48 小时概率 \(snapshot.prediction.probability48hPercent)%，\(snapshot.modelIQ.primaryModelRow.point.scoreDisplayText)"
     }
 }
 
@@ -190,15 +190,19 @@ private func tokenDisplayRadarProbabilityText(_ percent: Int?) -> String {
     return "\(percent)%"
 }
 
-private func tokenDisplayRadarIQText(_ snapshot: CodexRadarSnapshot?, effort: String) -> String {
-    let label = effort == "xhigh" ? "X high" : effort
-    guard let row = snapshot?.modelIQ.comparisonRows.first(where: { row in
-        row.point.reasoningEffort?.caseInsensitiveCompare(effort) == .orderedSame
-            || row.label.localizedCaseInsensitiveContains(effort)
-    }) else {
-        return "\(label) --"
-    }
-    return "\(label) \(CodexRadarModelIQPoint.display(row.point.score))"
+private func tokenDisplayRadarSecondaryIQText(_ snapshot: CodexRadarSnapshot?) -> String {
+    let rows = snapshot?.modelIQ.secondaryModelRows.prefix(2) ?? []
+    guard !rows.isEmpty else { return "其他模型 --" }
+    return rows.map { row in
+        "\(tokenDisplayRadarShortModelLabel(row.label)) \(CodexRadarModelIQPoint.display(row.point.score))"
+    }.joined(separator: "  ")
+}
+
+private func tokenDisplayRadarShortModelLabel(_ label: String) -> String {
+    label
+        .replacingOccurrences(of: "GPT-5.5 ", with: "")
+        .replacingOccurrences(of: "GPT-5.4 ", with: "5.4 ")
+        .replacingOccurrences(of: "xhigh", with: "X high")
 }
 
 struct TokenDisplayRateBar: View {

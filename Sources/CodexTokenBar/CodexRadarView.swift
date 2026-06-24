@@ -41,6 +41,8 @@ struct CodexRadarStrip: View {
 
                 Spacer(minLength: 8)
 
+                CodexRadarHeaderSourceCredit(snapshot: snapshot)
+
                 Button(action: onRefresh) {
                     Image(systemName: isRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
                         .font(.system(size: 12, weight: .semibold))
@@ -102,6 +104,30 @@ private struct CodexRadarDivider: View {
     }
 }
 
+private struct CodexRadarHeaderSourceCredit: View {
+    let snapshot: CodexRadarSnapshot?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Text("感谢")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text("Codex 雷达  codexradar.com")
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.74)
+        }
+        .help(sourceHelpText)
+    }
+
+    private var sourceHelpText: String {
+        guard let html = snapshot?.links.html else {
+            return "感谢来源网址与雷达"
+        }
+        return "感谢 \(html)"
+    }
+}
+
 private struct CodexRadarWindowBlock: View {
     let snapshot: CodexRadarSnapshot?
 
@@ -126,20 +152,20 @@ private struct CodexRadarModelIQBlock: View {
     let snapshot: CodexRadarSnapshot?
 
     var body: some View {
-        let latest = snapshot?.modelIQ.latest
+        let primary = snapshot?.modelIQ.primaryModelRow.point
         VStack(alignment: .leading, spacing: 6) {
             CodexRadarBlockTitle("今日主模型", systemImage: "brain.head.profile")
             HStack(alignment: .lastTextBaseline, spacing: 8) {
-                Text(latest?.scoreDisplayText ?? "IQ --")
+                Text(primary?.scoreDisplayText ?? "IQ --")
                     .font(.system(size: 20, weight: .semibold, design: .rounded))
                     .monospacedDigit()
-                Text(latest?.modelDisplayName ?? "待读取")
+                Text(primary?.modelDisplayName ?? "待读取")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             HStack(spacing: 8) {
-                ForEach((snapshot?.modelIQ.comparisonRows ?? []).prefix(3), id: \.label) { row in
+                ForEach((snapshot?.modelIQ.secondaryModelRows ?? []).prefix(3), id: \.label) { row in
                     Text("\(row.label.replacingOccurrences(of: "GPT-", with: "")) \(CodexRadarModelIQPoint.display(row.point.score))")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(color(for: row.point.status))
