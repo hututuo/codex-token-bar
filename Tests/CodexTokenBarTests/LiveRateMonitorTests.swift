@@ -67,6 +67,31 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertTrue(monitorSource.contains("await readRolloutUpdates(now:"))
     }
 
+    func testPollStillReadsRolloutJsonlAfterSqliteStreamRows() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let monitorSourceURL = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateMonitor.swift")
+        let monitorSource = try String(contentsOf: monitorSourceURL, encoding: .utf8)
+
+        let globalRowsRange = try XCTUnwrap(monitorSource.range(of: "for row in globalRows {"))
+        let rolloutRange = try XCTUnwrap(
+            monitorSource.range(
+                of: "let processedRolloutEvents = await readRolloutUpdates(now:",
+                range: globalRowsRange.upperBound..<monitorSource.endIndex
+            )
+        )
+        let snapshotRange = try XCTUnwrap(
+            monitorSource.range(
+                of: "updateSnapshots(now:",
+                range: rolloutRange.upperBound..<monitorSource.endIndex
+            )
+        )
+
+        XCTAssertLessThan(rolloutRange.lowerBound, snapshotRange.lowerBound)
+    }
+
     func testRolloutParserDoesNotCountAgentMessageDuplicateAsInstantRollingOutput() {
         let text = String(repeating: "streamed answer ", count: 200)
         let lines = [

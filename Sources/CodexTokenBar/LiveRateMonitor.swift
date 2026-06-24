@@ -273,7 +273,10 @@ final class LiveRateMonitor: ObservableObject {
                 add(row: row)
             }
 
-            updateSnapshots(now: Date().timeIntervalSince1970)
+            let processedRolloutEvents = await readRolloutUpdates(now: Date().timeIntervalSince1970)
+            if !processedRolloutEvents {
+                updateSnapshots(now: Date().timeIntervalSince1970)
+            }
         } catch {
             snapshot.status = "读取日志失败：\(error.localizedDescription)"
         }
@@ -294,9 +297,9 @@ final class LiveRateMonitor: ObservableObject {
                 rolloutOffsets[read.path] = read.newOffset
                 guard !read.events.isEmpty else { continue }
                 processedEvents = true
-                add(events: read.events, threadID: read.threadID, to: &totalRate)
+                add(events: read.events, threadID: read.threadID, keyThreadID: "all", to: &totalRate)
                 if read.threadID == threadID {
-                    add(events: read.events, threadID: read.threadID, to: &selectedRate)
+                    add(events: read.events, threadID: read.threadID, keyThreadID: read.threadID, to: &selectedRate)
                 }
             }
 
@@ -326,7 +329,7 @@ final class LiveRateMonitor: ObservableObject {
         }
     }
 
-    private func add(events: [RolloutMetricEvent], threadID: String, to rate: inout RateAccumulator) {
+    private func add(events: [RolloutMetricEvent], threadID: String, keyThreadID: String, to rate: inout RateAccumulator) {
         for event in events {
             let normalized = LiveMetricEvent(
                 source: .rollout,
@@ -340,7 +343,7 @@ final class LiveRateMonitor: ObservableObject {
                 exactOutputTokens: event.exactOutputTokens,
                 rollingOnly: event.rollingOnly
             )
-            add(event: normalized, keyThreadID: threadID, to: &rate)
+            add(event: normalized, keyThreadID: keyThreadID, to: &rate)
         }
     }
 
