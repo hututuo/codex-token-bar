@@ -44,9 +44,15 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     }
 
     func testDefaultFloatingPanelUsesTighterVerticalRhythm() {
-        XCTAssertEqual(FloatingTokenPanelMetrics.rowSpacing, 2.5, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.metricRowHeight, 12, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 92, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 97, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.verticalPadding, 6, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.rowSpacing, 2, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.rateRowHeight, 28, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.metricRowHeight, 11, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.quotaRowHeight, 15.5, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.radarRowHeight, 24, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 84.5, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 97, accuracy: 0.001)
     }
 
     func testUsageStatusEmbedsOnlyWhenAdjacentToRateRow() {
