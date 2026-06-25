@@ -635,7 +635,10 @@ function RadarLineChart({
   const axis = buildChartAxis(values, yDomain, yTickValues);
   const xIndex = new Map(xLabels.map((label, index) => [label, index]));
   const xPosition = (rawLabel: string) => plot.x + (plot.width * (xIndex.get(rawLabel) ?? 0)) / Math.max(xLabels.length - 1, 1);
-  const yPosition = (value: number) => plot.y + plot.height - ((value - axis.min) / Math.max(axis.max - axis.min, 1)) * plot.height;
+  const yPosition = (value: number) => {
+    const clamped = Math.min(Math.max(value, axis.min), axis.max);
+    return plot.y + plot.height - ((clamped - axis.min) / Math.max(axis.max - axis.min, 1)) * plot.height;
+  };
 
   return (
     <svg className="codex-radar-line-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${yAxisTitle}趋势图`}>
@@ -656,7 +659,7 @@ function RadarLineChart({
           <g key={tick}>
             <line className="codex-radar-chart-grid" x1={plot.x} x2={plot.x + plot.width} y1={y} y2={y} />
             <text className="codex-radar-chart-y-label" x={plot.x - 8} y={y + 3} textAnchor="end">
-              {valuePrefix}{displayRadarNumber(tick, tick >= 10 ? 0 : 2)}
+              {valuePrefix}{displayRadarNumber(tick, 2)}
             </text>
           </g>
         );
@@ -732,13 +735,23 @@ function buildChartAxis(values: number[], yDomain?: [number, number], yTickValue
   const rawMin = Math.min(...values);
   const rawMax = Math.max(...values);
   const span = Math.max(rawMax - rawMin, 1);
-  const min = Math.max(0, rawMin - span * 0.16);
-  const max = rawMax + span * 0.16;
+  const paddedMin = Math.max(0, rawMin - span * 0.12);
+  const paddedMax = rawMax + span * 0.12;
+  const min = Math.floor(paddedMin / 10) * 10;
+  const max = Math.ceil(paddedMax / 10) * 10;
   return {
     min,
     max,
-    ticks: [max, min + (max - min) * 0.66, min + (max - min) * 0.33, min],
+    ticks: evenlySpacedTicks(min, max),
   };
+}
+
+function evenlySpacedTicks(min: number, max: number): number[] {
+  const count = 4;
+  if (max <= min) {
+    return [max];
+  }
+  return Array.from({ length: count }, (_, index) => max - ((max - min) * index) / (count - 1));
 }
 
 function uniqueLabels(labels: string[]): string[] {
