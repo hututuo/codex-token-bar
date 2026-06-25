@@ -1655,7 +1655,7 @@ button.quota-side-card:hover {
 
 .live-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 330px;
+  grid-template-columns: minmax(300px, 44fr) minmax(420px, 56fr);
   gap: 12px;
   align-items: stretch;
   margin-top: 6px;
@@ -1887,15 +1887,15 @@ button.quota-side-card:hover {
 
 .setting-slider {
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr) 42px;
+  grid-template-columns: 62px minmax(0, 1fr) 36px;
   align-items: center;
-  gap: 9px;
+  gap: 7px;
 }
 
 .floating-appearance-compact {
   display: grid;
-  grid-template-columns: 104px minmax(0, 1fr);
-  gap: 9px;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 8px;
   align-items: stretch;
 }
 
