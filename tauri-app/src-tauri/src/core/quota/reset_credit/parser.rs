@@ -40,7 +40,7 @@ fn parse_reset_credit_detail(value: &Value, index: usize) -> ResetCreditDetail {
         .unwrap_or_else(|| format!("重置卡 {}", index + 1));
     let reset_type = text_from_keys(value, &["reset_type", "resetType", "type", "kind"])
         .unwrap_or_else(|| "未提供".into());
-    let issued_at = time_from_keys(
+    let granted_at = parsed_time_from_keys(
         value,
         &[
             "issued_at",
@@ -51,7 +51,14 @@ fn parse_reset_credit_detail(value: &Value, index: usize) -> ResetCreditDetail {
             "grantedAt",
         ],
     );
-    let expires_at = time_from_keys(value, &["expires_at", "expiresAt", "expiration", "expires"]);
+    let issued_at = granted_at
+        .map(format_reset_credit_time)
+        .unwrap_or_else(|| "未提供".into());
+    let expires_at_date =
+        parsed_time_from_keys(value, &["expires_at", "expiresAt", "expiration", "expires"]);
+    let expires_at = expires_at_date
+        .map(format_reset_credit_time)
+        .unwrap_or_else(|| "未提供".into());
     let redeem_started_at = time_from_keys(
         value,
         &[
@@ -97,12 +104,16 @@ fn parse_reset_credit_detail(value: &Value, index: usize) -> ResetCreditDetail {
         ],
     )
     .unwrap_or_else(|| "未提供".into());
-    let short_id = text_from_keys(
+    let card_id = text_from_keys(
         value,
         &["id", "credit_id", "creditId", "reset_credit_id", "resetCreditId"],
     )
-    .map(|id| short_identifier(&id))
     .unwrap_or_else(|| "未提供".into());
+    let short_id = if card_id == "未提供" {
+        "未提供".into()
+    } else {
+        short_identifier(&card_id)
+    };
     let summary = [
         format!("状态 {status}"),
         format!("类型 {reset_type}"),
@@ -113,12 +124,15 @@ fn parse_reset_credit_detail(value: &Value, index: usize) -> ResetCreditDetail {
     .join(" · ");
 
     ResetCreditDetail {
+        card_id,
         title,
         status,
         summary,
         reset_type,
         issued_at,
+        granted_at_unix: granted_at.map(|date| date.unix_timestamp()),
         expires_at,
+        expires_at_unix: expires_at_date.map(|date| date.unix_timestamp()),
         redeem_started_at,
         redeemed_at,
         source,
@@ -176,11 +190,13 @@ fn associated_user_label(value: &Value) -> Option<String> {
 }
 
 fn time_from_keys(value: &Value, keys: &[&str]) -> String {
-    keys.iter()
-        .find_map(|key| value.get(*key))
-        .and_then(parse_time)
+    parsed_time_from_keys(value, keys)
         .map(format_reset_credit_time)
         .unwrap_or_else(|| "未提供".into())
+}
+
+fn parsed_time_from_keys(value: &Value, keys: &[&str]) -> Option<OffsetDateTime> {
+    keys.iter().find_map(|key| value.get(*key)).and_then(parse_time)
 }
 
 fn parse_time(value: &Value) -> Option<OffsetDateTime> {
@@ -312,6 +328,7 @@ mod tests {
         let detail = parse_reset_credit_detail(&credit, 0);
         assert_eq!(detail.title, "每周重置卡");
         assert_eq!(detail.status, "可用");
+        assert_eq!(detail.card_id, "reset-credit-abcdef123456");
         assert_eq!(detail.reset_type, "weekly");
         assert_eq!(detail.redeemed_at, "未使用");
         assert_eq!(detail.source, "system_grant");
@@ -319,6 +336,8 @@ mod tests {
         assert_eq!(detail.associated_user, "user_123");
         assert_eq!(detail.profile_image_url, "https://example.com/avatar.png");
         assert_eq!(detail.short_id, "reset-...3456");
+        assert!(detail.granted_at_unix.is_some());
+        assert!(detail.expires_at_unix.is_some());
         assert!(detail.issued_at.starts_with("2026-06-12 "));
         assert!(detail.expires_at.starts_with("2026-06-20 "));
         assert!(detail.redeem_started_at.starts_with("2026-06-13 "));

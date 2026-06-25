@@ -33,12 +33,15 @@ export interface ResetCreditSummary {
 }
 
 export interface ResetCreditDetail {
+  cardId: string;
   title: string;
   status: string;
   summary: string;
   resetType: string;
   issuedAt: string;
+  grantedAtUnix?: number | null;
   expiresAt: string;
+  expiresAtUnix?: number | null;
   redeemStartedAt: string;
   redeemedAt: string;
   source: string;

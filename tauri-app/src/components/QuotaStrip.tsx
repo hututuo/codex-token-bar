@@ -1,6 +1,14 @@
-import { memo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import type { QuotaLimit, QuotaSnapshot, ResetCreditDetail } from "../types/dashboard";
 import { formatPercent } from "../utils/format";
+import {
+  cardIdentifier,
+  nearestResetCreditCompactText,
+  prepareResetCreditsForDisplay,
+  resetCreditCountText,
+  resetCreditPanelSubtitle,
+  type ResetCreditDisplayItem,
+} from "./quota/resetCredits";
 
 interface QuotaStripProps {
   snapshot: QuotaSnapshot;
@@ -19,63 +27,98 @@ function QuotaBar({ quota }: { quota: QuotaLimit }) {
   );
 }
 
-function ResetCreditItem({ credit }: { credit: ResetCreditDetail }) {
+function ResetCreditAvatar({ credit }: { credit: ResetCreditDetail }) {
+  const avatarUrl =
+    credit.profileImageUrl && credit.profileImageUrl !== "未提供" ? credit.profileImageUrl : null;
+
   return (
-    <article className="reset-credit-item">
-      <div className="reset-credit-title">
-        <strong>{credit.title}</strong>
-        <span>{credit.status}</span>
-      </div>
-      <p>{credit.summary}</p>
-      <dl className="reset-credit-fields">
-        <div>
-          <dt>发放</dt>
-          <dd>{credit.issuedAt}</dd>
-        </div>
-        <div>
-          <dt>类型</dt>
-          <dd>{credit.resetType}</dd>
-        </div>
-        <div>
-          <dt>到期</dt>
-          <dd>{credit.expiresAt}</dd>
-        </div>
-        <div>
-          <dt>兑换开始</dt>
-          <dd>{credit.redeemStartedAt}</dd>
-        </div>
-        <div>
-          <dt>使用</dt>
-          <dd>{credit.redeemedAt}</dd>
-        </div>
-        <div>
-          <dt>来源</dt>
-          <dd>{credit.source}</dd>
-        </div>
-        <div>
-          <dt>说明</dt>
-          <dd>{credit.detailNote}</dd>
-        </div>
-        <div>
-          <dt>关联用户</dt>
-          <dd>{credit.associatedUser}</dd>
-        </div>
-        <div>
-          <dt>头像</dt>
-          <dd>{credit.profileImageUrl}</dd>
-        </div>
-        <div>
-          <dt>短 ID</dt>
-          <dd>{credit.shortId}</dd>
-        </div>
-      </dl>
+    <span className="reset-credit-avatar" aria-hidden="true">
+      {avatarUrl ? <img alt="" src={avatarUrl} /> : <b>{credit.associatedUser.slice(0, 1) || "卡"}</b>}
+    </span>
+  );
+}
+
+function ResetCreditItem({
+  item,
+  index,
+  expanded,
+  onToggle,
+}: {
+  item: ResetCreditDisplayItem;
+  index: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const { credit } = item;
+
+  return (
+    <article className={expanded ? "reset-credit-item reset-credit-item--expanded" : "reset-credit-item"}>
+      <button
+        type="button"
+        className="reset-credit-summary-row"
+        aria-expanded={expanded}
+        onClick={onToggle}
+      >
+        <ResetCreditAvatar credit={credit} />
+        <span className="reset-credit-summary-main">
+          <strong>{item.compactRemainingText}</strong>
+          <span className="reset-credit-progress" aria-hidden="true">
+            <i style={{ width: `${Math.round(item.remainingProgress * 100)}%` }} />
+          </span>
+        </span>
+        <em>第 {index + 1} 张</em>
+        <b aria-hidden="true">{expanded ? "⌃" : "⌄"}</b>
+      </button>
+      {expanded ? (
+        <dl className="reset-credit-fields">
+          <div>
+            <dt>原因</dt>
+            <dd>{credit.detailNote}</dd>
+          </div>
+          <div>
+            <dt>关联用户</dt>
+            <dd>{credit.associatedUser}</dd>
+          </div>
+          <div>
+            <dt>到期时间</dt>
+            <dd>{credit.expiresAt}</dd>
+          </div>
+          <div>
+            <dt>剩余时间</dt>
+            <dd>{item.detailedRemainingText}</dd>
+          </div>
+          <div>
+            <dt>卡片编号</dt>
+            <dd>{cardIdentifier(credit)}</dd>
+          </div>
+        </dl>
+      ) : null}
     </article>
   );
 }
 
 function QuotaStripView({ snapshot }: QuotaStripProps) {
   const [showResetDetails, setShowResetDetails] = useState(false);
-  const credits = snapshot.resetCredit.credits ?? [];
+  const [expandedCredits, setExpandedCredits] = useState<Set<string>>(() => new Set());
+  const displayCredits = useMemo(
+    () => prepareResetCreditsForDisplay(snapshot.resetCredit.credits ?? []),
+    [snapshot.resetCredit.credits],
+  );
+  const nearestResetCredit = nearestResetCreditCompactText(snapshot.resetCredit);
+  const resetCreditSummary = resetCreditCountText(snapshot.resetCredit);
+
+  function toggleCredit(credit: ResetCreditDetail, index: number) {
+    const key = `${cardIdentifier(credit)}-${index}`;
+    setExpandedCredits((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }
 
   return (
     <section className={showResetDetails ? "quota-strip quota-strip--details-open" : "quota-strip"} aria-label="账户额度">
@@ -92,9 +135,10 @@ function QuotaStripView({ snapshot }: QuotaStripProps) {
         onClick={() => setShowResetDetails((value) => !value)}
       >
         <span>重置卡</span>
-        <strong>{snapshot.resetCredit.status}</strong>
+        <strong>{resetCreditSummary}</strong>
         <em>
           {snapshot.resetCredit.availableCount} 张可用
+          {nearestResetCredit ? <small>{nearestResetCredit}</small> : null}
           <b aria-hidden="true">{showResetDetails ? "⌃" : "⌄"}</b>
         </em>
       </button>
@@ -109,16 +153,20 @@ function QuotaStripView({ snapshot }: QuotaStripProps) {
           <div className="reset-credit-panel-head">
             <div>
               <strong>重置卡详情</strong>
-              <span>
-                读到 {credits.length} 条明细，可用 {snapshot.resetCredit.availableCount} 张
-              </span>
+              <span>{resetCreditPanelSubtitle(snapshot.resetCredit, displayCredits)}</span>
             </div>
             <button aria-label="关闭重置卡详情" onClick={() => setShowResetDetails(false)} type="button">×</button>
           </div>
-          {credits.length > 0 ? (
+          {displayCredits.length > 0 ? (
             <div className="reset-credit-list">
-              {credits.map((credit, index) => (
-                <ResetCreditItem credit={credit} key={`${credit.shortId}-${index}`} />
+              {displayCredits.map((item, index) => (
+                <ResetCreditItem
+                  expanded={expandedCredits.has(`${cardIdentifier(item.credit)}-${index}`)}
+                  index={index}
+                  item={item}
+                  key={`${cardIdentifier(item.credit)}-${index}`}
+                  onToggle={() => toggleCredit(item.credit, index)}
+                />
               ))}
             </div>
           ) : (

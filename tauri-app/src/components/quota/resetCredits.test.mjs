@@ -1,0 +1,96 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  compactRemainingTimeText,
+  detailedRemainingTimeText,
+  nearestResetCreditCompactText,
+  prepareResetCreditsForDisplay,
+  remainingProgress,
+  resetCreditCountText,
+  resetCreditPanelSubtitle,
+} from "./resetCredits.ts";
+
+const now = new Date("2026-06-26T00:00:00Z");
+const nowUnix = Math.floor(now.getTime() / 1000);
+
+function credit(overrides = {}) {
+  return {
+    cardId: "card-a",
+    title: "一次免费额度重置",
+    status: "可用",
+    summary: "",
+    resetType: "codex_rate_limits",
+    issuedAt: "2026-06-25 00:00",
+    grantedAtUnix: nowUnix - 24 * 60 * 60,
+    expiresAt: "2026-06-28 03:00",
+    expiresAtUnix: nowUnix + 2 * 24 * 60 * 60 + 3 * 60 * 60,
+    redeemStartedAt: "未提供",
+    redeemedAt: "未使用",
+    source: "invite",
+    detailNote: "邀请获得",
+    associatedUser: "user_1",
+    profileImageUrl: "https://example.com/avatar.png",
+    shortId: "card-a",
+    ...overrides,
+  };
+}
+
+test("reset credits sort available cards first by nearest expiry", () => {
+  const sorted = prepareResetCreditsForDisplay(
+    [
+      credit({ cardId: "used", status: "已使用", expiresAtUnix: nowUnix + 60 }),
+      credit({ cardId: "later", expiresAtUnix: nowUnix + 7 * 24 * 60 * 60 }),
+      credit({ cardId: "soon", expiresAtUnix: nowUnix + 2 * 60 * 60 }),
+      credit({ cardId: "expired", status: "已过期", expiresAtUnix: nowUnix - 60 }),
+    ],
+    now,
+  );
+
+  assert.deepEqual(sorted.map((item) => item.credit.cardId), ["soon", "later", "expired", "used"]);
+  assert.equal(sorted[0].isAvailable, true);
+  assert.equal(sorted[2].isAvailable, false);
+});
+
+test("reset credit remaining time has compact and detailed variants", () => {
+  const days = credit({ expiresAtUnix: nowUnix + 2 * 24 * 60 * 60 + 3 * 60 * 60 });
+  const hours = credit({ expiresAtUnix: nowUnix + 4 * 60 * 60 + 20 * 60 });
+  const soon = credit({ expiresAtUnix: nowUnix + 30 * 60 });
+  const expired = credit({ expiresAtUnix: nowUnix - 1 });
+
+  assert.equal(compactRemainingTimeText(days, now), "剩 2天3h");
+  assert.equal(detailedRemainingTimeText(days, now), "约 2 天 3 小时后到期");
+  assert.equal(compactRemainingTimeText(hours, now), "剩 4h20m");
+  assert.equal(compactRemainingTimeText(soon, now), "剩 <1h");
+  assert.equal(compactRemainingTimeText(expired, now), "已到期");
+});
+
+test("reset credit progress uses granted and expiry window with safe fallbacks", () => {
+  assert.equal(
+    remainingProgress(
+      credit({
+        grantedAtUnix: nowUnix - 24 * 60 * 60,
+        expiresAtUnix: nowUnix + 24 * 60 * 60,
+      }),
+      now,
+    ),
+    0.5,
+  );
+  assert.equal(remainingProgress(credit({ grantedAtUnix: null, expiresAtUnix: null }), now), 1);
+  assert.equal(remainingProgress(credit({ status: "已使用", grantedAtUnix: null, expiresAtUnix: null }), now), 0);
+});
+
+test("reset credit summary keeps count and exposes nearest remaining time", () => {
+  const summary = {
+    availableCount: 2,
+    status: "2 张重置卡可用",
+    credits: [
+      credit({ cardId: "later", expiresAtUnix: nowUnix + 3 * 24 * 60 * 60 }),
+      credit({ cardId: "nearest", expiresAtUnix: nowUnix + 4 * 60 * 60 + 20 * 60 }),
+    ],
+  };
+  const displayItems = prepareResetCreditsForDisplay(summary.credits, now);
+
+  assert.equal(resetCreditCountText(summary), "2 张重置卡");
+  assert.equal(nearestResetCreditCompactText(summary, now), "最近 剩 4h20m");
+  assert.equal(resetCreditPanelSubtitle(summary, displayItems), "共 2 张；可用 2 张 · 按最近到期排序");
+});

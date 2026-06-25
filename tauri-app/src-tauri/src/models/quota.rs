@@ -61,12 +61,15 @@ pub struct ResetCreditSummary {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResetCreditDetail {
+    pub card_id: String,
     pub title: String,
     pub status: String,
     pub summary: String,
     pub reset_type: String,
     pub issued_at: String,
+    pub granted_at_unix: Option<i64>,
     pub expires_at: String,
+    pub expires_at_unix: Option<i64>,
     pub redeem_started_at: String,
     pub redeemed_at: String,
     pub source: String,
