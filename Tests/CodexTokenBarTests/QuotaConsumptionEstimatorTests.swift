@@ -208,6 +208,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(source.contains("quotaConsumptionSelection("))
         XCTAssertTrue(source.contains("onClick:"))
         XCTAssertTrue(source.contains("点击图表估算额度"))
+        XCTAssertTrue(source.contains("y: plot.minY -"))
         XCTAssertTrue(componentSource.contains("点击图表可估算额度"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateModelSelector"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateOverlay"))
