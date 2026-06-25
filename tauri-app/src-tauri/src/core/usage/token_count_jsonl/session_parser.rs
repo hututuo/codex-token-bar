@@ -2,10 +2,15 @@ use super::TokenEvent;
 use crate::models::LocalDataWarning;
 use serde_json::Value;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
+
+#[cfg(test)]
+static SESSION_FULL_PARSE_COUNT: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
 struct ParsedUsage {
@@ -22,11 +27,36 @@ struct ParsedUsageLine {
     last: Option<ParsedUsage>,
 }
 
+pub(super) struct SessionParseResult {
+    pub(super) events: Vec<TokenEvent>,
+    pub(super) previous_total_tokens: Option<u64>,
+    pub(super) consumed_size: u64,
+}
+
 pub(super) fn parse_session_file(
     file: &Path,
     session_id: &str,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Vec<TokenEvent> {
+    parse_session_file_full_result(file, session_id, warnings).events
+}
+
+pub(super) fn parse_session_file_full_result(
+    file: &Path,
+    session_id: &str,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> SessionParseResult {
+    record_full_parse_for_testing();
+    parse_session_file_range(file, session_id, 0, None, warnings)
+}
+
+pub(super) fn parse_session_file_range(
+    file: &Path,
+    session_id: &str,
+    start_offset: u64,
+    initial_previous_total: Option<u64>,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> SessionParseResult {
     let handle = match fs::File::open(file) {
         Ok(handle) => handle,
         Err(error) => {
@@ -35,19 +65,46 @@ pub(super) fn parse_session_file(
                 file.display(),
                 error
             )));
-            return Vec::new();
+            return SessionParseResult {
+                events: Vec::new(),
+                previous_total_tokens: initial_previous_total,
+                consumed_size: start_offset,
+            };
         }
     };
+    let mut handle = handle;
+    if start_offset > 0 {
+        if let Err(error) = handle.seek(SeekFrom::Start(start_offset)) {
+            warnings.push(jsonl_file_warning(format!(
+                "定位会话文件失败：{}（{}）",
+                file.display(),
+                error
+            )));
+            return SessionParseResult {
+                events: Vec::new(),
+                previous_total_tokens: initial_previous_total,
+                consumed_size: start_offset,
+            };
+        }
+    }
     let reader = BufReader::new(handle);
-    let fork_replay_cutoff = fork_replay_cutoff(file);
-    let mut previous_total = None;
+    let fork_replay_cutoff = if start_offset == 0 {
+        fork_replay_cutoff(file)
+    } else {
+        None
+    };
+    let mut previous_total = initial_previous_total;
     let mut current_user_prompt = String::new();
     let mut assistant_fragments = Vec::<String>::new();
     let mut events = Vec::new();
+    let mut consumed_size = start_offset;
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(line) => line,
+    let mut reader = reader;
+    loop {
+        let mut line = String::new();
+        let bytes_read = match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(bytes_read) => bytes_read,
             Err(error) => {
                 warnings.push(jsonl_file_warning(format!(
                     "读取会话文件中断：{}（{}）",
@@ -57,24 +114,33 @@ pub(super) fn parse_session_file(
                 break;
             }
         };
-        if let Some(message) = extract_payload_message(&line, "user_message") {
+        if !line.ends_with('\n') && !is_complete_json_line(&line) {
+            break;
+        }
+        let line = line.trim_end_matches(['\r', '\n']);
+        if let Some(message) = extract_payload_message(line, "user_message") {
             current_user_prompt = message;
             assistant_fragments.clear();
+            consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         }
 
-        if let Some(message) = extract_payload_message(&line, "agent_message") {
+        if let Some(message) = extract_payload_message(line, "agent_message") {
             assistant_fragments.push(message);
+            consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         }
 
         if !line.contains("\"token_count\"") {
+            consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         }
-        let Some(usage_line) = parse_usage_line(&line) else {
+        let Some(usage_line) = parse_usage_line(line) else {
+            consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         };
         if fork_replay_cutoff.is_some_and(|cutoff| usage_line.timestamp <= cutoff) {
+            consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         }
 
@@ -111,9 +177,36 @@ pub(super) fn parse_session_file(
             assistant_response: excerpt(&assistant_fragments.join(" "), 220),
         });
         assistant_fragments.clear();
+        consumed_size = consumed_size.saturating_add(bytes_read as u64);
     }
 
-    events
+    SessionParseResult {
+        events,
+        previous_total_tokens: previous_total,
+        consumed_size,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn reset_session_full_parse_count_for_testing() {
+    SESSION_FULL_PARSE_COUNT.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(super) fn session_full_parse_count_for_testing() -> u64 {
+    SESSION_FULL_PARSE_COUNT.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn record_full_parse_for_testing() {
+    SESSION_FULL_PARSE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+fn record_full_parse_for_testing() {}
+
+fn is_complete_json_line(line: &str) -> bool {
+    serde_json::from_str::<Value>(line).is_ok()
 }
 
 fn extract_payload_message(line: &str, expected_type: &str) -> Option<String> {

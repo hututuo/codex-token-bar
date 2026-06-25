@@ -1,4 +1,7 @@
-use super::{session_parser::parse_session_file, TokenEvent};
+use super::{
+    session_parser::{parse_session_file, parse_session_file_full_result, parse_session_file_range},
+    TokenEvent,
+};
 use crate::core::app_paths;
 use crate::models::LocalDataWarning;
 use serde::{Deserialize, Serialize};
@@ -45,6 +48,10 @@ pub(super) struct CachedFileSignature {
 #[serde(rename_all = "camelCase")]
 pub(super) struct CachedSessionFile {
     pub(super) signature: CachedFileSignature,
+    #[serde(default)]
+    pub(super) parsed_size: u64,
+    #[serde(default)]
+    pub(super) previous_total_tokens: Option<u64>,
     pub(super) events: Vec<CachedTokenEvent>,
 }
 
@@ -161,11 +168,41 @@ pub(super) fn parse_session_file_cached(
         }
     }
 
-    let events = parse_session_file(file, session_id, warnings);
+    if let Some(entry) = files.get_mut(&cache_key) {
+        let parsed_size = entry.effective_parsed_size();
+        if signature.size >= parsed_size
+            && signature.size >= entry.signature.size
+            && parsed_size > 0
+        {
+            let previous_total_tokens = entry.effective_previous_total_tokens();
+            let parsed = parse_session_file_range(
+                file,
+                session_id,
+                parsed_size,
+                previous_total_tokens,
+                warnings,
+            );
+            if parsed.consumed_size >= parsed_size {
+                entry
+                    .events
+                    .extend(parsed.events.iter().map(CachedTokenEvent::from_event));
+                entry.signature = signature;
+                entry.parsed_size = parsed.consumed_size;
+                entry.previous_total_tokens = parsed.previous_total_tokens;
+                *cache_changed = true;
+                return entry.to_events(session_id);
+            }
+        }
+    }
+
+    let parsed = parse_session_file_full_result(file, session_id, warnings);
+    let events = parsed.events;
     files.insert(
         cache_key,
         CachedSessionFile {
             signature,
+            parsed_size: parsed.consumed_size,
+            previous_total_tokens: parsed.previous_total_tokens,
             events: events.iter().map(CachedTokenEvent::from_event).collect(),
         },
     );
@@ -179,6 +216,24 @@ impl CachedSessionFile {
             .iter()
             .filter_map(|event| event.to_event(session_id))
             .collect()
+    }
+
+    fn effective_parsed_size(&self) -> u64 {
+        if self.parsed_size > 0 {
+            self.parsed_size
+        } else {
+            self.signature.size
+        }
+    }
+
+    fn effective_previous_total_tokens(&self) -> Option<u64> {
+        self.previous_total_tokens.or_else(|| {
+            Some(
+                self.events
+                    .iter()
+                    .fold(0u64, |total, event| total.saturating_add(event.tokens)),
+            )
+        })
     }
 }
 

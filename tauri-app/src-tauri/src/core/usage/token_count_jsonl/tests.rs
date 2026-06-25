@@ -1,6 +1,9 @@
 use super::token_event_cache::{
-    codex_home_cache_key, CachedCodexHome, CachedFileSignature, CachedSessionFile,
-    CachedTokenEvent, TokenEventCache,
+    codex_home_cache_key, parse_session_file_cached, CachedCodexHome, CachedFileSignature,
+    CachedSessionFile, CachedTokenEvent, TokenEventCache,
+};
+use super::session_parser::{
+    reset_session_full_parse_count_for_testing, session_full_parse_count_for_testing,
 };
 use super::*;
 use rusqlite::Connection;
@@ -283,6 +286,8 @@ fn token_event_cache_serializes_only_usage_summary() {
                 size: 128,
                 modified_millis: 1_781_715_600_000,
             },
+            parsed_size: 128,
+            previous_total_tokens: Some(42),
             events: vec![CachedTokenEvent {
                 timestamp_unix: 1_781_715_600,
                 tokens: 42,
@@ -371,6 +376,226 @@ fn token_event_cache_partitions_entries_by_codex_home() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn token_event_cache_reads_only_appended_session_bytes() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eappend-0000-0000-0000-cache.jsonl");
+    write_lines(
+        &file,
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+
+    let mut warnings = Vec::new();
+    let mut files = HashMap::new();
+    let mut cache_changed = false;
+    reset_session_full_parse_count_for_testing();
+
+    let first = parse_session_file_cached(
+        &file,
+        "019eappend-0000-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+    let full_parses_after_first = session_full_parse_count_for_testing();
+
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(
+            handle,
+            r#"{{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170}},"last_token_usage":{{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}}}}}"#
+        )
+        .unwrap();
+    }
+
+    let second = parse_session_file_cached(
+        &file,
+        "019eappend-0000-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+
+    assert_eq!(first.iter().map(|event| event.tokens).sum::<u64>(), 120);
+    assert_eq!(second.iter().map(|event| event.tokens).sum::<u64>(), 170);
+    assert_eq!(full_parses_after_first, 1);
+    assert_eq!(session_full_parse_count_for_testing(), full_parses_after_first);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn token_event_cache_migrates_legacy_entries_without_full_reparse() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019elegacy-0000-0000-0000-cache.jsonl");
+    write_lines(
+        &file,
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    let original_signature = super::token_event_cache::file_signature(&file).unwrap();
+    let cache_key = super::token_event_cache::file_cache_key(&root, &file);
+    let mut files = HashMap::new();
+    files.insert(
+        cache_key,
+        CachedSessionFile {
+            signature: original_signature,
+            parsed_size: 0,
+            previous_total_tokens: None,
+            events: vec![CachedTokenEvent {
+                timestamp_unix: 1_781_715_600,
+                tokens: 120,
+                input_tokens: 100,
+                cached_input_tokens: 20,
+                output_tokens: 20,
+            }],
+        },
+    );
+
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(
+            handle,
+            r#"{{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170}},"last_token_usage":{{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}}}}}"#
+        )
+        .unwrap();
+    }
+
+    let mut warnings = Vec::new();
+    let mut cache_changed = false;
+    reset_session_full_parse_count_for_testing();
+    let events = parse_session_file_cached(
+        &file,
+        "019elegacy-0000-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+
+    assert_eq!(events.iter().map(|event| event.tokens).sum::<u64>(), 170);
+    assert_eq!(session_full_parse_count_for_testing(), 0);
+    assert!(cache_changed);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn token_event_cache_keeps_incomplete_appended_line_unconsumed() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019epartial-0000-0000-0000-cache.jsonl");
+    write_lines(
+        &file,
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+
+    let mut warnings = Vec::new();
+    let mut files = HashMap::new();
+    let mut cache_changed = false;
+    reset_session_full_parse_count_for_testing();
+    let _ = parse_session_file_cached(
+        &file,
+        "019epartial-0000-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        write!(
+            handle,
+            r#"{{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":140,"cached_input_tokens":40"#
+        )
+        .unwrap();
+    }
+    let unchanged = parse_session_file_cached(
+        &file,
+        "019epartial-0000-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+    assert_eq!(unchanged.iter().map(|event| event.tokens).sum::<u64>(), 120);
+
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(
+            handle,
+            r#","output_tokens":30,"total_tokens":170}},"last_token_usage":{{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}}}}}"#
+        )
+        .unwrap();
+    }
+    let completed = parse_session_file_cached(
+        &file,
+        "019epartial-0000-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+
+    assert_eq!(completed.iter().map(|event| event.tokens).sum::<u64>(), 170);
+    assert_eq!(session_full_parse_count_for_testing(), 1);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn token_event_cache_reparses_truncated_session_file() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019etruncate-0000-0000-0000-cache.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170},"last_token_usage":{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}"#,
+        ],
+    );
+
+    let mut warnings = Vec::new();
+    let mut files = HashMap::new();
+    let mut cache_changed = false;
+    reset_session_full_parse_count_for_testing();
+    let first = parse_session_file_cached(
+        &file,
+        "019etruncate-0000-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+    write_lines(
+        &file,
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":70,"cached_input_tokens":10,"output_tokens":20,"total_tokens":90}}}}"#],
+    );
+    let second = parse_session_file_cached(
+        &file,
+        "019etruncate-0000-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+
+    assert_eq!(first.iter().map(|event| event.tokens).sum::<u64>(), 170);
+    assert_eq!(second.iter().map(|event| event.tokens).sum::<u64>(), 90);
+    assert_eq!(session_full_parse_count_for_testing(), 2);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn temp_root() -> PathBuf {
     let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
@@ -428,6 +653,8 @@ fn cached_file_with_one_event(tokens: u64) -> CachedSessionFile {
             size: tokens,
             modified_millis: 1_781_715_600_000,
         },
+        parsed_size: tokens,
+        previous_total_tokens: Some(tokens),
         events: vec![CachedTokenEvent {
             timestamp_unix: 1_781_715_600,
             tokens,
