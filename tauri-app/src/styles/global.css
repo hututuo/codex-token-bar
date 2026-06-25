@@ -1005,7 +1005,7 @@ button.quota-side-card:hover {
 }
 
 .codex-radar-head span,
-.codex-radar-head a {
+.codex-radar-source-credit {
   overflow: hidden;
   color: var(--muted);
   font-size: 11px;
@@ -1014,10 +1014,31 @@ button.quota-side-card:hover {
   white-space: nowrap;
 }
 
-.codex-radar-head a {
+.codex-radar-source-credit {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
   margin-left: auto;
-  color: var(--accent-strong);
   text-decoration: none;
+}
+
+.codex-radar-source-credit span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.codex-radar-source-credit strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 740;
+}
+
+.codex-radar-source-credit em {
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 680;
 }
 
 .codex-radar-head button {

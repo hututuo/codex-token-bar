@@ -7,6 +7,13 @@ import { fileURLToPath } from "node:url";
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(currentDir, "CodexRadarStrip.tsx"), "utf8");
 
+test("Codex Radar header keeps the Swift-style source credit", () => {
+  assert.match(source, /className="codex-radar-source-credit"/);
+  assert.match(source, /感谢/);
+  assert.match(source, /Codex 雷达/);
+  assert.match(source, /codexradar\.com/);
+});
+
 test("Codex Radar detail card keeps the full human-readable feed breakdown", () => {
   for (const title of ["速蹬窗口与预测", "降智雷达", "预估额度", "环境压力与资讯", "窗口摘要", "预测说明", "信号拆分", "模型对比", "近日日志", "套餐预估", "趋势明细", "RSS 提醒历史", "来源"]) {
     assert.match(source, new RegExp(`title="${title}"`));

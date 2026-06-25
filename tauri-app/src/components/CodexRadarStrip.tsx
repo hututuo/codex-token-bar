@@ -78,8 +78,10 @@ function CodexRadarStripView() {
           <h2>Codex 雷达</h2>
           <span>{status}</span>
         </div>
-        <a href={snapshot?.links.html ?? "https://codexradar.com"} rel="noreferrer" target="_blank">
-          codexradar.com
+        <a className="codex-radar-source-credit" href={snapshot?.links.html ?? "https://codexradar.com"} rel="noreferrer" target="_blank">
+          <span>感谢</span>
+          <strong>Codex 雷达</strong>
+          <em>codexradar.com</em>
         </a>
         <button
           aria-expanded={showDetails}
