@@ -504,6 +504,36 @@ fn interval_history_supports_hour_and_six_hour_axes() {
     let _ = std::fs::remove_file(path);
 }
 
+#[test]
+fn history_bundle_builds_all_axes_from_one_read() {
+    let path = temp_db_path("history-bundle");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let reset = now_unix() + 12.0 * 3_600.0;
+
+    database
+        .record(&bundle("tester", 0.20, reset as i64, 0.40, (reset + 500_000.0) as i64))
+        .unwrap();
+
+    let history = database.history_bundle(365, RECENT_BIN_COUNT).unwrap();
+    assert_eq!(history.recent_24h.len(), RECENT_BIN_COUNT);
+    assert_eq!(history.recent_7d.len(), 7 * 24);
+    assert_eq!(history.recent_30d.len(), 30 * 4);
+    assert!(history.daily.iter().any(|point| {
+        point.five_hour_remaining_percent == Some(0.80)
+            && point.seven_day_remaining_percent == Some(0.60)
+    }));
+    assert_eq!(
+        history.recent_24h.last().unwrap().five_hour_remaining_percent,
+        Some(0.80)
+    );
+    assert_eq!(
+        history.recent_7d.last().unwrap().seven_day_remaining_percent,
+        Some(0.60)
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
 fn bundle(
     name: &str,
     five_used: f64,

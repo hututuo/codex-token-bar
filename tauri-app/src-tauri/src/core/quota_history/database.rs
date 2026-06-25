@@ -62,6 +62,7 @@ pub(super) fn latest_trusted_row(
     Ok(sanitized_rows(rows.into_iter().rev().collect()).pop())
 }
 
+#[cfg(test)]
 pub(super) fn recent_rows(connection: &Connection) -> SqlResult<Vec<QuotaHistoryRow>> {
     rows_since(connection, 31.0 * 24.0 * 60.0 * 60.0)
 }

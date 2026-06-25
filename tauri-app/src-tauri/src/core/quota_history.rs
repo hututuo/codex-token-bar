@@ -6,6 +6,7 @@ use crate::models::{
 #[cfg(test)]
 use crate::models::RecentUsagePoint;
 use rusqlite::{Connection, Result as SqlResult};
+#[cfg(test)]
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -14,8 +15,12 @@ use time::OffsetDateTime;
 mod database;
 mod series;
 
-use database::{ensure_schema, insert_row, latest_trusted_row, prune, recent_rows, rows_since};
-use series::{make_daily_history, make_interval_history, make_recent_history, DailyQuotaHistory};
+use database::{ensure_schema, insert_row, latest_trusted_row, prune, rows_since};
+#[cfg(test)]
+use database::recent_rows;
+use series::{make_daily_history, make_interval_history, make_recent_history};
+#[cfg(test)]
+use series::DailyQuotaHistory;
 
 #[cfg(test)]
 use series::format_date;
@@ -27,6 +32,14 @@ const RETENTION_DAYS: i64 = 45;
 const RECENT_BIN_COUNT: usize = 289;
 const QUOTA_HISTORY_SOURCE: &str = "tauri";
 
+#[derive(Debug, Default)]
+pub struct QuotaHistoryBundle {
+    pub daily: Vec<QuotaHistoryDailyPoint>,
+    pub recent_24h: Vec<QuotaHistoryPoint>,
+    pub recent_7d: Vec<QuotaHistoryPoint>,
+    pub recent_30d: Vec<QuotaHistoryPoint>,
+}
+
 pub fn record_bundle(bundle: &AccountQuotaBundle) -> Result<(), String> {
     if !quota_available(&bundle.quota) {
         return Ok(());
@@ -36,28 +49,10 @@ pub fn record_bundle(bundle: &AccountQuotaBundle) -> Result<(), String> {
         .map_err(|error| format!("写入额度历史失败：{error}"))
 }
 
-pub fn recent_history_24h() -> Result<Vec<QuotaHistoryPoint>, String> {
+pub fn history_bundle(day_count: usize) -> Result<QuotaHistoryBundle, String> {
     QuotaHistoryDatabase::default()?
-        .recent_history_24h(RECENT_BIN_COUNT)
-        .map_err(|error| format!("读取 24 小时额度历史失败：{error}"))
-}
-
-pub fn recent_history_7d() -> Result<Vec<QuotaHistoryPoint>, String> {
-    QuotaHistoryDatabase::default()?
-        .recent_history(7 * 24, 60 * 60)
-        .map_err(|error| format!("读取 7 天额度历史失败：{error}"))
-}
-
-pub fn recent_history_30d() -> Result<Vec<QuotaHistoryPoint>, String> {
-    QuotaHistoryDatabase::default()?
-        .recent_history(30 * 4, 6 * 60 * 60)
-        .map_err(|error| format!("读取 30 天额度历史失败：{error}"))
-}
-
-pub fn daily_history(day_count: usize) -> Result<Vec<QuotaHistoryDailyPoint>, String> {
-    QuotaHistoryDatabase::default()?
-        .daily_history_points(day_count)
-        .map_err(|error| format!("读取每日额度历史失败：{error}"))
+        .history_bundle(day_count, RECENT_BIN_COUNT)
+        .map_err(|error| format!("读取额度历史失败：{error}"))
 }
 
 #[cfg(test)]
@@ -115,10 +110,12 @@ impl QuotaHistoryDatabase {
         Ok(())
     }
 
+    #[cfg(test)]
     fn recent_history_24h(&self, count: usize) -> SqlResult<Vec<QuotaHistoryPoint>> {
         self.recent_history(count, 5 * 60)
     }
 
+    #[cfg(test)]
     fn recent_history(&self, count: usize, interval_seconds: i64) -> SqlResult<Vec<QuotaHistoryPoint>> {
         let connection = self.open()?;
         ensure_schema(&connection)?;
@@ -129,6 +126,7 @@ impl QuotaHistoryDatabase {
         })
     }
 
+    #[cfg(test)]
     fn daily_history(&self, day_count: usize) -> SqlResult<HashMap<String, DailyQuotaHistory>> {
         let connection = self.open()?;
         ensure_schema(&connection)?;
@@ -136,16 +134,30 @@ impl QuotaHistoryDatabase {
         Ok(make_daily_history(rows))
     }
 
-    fn daily_history_points(&self, day_count: usize) -> SqlResult<Vec<QuotaHistoryDailyPoint>> {
-        Ok(self
-            .daily_history(day_count)?
-            .into_iter()
-            .map(|(date, history)| QuotaHistoryDailyPoint {
-                date,
-                five_hour_remaining_percent: history.five_hour_remaining_percent,
-                seven_day_remaining_percent: history.seven_day_remaining_percent,
-            })
-            .collect())
+    fn history_bundle(
+        &self,
+        day_count: usize,
+        recent_count: usize,
+    ) -> SqlResult<QuotaHistoryBundle> {
+        let connection = self.open()?;
+        ensure_schema(&connection)?;
+        let rows = rows_since(
+            &connection,
+            day_count.max(31) as f64 * 24.0 * 60.0 * 60.0,
+        )?;
+        Ok(QuotaHistoryBundle {
+            daily: make_daily_history(rows.clone())
+                .into_iter()
+                .map(|(date, history)| QuotaHistoryDailyPoint {
+                    date,
+                    five_hour_remaining_percent: history.five_hour_remaining_percent,
+                    seven_day_remaining_percent: history.seven_day_remaining_percent,
+                })
+                .collect(),
+            recent_24h: make_recent_history(rows.clone(), recent_count.max(1)),
+            recent_7d: make_interval_history(rows.clone(), 7 * 24, 60 * 60),
+            recent_30d: make_interval_history(rows, 30 * 4, 6 * 60 * 60),
+        })
     }
 
     fn open(&self) -> SqlResult<Connection> {

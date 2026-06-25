@@ -31,23 +31,30 @@ struct QuotaCacheEntry {
 
 pub fn read_account_quota(codex_home: &Path, force_refresh: bool) -> Result<AccountQuotaBundle, String> {
     let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
-    let mut guard = cache.lock().map_err(|error| error.to_string())?;
-    if !force_refresh {
-        if let Some(entry) = guard.as_ref() {
-            if entry.codex_home == codex_home && entry.cached_at.elapsed() <= cache_ttl(&entry.result) {
-                return match &entry.result {
-                    Ok(bundle) => {
-                        let mut cached = bundle.clone();
-                        refresh_quota_histories(&mut cached);
-                        Ok(cached)
-                    }
-                    Err(error) => Err(error.clone()),
-                };
+    let cached = if !force_refresh {
+        let guard = cache.lock().map_err(|error| error.to_string())?;
+        guard
+            .as_ref()
+            .filter(|entry| {
+                entry.codex_home == codex_home && entry.cached_at.elapsed() <= cache_ttl(&entry.result)
+            })
+            .map(|entry| entry.result.clone())
+    } else {
+        None
+    };
+
+    if let Some(cached) = cached {
+        return match cached {
+            Ok(mut bundle) => {
+                refresh_quota_histories(&mut bundle);
+                Ok(bundle)
             }
-        }
+            Err(error) => Err(error),
+        };
     }
 
     let result = read_account_quota_uncached(codex_home);
+    let mut guard = cache.lock().map_err(|error| error.to_string())?;
     *guard = Some(QuotaCacheEntry {
         codex_home: codex_home.to_path_buf(),
         cached_at: Instant::now(),
@@ -110,20 +117,13 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
 }
 
 fn refresh_quota_histories(bundle: &mut AccountQuotaBundle) {
-    match quota_history::daily_history(365) {
-        Ok(history) => bundle.quota_history_daily = history,
-        Err(error) => bundle.warnings.push(quota_history::warning(error)),
-    }
-    match quota_history::recent_history_24h() {
-        Ok(history) => bundle.quota_history_24h = history,
-        Err(error) => bundle.warnings.push(quota_history::warning(error)),
-    }
-    match quota_history::recent_history_7d() {
-        Ok(history) => bundle.quota_history_7d = history,
-        Err(error) => bundle.warnings.push(quota_history::warning(error)),
-    }
-    match quota_history::recent_history_30d() {
-        Ok(history) => bundle.quota_history_30d = history,
+    match quota_history::history_bundle(365) {
+        Ok(history) => {
+            bundle.quota_history_daily = history.daily;
+            bundle.quota_history_24h = history.recent_24h;
+            bundle.quota_history_7d = history.recent_7d;
+            bundle.quota_history_30d = history.recent_30d;
+        }
         Err(error) => bundle.warnings.push(quota_history::warning(error)),
     }
 }
