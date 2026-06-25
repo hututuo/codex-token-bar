@@ -9,6 +9,7 @@ interface DashboardHeaderProps {
   generatedAt: string;
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
+  onExportCsv: () => void;
   onRefresh: () => Promise<void>;
   onToggleAutostart: () => void;
   refreshing: boolean;
@@ -21,6 +22,7 @@ export function DashboardHeader({
   generatedAt,
   onCodexHomeChange,
   onCodexHomeReset,
+  onExportCsv,
   onRefresh,
   onToggleAutostart,
   refreshing,
@@ -50,6 +52,9 @@ export function DashboardHeader({
         <span className="muted">Updated {timeLabel}</span>
         <button className="toolbar-button" disabled={refreshing} onClick={onRefresh} type="button">
           立即刷新
+        </button>
+        <button className="toolbar-button" onClick={onExportCsv} type="button">
+          导出 CSV
         </button>
         <button className="toolbar-button" onClick={() => setEditingPath((value) => !value)} type="button">
           {editingPath ? "收起目录" : "更改目录"}

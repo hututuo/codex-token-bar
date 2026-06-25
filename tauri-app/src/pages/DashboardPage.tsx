@@ -14,6 +14,7 @@ import type {
 import { DashboardAnalyticsSection } from "./dashboard/DashboardAnalyticsSection";
 import { DashboardSummarySection } from "./dashboard/DashboardSummarySection";
 import { useDashboardPageLifecycle } from "./dashboard/useDashboardPageLifecycle";
+import { downloadDashboardCsv } from "../utils/dashboardExport";
 
 interface DashboardPageProps {
   autostartStatus: AutostartStatus;
@@ -80,6 +81,7 @@ export function DashboardPage({
           generatedAt={dashboard.generatedAt}
           onCodexHomeChange={onCodexHomeChange}
           onCodexHomeReset={onCodexHomeReset}
+          onExportCsv={() => downloadDashboardCsv(dashboard)}
           onRefresh={onRefresh}
           onToggleAutostart={onToggleAutostart}
           refreshing={refreshing}
