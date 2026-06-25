@@ -340,6 +340,34 @@ fn dashboard_aggregate_cache_does_not_persist_conversation_text() {
 }
 
 #[test]
+fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
+    let root = temp_root();
+    let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019esummary-0000-0000-0000-cache.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+
+    let summary = usage_summary(&root).unwrap();
+    assert_eq!(summary.total_tokens, 120);
+    assert!(!aggregate_cache_text().contains(r#""snapshot":null"#));
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    assert_eq!(snapshot.stats.total_tokens, 120);
+    assert!(aggregate_cache_text().contains(r#""snapshot":{"#));
+
+    reset_dashboard_aggregate_build_count_for_testing();
+    let summary_after_restart = usage_summary(&root).unwrap();
+    assert_eq!(summary_after_restart.total_tokens, 120);
+    assert!(aggregate_cache_text().contains(r#""snapshot":{"#));
+    assert!(!aggregate_cache_text().contains(r#""snapshot":null"#));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn token_event_cache_partitions_entries_by_codex_home() {
     let root = temp_root();
     let home_a = root.join("codex-a");
@@ -614,6 +642,30 @@ fn write_lines<S: AsRef<str>>(path: &Path, lines: &[S]) {
     for line in lines {
         writeln!(file, "{}", line.as_ref()).unwrap();
     }
+}
+
+struct AggregateCacheEnvGuard;
+
+impl AggregateCacheEnvGuard {
+    fn new(path: PathBuf) -> Self {
+        reset_dashboard_aggregate_build_count_for_testing();
+        let _ = fs::remove_file(&path);
+        std::env::set_var("CODEX_TOKEN_BAR_AGGREGATE_CACHE_PATH", path);
+        Self
+    }
+}
+
+impl Drop for AggregateCacheEnvGuard {
+    fn drop(&mut self) {
+        std::env::remove_var("CODEX_TOKEN_BAR_AGGREGATE_CACHE_PATH");
+        reset_dashboard_aggregate_build_count_for_testing();
+    }
+}
+
+fn aggregate_cache_text() -> String {
+    app_paths::token_aggregate_cache_path()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .unwrap_or_default()
 }
 
 fn create_state_database(root: &Path, low_id: &str, high_id: &str) {

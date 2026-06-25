@@ -4,7 +4,7 @@ use crate::models::{
     CacheHitRankingItem, LocalDataWarning, SessionCacheUsage, TokenCacheBreakdown,
     TokenCacheUsage, TurnCacheUsage,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration as StdDuration;
 use time::macros::format_description;
@@ -15,6 +15,9 @@ struct ThreadInfo {
     title: String,
     updated_at: Option<OffsetDateTime>,
 }
+
+const CACHE_USAGE_MIN_INPUT_TOKENS: u64 = 1_000;
+const CACHE_USAGE_CANDIDATE_LIMIT: usize = 40;
 
 pub(super) fn cache_hit_ranking(
     events: &[TokenEvent],
@@ -169,6 +172,9 @@ pub(super) fn cache_usage(
         .collect::<Vec<_>>();
     turns.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
 
+    sessions = trim_session_cache_usage(sessions);
+    turns = trim_turn_cache_usage(turns);
+
     TokenCacheUsage { sessions, turns }
 }
 
@@ -311,6 +317,93 @@ fn breakdown_from_event(event: &TokenEvent) -> TokenCacheBreakdown {
         total_tokens: event.tokens,
         calls: 1,
     }
+}
+
+fn trim_session_cache_usage(items: Vec<SessionCacheUsage>) -> Vec<SessionCacheUsage> {
+    let mut selected_ids = HashSet::new();
+    let mut selected = Vec::new();
+    extend_ranked_sessions(&items, |item| item.breakdown.calls > 1, &mut selected_ids, &mut selected);
+    extend_ranked_sessions(&items, |_| true, &mut selected_ids, &mut selected);
+    selected
+}
+
+fn extend_ranked_sessions(
+    items: &[SessionCacheUsage],
+    predicate: impl Fn(&SessionCacheUsage) -> bool,
+    selected_ids: &mut HashSet<String>,
+    selected: &mut Vec<SessionCacheUsage>,
+) {
+    let mut ranked = items
+        .iter()
+        .filter(|item| {
+            predicate(item)
+                && item.breakdown.calls > 0
+                && item.breakdown.input_tokens >= CACHE_USAGE_MIN_INPUT_TOKENS
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| compare_breakdowns(&left.breakdown, &right.breakdown));
+
+    for item in ranked.into_iter().take(CACHE_USAGE_CANDIDATE_LIMIT) {
+        if selected_ids.insert(item.id.clone()) {
+            selected.push(item.clone());
+        }
+    }
+}
+
+fn trim_turn_cache_usage(items: Vec<TurnCacheUsage>) -> Vec<TurnCacheUsage> {
+    let mut selected_ids = HashSet::new();
+    let mut selected = Vec::new();
+    extend_ranked_turns(&items, |item| item.turn_index_in_session > 1, &mut selected_ids, &mut selected);
+    extend_ranked_turns(&items, |_| true, &mut selected_ids, &mut selected);
+    selected
+}
+
+fn extend_ranked_turns(
+    items: &[TurnCacheUsage],
+    predicate: impl Fn(&TurnCacheUsage) -> bool,
+    selected_ids: &mut HashSet<String>,
+    selected: &mut Vec<TurnCacheUsage>,
+) {
+    let mut ranked = items
+        .iter()
+        .filter(|item| {
+            predicate(item)
+                && item.breakdown.calls > 0
+                && item.breakdown.input_tokens >= CACHE_USAGE_MIN_INPUT_TOKENS
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| compare_breakdowns(&left.breakdown, &right.breakdown));
+
+    for item in ranked.into_iter().take(CACHE_USAGE_CANDIDATE_LIMIT) {
+        if selected_ids.insert(item.id.clone()) {
+            selected.push(item.clone());
+        }
+    }
+}
+
+fn compare_breakdowns(
+    left: &TokenCacheBreakdown,
+    right: &TokenCacheBreakdown,
+) -> std::cmp::Ordering {
+    cache_hit_rate(left)
+        .partial_cmp(&cache_hit_rate(right))
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| uncached_input_tokens(right).cmp(&uncached_input_tokens(left)))
+        .then_with(|| right.input_tokens.cmp(&left.input_tokens))
+}
+
+fn cache_hit_rate(breakdown: &TokenCacheBreakdown) -> f64 {
+    if breakdown.input_tokens == 0 {
+        0.0
+    } else {
+        breakdown.cached_input_tokens as f64 / breakdown.input_tokens as f64
+    }
+}
+
+fn uncached_input_tokens(breakdown: &TokenCacheBreakdown) -> u64 {
+    breakdown
+        .input_tokens
+        .saturating_sub(breakdown.cached_input_tokens)
 }
 
 fn format_rfc3339(date: OffsetDateTime) -> Option<String> {

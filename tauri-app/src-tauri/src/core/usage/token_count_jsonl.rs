@@ -32,6 +32,7 @@ static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<Option<CachedDashboardAggregate
 static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct TokenUsageSummary {
@@ -303,7 +304,7 @@ fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSum
         });
     }
 
-    let snapshot = DASHBOARD_AGGREGATE_CACHE
+    let memory_snapshot = DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(None))
         .lock()
         .ok()
@@ -313,7 +314,15 @@ fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSum
                 .filter(|cached| cached.signature == signature)
                 .and_then(|cached| cached.snapshot.clone())
         });
-    store_dashboard_aggregate(signature, snapshot, summary);
+    let persistent_snapshot = memory_snapshot.or_else(|| {
+        load_persistent_dashboard_aggregate()
+            .filter(|cached| cached.signature == signature)
+            .and_then(|cached| cached.snapshot)
+    });
+
+    if let Some(snapshot) = persistent_snapshot {
+        store_dashboard_aggregate(signature, Some(snapshot), summary);
+    }
 }
 
 fn load_persistent_dashboard_aggregate() -> Option<CachedDashboardAggregate> {
@@ -322,7 +331,7 @@ fn load_persistent_dashboard_aggregate() -> Option<CachedDashboardAggregate> {
     serde_json::from_slice::<PersistentDashboardAggregateCache>(&data)
         .ok()
         .and_then(|cache| {
-            (cache.version == 2).then_some(CachedDashboardAggregate {
+            (cache.version == DASHBOARD_AGGREGATE_CACHE_VERSION).then_some(CachedDashboardAggregate {
                 signature: cache.signature,
                 snapshot: cache.snapshot,
                 summary: cache.summary,
@@ -340,7 +349,7 @@ fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) {
         }
     }
     let payload = PersistentDashboardAggregateCache {
-        version: 2,
+        version: DASHBOARD_AGGREGATE_CACHE_VERSION,
         signature: aggregate.signature.clone(),
         snapshot: aggregate.snapshot.clone().map(sanitize_snapshot_for_persistence),
         summary: aggregate.summary.clone(),
