@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { readCodexRadarSnapshot } from "../api/codexRadarClient";
 import {
   type CodexRadarModelIQComparisonRow,
@@ -19,21 +19,34 @@ export function CodexRadarStrip() {
   const [status, setStatus] = useState("Codex 雷达待读取");
   const [refreshing, setRefreshing] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const refreshingRef = useRef(false);
+  const snapshotRef = useRef<CodexRadarSnapshot | null>(null);
 
   async function refresh(force = false) {
-    if (refreshing) {
+    if (refreshingRef.current) {
       return;
     }
-    setRefreshing(true);
-    setStatus(snapshot ? "正在更新 Codex 雷达..." : "正在读取 Codex 雷达...");
+    refreshingRef.current = true;
+    startTransition(() => {
+      setRefreshing(true);
+      setStatus(snapshotRef.current ? "正在更新 Codex 雷达..." : "正在读取 Codex 雷达...");
+    });
     try {
       const next = await readCodexRadarSnapshot({ force });
-      setSnapshot(next);
-      setStatus(`10分钟刷新 · ${next.monitoredAt}`);
+      snapshotRef.current = next;
+      startTransition(() => {
+        setSnapshot(next);
+        setStatus(`10分钟刷新 · ${next.monitoredAt}`);
+      });
     } catch (error) {
-      setStatus(`Codex 雷达读取失败：${error instanceof Error ? error.message : String(error)}`);
+      startTransition(() => {
+        setStatus(`Codex 雷达读取失败：${error instanceof Error ? error.message : String(error)}`);
+      });
     } finally {
-      setRefreshing(false);
+      refreshingRef.current = false;
+      startTransition(() => {
+        setRefreshing(false);
+      });
     }
   }
 
@@ -195,157 +208,14 @@ function CodexRadarDetailOverlay({
 
         <div className="codex-radar-detail-scroll">
           {snapshot ? (
-            <div className="codex-radar-detail-stack">
-              <RadarDetailSection icon="bolt.badge.clock" title="速蹬窗口与预测">
-                <RadarDetailSubsection title="窗口摘要">
-                  <RadarKeyValueGrid rows={[
-                    ["窗口状态", snapshot.window.message || "--"],
-                    ["建议动作", snapshot.recommendedAction || "--"],
-                    ["24h 概率", percentText(probability24h)],
-                    ["48h 概率", percentText(probability48h)],
-                    ["预计窗口", snapshot.prediction.expectedWindow || "--"],
-                    ["范围", snapshot.window.scope || "--"],
-                    ["上次关闭", snapshot.window.closedAt || "--"],
-                    ["来源", snapshot.window.sourceUrl || "--"],
-                  ]} />
-                </RadarDetailSubsection>
-                <RadarDetailSubsection title="预测说明">
-                  <p className="codex-radar-paragraph">{snapshot.prediction.summary || "--"}</p>
-                </RadarDetailSubsection>
-                <RadarDetailSubsection title="信号拆分">
-                  <div className="codex-radar-signal-grid">
-                    <RadarSignalList title="积极信号" items={snapshot.prediction.positiveSignals} />
-                    <RadarSignalList title="降温信号" items={snapshot.prediction.negativeSignals} />
-                  </div>
-                </RadarDetailSubsection>
-                {snapshot.tiboPresence?.shouldDisplay ? (
-                  <RadarDetailSubsection title="Tibo 观察">
-                    <RadarKeyValueGrid rows={[
-                      ["Tibo 位置/时区", snapshot.tiboPresence.locationLabelZh || "--"],
-                      ["概率", percentText(snapshot.tiboPresence.probability)],
-                      ["置信度", snapshot.tiboPresence.confidence || "--"],
-                      ["观察数", `${snapshot.tiboPresence.observationsConsidered ?? 0}`],
-                    ]} />
-                    <p className="codex-radar-paragraph">{snapshot.tiboPresence.safetyNoteZh || ""}</p>
-                  </RadarDetailSubsection>
-                ) : null}
-              </RadarDetailSection>
-
-              <RadarDetailSection icon="brain.head.profile" title="降智雷达">
-                <RadarDetailSubsection title="IQ 趋势">
-                  <RadarTrendSummary points={snapshot.modelIq.recentDays} />
-                </RadarDetailSubsection>
-                <RadarDetailSubsection title="模型对比">
-                  <RadarTable
-                    headers={["模型", "IQ", "通过", "状态", "费用", "耗时", "Tokens"]}
-                    rows={(allModels.length > 0 ? allModels : primary ? [primary] : []).map((row) => [
-                      row.label,
-                      displayRadarNumber(row.point.score),
-                      `${row.point.passed}/${row.point.tasks}`,
-                      row.point.status || "--",
-                      formatCost(row.point.costUsd),
-                      row.point.wallTimeHuman || formatSeconds(row.point.wallSeconds),
-                      formatTokens(row.point.totalTokens),
-                    ])}
-                  />
-                </RadarDetailSubsection>
-                <RadarDetailSubsection title="近日日志">
-                  <RadarTable
-                    headers={["日期", "IQ", "通过", "状态", "耗时", "Tokens"]}
-                    rows={snapshot.modelIq.recentDays.map((point) => [
-                      point.date || "--",
-                      displayRadarNumber(point.score),
-                      `${point.passed}/${point.tasks}`,
-                      point.status || "--",
-                      point.wallTimeHuman || formatSeconds(point.wallSeconds),
-                      formatTokens(point.totalTokens),
-                    ])}
-                    emptyText="暂无近日日志"
-                  />
-                </RadarDetailSubsection>
-              </RadarDetailSection>
-
-              <RadarDetailSection icon="gauge.with.dots.needle.67percent" title="预估额度">
-                {snapshot.modelIq.quotaRadar ? (
-                  <>
-                    <RadarDetailSubsection title="额度基准">
-                      <RadarKeyValueGrid rows={[
-                        ["依据窗口", snapshot.modelIq.quotaRadar.basisWindowLabel || "--"],
-                        ["本轮成本", formatCost(snapshot.modelIq.quotaRadar.costUsd)],
-                        ["本轮 tokens", formatTokens(snapshot.modelIq.quotaRadar.totalTokens)],
-                        ["原始变化", `${snapshot.modelIq.quotaRadar.rawDelta}%`],
-                        ["修正变化", `${snapshot.modelIq.quotaRadar.adjustedDelta}%`],
-                        ["rate", formatCost(snapshot.modelIq.quotaRadar.rate)],
-                      ]} />
-                    </RadarDetailSubsection>
-                    <RadarDetailSubsection title="套餐预估">
-                      <RadarTable
-                        headers={["套餐", "5h", "7d", "依据"]}
-                        rows={quotaRows.map((row) => [row.tier, formatCost(row.fiveH), formatCost(row.sevenD), row.basis || "--"])}
-                      />
-                    </RadarDetailSubsection>
-                    <RadarDetailSubsection title="趋势明细">
-                      <RadarTable
-                        headers={["日期", "20x 5h", "20x 7d", "5x 5h", "Plus 5h", "依据"]}
-                        rows={snapshot.modelIq.quotaRadar.trend.slice(-8).map((point) => [
-                          point.date,
-                          formatCost(point.fiveHour20x),
-                          formatCost(point.sevenDay20x),
-                          formatCost(point.fiveHour5x),
-                          formatCost(point.fiveHourPlus),
-                          point.basisWindowLabel || "--",
-                        ])}
-                        emptyText="暂无趋势明细"
-                      />
-                    </RadarDetailSubsection>
-                  </>
-                ) : (
-                  <p className="codex-radar-paragraph">暂无额度雷达数据</p>
-                )}
-              </RadarDetailSection>
-
-              <RadarDetailSection icon="waveform.path.ecg" title="环境压力与资讯">
-                <RadarDetailSubsection title="压力指标">
-                  <RadarKeyValueGrid rows={[
-                    ["官方动态 24h", `${environmentCount(snapshot.codexEnvironment, "officialUpdates")}`],
-                    ["社区提及 24h", `${environmentCount(snapshot.codexEnvironment, "communityMentions")}`],
-                    ["异常/限额反馈", `${environmentCount(snapshot.codexEnvironment, "issueOrLimitAnomalies")}`],
-                    ["Status 事故", `${environmentCount(snapshot.codexEnvironment, "statusIncidents")}`],
-                    ["抱怨压力", snapshot.codexEnvironment.complaintPressure || "--"],
-                    ["RSS", snapshot.links.rss || "--"],
-                  ]} />
-                </RadarDetailSubsection>
-                <RadarDetailSubsection title="角色分布">
-                  <RadarRoleCounts roleCounts={snapshot.codexEnvironment.roleCounts} />
-                </RadarDetailSubsection>
-                <RadarArticleList
-                  emptyText="暂无官方动态"
-                  items={snapshot.codexEnvironment.officialNews.map((item) => ({
-                    title: item.titleZh || "Codex 官方动态",
-                    subtitle: `@${item.account || "--"} · ${item.summaryZh || item.summaryEn || item.text || ""}`,
-                    url: item.url,
-                  }))}
-                  title="官方动态"
-                />
-                <RadarArticleList
-                  emptyText="暂无社区反馈样本"
-                  items={snapshot.codexEnvironment.complaintExamples.map((item) => ({
-                    title: `@${item.account || "--"}`,
-                    subtitle: item.summaryZh || item.summaryEn || "",
-                    url: item.url,
-                  }))}
-                  title="社区反馈样本"
-                />
-                <RadarDetailSubsection title="来源">
-                  <RadarKeyValueGrid rows={[
-                    ["网页", snapshot.links.html || "https://codexradar.com"],
-                    ["订阅", snapshot.links.rss || "--"],
-                    ["服务", snapshot.service || "--"],
-                    ["时区", snapshot.timezone || "--"],
-                  ]} />
-                </RadarDetailSubsection>
-              </RadarDetailSection>
-            </div>
+            <CodexRadarDetailBody
+              allModels={allModels}
+              primary={primary}
+              probability24h={probability24h}
+              probability48h={probability48h}
+              quotaRows={quotaRows}
+              snapshot={snapshot}
+            />
           ) : (
             <div className="codex-radar-detail-loading">
               <span className="codex-radar-spinner" aria-hidden="true" />
@@ -361,6 +231,176 @@ function CodexRadarDetailOverlay({
     </div>
   );
 }
+
+const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
+  allModels,
+  primary,
+  probability24h,
+  probability48h,
+  quotaRows,
+  snapshot,
+}: {
+  allModels: CodexRadarModelIQComparisonRow[];
+  primary: CodexRadarModelIQComparisonRow | null;
+  probability24h: number | undefined;
+  probability48h: number | undefined;
+  quotaRows: { tier: string; basis: string; fiveH: number; sevenD: number }[];
+  snapshot: CodexRadarSnapshot;
+}) {
+  return (
+    <div className="codex-radar-detail-stack">
+      <RadarDetailSection icon="bolt.badge.clock" title="速蹬窗口与预测">
+        <RadarDetailSubsection title="窗口摘要">
+          <RadarKeyValueGrid rows={[
+            ["窗口状态", snapshot.window.message || "--"],
+            ["建议动作", snapshot.recommendedAction || "--"],
+            ["24h 概率", percentText(probability24h)],
+            ["48h 概率", percentText(probability48h)],
+            ["预计窗口", snapshot.prediction.expectedWindow || "--"],
+            ["范围", snapshot.window.scope || "--"],
+            ["上次关闭", snapshot.window.closedAt || "--"],
+            ["来源", snapshot.window.sourceUrl || "--"],
+          ]} />
+        </RadarDetailSubsection>
+        <RadarDetailSubsection title="预测说明">
+          <p className="codex-radar-paragraph">{snapshot.prediction.summary || "--"}</p>
+        </RadarDetailSubsection>
+        <RadarDetailSubsection title="信号拆分">
+          <div className="codex-radar-signal-grid">
+            <RadarSignalList title="积极信号" items={snapshot.prediction.positiveSignals} />
+            <RadarSignalList title="降温信号" items={snapshot.prediction.negativeSignals} />
+          </div>
+        </RadarDetailSubsection>
+        {snapshot.tiboPresence?.shouldDisplay ? (
+          <RadarDetailSubsection title="Tibo 观察">
+            <RadarKeyValueGrid rows={[
+              ["Tibo 位置/时区", snapshot.tiboPresence.locationLabelZh || "--"],
+              ["概率", percentText(snapshot.tiboPresence.probability)],
+              ["置信度", snapshot.tiboPresence.confidence || "--"],
+              ["观察数", `${snapshot.tiboPresence.observationsConsidered ?? 0}`],
+            ]} />
+            <p className="codex-radar-paragraph">{snapshot.tiboPresence.safetyNoteZh || ""}</p>
+          </RadarDetailSubsection>
+        ) : null}
+      </RadarDetailSection>
+
+      <RadarDetailSection icon="brain.head.profile" title="降智雷达">
+        <RadarDetailSubsection title="IQ 趋势">
+          <RadarTrendSummary points={snapshot.modelIq.recentDays} />
+        </RadarDetailSubsection>
+        <RadarDetailSubsection title="模型对比">
+          <RadarTable
+            headers={["模型", "IQ", "通过", "状态", "费用", "耗时", "Tokens"]}
+            rows={(allModels.length > 0 ? allModels : primary ? [primary] : []).map((row) => [
+              row.label,
+              displayRadarNumber(row.point.score),
+              `${row.point.passed}/${row.point.tasks}`,
+              row.point.status || "--",
+              formatCost(row.point.costUsd),
+              row.point.wallTimeHuman || formatSeconds(row.point.wallSeconds),
+              formatTokens(row.point.totalTokens),
+            ])}
+          />
+        </RadarDetailSubsection>
+        <RadarDetailSubsection title="近日日志">
+          <RadarTable
+            headers={["日期", "IQ", "通过", "状态", "耗时", "Tokens"]}
+            rows={snapshot.modelIq.recentDays.map((point) => [
+              point.date || "--",
+              displayRadarNumber(point.score),
+              `${point.passed}/${point.tasks}`,
+              point.status || "--",
+              point.wallTimeHuman || formatSeconds(point.wallSeconds),
+              formatTokens(point.totalTokens),
+            ])}
+            emptyText="暂无近日日志"
+          />
+        </RadarDetailSubsection>
+      </RadarDetailSection>
+
+      <RadarDetailSection icon="gauge.with.dots.needle.67percent" title="预估额度">
+        {snapshot.modelIq.quotaRadar ? (
+          <>
+            <RadarDetailSubsection title="额度基准">
+              <RadarKeyValueGrid rows={[
+                ["依据窗口", snapshot.modelIq.quotaRadar.basisWindowLabel || "--"],
+                ["本轮成本", formatCost(snapshot.modelIq.quotaRadar.costUsd)],
+                ["本轮 tokens", formatTokens(snapshot.modelIq.quotaRadar.totalTokens)],
+                ["原始变化", `${snapshot.modelIq.quotaRadar.rawDelta}%`],
+                ["修正变化", `${snapshot.modelIq.quotaRadar.adjustedDelta}%`],
+                ["rate", formatCost(snapshot.modelIq.quotaRadar.rate)],
+              ]} />
+            </RadarDetailSubsection>
+            <RadarDetailSubsection title="套餐预估">
+              <RadarTable
+                headers={["套餐", "5h", "7d", "依据"]}
+                rows={quotaRows.map((row) => [row.tier, formatCost(row.fiveH), formatCost(row.sevenD), row.basis || "--"])}
+              />
+            </RadarDetailSubsection>
+            <RadarDetailSubsection title="趋势明细">
+              <RadarTable
+                headers={["日期", "20x 5h", "20x 7d", "5x 5h", "Plus 5h", "依据"]}
+                rows={snapshot.modelIq.quotaRadar.trend.slice(-8).map((point) => [
+                  point.date,
+                  formatCost(point.fiveHour20x),
+                  formatCost(point.sevenDay20x),
+                  formatCost(point.fiveHour5x),
+                  formatCost(point.fiveHourPlus),
+                  point.basisWindowLabel || "--",
+                ])}
+                emptyText="暂无趋势明细"
+              />
+            </RadarDetailSubsection>
+          </>
+        ) : (
+          <p className="codex-radar-paragraph">暂无额度雷达数据</p>
+        )}
+      </RadarDetailSection>
+
+      <RadarDetailSection icon="waveform.path.ecg" title="环境压力与资讯">
+        <RadarDetailSubsection title="压力指标">
+          <RadarKeyValueGrid rows={[
+            ["官方动态 24h", `${environmentCount(snapshot.codexEnvironment, "officialUpdates")}`],
+            ["社区提及 24h", `${environmentCount(snapshot.codexEnvironment, "communityMentions")}`],
+            ["异常/限额反馈", `${environmentCount(snapshot.codexEnvironment, "issueOrLimitAnomalies")}`],
+            ["Status 事故", `${environmentCount(snapshot.codexEnvironment, "statusIncidents")}`],
+            ["抱怨压力", snapshot.codexEnvironment.complaintPressure || "--"],
+            ["RSS", snapshot.links.rss || "--"],
+          ]} />
+        </RadarDetailSubsection>
+        <RadarDetailSubsection title="角色分布">
+          <RadarRoleCounts roleCounts={snapshot.codexEnvironment.roleCounts} />
+        </RadarDetailSubsection>
+        <RadarArticleList
+          emptyText="暂无官方动态"
+          items={snapshot.codexEnvironment.officialNews.map((item) => ({
+            title: item.titleZh || "Codex 官方动态",
+            subtitle: `@${item.account || "--"} · ${item.summaryZh || item.summaryEn || item.text || ""}`,
+            url: item.url,
+          }))}
+          title="官方动态"
+        />
+        <RadarArticleList
+          emptyText="暂无社区反馈样本"
+          items={snapshot.codexEnvironment.complaintExamples.map((item) => ({
+            title: `@${item.account || "--"}`,
+            subtitle: item.summaryZh || item.summaryEn || "",
+            url: item.url,
+          }))}
+          title="社区反馈样本"
+        />
+        <RadarDetailSubsection title="来源">
+          <RadarKeyValueGrid rows={[
+            ["网页", snapshot.links.html || "https://codexradar.com"],
+            ["订阅", snapshot.links.rss || "--"],
+            ["服务", snapshot.service || "--"],
+            ["时区", snapshot.timezone || "--"],
+          ]} />
+        </RadarDetailSubsection>
+      </RadarDetailSection>
+    </div>
+  );
+});
 
 function RadarBlock({ children, icon, title }: { children: ReactNode; icon: string; title: string }) {
   return (
@@ -396,7 +436,7 @@ function RadarDetailSection({ children, icon, title }: { children: ReactNode; ic
   return (
     <section className="codex-radar-detail-section">
       <h3>
-        <i aria-hidden="true">{radarIconText(icon)}</i>
+        <RadarIcon name={icon} />
         {title}
       </h3>
       <div className="codex-radar-detail-section-body">{children}</div>
@@ -509,18 +549,52 @@ function RadarArticleList({
   );
 }
 
-function radarIconText(systemImage: string): string {
+function RadarIcon({ name }: { name: string }) {
+  return (
+    <span className="codex-radar-section-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" focusable="false">
+        {radarIconPath(name)}
+      </svg>
+    </span>
+  );
+}
+
+function radarIconPath(systemImage: string): ReactNode {
   switch (systemImage) {
     case "bolt.badge.clock":
-      return "↯";
+      return (
+        <>
+          <path d="M12.6 2.4 5.7 13h5.2l-1.4 8.6 7.2-11.3h-5.1l1-7.9Z" />
+          <circle cx="16.6" cy="15.9" r="4.2" fill="none" stroke="currentColor" strokeWidth="1.7" />
+          <path d="M16.6 13.5v2.7l1.8 1.1" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" />
+        </>
+      );
     case "brain.head.profile":
-      return "IQ";
+      return (
+        <>
+          <path d="M8.7 18.8c-2.8-.8-4.7-3.2-4.7-6.2 0-3.7 2.8-6.7 6.6-6.7 4.2 0 7.4 3.4 7.4 7.5 0 2.2-.8 4-2.1 5.2" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.9" />
+          <path d="M8.5 9.2c.6-1.3 2.2-1.5 3.1-.6.8-1.1 2.6-.7 3 .7 1.4.2 2 2 .9 3 .8 1.4-.2 3-1.8 2.9-.6 1.1-2.3 1.2-3.1.1-1.2.5-2.6-.5-2.5-1.9-1.3-.7-1.3-2.9.4-4.2Z" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
+          <path d="M12 15.6v4.1h3" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.7" />
+        </>
+      );
     case "gauge.with.dots.needle.67percent":
-      return "%";
+      return (
+        <>
+          <path d="M4.3 16.7a8.3 8.3 0 1 1 15.4 0" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.9" />
+          <path d="M12 16.3 16.7 10" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.9" />
+          <circle cx="12" cy="16.6" r="1.4" />
+          <circle cx="6.9" cy="16.1" r="1" />
+          <circle cx="8.1" cy="9.2" r="1" />
+          <circle cx="15.9" cy="9.2" r="1" />
+          <circle cx="17.1" cy="16.1" r="1" />
+        </>
+      );
     case "waveform.path.ecg":
-      return "~";
+      return (
+        <path d="M2.5 12h4l1.7-5.2 3.1 10.4L14 8.7l1.5 3.3h6" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+      );
     default:
-      return "•";
+      return <circle cx="12" cy="12" r="5" />;
   }
 }
 

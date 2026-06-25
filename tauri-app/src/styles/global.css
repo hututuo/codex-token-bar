@@ -1037,7 +1037,7 @@ button.quota-side-card:hover {
   line-height: 1.15;
 }
 
-.codex-radar-detail-section h3 i {
+.codex-radar-section-icon {
   display: inline-grid;
   place-items: center;
   width: 26px;
@@ -1045,9 +1045,12 @@ button.quota-side-card:hover {
   border-radius: 8px;
   background: color-mix(in srgb, var(--accent) 12%, var(--panel-solid));
   color: var(--accent-strong);
-  font-size: 11px;
-  font-style: normal;
-  font-weight: 800;
+}
+
+.codex-radar-section-icon svg {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
 }
 
 .codex-radar-detail-section-body {
