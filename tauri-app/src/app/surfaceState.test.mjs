@@ -167,17 +167,23 @@ test("status tray live text reuses dashboard live rate instead of polling compac
   assert.equal(dashboardApp.includes("liveRate: readyState.liveRate"), true);
 });
 
-test("live polling follows Swift fast-active idle cadence", async () => {
+test("live rate surfaces subscribe to the shared stream instead of polling snapshots", async () => {
   const liveFeed = await readFile(new URL("../state/useLiveRateFeed.ts", import.meta.url), "utf8");
   const compactSnapshot = await readFile(new URL("../surfaces/useCompactPanelSnapshot.ts", import.meta.url), "utf8");
+  const surfaceCommands = await readFile(new URL("../platform/surfaceCommands.ts", import.meta.url), "utf8");
+
+  for (const source of [liveFeed, compactSnapshot, surfaceCommands]) {
+    assert.equal(source.includes("startLiveRateStream"), true);
+  }
 
   for (const source of [liveFeed, compactSnapshot]) {
-    assert.equal(source.includes("FAST_LIVE_POLL_INTERVAL_MS = 250"), true);
-    assert.equal(source.includes("IDLE_LIVE_POLL_INTERVAL_MS = 1_000"), true);
-    assert.equal(source.includes("nextLivePollInterval"), true);
-    assert.equal(source.includes("window.setTimeout"), true);
+    assert.equal(source.includes("onLiveRateSnapshot"), true);
+    assert.equal(source.includes("window.setTimeout"), false);
     assert.equal(source.includes("window.setInterval"), false);
   }
+
+  assert.equal(compactSnapshot.includes("readFloatingPanelSnapshot"), false);
+  assert.equal(surfaceCommands.includes("controlsSelectedThread"), true);
 });
 
 test("live rate card exposes Swift-style reset action", async () => {

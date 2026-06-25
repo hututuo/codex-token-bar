@@ -12,10 +12,12 @@ export function emptyLiveRateSnapshot(selectedThreadId?: string | null): LiveRat
     selectedThreadTitle: selectedThreadId ? "选中会话待读取" : "选择会话查看单会话速率",
     selectedTokensPerSecond: 0,
     tokensPerSecond: 0,
+    totalTokens: 0,
     totalTokensToday: 0,
     requestsToday: 0,
     maxTokensPerSecond: 200,
     preciseEnabled: false,
+    unreadSummary: emptyUnreadSummary,
     warnings: [],
   };
 }

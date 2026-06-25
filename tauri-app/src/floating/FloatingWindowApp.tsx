@@ -17,7 +17,6 @@ import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
 
 export function FloatingWindowApp() {
   const { snapshot } = useCompactPanelData({
-    snapshotIntervalMs: 500,
     quotaInitialDelayMs: 8_000,
     quotaIntervalMs: 180_000,
   });

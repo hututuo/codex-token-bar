@@ -1,19 +1,15 @@
 import { useEffect, useState } from "react";
-import { readFloatingPanelSnapshot } from "../api/client";
 import { emptyFloatingPanelSnapshot } from "../api/fallback";
-import type { FloatingPanelSnapshot } from "../types/dashboard";
-
-const FAST_LIVE_POLL_INTERVAL_MS = 250;
-const IDLE_LIVE_POLL_INTERVAL_MS = 1_000;
+import { readLiveRateSnapshot } from "../api/liveClient";
+import { desktopPlatform } from "../platform/desktop";
+import type { FloatingPanelSnapshot, LiveRateSnapshot } from "../types/dashboard";
 
 interface CompactPanelSnapshotOptions {
   active: boolean;
-  intervalMs: number;
 }
 
 export function useCompactPanelSnapshot({
   active,
-  intervalMs,
 }: CompactPanelSnapshotOptions): FloatingPanelSnapshot {
   const [rawSnapshot, setRawSnapshot] = useState<FloatingPanelSnapshot>(emptyFloatingPanelSnapshot);
 
@@ -23,50 +19,56 @@ export function useCompactPanelSnapshot({
     }
 
     let cancelled = false;
-    let inFlight = false;
-    let timer = 0;
+    let unlisten: (() => void) | null = null;
 
-    function scheduleNextPoll(delayMs: number) {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        void refreshSnapshot();
-      }, delayMs);
-    }
-
-    async function refreshSnapshot() {
-      if (inFlight) {
-        return;
+    void desktopPlatform.onLiveRateSnapshot((liveRate) => {
+      if (!cancelled) {
+        setRawSnapshot(floatingSnapshotFromLiveRate(liveRate));
       }
-
-      inFlight = true;
-      let nextDelay = IDLE_LIVE_POLL_INTERVAL_MS;
-      try {
-        const next = await readFloatingPanelSnapshot();
-        nextDelay = nextLivePollInterval(next);
-        if (!cancelled) {
-          setRawSnapshot(next);
-        }
-      } finally {
-        inFlight = false;
-        if (!cancelled) {
-          scheduleNextPoll(nextDelay);
-        }
+    }).then((listener) => {
+      if (cancelled) {
+        listener();
+      } else {
+        unlisten = listener;
       }
-    }
+    });
 
-    scheduleNextPoll(Math.min(intervalMs, FAST_LIVE_POLL_INTERVAL_MS));
+    void desktopPlatform.startLiveRateStream(null, false);
+    void readLiveRateSnapshot(null).then((liveRate) => {
+      if (!cancelled) {
+        setRawSnapshot(floatingSnapshotFromLiveRate(liveRate));
+      }
+    });
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      unlisten?.();
+      void desktopPlatform.stopLiveRateStream();
     };
-  }, [active, intervalMs]);
+  }, [active]);
 
   return rawSnapshot;
 }
 
-function nextLivePollInterval(snapshot: FloatingPanelSnapshot) {
-  return snapshot.tokensPerSecond > 0.05
-    ? FAST_LIVE_POLL_INTERVAL_MS
-    : IDLE_LIVE_POLL_INTERVAL_MS;
+function floatingSnapshotFromLiveRate(snapshot: LiveRateSnapshot): FloatingPanelSnapshot {
+  return {
+    ...emptyFloatingPanelSnapshot,
+    tokensPerSecond: snapshot.tokensPerSecond,
+    maxTokensPerSecond: snapshot.maxTokensPerSecond,
+    totalTokensLabel: `总 ${compactTokens(snapshot.totalTokens)}`,
+    todayTokensLabel: `今 ${compactTokens(snapshot.totalTokensToday)}`,
+    requestsLabel: `次 ${snapshot.requestsToday}`,
+    unread: snapshot.unreadSummary.active,
+    unreadSummary: snapshot.unreadSummary,
+  };
+}
+
+function compactTokens(value: number): string {
+  if (value >= 100_000_000) {
+    return `${(value / 100_000_000).toFixed(1)}亿`;
+  }
+  if (value >= 10_000) {
+    return `${(value / 10_000).toFixed(1)}万`;
+  }
+  return String(Math.max(0, Math.round(value)));
 }

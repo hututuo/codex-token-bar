@@ -24,9 +24,13 @@ export function setStatusTrayReadout(title: string, tooltip: string): Promise<bo
   return invokePlatformCommand("set_status_tray_readout", false, { title, tooltip });
 }
 
-export function startLiveRateStream(selectedThreadId?: string | null): Promise<boolean> {
+export function startLiveRateStream(
+  selectedThreadId?: string | null,
+  controlsSelectedThread = false,
+): Promise<boolean> {
   return invokePlatformCommand("start_live_rate_stream", false, {
     selectedThreadId: selectedThreadId || null,
+    controlsSelectedThread,
   });
 }
 

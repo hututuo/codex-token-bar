@@ -22,7 +22,6 @@ export function StatusPanelApp() {
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   const { snapshot, quotaLabels } = useCompactPanelData({
     active,
-    snapshotIntervalMs: 750,
     quotaInitialDelayMs: 0,
     quotaIntervalMs: 180_000,
   });

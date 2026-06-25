@@ -7,10 +7,12 @@ export interface LiveRateSnapshot {
   selectedThreadTitle: string;
   selectedTokensPerSecond: number;
   tokensPerSecond: number;
+  totalTokens: number;
   totalTokensToday: number;
   requestsToday: number;
   maxTokensPerSecond: number;
   preciseEnabled: boolean;
+  unreadSummary: UnreadSummary;
   warnings: LocalDataWarning[];
 }
 

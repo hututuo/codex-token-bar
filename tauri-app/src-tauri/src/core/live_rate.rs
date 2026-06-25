@@ -1,5 +1,7 @@
 use crate::core::{unread, usage::token_count_jsonl};
-use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, LocalDataWarning};
+use crate::models::{
+    FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, LocalDataWarning, UnreadSummary,
+};
 use logs::read_recent_log_rows;
 pub use monitor::LiveRateMonitorService;
 use rusqlite::Result;
@@ -13,6 +15,7 @@ use stream::{rollup_metric_events, rollup_stream_rows};
 const LOOKBACK_SECONDS: f64 = 8.0;
 const MAX_TOKENS_PER_SECOND: f64 = 200.0;
 const PRECISE_USAGE_SUMMARY_TTL: Duration = Duration::from_secs(30);
+const UNREAD_SUMMARY_TTL: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 struct CachedPreciseUsageSummary {
@@ -22,6 +25,14 @@ struct CachedPreciseUsageSummary {
 }
 
 static PRECISE_USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedPreciseUsageSummary>>> = OnceLock::new();
+static UNREAD_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUnreadSummary>>> = OnceLock::new();
+
+#[derive(Clone)]
+struct CachedUnreadSummary {
+    codex_home: PathBuf,
+    summary: UnreadSummary,
+    refreshed_at: Instant,
+}
 
 mod logs;
 mod monitor;
@@ -60,6 +71,7 @@ fn idle_snapshot_with_warnings(
     mut warnings: Vec<LocalDataWarning>,
 ) -> LiveRateSnapshot {
     let summary = read_precise_usage_summary_or_fallback(codex_home, &mut warnings);
+    let unread_summary = read_unread_summary_cached(codex_home);
     let selected_thread_title = selected_thread_id
         .and_then(|thread_id| read_thread_title_or_warn(codex_home, thread_id, &mut warnings))
         .unwrap_or_else(|| "选择会话查看单会话速率".into());
@@ -70,10 +82,12 @@ fn idle_snapshot_with_warnings(
         selected_thread_title,
         selected_tokens_per_second: 0.0,
         tokens_per_second: 0.0,
+        total_tokens: summary.total_tokens,
         total_tokens_today: summary.today_tokens,
         requests_today: summary.today_requests,
         max_tokens_per_second: MAX_TOKENS_PER_SECOND,
         precise_enabled: false,
+        unread_summary,
         warnings,
     }
 }
@@ -111,6 +125,7 @@ fn read_snapshot_result(
         (rollup, selected_rollup)
     };
     let summary = read_precise_usage_summary_or_fallback(codex_home, &mut warnings);
+    let unread_summary = read_unread_summary_cached(codex_home);
     let _observed_live_source_tokens = rollup.breakdown.observed_total();
     let thread_title = rollup
         .latest_thread_id
@@ -128,32 +143,31 @@ fn read_snapshot_result(
         selected_thread_title,
         selected_tokens_per_second: selected_rollup.tokens_per_second,
         tokens_per_second: rollup.tokens_per_second,
+        total_tokens: summary.total_tokens,
         total_tokens_today: summary.today_tokens,
         requests_today: summary.today_requests,
         max_tokens_per_second: MAX_TOKENS_PER_SECOND,
         precise_enabled: false,
+        unread_summary,
         warnings,
     })
 }
 
 pub fn read_floating_snapshot_from_live(
-    codex_home: &Path,
+    _codex_home: &Path,
     live: &LiveRateSnapshot,
 ) -> FloatingPanelSnapshot {
-    let mut warnings = Vec::new();
-    let summary = read_precise_usage_summary_or_fallback(codex_home, &mut warnings);
-    let unread_summary = unread::read_unread_summary(codex_home);
     FloatingPanelSnapshot {
         tokens_per_second: live.tokens_per_second,
         max_tokens_per_second: live.max_tokens_per_second,
         trend_label: String::new(),
-        total_tokens_label: format!("总 {}", compact_tokens(summary.total_tokens)),
+        total_tokens_label: format!("总 {}", compact_tokens(live.total_tokens)),
         today_tokens_label: format!("今 {}", compact_tokens(live.total_tokens_today)),
         requests_label: format!("次 {}", live.requests_today),
         five_hour_label: "5h 待读取".into(),
         seven_day_label: "7d 待读取".into(),
-        unread: unread_summary.active,
-        unread_summary,
+        unread: live.unread_summary.active,
+        unread_summary: live.unread_summary.clone(),
     }
 }
 
@@ -234,6 +248,28 @@ fn read_precise_usage_summary_or_fallback(
             read_usage_summary_or_default(codex_home, warnings)
         }
     }
+}
+
+fn read_unread_summary_cached(codex_home: &Path) -> UnreadSummary {
+    let now = Instant::now();
+    let cache = UNREAD_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached) = guard.as_ref() {
+            if cached.codex_home == codex_home && now.duration_since(cached.refreshed_at) <= UNREAD_SUMMARY_TTL {
+                return cached.summary.clone();
+            }
+        }
+    }
+
+    let summary = unread::read_unread_summary(codex_home);
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(CachedUnreadSummary {
+            codex_home: codex_home.to_path_buf(),
+            summary: summary.clone(),
+            refreshed_at: now,
+        });
+    }
+    summary
 }
 
 fn read_thread_title_or_warn(

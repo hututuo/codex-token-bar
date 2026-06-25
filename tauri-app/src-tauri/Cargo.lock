@@ -351,6 +351,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-autostart",
  "time",
+ "tokio",
  "windows-sys 0.61.2",
 ]
 

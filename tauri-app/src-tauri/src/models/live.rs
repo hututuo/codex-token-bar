@@ -11,10 +11,12 @@ pub struct LiveRateSnapshot {
     pub selected_thread_title: String,
     pub selected_tokens_per_second: f64,
     pub tokens_per_second: f64,
+    pub total_tokens: u64,
     pub total_tokens_today: u64,
     pub requests_today: u32,
     pub max_tokens_per_second: f64,
     pub precise_enabled: bool,
+    pub unread_summary: UnreadSummary,
     pub warnings: Vec<LocalDataWarning>,
 }
 

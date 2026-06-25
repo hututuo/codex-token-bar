@@ -13,9 +13,23 @@ use time::OffsetDateTime;
 const RECENT_ROLLOUT_LIMIT: usize = 20;
 
 static ROLLOUT_OFFSETS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
+static RECENT_ROLLOUT_THREADS: OnceLock<Mutex<Option<CachedRolloutThreads>>> = OnceLock::new();
+
+#[derive(Clone)]
+struct CachedRolloutThreads {
+    codex_home: PathBuf,
+    state_signature: StateDatabaseSignature,
+    threads: Vec<super::state::RolloutThread>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StateDatabaseSignature {
+    len: u64,
+    modified_at: Option<SystemTime>,
+}
 
 pub(super) fn read_rollout_metrics(codex_home: &Path, now: f64) -> Vec<LiveMetricEvent> {
-    let Ok(threads) = read_recent_rollout_threads(codex_home, RECENT_ROLLOUT_LIMIT) else {
+    let Ok(threads) = recent_rollout_threads(codex_home) else {
         return Vec::new();
     };
     let offsets = ROLLOUT_OFFSETS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -55,7 +69,7 @@ pub(super) fn read_rollout_metrics(codex_home: &Path, now: f64) -> Vec<LiveMetri
 }
 
 pub(super) fn sync_rollout_offsets_to_current(codex_home: &Path) {
-    let Ok(threads) = read_recent_rollout_threads(codex_home, RECENT_ROLLOUT_LIMIT) else {
+    let Ok(threads) = recent_rollout_threads(codex_home) else {
         return;
     };
     let offsets = ROLLOUT_OFFSETS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -72,7 +86,7 @@ pub(super) fn sync_rollout_offsets_to_current(codex_home: &Path) {
 }
 
 pub(super) fn rollout_file_signatures(codex_home: &Path) -> Vec<RolloutFileSignature> {
-    let Ok(threads) = read_recent_rollout_threads(codex_home, RECENT_ROLLOUT_LIMIT) else {
+    let Ok(threads) = recent_rollout_threads(codex_home) else {
         return Vec::new();
     };
     threads
@@ -86,6 +100,36 @@ pub(super) fn rollout_file_signatures(codex_home: &Path) -> Vec<RolloutFileSigna
             }
         })
         .collect()
+}
+
+fn recent_rollout_threads(codex_home: &Path) -> rusqlite::Result<Vec<super::state::RolloutThread>> {
+    let state_signature = state_database_signature(codex_home);
+    let cache = RECENT_ROLLOUT_THREADS.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached) = guard.as_ref() {
+            if cached.codex_home == codex_home && cached.state_signature == state_signature {
+                return Ok(cached.threads.clone());
+            }
+        }
+    }
+
+    let threads = read_recent_rollout_threads(codex_home, RECENT_ROLLOUT_LIMIT)?;
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(CachedRolloutThreads {
+            codex_home: codex_home.to_path_buf(),
+            state_signature,
+            threads: threads.clone(),
+        });
+    }
+    Ok(threads)
+}
+
+fn state_database_signature(codex_home: &Path) -> StateDatabaseSignature {
+    let signature = file_signature(&codex_home.join("state_5.sqlite"));
+    StateDatabaseSignature {
+        len: signature.len,
+        modified_at: signature.modified_at,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

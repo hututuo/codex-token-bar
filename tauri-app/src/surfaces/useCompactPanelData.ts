@@ -6,7 +6,6 @@ import { useCompactPanelSnapshot } from "./useCompactPanelSnapshot";
 
 interface CompactPanelDataOptions {
   active?: boolean;
-  snapshotIntervalMs?: number;
   quotaEnabled?: boolean;
   quotaInitialDelayMs?: number;
   quotaIntervalMs?: number;
@@ -22,20 +21,17 @@ export interface CompactPanelData {
   };
 }
 
-const DEFAULT_SNAPSHOT_INTERVAL_MS = 500;
 const DEFAULT_QUOTA_INITIAL_DELAY_MS = 8_000;
 const DEFAULT_QUOTA_INTERVAL_MS = 60_000;
 
 export function useCompactPanelData(options: CompactPanelDataOptions = {}): CompactPanelData {
   const active = options.active ?? true;
-  const snapshotIntervalMs = options.snapshotIntervalMs ?? DEFAULT_SNAPSHOT_INTERVAL_MS;
   const quotaEnabled = options.quotaEnabled ?? true;
   const quotaInitialDelayMs = options.quotaInitialDelayMs ?? DEFAULT_QUOTA_INITIAL_DELAY_MS;
   const quotaIntervalMs = options.quotaIntervalMs ?? DEFAULT_QUOTA_INTERVAL_MS;
 
   const rawSnapshot = useCompactPanelSnapshot({
     active,
-    intervalMs: snapshotIntervalMs,
   });
   const quota = useCompactPanelQuota({
     active,
