@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 const SUCCESS_CACHE_TTL: Duration = Duration::from_secs(60);
 const FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
+const HISTORY_CACHE_TTL: Duration = Duration::from_secs(60);
 
 mod auth;
 mod codex_binary;
@@ -21,12 +22,50 @@ mod rate_limits;
 mod reset_credit;
 
 static QUOTA_READ_CACHE: OnceLock<Mutex<Option<QuotaCacheEntry>>> = OnceLock::new();
+static QUOTA_HISTORY_CACHE: OnceLock<Mutex<QuotaHistoryMemoryCache>> = OnceLock::new();
 
 #[derive(Clone)]
 struct QuotaCacheEntry {
     codex_home: std::path::PathBuf,
     result: Result<AccountQuotaBundle, String>,
     cached_at: Instant,
+}
+
+#[derive(Clone)]
+struct QuotaHistoryCacheEntry {
+    bundle: quota_history::QuotaHistoryBundle,
+    cached_at: Instant,
+}
+
+#[derive(Default)]
+struct QuotaHistoryMemoryCache {
+    entry: Option<QuotaHistoryCacheEntry>,
+}
+
+impl QuotaHistoryMemoryCache {
+    fn load_or_refresh<F>(
+        &mut self,
+        force_refresh: bool,
+        mut loader: F,
+    ) -> Result<quota_history::QuotaHistoryBundle, String>
+    where
+        F: FnMut() -> Result<quota_history::QuotaHistoryBundle, String>,
+    {
+        if !force_refresh {
+            if let Some(entry) = &self.entry {
+                if entry.cached_at.elapsed() <= HISTORY_CACHE_TTL {
+                    return Ok(entry.bundle.clone());
+                }
+            }
+        }
+
+        let bundle = loader()?;
+        self.entry = Some(QuotaHistoryCacheEntry {
+            bundle: bundle.clone(),
+            cached_at: Instant::now(),
+        });
+        Ok(bundle)
+    }
 }
 
 pub fn read_account_quota(codex_home: &Path, force_refresh: bool) -> Result<AccountQuotaBundle, String> {
@@ -46,7 +85,7 @@ pub fn read_account_quota(codex_home: &Path, force_refresh: bool) -> Result<Acco
     if let Some(cached) = cached {
         return match cached {
             Ok(mut bundle) => {
-                refresh_quota_histories(&mut bundle);
+                refresh_quota_histories(&mut bundle, false);
                 Ok(bundle)
             }
             Err(error) => Err(error),
@@ -98,7 +137,7 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
             if let Err(error) = quota_history::record_bundle(&bundle) {
                 bundle.warnings.push(quota_history::warning(error));
             }
-            refresh_quota_histories(&mut bundle);
+            refresh_quota_histories(&mut bundle, true);
             bundle
         }
         Err(error) => return Err(format!("额度读取失败：{error}")),
@@ -116,8 +155,16 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
     Ok(bundle)
 }
 
-fn refresh_quota_histories(bundle: &mut AccountQuotaBundle) {
-    match quota_history::history_bundle(365) {
+fn refresh_quota_histories(bundle: &mut AccountQuotaBundle, force_refresh: bool) {
+    let cache = QUOTA_HISTORY_CACHE.get_or_init(|| Mutex::new(QuotaHistoryMemoryCache::default()));
+    let history = cache
+        .lock()
+        .map_err(|error| error.to_string())
+        .and_then(|mut cache| {
+            cache.load_or_refresh(force_refresh, || quota_history::history_bundle(365))
+        });
+
+    match history {
         Ok(history) => {
             bundle.quota_history_daily = history.daily;
             bundle.quota_history_24h = history.recent_24h;
@@ -256,6 +303,37 @@ fn write_json_line(stdin: &mut std::process::ChildStdin, value: &Value) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quota_history_cache_reuses_recent_bundle_until_forced() {
+        use std::cell::Cell;
+
+        let mut cache = QuotaHistoryMemoryCache::default();
+        let load_count = Cell::new(0);
+        let mut loader = || {
+            let next_count = load_count.get() + 1;
+            load_count.set(next_count);
+            Ok(quota_history::QuotaHistoryBundle {
+                recent_24h: vec![crate::models::QuotaHistoryPoint {
+                    label: format!("load-{next_count}"),
+                    start_unix: next_count,
+                    five_hour_remaining_percent: Some(0.8),
+                    seven_day_remaining_percent: Some(0.6),
+                }],
+                ..Default::default()
+            })
+        };
+
+        let first = cache.load_or_refresh(false, &mut loader).unwrap();
+        let second = cache.load_or_refresh(false, &mut loader).unwrap();
+        assert_eq!(load_count.get(), 1);
+        assert_eq!(first.recent_24h[0].label, "load-1");
+        assert_eq!(second.recent_24h[0].label, "load-1");
+
+        let forced = cache.load_or_refresh(true, &mut loader).unwrap();
+        assert_eq!(load_count.get(), 2);
+        assert_eq!(forced.recent_24h[0].label, "load-2");
+    }
 
     #[test]
     fn quota_cache_uses_short_ttl_for_failures() {

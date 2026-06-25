@@ -32,7 +32,7 @@ const RETENTION_DAYS: i64 = 45;
 const RECENT_BIN_COUNT: usize = 289;
 const QUOTA_HISTORY_SOURCE: &str = "tauri";
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct QuotaHistoryBundle {
     pub daily: Vec<QuotaHistoryDailyPoint>,
     pub recent_24h: Vec<QuotaHistoryPoint>,
