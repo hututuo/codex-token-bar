@@ -297,7 +297,7 @@ pub(super) fn parse_session_file_cached(
     };
 
     if let Some(entry) = files.get(&cache_key) {
-        if entry.signature == signature {
+        if entry.signature == signature && entry.is_safe_to_reuse() {
             return entry.to_events(session_id);
         }
     }
@@ -308,6 +308,7 @@ pub(super) fn parse_session_file_cached(
             && signature.size >= entry.signature.size
             && parsed_size > 0
             && entry.ended_with_newline
+            && entry.is_safe_to_reuse()
         {
             let previous_total_tokens = entry.effective_previous_total_tokens();
             let parsed = parse_session_file_range(
@@ -318,19 +319,47 @@ pub(super) fn parse_session_file_cached(
                 warnings,
             );
             if parsed.consumed_size >= parsed_size {
-                entry
-                    .events
-                    .extend(parsed.events.iter().map(CachedTokenEvent::from_event));
-                entry.signature = signature;
-                entry.parsed_size = parsed.consumed_size;
-                entry.ended_with_newline = parsed.ended_with_newline;
-                entry.previous_total_tokens = parsed.previous_total_tokens;
-                *cache_changed = true;
-                return entry.to_events(session_id);
+                let overlaps_cached_events = parsed.events.first().is_some_and(|first| {
+                    entry
+                        .events
+                        .last()
+                        .is_some_and(|last| first.timestamp.unix_timestamp() <= last.timestamp_unix)
+                });
+                if !overlaps_cached_events {
+                    entry
+                        .events
+                        .extend(parsed.events.iter().map(CachedTokenEvent::from_event));
+                    entry.signature = signature;
+                    entry.parsed_size = parsed.consumed_size;
+                    entry.ended_with_newline = parsed.ended_with_newline;
+                    entry.previous_total_tokens = parsed.previous_total_tokens;
+                    *cache_changed = true;
+                    return entry.to_events(session_id);
+                }
             }
         }
     }
 
+    reparse_session_file(
+        file,
+        session_id,
+        files,
+        cache_key,
+        signature,
+        cache_changed,
+        warnings,
+    )
+}
+
+fn reparse_session_file(
+    file: &Path,
+    session_id: &str,
+    files: &mut HashMap<String, CachedSessionFile>,
+    cache_key: String,
+    signature: CachedFileSignature,
+    cache_changed: &mut bool,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Vec<TokenEvent> {
     let parsed = parse_session_file_full_result(file, session_id, warnings);
     let events = parsed.events;
     files.insert(
@@ -372,6 +401,12 @@ impl CachedSessionFile {
             )
         })
     }
+
+    fn is_safe_to_reuse(&self) -> bool {
+        self.events
+            .iter()
+            .all(CachedTokenEvent::has_plausible_token_total)
+    }
 }
 
 impl CachedTokenEvent {
@@ -396,6 +431,14 @@ impl CachedTokenEvent {
             user_prompt: String::new(),
             assistant_response: String::new(),
         })
+    }
+
+    fn has_plausible_token_total(&self) -> bool {
+        let visible_total = self.input_tokens.saturating_add(self.output_tokens);
+        let slack = visible_total
+            .saturating_mul(4)
+            .max(1_000_000);
+        self.tokens <= visible_total.saturating_add(slack)
     }
 }
 

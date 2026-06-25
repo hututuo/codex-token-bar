@@ -593,6 +593,126 @@ fn token_event_cache_migrates_legacy_entries_without_full_reparse() {
 }
 
 #[test]
+fn token_event_cache_reparses_implausible_cached_event_even_when_signature_matches() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eimplausible-0000-0000-0000-cache.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170},"last_token_usage":{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}"#,
+        ],
+    );
+    let signature = super::token_event_cache::file_signature(&file).unwrap();
+    let cache_key = super::token_event_cache::file_cache_key(&root, &file);
+    let first_timestamp =
+        OffsetDateTime::parse("2026-06-18T01:00:00Z", &Rfc3339).unwrap().unix_timestamp();
+    let mut files = HashMap::new();
+    files.insert(
+        cache_key,
+        CachedSessionFile {
+            signature,
+            parsed_size: fs::metadata(&file).unwrap().len(),
+            ended_with_newline: true,
+            previous_total_tokens: Some(170),
+            events: vec![CachedTokenEvent {
+                timestamp_unix: first_timestamp,
+                tokens: 605_109_263,
+                input_tokens: 155_979,
+                cached_input_tokens: 141_184,
+                output_tokens: 806,
+            }],
+        },
+    );
+
+    let mut warnings = Vec::new();
+    let mut cache_changed = false;
+    reset_session_full_parse_count_for_testing();
+    let events = parse_session_file_cached(
+        &file,
+        "019eimplausible-0000-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+
+    assert_eq!(events.iter().map(|event| event.tokens).sum::<u64>(), 170);
+    assert_eq!(session_full_parse_count_for_testing(), 1);
+    assert!(cache_changed);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn token_event_cache_reparses_when_incremental_range_overlaps_cached_events() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eoverlap-0000-0000-0000-cache.jsonl");
+    let first_line = r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
+    let second_line = r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170},"last_token_usage":{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}"#;
+    write_lines(&file, &[first_line]);
+    let first_signature = super::token_event_cache::file_signature(&file).unwrap();
+    let first_size = first_signature.size;
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(handle, "{second_line}").unwrap();
+    }
+    let cache_key = super::token_event_cache::file_cache_key(&root, &file);
+    let first_timestamp =
+        OffsetDateTime::parse("2026-06-18T01:00:00Z", &Rfc3339).unwrap().unix_timestamp();
+    let second_timestamp =
+        OffsetDateTime::parse("2026-06-18T01:05:00Z", &Rfc3339).unwrap().unix_timestamp();
+    let mut files = HashMap::new();
+    files.insert(
+        cache_key,
+        CachedSessionFile {
+            signature: first_signature,
+            parsed_size: first_size,
+            ended_with_newline: true,
+            previous_total_tokens: Some(120),
+            events: vec![
+                CachedTokenEvent {
+                    timestamp_unix: first_timestamp,
+                    tokens: 120,
+                    input_tokens: 100,
+                    cached_input_tokens: 20,
+                    output_tokens: 20,
+                },
+                CachedTokenEvent {
+                    timestamp_unix: second_timestamp,
+                    tokens: 50,
+                    input_tokens: 40,
+                    cached_input_tokens: 20,
+                    output_tokens: 10,
+                },
+            ],
+        },
+    );
+
+    let mut warnings = Vec::new();
+    let mut cache_changed = false;
+    reset_session_full_parse_count_for_testing();
+    let events = parse_session_file_cached(
+        &file,
+        "019eoverlap-0000-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+
+    assert_eq!(events.iter().map(|event| event.tokens).sum::<u64>(), 170);
+    assert_eq!(session_full_parse_count_for_testing(), 1);
+    assert!(cache_changed);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn token_event_cache_keeps_incomplete_appended_line_unconsumed() {
     let root = temp_root();
     let session_dir = root.join("sessions");
