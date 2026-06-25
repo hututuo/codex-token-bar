@@ -45,8 +45,10 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   const [fastSnapshotLoaded, setFastSnapshotLoaded] = useState(false);
   const [loadGeneration, setLoadGeneration] = useState(0);
   const [quotaLoadGeneration, setQuotaLoadGeneration] = useState(0);
+  const [radarRefreshGeneration, setRadarRefreshGeneration] = useState(0);
   const [forceNextQuotaLoad, setForceNextQuotaLoad] = useState(false);
   const [dashboardVisible, setDashboardVisible] = useState(dashboardIsVisible);
+  const [refreshTaskCount, setRefreshTaskCount] = useState(0);
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
   const {
     reloadAll,
@@ -61,6 +63,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     setFastSnapshotLoaded,
     setLoadGeneration,
     setQuotaLoadGeneration,
+    setRadarRefreshGeneration,
     setForceNextQuotaLoad,
   });
 
@@ -90,6 +93,12 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
 
   const consumeForcedQuotaRefresh = useCallback(() => {
     setForceNextQuotaLoad(false);
+  }, []);
+  const beginRefreshTask = useCallback(() => {
+    setRefreshTaskCount((count) => count + 1);
+  }, []);
+  const endRefreshTask = useCallback(() => {
+    setRefreshTaskCount((count) => Math.max(0, count - 1));
   }, []);
 
   useEffect(() => {
@@ -171,6 +180,8 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     onQuota: mergeQuotaSnapshot,
     onLiveThreadOptions: mergeThreadOptions,
     onForceQuotaRefreshConsumed: consumeForcedQuotaRefresh,
+    onRefreshTaskStart: beginRefreshTask,
+    onRefreshTaskEnd: endRefreshTask,
   });
 
   useLiveRateFeed({
@@ -185,6 +196,8 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   return {
     state,
     readyState,
+    refreshing: state.loading || refreshTaskCount > 0,
+    radarRefreshGeneration,
     reloadAll,
     updateCodexHome,
     restoreAutoCodexHome,

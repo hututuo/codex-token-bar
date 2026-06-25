@@ -29,12 +29,24 @@ pub fn performance_trace_log_path() -> Option<PathBuf> {
 pub fn token_event_cache_path() -> Option<PathBuf> {
     #[cfg(test)]
     {
-        None
+        std::env::var_os("CODEX_TOKEN_BAR_EVENT_CACHE_LEGACY_PATH").map(PathBuf::from)
     }
 
     #[cfg(not(test))]
     {
         app_cache_dir().map(|path| path.join("token-events-cache-v2.json"))
+    }
+}
+
+pub fn token_event_cache_directory() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        std::env::var_os("CODEX_TOKEN_BAR_EVENT_CACHE_DIR").map(PathBuf::from)
+    }
+
+    #[cfg(not(test))]
+    {
+        app_cache_dir().map(|path| path.join("token-events-cache-v3"))
     }
 }
 

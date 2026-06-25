@@ -9,6 +9,8 @@ interface PreciseDashboardLoadOptions {
   generation: number;
   source: Pick<DashboardDataSource, "readPreciseDashboardSnapshot">;
   onPreciseDashboard: (snapshot: DashboardSnapshot) => void;
+  onLoadEnd?: () => void;
+  onLoadStart?: () => void;
 }
 
 export function usePreciseDashboardLoad({
@@ -18,6 +20,8 @@ export function usePreciseDashboardLoad({
   generation,
   source,
   onPreciseDashboard,
+  onLoadEnd,
+  onLoadStart,
 }: PreciseDashboardLoadOptions) {
   const preciseGeneration = useRef<number | null>(null);
 
@@ -30,9 +34,14 @@ export function usePreciseDashboardLoad({
     preciseGeneration.current = generation;
 
     async function loadPreciseSnapshot() {
-      const precise = await source.readPreciseDashboardSnapshot();
-      if (!cancelled && precise !== null) {
-        onPreciseDashboard(precise);
+      onLoadStart?.();
+      try {
+        const precise = await source.readPreciseDashboardSnapshot();
+        if (!cancelled && precise !== null) {
+          onPreciseDashboard(precise);
+        }
+      } finally {
+        onLoadEnd?.();
       }
     }
 
@@ -41,5 +50,5 @@ export function usePreciseDashboardLoad({
     return () => {
       cancelled = true;
     };
-  }, [active, dashboardReady, generation, loading, onPreciseDashboard, source]);
+  }, [active, dashboardReady, generation, loading, onLoadEnd, onLoadStart, onPreciseDashboard, source]);
 }

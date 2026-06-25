@@ -11,6 +11,8 @@ interface DeferredQuotaLoadOptions {
   source: Pick<DashboardDataSource, "readAccountQuota">;
   onQuota: (quota: AccountQuotaBundle) => void;
   onForceQuotaRefreshConsumed: () => void;
+  onLoadEnd?: () => void;
+  onLoadStart?: () => void;
 }
 
 export function useDeferredQuotaLoad({
@@ -22,6 +24,8 @@ export function useDeferredQuotaLoad({
   source,
   onQuota,
   onForceQuotaRefreshConsumed,
+  onLoadEnd,
+  onLoadStart,
 }: DeferredQuotaLoadOptions) {
   const quotaGeneration = useRef<number | null>(null);
 
@@ -37,6 +41,7 @@ export function useDeferredQuotaLoad({
     const delayMs = shouldForceRefresh || !isFirstQuotaLoad ? 0 : 5_000;
 
     async function loadQuota() {
+      onLoadStart?.();
       try {
         const quota = await source.readAccountQuota(shouldForceRefresh);
         if (!cancelled && quota !== null) {
@@ -46,6 +51,7 @@ export function useDeferredQuotaLoad({
         if (shouldForceRefresh && !cancelled) {
           onForceQuotaRefreshConsumed();
         }
+        onLoadEnd?.();
       }
     }
 
@@ -64,6 +70,8 @@ export function useDeferredQuotaLoad({
     generation,
     loading,
     onForceQuotaRefreshConsumed,
+    onLoadEnd,
+    onLoadStart,
     onQuota,
     source,
   ]);

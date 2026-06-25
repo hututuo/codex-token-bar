@@ -20,11 +20,16 @@ import {
 const RADAR_REFRESH_INTERVAL_MS = 600_000;
 const RADAR_CHART_COLORS = ["#18a7f2", "#ff8a2c", "#2f7df6", "#32b85f", "#a65af5"];
 
-function CodexRadarStripView() {
+interface CodexRadarStripProps {
+  refreshGeneration?: number;
+}
+
+function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const [snapshot, setSnapshot] = useState<CodexRadarSnapshot | null>(null);
   const [status, setStatus] = useState("Codex 雷达待读取");
   const [refreshing, setRefreshing] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const lastExternalRefreshGeneration = useRef(0);
   const refreshingRef = useRef(false);
   const snapshotRef = useRef<CodexRadarSnapshot | null>(null);
 
@@ -62,6 +67,15 @@ function CodexRadarStripView() {
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (refreshGeneration <= 0 || refreshGeneration === lastExternalRefreshGeneration.current) {
+      return;
+    }
+    lastExternalRefreshGeneration.current = refreshGeneration;
+    void refresh(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshGeneration]);
 
   const primary = useMemo(() => (snapshot ? primaryModelRow(snapshot.modelIq) : null), [snapshot]);
   const secondary = useMemo(() => (snapshot ? secondaryModelRows(snapshot.modelIq).slice(0, 3) : []), [snapshot]);

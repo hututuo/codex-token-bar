@@ -15,6 +15,8 @@ export function DashboardApp() {
   const {
     state,
     readyState,
+    refreshing,
+    radarRefreshGeneration,
     reloadAll,
     updateCodexHome,
     restoreAutoCodexHome,
@@ -40,6 +42,7 @@ export function DashboardApp() {
         liveThreadOptions={readyState.liveThreadOptions}
         platform={readyState.platform}
         onRefresh={reloadAll}
+        radarRefreshGeneration={radarRefreshGeneration}
         onFloatingOpacityChange={shellSettings.updateFloatingOpacity}
         onFloatingScaleChange={shellSettings.updateFloatingScale}
         onTokenRateFullScaleChange={shellSettings.updateTokenRateFullScale}
@@ -55,7 +58,7 @@ export function DashboardApp() {
         onCodexHomeReset={restoreAutoCodexHome}
         onCustomAccountDisplayNameChange={shellSettings.updateCustomAccountDisplayName}
         onToggleAutostart={shellSettings.toggleAutostart}
-        refreshing={state.loading}
+        refreshing={refreshing}
         selectedLiveThreadId={selectedLiveThreadId}
       />
       {shellSettings.showSetupGuide ? (

@@ -9,6 +9,8 @@ interface LiveThreadOptionsLoadOptions {
   generation: number;
   source: Pick<DashboardDataSource, "readLiveThreadOptions">;
   onLiveThreadOptions: (options: LiveThreadOption[]) => void;
+  onLoadEnd?: () => void;
+  onLoadStart?: () => void;
 }
 
 export function useLiveThreadOptionsLoad({
@@ -18,6 +20,8 @@ export function useLiveThreadOptionsLoad({
   generation,
   source,
   onLiveThreadOptions,
+  onLoadEnd,
+  onLoadStart,
 }: LiveThreadOptionsLoadOptions) {
   const liveThreadOptionsGeneration = useRef<number | null>(null);
 
@@ -35,9 +39,14 @@ export function useLiveThreadOptionsLoad({
     liveThreadOptionsGeneration.current = generation;
 
     async function loadThreadOptions() {
-      const liveThreadOptions = await source.readLiveThreadOptions();
-      if (!cancelled) {
-        onLiveThreadOptions(liveThreadOptions);
+      onLoadStart?.();
+      try {
+        const liveThreadOptions = await source.readLiveThreadOptions();
+        if (!cancelled) {
+          onLiveThreadOptions(liveThreadOptions);
+        }
+      } finally {
+        onLoadEnd?.();
       }
     }
 
@@ -46,5 +55,5 @@ export function useLiveThreadOptionsLoad({
     return () => {
       cancelled = true;
     };
-  }, [active, dashboardReady, generation, loading, onLiveThreadOptions, source]);
+  }, [active, dashboardReady, generation, loading, onLoadEnd, onLoadStart, onLiveThreadOptions, source]);
 }

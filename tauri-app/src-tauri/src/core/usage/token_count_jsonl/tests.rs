@@ -287,6 +287,7 @@ fn token_event_cache_serializes_only_usage_summary() {
                 modified_millis: 1_781_715_600_000,
             },
             parsed_size: 128,
+            ended_with_newline: true,
             previous_total_tokens: Some(42),
             events: vec![CachedTokenEvent {
                 timestamp_unix: 1_781_715_600,
@@ -304,6 +305,83 @@ fn token_event_cache_serializes_only_usage_summary() {
     assert!(!serialized.contains("assistantResponse"));
     assert!(!serialized.contains("用户问题"));
     assert!(!serialized.contains("模型回答"));
+}
+
+#[test]
+fn token_event_cache_persists_sessions_as_sharded_files() {
+    let root = temp_root();
+    let cache_dir = root.join("token-event-cache-shards");
+    let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
+    let mut cache = TokenEventCache::default();
+    let home_a = root.join("codex-a");
+    let home_b = root.join("codex-b");
+    fs::create_dir_all(&home_a).unwrap();
+    fs::create_dir_all(&home_b).unwrap();
+
+    let key_a = codex_home_cache_key(&home_a);
+    let key_b = codex_home_cache_key(&home_b);
+    cache
+        .home_cache_mut(&key_a, &home_a)
+        .files
+        .insert("sessions/a.jsonl".into(), cached_file_with_one_event(10));
+    cache
+        .home_cache_mut(&key_b, &home_b)
+        .files
+        .insert("sessions/b.jsonl".into(), cached_file_with_one_event(20));
+
+    cache.save().unwrap();
+
+    let shard_files = json_files_under(&cache_dir);
+    assert_eq!(shard_files.len(), 2);
+    assert!(shard_files.iter().all(|path| path.starts_with(&cache_dir)));
+    assert!(shard_files.iter().all(|path| {
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| name.ends_with(".json") && name != "token-events-cache-v2.json")
+    }));
+
+    let mut warnings = Vec::new();
+    let loaded = TokenEventCache::load(&mut warnings);
+    assert!(warnings.is_empty());
+    assert_eq!(loaded.homes.get(&key_a).unwrap().files.len(), 1);
+    assert_eq!(loaded.homes.get(&key_b).unwrap().files.len(), 1);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn token_event_cache_removes_deleted_session_shards() {
+    let root = temp_root();
+    let cache_dir = root.join("token-event-cache-shards");
+    let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
+    let home = root.join("codex-home");
+    fs::create_dir_all(&home).unwrap();
+    let home_key = codex_home_cache_key(&home);
+    let mut cache = TokenEventCache::default();
+    {
+        let home_cache = cache.home_cache_mut(&home_key, &home);
+        home_cache
+            .files
+            .insert("sessions/a.jsonl".into(), cached_file_with_one_event(10));
+        home_cache
+            .files
+            .insert("sessions/b.jsonl".into(), cached_file_with_one_event(20));
+    }
+    cache.save().unwrap();
+    assert_eq!(json_files_under(&cache_dir).len(), 2);
+
+    let mut seen = HashSet::new();
+    seen.insert("sessions/a.jsonl".into());
+    assert!(cache.home_cache_mut(&home_key, &home).retain_seen(&seen));
+    cache.save().unwrap();
+
+    let shard_files = json_files_under(&cache_dir);
+    assert_eq!(shard_files.len(), 1);
+    let shard_text = fs::read_to_string(&shard_files[0]).unwrap();
+    assert!(shard_text.contains("sessions/a.jsonl"));
+    assert!(!shard_text.contains("sessions/b.jsonl"));
+
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -474,6 +552,7 @@ fn token_event_cache_migrates_legacy_entries_without_full_reparse() {
         CachedSessionFile {
             signature: original_signature,
             parsed_size: 0,
+            ended_with_newline: true,
             previous_total_tokens: None,
             events: vec![CachedTokenEvent {
                 timestamp_unix: 1_781_715_600,
@@ -662,10 +741,47 @@ impl Drop for AggregateCacheEnvGuard {
     }
 }
 
+struct TokenEventCacheEnvGuard;
+
+impl TokenEventCacheEnvGuard {
+    fn new(path: &Path) -> Self {
+        let _ = fs::remove_dir_all(path);
+        std::env::set_var("CODEX_TOKEN_BAR_EVENT_CACHE_DIR", path);
+        Self
+    }
+}
+
+impl Drop for TokenEventCacheEnvGuard {
+    fn drop(&mut self) {
+        std::env::remove_var("CODEX_TOKEN_BAR_EVENT_CACHE_DIR");
+    }
+}
+
 fn aggregate_cache_text() -> String {
     app_paths::token_aggregate_cache_path()
         .and_then(|path| fs::read_to_string(path).ok())
         .unwrap_or_default()
+}
+
+fn json_files_under(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_json_files(root, &mut files);
+    files.sort();
+    files
+}
+
+fn collect_json_files(root: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_json_files(&path, files);
+        } else if path.extension().is_some_and(|extension| extension == "json") {
+            files.push(path);
+        }
+    }
 }
 
 fn create_state_database(root: &Path, low_id: &str, high_id: &str) {
@@ -706,6 +822,7 @@ fn cached_file_with_one_event(tokens: u64) -> CachedSessionFile {
             modified_millis: 1_781_715_600_000,
         },
         parsed_size: tokens,
+        ended_with_newline: true,
         previous_total_tokens: Some(tokens),
         events: vec![CachedTokenEvent {
             timestamp_unix: 1_781_715_600,

@@ -22,6 +22,7 @@ interface DashboardActionsOptions {
   setFastSnapshotLoaded: Dispatch<SetStateAction<boolean>>;
   setLoadGeneration: Dispatch<SetStateAction<number>>;
   setQuotaLoadGeneration: Dispatch<SetStateAction<number>>;
+  setRadarRefreshGeneration: Dispatch<SetStateAction<number>>;
   setForceNextQuotaLoad: Dispatch<SetStateAction<boolean>>;
 }
 
@@ -31,6 +32,7 @@ export function useDashboardActions({
   setFastSnapshotLoaded,
   setLoadGeneration,
   setQuotaLoadGeneration,
+  setRadarRefreshGeneration,
   setForceNextQuotaLoad,
 }: DashboardActionsOptions) {
   const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
@@ -53,11 +55,13 @@ export function useDashboardActions({
   const reloadAll = useCallback(async () => {
     setLoadGeneration((current) => current + 1);
     setQuotaLoadGeneration((current) => current + 1);
+    setRadarRefreshGeneration((current) => current + 1);
     setForceNextQuotaLoad(true);
   }, [
     setForceNextQuotaLoad,
     setLoadGeneration,
     setQuotaLoadGeneration,
+    setRadarRefreshGeneration,
   ]);
 
   const updateCodexHome = useCallback(async (path: string) => {

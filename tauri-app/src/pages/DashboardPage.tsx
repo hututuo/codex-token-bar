@@ -42,6 +42,7 @@ interface DashboardPageProps {
   onToggleAutostart: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
+  radarRefreshGeneration: number;
   refreshing: boolean;
   selectedLiveThreadId: string;
 }
@@ -72,6 +73,7 @@ export function DashboardPage({
   onToggleAutostart,
   onToggleFloating,
   onToggleStatusTray,
+  radarRefreshGeneration,
   refreshing,
   selectedLiveThreadId,
 }: DashboardPageProps) {
@@ -118,6 +120,7 @@ export function DashboardPage({
               onToggleFloating={onToggleFloating}
               onToggleStatusTray={onToggleStatusTray}
               platform={platform}
+              radarRefreshGeneration={radarRefreshGeneration}
               selectedLiveThreadId={selectedLiveThreadId}
             />
             {analyticsReady ? (

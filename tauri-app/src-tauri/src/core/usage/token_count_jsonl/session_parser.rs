@@ -31,6 +31,7 @@ pub(super) struct SessionParseResult {
     pub(super) events: Vec<TokenEvent>,
     pub(super) previous_total_tokens: Option<u64>,
     pub(super) consumed_size: u64,
+    pub(super) ended_with_newline: bool,
 }
 
 pub(super) fn parse_session_file(
@@ -69,6 +70,7 @@ pub(super) fn parse_session_file_range(
                 events: Vec::new(),
                 previous_total_tokens: initial_previous_total,
                 consumed_size: start_offset,
+                ended_with_newline: true,
             };
         }
     };
@@ -84,6 +86,7 @@ pub(super) fn parse_session_file_range(
                 events: Vec::new(),
                 previous_total_tokens: initial_previous_total,
                 consumed_size: start_offset,
+                ended_with_newline: true,
             };
         }
     }
@@ -98,6 +101,7 @@ pub(super) fn parse_session_file_range(
     let mut assistant_fragments = Vec::<String>::new();
     let mut events = Vec::new();
     let mut consumed_size = start_offset;
+    let mut ended_with_newline = true;
 
     let mut reader = reader;
     loop {
@@ -114,9 +118,11 @@ pub(super) fn parse_session_file_range(
                 break;
             }
         };
-        if !line.ends_with('\n') && !is_complete_json_line(&line) {
+        let line_ended_with_newline = line.ends_with('\n');
+        if !line_ended_with_newline && !is_complete_json_line(&line) {
             break;
         }
+        ended_with_newline = line_ended_with_newline;
         let line = line.trim_end_matches(['\r', '\n']);
         if let Some(message) = extract_payload_message(line, "user_message") {
             current_user_prompt = message;
@@ -184,6 +190,7 @@ pub(super) fn parse_session_file_range(
         events,
         previous_total_tokens: previous_total,
         consumed_size,
+        ended_with_newline,
     }
 }
 

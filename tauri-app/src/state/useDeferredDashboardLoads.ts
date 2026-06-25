@@ -19,6 +19,8 @@ interface DeferredDashboardLoadsOptions {
   onQuota: (quota: AccountQuotaBundle) => void;
   onLiveThreadOptions: (options: LiveThreadOption[]) => void;
   onForceQuotaRefreshConsumed: () => void;
+  onRefreshTaskEnd?: () => void;
+  onRefreshTaskStart?: () => void;
 }
 
 export function useDeferredDashboardLoads({
@@ -33,6 +35,8 @@ export function useDeferredDashboardLoads({
   onQuota,
   onLiveThreadOptions,
   onForceQuotaRefreshConsumed,
+  onRefreshTaskEnd,
+  onRefreshTaskStart,
 }: DeferredDashboardLoadsOptions) {
   usePreciseDashboardLoad({
     active,
@@ -40,6 +44,8 @@ export function useDeferredDashboardLoads({
     generation,
     loading,
     onPreciseDashboard,
+    onLoadEnd: onRefreshTaskEnd,
+    onLoadStart: onRefreshTaskStart,
     source,
   });
 
@@ -51,6 +57,8 @@ export function useDeferredDashboardLoads({
     loading,
     onForceQuotaRefreshConsumed,
     onQuota,
+    onLoadEnd: onRefreshTaskEnd,
+    onLoadStart: onRefreshTaskStart,
     source,
   });
 
@@ -60,6 +68,8 @@ export function useDeferredDashboardLoads({
     generation,
     loading,
     onLiveThreadOptions,
+    onLoadEnd: onRefreshTaskEnd,
+    onLoadStart: onRefreshTaskStart,
     source,
   });
 }

@@ -8,11 +8,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use time::OffsetDateTime;
 
-const TOKEN_EVENT_CACHE_VERSION: u32 = 3;
+const TOKEN_EVENT_CACHE_VERSION: u32 = 4;
+const LEGACY_TOKEN_EVENT_CACHE_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,9 +51,21 @@ pub(super) struct CachedSessionFile {
     pub(super) signature: CachedFileSignature,
     #[serde(default)]
     pub(super) parsed_size: u64,
+    #[serde(default = "default_true")]
+    pub(super) ended_with_newline: bool,
     #[serde(default)]
     pub(super) previous_total_tokens: Option<u64>,
     pub(super) events: Vec<CachedTokenEvent>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistentSessionShard {
+    version: u32,
+    home_key: String,
+    codex_home: String,
+    cache_key: String,
+    session: CachedSessionFile,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -68,6 +81,14 @@ pub(super) struct CachedTokenEvent {
 
 impl TokenEventCache {
     pub(super) fn load(warnings: &mut Vec<LocalDataWarning>) -> Self {
+        if let Some(cache) = Self::load_sharded(warnings) {
+            return cache;
+        }
+
+        Self::load_legacy_json(warnings)
+    }
+
+    fn load_legacy_json(warnings: &mut Vec<LocalDataWarning>) -> Self {
         let Some(path) = app_paths::token_event_cache_path() else {
             return Self::default();
         };
@@ -94,14 +115,23 @@ impl TokenEventCache {
                 return Self::default();
             }
         };
-        if cache.version == TOKEN_EVENT_CACHE_VERSION {
-            cache
+        if cache.version == TOKEN_EVENT_CACHE_VERSION
+            || cache.version == LEGACY_TOKEN_EVENT_CACHE_VERSION
+        {
+            Self {
+                version: TOKEN_EVENT_CACHE_VERSION,
+                homes: cache.homes,
+            }
         } else {
             Self::default()
         }
     }
 
     pub(super) fn save(&self) -> Result<(), String> {
+        if let Some(directory) = app_paths::token_event_cache_directory() {
+            return self.save_sharded(&directory);
+        }
+
         let Some(path) = app_paths::token_event_cache_path() else {
             return Ok(());
         };
@@ -119,6 +149,110 @@ impl TokenEventCache {
         fs::rename(&temp_path, &path).map_err(|error| {
             format!("替换精确 token 缓存失败：{}（{}）", path.display(), error)
         })
+    }
+
+    fn load_sharded(warnings: &mut Vec<LocalDataWarning>) -> Option<Self> {
+        let directory = app_paths::token_event_cache_directory()?;
+        let mut shards = Vec::new();
+        collect_json_files(&directory, &mut shards);
+        if shards.is_empty() {
+            return None;
+        }
+
+        let mut cache = Self::default();
+        for shard in shards {
+            let data = match fs::read(&shard) {
+                Ok(data) => data,
+                Err(error) => {
+                    warnings.push(token_cache_warning(format!(
+                        "读取精确 token 分片缓存失败：{}（{}）",
+                        shard.display(),
+                        error
+                    )));
+                    continue;
+                }
+            };
+            let shard = match serde_json::from_slice::<PersistentSessionShard>(&data) {
+                Ok(shard) if shard.version == TOKEN_EVENT_CACHE_VERSION => shard,
+                Ok(_) => continue,
+                Err(error) => {
+                    warnings.push(token_cache_warning(format!(
+                        "精确 token 分片缓存不是有效 JSON：{}（{}）",
+                        shard.display(),
+                        error
+                    )));
+                    continue;
+                }
+            };
+            let home = cache
+                .homes
+                .entry(shard.home_key)
+                .or_insert_with(|| CachedCodexHome {
+                    codex_home: shard.codex_home.clone(),
+                    files: HashMap::new(),
+                });
+            home.codex_home = shard.codex_home;
+            home.files.insert(shard.cache_key, shard.session);
+        }
+
+        Some(cache)
+    }
+
+    fn save_sharded(&self, directory: &Path) -> Result<(), String> {
+        let temp_directory = directory.with_extension("tmp");
+        let _ = fs::remove_dir_all(&temp_directory);
+        fs::create_dir_all(&temp_directory).map_err(|error| {
+            format!(
+                "创建精确 token 分片缓存目录失败：{}（{}）",
+                temp_directory.display(),
+                error
+            )
+        })?;
+
+        for (home_key, home) in &self.homes {
+            let home_directory = temp_directory.join(home_key);
+            fs::create_dir_all(&home_directory).map_err(|error| {
+                format!(
+                    "创建精确 token 分片缓存目录失败：{}（{}）",
+                    home_directory.display(),
+                    error
+                )
+            })?;
+            for (cache_key, session) in &home.files {
+                let shard = PersistentSessionShard {
+                    version: TOKEN_EVENT_CACHE_VERSION,
+                    home_key: home_key.clone(),
+                    codex_home: home.codex_home.clone(),
+                    cache_key: cache_key.clone(),
+                    session: session.clone(),
+                };
+                let data = serde_json::to_vec(&shard)
+                    .map_err(|error| format!("序列化精确 token 分片缓存失败：{error}"))?;
+                let path =
+                    home_directory.join(format!("{}.json", stable_path_fingerprint(cache_key)));
+                fs::write(&path, data).map_err(|error| {
+                    format!("写入精确 token 分片缓存失败：{}（{}）", path.display(), error)
+                })?;
+            }
+        }
+
+        if directory.exists() {
+            fs::remove_dir_all(directory).map_err(|error| {
+                format!("清理旧精确 token 分片缓存失败：{}（{}）", directory.display(), error)
+            })?;
+        }
+        fs::rename(&temp_directory, directory).map_err(|error| {
+            format!(
+                "替换精确 token 分片缓存失败：{}（{}）",
+                directory.display(),
+                error
+            )
+        })?;
+
+        if let Some(legacy_path) = app_paths::token_event_cache_path() {
+            let _ = fs::remove_file(legacy_path);
+        }
+        Ok(())
     }
 
     pub(super) fn home_cache_mut(
@@ -173,6 +307,7 @@ pub(super) fn parse_session_file_cached(
         if signature.size >= parsed_size
             && signature.size >= entry.signature.size
             && parsed_size > 0
+            && entry.ended_with_newline
         {
             let previous_total_tokens = entry.effective_previous_total_tokens();
             let parsed = parse_session_file_range(
@@ -188,6 +323,7 @@ pub(super) fn parse_session_file_cached(
                     .extend(parsed.events.iter().map(CachedTokenEvent::from_event));
                 entry.signature = signature;
                 entry.parsed_size = parsed.consumed_size;
+                entry.ended_with_newline = parsed.ended_with_newline;
                 entry.previous_total_tokens = parsed.previous_total_tokens;
                 *cache_changed = true;
                 return entry.to_events(session_id);
@@ -202,6 +338,7 @@ pub(super) fn parse_session_file_cached(
         CachedSessionFile {
             signature,
             parsed_size: parsed.consumed_size,
+            ended_with_newline: parsed.ended_with_newline,
             previous_total_tokens: parsed.previous_total_tokens,
             events: events.iter().map(CachedTokenEvent::from_event).collect(),
         },
@@ -297,6 +434,24 @@ fn stable_path_fingerprint(value: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("{hash:016x}")
+}
+
+fn collect_json_files(root: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_json_files(&path, files);
+        } else if path.extension().is_some_and(|extension| extension == "json") {
+            files.push(path);
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 pub(super) fn token_cache_warning(message: String) -> LocalDataWarning {

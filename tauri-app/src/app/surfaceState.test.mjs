@@ -208,12 +208,30 @@ test("manual dashboard refresh keeps the current snapshot visible", async () => 
 
   assert.equal(reloadAll.includes("setLoadGeneration((current) => current + 1)"), true);
   assert.equal(reloadAll.includes("setQuotaLoadGeneration((current) => current + 1)"), true);
+  assert.equal(reloadAll.includes("setRadarRefreshGeneration((current) => current + 1)"), true);
   assert.equal(reloadAll.includes("setForceNextQuotaLoad(true)"), true);
   assert.equal(reloadAll.includes("setFastSnapshotLoaded(false)"), false);
   assert.equal(reloadAll.includes("loading: true"), false);
   assert.equal(reloadAll.includes("loadInitialDashboardState"), false);
   assert.equal(reloadInitialSnapshot.includes("setFastSnapshotLoaded(false)"), true);
   assert.equal(reloadInitialSnapshot.includes("loadInitialDashboardState"), true);
+});
+
+test("manual dashboard refresh forces codex radar without clearing dashboard", async () => {
+  const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
+  const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
+  const dashboardPage = await readFile(new URL("../pages/DashboardPage.tsx", import.meta.url), "utf8");
+  const summarySection = await readFile(new URL("../pages/dashboard/DashboardSummarySection.tsx", import.meta.url), "utf8");
+  const radarStrip = await readFile(new URL("../components/CodexRadarStrip.tsx", import.meta.url), "utf8");
+
+  assert.equal(dashboardData.includes("const [radarRefreshGeneration, setRadarRefreshGeneration] = useState(0)"), true);
+  assert.equal(dashboardData.includes("refreshing: state.loading || refreshTaskCount > 0"), true);
+  assert.equal(dashboardApp.includes("radarRefreshGeneration={radarRefreshGeneration}"), true);
+  assert.equal(dashboardPage.includes("radarRefreshGeneration: number"), true);
+  assert.equal(summarySection.includes("<CodexRadarStrip refreshGeneration={radarRefreshGeneration} />"), true);
+  assert.equal(radarStrip.includes("interface CodexRadarStripProps"), true);
+  assert.equal(radarStrip.includes("readCodexRadarSnapshot({ force })"), true);
+  assert.equal(radarStrip.includes("void refresh(true)"), true);
 });
 
 test("live rate updates do not force heavy analytics rerenders", async () => {

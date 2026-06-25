@@ -31,6 +31,7 @@ interface DashboardSummarySectionProps {
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
   platform: PlatformCapabilities;
+  radarRefreshGeneration: number;
   selectedLiveThreadId: string;
 }
 
@@ -52,13 +53,14 @@ export function DashboardSummarySection({
   onToggleFloating,
   onToggleStatusTray,
   platform,
+  radarRefreshGeneration,
   selectedLiveThreadId,
 }: DashboardSummarySectionProps) {
   return (
     <>
       <QuotaStrip snapshot={dashboard.quota} />
       <StatsStrip stats={dashboard.stats} />
-      <CodexRadarStrip />
+      <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />
       <LiveRateCard
         floatingEnabled={displaySurfaces.floatingWindowEnabled}
         floatingSettings={floatingSettings}
