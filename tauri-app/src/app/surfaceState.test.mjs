@@ -141,6 +141,19 @@ test("status tray live text reuses dashboard live rate instead of polling compac
   assert.equal(dashboardApp.includes("liveRate: readyState.liveRate"), true);
 });
 
+test("live polling follows Swift fast-active idle cadence", async () => {
+  const liveFeed = await readFile(new URL("../state/useLiveRateFeed.ts", import.meta.url), "utf8");
+  const compactSnapshot = await readFile(new URL("../surfaces/useCompactPanelSnapshot.ts", import.meta.url), "utf8");
+
+  for (const source of [liveFeed, compactSnapshot]) {
+    assert.equal(source.includes("FAST_LIVE_POLL_INTERVAL_MS = 250"), true);
+    assert.equal(source.includes("IDLE_LIVE_POLL_INTERVAL_MS = 1_000"), true);
+    assert.equal(source.includes("nextLivePollInterval"), true);
+    assert.equal(source.includes("window.setTimeout"), true);
+    assert.equal(source.includes("window.setInterval"), false);
+  }
+});
+
 test("live rate card exposes Swift-style reset action", async () => {
   const liveClient = await readFile(new URL("../api/liveClient.ts", import.meta.url), "utf8");
   const apiClient = await readFile(new URL("../api/client.ts", import.meta.url), "utf8");
@@ -189,6 +202,25 @@ test("live rate updates do not force heavy analytics rerenders", async () => {
   assert.equal(dashboardData.includes("startTransition"), true);
   assert.equal(dashboardData.includes("mergePreciseDashboard(current, precise)"), true);
   assert.equal(dashboardData.includes("mergeQuota(current, quota)"), true);
+});
+
+test("dashboard records frontend commit cost for refresh payloads", async () => {
+  const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
+  const startupClient = await readFile(new URL("../api/startupClient.ts", import.meta.url), "utf8");
+  const startupCommand = await readFile(
+    new URL("../../src-tauri/src/commands/startup.rs", import.meta.url),
+    "utf8",
+  );
+  const lib = await readFile(new URL("../../src-tauri/src/lib.rs", import.meta.url), "utf8");
+
+  assert.equal(startupClient.includes("recordPerformanceEvent"), true);
+  assert.equal(startupCommand.includes("record_performance_event"), true);
+  assert.equal(startupCommand.includes("startup_trace::mark_performance"), true);
+  assert.equal(lib.includes("commands::startup::record_performance_event"), true);
+  assert.equal(dashboardData.includes("useRenderCommitPerformanceTrace"), true);
+  assert.equal(dashboardData.includes('"frontend precise dashboard"'), true);
+  assert.equal(dashboardData.includes('"frontend quota dashboard"'), true);
+  assert.equal(dashboardData.includes("recordPerformanceEvent(`${pending.label} commit ${elapsedMs}ms`)"), true);
 });
 
 test("debug launcher stages a runnable app and stops stale debug instances", async () => {

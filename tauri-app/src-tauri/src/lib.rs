@@ -28,6 +28,7 @@ pub fn run() {
             commands::settings::save_display_surfaces,
             commands::settings::save_custom_account_display_name,
             commands::settings::save_setup_guide_completed,
+            commands::startup::record_performance_event,
             commands::dashboard::read_platform_capabilities,
             commands::dashboard::read_account_quota,
             commands::dashboard::read_dashboard_snapshot,

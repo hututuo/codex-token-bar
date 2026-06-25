@@ -42,4 +42,4 @@ export {
   verifyProviderRepair,
 } from "./providerRepairClient";
 
-export { recordStartupEvent } from "./startupClient";
+export { recordPerformanceEvent, recordStartupEvent } from "./startupClient";

@@ -2,9 +2,12 @@ import {
   startTransition,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+import { recordPerformanceEvent } from "../api/startupClient";
 import { dashboardDataSource, type DashboardDataSource } from "../data/dashboardDataSource";
 import type {
   AccountQuotaBundle,
@@ -44,6 +47,7 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   const [quotaLoadGeneration, setQuotaLoadGeneration] = useState(0);
   const [forceNextQuotaLoad, setForceNextQuotaLoad] = useState(false);
   const [dashboardVisible, setDashboardVisible] = useState(dashboardIsVisible);
+  const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
   const {
     reloadAll,
     updateCodexHome,
@@ -61,16 +65,18 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   });
 
   const mergePreciseSnapshot = useCallback((precise: DashboardSnapshot) => {
+    markRenderCommit("frontend precise dashboard");
     startTransition(() => {
       setState((current) => mergePreciseDashboard(current, precise));
     });
-  }, []);
+  }, [markRenderCommit]);
 
   const mergeQuotaSnapshot = useCallback((quota: AccountQuotaBundle) => {
+    markRenderCommit("frontend quota dashboard");
     startTransition(() => {
       setState((current) => mergeQuota(current, quota));
     });
-  }, []);
+  }, [markRenderCommit]);
 
   const mergeLiveRateSnapshot = useCallback((liveRate: LiveRateSnapshot) => {
     setState((current) => mergeLiveRate(current, liveRate));
@@ -186,4 +192,30 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
     selectedLiveThreadId,
     setSelectedLiveThreadId,
   };
+}
+
+interface PendingRenderCommit {
+  label: string;
+  startedAt: number;
+}
+
+function useRenderCommitPerformanceTrace(dashboard: DashboardSnapshot | null) {
+  const pendingCommitRef = useRef<PendingRenderCommit | null>(null);
+
+  useLayoutEffect(() => {
+    const pending = pendingCommitRef.current;
+    if (pending === null || dashboard === null) {
+      return;
+    }
+    pendingCommitRef.current = null;
+    const elapsedMs = Math.round(performance.now() - pending.startedAt);
+    void recordPerformanceEvent(`${pending.label} commit ${elapsedMs}ms`);
+  }, [dashboard]);
+
+  return useCallback((label: string) => {
+    pendingCommitRef.current = {
+      label,
+      startedAt: performance.now(),
+    };
+  }, []);
 }
