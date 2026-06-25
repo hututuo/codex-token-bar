@@ -189,6 +189,23 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(recentValues.min() ?? 100, 98)
     }
 
+    func testRecentHistorySuppressesLatestSevenDayFullUsageSpike() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let fiveHourReset = now.addingTimeInterval(3 * 60 * 60)
+        let sevenDayReset = now.addingTimeInterval(4 * 24 * 60 * 60)
+
+        try database.record(snapshot(usedPercent: 2, sevenDayUsedPercent: 0, reset: fiveHourReset, sevenDayReset: sevenDayReset, planType: "Pro", limitName: "codex", at: now.addingTimeInterval(-20 * 60)), createdAt: now.addingTimeInterval(-20 * 60))
+        try database.record(snapshot(usedPercent: 3, sevenDayUsedPercent: 100, reset: fiveHourReset, sevenDayReset: sevenDayReset, planType: "Pro", limitName: "codex", at: now.addingTimeInterval(-5 * 60)), createdAt: now.addingTimeInterval(-5 * 60))
+
+        let loaded = try database.loadSnapshot(now: now)
+        let recentValues = loaded.recentBins.compactMap(\.sevenDayRemainingPercent)
+
+        XCTAssertFalse(recentValues.contains(0), "latest full-usage spike should not leave a 7d quota pit")
+        XCTAssertGreaterThanOrEqual(recentValues.min() ?? 100, 99)
+    }
+
     private func snapshot(
         usedPercent: Int,
         sevenDayUsedPercent: Int = 40,

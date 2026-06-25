@@ -287,7 +287,12 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             }
             .flatMap(futureValue)
 
-        guard let recovered else { return current }
+        guard let recovered else {
+            if let previous, previous <= 5, current >= 95 {
+                return previous
+            }
+            return current
+        }
         if let previous, current < 95, current - previous < 20 {
             return current
         }

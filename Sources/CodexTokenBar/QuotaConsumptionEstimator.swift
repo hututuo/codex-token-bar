@@ -236,12 +236,28 @@ extension RecentChartPreparedData {
     }
 
     private func cumulativeQuotaDrop(_ values: [Double?], lower: Int, upper: Int) -> Double? {
-        let availableValues = values[lower...upper].compactMap { $0 }
+        let availableValues = sanitizedQuotaDropValues(values[lower...upper].compactMap { $0 })
         guard availableValues.count >= 2 else { return nil }
 
         return zip(availableValues, availableValues.dropFirst())
             .reduce(0) { partial, pair in
                 partial + max(pair.0 - pair.1, 0)
             }
+    }
+
+    private func sanitizedQuotaDropValues(_ values: [Double]) -> [Double] {
+        values.enumerated().compactMap { index, value in
+            let previous = index > 0 ? values[index - 1] : nil
+            let next = index + 1 < values.count ? values[index + 1] : nil
+            if isFullUsageSpike(value, previous: previous, next: next) {
+                return nil
+            }
+            return value
+        }
+    }
+
+    private func isFullUsageSpike(_ value: Double, previous: Double?, next: Double?) -> Bool {
+        guard value <= 1, let previous, previous >= 95 else { return false }
+        return next == nil || (next ?? 0) >= 95
     }
 }
