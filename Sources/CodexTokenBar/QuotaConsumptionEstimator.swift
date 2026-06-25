@@ -153,7 +153,7 @@ extension QuotaConsumptionSelection {
 
     var hasDivergentBudgetRatio: Bool {
         guard let ratio = sevenDayToFiveHourBudgetRatio else { return false }
-        return ratio < 4 || ratio > 8
+        return ratio < 4.5 || ratio > 7.5
     }
 }
 

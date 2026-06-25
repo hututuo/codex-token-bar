@@ -84,40 +84,49 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     func testSelectionReportsSevenDayToFiveHourBudgetRatioAndDivergence() throws {
-        let selection = QuotaConsumptionSelection(
-            startIndex: 0,
-            endIndex: 1,
-            bucketCount: 2,
-            startDate: Date(timeIntervalSince1970: 0),
-            endDate: Date(timeIntervalSince1970: 600),
-            priceCard: .officialAPI(.gpt55),
-            breakdown: .empty,
-            fiveHour: QuotaConsumptionEstimate(
-                selectedCostUSD: 1,
-                impliedWindowBudgetUSD: 10,
-                quotaDropPercent: 10,
-                inputTokens: 0,
-                cachedInputTokens: 0,
-                outputTokens: 0,
-                calls: 0,
-                cacheHitRate: 0,
-                confidence: .measured
-            ),
-            sevenDay: QuotaConsumptionEstimate(
-                selectedCostUSD: 1,
-                impliedWindowBudgetUSD: 90,
-                quotaDropPercent: 1.1,
-                inputTokens: 0,
-                cachedInputTokens: 0,
-                outputTokens: 0,
-                calls: 0,
-                cacheHitRate: 0,
-                confidence: .measured
+        func selection(fiveHourBudget: Double, sevenDayBudget: Double) -> QuotaConsumptionSelection {
+            QuotaConsumptionSelection(
+                startIndex: 0,
+                endIndex: 1,
+                bucketCount: 2,
+                startDate: Date(timeIntervalSince1970: 0),
+                endDate: Date(timeIntervalSince1970: 600),
+                priceCard: .officialAPI(.gpt55),
+                breakdown: .empty,
+                fiveHour: QuotaConsumptionEstimate(
+                    selectedCostUSD: 1,
+                    impliedWindowBudgetUSD: fiveHourBudget,
+                    quotaDropPercent: 10,
+                    inputTokens: 0,
+                    cachedInputTokens: 0,
+                    outputTokens: 0,
+                    calls: 0,
+                    cacheHitRate: 0,
+                    confidence: .measured
+                ),
+                sevenDay: QuotaConsumptionEstimate(
+                    selectedCostUSD: 1,
+                    impliedWindowBudgetUSD: sevenDayBudget,
+                    quotaDropPercent: 1.1,
+                    inputTokens: 0,
+                    cachedInputTokens: 0,
+                    outputTokens: 0,
+                    calls: 0,
+                    cacheHitRate: 0,
+                    confidence: .measured
+                )
             )
-        )
+        }
 
-        XCTAssertEqual(try XCTUnwrap(selection.sevenDayToFiveHourBudgetRatio), 9, accuracy: 0.0001)
-        XCTAssertTrue(selection.hasDivergentBudgetRatio)
+        let highDivergence = selection(fiveHourBudget: 10, sevenDayBudget: 76)
+        let lowDivergence = selection(fiveHourBudget: 10, sevenDayBudget: 44)
+        let normal = selection(fiveHourBudget: 10, sevenDayBudget: 60)
+
+        XCTAssertEqual(try XCTUnwrap(highDivergence.sevenDayToFiveHourBudgetRatio), 7.6, accuracy: 0.0001)
+        XCTAssertTrue(highDivergence.hasDivergentBudgetRatio)
+        XCTAssertEqual(try XCTUnwrap(lowDivergence.sevenDayToFiveHourBudgetRatio), 4.4, accuracy: 0.0001)
+        XCTAssertTrue(lowDivergence.hasDivergentBudgetRatio)
+        XCTAssertFalse(normal.hasDivergentBudgetRatio)
     }
 
     func testPreparedDataUsesCumulativeQuotaDropAcrossClickedRange() throws {
@@ -245,7 +254,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(source.contains("quotaConsumptionSelection("))
         XCTAssertTrue(source.contains("onClick:"))
         XCTAssertTrue(source.contains("点击图表估算额度"))
-        XCTAssertTrue(source.contains("y: plot.minY -"))
+        XCTAssertTrue(source.contains("y: plot.minY - 58"))
         XCTAssertTrue(componentSource.contains("点击图表可估算额度"))
         XCTAssertTrue(componentSource.contains("xmark.circle.fill"))
         XCTAssertTrue(componentSource.contains("onClose:"))

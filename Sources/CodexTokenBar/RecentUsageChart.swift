@@ -270,7 +270,7 @@ struct RecentUsageChart: View {
                             consumptionSelectionState.reset()
                         }
                     )
-                        .position(x: plot.minX + 205, y: plot.minY - 34)
+                        .position(x: plot.minX + 205, y: plot.minY - 58)
                         .zIndex(12)
                 }
 
