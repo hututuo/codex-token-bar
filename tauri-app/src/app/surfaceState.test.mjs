@@ -101,6 +101,27 @@ test("compact surfaces refresh quota every minute", async () => {
   assert.equal(compactData.includes("DEFAULT_QUOTA_INTERVAL_MS = 60_000"), true);
 });
 
+test("manual dashboard refresh keeps the current snapshot visible", async () => {
+  const actions = await readFile(new URL("../state/useDashboardActions.ts", import.meta.url), "utf8");
+  const reloadAll = actions.slice(
+    actions.indexOf("const reloadAll ="),
+    actions.indexOf("const updateCodexHome ="),
+  );
+  const reloadInitialSnapshot = actions.slice(
+    actions.indexOf("const reloadInitialSnapshot ="),
+    actions.indexOf("const reloadAll ="),
+  );
+
+  assert.equal(reloadAll.includes("setLoadGeneration((current) => current + 1)"), true);
+  assert.equal(reloadAll.includes("setQuotaLoadGeneration((current) => current + 1)"), true);
+  assert.equal(reloadAll.includes("setForceNextQuotaLoad(true)"), true);
+  assert.equal(reloadAll.includes("setFastSnapshotLoaded(false)"), false);
+  assert.equal(reloadAll.includes("loading: true"), false);
+  assert.equal(reloadAll.includes("loadInitialDashboardState"), false);
+  assert.equal(reloadInitialSnapshot.includes("setFastSnapshotLoaded(false)"), true);
+  assert.equal(reloadInitialSnapshot.includes("loadInitialDashboardState"), true);
+});
+
 test("debug launcher stages a runnable app and stops stale debug instances", async () => {
   const script = await readFile(
     new URL("../../../scripts/open_tauri_debug_app.sh", import.meta.url),

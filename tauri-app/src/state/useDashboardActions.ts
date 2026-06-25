@@ -35,10 +35,7 @@ export function useDashboardActions({
 }: DashboardActionsOptions) {
   const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
 
-  const reloadAll = useCallback(async () => {
-    setLoadGeneration((current) => current + 1);
-    setQuotaLoadGeneration((current) => current + 1);
-    setForceNextQuotaLoad(true);
+  const reloadInitialSnapshot = useCallback(async () => {
     setFastSnapshotLoaded(false);
     setState((current) => ({ ...current, loading: true }));
     await loadInitialDashboardState({
@@ -49,26 +46,33 @@ export function useDashboardActions({
     });
   }, [
     setFastSnapshotLoaded,
+    setState,
+    source,
+  ]);
+
+  const reloadAll = useCallback(async () => {
+    setLoadGeneration((current) => current + 1);
+    setQuotaLoadGeneration((current) => current + 1);
+    setForceNextQuotaLoad(true);
+  }, [
     setForceNextQuotaLoad,
     setLoadGeneration,
     setQuotaLoadGeneration,
-    setState,
-    source,
   ]);
 
   const updateCodexHome = useCallback(async (path: string) => {
     setSelectedLiveThreadId("");
     setState((current) => ({ ...current, loading: true }));
     await source.setCodexHome(path);
-    await reloadAll();
-  }, [reloadAll, setState, source]);
+    await reloadInitialSnapshot();
+  }, [reloadInitialSnapshot, setState, source]);
 
   const restoreAutoCodexHome = useCallback(async () => {
     setSelectedLiveThreadId("");
     setState((current) => ({ ...current, loading: true }));
     await source.resetCodexHome();
-    await reloadAll();
-  }, [reloadAll, setState, source]);
+    await reloadInitialSnapshot();
+  }, [reloadInitialSnapshot, setState, source]);
 
   const updateProviderRepair = useCallback((repair: ProviderRepairSnapshot) => {
     setState((current) => ({ ...current, repair }));
