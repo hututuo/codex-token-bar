@@ -1,9 +1,10 @@
 use crate::core::app_paths;
 use crate::core::sqlite;
 use crate::models::{
-    AccountQuotaBundle, ActivityDay, LocalDataWarning, QuotaHistoryPoint, QuotaSnapshot,
-    RecentUsagePoint,
+    AccountQuotaBundle, LocalDataWarning, QuotaHistoryDailyPoint, QuotaHistoryPoint, QuotaSnapshot,
 };
+#[cfg(test)]
+use crate::models::RecentUsagePoint;
 use rusqlite::{Connection, Result as SqlResult};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -53,49 +54,13 @@ pub fn recent_history_30d() -> Result<Vec<QuotaHistoryPoint>, String> {
         .map_err(|error| format!("读取 30 天额度历史失败：{error}"))
 }
 
-pub fn apply_recent_history(points: &mut [RecentUsagePoint]) -> Result<(), String> {
-    apply_recent_history_with_interval(points, 5 * 60, "24 小时")
+pub fn daily_history(day_count: usize) -> Result<Vec<QuotaHistoryDailyPoint>, String> {
+    QuotaHistoryDatabase::default()?
+        .daily_history_points(day_count)
+        .map_err(|error| format!("读取每日额度历史失败：{error}"))
 }
 
-pub fn apply_recent_history_7d(points: &mut [RecentUsagePoint]) -> Result<(), String> {
-    apply_recent_history_with_interval(points, 60 * 60, "7 天")
-}
-
-pub fn apply_recent_history_30d(points: &mut [RecentUsagePoint]) -> Result<(), String> {
-    apply_recent_history_with_interval(points, 6 * 60 * 60, "30 天")
-}
-
-fn apply_recent_history_with_interval(
-    points: &mut [RecentUsagePoint],
-    interval_seconds: i64,
-    label: &str,
-) -> Result<(), String> {
-    if points.is_empty() {
-        return Ok(());
-    }
-    let history = QuotaHistoryDatabase::default()?
-        .recent_history(points.len(), interval_seconds)
-        .map_err(|error| format!("读取 {label}额度历史失败：{error}"))?;
-    overlay_history(points, &history);
-    Ok(())
-}
-
-pub fn apply_activity_history(days: &mut [ActivityDay]) -> Result<(), String> {
-    if days.is_empty() {
-        return Ok(());
-    }
-    let history = QuotaHistoryDatabase::default()?
-        .daily_history(days.len())
-        .map_err(|error| format!("读取每日额度历史失败：{error}"))?;
-    for day in days {
-        if let Some(quota) = history.get(&day.date) {
-            day.five_hour_remaining_percent = quota.five_hour_remaining_percent;
-            day.seven_day_remaining_percent = quota.seven_day_remaining_percent;
-        }
-    }
-    Ok(())
-}
-
+#[cfg(test)]
 pub fn overlay_history(points: &mut [RecentUsagePoint], history: &[QuotaHistoryPoint]) {
     let history_by_start: HashMap<i64, &QuotaHistoryPoint> = history
         .iter()
@@ -169,6 +134,18 @@ impl QuotaHistoryDatabase {
         ensure_schema(&connection)?;
         let rows = rows_since(&connection, day_count.max(1) as f64 * 24.0 * 60.0 * 60.0)?;
         Ok(make_daily_history(rows))
+    }
+
+    fn daily_history_points(&self, day_count: usize) -> SqlResult<Vec<QuotaHistoryDailyPoint>> {
+        Ok(self
+            .daily_history(day_count)?
+            .into_iter()
+            .map(|(date, history)| QuotaHistoryDailyPoint {
+                date,
+                five_hour_remaining_percent: history.five_hour_remaining_percent,
+                seven_day_remaining_percent: history.seven_day_remaining_percent,
+            })
+            .collect())
     }
 
     fn open(&self) -> SqlResult<Connection> {

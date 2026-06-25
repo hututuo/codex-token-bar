@@ -538,6 +538,7 @@ fn bundle(
             },
             pace_label: "测试".into(),
         },
+        quota_history_daily: Vec::new(),
         quota_history_24h: Vec::new(),
         quota_history_7d: Vec::new(),
         quota_history_30d: Vec::new(),

@@ -82,6 +82,7 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
             let mut bundle = AccountQuotaBundle {
                 account: account_info(codex_home, Some(&quota)),
                 quota,
+                quota_history_daily: Vec::new(),
                 quota_history_24h: Vec::new(),
                 quota_history_7d: Vec::new(),
                 quota_history_30d: Vec::new(),
@@ -109,6 +110,10 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
 }
 
 fn refresh_quota_histories(bundle: &mut AccountQuotaBundle) {
+    match quota_history::daily_history(365) {
+        Ok(history) => bundle.quota_history_daily = history,
+        Err(error) => bundle.warnings.push(quota_history::warning(error)),
+    }
     match quota_history::recent_history_24h() {
         Ok(history) => bundle.quota_history_24h = history,
         Err(error) => bundle.warnings.push(quota_history::warning(error)),
@@ -274,6 +279,7 @@ mod tests {
                 plan_label: "Pro".into(),
             },
             quota,
+            quota_history_daily: Vec::new(),
             quota_history_24h: Vec::new(),
             quota_history_7d: Vec::new(),
             quota_history_30d: Vec::new(),

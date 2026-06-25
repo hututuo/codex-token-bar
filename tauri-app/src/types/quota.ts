@@ -20,6 +20,12 @@ export interface QuotaHistoryPoint {
   sevenDayRemainingPercent: number | null;
 }
 
+export interface QuotaHistoryDailyPoint {
+  date: string;
+  fiveHourRemainingPercent: number | null;
+  sevenDayRemainingPercent: number | null;
+}
+
 export interface ResetCreditSummary {
   availableCount: number;
   status: string;
@@ -52,6 +58,7 @@ export interface QuotaSnapshot {
 export interface AccountQuotaBundle {
   account: AccountInfo;
   quota: QuotaSnapshot;
+  quotaHistoryDaily: QuotaHistoryDailyPoint[];
   quotaHistory24h: QuotaHistoryPoint[];
   quotaHistory7d: QuotaHistoryPoint[];
   quotaHistory30d: QuotaHistoryPoint[];

@@ -1,4 +1,4 @@
-use crate::core::{app_paths, quota_history};
+use crate::core::app_paths;
 use crate::models::{
     AccountInfo, DashboardSnapshot, LocalDataWarning, QuotaLimit, QuotaSnapshot,
     ResetCreditSummary,
@@ -75,10 +75,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     let generated_at = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
-    let mut activity_days = activity_days(&events, local_offset);
-    if let Err(error) = quota_history::apply_activity_history(&mut activity_days) {
-        warnings.push(quota_history::warning(error));
-    }
+    let activity_days = activity_days(&events, local_offset);
     let recent_usage_24h = recent_usage(&events, local_offset);
     let recent_usage_7d = recent_usage_7d(&events, local_offset);
     let recent_usage_30d = recent_usage_30d(&events, local_offset);

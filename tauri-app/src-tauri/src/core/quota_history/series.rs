@@ -148,58 +148,32 @@ fn suppress_recovered_usage_spikes_for_window(
     reset: impl Fn(&QuotaHistoryRow) -> Option<f64> + Copy,
     mut set_used: impl FnMut(&mut QuotaHistoryRow, Option<i32>),
 ) {
-    for index in 0..rows.len() {
-        let Some(current_used) = used(&rows[index]) else {
-            continue;
-        };
-        let current_account = rows[index].history_match_key();
-        let current_reset = reset(&rows[index]);
-        let previous = previous_same_cycle_used(rows, index, &current_account, current_reset, used, reset);
-        let next = next_same_cycle_used(rows, index + 1, &current_account, current_reset, used, reset);
-        if let (Some(previous_used), Some(next_used)) = (previous, next) {
+    let mut groups: HashMap<(String, Option<i64>), Vec<(usize, i32)>> = HashMap::new();
+    for (index, row) in rows.iter().enumerate() {
+        if let Some(value) = used(row) {
+            groups
+                .entry((row.history_match_key(), reset_bucket(reset(row))))
+                .or_default()
+                .push((index, value));
+        }
+    }
+
+    for entries in groups.values() {
+        for window in entries.windows(3) {
+            let previous_used = window[0].1;
+            let current_index = window[1].0;
+            let current_used = window[1].1;
+            let next_used = window[2].1;
             let recovered_floor = previous_used.max(next_used);
             if current_used - recovered_floor >= 20 {
-                set_used(&mut rows[index], Some(previous_used));
+                set_used(&mut rows[current_index], Some(previous_used));
             }
         }
     }
 }
 
-fn previous_same_cycle_used(
-    rows: &[QuotaHistoryRow],
-    index: usize,
-    account_key: &str,
-    reset_at: Option<f64>,
-    used: impl Fn(&QuotaHistoryRow) -> Option<i32> + Copy,
-    reset: impl Fn(&QuotaHistoryRow) -> Option<f64> + Copy,
-) -> Option<i32> {
-    rows[..index]
-        .iter()
-        .rev()
-        .find(|row| row.history_match_key() == account_key && same_reset(reset(row), reset_at))
-        .and_then(used)
-}
-
-fn next_same_cycle_used(
-    rows: &[QuotaHistoryRow],
-    index: usize,
-    account_key: &str,
-    reset_at: Option<f64>,
-    used: impl Fn(&QuotaHistoryRow) -> Option<i32> + Copy,
-    reset: impl Fn(&QuotaHistoryRow) -> Option<f64> + Copy,
-) -> Option<i32> {
-    rows[index..]
-        .iter()
-        .find(|row| row.history_match_key() == account_key && same_reset(reset(row), reset_at))
-        .and_then(used)
-}
-
-fn same_reset(left: Option<f64>, right: Option<f64>) -> bool {
-    match (left, right) {
-        (Some(left), Some(right)) => (left - right).abs() < 1.0,
-        (None, None) => true,
-        _ => false,
-    }
+fn reset_bucket(value: Option<f64>) -> Option<i64> {
+    value.map(|value| value.round() as i64)
 }
 
 fn floor_to_bin(timestamp: f64, interval_seconds: i64) -> f64 {

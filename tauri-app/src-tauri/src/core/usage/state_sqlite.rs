@@ -1,4 +1,3 @@
-use crate::core::quota_history;
 use crate::core::sqlite;
 use crate::models::{
     AccountInfo, ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats,
@@ -22,11 +21,8 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
     let stats = read_stats(&connection)?;
     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
     let local_now = OffsetDateTime::now_utc().to_offset(local_offset);
-    let mut activity_days = empty_activity_days(local_now.date());
-    let mut warnings = Vec::new();
-    if let Err(error) = quota_history::apply_activity_history(&mut activity_days) {
-        warnings.push(quota_history::warning(error));
-    }
+    let activity_days = empty_activity_days(local_now.date());
+    let warnings = Vec::new();
     let recent_usage_24h = empty_recent_usage(local_now, 5 * 60, 289);
     let recent_usage_7d = empty_recent_usage(local_now, 60 * 60, 7 * 24);
     let recent_usage_30d = empty_recent_usage(local_now, 6 * 60 * 60, 30 * 4);

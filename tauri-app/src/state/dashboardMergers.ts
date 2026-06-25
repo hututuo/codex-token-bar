@@ -1,8 +1,10 @@
 import type {
   AccountQuotaBundle,
+  ActivityDay,
   DashboardSnapshot,
   LiveRateSnapshot,
   LiveThreadOption,
+  QuotaHistoryDailyPoint,
   QuotaHistoryPoint,
   RecentUsagePoint,
 } from "../types/dashboard";
@@ -22,6 +24,10 @@ export function mergePreciseDashboard(
             ...precise,
             account: state.dashboard.account,
             quota: state.dashboard.quota,
+            activityDays: mergeActivityQuotaHistory(precise.activityDays, state.dashboard.activityDays),
+            recentUsage24h: mergeQuotaHistory(precise.recentUsage24h, state.dashboard.recentUsage24h),
+            recentUsage7d: mergeQuotaHistory(precise.recentUsage7d, state.dashboard.recentUsage7d),
+            recentUsage30d: mergeQuotaHistory(precise.recentUsage30d, state.dashboard.recentUsage30d),
             warnings: mergeWarnings(state.dashboard.warnings, precise.warnings),
           },
   };
@@ -35,6 +41,7 @@ export function mergeQuota(state: DashboardAppState, quota: AccountQuotaBundle):
           ...state.dashboard,
           account: quota.account,
           quota: quota.quota,
+          activityDays: mergeActivityQuotaHistory(state.dashboard.activityDays, quota.quotaHistoryDaily),
           recentUsage24h: mergeQuotaHistory(state.dashboard.recentUsage24h, quota.quotaHistory24h),
           recentUsage7d: mergeQuotaHistory(state.dashboard.recentUsage7d, quota.quotaHistory7d),
           recentUsage30d: mergeQuotaHistory(state.dashboard.recentUsage30d, quota.quotaHistory30d),
@@ -64,6 +71,28 @@ export function mergeLiveThreadOptions(
     ...state,
     liveThreadOptions,
   };
+}
+
+function mergeActivityQuotaHistory(
+  days: ActivityDay[],
+  historyDays: Array<QuotaHistoryDailyPoint | ActivityDay>,
+): ActivityDay[] {
+  if (historyDays.length === 0) {
+    return days;
+  }
+
+  const historyByDate = new Map(historyDays.map((day) => [day.date, day]));
+  return days.map((day) => {
+    const history = historyByDate.get(day.date);
+    if (history === undefined) {
+      return day;
+    }
+    return {
+      ...day,
+      fiveHourRemainingPercent: history.fiveHourRemainingPercent,
+      sevenDayRemainingPercent: history.sevenDayRemainingPercent,
+    };
+  });
 }
 
 function mergeQuotaHistory(points: RecentUsagePoint[], historyPoints: QuotaHistoryPoint[]): RecentUsagePoint[] {

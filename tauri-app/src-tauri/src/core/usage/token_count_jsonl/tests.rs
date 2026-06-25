@@ -20,12 +20,21 @@ fn parses_token_count_totals_as_deltas() {
     let session_dir = root.join("sessions").join("2026").join("06").join("18");
     fs::create_dir_all(&session_dir).unwrap();
     let file = session_dir.join("rollout-019eaaaa-bbbb-cccc-dddd-eeeeffffffff.jsonl");
+    let first_timestamp = (OffsetDateTime::now_utc() - time::Duration::minutes(10))
+        .format(&Rfc3339)
+        .unwrap();
+    let second_timestamp = (OffsetDateTime::now_utc() - time::Duration::minutes(5))
+        .format(&Rfc3339)
+        .unwrap();
+    let first_line = format!(
+        r#"{{"timestamp":"{first_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"total_tokens":13}},"last_token_usage":{{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"total_tokens":13}}}}}}}}"#
+    );
+    let second_line = format!(
+        r#"{{"timestamp":"{second_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":20,"cached_input_tokens":5,"output_tokens":8,"total_tokens":28}},"last_token_usage":{{"input_tokens":10,"cached_input_tokens":3,"output_tokens":5,"total_tokens":15}}}}}}}}"#
+    );
     write_lines(
         &file,
-        &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"total_tokens":13},"last_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"total_tokens":13}}}}"#,
-            r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":8,"total_tokens":28},"last_token_usage":{"input_tokens":10,"cached_input_tokens":3,"output_tokens":5,"total_tokens":15}}}}"#,
-        ],
+        &[first_line, second_line],
     );
 
     let snapshot = dashboard_snapshot(&root).unwrap();
@@ -261,10 +270,10 @@ fn temp_root() -> PathBuf {
     ))
 }
 
-fn write_lines(path: &Path, lines: &[&str]) {
+fn write_lines<S: AsRef<str>>(path: &Path, lines: &[S]) {
     let mut file = fs::File::create(path).unwrap();
     for line in lines {
-        writeln!(file, "{line}").unwrap();
+        writeln!(file, "{}", line.as_ref()).unwrap();
     }
 }
 

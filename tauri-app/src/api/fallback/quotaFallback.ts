@@ -1,5 +1,5 @@
 import type { AccountQuotaBundle, QuotaSnapshot } from "../../types/quota";
-import { emptyRecentUsage } from "./timeSeriesFallback";
+import { emptyActivityDays, emptyRecentUsage } from "./timeSeriesFallback";
 
 export function emptyQuotaSnapshot(): QuotaSnapshot {
   return {
@@ -28,6 +28,11 @@ export function emptyQuotaSnapshot(): QuotaSnapshot {
 
 export function emptyAccountQuotaBundle(): AccountQuotaBundle {
   const now = new Date();
+  const emptyQuotaHistoryDaily = emptyActivityDays(now).map((day) => ({
+    date: day.date,
+    fiveHourRemainingPercent: null,
+    sevenDayRemainingPercent: null,
+  }));
   const emptyQuotaHistory24h = emptyRecentUsage(now).map((point) => ({
     label: point.label,
     startUnix: point.startUnix,
@@ -53,6 +58,7 @@ export function emptyAccountQuotaBundle(): AccountQuotaBundle {
       planLabel: "计划待读取",
     },
     quota: emptyQuotaSnapshot(),
+    quotaHistoryDaily: emptyQuotaHistoryDaily,
     quotaHistory24h: emptyQuotaHistory24h,
     quotaHistory7d: emptyQuotaHistory7d,
     quotaHistory30d: emptyQuotaHistory30d,

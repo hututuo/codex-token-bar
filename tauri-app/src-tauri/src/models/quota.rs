@@ -7,6 +7,7 @@ use super::{AccountInfo, LocalDataWarning};
 pub struct AccountQuotaBundle {
     pub account: AccountInfo,
     pub quota: QuotaSnapshot,
+    pub quota_history_daily: Vec<QuotaHistoryDailyPoint>,
     pub quota_history_24h: Vec<QuotaHistoryPoint>,
     pub quota_history_7d: Vec<QuotaHistoryPoint>,
     pub quota_history_30d: Vec<QuotaHistoryPoint>,
@@ -37,6 +38,14 @@ pub struct QuotaLimit {
 pub struct QuotaHistoryPoint {
     pub label: String,
     pub start_unix: i64,
+    pub five_hour_remaining_percent: Option<f64>,
+    pub seven_day_remaining_percent: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaHistoryDailyPoint {
+    pub date: String,
     pub five_hour_remaining_percent: Option<f64>,
     pub seven_day_remaining_percent: Option<f64>,
 }
