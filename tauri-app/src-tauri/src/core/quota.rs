@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 const SUCCESS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
 const HISTORY_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const FORCED_REFRESH_COALESCE_TTL: Duration = Duration::from_secs(5);
 
 mod auth;
 mod codex_binary;
@@ -23,6 +24,7 @@ mod reset_credit;
 
 static QUOTA_READ_CACHE: OnceLock<Mutex<Option<QuotaCacheEntry>>> = OnceLock::new();
 static QUOTA_HISTORY_CACHE: OnceLock<Mutex<QuotaHistoryMemoryCache>> = OnceLock::new();
+static QUOTA_READ_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Clone)]
 struct QuotaCacheEntry {
@@ -69,30 +71,18 @@ impl QuotaHistoryMemoryCache {
 }
 
 pub fn read_account_quota(codex_home: &Path, force_refresh: bool) -> Result<AccountQuotaBundle, String> {
-    let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
-    let cached = if !force_refresh {
-        let guard = cache.lock().map_err(|error| error.to_string())?;
-        guard
-            .as_ref()
-            .filter(|entry| {
-                entry.codex_home == codex_home && entry.cached_at.elapsed() <= cache_ttl(&entry.result)
-            })
-            .map(|entry| entry.result.clone())
-    } else {
-        None
-    };
+    if let Some(cached) = cached_quota_result(codex_home, force_refresh)? {
+        return resolve_cached_quota(cached);
+    }
 
-    if let Some(cached) = cached {
-        return match cached {
-            Ok(mut bundle) => {
-                refresh_quota_histories(&mut bundle, false);
-                Ok(bundle)
-            }
-            Err(error) => Err(error),
-        };
+    let gate = QUOTA_READ_GATE.get_or_init(|| Mutex::new(()));
+    let _read_guard = gate.lock().map_err(|error| error.to_string())?;
+    if let Some(cached) = cached_quota_result(codex_home, force_refresh)? {
+        return resolve_cached_quota(cached);
     }
 
     let result = read_account_quota_uncached(codex_home);
+    let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
     let mut guard = cache.lock().map_err(|error| error.to_string())?;
     *guard = Some(QuotaCacheEntry {
         codex_home: codex_home.to_path_buf(),
@@ -100,6 +90,36 @@ pub fn read_account_quota(codex_home: &Path, force_refresh: bool) -> Result<Acco
         result: result.clone(),
     });
     result
+}
+
+fn cached_quota_result(
+    codex_home: &Path,
+    force_refresh: bool,
+) -> Result<Option<Result<AccountQuotaBundle, String>>, String> {
+    let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
+    let guard = cache.lock().map_err(|error| error.to_string())?;
+    Ok(guard
+        .as_ref()
+        .filter(|entry| {
+            entry.codex_home == codex_home
+                && entry.cached_at.elapsed()
+                    <= if force_refresh {
+                        FORCED_REFRESH_COALESCE_TTL
+                    } else {
+                        cache_ttl(&entry.result)
+                    }
+        })
+        .map(|entry| entry.result.clone()))
+}
+
+fn resolve_cached_quota(cached: Result<AccountQuotaBundle, String>) -> Result<AccountQuotaBundle, String> {
+    match cached {
+        Ok(mut bundle) => {
+            refresh_quota_histories(&mut bundle, false);
+            Ok(bundle)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn cache_ttl(result: &Result<AccountQuotaBundle, String>) -> Duration {
@@ -371,5 +391,64 @@ mod tests {
         assert_eq!(SUCCESS_CACHE_TTL, Duration::from_secs(5 * 60));
         assert_eq!(HISTORY_CACHE_TTL, Duration::from_secs(5 * 60));
         assert_eq!(FAILURE_CACHE_TTL, Duration::from_secs(15));
+    }
+
+    #[test]
+    fn forced_quota_refresh_coalesces_only_recent_cache_entries() {
+        let codex_home = std::env::temp_dir().join(format!(
+            "codex-token-bar-quota-cache-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bundle = AccountQuotaBundle {
+            account: AccountInfo {
+                display_name: "本地用户".into(),
+                plan_label: "Pro".into(),
+            },
+            quota: parse_rate_limits(&json!({
+                "rateLimitsByLimitId": {
+                    "codex": {
+                        "limitId": "codex",
+                        "limitName": "Codex",
+                        "primary": { "usedPercent": 20, "resetsAt": 1781715600 },
+                        "secondary": { "usedPercent": 40, "resetsAt": 1782144492 }
+                    }
+                }
+            }))
+            .unwrap(),
+            quota_history_daily: Vec::new(),
+            quota_history_24h: Vec::new(),
+            quota_history_7d: Vec::new(),
+            quota_history_30d: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
+
+        {
+            let mut guard = cache.lock().unwrap();
+            *guard = Some(QuotaCacheEntry {
+                codex_home: codex_home.clone(),
+                result: Ok(bundle.clone()),
+                cached_at: Instant::now(),
+            });
+        }
+        assert!(cached_quota_result(&codex_home, true).unwrap().is_some());
+
+        {
+            let mut guard = cache.lock().unwrap();
+            *guard = Some(QuotaCacheEntry {
+                codex_home: codex_home.clone(),
+                result: Ok(bundle),
+                cached_at: Instant::now()
+                    .checked_sub(FORCED_REFRESH_COALESCE_TTL + Duration::from_millis(1))
+                    .unwrap(),
+            });
+        }
+        assert!(cached_quota_result(&codex_home, true).unwrap().is_none());
+
+        let mut guard = cache.lock().unwrap();
+        *guard = None;
     }
 }
