@@ -149,6 +149,28 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(recentValues.min() ?? 100, 88)
     }
 
+    func testRecentHistoryInterpolatesAcrossMissingQuotaSamplesInSameCycle() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let reset = now.addingTimeInterval(3 * 60 * 60)
+
+        try database.record(
+            snapshot(usedPercent: 20, reset: reset, planType: "Pro", limitName: "codex", at: now.addingTimeInterval(-4 * 60 * 60)),
+            createdAt: now.addingTimeInterval(-4 * 60 * 60)
+        )
+        try database.record(
+            snapshot(usedPercent: 22, reset: reset, planType: "Pro", limitName: "codex", at: now.addingTimeInterval(-30 * 60)),
+            createdAt: now.addingTimeInterval(-30 * 60)
+        )
+
+        let loaded = try database.loadSnapshot(now: now)
+        let recentValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
+        let interpolatedValues = recentValues.filter { $0 < 79.9 && $0 > 78.1 }
+
+        XCTAssertFalse(interpolatedValues.isEmpty, "quota curve should connect 80% to 78% smoothly across a sleep/no-sample gap")
+    }
+
     func testRecentHistorySuppressesRecoveredSevenDayFullUsageSpike() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)

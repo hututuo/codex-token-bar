@@ -324,6 +324,9 @@ struct DashboardView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             updateUsageRefreshCadence()
         }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
+            refreshAllData()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in
             showingResetCreditDetails = false
             showingCodexRadarDetails = false
@@ -472,6 +475,7 @@ struct DashboardView: View {
     }
 
     private func refreshAllData() {
+        quotaHistoryStore.reload()
         store.refresh()
         quotaStore.refresh()
         radarStore.refresh()

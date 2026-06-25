@@ -344,22 +344,27 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 latestRow = rows[rowIndex]
                 rowIndex += 1
             }
+            let nextRow = rows[safe: rowIndex]
 
             return QuotaHistoryRecentBucket(
                 start: binStart,
                 fiveHourRemainingPercent: quotaRemaining(
                     from: latestRow,
+                    to: nextRow,
                     at: end,
                     maxCarryGap: maxCarryGap,
                     remaining: \.fiveHourRemainingPercent,
-                    resetsAt: \.fiveHourResetsAt
+                    resetsAt: \.fiveHourResetsAt,
+                    sameCycle: { $0.isSameFiveHourCycle(as: $1) }
                 ),
                 sevenDayRemainingPercent: quotaRemaining(
                     from: latestRow,
+                    to: nextRow,
                     at: end,
                     maxCarryGap: maxCarryGap,
                     remaining: \.sevenDayRemainingPercent,
-                    resetsAt: \.sevenDayResetsAt
+                    resetsAt: \.sevenDayResetsAt,
+                    sameCycle: { $0.isSameSevenDayCycle(as: $1) }
                 )
             )
         }
@@ -367,10 +372,12 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
 
     private static func quotaRemaining(
         from row: QuotaHistoryRow?,
+        to nextRow: QuotaHistoryRow?,
         at date: Date,
         maxCarryGap: TimeInterval,
         remaining: KeyPath<QuotaHistoryRow, Double?>,
-        resetsAt: KeyPath<QuotaHistoryRow, Date?>
+        resetsAt: KeyPath<QuotaHistoryRow, Date?>,
+        sameCycle: (QuotaHistoryRow, QuotaHistoryRow) -> Bool
     ) -> Double? {
         guard let row, let value = row[keyPath: remaining] else { return nil }
 
@@ -378,13 +385,54 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             if date >= resetDate {
                 return 100
             }
+            if let interpolated = interpolatedQuotaRemaining(
+                from: row,
+                to: nextRow,
+                at: date,
+                startValue: value,
+                remaining: remaining,
+                sameCycle: sameCycle
+            ) {
+                return interpolated
+            }
             return value
         }
 
+        if let interpolated = interpolatedQuotaRemaining(
+            from: row,
+            to: nextRow,
+            at: date,
+            startValue: value,
+            remaining: remaining,
+            sameCycle: sameCycle
+        ) {
+            return interpolated
+        }
         guard date.timeIntervalSince(row.createdAt) <= maxCarryGap else {
             return nil
         }
         return value
+    }
+
+    private static func interpolatedQuotaRemaining(
+        from row: QuotaHistoryRow,
+        to nextRow: QuotaHistoryRow?,
+        at date: Date,
+        startValue: Double,
+        remaining: KeyPath<QuotaHistoryRow, Double?>,
+        sameCycle: (QuotaHistoryRow, QuotaHistoryRow) -> Bool
+    ) -> Double? {
+        guard let nextRow,
+              sameCycle(row, nextRow),
+              let endValue = nextRow[keyPath: remaining],
+              endValue < startValue,
+              date > row.createdAt,
+              date < nextRow.createdAt else { return nil }
+
+        let duration = nextRow.createdAt.timeIntervalSince(row.createdAt)
+        guard duration > 0 else { return nil }
+        let progress = max(0, min(1, date.timeIntervalSince(row.createdAt) / duration))
+        return startValue + (endValue - startValue) * progress
     }
 
     private static func average(_ values: [Double]) -> Double? {
