@@ -34,6 +34,7 @@ interface DashboardPageProps {
   onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
   onFloatingTextToneChange: (textTone: number) => void;
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
+  onLiveRateReset: () => Promise<void>;
   onLiveThreadSelect: (threadId: string) => void;
   onRefresh: () => Promise<void>;
   onToggleAutostart: () => void;
@@ -61,6 +62,7 @@ export function DashboardPage({
   onFloatingGradientChange,
   onFloatingTextToneChange,
   onFloatingContentVisibilityChange,
+  onLiveRateReset,
   onLiveThreadSelect,
   onRefresh,
   onToggleAutostart,
@@ -105,6 +107,7 @@ export function DashboardPage({
               onFloatingGradientChange={onFloatingGradientChange}
               onFloatingTextToneChange={onFloatingTextToneChange}
               onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
+              onLiveRateReset={onLiveRateReset}
               onLiveThreadSelect={onLiveThreadSelect}
               onToggleFloating={onToggleFloating}
               onToggleStatusTray={onToggleStatusTray}

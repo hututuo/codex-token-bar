@@ -826,6 +826,32 @@ button.quota-side-card:hover {
   white-space: nowrap;
 }
 
+.live-reset-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--control);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.live-reset-button:hover {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
+  background: var(--control-strong);
+}
+
+.live-reset-button:active {
+  transform: translateY(1px);
+}
+
 .ranking-controls {
   display: flex;
   align-items: center;

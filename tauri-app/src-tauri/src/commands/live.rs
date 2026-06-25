@@ -48,6 +48,14 @@ impl LiveRateMonitorRegistry {
             .expect("live rate monitor should be initialized")
             .floating_snapshot())
     }
+
+    fn reset(&self) -> Result<(), String> {
+        let monitor = self.monitor.lock().map_err(|error| error.to_string())?;
+        if let Some(monitor) = monitor.as_ref() {
+            monitor.reset();
+        }
+        Ok(())
+    }
 }
 
 async fn run_blocking_command<T, F>(work: F) -> Result<T, String>
@@ -138,6 +146,25 @@ pub async fn read_unread_summary() -> Result<UnreadSummary, String> {
     let result = run_blocking_command(|| Ok(local_source().read_unread_summary())).await;
     startup_trace::mark_performance(format!(
         "read_unread_summary {}ms {}",
+        started.elapsed().as_millis(),
+        result_status(&result)
+    ));
+    result
+}
+
+#[tauri::command]
+pub async fn reset_live_rate_monitor(
+    state: State<'_, LiveRateMonitorRegistry>,
+) -> Result<bool, String> {
+    let started = Instant::now();
+    let registry = state.inner().clone();
+    let result = run_blocking_command(move || {
+        registry.reset()?;
+        Ok(true)
+    })
+    .await;
+    startup_trace::mark_performance(format!(
+        "reset_live_rate_monitor {}ms {}",
         started.elapsed().as_millis(),
         result_status(&result)
     ));

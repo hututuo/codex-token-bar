@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { recordStartupEvent } from "../api/client";
+import { resetLiveRateMonitor } from "../api/liveClient";
 import { SetupGuide } from "../components/SetupGuide";
 import { DashboardPage } from "../pages/DashboardPage";
 import { useDashboardData } from "../state/useDashboardData";
@@ -45,6 +46,7 @@ export function DashboardApp() {
         onFloatingGradientChange={shellSettings.updateFloatingGradient}
         onFloatingTextToneChange={shellSettings.updateFloatingTextTone}
         onFloatingContentVisibilityChange={shellSettings.updateFloatingContentVisibility}
+        onLiveRateReset={resetLiveRate}
         onLiveThreadSelect={setSelectedLiveThreadId}
         onToggleFloating={shellSettings.toggleFloatingWindow}
         onToggleStatusTray={shellSettings.toggleStatusTrayLiveText}
@@ -71,6 +73,10 @@ export function DashboardApp() {
       ) : null}
     </>
   );
+}
+
+async function resetLiveRate() {
+  await resetLiveRateMonitor();
 }
 
 function useDashboardHydration(setDashboardHydrated: (hydrated: boolean) => void) {

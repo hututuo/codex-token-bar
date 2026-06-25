@@ -210,6 +210,47 @@ fn monitor_reuses_snapshot_until_logs_change() {
 }
 
 #[test]
+fn monitor_reset_invalidates_cached_snapshot_immediately() {
+    let root = temp_root("live-rate-monitor-reset");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "可重置会话", 300);
+    create_logs_database(&root, |connection, now| {
+        insert_log(
+            connection,
+            1,
+            "thread-a",
+            now,
+            "codex_api::sse::responses",
+            r#"SSE event: {"type":"response.output_text.delta","delta":"first stream text","item_id":"item-a","sequence_number":1}"#,
+        );
+    });
+
+    let monitor = LiveRateMonitorService::new(root.clone());
+    let _first = monitor.snapshot(None);
+    let refreshes_after_first = monitor.test_refresh_count();
+    let signatures_after_first = monitor.test_signature_count();
+
+    {
+        let connection = Connection::open(root.join("logs_2.sqlite")).unwrap();
+        insert_log(
+            &connection,
+            2,
+            "thread-a",
+            current_time_seconds().floor() as i64,
+            "codex_api::sse::responses",
+            r#"SSE event: {"type":"response.output_text.delta","delta":"new stream text after reset","item_id":"item-a","sequence_number":2}"#,
+        );
+    }
+
+    monitor.reset();
+    let _after_reset = monitor.snapshot(None);
+    assert_eq!(monitor.test_refresh_count(), refreshes_after_first + 1);
+    assert_eq!(monitor.test_signature_count(), signatures_after_first + 1);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn read_snapshot_falls_back_to_rollout_assistant_message_when_logs_have_no_new_rows() {
     let root = temp_root("live-rate-rollout-fallback");
     fs::create_dir_all(&root).unwrap();

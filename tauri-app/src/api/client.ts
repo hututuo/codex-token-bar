@@ -19,6 +19,7 @@ export {
   readLiveRateSnapshot,
   readLiveThreadOptions,
   readUnreadSummary,
+  resetLiveRateMonitor,
 } from "./liveClient";
 
 export {

@@ -110,6 +110,14 @@ impl LiveRateMonitorService {
         read_floating_snapshot_from_live(&self.codex_home, &live)
     }
 
+    pub fn reset(&self) {
+        let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.all_snapshot = None;
+        state.selected_snapshot = None;
+        state.last_signature = None;
+        state.last_refresh = None;
+    }
+
     #[cfg(test)]
     pub fn test_refresh_count(&self) -> usize {
         self.inner

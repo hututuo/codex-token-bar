@@ -126,6 +126,21 @@ test("status tray live text reuses dashboard live rate instead of polling compac
   assert.equal(dashboardApp.includes("liveRate: readyState.liveRate"), true);
 });
 
+test("live rate card exposes Swift-style reset action", async () => {
+  const liveClient = await readFile(new URL("../api/liveClient.ts", import.meta.url), "utf8");
+  const apiClient = await readFile(new URL("../api/client.ts", import.meta.url), "utf8");
+  const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
+  const dashboardPage = await readFile(new URL("../pages/DashboardPage.tsx", import.meta.url), "utf8");
+  const card = await readFile(new URL("../components/LiveRateCard.tsx", import.meta.url), "utf8");
+
+  assert.equal(liveClient.includes("resetLiveRateMonitor"), true);
+  assert.equal(liveClient.includes('"reset_live_rate_monitor"'), true);
+  assert.equal(apiClient.includes("resetLiveRateMonitor"), true);
+  assert.equal(dashboardApp.includes("onLiveRateReset={resetLiveRate}"), true);
+  assert.equal(dashboardPage.includes("onLiveRateReset"), true);
+  assert.equal(card.includes("重置整体速率"), true);
+});
+
 test("manual dashboard refresh keeps the current snapshot visible", async () => {
   const actions = await readFile(new URL("../state/useDashboardActions.ts", import.meta.url), "utf8");
   const reloadAll = actions.slice(

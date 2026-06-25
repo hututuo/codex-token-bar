@@ -26,6 +26,7 @@ interface DashboardSummarySectionProps {
   onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
   onFloatingTextToneChange: (textTone: number) => void;
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
+  onLiveRateReset: () => Promise<void>;
   onLiveThreadSelect: (threadId: string) => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
@@ -46,6 +47,7 @@ export function DashboardSummarySection({
   onFloatingGradientChange,
   onFloatingTextToneChange,
   onFloatingContentVisibilityChange,
+  onLiveRateReset,
   onLiveThreadSelect,
   onToggleFloating,
   onToggleStatusTray,
@@ -68,6 +70,7 @@ export function DashboardSummarySection({
         onFloatingGradientChange={onFloatingGradientChange}
         onFloatingTextToneChange={onFloatingTextToneChange}
         onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
+        onLiveRateReset={onLiveRateReset}
         onLiveThreadSelect={onLiveThreadSelect}
         onToggleFloating={onToggleFloating}
         onToggleStatusTray={onToggleStatusTray}
