@@ -168,8 +168,58 @@ button {
 }
 
 .account-name {
+  overflow: hidden;
+  max-width: 340px;
   font-size: 22px;
   font-weight: 620;
+  line-height: 1.05;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-name-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 390px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0;
+}
+
+.account-name-button:hover .account-name-pencil {
+  color: var(--text);
+}
+
+.account-name-pencil {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.account-name-pencil--spacer {
+  opacity: 0;
+}
+
+.account-name-edit {
+  width: min(300px, 70vw);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 520;
+  line-height: 1.1;
+  outline: none;
+  padding: 4px 12px;
+  text-align: center;
+}
+
+.account-name-edit:focus {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
 }
 
 .plan-badge,

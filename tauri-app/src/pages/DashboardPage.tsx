@@ -22,11 +22,13 @@ interface DashboardPageProps {
   dashboard: DashboardSnapshot;
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
+  customAccountDisplayName: string;
   liveRate: LiveRateSnapshot;
   liveThreadOptions: LiveThreadOption[];
   platform: PlatformCapabilities;
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
+  onCustomAccountDisplayNameChange: (displayName: string) => Promise<void>;
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
   onTokenRateFullScaleChange: (fullScale: number) => void;
@@ -50,11 +52,13 @@ export function DashboardPage({
   dashboard,
   displaySurfaces,
   floatingSettings,
+  customAccountDisplayName,
   liveRate,
   liveThreadOptions,
   platform,
   onCodexHomeChange,
   onCodexHomeReset,
+  onCustomAccountDisplayNameChange,
   onFloatingOpacityChange,
   onFloatingScaleChange,
   onTokenRateFullScaleChange,
@@ -80,9 +84,11 @@ export function DashboardPage({
           account={dashboard.account}
           autostartStatus={autostartStatus}
           codexHome={codexHome}
+          customAccountDisplayName={customAccountDisplayName}
           generatedAt={dashboard.generatedAt}
           onCodexHomeChange={onCodexHomeChange}
           onCodexHomeReset={onCodexHomeReset}
+          onCustomAccountDisplayNameChange={onCustomAccountDisplayNameChange}
           onExportCsv={() => downloadDashboardCsv(dashboard)}
           onExportPng={() => {
             void downloadDashboardPng(dashboard);

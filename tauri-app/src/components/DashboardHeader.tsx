@@ -1,14 +1,16 @@
 import type { AccountInfo, AutostartStatus, CodexHomeStatus } from "../types/dashboard";
 import { CodexHomeEditor } from "./dashboardHeader/CodexHomeEditor";
-import { useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 
 interface DashboardHeaderProps {
   account: AccountInfo;
   autostartStatus: AutostartStatus;
   codexHome: CodexHomeStatus;
+  customAccountDisplayName: string;
   generatedAt: string;
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
+  onCustomAccountDisplayNameChange: (displayName: string) => Promise<void>;
   onExportCsv: () => void;
   onExportPng: () => void;
   onRefresh: () => Promise<void>;
@@ -20,9 +22,11 @@ export function DashboardHeader({
   account,
   autostartStatus,
   codexHome,
+  customAccountDisplayName,
   generatedAt,
   onCodexHomeChange,
   onCodexHomeReset,
+  onCustomAccountDisplayNameChange,
   onExportCsv,
   onExportPng,
   onRefresh,
@@ -30,6 +34,15 @@ export function DashboardHeader({
   refreshing,
 }: DashboardHeaderProps) {
   const [editingPath, setEditingPath] = useState(false);
+  const [editingDisplayName, setEditingDisplayName] = useState(false);
+  const resolvedDisplayName = customAccountDisplayName.trim() || account.displayName;
+  const [displayNameDraft, setDisplayNameDraft] = useState(resolvedDisplayName);
+
+  useEffect(() => {
+    if (!editingDisplayName) {
+      setDisplayNameDraft(resolvedDisplayName);
+    }
+  }, [editingDisplayName, resolvedDisplayName]);
 
   const timeLabel = new Intl.DateTimeFormat("zh-CN", {
     hour: "2-digit",
@@ -38,13 +51,53 @@ export function DashboardHeader({
   }).format(new Date(generatedAt));
   const sourceLabel = codexHome.source === "manual" ? "手动目录" : codexHome.exists ? "自动发现" : "等待选择";
 
+  function beginEditDisplayName() {
+    setDisplayNameDraft(resolvedDisplayName);
+    setEditingDisplayName(true);
+  }
+
+  function commitDisplayName() {
+    const nextName = displayNameDraft.trim();
+    setEditingDisplayName(false);
+    if (nextName !== customAccountDisplayName.trim()) {
+      void onCustomAccountDisplayNameChange(nextName);
+    }
+  }
+
+  function handleDisplayNameKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.currentTarget.blur();
+    }
+  }
+
   return (
     <header className="dashboard-header">
       <div className="floating-title-spacer" />
       <div className="brand-mark">CX</div>
       <div className="account-row">
         <span className="app-name">Codex Token Bar</span>
-        <span className="account-name">{account.displayName}</span>
+        {editingDisplayName ? (
+          <input
+            autoFocus
+            aria-label="昵称"
+            className="account-name-edit"
+            onBlur={commitDisplayName}
+            onChange={(event) => setDisplayNameDraft(event.currentTarget.value)}
+            onKeyDown={handleDisplayNameKeyDown}
+            value={displayNameDraft}
+          />
+        ) : (
+          <button
+            className="account-name-button"
+            onClick={beginEditDisplayName}
+            title="修改显示昵称"
+            type="button"
+          >
+            <span className="account-name-pencil account-name-pencil--spacer">✎</span>
+            <span className="account-name">{resolvedDisplayName}</span>
+            <span className="account-name-pencil">✎</span>
+          </button>
+        )}
         <span className="plan-badge">{account.planLabel}</span>
       </div>
       <div className="source-row">

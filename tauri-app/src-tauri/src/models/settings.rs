@@ -6,6 +6,8 @@ pub struct AppSettingsSnapshot {
     #[serde(default, alias = "codex_home")]
     pub codex_home: Option<String>,
     #[serde(default)]
+    pub custom_account_display_name: String,
+    #[serde(default)]
     pub floating_window: FloatingWindowSettingsSnapshot,
     #[serde(default)]
     pub floating_position: Option<FloatingWindowPositionSnapshot>,
@@ -19,6 +21,7 @@ impl Default for AppSettingsSnapshot {
     fn default() -> Self {
         Self {
             codex_home: None,
+            custom_account_display_name: String::new(),
             floating_window: FloatingWindowSettingsSnapshot::default(),
             floating_position: None,
             display_surfaces: DisplaySurfaceSettingsSnapshot::default(),

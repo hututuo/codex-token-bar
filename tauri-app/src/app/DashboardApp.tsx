@@ -35,6 +35,7 @@ export function DashboardApp() {
         dashboard={readyState.dashboard}
         displaySurfaces={shellSettings.displaySurfaces}
         floatingSettings={shellSettings.floatingSettings}
+        customAccountDisplayName={shellSettings.customAccountDisplayName}
         liveRate={readyState.liveRate}
         liveThreadOptions={readyState.liveThreadOptions}
         platform={readyState.platform}
@@ -52,6 +53,7 @@ export function DashboardApp() {
         onToggleStatusTray={shellSettings.toggleStatusTrayLiveText}
         onCodexHomeChange={updateCodexHome}
         onCodexHomeReset={restoreAutoCodexHome}
+        onCustomAccountDisplayNameChange={shellSettings.updateCustomAccountDisplayName}
         onToggleAutostart={shellSettings.toggleAutostart}
         refreshing={state.loading}
         selectedLiveThreadId={selectedLiveThreadId}

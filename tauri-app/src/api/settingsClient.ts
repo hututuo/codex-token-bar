@@ -24,6 +24,10 @@ export function saveDisplaySurfaces(display: DisplaySurfaceSettings): Promise<Ap
   return callCommandStrict<AppSettingsSnapshot>("save_display_surfaces", { display });
 }
 
+export function saveCustomAccountDisplayName(customAccountDisplayName: string): Promise<AppSettingsSnapshot> {
+  return callCommandStrict<AppSettingsSnapshot>("save_custom_account_display_name", { customAccountDisplayName });
+}
+
 export function saveSetupGuideCompleted(completed: boolean): Promise<AppSettingsSnapshot> {
   return callCommandStrict<AppSettingsSnapshot>("save_setup_guide_completed", { completed });
 }

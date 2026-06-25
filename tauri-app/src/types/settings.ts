@@ -27,6 +27,7 @@ export interface FloatingContentVisibility {
 
 export interface AppSettingsSnapshot {
   codexHome: string | null;
+  customAccountDisplayName: string;
   floatingWindow: FloatingWindowSettings;
   floatingPosition: FloatingWindowPosition | null;
   displaySurfaces: DisplaySurfaceSettings;

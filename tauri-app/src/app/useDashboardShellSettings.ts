@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   readAppSettings,
+  saveCustomAccountDisplayName,
   saveFloatingSettings,
   saveSetupGuideCompleted,
 } from "../api/client";
@@ -32,6 +33,7 @@ export interface DashboardShellSettingsState {
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
   floatingVisible: boolean;
+  customAccountDisplayName: string;
   showSetupGuide: boolean;
   completeSetupGuide: () => Promise<void>;
   toggleAutostart: () => void;
@@ -44,6 +46,7 @@ export interface DashboardShellSettingsState {
   updateFloatingGradient: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
   updateFloatingTextTone: (textTone: number) => void;
   updateFloatingContentVisibility: (contentVisibility: FloatingContentVisibility) => void;
+  updateCustomAccountDisplayName: (displayName: string) => Promise<void>;
 }
 
 export function useDashboardShellSettings({
@@ -52,6 +55,7 @@ export function useDashboardShellSettings({
   platform,
 }: DashboardShellSettingsOptions): DashboardShellSettingsState {
   const [floatingSettings, setFloatingSettings] = useState(DEFAULT_FLOATING_SETTINGS);
+  const [customAccountDisplayName, setCustomAccountDisplayName] = useState("");
   const [showSetupGuide, setShowSetupGuide] = useState(false);
   const floatingSettingsLoaded = useRef(false);
   const { autostartStatus, toggleAutostart } = useAutostartSettings({ dashboardHydrated });
@@ -71,6 +75,7 @@ export function useDashboardShellSettings({
         return;
       }
       floatingSettingsLoaded.current = true;
+      setCustomAccountDisplayName(settings.customAccountDisplayName.trim());
       setFloatingSettings(sanitizeFloatingSettings(settings.floatingWindow));
       applyDisplaySurfaces(settings.displaySurfaces);
       setShowSetupGuide(!settings.setupGuideCompleted);
@@ -119,6 +124,13 @@ export function useDashboardShellSettings({
     setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, contentVisibility }));
   }
 
+  async function updateCustomAccountDisplayName(displayName: string) {
+    const nextName = displayName.trim();
+    setCustomAccountDisplayName(nextName);
+    const settings = await saveCustomAccountDisplayName(nextName);
+    setCustomAccountDisplayName(settings.customAccountDisplayName.trim());
+  }
+
   async function completeSetupGuide() {
     const settings = await saveSetupGuideCompleted(true);
     if (!settings.setupGuideCompleted) {
@@ -132,6 +144,7 @@ export function useDashboardShellSettings({
     displaySurfaces,
     floatingSettings,
     floatingVisible,
+    customAccountDisplayName,
     showSetupGuide,
     completeSetupGuide,
     toggleAutostart,
@@ -144,5 +157,6 @@ export function useDashboardShellSettings({
     updateFloatingGradient,
     updateFloatingTextTone,
     updateFloatingContentVisibility,
+    updateCustomAccountDisplayName,
   };
 }

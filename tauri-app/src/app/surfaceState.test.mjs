@@ -9,6 +9,21 @@ test("dashboard header does not render the local diagnostics strip", async () =>
   assert.equal(header.includes("diagnostic-strip"), false);
 });
 
+test("dashboard header supports Swift-style editable account display name", async () => {
+  const header = await readFile(new URL("../components/DashboardHeader.tsx", import.meta.url), "utf8");
+  const shellSettings = await readFile(new URL("./useDashboardShellSettings.ts", import.meta.url), "utf8");
+  const settingsClient = await readFile(new URL("../api/settingsClient.ts", import.meta.url), "utf8");
+
+  assert.equal(header.includes("customAccountDisplayName"), true);
+  assert.equal(header.includes("onCustomAccountDisplayNameChange"), true);
+  assert.equal(header.includes("account-name-edit"), true);
+  assert.equal(header.includes("onBlur={commitDisplayName}"), true);
+  assert.equal(header.includes("onKeyDown={handleDisplayNameKeyDown}"), true);
+  assert.equal(header.includes("✎"), true);
+  assert.equal(shellSettings.includes("saveCustomAccountDisplayName"), true);
+  assert.equal(settingsClient.includes("save_custom_account_display_name"), true);
+});
+
 test("floating toggle follows saved preference instead of transient visibility", async () => {
   const hook = await readFile(new URL("./useFloatingWindowSurface.ts", import.meta.url), "utf8");
   const toggleBody = hook.slice(hook.indexOf("const toggleFloatingWindow"));

@@ -40,6 +40,15 @@ pub fn save_display_surfaces(
     Ok(settings)
 }
 
+pub fn save_custom_account_display_name(
+    custom_account_display_name: String,
+) -> Result<AppSettingsSnapshot, String> {
+    let mut settings = read_app_settings()?;
+    settings.custom_account_display_name = custom_account_display_name;
+    write_app_settings(&settings)?;
+    Ok(settings)
+}
+
 pub fn save_setup_guide_completed(completed: bool) -> Result<AppSettingsSnapshot, String> {
     let mut settings = read_app_settings()?;
     settings.setup_guide_completed = completed;
@@ -98,6 +107,7 @@ fn sanitize_app_settings(mut settings: AppSettingsSnapshot) -> AppSettingsSnapsh
             Some(trimmed.into())
         }
     });
+    settings.custom_account_display_name = settings.custom_account_display_name.trim().into();
     settings.floating_window = sanitize_floating_settings(settings.floating_window);
     settings.floating_position = sanitize_floating_position(settings.floating_position);
     settings
@@ -225,6 +235,7 @@ mod tests {
     fn settings_keep_legacy_codex_home_and_sanitize_floating_values() {
         let raw = r##"{
             "codex_home": "~/custom-codex",
+            "customAccountDisplayName": "  来先生  ",
             "floatingWindow": {
                 "opacity": 1.4,
                 "scale": 0.2,
@@ -245,6 +256,7 @@ mod tests {
         let sanitized = sanitize_app_settings(settings);
 
         assert_eq!(sanitized.codex_home.as_deref(), Some("~/custom-codex"));
+        assert_eq!(sanitized.custom_account_display_name, "来先生");
         assert_eq!(sanitized.floating_window.opacity, 1.0);
         assert_eq!(sanitized.floating_window.scale, 0.9);
         assert_eq!(sanitized.floating_window.token_rate_full_scale, 200.0);
@@ -262,6 +274,16 @@ mod tests {
         assert!(sanitized.display_surfaces.floating_window_enabled);
         assert!(sanitized.display_surfaces.status_tray_live_text_enabled);
         assert!(!sanitized.setup_guide_completed);
+    }
+
+    #[test]
+    fn settings_clear_blank_custom_account_display_name() {
+        let settings = AppSettingsSnapshot {
+            custom_account_display_name: "   ".into(),
+            ..AppSettingsSnapshot::default()
+        };
+
+        assert!(sanitize_app_settings(settings).custom_account_display_name.is_empty());
     }
 
     #[test]

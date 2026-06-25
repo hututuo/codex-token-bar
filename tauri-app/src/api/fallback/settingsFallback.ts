@@ -3,6 +3,7 @@ import { DEFAULT_FLOATING_CONTENT_VISIBILITY } from "../../floating/floatingCont
 
 export const fallbackAppSettings: AppSettingsSnapshot = {
   codexHome: null,
+  customAccountDisplayName: "",
   floatingWindow: {
     opacity: 0.92,
     scale: 1,

@@ -51,6 +51,13 @@ pub fn save_display_surfaces(
 }
 
 #[tauri::command]
+pub fn save_custom_account_display_name(
+    custom_account_display_name: String,
+) -> Result<AppSettingsSnapshot, String> {
+    platform::save_custom_account_display_name(custom_account_display_name)
+}
+
+#[tauri::command]
 pub fn save_setup_guide_completed(completed: bool) -> Result<AppSettingsSnapshot, String> {
     platform::save_setup_guide_completed(completed)
 }

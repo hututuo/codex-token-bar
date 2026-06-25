@@ -26,6 +26,7 @@ pub fn run() {
             commands::settings::save_floating_settings,
             commands::settings::save_floating_position,
             commands::settings::save_display_surfaces,
+            commands::settings::save_custom_account_display_name,
             commands::settings::save_setup_guide_completed,
             commands::dashboard::read_platform_capabilities,
             commands::dashboard::read_account_quota,

@@ -25,6 +25,7 @@ export {
 export {
   readAppSettings,
   readAutostartStatus,
+  saveCustomAccountDisplayName,
   saveDisplaySurfaces,
   saveFloatingPosition,
   saveFloatingSettings,
