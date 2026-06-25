@@ -143,6 +143,20 @@ struct QuotaConsumptionSelection: Equatable {
     let sevenDay: QuotaConsumptionEstimate
 }
 
+extension QuotaConsumptionSelection {
+    var sevenDayToFiveHourBudgetRatio: Double? {
+        guard let fiveHourBudget = fiveHour.impliedWindowBudgetUSD,
+              let sevenDayBudget = sevenDay.impliedWindowBudgetUSD,
+              fiveHourBudget > 0 else { return nil }
+        return sevenDayBudget / fiveHourBudget
+    }
+
+    var hasDivergentBudgetRatio: Bool {
+        guard let ratio = sevenDayToFiveHourBudgetRatio else { return false }
+        return ratio < 4 || ratio > 8
+    }
+}
+
 struct RecentChartConsumptionSelectionState: Equatable {
     private(set) var startIndex: Int?
     private(set) var fixedEndIndex: Int?

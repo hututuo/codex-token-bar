@@ -264,8 +264,13 @@ struct RecentUsageChart: View {
                     }
                     .stroke(AppTheme.accentBlue.opacity(0.55), style: StrokeStyle(lineWidth: 1.2, dash: [4, 5]))
 
-                    RecentChartQuotaEstimateOverlay(selection: consumptionSelection)
-                        .position(x: plot.minX + 190, y: plot.minY - 34)
+                    RecentChartQuotaEstimateOverlay(
+                        selection: consumptionSelection,
+                        onClose: {
+                            consumptionSelectionState.reset()
+                        }
+                    )
+                        .position(x: plot.minX + 205, y: plot.minY - 34)
                         .zIndex(12)
                 }
 

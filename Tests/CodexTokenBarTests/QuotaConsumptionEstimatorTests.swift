@@ -83,6 +83,43 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(selection.sevenDay.impliedWindowBudgetUSD), 275.25, accuracy: 0.0001)
     }
 
+    func testSelectionReportsSevenDayToFiveHourBudgetRatioAndDivergence() throws {
+        let selection = QuotaConsumptionSelection(
+            startIndex: 0,
+            endIndex: 1,
+            bucketCount: 2,
+            startDate: Date(timeIntervalSince1970: 0),
+            endDate: Date(timeIntervalSince1970: 600),
+            priceCard: .officialAPI(.gpt55),
+            breakdown: .empty,
+            fiveHour: QuotaConsumptionEstimate(
+                selectedCostUSD: 1,
+                impliedWindowBudgetUSD: 10,
+                quotaDropPercent: 10,
+                inputTokens: 0,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                calls: 0,
+                cacheHitRate: 0,
+                confidence: .measured
+            ),
+            sevenDay: QuotaConsumptionEstimate(
+                selectedCostUSD: 1,
+                impliedWindowBudgetUSD: 90,
+                quotaDropPercent: 1.1,
+                inputTokens: 0,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                calls: 0,
+                cacheHitRate: 0,
+                confidence: .measured
+            )
+        )
+
+        XCTAssertEqual(try XCTUnwrap(selection.sevenDayToFiveHourBudgetRatio), 9, accuracy: 0.0001)
+        XCTAssertTrue(selection.hasDivergentBudgetRatio)
+    }
+
     func testPreparedDataUsesCumulativeQuotaDropAcrossClickedRange() throws {
         let start = Date(timeIntervalSince1970: 1_800)
         let bins = [
@@ -210,6 +247,10 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(source.contains("点击图表估算额度"))
         XCTAssertTrue(source.contains("y: plot.minY -"))
         XCTAssertTrue(componentSource.contains("点击图表可估算额度"))
+        XCTAssertTrue(componentSource.contains("xmark.circle.fill"))
+        XCTAssertTrue(componentSource.contains("onClose:"))
+        XCTAssertTrue(componentSource.contains("倍率"))
+        XCTAssertTrue(componentSource.contains("偏离 6x"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateModelSelector"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateOverlay"))
         XCTAssertTrue(componentSource.contains("本段消耗"))

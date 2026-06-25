@@ -130,35 +130,73 @@ struct RecentChartQuotaEstimateModelSelector: View {
 
 struct RecentChartQuotaEstimateOverlay: View {
     let selection: QuotaConsumptionSelection
+    let onClose: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("本段消耗")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text(selection.breakdown.costText(selection.priceCard))
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(AppTheme.accentBlue)
-                Text(selection.timeRangeText)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text("命中 \(selection.breakdown.cacheHitRate.percentString)")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(AppTheme.accentCyan)
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("本段消耗")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text(selection.breakdown.costText(selection.priceCard))
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(AppTheme.accentBlue)
+                    Text(selection.timeRangeText)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text("命中 \(selection.breakdown.cacheHitRate.percentString)")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(AppTheme.accentCyan)
+                }
+
+                HStack(spacing: 7) {
+                    Text("反推总额度")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    QuotaEstimateChip(title: "5h", estimate: selection.fiveHour, color: .purple)
+                    QuotaEstimateChip(title: "7d", estimate: selection.sevenDay, color: .green)
+                }
+
+                HStack(spacing: 6) {
+                    Text("倍率")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text(selection.budgetRatioText)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(selection.hasDivergentBudgetRatio ? .orange : .primary)
+                    Text("7d/5h，正常约 6x")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    if selection.hasDivergentBudgetRatio {
+                        Text("偏离 6x，误差可能较大")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                if selection.hasDivergentBudgetRatio {
+                    Text("可能因 7d 下降太少、颗粒度太低或其他误差。")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            HStack(spacing: 7) {
-                Text("反推总额度")
-                    .font(.system(size: 10, weight: .semibold))
+            Spacer(minLength: 0)
+
+            Button(action: onClose) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(.secondary)
-                QuotaEstimateChip(title: "5h", estimate: selection.fiveHour, color: .purple)
-                QuotaEstimateChip(title: "7d", estimate: selection.sevenDay, color: .green)
+                    .frame(width: 22, height: 22)
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("关闭额度估算")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .frame(width: 380, alignment: .leading)
+        .frame(width: 410, alignment: .leading)
         .background(AppTheme.hoverBubble.opacity(0.96), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -166,7 +204,7 @@ struct RecentChartQuotaEstimateOverlay: View {
         )
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("额度估算")
-        .accessibilityValue("本段消耗 \(selection.breakdown.costText(selection.priceCard))，5 小时 \(selection.fiveHour.accessibilityText)，7 天 \(selection.sevenDay.accessibilityText)")
+        .accessibilityValue("本段消耗 \(selection.breakdown.costText(selection.priceCard))，5 小时 \(selection.fiveHour.accessibilityText)，7 天 \(selection.sevenDay.accessibilityText)，倍率 \(selection.budgetRatioText)")
     }
 }
 
@@ -226,6 +264,11 @@ private extension OfficialAPIPriceModel {
 private extension QuotaConsumptionSelection {
     var timeRangeText: String {
         "\(DateFormatter.hourMinute.string(from: startDate))-\(DateFormatter.hourMinute.string(from: endDate))"
+    }
+
+    var budgetRatioText: String {
+        guard let sevenDayToFiveHourBudgetRatio else { return "--" }
+        return String(format: "%.1fx", sevenDayToFiveHourBudgetRatio)
     }
 }
 
