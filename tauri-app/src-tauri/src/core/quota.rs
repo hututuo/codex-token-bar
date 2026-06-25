@@ -12,9 +12,9 @@ use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const SUCCESS_CACHE_TTL: Duration = Duration::from_secs(60);
+const SUCCESS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
-const HISTORY_CACHE_TTL: Duration = Duration::from_secs(60);
+const HISTORY_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
 mod auth;
 mod codex_binary;
@@ -366,4 +366,10 @@ mod tests {
         assert_eq!(cache_ttl(&success), SUCCESS_CACHE_TTL);
     }
 
+    #[test]
+    fn quota_success_cache_covers_dashboard_refresh_window() {
+        assert_eq!(SUCCESS_CACHE_TTL, Duration::from_secs(5 * 60));
+        assert_eq!(HISTORY_CACHE_TTL, Duration::from_secs(5 * 60));
+        assert_eq!(FAILURE_CACHE_TTL, Duration::from_secs(15));
+    }
 }
