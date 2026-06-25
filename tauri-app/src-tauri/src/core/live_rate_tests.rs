@@ -2,7 +2,7 @@ use super::*;
 use rusqlite::{params, Connection};
 use std::fs;
 use std::io::Write;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
@@ -178,13 +178,16 @@ fn monitor_reuses_snapshot_until_logs_change() {
     let monitor = LiveRateMonitorService::new(root.clone());
     let first = monitor.snapshot(None);
     let refreshes_after_first = monitor.test_refresh_count();
+    let signatures_after_first = monitor.test_signature_count();
     let second = monitor.snapshot(None);
 
     assert_eq!(monitor.test_refresh_count(), refreshes_after_first);
+    assert_eq!(monitor.test_signature_count(), signatures_after_first);
     assert_eq!(second.tokens_per_second, first.tokens_per_second);
 
     let floating = monitor.floating_snapshot();
     assert_eq!(monitor.test_refresh_count(), refreshes_after_first);
+    assert_eq!(monitor.test_signature_count(), signatures_after_first);
     assert!((floating.tokens_per_second - first.tokens_per_second).abs() < 0.001);
 
     {
@@ -199,6 +202,7 @@ fn monitor_reuses_snapshot_until_logs_change() {
         );
     }
 
+    std::thread::sleep(Duration::from_millis(280));
     let _changed = monitor.snapshot(None);
     assert_eq!(monitor.test_refresh_count(), refreshes_after_first + 1);
 

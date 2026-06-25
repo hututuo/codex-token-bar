@@ -20,6 +20,7 @@ struct LiveRateMonitorState {
     last_signature: Option<LogStoreSignature>,
     last_refresh: Option<Instant>,
     refresh_count: usize,
+    signature_count: usize,
 }
 
 struct SelectedSnapshot {
@@ -59,7 +60,11 @@ impl LiveRateMonitorService {
 
     pub fn snapshot(&self, selected_thread_id: Option<&str>) -> LiveRateSnapshot {
         let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(snapshot) = state.cached_snapshot_before_signature(selected_thread_id) {
+            return snapshot;
+        }
         let signature = log_store_signature(&self.codex_home);
+        state.signature_count += 1;
         let selected_matches = state
             .selected_snapshot
             .as_ref()
@@ -112,9 +117,40 @@ impl LiveRateMonitorService {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .refresh_count
     }
+
+    #[cfg(test)]
+    pub fn test_signature_count(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .signature_count
+    }
 }
 
 impl LiveRateMonitorState {
+    fn cached_snapshot_before_signature(
+        &self,
+        selected_thread_id: Option<&str>,
+    ) -> Option<LiveRateSnapshot> {
+        if self.all_snapshot.is_none() {
+            return None;
+        }
+        let last_refresh = self.last_refresh?;
+        if last_refresh.elapsed() >= self.refresh_interval() {
+            return None;
+        }
+
+        if let Some(selected_thread_id) = selected_thread_id {
+            return self
+                .selected_snapshot
+                .as_ref()
+                .filter(|cached| cached.selected_thread_id.as_deref() == Some(selected_thread_id))
+                .map(|cached| cached.snapshot.clone());
+        }
+
+        self.all_snapshot.clone()
+    }
+
     fn should_refresh(
         &self,
         signature: &LogStoreSignature,
@@ -134,7 +170,11 @@ impl LiveRateMonitorState {
         let Some(last_refresh) = self.last_refresh else {
             return true;
         };
-        let interval = if self
+        last_refresh.elapsed() >= self.refresh_interval()
+    }
+
+    fn refresh_interval(&self) -> Duration {
+        if self
             .all_snapshot
             .as_ref()
             .is_some_and(|snapshot| snapshot.tokens_per_second > 0.05)
@@ -142,8 +182,7 @@ impl LiveRateMonitorState {
             FAST_REFRESH_INTERVAL
         } else {
             IDLE_REFRESH_INTERVAL
-        };
-        last_refresh.elapsed() >= interval
+        }
     }
 }
 
