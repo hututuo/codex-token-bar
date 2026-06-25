@@ -10,6 +10,7 @@ interface DashboardHeaderProps {
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
   onExportCsv: () => void;
+  onExportPng: () => void;
   onRefresh: () => Promise<void>;
   onToggleAutostart: () => void;
   refreshing: boolean;
@@ -23,6 +24,7 @@ export function DashboardHeader({
   onCodexHomeChange,
   onCodexHomeReset,
   onExportCsv,
+  onExportPng,
   onRefresh,
   onToggleAutostart,
   refreshing,
@@ -55,6 +57,9 @@ export function DashboardHeader({
         </button>
         <button className="toolbar-button" onClick={onExportCsv} type="button">
           导出 CSV
+        </button>
+        <button className="toolbar-button" onClick={onExportPng} type="button">
+          导出 PNG
         </button>
         <button className="toolbar-button" onClick={() => setEditingPath((value) => !value)} type="button">
           {editingPath ? "收起目录" : "更改目录"}
