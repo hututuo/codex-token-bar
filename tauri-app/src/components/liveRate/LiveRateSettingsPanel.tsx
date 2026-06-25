@@ -337,16 +337,18 @@ function ContentSettingsCallout({
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onFloatingTextToneChange: (textTone: number) => void;
 }) {
-  const [movedGroup, setMovedGroup] = useState<FloatingContentGroup | null>(null);
+  const [movedInfo, setMovedInfo] = useState<{ group: FloatingContentGroup; direction: "up" | "down" } | null>(null);
 
-  function handleContentVisibilityChange(next: FloatingContentVisibility, moved?: FloatingContentGroup) {
+  function handleContentVisibilityChange(next: FloatingContentVisibility, moved?: { group: FloatingContentGroup; direction: "up" | "down" }) {
     onFloatingContentVisibilityChange(next);
     if (!moved) {
       return;
     }
-    setMovedGroup(moved);
+    setMovedInfo(moved);
     window.setTimeout(() => {
-      setMovedGroup((current) => (current === moved ? null : current));
+      setMovedInfo((current) => (
+        current?.group === moved.group && current.direction === moved.direction ? null : current
+      ));
     }, 900);
   }
 
@@ -370,14 +372,16 @@ function ContentSettingsCallout({
             group={group}
             index={index}
             key={group}
-            movedGroup={movedGroup}
+            movedInfo={movedInfo}
             visibility={contentVisibility}
             onChange={handleContentVisibilityChange}
           />
         ))}
       </div>
       <span className="settings-content-feedback" aria-live="polite">
-        {movedGroup ? `${FLOATING_CONTENT_LABELS[movedGroup].title} 已调整顺序` : "相邻的趣味话和速率会合并显示"}
+        {movedInfo
+          ? `${FLOATING_CONTENT_LABELS[movedInfo.group].title} 已${movedInfo.direction === "up" ? "上移" : "下移"} · 相邻的趣味话和速率会合并显示`
+          : "相邻的趣味话和速率会合并显示"}
       </span>
     </SettingsCalloutShell>
   );
@@ -386,14 +390,15 @@ function ContentSettingsCallout({
 interface ContentSettingRowProps {
   group: FloatingContentGroup;
   index: number;
-  movedGroup: FloatingContentGroup | null;
+  movedInfo: { group: FloatingContentGroup; direction: "up" | "down" } | null;
   visibility: FloatingContentVisibility;
-  onChange: (contentVisibility: FloatingContentVisibility, moved?: FloatingContentGroup) => void;
+  onChange: (contentVisibility: FloatingContentVisibility, moved?: { group: FloatingContentGroup; direction: "up" | "down" }) => void;
 }
 
-function ContentSettingRow({ group, index, movedGroup, visibility, onChange }: ContentSettingRowProps) {
+function ContentSettingRow({ group, index, movedInfo, visibility, onChange }: ContentSettingRowProps) {
   const label = FLOATING_CONTENT_LABELS[group];
   const checked = isFloatingGroupVisible(visibility, group);
+  const moveDirection = movedInfo?.group === group ? movedInfo.direction : undefined;
 
   function updateVisibility(visible: boolean) {
     onChange(sanitizeFloatingContentVisibility({
@@ -409,11 +414,14 @@ function ContentSettingRow({ group, index, movedGroup, visibility, onChange }: C
     onChange(sanitizeFloatingContentVisibility({
       ...visibility,
       order: moveFloatingContent(visibility.order, group, delta),
-    }), group);
+    }), { group, direction: delta === -1 ? "up" : "down" });
   }
 
   return (
-    <div className={movedGroup === group ? "floating-content-row is-recently-moved" : "floating-content-row"}>
+    <div
+      className={moveDirection ? "floating-content-row is-recently-moved" : "floating-content-row"}
+      data-move-direction={moveDirection}
+    >
       <label>
         <input
           checked={checked}
@@ -427,7 +435,8 @@ function ContentSettingRow({ group, index, movedGroup, visibility, onChange }: C
       </label>
       <div>
         <button
-          aria-label={`${label.title}上移`}
+          aria-label={`向上移动${label.title}`}
+          title={`向上移动 ${label.title}`}
           disabled={index === 0}
           onClick={() => move(-1)}
           type="button"
@@ -435,7 +444,8 @@ function ContentSettingRow({ group, index, movedGroup, visibility, onChange }: C
           ↑
         </button>
         <button
-          aria-label={`${label.title}下移`}
+          aria-label={`向下移动${label.title}`}
+          title={`向下移动 ${label.title}`}
           disabled={index === FLOATING_CONTENT_GROUPS.length - 1}
           onClick={() => move(1)}
           type="button"
