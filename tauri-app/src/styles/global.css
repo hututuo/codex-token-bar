@@ -3802,8 +3802,8 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .status-panel-rate-unit button {
   display: grid;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   place-items: center;
   border: 0;
   border-radius: 999px;
@@ -3881,7 +3881,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .status-panel-actions button {
   flex: 1;
-  min-height: 30px;
+  min-height: 34px;
   border: 1px solid #d7e1ec;
   border-radius: 9px;
   background: #eef4fa;

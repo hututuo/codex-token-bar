@@ -125,6 +125,32 @@ test("hidden status panel starts inactive and verifies window visibility before 
   assert.equal(statusPanel.includes("setActive(Boolean(visible) && document.hasFocus())"), true);
 });
 
+test("status panel hides itself when focus leaves", async () => {
+  const statusPanel = await readFile(new URL("../status/StatusPanelApp.tsx", import.meta.url), "utf8");
+
+  assert.equal(statusPanel.includes("const hideWhenBlurred = () => {"), true);
+  assert.equal(statusPanel.includes("setActive(false);"), true);
+  assert.equal(statusPanel.includes("desktopPlatform.hideStatusPanelWindow()"), true);
+  assert.equal(statusPanel.includes('window.addEventListener("blur", hideWhenBlurred)'), true);
+  assert.equal(statusPanel.includes('window.removeEventListener("blur", hideWhenBlurred)'), true);
+});
+
+test("status panel controls keep comfortable hit targets", async () => {
+  const css = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
+  const closeButton = css.slice(
+    css.indexOf(".status-panel-rate-unit button {"),
+    css.indexOf(".status-panel-meter {"),
+  );
+  const actionButton = css.slice(
+    css.indexOf(".status-panel-actions button {"),
+    css.indexOf("@media (max-width: 960px)"),
+  );
+
+  assert.equal(closeButton.includes("width: 28px;"), true);
+  assert.equal(closeButton.includes("height: 28px;"), true);
+  assert.equal(actionButton.includes("min-height: 34px;"), true);
+});
+
 test("status tray live text reuses dashboard live rate instead of polling compact data", async () => {
   const tray = await readFile(new URL("../tray/useStatusTray.ts", import.meta.url), "utf8");
   const displaySettings = await readFile(new URL("./useDisplaySurfaceSettings.ts", import.meta.url), "utf8");
