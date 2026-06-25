@@ -181,7 +181,7 @@ final class LiveRateMonitor: ObservableObject {
             guard !rows.isEmpty else { return }
             for row in rows {
                 lastGlobalLogID = max(lastGlobalLogID, row.id)
-                add(row: row)
+                _ = add(row: row)
             }
             extendFastPolling(from: Date().timeIntervalSince1970)
             updateSnapshots(now: Date().timeIntervalSince1970)
@@ -268,13 +268,20 @@ final class LiveRateMonitor: ObservableObject {
             lastPollProcessedRows = true
             extendFastPolling(from: Date().timeIntervalSince1970)
 
+            var processedStreamEvents = false
             for row in globalRows {
                 lastGlobalLogID = max(lastGlobalLogID, row.id)
-                add(row: row)
+                if add(row: row) {
+                    processedStreamEvents = true
+                }
             }
 
-            let processedRolloutEvents = await readRolloutUpdates(now: Date().timeIntervalSince1970)
-            if !processedRolloutEvents {
+            if !processedStreamEvents {
+                let processedRolloutEvents = await readRolloutUpdates(now: Date().timeIntervalSince1970)
+                if !processedRolloutEvents {
+                    updateSnapshots(now: Date().timeIntervalSince1970)
+                }
+            } else {
                 updateSnapshots(now: Date().timeIntervalSince1970)
             }
         } catch {
@@ -314,11 +321,12 @@ final class LiveRateMonitor: ObservableObject {
         }
     }
 
-    private func add(row: LogRow) {
+    private func add(row: LogRow) -> Bool {
         updateTraceAttribution(from: row)
-        guard let streamEvent = Self.streamEvent(from: row) else { return }
+        guard let streamEvent = Self.streamEvent(from: row) else { return false }
         updateAttribution(from: streamEvent, row: row)
 
+        var processedEvent = false
         for event in Self.metricEvents(from: streamEvent, row: row, toolNames: itemToolNames) {
             guard shouldCountStreamEvent(event) else { continue }
             let resolvedThreadID = resolveThreadID(for: event)
@@ -326,7 +334,9 @@ final class LiveRateMonitor: ObservableObject {
             if resolvedThreadID == threadID {
                 add(event: event, keyThreadID: resolvedThreadID ?? threadID, to: &selectedRate)
             }
+            processedEvent = true
         }
+        return processedEvent
     }
 
     private func add(events: [RolloutMetricEvent], threadID: String, keyThreadID: String, to rate: inout RateAccumulator) {

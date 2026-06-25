@@ -92,6 +92,19 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertLessThan(rolloutRange.lowerBound, snapshotRange.lowerBound)
     }
 
+    func testPollUsesRolloutOnlyWhenSqliteRowsHaveNoUsableStreamMetrics() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let monitorSourceURL = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateMonitor.swift")
+        let monitorSource = try String(contentsOf: monitorSourceURL, encoding: .utf8)
+
+        XCTAssertTrue(monitorSource.contains("var processedStreamEvents = false"))
+        XCTAssertTrue(monitorSource.contains("if add(row: row) {"))
+        XCTAssertTrue(monitorSource.contains("if !processedStreamEvents {"))
+    }
+
     func testRolloutParserDoesNotCountAgentMessageDuplicateAsInstantRollingOutput() {
         let text = String(repeating: "streamed answer ", count: 200)
         let lines = [
