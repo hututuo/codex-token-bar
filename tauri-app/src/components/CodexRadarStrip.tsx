@@ -12,7 +12,7 @@ import {
   type CodexRadarSnapshot,
 } from "./codexRadar/model";
 
-const RADAR_REFRESH_INTERVAL_MS = 300_000;
+const RADAR_REFRESH_INTERVAL_MS = 600_000;
 
 export function CodexRadarStrip() {
   const [snapshot, setSnapshot] = useState<CodexRadarSnapshot | null>(null);

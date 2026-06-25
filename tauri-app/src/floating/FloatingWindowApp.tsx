@@ -134,7 +134,7 @@ export function FloatingWindowApp() {
     };
 
     void refreshRadar();
-    const timer = window.setInterval(refreshRadar, 300_000);
+    const timer = window.setInterval(refreshRadar, 600_000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
