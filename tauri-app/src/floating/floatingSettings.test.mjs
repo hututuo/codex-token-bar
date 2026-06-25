@@ -16,6 +16,7 @@ test("sanitizeFloatingSettings keeps valid gradient palette values", () => {
   const settings = sanitizeFloatingSettings({
     opacity: 0.78,
     scale: 1.22,
+    tokenRateFullScale: 260,
     unreadEffect: "shimmer",
     gradientStart: "#ABCDEF",
     gradientEnd: "#123456",
@@ -27,12 +28,14 @@ test("sanitizeFloatingSettings keeps valid gradient palette values", () => {
   assert.equal(settings.gradientEnd, "#123456");
   assert.equal(settings.gradientDirection, "90deg");
   assert.equal(settings.gradientType, "radial");
+  assert.equal(settings.tokenRateFullScale, 260);
 });
 
 test("sanitizeFloatingSettings falls back for invalid gradient palette values", () => {
   const settings = sanitizeFloatingSettings({
     opacity: 2,
     scale: 3,
+    tokenRateFullScale: 900,
     unreadEffect: "sparkle",
     gradientStart: "blue",
     gradientEnd: "#12",
@@ -47,4 +50,12 @@ test("sanitizeFloatingSettings falls back for invalid gradient palette values", 
   assert.equal(settings.gradientEnd, DEFAULT_FLOATING_SETTINGS.gradientEnd);
   assert.equal(settings.gradientDirection, DEFAULT_FLOATING_SETTINGS.gradientDirection);
   assert.equal(settings.gradientType, DEFAULT_FLOATING_SETTINGS.gradientType);
+  assert.equal(settings.tokenRateFullScale, 400);
+});
+
+test("sanitizeFloatingSettings defaults missing token rate full scale to Swift-style 200 tok/s", () => {
+  const settings = sanitizeFloatingSettings({});
+
+  assert.equal(DEFAULT_FLOATING_SETTINGS.tokenRateFullScale, 200);
+  assert.equal(settings.tokenRateFullScale, 200);
 });

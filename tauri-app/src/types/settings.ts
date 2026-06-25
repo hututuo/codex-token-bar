@@ -1,6 +1,7 @@
 export interface FloatingWindowSettings {
   opacity: number;
   scale: number;
+  tokenRateFullScale: number;
   unreadEffect: FloatingUnreadEffect;
   gradientStart: string;
   gradientEnd: string;

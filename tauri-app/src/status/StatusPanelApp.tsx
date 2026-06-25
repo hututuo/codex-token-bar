@@ -1,9 +1,24 @@
 import { useEffect, useState } from "react";
+import { readAppSettings } from "../api/client";
+import {
+  DEFAULT_FLOATING_SETTINGS,
+  sanitizeFloatingSettings,
+} from "../floating/floatingSettings";
 import { desktopPlatform } from "../platform/desktop";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
+import type { FloatingWindowSettings } from "../types/dashboard";
+
+function statusRateFillPercent(tokensPerSecond: number, fullScale: number): number {
+  if (!Number.isFinite(tokensPerSecond) || tokensPerSecond <= 0) {
+    return 0;
+  }
+  const scaleLimit = Number.isFinite(fullScale) && fullScale > 0 ? fullScale : DEFAULT_FLOATING_SETTINGS.tokenRateFullScale;
+  return Math.min(100, Math.max(7, (tokensPerSecond / scaleLimit) * 100));
+}
 
 export function StatusPanelApp() {
   const [active, setActive] = useState(() => document.hasFocus());
+  const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   const { snapshot, quotaLabels } = useCompactPanelData({
     active,
     snapshotIntervalMs: 750,
@@ -14,6 +29,32 @@ export function StatusPanelApp() {
   useEffect(() => {
     document.documentElement.classList.add("status-document");
     return () => document.documentElement.classList.remove("status-document");
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unsubscribe: (() => void) | null = null;
+
+    void desktopPlatform.onFloatingSettingsChanged((payload) => {
+      setSettings(sanitizeFloatingSettings(payload));
+    }).then((handler) => {
+      if (disposed) {
+        handler();
+        return;
+      }
+      unsubscribe = handler;
+    });
+
+    void readAppSettings().then((snapshot) => {
+      if (snapshot?.floatingWindow) {
+        setSettings(sanitizeFloatingSettings(snapshot.floatingWindow));
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unsubscribe?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -54,7 +95,7 @@ export function StatusPanelApp() {
         </header>
 
         <div className="status-panel-meter" aria-hidden="true">
-          <i style={{ width: `${Math.min(100, Math.max(7, snapshot.tokensPerSecond / 2))}%` }} />
+          <i style={{ width: `${statusRateFillPercent(snapshot.tokensPerSecond, settings.tokenRateFullScale)}%` }} />
         </div>
 
         <div className="status-panel-status">

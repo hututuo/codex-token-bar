@@ -15,6 +15,7 @@ interface LiveRateCardProps {
   floatingEnabled: boolean;
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
+  onTokenRateFullScaleChange: (fullScale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
   onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
   onFloatingTextToneChange: (textTone: number) => void;
@@ -34,6 +35,7 @@ export function LiveRateCard({
   floatingEnabled,
   onFloatingOpacityChange,
   onFloatingScaleChange,
+  onTokenRateFullScaleChange,
   onFloatingUnreadEffectChange,
   onFloatingGradientChange,
   onFloatingTextToneChange,
@@ -58,7 +60,11 @@ export function LiveRateCard({
 
       <div className="live-grid">
         <div className="live-left">
-          <LiveRateMeter snapshot={snapshot} />
+          <LiveRateMeter
+            fullScale={floatingSettings.tokenRateFullScale}
+            snapshot={snapshot}
+            onFullScaleChange={onTokenRateFullScaleChange}
+          />
           <LiveRateSessionRow
             liveThreadOptions={liveThreadOptions}
             onLiveThreadSelect={onLiveThreadSelect}

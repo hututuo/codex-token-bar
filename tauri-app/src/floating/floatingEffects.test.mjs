@@ -71,6 +71,7 @@ test("floating panel keeps muted pace text black metrics rounded corners and cor
   assert.match(stylesSource, /\.floating-topline strong\s*{[\s\S]*?font-size: calc\(20px \* var\(--floating-scale\)\);[\s\S]*?font-variant-numeric: tabular-nums;/);
   assert.match(stylesSource, /\.floating-rate-readout > span\s*{[\s\S]*?font-size: calc\(8\.6px \* var\(--floating-scale\)\);/);
   assert.match(previewSource, /function FloatingRateMeter/);
+  assert.match(previewSource, /fullScale=\{settings\.tokenRateFullScale\}/);
   assert.match(previewSource, /floating-rate-meter--with-status/);
   assert.match(previewSource, /floating-rate-meter--solo/);
   assert.match(previewSource, /hasStatusText \? <em>{statusText}<\/em> : null/);

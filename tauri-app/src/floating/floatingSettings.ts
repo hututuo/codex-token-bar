@@ -31,6 +31,7 @@ const DEFAULT_FLOATING_CONTENT_VISIBILITY: FloatingContentVisibility = {
 export const DEFAULT_FLOATING_SETTINGS: FloatingWindowSettings = {
   opacity: 0.92,
   scale: 1,
+  tokenRateFullScale: 200,
   unreadEffect: "ripple",
   gradientStart: "#ffffff",
   gradientEnd: "#daefff",
@@ -46,6 +47,7 @@ export function sanitizeFloatingSettings(
   return {
     opacity: clampNumber(settings.opacity, 0.4, 1, DEFAULT_FLOATING_SETTINGS.opacity),
     scale: clampNumber(settings.scale, 0.9, 1.38, DEFAULT_FLOATING_SETTINGS.scale),
+    tokenRateFullScale: clampNumber(settings.tokenRateFullScale, 50, 400, DEFAULT_FLOATING_SETTINGS.tokenRateFullScale),
     unreadEffect: sanitizeUnreadEffect(settings.unreadEffect),
     gradientStart: sanitizeHexColor(settings.gradientStart, DEFAULT_FLOATING_SETTINGS.gradientStart),
     gradientEnd: sanitizeHexColor(settings.gradientEnd, DEFAULT_FLOATING_SETTINGS.gradientEnd),

@@ -6,6 +6,7 @@ export const fallbackAppSettings: AppSettingsSnapshot = {
   floatingWindow: {
     opacity: 0.92,
     scale: 1,
+    tokenRateFullScale: 200,
     unreadEffect: "ripple",
     gradientStart: "#ffffff",
     gradientEnd: "#daefff",

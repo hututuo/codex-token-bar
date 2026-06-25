@@ -21,6 +21,7 @@ interface DashboardSummarySectionProps {
   liveThreadOptions: LiveThreadOption[];
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
+  onTokenRateFullScaleChange: (fullScale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
   onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
   onFloatingTextToneChange: (textTone: number) => void;
@@ -40,6 +41,7 @@ export function DashboardSummarySection({
   liveThreadOptions,
   onFloatingOpacityChange,
   onFloatingScaleChange,
+  onTokenRateFullScaleChange,
   onFloatingUnreadEffectChange,
   onFloatingGradientChange,
   onFloatingTextToneChange,
@@ -61,6 +63,7 @@ export function DashboardSummarySection({
         statusTrayLiveTextEnabled={displaySurfaces.statusTrayLiveTextEnabled}
         onFloatingOpacityChange={onFloatingOpacityChange}
         onFloatingScaleChange={onFloatingScaleChange}
+        onTokenRateFullScaleChange={onTokenRateFullScaleChange}
         onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
         onFloatingGradientChange={onFloatingGradientChange}
         onFloatingTextToneChange={onFloatingTextToneChange}

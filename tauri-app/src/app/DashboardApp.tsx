@@ -39,6 +39,7 @@ export function DashboardApp() {
         onRefresh={reloadAll}
         onFloatingOpacityChange={shellSettings.updateFloatingOpacity}
         onFloatingScaleChange={shellSettings.updateFloatingScale}
+        onTokenRateFullScaleChange={shellSettings.updateTokenRateFullScale}
         onFloatingUnreadEffectChange={shellSettings.updateFloatingUnreadEffect}
         onFloatingGradientChange={shellSettings.updateFloatingGradient}
         onFloatingTextToneChange={shellSettings.updateFloatingTextTone}

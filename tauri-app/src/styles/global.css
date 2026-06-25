@@ -1566,8 +1566,7 @@ button.quota-side-card:hover {
 
 .live-left {
   display: grid;
-  grid-template-columns: 210px minmax(0, 1fr);
-  grid-template-rows: 52px 25px;
+  grid-template-rows: minmax(85px, auto) 30px;
   gap: 8px;
   min-width: 0;
 }
@@ -1575,10 +1574,7 @@ button.quota-side-card:hover {
 .rate-meter {
   position: relative;
   display: grid;
-  grid-row: 1 / span 2;
-  grid-template-columns: 78px minmax(0, 1fr);
-  gap: 8px;
-  align-items: center;
+  gap: 7px;
   overflow: hidden;
   min-height: 85px;
   padding: 7px 9px;
@@ -1595,24 +1591,27 @@ button.quota-side-card:hover {
   content: "";
 }
 
+.rate-meter-main {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
 .rate-readout {
   display: grid;
   gap: 1px;
   min-width: 0;
 }
 
-.rate-readout div {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-}
-
 .rate-readout strong {
   color: var(--text);
-  font-size: 22.5px;
+  font-size: 23px;
   font-weight: 680;
   letter-spacing: 0;
   line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .rate-readout span,
@@ -1660,44 +1659,13 @@ button.quota-side-card:hover {
   background: linear-gradient(90deg, var(--accent), #18c3d5);
 }
 
-.rate-details {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  min-width: 0;
-}
-
-.metric-card,
 .session-row,
 .settings-panel {
   border-radius: 10px;
   background: var(--panel-soft);
 }
 
-.metric-card {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-  padding: 7px 9px;
-}
-
-.metric-card strong {
-  overflow: hidden;
-  font-size: 14.5px;
-  font-weight: 660;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.metric-card span {
-  overflow: hidden;
-  font-size: 10.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .session-row {
-  grid-column: 1 / -1;
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr) auto;
   gap: 8px;
@@ -1706,6 +1674,32 @@ button.quota-side-card:hover {
   min-height: 30px;
   padding: 4px 8px;
   font-size: 13px;
+}
+
+.rate-scale-slider {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 34px;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  padding: 4px 7px;
+}
+
+.rate-scale-slider span,
+.rate-scale-slider strong {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.rate-scale-slider strong {
+  color: color-mix(in srgb, var(--text) 78%, var(--muted));
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .session-title {

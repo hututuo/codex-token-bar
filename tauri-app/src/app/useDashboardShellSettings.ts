@@ -37,6 +37,7 @@ export interface DashboardShellSettingsState {
   toggleStatusTrayLiveText: () => void;
   updateFloatingOpacity: (opacity: number) => void;
   updateFloatingScale: (scale: number) => void;
+  updateTokenRateFullScale: (fullScale: number) => void;
   updateFloatingUnreadEffect: (unreadEffect: FloatingUnreadEffect) => void;
   updateFloatingGradient: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
   updateFloatingTextTone: (textTone: number) => void;
@@ -93,6 +94,10 @@ export function useDashboardShellSettings({
     setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, scale }));
   }
 
+  function updateTokenRateFullScale(tokenRateFullScale: number) {
+    setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, tokenRateFullScale }));
+  }
+
   function updateFloatingUnreadEffect(unreadEffect: FloatingUnreadEffect) {
     setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, unreadEffect }));
   }
@@ -131,6 +136,7 @@ export function useDashboardShellSettings({
     toggleStatusTrayLiveText,
     updateFloatingOpacity,
     updateFloatingScale,
+    updateTokenRateFullScale,
     updateFloatingUnreadEffect,
     updateFloatingGradient,
     updateFloatingTextTone,

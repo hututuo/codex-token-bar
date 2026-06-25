@@ -56,8 +56,17 @@ function FloatingQuotaBar({ label, remainingPercent }: { label: string; remainin
   );
 }
 
-function FloatingRateMeter({ snapshot, statusText }: { snapshot: FloatingPanelSnapshot; statusText?: string }) {
-  const fillPercent = rateFillPercent(snapshot.tokensPerSecond, snapshot.maxTokensPerSecond);
+function FloatingRateMeter({
+  fullScale,
+  snapshot,
+  statusText,
+}: {
+  fullScale: number;
+  snapshot: FloatingPanelSnapshot;
+  statusText?: string;
+}) {
+  const scaleLimit = Number.isFinite(fullScale) && fullScale > 0 ? fullScale : snapshot.maxTokensPerSecond || 200;
+  const fillPercent = rateFillPercent(snapshot.tokensPerSecond, scaleLimit);
   const visibleFillPercent = fillPercent > 0 ? Math.max(3, fillPercent) : 0;
   const hasStatusText = typeof statusText === "string" && statusText.length > 0;
 
@@ -65,9 +74,9 @@ function FloatingRateMeter({ snapshot, statusText }: { snapshot: FloatingPanelSn
     <span
       className={`floating-rate-meter ${hasStatusText ? "floating-rate-meter--with-status" : "floating-rate-meter--solo"}`}
       role="meter"
-      aria-label={`实时速率 ${snapshot.tokensPerSecond.toFixed(1)} tok/s，满格 ${Math.round(snapshot.maxTokensPerSecond || 200)} tok/s`}
+      aria-label={`实时速率 ${snapshot.tokensPerSecond.toFixed(1)} tok/s，满格 ${Math.round(scaleLimit)} tok/s`}
       aria-valuemin={0}
-      aria-valuemax={Math.round(snapshot.maxTokensPerSecond || 200)}
+      aria-valuemax={Math.round(scaleLimit)}
       aria-valuenow={Number(snapshot.tokensPerSecond.toFixed(1))}
       style={{ "--rate-fill": `${visibleFillPercent}%` } as CSSProperties}
     >
@@ -169,7 +178,11 @@ function FloatingContentRow({
             <strong>{snapshot.tokensPerSecond.toFixed(1)}</strong>
             <span>tok/s</span>
           </span>
-          <FloatingRateMeter snapshot={snapshot} statusText={attachedUsageStatus ? snapshot.trendLabel : undefined} />
+          <FloatingRateMeter
+            fullScale={settings.tokenRateFullScale}
+            snapshot={snapshot}
+            statusText={attachedUsageStatus ? snapshot.trendLabel : undefined}
+          />
         </div>
       );
     case "usageStatus":

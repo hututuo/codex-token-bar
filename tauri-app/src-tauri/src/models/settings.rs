@@ -34,6 +34,8 @@ pub struct FloatingWindowSettingsSnapshot {
     pub opacity: f64,
     #[serde(default = "default_floating_scale")]
     pub scale: f64,
+    #[serde(default = "default_token_rate_full_scale")]
+    pub token_rate_full_scale: f64,
     #[serde(default = "default_floating_unread_effect")]
     pub unread_effect: String,
     #[serde(default = "default_floating_gradient_start")]
@@ -55,6 +57,7 @@ impl Default for FloatingWindowSettingsSnapshot {
         Self {
             opacity: default_floating_opacity(),
             scale: default_floating_scale(),
+            token_rate_full_scale: default_token_rate_full_scale(),
             unread_effect: default_floating_unread_effect(),
             gradient_start: default_floating_gradient_start(),
             gradient_end: default_floating_gradient_end(),
@@ -72,6 +75,10 @@ fn default_floating_opacity() -> f64 {
 
 fn default_floating_scale() -> f64 {
     1.0
+}
+
+fn default_token_rate_full_scale() -> f64 {
+    200.0
 }
 
 fn default_floating_unread_effect() -> String {

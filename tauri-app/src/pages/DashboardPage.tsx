@@ -28,6 +28,7 @@ interface DashboardPageProps {
   onCodexHomeReset: () => Promise<void>;
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
+  onTokenRateFullScaleChange: (fullScale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
   onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
   onFloatingTextToneChange: (textTone: number) => void;
@@ -54,6 +55,7 @@ export function DashboardPage({
   onCodexHomeReset,
   onFloatingOpacityChange,
   onFloatingScaleChange,
+  onTokenRateFullScaleChange,
   onFloatingUnreadEffectChange,
   onFloatingGradientChange,
   onFloatingTextToneChange,
@@ -93,6 +95,7 @@ export function DashboardPage({
               liveThreadOptions={liveThreadOptions}
               onFloatingOpacityChange={onFloatingOpacityChange}
               onFloatingScaleChange={onFloatingScaleChange}
+              onTokenRateFullScaleChange={onTokenRateFullScaleChange}
               onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
               onFloatingGradientChange={onFloatingGradientChange}
               onFloatingTextToneChange={onFloatingTextToneChange}
