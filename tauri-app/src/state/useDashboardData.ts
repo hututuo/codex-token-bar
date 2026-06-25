@@ -1,4 +1,5 @@
 import {
+  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -60,11 +61,15 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   });
 
   const mergePreciseSnapshot = useCallback((precise: DashboardSnapshot) => {
-    setState((current) => mergePreciseDashboard(current, precise));
+    startTransition(() => {
+      setState((current) => mergePreciseDashboard(current, precise));
+    });
   }, []);
 
   const mergeQuotaSnapshot = useCallback((quota: AccountQuotaBundle) => {
-    setState((current) => mergeQuota(current, quota));
+    startTransition(() => {
+      setState((current) => mergeQuota(current, quota));
+    });
   }, []);
 
   const mergeLiveRateSnapshot = useCallback((liveRate: LiveRateSnapshot) => {
@@ -72,7 +77,9 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   }, []);
 
   const mergeThreadOptions = useCallback((liveThreadOptions: LiveThreadOption[]) => {
-    setState((current) => mergeLiveThreadOptions(current, liveThreadOptions));
+    startTransition(() => {
+      setState((current) => mergeLiveThreadOptions(current, liveThreadOptions));
+    });
   }, []);
 
   const consumeForcedQuotaRefresh = useCallback(() => {

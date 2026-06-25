@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import type { QuotaLimit, QuotaSnapshot, ResetCreditDetail } from "../types/dashboard";
 import { formatPercent } from "../utils/format";
 
@@ -73,7 +73,7 @@ function ResetCreditItem({ credit }: { credit: ResetCreditDetail }) {
   );
 }
 
-export function QuotaStrip({ snapshot }: QuotaStripProps) {
+function QuotaStripView({ snapshot }: QuotaStripProps) {
   const [showResetDetails, setShowResetDetails] = useState(false);
   const credits = snapshot.resetCredit.credits ?? [];
 
@@ -131,3 +131,5 @@ export function QuotaStrip({ snapshot }: QuotaStripProps) {
     </section>
   );
 }
+
+export const QuotaStrip = memo(QuotaStripView);

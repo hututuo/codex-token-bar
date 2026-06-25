@@ -20,7 +20,7 @@ import {
 const RADAR_REFRESH_INTERVAL_MS = 600_000;
 const RADAR_CHART_COLORS = ["#18a7f2", "#ff8a2c", "#2f7df6", "#32b85f", "#a65af5"];
 
-export function CodexRadarStrip() {
+function CodexRadarStripView() {
   const [snapshot, setSnapshot] = useState<CodexRadarSnapshot | null>(null);
   const [status, setStatus] = useState("Codex 雷达待读取");
   const [refreshing, setRefreshing] = useState(false);
@@ -160,6 +160,8 @@ export function CodexRadarStrip() {
     </section>
   );
 }
+
+export const CodexRadarStrip = memo(CodexRadarStripView);
 
 function CodexRadarDetailOverlay({
   allModels,

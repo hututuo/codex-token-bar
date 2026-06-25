@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { DashboardStats } from "../types/dashboard";
 import { formatTokens } from "../utils/format";
 
@@ -13,7 +14,7 @@ const statsConfig: Array<[keyof DashboardStats, string, (value: number) => strin
   ["longestStreakDays", "最长连续天数", (value) => `${value} 天`],
 ];
 
-export function StatsStrip({ stats }: StatsStripProps) {
+function StatsStripView({ stats }: StatsStripProps) {
   return (
     <section className="stats-strip" aria-label="Token 总览">
       {statsConfig.map(([key, label, format]) => (
@@ -25,3 +26,5 @@ export function StatsStrip({ stats }: StatsStripProps) {
     </section>
   );
 }
+
+export const StatsStrip = memo(StatsStripView);

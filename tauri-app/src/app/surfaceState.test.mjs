@@ -177,6 +177,20 @@ test("manual dashboard refresh keeps the current snapshot visible", async () => 
   assert.equal(reloadInitialSnapshot.includes("loadInitialDashboardState"), true);
 });
 
+test("live rate updates do not force heavy analytics rerenders", async () => {
+  const analyticsSection = await readFile(
+    new URL("../pages/dashboard/DashboardAnalyticsSection.tsx", import.meta.url),
+    "utf8",
+  );
+  const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
+
+  assert.equal(analyticsSection.includes("memo("), true);
+  assert.equal(analyticsSection.includes("DashboardAnalyticsSectionView"), true);
+  assert.equal(dashboardData.includes("startTransition"), true);
+  assert.equal(dashboardData.includes("mergePreciseDashboard(current, precise)"), true);
+  assert.equal(dashboardData.includes("mergeQuota(current, quota)"), true);
+});
+
 test("debug launcher stages a runnable app and stops stale debug instances", async () => {
   const script = await readFile(
     new URL("../../../scripts/open_tauri_debug_app.sh", import.meta.url),

@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { CacheHitRanking } from "../../components/CacheHitRanking";
 import { RecentUsageChart } from "../../components/RecentUsageChart";
 import { TokenActivitySection } from "../../components/TokenActivitySection";
@@ -7,7 +8,7 @@ interface DashboardAnalyticsSectionProps {
   dashboard: DashboardSnapshot;
 }
 
-export function DashboardAnalyticsSection({ dashboard }: DashboardAnalyticsSectionProps) {
+function DashboardAnalyticsSectionView({ dashboard }: DashboardAnalyticsSectionProps) {
   return (
     <>
       <TokenActivitySection days={dashboard.activityDays} />
@@ -20,3 +21,5 @@ export function DashboardAnalyticsSection({ dashboard }: DashboardAnalyticsSecti
     </>
   );
 }
+
+export const DashboardAnalyticsSection = memo(DashboardAnalyticsSectionView);
