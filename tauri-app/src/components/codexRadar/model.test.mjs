@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { modelIqChartSeries, normalizeCodexRadarSnapshot, primaryModelRow, quotaChartSeries, secondaryModelRows, shortDateLabel } from "./model.ts";
+import { modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, primaryModelRow, quotaChartSeries, secondaryModelRows, shortDateLabel } from "./model.ts";
 
 const snapshot = {
   modelIq: {
@@ -217,4 +217,34 @@ test("normalizeCodexRadarSnapshot accepts the public snake_case feed", () => {
   assert.equal(normalized.modelIq.quotaRadar.rows[0].fiveH, 284.57);
   assert.equal(normalized.prediction.probability24H, 0.18);
   assert.equal(normalized.codexEnvironment.issueOrLimitAnomalies24H, 4);
+  assert.deepEqual(normalized.feedItems, []);
+});
+
+test("parseCodexRadarFeedXml mirrors the Swift RSS reminder parser", () => {
+  const items = parseCodexRadarFeedXml(`
+    <rss>
+      <channel>
+        <item>
+          <title>速蹬窗口开启：500 万用户庆祝重置</title>
+          <link>https://codexradar.com/#codex-speed-window-2026-05-31-500</link>
+          <guid>radar-500</guid>
+          <pubDate>2026-06-24 20:00</pubDate>
+          <description><![CDATA[发现有效重置预告，速蹬窗口开启。]]></description>
+        </item>
+        <item>
+          <title>Codex &amp; Radar 更新</title>
+          <link>https://codexradar.com/#update</link>
+          <guid>radar-update</guid>
+          <pubDate>2026-06-25 09:00</pubDate>
+          <description>公开订阅 &amp; 提醒历史</description>
+        </item>
+      </channel>
+    </rss>
+  `);
+
+  assert.equal(items.length, 2);
+  assert.equal(items[0].title, "速蹬窗口开启：500 万用户庆祝重置");
+  assert.equal(items[0].description, "发现有效重置预告，速蹬窗口开启。");
+  assert.equal(items[1].title, "Codex & Radar 更新");
+  assert.equal(items[1].description, "公开订阅 & 提醒历史");
 });

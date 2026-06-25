@@ -1,4 +1,9 @@
-import { normalizeCodexRadarSnapshot, type CodexRadarSnapshot } from "../components/codexRadar/model";
+import {
+  normalizeCodexRadarSnapshot,
+  parseCodexRadarFeedXml,
+  type CodexRadarFeedItem,
+  type CodexRadarSnapshot,
+} from "../components/codexRadar/model";
 import { withTimeout } from "../platform/runtime";
 
 const CODEX_RADAR_ENDPOINT = "https://codexradar.com/current.json";
@@ -37,10 +42,39 @@ async function fetchCodexRadarSnapshot(): Promise<CodexRadarSnapshot> {
     throw new Error(`Codex Radar HTTP ${response.status}`);
   }
 
-  const snapshot = normalizeCodexRadarSnapshot(await response.json());
+  const baseSnapshot = normalizeCodexRadarSnapshot(await response.json());
+  const feedItems = await fetchCodexRadarFeed(baseSnapshot.links.rss);
+  const snapshot = {
+    ...baseSnapshot,
+    feedItems,
+  };
   cachedSnapshot = {
     snapshot,
     readAt: Date.now(),
   };
   return snapshot;
+}
+
+async function fetchCodexRadarFeed(feedUrl: string): Promise<CodexRadarFeedItem[]> {
+  if (!feedUrl) {
+    return [];
+  }
+
+  try {
+    const response = await withTimeout(
+      fetch(feedUrl, {
+        cache: "no-store",
+        headers: {
+          Accept: "application/rss+xml, application/xml, text/xml",
+        },
+      }),
+      18_000,
+    );
+    if (!response.ok) {
+      return [];
+    }
+    return parseCodexRadarFeedXml(await response.text());
+  } catch {
+    return [];
+  }
 }

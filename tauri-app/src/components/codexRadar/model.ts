@@ -13,6 +13,7 @@ export interface CodexRadarSnapshot {
   links: CodexRadarLinks;
   modelIq: CodexRadarModelIQ;
   codexEnvironment: CodexRadarEnvironment;
+  feedItems: CodexRadarFeedItem[];
 }
 
 export interface CodexRadarWindow {
@@ -62,6 +63,14 @@ export interface CodexRadarRecentWindow {
 export interface CodexRadarLinks {
   html: string;
   rss: string;
+}
+
+export interface CodexRadarFeedItem {
+  title: string;
+  link: string;
+  guid: string;
+  pubDate: string;
+  description: string;
 }
 
 export interface CodexRadarModelIQ {
@@ -313,7 +322,35 @@ export function normalizeCodexRadarSnapshot(raw: unknown): CodexRadarSnapshot {
       complaintExamples: arrayValue(read(environment, "complaintExamples", "complaint_examples")).map(normalizeComplaintExample),
       roleCounts: numberRecord(read(environment, "roleCounts", "role_counts")),
     },
+    feedItems: arrayValue(read(source, "feedItems", "feed_items")).map(normalizeFeedItem),
   };
+}
+
+export function parseCodexRadarFeedXml(xml: string): CodexRadarFeedItem[] {
+  if (typeof DOMParser !== "undefined") {
+    const parsed = new DOMParser().parseFromString(xml, "application/xml");
+    if (!parsed.querySelector("parsererror")) {
+      return Array.from(parsed.querySelectorAll("item"))
+        .map((item) => normalizeFeedItem({
+          title: item.querySelector("title")?.textContent ?? "",
+          link: item.querySelector("link")?.textContent ?? "",
+          guid: item.querySelector("guid")?.textContent ?? "",
+          pubDate: item.querySelector("pubDate")?.textContent ?? "",
+          description: item.querySelector("description")?.textContent ?? "",
+        }))
+        .filter(isCompleteFeedItem);
+    }
+  }
+
+  return [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)]
+    .map((match) => normalizeFeedItem({
+      title: xmlTagText(match[1], "title"),
+      link: xmlTagText(match[1], "link"),
+      guid: xmlTagText(match[1], "guid"),
+      pubDate: xmlTagText(match[1], "pubDate"),
+      description: xmlTagText(match[1], "description"),
+    }))
+    .filter(isCompleteFeedItem);
 }
 
 export function primaryModelRow(modelIq: CodexRadarModelIQ): CodexRadarModelIQComparisonRow {
@@ -691,6 +728,44 @@ function normalizeComplaintExample(raw: unknown): CodexRadarComplaintExample {
     semanticRole: stringValue(read(item, "semanticRole", "semantic_role")),
     predictionRelevance: optionalNumber(read(item, "predictionRelevance", "prediction_relevance")),
   };
+}
+
+function normalizeFeedItem(raw: unknown): CodexRadarFeedItem {
+  const item = asRecord(raw);
+  return {
+    title: normalizedText(read(item, "title")),
+    link: normalizedText(read(item, "link")),
+    guid: normalizedText(read(item, "guid")),
+    pubDate: normalizedText(read(item, "pubDate", "pub_date")),
+    description: normalizedText(read(item, "description")),
+  };
+}
+
+function isCompleteFeedItem(item: CodexRadarFeedItem): boolean {
+  return Boolean(item.title && item.link && item.guid && item.pubDate && item.description);
+}
+
+function xmlTagText(source: string, tagName: string): string {
+  const match = source.match(new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)</${tagName}>`, "i"));
+  return match ? decodeXmlText(match[1]) : "";
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/^<!\[CDATA\[([\s\S]*)\]\]>$/u, "$1")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) => String.fromCodePoint(Number.parseInt(code, 16)));
+}
+
+function normalizedText(value: unknown): string {
+  return stringValue(value)
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function read(record: Record<string, unknown>, ...keys: string[]): unknown {

@@ -439,6 +439,15 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
           }))}
           title="社区反馈样本"
         />
+        <RadarArticleList
+          emptyText="暂无 RSS 提醒历史"
+          items={snapshot.feedItems.map((item) => ({
+            title: item.title,
+            subtitle: `${item.pubDate} · ${item.description}`,
+            url: item.link,
+          }))}
+          title="RSS 提醒历史"
+        />
         <RadarDetailSubsection title="来源">
           <RadarKeyValueGrid rows={[
             ["网页", snapshot.links.html || "https://codexradar.com"],
