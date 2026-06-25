@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { readAppSettings } from "../api/client";
 import {
   DEFAULT_FLOATING_SETTINGS,
@@ -17,7 +18,7 @@ function statusRateFillPercent(tokensPerSecond: number, fullScale: number): numb
 }
 
 export function StatusPanelApp() {
-  const [active, setActive] = useState(() => document.hasFocus());
+  const [active, setActive] = useState(false);
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   const { snapshot, quotaLabels } = useCompactPanelData({
     active,
@@ -58,14 +59,34 @@ export function StatusPanelApp() {
   }, []);
 
   useEffect(() => {
+    const appWindow = getCurrentWindow();
+    let cancelled = false;
+
+    async function refreshActiveState() {
+      try {
+        const visible = await appWindow.isVisible();
+        if (!cancelled) {
+          setActive(Boolean(visible) && document.hasFocus());
+        }
+      } catch {
+        if (!cancelled) {
+          setActive(document.hasFocus());
+        }
+      }
+    }
+
     const hideWhenBlurred = () => {
       setActive(false);
       void desktopPlatform.hideStatusPanelWindow();
     };
-    const markActive = () => setActive(true);
+    const markActive = () => {
+      void refreshActiveState();
+    };
     window.addEventListener("focus", markActive);
     window.addEventListener("blur", hideWhenBlurred);
+    void refreshActiveState();
     return () => {
+      cancelled = true;
       window.removeEventListener("focus", markActive);
       window.removeEventListener("blur", hideWhenBlurred);
     };

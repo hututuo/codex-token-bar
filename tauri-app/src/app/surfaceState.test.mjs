@@ -101,6 +101,31 @@ test("compact surfaces refresh quota every minute", async () => {
   assert.equal(compactData.includes("DEFAULT_QUOTA_INTERVAL_MS = 60_000"), true);
 });
 
+test("hidden status panel starts inactive and verifies window visibility before polling", async () => {
+  const statusPanel = await readFile(new URL("../status/StatusPanelApp.tsx", import.meta.url), "utf8");
+
+  assert.equal(statusPanel.includes("useState(false)"), true);
+  assert.equal(statusPanel.includes("appWindow.isVisible()"), true);
+  assert.equal(statusPanel.includes("document.hasFocus()"), true);
+  assert.equal(statusPanel.includes("setActive(Boolean(visible) && document.hasFocus())"), true);
+});
+
+test("status tray live text reuses dashboard live rate instead of polling compact data", async () => {
+  const tray = await readFile(new URL("../tray/useStatusTray.ts", import.meta.url), "utf8");
+  const displaySettings = await readFile(new URL("./useDisplaySurfaceSettings.ts", import.meta.url), "utf8");
+  const shellSettings = await readFile(new URL("./useDashboardShellSettings.ts", import.meta.url), "utf8");
+  const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
+
+  assert.equal(tray.includes("useCompactPanelData"), false);
+  assert.equal(tray.includes("LiveRateSnapshot"), true);
+  assert.equal(displaySettings.includes("liveRate: LiveRateSnapshot"), true);
+  assert.equal(displaySettings.includes("useStatusTray("), true);
+  assert.equal(displaySettings.includes("liveRate,"), true);
+  assert.equal(shellSettings.includes("liveRate: LiveRateSnapshot"), true);
+  assert.equal(shellSettings.includes("useDisplaySurfaceSettings({ platform, liveRate })"), true);
+  assert.equal(dashboardApp.includes("liveRate: readyState.liveRate"), true);
+});
+
 test("manual dashboard refresh keeps the current snapshot visible", async () => {
   const actions = await readFile(new URL("../state/useDashboardActions.ts", import.meta.url), "utf8");
   const reloadAll = actions.slice(

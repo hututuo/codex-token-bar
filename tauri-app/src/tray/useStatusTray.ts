@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef } from "react";
 import { desktopPlatform } from "../platform/desktop";
-import { useCompactPanelData } from "../surfaces/useCompactPanelData";
-import type { FloatingPanelSnapshot, PlatformCapabilities } from "../types/dashboard";
+import type { LiveRateSnapshot, PlatformCapabilities } from "../types/dashboard";
 
 export function useStatusTray(
   platform: PlatformCapabilities | null,
   liveTextEnabled: boolean,
+  liveRate: LiveRateSnapshot,
 ) {
   const lastReadout = useRef<{ title: string; tooltip: string } | null>(null);
   const liveTextAvailable =
@@ -13,23 +13,18 @@ export function useStatusTray(
     platform !== null &&
     platform.statusTray.available &&
     platform.statusTrayLiveText.available;
-  const { snapshot } = useCompactPanelData({
-    active: liveTextAvailable,
-    snapshotIntervalMs: 1_000,
-    quotaEnabled: false,
-  });
   const readout = useMemo(
     () =>
       liveTextAvailable
         ? {
-            title: formatTrayTitle(snapshot),
-            tooltip: `Codex Token Bar · ${snapshot.tokensPerSecond.toFixed(1)} tok/s`,
+            title: formatTrayTitle(liveRate),
+            tooltip: `Codex Token Bar · ${liveRate.tokensPerSecond.toFixed(1)} tok/s`,
           }
         : {
             title: "CTB",
             tooltip: "Codex Token Bar",
           },
-    [liveTextAvailable, snapshot],
+    [liveTextAvailable, liveRate],
   );
 
   useEffect(() => {
@@ -50,7 +45,7 @@ export function useStatusTray(
   }, [platform, readout]);
 }
 
-function formatTrayTitle(snapshot: FloatingPanelSnapshot): string {
+function formatTrayTitle(snapshot: Pick<LiveRateSnapshot, "tokensPerSecond">): string {
   if (snapshot.tokensPerSecond >= 100) {
     return `${Math.round(snapshot.tokensPerSecond)}/s`;
   }
