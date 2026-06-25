@@ -202,7 +202,6 @@ struct CachedUsageSummary {
 struct DashboardScanSignature {
     codex_home: PathBuf,
     session_files: Vec<SessionFileSignature>,
-    state_database: Option<CachedFileSignature>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -226,7 +225,6 @@ fn dashboard_scan_signature(codex_home: &Path, session_files: &[PathBuf]) -> Das
     DashboardScanSignature {
         codex_home: codex_home.to_path_buf(),
         session_files: file_signatures,
-        state_database: file_signature(&codex_home.join("state_5.sqlite")),
     }
 }
 

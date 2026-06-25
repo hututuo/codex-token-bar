@@ -230,6 +230,43 @@ fn dashboard_snapshot_reuses_cached_aggregate_when_session_signatures_are_unchan
 }
 
 #[test]
+fn dashboard_snapshot_cache_ignores_state_database_churn() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let session_id = "019eaaaa-bbbb-cccc-dddd-state-churn";
+    write_lines(
+        &session_dir.join(format!("rollout-{session_id}.jsonl")),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    create_state_database(&root, session_id, "019ehigh-0000-0000-0000-state-churn2");
+    reset_dashboard_aggregate_build_count_for_testing();
+
+    let first = dashboard_snapshot(&root).unwrap();
+    let build_count_after_first_load = dashboard_aggregate_build_count_for_testing(&root);
+    {
+        let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
+        connection
+            .execute(
+                "UPDATE threads SET title = '重命名后的标题', updated_at = updated_at + 1, updated_at_ms = updated_at_ms + 1000 WHERE id = ?1;",
+                [session_id],
+            )
+            .unwrap();
+    }
+    let second = dashboard_snapshot(&root).unwrap();
+
+    assert_eq!(first.stats.total_tokens, 120);
+    assert_eq!(second.stats.total_tokens, 120);
+    assert!(build_count_after_first_load >= 1);
+    assert_eq!(
+        dashboard_aggregate_build_count_for_testing(&root),
+        build_count_after_first_load
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn token_event_cache_serializes_only_usage_summary() {
     let mut cache = TokenEventCache::default();
     cache.homes.insert(
