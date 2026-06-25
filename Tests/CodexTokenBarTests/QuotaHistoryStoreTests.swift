@@ -206,6 +206,39 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(recentValues.min() ?? 100, 99)
     }
 
+    func testCurrentHourlyQuotaBucketDoesNotLookPastNow() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        var components = DateComponents()
+        components.calendar = Calendar(identifier: .gregorian)
+        components.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)
+        components.year = 2026
+        components.month = 6
+        components.day = 25
+        components.hour = 14
+        components.minute = 23
+        components.second = 0
+        let now = try XCTUnwrap(components.date)
+        let futureSevenDayReset = now.addingTimeInterval(37 * 60)
+
+        try database.record(
+            snapshot(
+                usedPercent: 23,
+                sevenDayUsedPercent: 56,
+                reset: now.addingTimeInterval(3 * 60 * 60),
+                sevenDayReset: futureSevenDayReset,
+                planType: "Pro",
+                limitName: "codex",
+                at: now.addingTimeInterval(-10 * 60)
+            ),
+            createdAt: now.addingTimeInterval(-10 * 60)
+        )
+
+        let loaded = try database.loadSnapshot(now: now)
+
+        XCTAssertEqual(loaded.hourlyBins.last?.sevenDayRemainingPercent, 44)
+    }
+
     private func snapshot(
         usedPercent: Int,
         sevenDayUsedPercent: Int = 40,

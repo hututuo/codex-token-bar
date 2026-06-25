@@ -200,7 +200,8 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             start: recentStart,
             count: intervalCount,
             interval: recentInterval,
-            maxCarryGap: maxCarryGap
+            maxCarryGap: maxCarryGap,
+            now: now
         )
 
         let currentHour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
@@ -210,7 +211,8 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             start: hourlyStart,
             count: 720,
             interval: 60 * 60,
-            maxCarryGap: maxCarryGap
+            maxCarryGap: maxCarryGap,
+            now: now
         )
 
         let startDay = calendar.startOfDay(for: calendar.date(byAdding: .day, value: -29, to: now) ?? now)
@@ -336,7 +338,8 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         start: Date,
         count: Int,
         interval: TimeInterval,
-        maxCarryGap: TimeInterval
+        maxCarryGap: TimeInterval,
+        now: Date
     ) -> [QuotaHistoryRecentBucket] {
         var rowIndex = 0
         var latestRow: QuotaHistoryRow?
@@ -344,8 +347,9 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         return (0..<count).map { index -> QuotaHistoryRecentBucket in
             let binStart = start.addingTimeInterval(Double(index) * interval)
             let end = binStart.addingTimeInterval(interval)
+            let sampleDate = min(end, now)
 
-            while rowIndex < rows.count, rows[rowIndex].createdAt <= end {
+            while rowIndex < rows.count, rows[rowIndex].createdAt <= sampleDate {
                 latestRow = rows[rowIndex]
                 rowIndex += 1
             }
@@ -356,7 +360,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 fiveHourRemainingPercent: quotaRemaining(
                     from: latestRow,
                     to: nextRow,
-                    at: end,
+                    at: sampleDate,
                     maxCarryGap: maxCarryGap,
                     remaining: \.fiveHourRemainingPercent,
                     resetsAt: \.fiveHourResetsAt,
@@ -365,7 +369,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 sevenDayRemainingPercent: quotaRemaining(
                     from: latestRow,
                     to: nextRow,
-                    at: end,
+                    at: sampleDate,
                     maxCarryGap: maxCarryGap,
                     remaining: \.sevenDayRemainingPercent,
                     resetsAt: \.sevenDayResetsAt,
