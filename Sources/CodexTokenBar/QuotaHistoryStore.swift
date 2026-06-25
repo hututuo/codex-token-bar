@@ -44,7 +44,7 @@ final class QuotaHistoryStore: ObservableObject {
 }
 
 private struct QuotaHistoryRow {
-    private static let resetGraceInterval: TimeInterval = 2 * 60
+    fileprivate static let resetGraceInterval: TimeInterval = 2 * 60
 
     let createdAt: Date
     let accountKey: String
@@ -127,6 +127,11 @@ private struct QuotaHistoryRow {
             return false
         }
     }
+}
+
+private struct QuotaHistorySpikeEntry {
+    let index: Int
+    let usedPercent: Int
 }
 
 final class QuotaHistoryDatabase: @unchecked Sendable {
@@ -246,62 +251,72 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     }
 
     private static func suppressRecoveredFullUsageSpikes(_ rows: [QuotaHistoryRow]) -> [QuotaHistoryRow] {
-        rows.enumerated().map { index, row in
-            let fiveHour = recoveredFullUsageReplacement(
-                in: rows,
-                at: index,
-                current: row.fiveHourUsedPercent,
-                previousValue: { $0.fiveHourUsedPercent },
-                futureValue: { $0.fiveHourUsedPercent },
-                sameCycle: { row.isSameFiveHourCycle(as: $0) }
-            )
-            let sevenDay = recoveredFullUsageReplacement(
-                in: rows,
-                at: index,
-                current: row.sevenDayUsedPercent,
-                previousValue: { $0.sevenDayUsedPercent },
-                futureValue: { $0.sevenDayUsedPercent },
-                sameCycle: { row.isSameSevenDayCycle(as: $0) }
-            )
-            return row.replacing(fiveHourUsedPercent: fiveHour, sevenDayUsedPercent: sevenDay)
+        var adjusted = rows
+        suppressRecoveredFullUsageSpikes(
+            in: &adjusted,
+            usedPercent: \.fiveHourUsedPercent,
+            resetDate: \.fiveHourResetsAt,
+            replacing: { row, value in row.replacing(fiveHourUsedPercent: value) }
+        )
+        suppressRecoveredFullUsageSpikes(
+            in: &adjusted,
+            usedPercent: \.sevenDayUsedPercent,
+            resetDate: \.sevenDayResetsAt,
+            replacing: { row, value in row.replacing(sevenDayUsedPercent: value) }
+        )
+        return adjusted
+    }
+
+    private static func suppressRecoveredFullUsageSpikes(
+        in rows: inout [QuotaHistoryRow],
+        usedPercent: KeyPath<QuotaHistoryRow, Int?>,
+        resetDate: KeyPath<QuotaHistoryRow, Date?>,
+        replacing: (QuotaHistoryRow, Int) -> QuotaHistoryRow
+    ) {
+        var groups: [String: [QuotaHistorySpikeEntry]] = [:]
+        for (index, row) in rows.enumerated() {
+            guard let used = row[keyPath: usedPercent] else { continue }
+            let key = "\(row.accountKey)|\(resetBucket(row[keyPath: resetDate]))"
+            groups[key, default: []].append(QuotaHistorySpikeEntry(index: index, usedPercent: used))
+        }
+
+        for entries in groups.values {
+            for position in entries.indices {
+                let entry = entries[position]
+                let previous = position > entries.startIndex ? entries[entries.index(before: position)].usedPercent : nil
+                let nextIndex = entries.index(after: position)
+                let next = nextIndex < entries.endIndex ? entries[nextIndex].usedPercent : nil
+                guard let replacement = recoveredFullUsageReplacement(
+                    current: entry.usedPercent,
+                    previous: previous,
+                    next: next
+                ) else { continue }
+                rows[entry.index] = replacing(rows[entry.index], replacement)
+            }
         }
     }
 
-    private static func recoveredFullUsageReplacement(
-        in rows: [QuotaHistoryRow],
-        at index: Int,
-        current: Int?,
-        previousValue: (QuotaHistoryRow) -> Int?,
-        futureValue: (QuotaHistoryRow) -> Int?,
-        sameCycle: (QuotaHistoryRow) -> Bool
-    ) -> Int? {
-        guard let current else { return current }
+    private static func resetBucket(_ date: Date?) -> String {
+        guard let date else { return "none" }
+        return String(Int((date.timeIntervalSince1970 / QuotaHistoryRow.resetGraceInterval).rounded()))
+    }
 
-        let previous = rows[..<index]
-            .reversed()
-            .first { $0.accountKey == rows[index].accountKey && sameCycle($0) }
-            .flatMap(previousValue)
-        let recovered = rows[(index + 1)...]
-            .first { candidate in
-                candidate.accountKey == rows[index].accountKey
-                    && sameCycle(candidate)
-                    && (futureValue(candidate) ?? current) <= current - 20
+    private static func recoveredFullUsageReplacement(current: Int, previous: Int?, next: Int?) -> Int? {
+        if let next, current - next >= 20 {
+            if let previous {
+                if current < 95, current - previous < 20 {
+                    return nil
+                }
+                if previous < 95 {
+                    return previous
+                }
             }
-            .flatMap(futureValue)
-
-        guard let recovered else {
-            if let previous, previous <= 5, current >= 95 {
-                return previous
-            }
-            return current
+            return next
         }
-        if let previous, current < 95, current - previous < 20 {
-            return current
-        }
-        if let previous, previous < 95 {
+        if let previous, previous <= 5, current >= 95 {
             return previous
         }
-        return recovered
+        return nil
     }
 
     private static func row(from quota: AccountQuotaSnapshot, createdAt: Date) -> QuotaHistoryRow {

@@ -16,7 +16,7 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertTrue(source.contains("onlyCompactSurfaceVisible ? 300 : 180"))
     }
 
-    func testDashboardRefreshReloadsQuotaHistoryTimeline() throws {
+    func testDashboardRefreshDoesNotEagerlyReloadQuotaHistoryTimeline() throws {
         let testFile = URL(fileURLWithPath: #filePath)
         let projectRoot = testFile
             .deletingLastPathComponent()
@@ -26,7 +26,7 @@ final class CodexUsageStoreTests: XCTestCase {
         let source = try String(contentsOf: dashboardView, encoding: .utf8)
         let refreshBlock = try XCTUnwrap(sourceBlock(named: "refreshAllData", in: source, endingBefore: "private var requestedInterfaceScale"))
 
-        XCTAssertTrue(refreshBlock.contains("quotaHistoryStore.reload()"))
+        XCTAssertFalse(refreshBlock.contains("quotaHistoryStore.reload()"))
         XCTAssertTrue(source.contains("NSWorkspace.didWakeNotification"))
     }
 

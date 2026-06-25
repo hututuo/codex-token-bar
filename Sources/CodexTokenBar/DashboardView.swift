@@ -475,7 +475,6 @@ struct DashboardView: View {
     }
 
     private func refreshAllData() {
-        quotaHistoryStore.reload()
         store.refresh()
         quotaStore.refresh()
         radarStore.refresh()

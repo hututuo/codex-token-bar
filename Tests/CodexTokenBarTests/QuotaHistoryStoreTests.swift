@@ -44,7 +44,10 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let loaded = try database.loadSnapshot(now: now)
         let recentValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
 
-        XCTAssertTrue(recentValues.contains(88), "legacy pro row should remain visible in the 24h quota curve")
+        XCTAssertTrue(
+            recentValues.contains { $0 > 87 && $0 <= 88 },
+            "legacy pro row should remain visible in the 24h quota curve, including smoothed transitions"
+        )
         XCTAssertTrue(recentValues.contains(87), "current Pro|codex row should remain visible in the 24h quota curve")
     }
 
@@ -239,6 +242,41 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertEqual(loaded.hourlyBins.last?.sevenDayRemainingPercent, 44)
     }
 
+    func testLargeStableHistoryLoadsWithoutQuadraticSpikeScan() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let reset = now.addingTimeInterval(3 * 60 * 60)
+        try database.record(
+            snapshot(
+                usedPercent: 10,
+                sevenDayUsedPercent: 40,
+                reset: reset,
+                sevenDayReset: reset.addingTimeInterval(4 * 24 * 60 * 60),
+                planType: "Pro",
+                limitName: "codex",
+                at: now.addingTimeInterval(-30 * 24 * 60 * 60)
+            ),
+            createdAt: now.addingTimeInterval(-30 * 24 * 60 * 60)
+        )
+
+        try insertStableRawSnapshots(
+            databaseURL: url,
+            count: 3_200,
+            start: now.addingTimeInterval(-30 * 24 * 60 * 60),
+            step: 12 * 60,
+            fiveHourReset: reset,
+            sevenDayReset: reset.addingTimeInterval(4 * 24 * 60 * 60)
+        )
+
+        let start = Date()
+        let loaded = try database.loadSnapshot(now: now)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertEqual(loaded.recentBins.count, 288)
+        XCTAssertLessThan(elapsed, 1.0, "stable quota histories should not spend seconds scanning future rows")
+    }
+
     private func snapshot(
         usedPercent: Int,
         sevenDayUsedPercent: Int = 40,
@@ -257,6 +295,44 @@ final class QuotaHistoryStoreTests: XCTestCase {
             status: "额度已更新",
             updatedAt: date
         )
+    }
+
+    private func insertStableRawSnapshots(
+        databaseURL: URL,
+        count: Int,
+        start: Date,
+        step: TimeInterval,
+        fiveHourReset: Date,
+        sevenDayReset: Date
+    ) throws {
+        let driver = SQLiteDatabaseDriver(url: databaseURL)
+        try driver.transaction { connection in
+            for index in 0..<count {
+                let createdAt = start.addingTimeInterval(Double(index + 1) * step)
+                try connection.execute(
+                    """
+                    INSERT INTO quota_snapshots (
+                        created_at, account_key, source, plan_type, limit_name, account_name,
+                        five_hour_used_percent, five_hour_resets_at,
+                        seven_day_used_percent, seven_day_resets_at, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    bindings: [
+                        .date(createdAt),
+                        .text("来先生|Pro|codex"),
+                        .text("test"),
+                        .text("Pro"),
+                        .text("codex"),
+                        .text("来先生"),
+                        .int(10),
+                        .date(fiveHourReset),
+                        .int(40),
+                        .date(sevenDayReset),
+                        .text("stable")
+                    ]
+                )
+            }
+        }
     }
 
     private func makeDatabaseURL() throws -> URL {
