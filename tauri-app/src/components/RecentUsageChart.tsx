@@ -2,14 +2,22 @@ import { useMemo, useRef, useState } from "react";
 import type { RecentUsagePoint } from "../types/dashboard";
 import { formatTokens } from "../utils/format";
 import {
+  activeQuotaSelectionEndIndex,
+  clickQuotaSelection,
+  clampQuotaSelection,
   DEFAULT_SERIES_VISIBILITY,
   hoverIndexForX,
   optionalSmoothPath,
   percentText,
   plotChartPoints,
   prepareRecentChartData,
+  quotaConsumptionSelection,
   smoothPath,
   tokenAreaPath,
+  type OfficialAPIPriceModel,
+  type QuotaConsumptionEstimate,
+  type QuotaConsumptionSelection,
+  type QuotaSelectionState,
   type RecentChartRange,
   type SeriesVisibility,
 } from "./recentUsageChart/model";
@@ -27,6 +35,12 @@ const PLOT_HEIGHT = 143;
 const RANGE_OPTIONS: RecentChartRange[] = ["24h", "7d", "30d"];
 const VISIBILITY_STORAGE_KEY = "recentChartVisibility";
 const RANGE_STORAGE_KEY = "recentChartRange";
+const QUOTA_MODEL_STORAGE_KEY = "recentChartQuotaEstimateModel";
+const QUOTA_MODEL_OPTIONS: Array<{ value: OfficialAPIPriceModel; label: string }> = [
+  { value: "gpt55", label: "官方 API · GPT-5.5" },
+  { value: "gpt54", label: "官方 API · GPT-5.4" },
+  { value: "gpt54Mini", label: "官方 API · GPT-5.4 mini" },
+];
 
 export function RecentUsageChart({
   recentUsage24h,
@@ -36,6 +50,8 @@ export function RecentUsageChart({
   const [range, setRange] = useState<RecentChartRange>(() => readStoredRange());
   const [visibility, setVisibility] = useState<SeriesVisibility>(() => readStoredVisibility());
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [quotaModel, setQuotaModel] = useState<OfficialAPIPriceModel>(() => readStoredQuotaModel());
+  const [quotaSelectionState, setQuotaSelectionState] = useState<QuotaSelectionState>({ startIndex: null, fixedEndIndex: null });
   const svgRef = useRef<SVGSVGElement | null>(null);
   const data = useMemo(
     () => prepareRecentChartData(range, { recentUsage24h, recentUsage7d, recentUsage30d }),
@@ -45,11 +61,25 @@ export function RecentUsageChart({
   const activeIndex = hoveredIndex !== null && data.points[hoveredIndex] ? hoveredIndex : null;
   const activePoint = activeIndex !== null ? data.points[activeIndex] : null;
   const activeTokenPoint = activeIndex !== null ? plotData.tokenPoints[activeIndex] : null;
+  const quotaEndIndex = activeQuotaSelectionEndIndex(
+    clampQuotaSelection(quotaSelectionState, data.points.length),
+    activeIndex,
+    Math.max(data.points.length - 1, 0),
+  );
+  const consumptionSelection = quotaSelectionState.startIndex !== null && quotaEndIndex !== null
+    ? quotaConsumptionSelection(data, quotaSelectionState.startIndex, quotaEndIndex, quotaModel)
+    : null;
 
   function updateRange(next: RecentChartRange) {
     setRange(next);
     setHoveredIndex(null);
+    setQuotaSelectionState({ startIndex: null, fixedEndIndex: null });
     window.localStorage.setItem(RANGE_STORAGE_KEY, next);
+  }
+
+  function updateQuotaModel(next: OfficialAPIPriceModel) {
+    setQuotaModel(next);
+    window.localStorage.setItem(QUOTA_MODEL_STORAGE_KEY, next);
   }
 
   function updateVisibility(key: keyof SeriesVisibility) {
@@ -74,11 +104,30 @@ export function RecentUsageChart({
     setHoveredIndex(hoverIndexForX(x, CHART_WIDTH, data.points.length));
   }
 
+  function handlePointerDown(event: React.PointerEvent<SVGSVGElement>) {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return;
+    }
+    const x = ((event.clientX - rect.left) / rect.width) * CHART_WIDTH;
+    const y = ((event.clientY - rect.top) / rect.height) * CHART_HEIGHT;
+    if (y < PLOT_TOP || y > PLOT_TOP + PLOT_HEIGHT) {
+      return;
+    }
+    const clickedIndex = hoverIndexForX(x, CHART_WIDTH, data.points.length);
+    if (clickedIndex === null) {
+      return;
+    }
+    setHoveredIndex(clickedIndex);
+    setQuotaSelectionState((current) => clickQuotaSelection(current, clickedIndex, data.points.length));
+  }
+
   return (
     <section className="chart-section" aria-label={data.title}>
       <div className="recent-chart-head">
         <div className="recent-chart-title">
           <h2>{data.title}</h2>
+          <span className="recent-estimate-hint">点击图表估算额度</span>
           <span>{data.subtitle}</span>
         </div>
         <div className="recent-range-tabs" aria-label="曲线范围">
@@ -94,6 +143,14 @@ export function RecentUsageChart({
           ))}
         </div>
         <div className="recent-chart-controls">
+          <label className="quota-model-select">
+            <span>反推</span>
+            <select value={quotaModel} onChange={(event) => updateQuotaModel(event.target.value as OfficialAPIPriceModel)}>
+              {QUOTA_MODEL_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
           <div className="chart-legend">
             <LegendDot className="legend-dot--token" label="Token" value={formatTokens(data.tokenTotal)} />
             <LegendDot className="legend-dot--calls" label="调用" value={`${data.callTotal}`} />
@@ -120,6 +177,7 @@ export function RecentUsageChart({
         <svg
           ref={svgRef}
           className="usage-chart"
+          onPointerDown={handlePointerDown}
           onPointerLeave={() => setHoveredIndex(null)}
           onPointerMove={handlePointerMove}
           role="img"
@@ -127,6 +185,7 @@ export function RecentUsageChart({
         >
           <title>{chartAccessibility(data, visibility)}</title>
           <rect className="chart-plot-bg" x="0" y={PLOT_TOP} width={CHART_WIDTH} height={PLOT_HEIGHT} rx="8" />
+          {consumptionSelection ? <SelectionRange pointCount={data.points.length} selection={consumptionSelection} /> : null}
           {[0, 1, 2, 3].map((line) => {
             const y = PLOT_TOP + (line * PLOT_HEIGHT) / 3;
             return <line className="chart-grid-line" key={line} x1="0" x2={CHART_WIDTH} y1={y} y2={y} />;
@@ -169,8 +228,30 @@ export function RecentUsageChart({
             x={activeTokenPoint.x}
           />
         ) : null}
+        {consumptionSelection ? (
+          <RecentChartQuotaEstimateOverlay
+            selection={consumptionSelection}
+            onClose={() => setQuotaSelectionState({ startIndex: null, fixedEndIndex: null })}
+          />
+        ) : null}
       </div>
     </section>
+  );
+}
+
+function SelectionRange({ pointCount, selection }: { pointCount: number; selection: QuotaConsumptionSelection }) {
+  const actualStep = CHART_WIDTH / Math.max(pointCount - 1, 1);
+  const startX = selection.startIndex * actualStep;
+  const endX = selection.endIndex * actualStep;
+  const x = Math.min(startX, endX);
+  const width = Math.max(Math.abs(endX - startX), 2);
+
+  return (
+    <g className="chart-selection-layer">
+      <rect className="chart-selection-range" x={x} y={PLOT_TOP} width={width} height={PLOT_HEIGHT} />
+      <line className="chart-selection-line" x1={startX} x2={startX} y1={PLOT_TOP} y2={PLOT_TOP + PLOT_HEIGHT} />
+      <line className="chart-selection-line" x1={endX} x2={endX} y1={PLOT_TOP} y2={PLOT_TOP + PLOT_HEIGHT} />
+    </g>
   );
 }
 
@@ -242,7 +323,60 @@ function HoverBubble({
       {fiveHourRemaining !== null || sevenDayRemaining !== null ? (
         <span>额度 5h {percentText(fiveHourRemaining)} · 7d {percentText(sevenDayRemaining)}</span>
       ) : null}
+      <em>点击起点/终点可估算额度</em>
     </div>
+  );
+}
+
+function RecentChartQuotaEstimateOverlay({
+  selection,
+  onClose,
+}: {
+  selection: QuotaConsumptionSelection;
+  onClose: () => void;
+}) {
+  return (
+    <div className="chart-quota-estimate-card" role="dialog" aria-label="额度估算">
+      <div className="quota-estimate-main">
+        <div className="quota-estimate-row">
+          <span>本段消耗</span>
+          <strong>{moneyText(selection.selectedCostUSD)}</strong>
+          <em>{timeRange(selection.startUnix, selection.endUnix - selection.startUnix)}</em>
+          <b>命中 {percentText(selection.cacheHitRate)}</b>
+        </div>
+        <div className="quota-estimate-row">
+          <span>反推总额度</span>
+          <QuotaEstimateChip title="5h" estimate={selection.fiveHour} className="quota-chip--five" />
+          <QuotaEstimateChip title="7d" estimate={selection.sevenDay} className="quota-chip--seven" />
+        </div>
+        <div className="quota-estimate-row">
+          <span>倍率</span>
+          <strong className={selection.hasDivergentBudgetRatio ? "is-warning" : ""}>
+            {selection.sevenDayToFiveHourBudgetRatio === null ? "--" : `${selection.sevenDayToFiveHourBudgetRatio.toFixed(1)}x`}
+          </strong>
+          <em>7d/5h，正常约 6x</em>
+          {selection.hasDivergentBudgetRatio ? <b className="is-warning">偏离 6x，误差可能较大</b> : null}
+        </div>
+      </div>
+      <button aria-label="关闭额度估算" onClick={onClose} type="button">×</button>
+    </div>
+  );
+}
+
+function QuotaEstimateChip({
+  title,
+  estimate,
+  className,
+}: {
+  title: string;
+  estimate: QuotaConsumptionEstimate;
+  className: string;
+}) {
+  return (
+    <span className={`quota-estimate-chip ${className}`}>
+      <b>{title}</b>
+      <span>{estimateText(estimate)}</span>
+    </span>
   );
 }
 
@@ -325,6 +459,11 @@ function readStoredVisibility(): SeriesVisibility {
   }
 }
 
+function readStoredQuotaModel(): OfficialAPIPriceModel {
+  const stored = window.localStorage.getItem(QUOTA_MODEL_STORAGE_KEY);
+  return stored === "gpt54" || stored === "gpt54Mini" || stored === "gpt55" ? stored : "gpt55";
+}
+
 function chartAccessibility(data: ReturnType<typeof prepareRecentChartData>, visibility: SeriesVisibility): string {
   const visible = [
     visibility.tokens ? "Token" : null,
@@ -335,6 +474,34 @@ function chartAccessibility(data: ReturnType<typeof prepareRecentChartData>, vis
   ].filter(Boolean);
 
   return `${data.title}，${data.points.length} 个时间点，Token 总量 ${formatTokens(data.tokenTotal)}，调用 ${data.callTotal} 次，已显示 ${visible.join("、") || "无曲线"}`;
+}
+
+function estimateText(estimate: QuotaConsumptionEstimate): string {
+  switch (estimate.confidence) {
+    case "measured":
+      return `${moneyText(estimate.impliedWindowBudgetUSD)} · 降 ${oneDecimalPercent(estimate.quotaDropPercent)}`;
+    case "insufficientQuotaMovement":
+      return "下降太小";
+    case "noTokenUsage":
+      return "无 token";
+  }
+}
+
+function moneyText(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "--";
+  }
+  if (value >= 100) {
+    return `$${value.toFixed(0)}`;
+  }
+  if (value >= 10) {
+    return `$${value.toFixed(1)}`;
+  }
+  return `$${value.toFixed(2)}`;
+}
+
+function oneDecimalPercent(value: number): string {
+  return Number.isInteger(value) ? `${value}%` : `${value.toFixed(1)}%`;
 }
 
 function timeRange(startUnix: number, bucketSeconds: number): string {

@@ -49,6 +49,7 @@ pub struct RecentUsagePoint {
     pub calls: u32,
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
+    pub output_tokens: u64,
     pub cache_hit_rate: Option<f64>,
     pub five_hour_remaining_percent: Option<f64>,
     pub seven_day_remaining_percent: Option<f64>,

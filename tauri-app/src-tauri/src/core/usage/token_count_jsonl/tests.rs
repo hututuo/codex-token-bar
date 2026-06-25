@@ -61,6 +61,14 @@ fn parses_token_count_totals_as_deltas() {
             .sum::<u64>(),
         5
     );
+    assert_eq!(
+        snapshot
+            .recent_usage_7d
+            .iter()
+            .map(|point| point.output_tokens)
+            .sum::<u64>(),
+        8
+    );
     assert!(snapshot
         .recent_usage_7d
         .windows(2)
@@ -208,6 +216,7 @@ fn token_event_cache_serializes_only_usage_summary() {
                 tokens: 42,
                 input_tokens: 40,
                 cached_input_tokens: 30,
+                output_tokens: 2,
             }],
         },
     );
@@ -319,6 +328,7 @@ fn cached_file_with_one_event(tokens: u64) -> CachedSessionFile {
             tokens,
             input_tokens: tokens,
             cached_input_tokens: tokens / 2,
+            output_tokens: 0,
         }],
     }
 }

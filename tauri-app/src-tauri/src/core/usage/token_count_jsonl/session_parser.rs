@@ -11,6 +11,7 @@ use time::{Duration, OffsetDateTime};
 struct ParsedUsage {
     input_tokens: u64,
     cached_input_tokens: u64,
+    output_tokens: u64,
     total_tokens: u64,
 }
 
@@ -92,6 +93,7 @@ pub(super) fn parse_session_file(
                 .last
                 .as_ref()
                 .map_or(0, |usage| usage.cached_input_tokens),
+            output_tokens: usage_line.last.as_ref().map_or(0, |usage| usage.output_tokens),
         });
     }
 
@@ -152,6 +154,7 @@ fn parse_usage(value: Option<&Value>) -> Option<ParsedUsage> {
     Some(ParsedUsage {
         input_tokens: number_field(value, "input_tokens").unwrap_or(0),
         cached_input_tokens: number_field(value, "cached_input_tokens").unwrap_or(0),
+        output_tokens: number_field(value, "output_tokens").unwrap_or(0),
         total_tokens: number_field(value, "total_tokens")?,
     })
 }

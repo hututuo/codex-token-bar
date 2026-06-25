@@ -2369,12 +2369,53 @@ input[type="range"]::-moz-range-thumb {
   white-space: nowrap;
 }
 
+.recent-estimate-hint {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent-strong) !important;
+  font-size: 11px !important;
+  font-weight: 720 !important;
+}
+
 .recent-chart-controls {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 8px 10px;
+}
+
+.quota-model-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 3px 6px 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--line) 88%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-soft) 82%, transparent);
+}
+
+.quota-model-select span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.quota-model-select select {
+  max-width: 138px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 720;
 }
 
 .recent-range-tabs,
@@ -2530,6 +2571,16 @@ input[type="range"]::-moz-range-thumb {
   stroke: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
+.chart-selection-range {
+  fill: color-mix(in srgb, var(--accent) 11%, transparent);
+}
+
+.chart-selection-line {
+  stroke: color-mix(in srgb, var(--accent) 62%, transparent);
+  stroke-dasharray: 4 5;
+  stroke-width: 1.2;
+}
+
 .chart-grid-line {
   stroke: color-mix(in srgb, var(--line-strong) 80%, transparent);
   stroke-dasharray: 5 7;
@@ -2650,6 +2701,108 @@ input[type="range"]::-moz-range-thumb {
   margin-top: 4px;
   color: var(--accent);
   font-size: 20px;
+  line-height: 1;
+}
+
+.chart-quota-estimate-card {
+  position: absolute;
+  z-index: 6;
+  top: -12px;
+  left: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22px;
+  gap: 8px;
+  width: min(410px, calc(100% - 28px));
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 90%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-solid) 97%, transparent);
+  color: var(--text);
+}
+
+.quota-estimate-main {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.quota-estimate-row {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.quota-estimate-row > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 720;
+}
+
+.quota-estimate-row strong {
+  color: var(--accent-strong);
+  font-size: 15px;
+  font-weight: 790;
+}
+
+.quota-estimate-row em,
+.quota-estimate-row b {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 680;
+  text-overflow: ellipsis;
+}
+
+.quota-estimate-row b {
+  color: #0398b6;
+}
+
+.quota-estimate-row .is-warning {
+  color: var(--orange);
+}
+
+.quota-estimate-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 21px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+  font-size: 10px;
+  font-weight: 720;
+}
+
+.quota-estimate-chip b {
+  font-weight: 800;
+}
+
+.quota-estimate-chip span {
+  color: var(--text);
+}
+
+.quota-chip--five {
+  color: var(--purple);
+}
+
+.quota-chip--seven {
+  color: var(--green);
+}
+
+.chart-quota-estimate-card > button {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 760;
   line-height: 1;
 }
 

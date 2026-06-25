@@ -47,6 +47,7 @@ struct TokenEvent {
     tokens: u64,
     input_tokens: u64,
     cached_input_tokens: u64,
+    output_tokens: u64,
 }
 
 pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String> {

@@ -31,6 +31,7 @@ export function emptyRecentUsage(
       calls: 0,
       inputTokens: 0,
       cachedInputTokens: 0,
+      outputTokens: 0,
       cacheHitRate: null,
       fiveHourRemainingPercent: null,
       sevenDayRemainingPercent: null,

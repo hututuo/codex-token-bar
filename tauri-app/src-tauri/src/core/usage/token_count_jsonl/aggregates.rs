@@ -17,6 +17,7 @@ pub(super) struct TokenAccumulator {
     pub(super) calls: u32,
     pub(super) input_tokens: u64,
     pub(super) cached_input_tokens: u64,
+    pub(super) output_tokens: u64,
 }
 
 impl TokenAccumulator {
@@ -27,6 +28,7 @@ impl TokenAccumulator {
         self.cached_input_tokens = self
             .cached_input_tokens
             .saturating_add(event.cached_input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(event.output_tokens);
     }
 
     pub(super) fn cache_hit_rate(&self) -> f64 {
@@ -124,6 +126,7 @@ fn usage_series(
                 calls: usage.calls,
                 input_tokens: usage.input_tokens,
                 cached_input_tokens: usage.cached_input_tokens,
+                output_tokens: usage.output_tokens,
                 cache_hit_rate: if usage.input_tokens > 0 {
                     Some(usage.cache_hit_rate())
                 } else {

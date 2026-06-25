@@ -627,6 +627,7 @@ fn recent_point(start_unix: i64) -> RecentUsagePoint {
         calls: 0,
         input_tokens: 0,
         cached_input_tokens: 0,
+        output_tokens: 0,
         cache_hit_rate: None,
         five_hour_remaining_percent: None,
         seven_day_remaining_percent: None,

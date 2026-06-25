@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 use time::OffsetDateTime;
 
-const TOKEN_EVENT_CACHE_VERSION: u32 = 2;
+const TOKEN_EVENT_CACHE_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +55,8 @@ pub(super) struct CachedTokenEvent {
     pub(super) tokens: u64,
     pub(super) input_tokens: u64,
     pub(super) cached_input_tokens: u64,
+    #[serde(default)]
+    pub(super) output_tokens: u64,
 }
 
 impl TokenEventCache {
@@ -187,6 +189,7 @@ impl CachedTokenEvent {
             tokens: event.tokens,
             input_tokens: event.input_tokens,
             cached_input_tokens: event.cached_input_tokens,
+            output_tokens: event.output_tokens,
         }
     }
 
@@ -197,6 +200,7 @@ impl CachedTokenEvent {
             tokens: self.tokens,
             input_tokens: self.input_tokens,
             cached_input_tokens: self.cached_input_tokens,
+            output_tokens: self.output_tokens,
         })
     }
 }

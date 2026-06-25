@@ -27,6 +27,7 @@ export interface RecentUsagePoint {
   calls: number;
   inputTokens: number;
   cachedInputTokens: number;
+  outputTokens: number;
   cacheHitRate: number | null;
   fiveHourRemainingPercent: number | null;
   sevenDayRemainingPercent: number | null;

@@ -41,6 +41,46 @@ export interface PreparedRecentChartData {
   markerIndices: number[];
 }
 
+export type QuotaConsumptionConfidence = "measured" | "insufficientQuotaMovement" | "noTokenUsage";
+
+export type OfficialAPIPriceModel = "gpt55" | "gpt54" | "gpt54Mini";
+
+export interface QuotaConsumptionEstimate {
+  selectedCostUSD: number;
+  impliedWindowBudgetUSD: number | null;
+  quotaDropPercent: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  calls: number;
+  cacheHitRate: number;
+  confidence: QuotaConsumptionConfidence;
+}
+
+export interface QuotaConsumptionSelection {
+  startIndex: number;
+  endIndex: number;
+  bucketCount: number;
+  startUnix: number;
+  endUnix: number;
+  priceModel: OfficialAPIPriceModel;
+  selectedCostUSD: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  calls: number;
+  cacheHitRate: number;
+  fiveHour: QuotaConsumptionEstimate;
+  sevenDay: QuotaConsumptionEstimate;
+  sevenDayToFiveHourBudgetRatio: number | null;
+  hasDivergentBudgetRatio: boolean;
+}
+
+export interface QuotaSelectionState {
+  startIndex: number | null;
+  fixedEndIndex: number | null;
+}
+
 const RANGE_CONFIG: Record<RecentChartRange, { title: string; subtitle: string; bucketSeconds: number }> = {
   "24h": {
     title: "最近 24 小时",
@@ -221,6 +261,83 @@ export function percentText(value: number | null): string {
   return `${Math.round(value * 100)}%`;
 }
 
+export function clickQuotaSelection(
+  state: QuotaSelectionState,
+  index: number,
+  validCount: number,
+): QuotaSelectionState {
+  if (validCount <= 0 || index < 0 || index >= validCount) {
+    return state;
+  }
+  if (state.startIndex === null || state.fixedEndIndex !== null) {
+    return { startIndex: index, fixedEndIndex: null };
+  }
+  return { startIndex: state.startIndex, fixedEndIndex: index };
+}
+
+export function activeQuotaSelectionEndIndex(
+  state: QuotaSelectionState,
+  hoveredIndex: number | null,
+  fallbackEndIndex: number,
+): number | null {
+  return state.fixedEndIndex ?? hoveredIndex ?? state.startIndex ?? fallbackEndIndex;
+}
+
+export function clampQuotaSelection(state: QuotaSelectionState, validCount: number): QuotaSelectionState {
+  if (validCount <= 0 || state.startIndex === null || state.startIndex < 0 || state.startIndex >= validCount) {
+    return { startIndex: null, fixedEndIndex: null };
+  }
+  if (state.fixedEndIndex !== null && (state.fixedEndIndex < 0 || state.fixedEndIndex >= validCount)) {
+    return { startIndex: state.startIndex, fixedEndIndex: null };
+  }
+  return state;
+}
+
+export function quotaConsumptionSelection(
+  data: PreparedRecentChartData,
+  startIndex: number,
+  endIndex: number,
+  priceModel: OfficialAPIPriceModel,
+): QuotaConsumptionSelection | null {
+  if (data.points.length === 0) {
+    return null;
+  }
+  const lower = Math.max(0, Math.min(startIndex, endIndex));
+  const upper = Math.min(data.points.length - 1, Math.max(startIndex, endIndex));
+  if (lower > upper) {
+    return null;
+  }
+
+  const selectedPoints = data.points.slice(lower, upper + 1);
+  const breakdown = combineTokenBreakdown(selectedPoints);
+  const fiveHourDrop = cumulativeQuotaDrop(selectedPoints.map((point) => point.fiveHourRemainingPercent));
+  const sevenDayDrop = cumulativeQuotaDrop(selectedPoints.map((point) => point.sevenDayRemainingPercent));
+  const fiveHour = quotaConsumptionEstimate(breakdown, fiveHourDrop, priceModel);
+  const sevenDay = quotaConsumptionEstimate(breakdown, sevenDayDrop, priceModel);
+  const ratio = fiveHour.impliedWindowBudgetUSD && sevenDay.impliedWindowBudgetUSD
+    ? sevenDay.impliedWindowBudgetUSD / fiveHour.impliedWindowBudgetUSD
+    : null;
+
+  return {
+    startIndex: lower,
+    endIndex: upper,
+    bucketCount: upper - lower + 1,
+    startUnix: data.points[lower].startUnix,
+    endUnix: data.points[upper].startUnix + data.bucketSeconds,
+    priceModel,
+    selectedCostUSD: fiveHour.selectedCostUSD,
+    inputTokens: breakdown.inputTokens,
+    cachedInputTokens: breakdown.cachedInputTokens,
+    outputTokens: breakdown.outputTokens,
+    calls: breakdown.calls,
+    cacheHitRate: breakdown.cacheHitRate,
+    fiveHour,
+    sevenDay,
+    sevenDayToFiveHourBudgetRatio: ratio,
+    hasDivergentBudgetRatio: ratio !== null && (ratio < 4.5 || ratio > 7.5),
+  };
+}
+
 function pointsForRange(range: RecentChartRange, series: RecentUsageChartSeries): RecentUsagePoint[] {
   switch (range) {
     case "24h":
@@ -269,6 +386,117 @@ function weightedCacheHitRate(points: RecentUsagePoint[]): number {
     cachedInputTokens += point.cachedInputTokens;
   }
   return inputTokens === 0 ? 0 : cachedInputTokens / inputTokens;
+}
+
+function combineTokenBreakdown(points: RecentUsagePoint[]) {
+  const inputTokens = points.reduce((total, point) => total + point.inputTokens, 0);
+  const cachedInputTokens = points.reduce((total, point) => total + point.cachedInputTokens, 0);
+  const outputTokens = points.reduce((total, point) => total + (point.outputTokens ?? Math.max(point.tokens - point.inputTokens, 0)), 0);
+  const calls = points.reduce((total, point) => total + point.calls, 0);
+  const costUSD = officialAPICostUSD(inputTokens, cachedInputTokens, outputTokens, "gpt55");
+  return {
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    totalTokens: points.reduce((total, point) => total + point.tokens, 0),
+    calls,
+    cacheHitRate: inputTokens === 0 ? 0 : cachedInputTokens / inputTokens,
+    costUSD,
+  };
+}
+
+function quotaConsumptionEstimate(
+  breakdown: ReturnType<typeof combineTokenBreakdown>,
+  quotaDropPercent: number | null,
+  priceModel: OfficialAPIPriceModel,
+): QuotaConsumptionEstimate {
+  const selectedCostUSD = officialAPICostUSD(
+    breakdown.inputTokens,
+    breakdown.cachedInputTokens,
+    breakdown.outputTokens,
+    priceModel,
+  );
+  const drop = Math.max(quotaDropPercent ?? 0, 0);
+  const hasTokenUsage = breakdown.totalTokens > 0 || breakdown.inputTokens > 0 || breakdown.outputTokens > 0;
+  let confidence: QuotaConsumptionConfidence = "measured";
+  let impliedWindowBudgetUSD: number | null = null;
+  if (!hasTokenUsage) {
+    confidence = "noTokenUsage";
+  } else if (drop <= 0.0001) {
+    confidence = "insufficientQuotaMovement";
+  } else {
+    impliedWindowBudgetUSD = selectedCostUSD / (drop / 100);
+  }
+  return {
+    selectedCostUSD,
+    impliedWindowBudgetUSD,
+    quotaDropPercent: drop,
+    inputTokens: breakdown.inputTokens,
+    cachedInputTokens: breakdown.cachedInputTokens,
+    outputTokens: breakdown.outputTokens,
+    calls: breakdown.calls,
+    cacheHitRate: breakdown.cacheHitRate,
+    confidence,
+  };
+}
+
+function cumulativeQuotaDrop(values: Array<number | null>): number | null {
+  const availableValues = sanitizedQuotaDropValues(values.flatMap((value) => {
+    if (value === null || !Number.isFinite(value)) {
+      return [];
+    }
+    return [quotaPercentValue(value)];
+  }));
+  if (availableValues.length < 2) {
+    return null;
+  }
+  return availableValues.slice(1).reduce((total, value, index) => {
+    const previous = availableValues[index];
+    return total + Math.max(previous - value, 0);
+  }, 0);
+}
+
+function sanitizedQuotaDropValues(values: number[]): number[] {
+  return values.filter((value, index) => {
+    const previous = index > 0 ? values[index - 1] : null;
+    const next = index + 1 < values.length ? values[index + 1] : null;
+    return !isFullUsageSpike(value, previous, next);
+  });
+}
+
+function isFullUsageSpike(value: number, previous: number | null, next: number | null): boolean {
+  return value <= 1 && previous !== null && previous >= 95 && (next === null || next >= 95);
+}
+
+function quotaPercentValue(value: number): number {
+  return value <= 1 ? value * 100 : value;
+}
+
+function officialAPICostUSD(
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number,
+  priceModel: OfficialAPIPriceModel,
+): number {
+  const prices = officialAPIPrices(priceModel);
+  const cachedInput = Math.max(0, Math.min(cachedInputTokens, inputTokens));
+  const uncachedInput = Math.max(0, inputTokens - cachedInput);
+  return (
+    uncachedInput * prices.inputUSDPerMillion
+    + cachedInput * prices.cachedInputUSDPerMillion
+    + Math.max(0, outputTokens) * prices.outputUSDPerMillion
+  ) / 1_000_000;
+}
+
+function officialAPIPrices(priceModel: OfficialAPIPriceModel) {
+  switch (priceModel) {
+    case "gpt55":
+      return { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 };
+    case "gpt54":
+      return { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 };
+    case "gpt54Mini":
+      return { inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.5 };
+  }
 }
 
 function latestPresent(values: Array<number | null>): number | null {
