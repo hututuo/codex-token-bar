@@ -4,6 +4,7 @@ import {
   DEFAULT_FLOATING_CONTENT_VISIBILITY,
   floatingContentHeight,
   layoutFloatingContentGroups,
+  moveFloatingContent,
   sanitizeFloatingContentVisibility,
 } from "./floatingContent.ts";
 import { floatingTextPaletteForGroup } from "./floatingTextPalette.ts";
@@ -24,6 +25,25 @@ test("layoutFloatingContentGroups keeps usage status standalone when it is not a
   });
 
   assert.deepEqual(layoutFloatingContentGroups(visibility), ["rateAndBar", "metrics", "usageStatus", "radar", "quota"]);
+});
+
+test("moveFloatingContent swaps adjacent groups in both directions", () => {
+  const order = ["rateAndBar", "usageStatus", "metrics", "radar", "quota"];
+
+  assert.deepEqual(moveFloatingContent(order, "usageStatus", -1), [
+    "usageStatus",
+    "rateAndBar",
+    "metrics",
+    "radar",
+    "quota",
+  ]);
+  assert.deepEqual(moveFloatingContent(order, "metrics", 1), [
+    "rateAndBar",
+    "usageStatus",
+    "radar",
+    "metrics",
+    "quota",
+  ]);
 });
 
 test("floatingTextPaletteForGroup turns text light on dark saturated gradients", () => {

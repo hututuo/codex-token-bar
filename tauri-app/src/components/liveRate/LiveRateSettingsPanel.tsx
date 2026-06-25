@@ -2,7 +2,7 @@ import { useState, type CSSProperties, type ReactNode } from "react";
 import {
   FLOATING_CONTENT_LABELS,
   FLOATING_CONTENT_GROUPS,
-  reorderFloatingContent,
+  moveFloatingContent,
   sanitizeFloatingContentVisibility,
 } from "../../floating/floatingContent";
 import type { FloatingWindowSettings } from "../../floating/floatingSettings";
@@ -337,6 +337,19 @@ function ContentSettingsCallout({
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onFloatingTextToneChange: (textTone: number) => void;
 }) {
+  const [movedGroup, setMovedGroup] = useState<FloatingContentGroup | null>(null);
+
+  function handleContentVisibilityChange(next: FloatingContentVisibility, moved?: FloatingContentGroup) {
+    onFloatingContentVisibilityChange(next);
+    if (!moved) {
+      return;
+    }
+    setMovedGroup(moved);
+    window.setTimeout(() => {
+      setMovedGroup((current) => (current === moved ? null : current));
+    }, 900);
+  }
+
   return (
     <SettingsCalloutShell title="显示内容" subtitle="选择悬浮窗里显示哪些信息，并调整顺序。" onClose={onClose}>
       <label className="setting-slider settings-callout-slider">
@@ -357,11 +370,15 @@ function ContentSettingsCallout({
             group={group}
             index={index}
             key={group}
+            movedGroup={movedGroup}
             visibility={contentVisibility}
-            onChange={onFloatingContentVisibilityChange}
+            onChange={handleContentVisibilityChange}
           />
         ))}
       </div>
+      <span className="settings-content-feedback" aria-live="polite">
+        {movedGroup ? `${FLOATING_CONTENT_LABELS[movedGroup].title} 已调整顺序` : "相邻的趣味话和速率会合并显示"}
+      </span>
     </SettingsCalloutShell>
   );
 }
@@ -369,11 +386,12 @@ function ContentSettingsCallout({
 interface ContentSettingRowProps {
   group: FloatingContentGroup;
   index: number;
+  movedGroup: FloatingContentGroup | null;
   visibility: FloatingContentVisibility;
-  onChange: (contentVisibility: FloatingContentVisibility) => void;
+  onChange: (contentVisibility: FloatingContentVisibility, moved?: FloatingContentGroup) => void;
 }
 
-function ContentSettingRow({ group, index, visibility, onChange }: ContentSettingRowProps) {
+function ContentSettingRow({ group, index, movedGroup, visibility, onChange }: ContentSettingRowProps) {
   const label = FLOATING_CONTENT_LABELS[group];
   const checked = isFloatingGroupVisible(visibility, group);
 
@@ -385,25 +403,27 @@ function ContentSettingRow({ group, index, visibility, onChange }: ContentSettin
   }
 
   function move(delta: number) {
-    const target = visibility.order[index + delta];
-    if (!target) {
+    if (delta !== -1 && delta !== 1) {
       return;
     }
     onChange(sanitizeFloatingContentVisibility({
       ...visibility,
-      order: reorderFloatingContent(visibility.order, group, target),
-    }));
+      order: moveFloatingContent(visibility.order, group, delta),
+    }), group);
   }
 
   return (
-    <div className="floating-content-row">
+    <div className={movedGroup === group ? "floating-content-row is-recently-moved" : "floating-content-row"}>
       <label>
         <input
           checked={checked}
           onChange={(event) => updateVisibility(event.currentTarget.checked)}
           type="checkbox"
         />
-        <span>{label.title}</span>
+        <span>
+          <strong>{label.title}</strong>
+          {label.subtitle ? <em>{label.subtitle}</em> : null}
+        </span>
       </label>
       <div>
         <button

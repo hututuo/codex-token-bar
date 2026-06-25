@@ -82,6 +82,22 @@ export function reorderFloatingContent(
   return sanitizeContentOrder(current);
 }
 
+export function moveFloatingContent(
+  order: FloatingContentGroup[],
+  group: FloatingContentGroup,
+  delta: -1 | 1,
+): FloatingContentGroup[] {
+  const current = sanitizeContentOrder(order);
+  const index = current.indexOf(group);
+  const targetIndex = index + delta;
+  if (index < 0 || targetIndex < 0 || targetIndex >= current.length) {
+    return current;
+  }
+  const next = [...current];
+  [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+  return sanitizeContentOrder(next);
+}
+
 export function floatingContentHeight(visibility: FloatingContentVisibility): number {
   const groups = layoutFloatingContentGroups(visibility);
   if (groups.length === 0) {

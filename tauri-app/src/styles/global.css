@@ -1974,10 +1974,29 @@ button.quota-side-card:hover {
 }
 
 .floating-content-row label span {
+  display: grid;
+  gap: 1px;
   min-width: 0;
+}
+
+.floating-content-row label strong,
+.floating-content-row label em {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.floating-content-row label strong {
+  color: var(--text);
+  font-size: 10.6px;
+  font-weight: 720;
+}
+
+.floating-content-row label em {
+  color: color-mix(in srgb, var(--text) 58%, var(--muted));
+  font-size: 9.4px;
+  font-style: normal;
+  font-weight: 560;
 }
 
 .floating-content-row > div {
@@ -2002,6 +2021,11 @@ button.quota-side-card:hover {
 .floating-content-row button:disabled {
   cursor: default;
   opacity: 0.35;
+}
+
+.floating-content-row.is-recently-moved {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel-solid));
 }
 
 .settings-callout {
@@ -2196,6 +2220,17 @@ button.quota-side-card:hover {
 
 .settings-callout .floating-content-row button {
   height: 21px;
+}
+
+.settings-content-feedback {
+  border: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel) 58%, transparent);
+  color: color-mix(in srgb, var(--text) 68%, var(--muted));
+  font-size: 10.4px;
+  font-weight: 620;
+  line-height: 1.25;
+  padding: 5px 7px;
 }
 
 .settings-label,
