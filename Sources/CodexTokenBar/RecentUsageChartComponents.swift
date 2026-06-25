@@ -329,6 +329,11 @@ struct ChartHoverBubble: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
+            if isHovering {
+                Text("点击起点/终点可估算额度")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(AppTheme.accentBlue)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -361,6 +366,9 @@ struct ChartHoverBubble: View {
         if fiveHourRemaining != nil || sevenDayRemaining != nil {
             parts.append("5 小时额度 \(percentText(fiveHourRemaining))")
             parts.append("7 天额度 \(percentText(sevenDayRemaining))")
+        }
+        if isHovering {
+            parts.append("点击图表可估算额度")
         }
         return parts.joined(separator: "；")
     }

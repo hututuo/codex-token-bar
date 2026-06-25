@@ -179,14 +179,27 @@ struct RecentUsageChart: View {
     private var chartHeader: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(selectedRange.title)
-                    .font(.system(size: 19, weight: .semibold))
+                HStack(spacing: 10) {
+                    Text(selectedRange.title)
+                        .font(.system(size: 19, weight: .semibold))
+                    Label("点击图表估算额度", systemImage: "cursorarrow.click.2")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(AppTheme.accentBlue)
+                        .padding(.horizontal, 9)
+                        .frame(height: 24)
+                        .background(AppTheme.accentBlue.opacity(0.10), in: Capsule())
+                        .overlay(
+                            Capsule()
+                                .stroke(AppTheme.accentBlue.opacity(0.28), lineWidth: 1)
+                        )
+                        .help("第一下定起点，移动鼠标实时预览，第二下固定终点；再次点击重新选择。")
+                }
                 Text(selectedRange.subtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                Text(selectedRange == .twentyFourHours ? "第一下定起点，移动实时预览，第二下固定终点；第三下重新选择。" : "额度估算仅在 24h 视图按 5 分钟粒度计算。")
+                Text("第一下定起点，移动实时预览，第二下固定终点；第三下重新选择。")
                     .font(.system(size: 10))
-                    .foregroundStyle(.secondary.opacity(0.86))
+                    .foregroundStyle(AppTheme.accentBlue.opacity(0.82))
             }
 
             Spacer()
@@ -377,8 +390,7 @@ struct RecentUsageChart: View {
                             x: location.x + plot.minX,
                             y: location.y + plot.minY
                         )
-                        guard selectedRange == .twentyFourHours,
-                              let clickedIndex = hoverIndex(at: plotLocation, in: plot, step: step),
+                        guard let clickedIndex = hoverIndex(at: plotLocation, in: plot, step: step),
                               preparedData.bins.indices.contains(clickedIndex) else { return }
                         hoveredIndex = clickedIndex
                         consumptionSelectionState.click(index: clickedIndex, validCount: preparedData.bins.count)
@@ -486,8 +498,7 @@ struct RecentUsageChart: View {
     }
 
     private var activeConsumptionSelection: QuotaConsumptionSelection? {
-        guard selectedRange == .twentyFourHours,
-              let startIndex = consumptionSelectionState.startIndex,
+        guard let startIndex = consumptionSelectionState.startIndex,
               !preparedData.bins.isEmpty else { return nil }
         let fallbackEnd = preparedData.bins.index(before: preparedData.bins.endIndex)
         let validHover = hoveredIndex.flatMap { preparedData.bins.indices.contains($0) ? $0 : nil }
@@ -503,10 +514,6 @@ struct RecentUsageChart: View {
     }
 
     private func clampConsumptionSelection() {
-        guard selectedRange == .twentyFourHours else {
-            consumptionSelectionState.reset()
-            return
-        }
         consumptionSelectionState.clamp(validCount: preparedData.bins.count)
     }
 }

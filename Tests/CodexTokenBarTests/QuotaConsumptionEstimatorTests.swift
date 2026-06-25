@@ -128,6 +128,53 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(selection.sevenDay.impliedWindowBudgetUSD), 40.0, accuracy: 0.0001)
     }
 
+    func testPreparedDataBuildsEstimatorSelectionForSevenAndThirtyDayRanges() throws {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let cache = Array(repeating: TokenCacheBreakdown(
+            inputTokens: 100_000,
+            cachedInputTokens: 20_000,
+            outputTokens: 50_000,
+            reasoningOutputTokens: 0,
+            totalTokens: 150_000,
+            calls: 1
+        ), count: 3)
+
+        for range in [RecentChartRange.sevenDays, .thirtyDays] {
+            let bins = [
+                BinUsage(start: start, tokens: 10, calls: 1),
+                BinUsage(start: start.addingTimeInterval(range.bucketInterval), tokens: 20, calls: 1),
+                BinUsage(start: start.addingTimeInterval(range.bucketInterval * 2), tokens: 30, calls: 1)
+            ]
+            let prepared = RecentChartPreparedData(
+                range: range,
+                bins: bins,
+                bucketInterval: range.bucketInterval,
+                maxTokens: 30,
+                maxCalls: 1,
+                tokenTotal: 60,
+                callTotal: 3,
+                recentCacheBreakdown: cache.combined,
+                cacheBreakdowns: cache,
+                carriedCacheHitRates: [0.2, 0.2, 0.2],
+                fiveHourRemainingPercents: [80, 75, 70],
+                sevenDayRemainingPercents: [90, 88, 86],
+                latestFiveHourRemaining: 70,
+                latestSevenDayRemaining: 86,
+                hasCacheCalls: true,
+                hasFiveHourQuota: true,
+                hasSevenDayQuota: true,
+                markerIndices: [0, 1, 2]
+            )
+
+            let selection = try XCTUnwrap(prepared.quotaConsumptionSelection(startIndex: 0, endIndex: 2, priceCard: .officialAPI(.gpt55)))
+
+            XCTAssertEqual(selection.bucketCount, 3)
+            XCTAssertEqual(selection.endDate.timeIntervalSince(selection.startDate), range.bucketInterval * 3, accuracy: 0.001)
+            XCTAssertEqual(selection.fiveHour.quotaDropPercent, 10, accuracy: 0.0001)
+            XCTAssertEqual(selection.sevenDay.quotaDropPercent, 4, accuracy: 0.0001)
+        }
+    }
+
     func testSelectionStatePreviewsOnHoverThenPinsEndOnSecondClick() {
         var state = RecentChartConsumptionSelectionState()
 
@@ -160,6 +207,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(estimatorSource.contains("fixedEndIndex"))
         XCTAssertTrue(source.contains("quotaConsumptionSelection("))
         XCTAssertTrue(source.contains("onClick:"))
+        XCTAssertTrue(source.contains("点击图表估算额度"))
+        XCTAssertTrue(componentSource.contains("点击图表可估算额度"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateModelSelector"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateOverlay"))
         XCTAssertTrue(componentSource.contains("本段消耗"))

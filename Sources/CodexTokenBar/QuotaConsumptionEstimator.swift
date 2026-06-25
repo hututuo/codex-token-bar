@@ -187,7 +187,7 @@ extension RecentChartPreparedData {
         endIndex: Int,
         priceCard: QuotaConsumptionPriceCard
     ) -> QuotaConsumptionSelection? {
-        guard range == .twentyFourHours, !bins.isEmpty else { return nil }
+        guard !bins.isEmpty else { return nil }
         let lower = max(0, min(startIndex, endIndex))
         let upper = min(bins.count - 1, max(startIndex, endIndex))
         guard lower <= upper,
