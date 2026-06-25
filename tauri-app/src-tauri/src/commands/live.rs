@@ -8,12 +8,14 @@ use crate::models::{
     FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, UnreadSummary,
 };
 use crate::platform;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use tauri::async_runtime;
 use tauri::State;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct LiveRateMonitorRegistry {
-    monitor: Mutex<Option<LiveRateMonitorService>>,
+    monitor: Arc<Mutex<Option<LiveRateMonitorService>>>,
 }
 
 impl LiveRateMonitorRegistry {
@@ -48,31 +50,66 @@ impl LiveRateMonitorRegistry {
     }
 }
 
+async fn run_blocking_command<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
-pub fn read_live_rate_snapshot(
-    state: State<LiveRateMonitorRegistry>,
+pub async fn read_live_rate_snapshot(
+    state: State<'_, LiveRateMonitorRegistry>,
     selected_thread_id: Option<String>,
 ) -> Result<LiveRateSnapshot, String> {
     startup_trace::mark_once("command read_live_rate_snapshot start");
-    let result = state.snapshot(selected_thread_id.as_deref());
+    let started = Instant::now();
+    let registry = state.inner().clone();
+    let result = run_blocking_command(move || registry.snapshot(selected_thread_id.as_deref())).await;
+    startup_trace::mark_performance(format!(
+        "read_live_rate_snapshot {}ms {}",
+        started.elapsed().as_millis(),
+        result_status(&result)
+    ));
     startup_trace::mark_once("command read_live_rate_snapshot end");
     result
 }
 
 #[tauri::command]
-pub fn read_live_thread_options() -> Result<Vec<LiveThreadOption>, String> {
-    local_source().try_read_live_thread_options()
+pub async fn read_live_thread_options() -> Result<Vec<LiveThreadOption>, String> {
+    let started = Instant::now();
+    let result = run_blocking_command(|| local_source().try_read_live_thread_options()).await;
+    startup_trace::mark_performance(format!(
+        "read_live_thread_options {}ms {}",
+        started.elapsed().as_millis(),
+        result_status(&result)
+    ));
+    result
 }
 
 #[tauri::command]
-pub fn start_live_rate_stream(
-    state: State<LiveRateMonitorRegistry>,
+pub async fn start_live_rate_stream(
+    state: State<'_, LiveRateMonitorRegistry>,
     selected_thread_id: Option<String>,
 ) -> Result<bool, String> {
     startup_trace::mark_once("command start_live_rate_stream start");
-    let _ = state.snapshot(selected_thread_id.as_deref())?;
+    let started = Instant::now();
+    let registry = state.inner().clone();
+    let result = run_blocking_command(move || {
+        let _ = registry.snapshot(selected_thread_id.as_deref())?;
+        Ok(true)
+    })
+    .await;
+    startup_trace::mark_performance(format!(
+        "start_live_rate_stream {}ms {}",
+        started.elapsed().as_millis(),
+        result_status(&result)
+    ));
     startup_trace::mark_once("command start_live_rate_stream end");
-    Ok(true)
+    result
 }
 
 #[tauri::command]
@@ -81,13 +118,36 @@ pub fn stop_live_rate_stream() -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn read_floating_snapshot(
-    state: State<LiveRateMonitorRegistry>,
+pub async fn read_floating_snapshot(
+    state: State<'_, LiveRateMonitorRegistry>,
 ) -> Result<FloatingPanelSnapshot, String> {
-    state.floating_snapshot()
+    let started = Instant::now();
+    let registry = state.inner().clone();
+    let result = run_blocking_command(move || registry.floating_snapshot()).await;
+    startup_trace::mark_performance(format!(
+        "read_floating_snapshot {}ms {}",
+        started.elapsed().as_millis(),
+        result_status(&result)
+    ));
+    result
 }
 
 #[tauri::command]
-pub fn read_unread_summary() -> Result<UnreadSummary, String> {
-    Ok(local_source().read_unread_summary())
+pub async fn read_unread_summary() -> Result<UnreadSummary, String> {
+    let started = Instant::now();
+    let result = run_blocking_command(|| Ok(local_source().read_unread_summary())).await;
+    startup_trace::mark_performance(format!(
+        "read_unread_summary {}ms {}",
+        started.elapsed().as_millis(),
+        result_status(&result)
+    ));
+    result
+}
+
+fn result_status<T>(result: &Result<T, String>) -> &'static str {
+    if result.is_ok() {
+        "ok"
+    } else {
+        "error"
+    }
 }
