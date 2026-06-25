@@ -27,7 +27,7 @@ import { useLiveRateFeed } from "./useLiveRateFeed";
 
 const DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
 const DASHBOARD_BACKGROUND_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
-const QUOTA_AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
+const QUOTA_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 function dashboardIsVisible() {
   if (typeof document === "undefined") {

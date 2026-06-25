@@ -22,6 +22,10 @@ pub fn startup_trace_log_path() -> Option<PathBuf> {
     app_support_dir().map(|path| path.join("startup-trace.log"))
 }
 
+pub fn performance_trace_log_path() -> Option<PathBuf> {
+    app_support_dir().map(|path| path.join("performance-trace.log"))
+}
+
 pub fn token_event_cache_path() -> Option<PathBuf> {
     #[cfg(test)]
     {

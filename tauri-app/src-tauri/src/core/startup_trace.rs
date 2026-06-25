@@ -4,10 +4,11 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     sync::{Mutex, OnceLock},
-    time::Instant,
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 const TRACE_WINDOW_MS: u128 = 15_000;
+const PERFORMANCE_TRACE_MAX_BYTES: u64 = 96 * 1024;
 
 static START: OnceLock<Instant> = OnceLock::new();
 static SEEN_ONCE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -18,6 +19,31 @@ pub fn mark(label: &str) {
 
 pub fn mark_once(label: &'static str) {
     write_mark(label, true);
+}
+
+pub fn mark_performance(label: impl AsRef<str>) {
+    let Some(path) = app_paths::performance_trace_log_path() else {
+        return;
+    };
+
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if fs::metadata(&path)
+        .map(|metadata| metadata.len() > PERFORMANCE_TRACE_MAX_BYTES)
+        .unwrap_or(false)
+    {
+        let _ = fs::remove_file(&path);
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(file, "{timestamp} {}", label.as_ref());
 }
 
 fn write_mark(label: &str, once: bool) {

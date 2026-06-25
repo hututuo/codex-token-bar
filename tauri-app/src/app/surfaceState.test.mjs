@@ -84,12 +84,12 @@ test("dashboard precise data refreshes every three minutes when visible and five
   assert.equal(dashboardData.includes("setLoadGeneration((current) => current + 1)"), true);
 });
 
-test("dashboard quota refreshes independently every minute", async () => {
+test("dashboard quota refreshes independently every five minutes", async () => {
   const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
   const deferredLoads = await readFile(new URL("../state/useDeferredDashboardLoads.ts", import.meta.url), "utf8");
   const quotaLoad = await readFile(new URL("../state/useDeferredQuotaLoad.ts", import.meta.url), "utf8");
 
-  assert.equal(dashboardData.includes("QUOTA_AUTO_REFRESH_INTERVAL_MS = 60 * 1000"), true);
+  assert.equal(dashboardData.includes("QUOTA_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000"), true);
   assert.equal(dashboardData.includes("setQuotaLoadGeneration((current) => current + 1)"), true);
   assert.equal(deferredLoads.includes("quotaGeneration"), true);
   assert.equal(quotaLoad.includes("const isFirstQuotaLoad = quotaGeneration.current === null"), true);

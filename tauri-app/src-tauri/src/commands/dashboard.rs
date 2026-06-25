@@ -5,6 +5,7 @@ use crate::models::{
     AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, PlatformCapabilities,
 };
 use crate::platform;
+use std::time::Instant;
 use tauri::async_runtime;
 
 async fn run_blocking_command<T, F>(work: F) -> Result<T, String>
@@ -46,23 +47,52 @@ pub fn read_platform_capabilities() -> Result<PlatformCapabilities, String> {
 #[tauri::command]
 pub async fn read_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
     startup_trace::mark("command read_dashboard_snapshot start");
+    let started = Instant::now();
     let result = run_blocking_command(|| local_source().read_dashboard_snapshot()).await;
+    startup_trace::mark_performance(format!(
+        "read_dashboard_snapshot {}ms {}",
+        started.elapsed().as_millis(),
+        result_status(&result)
+    ));
     startup_trace::mark("command read_dashboard_snapshot end");
     result
 }
 
 #[tauri::command]
 pub async fn read_precise_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
-    run_blocking_command(|| local_source().read_precise_dashboard_snapshot()).await
+    let started = Instant::now();
+    let result = run_blocking_command(|| local_source().read_precise_dashboard_snapshot()).await;
+    startup_trace::mark_performance(format!(
+        "read_precise_dashboard_snapshot {}ms {}",
+        started.elapsed().as_millis(),
+        result_status(&result)
+    ));
+    result
 }
 
 #[tauri::command]
 pub async fn read_account_quota(force_refresh: Option<bool>) -> Result<AccountQuotaBundle, String> {
     startup_trace::mark_once("command read_account_quota start");
+    let started = Instant::now();
+    let forced = force_refresh.unwrap_or(false);
     let result = run_blocking_command(move || {
-        local_source().read_account_quota(force_refresh.unwrap_or(false))
+        local_source().read_account_quota(forced)
     })
     .await;
+    startup_trace::mark_performance(format!(
+        "read_account_quota force={} {}ms {}",
+        forced,
+        started.elapsed().as_millis(),
+        result_status(&result)
+    ));
     startup_trace::mark_once("command read_account_quota end");
     result
+}
+
+fn result_status<T>(result: &Result<T, String>) -> &'static str {
+    if result.is_ok() {
+        "ok"
+    } else {
+        "error"
+    }
 }
