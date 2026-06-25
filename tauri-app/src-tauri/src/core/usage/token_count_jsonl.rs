@@ -23,7 +23,7 @@ mod token_event_cache;
 
 use aggregates::{activity_days, recent_usage, recent_usage_30d, recent_usage_7d, stats};
 use event_loader::load_token_events_from_files;
-use ranking::cache_hit_ranking;
+use ranking::{cache_hit_ranking, cache_usage, sanitize_cache_usage_for_persistence};
 use session_files::jsonl_files;
 use token_event_cache::{file_cache_key, file_signature, CachedFileSignature};
 
@@ -48,6 +48,8 @@ struct TokenEvent {
     input_tokens: u64,
     cached_input_tokens: u64,
     output_tokens: u64,
+    user_prompt: String,
+    assistant_response: String,
 }
 
 pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String> {
@@ -82,6 +84,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     let recent_usage_30d = recent_usage_30d(&events, local_offset);
     let stats = stats(&events, &activity_days);
     let cache_hit_ranking = cache_hit_ranking(&events, codex_home, local_offset, &mut warnings);
+    let cache_usage = cache_usage(&events, codex_home, local_offset, &mut warnings);
 
     let snapshot = DashboardSnapshot {
         generated_at,
@@ -96,6 +99,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         recent_usage_7d,
         recent_usage_30d,
         cache_hit_ranking,
+        cache_usage,
         warnings,
     };
     store_dashboard_aggregate(signature, Some(snapshot.clone()), summary);
@@ -320,7 +324,7 @@ fn load_persistent_dashboard_aggregate() -> Option<CachedDashboardAggregate> {
     serde_json::from_slice::<PersistentDashboardAggregateCache>(&data)
         .ok()
         .and_then(|cache| {
-            (cache.version == 1).then_some(CachedDashboardAggregate {
+            (cache.version == 2).then_some(CachedDashboardAggregate {
                 signature: cache.signature,
                 snapshot: cache.snapshot,
                 summary: cache.summary,
@@ -338,9 +342,9 @@ fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) {
         }
     }
     let payload = PersistentDashboardAggregateCache {
-        version: 1,
+        version: 2,
         signature: aggregate.signature.clone(),
-        snapshot: aggregate.snapshot.clone(),
+        snapshot: aggregate.snapshot.clone().map(sanitize_snapshot_for_persistence),
         summary: aggregate.summary.clone(),
     };
     let Ok(data) = serde_json::to_vec(&payload) else {
@@ -359,6 +363,11 @@ struct PersistentDashboardAggregateCache {
     signature: DashboardScanSignature,
     snapshot: Option<DashboardSnapshot>,
     summary: TokenUsageSummary,
+}
+
+fn sanitize_snapshot_for_persistence(mut snapshot: DashboardSnapshot) -> DashboardSnapshot {
+    snapshot.cache_usage = sanitize_cache_usage_for_persistence(snapshot.cache_usage);
+    snapshot
 }
 
 fn snapshot_with_generated_at(mut snapshot: DashboardSnapshot) -> DashboardSnapshot {

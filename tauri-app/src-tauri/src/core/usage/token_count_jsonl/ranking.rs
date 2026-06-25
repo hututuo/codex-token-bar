@@ -1,6 +1,9 @@
 use super::{aggregates::TokenAccumulator, TokenEvent};
 use crate::core::sqlite;
-use crate::models::{CacheHitRankingItem, LocalDataWarning};
+use crate::models::{
+    CacheHitRankingItem, LocalDataWarning, SessionCacheUsage, TokenCacheBreakdown,
+    TokenCacheUsage, TurnCacheUsage,
+};
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration as StdDuration;
@@ -84,6 +87,97 @@ pub(super) fn cache_hit_ranking(
             cached_tokens: usage.cached_input_tokens,
         })
         .collect()
+}
+
+pub(super) fn cache_usage(
+    events: &[TokenEvent],
+    codex_home: &Path,
+    _local_offset: UtcOffset,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> TokenCacheUsage {
+    let thread_info = read_thread_info(codex_home, warnings);
+    let mut by_session: HashMap<&str, TokenAccumulator> = HashMap::new();
+    let mut last_seen: HashMap<&str, OffsetDateTime> = HashMap::new();
+
+    for event in events {
+        by_session.entry(event.session_id.as_str()).or_default().add(event);
+        last_seen
+            .entry(event.session_id.as_str())
+            .and_modify(|timestamp| {
+                if event.timestamp > *timestamp {
+                    *timestamp = event.timestamp;
+                }
+            })
+            .or_insert(event.timestamp);
+    }
+
+    let mut sessions = by_session
+        .into_iter()
+        .map(|(session_id, usage)| {
+            let info = thread_info.get(session_id);
+            let updated_at = info
+                .and_then(|value| value.updated_at)
+                .or_else(|| last_seen.get(session_id).copied());
+            SessionCacheUsage {
+                id: session_id.to_string(),
+                title: info
+                    .map(|value| value.title.clone())
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| fallback_session_title(session_id)),
+                last_updated: updated_at.and_then(format_rfc3339),
+                breakdown: breakdown_from_accumulator(&usage),
+            }
+        })
+        .collect::<Vec<_>>();
+    sessions.sort_by(|left, right| {
+        right
+            .last_updated
+            .cmp(&left.last_updated)
+            .then_with(|| right.breakdown.total_tokens.cmp(&left.breakdown.total_tokens))
+    });
+
+    let mut ordered_events = events.iter().enumerate().collect::<Vec<_>>();
+    ordered_events.sort_by(|left, right| {
+        left.1
+            .timestamp
+            .cmp(&right.1.timestamp)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    let mut turn_index_by_session: HashMap<&str, u32> = HashMap::new();
+    let mut turns = ordered_events
+        .into_iter()
+        .map(|(index, event)| {
+            let turn_index = turn_index_by_session
+                .entry(event.session_id.as_str())
+                .and_modify(|value| *value = value.saturating_add(1))
+                .or_insert(1);
+            let info = thread_info.get(event.session_id.as_str());
+            TurnCacheUsage {
+                id: format!("{}-{}-{index}", event.session_id, event.timestamp.unix_timestamp()),
+                session_id: event.session_id.clone(),
+                session_title: info
+                    .map(|value| value.title.clone())
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| fallback_session_title(&event.session_id)),
+                timestamp: format_rfc3339(event.timestamp).unwrap_or_default(),
+                turn_index_in_session: *turn_index,
+                user_prompt: event.user_prompt.clone(),
+                assistant_response: event.assistant_response.clone(),
+                breakdown: breakdown_from_event(event),
+            }
+        })
+        .collect::<Vec<_>>();
+    turns.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
+
+    TokenCacheUsage { sessions, turns }
+}
+
+pub(super) fn sanitize_cache_usage_for_persistence(mut usage: TokenCacheUsage) -> TokenCacheUsage {
+    for turn in &mut usage.turns {
+        turn.user_prompt.clear();
+        turn.assistant_response.clear();
+    }
+    usage
 }
 
 fn thread_info_warning(message: String) -> LocalDataWarning {
@@ -197,6 +291,31 @@ fn session_ranking_subtitle(
         .map(|timestamp| format_month_day_time(timestamp.to_offset(local_offset)))
         .unwrap_or_else(|| "未知时间".into());
     format!("{} 轮 · {}", usage.calls, time)
+}
+
+fn breakdown_from_accumulator(usage: &TokenAccumulator) -> TokenCacheBreakdown {
+    TokenCacheBreakdown {
+        input_tokens: usage.input_tokens,
+        cached_input_tokens: usage.cached_input_tokens.min(usage.input_tokens),
+        output_tokens: usage.output_tokens,
+        total_tokens: usage.tokens,
+        calls: usage.calls,
+    }
+}
+
+fn breakdown_from_event(event: &TokenEvent) -> TokenCacheBreakdown {
+    TokenCacheBreakdown {
+        input_tokens: event.input_tokens,
+        cached_input_tokens: event.cached_input_tokens.min(event.input_tokens),
+        output_tokens: event.output_tokens,
+        total_tokens: event.tokens,
+        calls: 1,
+    }
+}
+
+fn format_rfc3339(date: OffsetDateTime) -> Option<String> {
+    date.format(&time::format_description::well_known::Rfc3339)
+        .ok()
 }
 
 fn format_month_day_time(date: OffsetDateTime) -> String {

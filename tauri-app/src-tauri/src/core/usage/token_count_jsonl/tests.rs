@@ -168,6 +168,41 @@ fn ranks_sessions_by_low_cache_hit_rate_with_thread_titles() {
 }
 
 #[test]
+fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let session_id = "019eturn-0000-0000-0000-000000000003";
+    write_lines(
+        &session_dir.join(format!("rollout-{session_id}.jsonl")),
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"第一轮问题"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:20Z","type":"event_msg","payload":{"type":"agent_message","message":"第一轮回答"}}"#,
+            r#"{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200,"cached_input_tokens":100,"output_tokens":50,"total_tokens":1250}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"user_message","message":"第二轮问题"}}"#,
+            r#"{"timestamp":"2026-06-18T01:05:20Z","type":"event_msg","payload":{"type":"agent_message","message":"第二轮回答"}}"#,
+            r#"{"timestamp":"2026-06-18T01:06:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1300,"cached_input_tokens":600,"output_tokens":80,"total_tokens":1380}}}}"#,
+        ],
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    assert_eq!(snapshot.cache_usage.sessions.len(), 1);
+    assert_eq!(snapshot.cache_usage.sessions[0].breakdown.calls, 2);
+    assert_eq!(snapshot.cache_usage.turns.len(), 2);
+    let second_turn = snapshot
+        .cache_usage
+        .turns
+        .iter()
+        .find(|turn| turn.turn_index_in_session == 2)
+        .unwrap();
+    assert_eq!(second_turn.user_prompt, "第二轮问题");
+    assert_eq!(second_turn.assistant_response, "第二轮回答");
+    assert_eq!(second_turn.breakdown.input_tokens, 1300);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn dashboard_snapshot_reuses_cached_aggregate_when_session_signatures_are_unchanged() {
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -227,6 +262,39 @@ fn token_event_cache_serializes_only_usage_summary() {
     assert!(!serialized.contains("assistantResponse"));
     assert!(!serialized.contains("用户问题"));
     assert!(!serialized.contains("模型回答"));
+}
+
+#[test]
+fn dashboard_aggregate_cache_does_not_persist_conversation_text() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let secret_question = "不要写进缓存的问题";
+    let secret_answer = "不要写进缓存的回答";
+    let user_line = format!(
+        r#"{{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{{"type":"user_message","message":"{secret_question}"}}}}"#
+    );
+    let assistant_line = format!(
+        r#"{{"timestamp":"2026-06-18T01:00:20Z","type":"event_msg","payload":{{"type":"agent_message","message":"{secret_answer}"}}}}"#
+    );
+    write_lines(
+        &session_dir.join("rollout-019esecret-0000-0000-0000-cachetext.jsonl"),
+        &[
+            user_line.as_str(),
+            assistant_line.as_str(),
+            r#"{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200,"cached_input_tokens":100,"output_tokens":50,"total_tokens":1250}}}}"#,
+        ],
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    assert_eq!(snapshot.cache_usage.turns[0].user_prompt, secret_question);
+    let cache_text = app_paths::token_aggregate_cache_path()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    assert!(!cache_text.contains(secret_question));
+    assert!(!cache_text.contains(secret_answer));
+
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

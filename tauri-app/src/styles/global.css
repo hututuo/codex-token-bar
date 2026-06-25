@@ -826,6 +826,68 @@ button.quota-side-card:hover {
   white-space: nowrap;
 }
 
+.ranking-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.ranking-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 25px;
+  border: 1px solid color-mix(in srgb, var(--line) 88%, transparent);
+  border-radius: 7px;
+  background: var(--panel-soft);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 640;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.ranking-check[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 25%, var(--line));
+  color: var(--accent-strong);
+}
+
+.ranking-check span {
+  display: inline-grid;
+  place-items: center;
+  width: 11px;
+  color: var(--accent-strong);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.ranking-scope-tabs {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.ranking-scope-tabs button {
+  height: 21px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 680;
+  padding: 0 10px;
+}
+
+.ranking-scope-tabs .is-active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 .live-card,
 .activity-section,
 .chart-section,
@@ -2839,10 +2901,10 @@ input[type="range"]::-moz-range-thumb {
 
 .ranking-row {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) 220px 56px 150px;
-  gap: 12px;
+  grid-template-columns: 32px minmax(0, 1fr) 154px 54px 92px 118px;
+  gap: 10px;
   align-items: center;
-  padding: 10px 12px;
+  padding: 7px 10px;
   border-radius: 8px;
   background: var(--panel-soft);
 }
@@ -2850,14 +2912,26 @@ input[type="range"]::-moz-range-thumb {
 .ranking-row h3 {
   overflow: hidden;
   margin: 0 0 2px;
-  font-size: 14px;
+  font-size: 12px;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranking-row small {
+  display: block;
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-size: 9px;
+  font-weight: 560;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .ranking-row em {
   font-style: normal;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 760;
 }
 
 .ranking-row--empty {

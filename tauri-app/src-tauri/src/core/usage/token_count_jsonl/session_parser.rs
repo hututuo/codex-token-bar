@@ -41,6 +41,8 @@ pub(super) fn parse_session_file(
     let reader = BufReader::new(handle);
     let fork_replay_cutoff = fork_replay_cutoff(file);
     let mut previous_total = None;
+    let mut current_user_prompt = String::new();
+    let mut assistant_fragments = Vec::<String>::new();
     let mut events = Vec::new();
 
     for line in reader.lines() {
@@ -55,6 +57,17 @@ pub(super) fn parse_session_file(
                 break;
             }
         };
+        if let Some(message) = extract_payload_message(&line, "user_message") {
+            current_user_prompt = message;
+            assistant_fragments.clear();
+            continue;
+        }
+
+        if let Some(message) = extract_payload_message(&line, "agent_message") {
+            assistant_fragments.push(message);
+            continue;
+        }
+
         if !line.contains("\"token_count\"") {
             continue;
         }
@@ -94,10 +107,49 @@ pub(super) fn parse_session_file(
                 .as_ref()
                 .map_or(0, |usage| usage.cached_input_tokens),
             output_tokens: usage_line.last.as_ref().map_or(0, |usage| usage.output_tokens),
+            user_prompt: excerpt(&current_user_prompt, 180),
+            assistant_response: excerpt(&assistant_fragments.join(" "), 220),
         });
+        assistant_fragments.clear();
     }
 
     events
+}
+
+fn extract_payload_message(line: &str, expected_type: &str) -> Option<String> {
+    if !line.contains("\"payload\"") || !line.contains(expected_type) {
+        return None;
+    }
+    let value: Value = serde_json::from_str(line).ok()?;
+    let payload = value.get("payload")?;
+    if payload.get("type")?.as_str()? != expected_type {
+        return None;
+    }
+    let normalized = normalize_excerpt_text(payload.get("message")?.as_str()?);
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn excerpt(value: &str, limit: usize) -> String {
+    let normalized = normalize_excerpt_text(value);
+    if normalized.chars().count() <= limit {
+        return normalized;
+    }
+    let mut text = normalized.chars().take(limit).collect::<String>();
+    text.push('…');
+    text
+}
+
+fn normalize_excerpt_text(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string()
 }
 
 fn fork_replay_cutoff(file: &Path) -> Option<OffsetDateTime> {

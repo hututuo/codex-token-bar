@@ -40,6 +40,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
         recent_usage_7d,
         recent_usage_30d,
         cache_hit_ranking: Vec::<CacheHitRankingItem>::new(),
+        cache_usage: Default::default(),
         warnings,
     })
 }

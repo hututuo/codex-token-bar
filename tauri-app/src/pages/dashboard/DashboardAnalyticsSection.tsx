@@ -16,7 +16,7 @@ export function DashboardAnalyticsSection({ dashboard }: DashboardAnalyticsSecti
         recentUsage7d={dashboard.recentUsage7d}
         recentUsage30d={dashboard.recentUsage30d}
       />
-      <CacheHitRanking items={dashboard.cacheHitRanking} />
+      <CacheHitRanking cacheUsage={dashboard.cacheUsage} legacyItems={dashboard.cacheHitRanking} />
     </>
   );
 }

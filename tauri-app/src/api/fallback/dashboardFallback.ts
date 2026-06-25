@@ -25,6 +25,10 @@ export function emptyDashboardSnapshot(): DashboardSnapshot {
     recentUsage7d: emptyRecentUsage(now, 60 * 60 * 1_000, 7 * 24),
     recentUsage30d: emptyRecentUsage(now, 6 * 60 * 60 * 1_000, 30 * 4),
     cacheHitRanking: [],
+    cacheUsage: {
+      sessions: [],
+      turns: [],
+    },
     warnings: [],
   };
 }

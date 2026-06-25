@@ -201,6 +201,8 @@ impl CachedTokenEvent {
             input_tokens: self.input_tokens,
             cached_input_tokens: self.cached_input_tokens,
             output_tokens: self.output_tokens,
+            user_prompt: String::new(),
+            assistant_response: String::new(),
         })
     }
 }

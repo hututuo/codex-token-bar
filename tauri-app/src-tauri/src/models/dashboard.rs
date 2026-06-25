@@ -14,6 +14,7 @@ pub struct DashboardSnapshot {
     pub recent_usage_7d: Vec<RecentUsagePoint>,
     pub recent_usage_30d: Vec<RecentUsagePoint>,
     pub cache_hit_ranking: Vec<CacheHitRankingItem>,
+    pub cache_usage: TokenCacheUsage,
     pub warnings: Vec<LocalDataWarning>,
 }
 
@@ -64,4 +65,43 @@ pub struct CacheHitRankingItem {
     pub hit_rate: f64,
     pub input_tokens: u64,
     pub cached_tokens: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenCacheUsage {
+    pub sessions: Vec<SessionCacheUsage>,
+    pub turns: Vec<TurnCacheUsage>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenCacheBreakdown {
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub calls: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCacheUsage {
+    pub id: String,
+    pub title: String,
+    pub last_updated: Option<String>,
+    pub breakdown: TokenCacheBreakdown,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnCacheUsage {
+    pub id: String,
+    pub session_id: String,
+    pub session_title: String,
+    pub timestamp: String,
+    pub turn_index_in_session: u32,
+    pub user_prompt: String,
+    pub assistant_response: String,
+    pub breakdown: TokenCacheBreakdown,
 }

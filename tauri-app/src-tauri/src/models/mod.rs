@@ -9,6 +9,7 @@ mod settings;
 pub use common::{AccountInfo, LocalDataWarning};
 pub use dashboard::{
     ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats, RecentUsagePoint,
+    SessionCacheUsage, TokenCacheBreakdown, TokenCacheUsage, TurnCacheUsage,
 };
 pub use live::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, UnreadSummary};
 pub use platform::{

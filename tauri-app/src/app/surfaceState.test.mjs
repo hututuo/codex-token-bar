@@ -101,14 +101,15 @@ test("compact surfaces refresh quota every minute", async () => {
   assert.equal(compactData.includes("DEFAULT_QUOTA_INTERVAL_MS = 60_000"), true);
 });
 
-test("debug launcher stops installed release before opening Tauri app", async () => {
+test("debug launcher stages a runnable app and stops stale debug instances", async () => {
   const script = await readFile(
     new URL("../../../scripts/open_tauri_debug_app.sh", import.meta.url),
     "utf8",
   );
 
-  assert.equal(script.includes("stop_installed_app"), true);
-  assert.equal(script.includes("/Applications/Codex Token Bar.app/Contents/MacOS/CodexTokenBar"), true);
+  assert.equal(script.includes("stop_other_debug_apps"), true);
+  assert.equal(script.includes("stage_runnable_app"), true);
+  assert.equal(script.includes("target/debug/run-bundle"), true);
 });
 
 test("compact floating data shows quota pace label instead of generic output status", async () => {

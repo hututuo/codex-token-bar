@@ -42,6 +42,37 @@ export interface CacheHitRankingItem {
   cachedTokens: number;
 }
 
+export interface TokenCacheBreakdown {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  calls: number;
+}
+
+export interface SessionCacheUsage {
+  id: string;
+  title: string;
+  lastUpdated: string | null;
+  breakdown: TokenCacheBreakdown;
+}
+
+export interface TurnCacheUsage {
+  id: string;
+  sessionId: string;
+  sessionTitle: string;
+  timestamp: string;
+  turnIndexInSession: number;
+  userPrompt: string;
+  assistantResponse: string;
+  breakdown: TokenCacheBreakdown;
+}
+
+export interface TokenCacheUsage {
+  sessions: SessionCacheUsage[];
+  turns: TurnCacheUsage[];
+}
+
 export interface DashboardSnapshot {
   generatedAt: string;
   account: AccountInfo;
@@ -52,5 +83,6 @@ export interface DashboardSnapshot {
   recentUsage7d: RecentUsagePoint[];
   recentUsage30d: RecentUsagePoint[];
   cacheHitRanking: CacheHitRankingItem[];
+  cacheUsage: TokenCacheUsage;
   warnings: LocalDataWarning[];
 }
