@@ -183,6 +183,10 @@ fn monitor_reuses_snapshot_until_logs_change() {
     assert_eq!(monitor.test_refresh_count(), refreshes_after_first);
     assert_eq!(second.tokens_per_second, first.tokens_per_second);
 
+    let floating = monitor.floating_snapshot();
+    assert_eq!(monitor.test_refresh_count(), refreshes_after_first);
+    assert!((floating.tokens_per_second - first.tokens_per_second).abs() < 0.001);
+
     {
         let connection = Connection::open(root.join("logs_2.sqlite")).unwrap();
         insert_log(
