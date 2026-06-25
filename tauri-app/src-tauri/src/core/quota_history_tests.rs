@@ -80,6 +80,77 @@ fn history_suppresses_recovered_full_usage_spike_runs() {
 }
 
 #[test]
+fn record_writes_canonical_codex_key_and_source() {
+    let path = temp_db_path("canonical-key-source");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let reset = now_unix() + 3_600.0;
+
+    database
+        .record(&bundle("来先生", 0.01, reset as i64, 0.50, (reset + 500_000.0) as i64))
+        .unwrap();
+
+    let connection = database.open().unwrap();
+    let stored = connection
+        .query_row(
+            "SELECT account_key, plan_type, limit_name, source FROM quota_snapshots ORDER BY id DESC LIMIT 1;",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+
+    assert_eq!(stored.0, "来先生|Pro|codex");
+    assert_eq!(stored.1.as_deref(), Some("Pro"));
+    assert_eq!(stored.2.as_deref(), Some("codex"));
+    assert_eq!(stored.3.as_deref(), Some("tauri"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn schema_adds_nullable_source_column_to_existing_database() {
+    let path = temp_db_path("source-migration");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE quota_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at REAL NOT NULL,
+                account_key TEXT NOT NULL,
+                plan_type TEXT,
+                limit_name TEXT,
+                account_name TEXT,
+                five_hour_used_percent INTEGER,
+                five_hour_resets_at REAL,
+                seven_day_used_percent INTEGER,
+                seven_day_resets_at REAL,
+                status TEXT NOT NULL
+            );
+            "#,
+        )
+        .unwrap();
+
+    ensure_schema(&connection).unwrap();
+    let has_source = connection
+        .prepare("PRAGMA table_info(quota_snapshots);")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .any(|name| name.unwrap() == "source");
+
+    assert!(has_source);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn recent_history_includes_legacy_codex_account_key_rows() {
     let path = temp_db_path("legacy-key");
     let database = QuotaHistoryDatabase { path: path.clone() };
@@ -122,6 +193,180 @@ fn recent_history_includes_legacy_codex_account_key_rows() {
         .iter()
         .any(|point| point.five_hour_remaining_percent == Some(0.90)));
     assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(0.85));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn recent_history_mixes_different_sources_for_same_codex_account() {
+    let path = temp_db_path("source-merge");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let connection = database.open().unwrap();
+    ensure_schema(&connection).unwrap();
+    let now = now_unix();
+    let reset = now + 3_600.0;
+
+    insert_history_row_with_source(
+        &connection,
+        &history_row(
+            now - 600.0,
+            "tester|Pro|codex",
+            "Pro",
+            Some("codex"),
+            10,
+            reset,
+            20,
+            reset + 500_000.0,
+        ),
+        Some("swift"),
+    );
+    insert_history_row_with_source(
+        &connection,
+        &history_row(
+            now - 300.0,
+            "tester|Pro|codex",
+            "Pro",
+            Some("codex"),
+            12,
+            reset,
+            21,
+            reset + 500_000.0,
+        ),
+        Some("tauri"),
+    );
+
+    let history = database.recent_history_24h(12).unwrap();
+    assert!(history
+        .iter()
+        .any(|point| point.five_hour_remaining_percent == Some(0.90)));
+    assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(0.88));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn recent_history_does_not_merge_non_codex_limit_rows() {
+    let path = temp_db_path("non-codex-limit");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let connection = database.open().unwrap();
+    ensure_schema(&connection).unwrap();
+    let now = now_unix();
+    let reset = now + 3_600.0;
+
+    insert_row(
+        &connection,
+        &history_row(
+            now - 600.0,
+            "tester|Pro|gpt-5-high",
+            "Pro",
+            Some("gpt-5-high"),
+            50,
+            reset,
+            50,
+            reset + 500_000.0,
+        ),
+    )
+    .unwrap();
+    insert_row(
+        &connection,
+        &history_row(
+            now - 300.0,
+            "tester|Pro|codex",
+            "Pro",
+            Some("codex"),
+            10,
+            reset,
+            20,
+            reset + 500_000.0,
+        ),
+    )
+    .unwrap();
+
+    let history = database.recent_history_24h(12).unwrap();
+    assert!(history
+        .iter()
+        .all(|point| point.five_hour_remaining_percent != Some(0.50)));
+    assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(0.90));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn history_suppresses_recovered_midcycle_usage_spike() {
+    let path = temp_db_path("midcycle-spike");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let connection = database.open().unwrap();
+    ensure_schema(&connection).unwrap();
+    let now = now_unix();
+    let reset = now + 3_600.0;
+
+    for (offset, used) in [(-900.0, 10), (-600.0, 45), (-300.0, 12)] {
+        insert_row(
+            &connection,
+            &history_row(
+                now + offset,
+                "tester|Pro|codex",
+                "Pro",
+                Some("codex"),
+                used,
+                reset,
+                20,
+                reset + 500_000.0,
+            ),
+        )
+        .unwrap();
+    }
+
+    let history = database.recent_history_24h(12).unwrap();
+    assert!(history
+        .iter()
+        .all(|point| point.five_hour_remaining_percent != Some(0.55)));
+    assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(0.88));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn history_allows_recovery_on_new_reset_window() {
+    let path = temp_db_path("new-reset-recovery");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let connection = database.open().unwrap();
+    ensure_schema(&connection).unwrap();
+    let now = now_unix();
+    let old_reset = now - 60.0;
+    let new_reset = now + 5.0 * 3_600.0;
+
+    insert_row(
+        &connection,
+        &history_row(
+            now - 600.0,
+            "tester|Pro|codex",
+            "Pro",
+            Some("codex"),
+            100,
+            old_reset,
+            20,
+            now + 500_000.0,
+        ),
+    )
+    .unwrap();
+    insert_row(
+        &connection,
+        &history_row(
+            now - 300.0,
+            "tester|Pro|codex",
+            "Pro",
+            Some("codex"),
+            0,
+            new_reset,
+            20,
+            now + 500_000.0,
+        ),
+    )
+    .unwrap();
+
+    let history = database.recent_history_24h(12).unwrap();
+    assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(1.0));
 
     let _ = std::fs::remove_file(path);
 }
@@ -317,12 +562,44 @@ fn history_row(
         plan_type: Some(plan_type.into()),
         limit_name: limit_name.map(str::to_string),
         account_name: Some("tester".into()),
+        source: None,
         five_hour_used_percent: Some(five_used_percent),
         five_hour_resets_at: Some(five_reset),
         seven_day_used_percent: Some(seven_used_percent),
         seven_day_resets_at: Some(seven_reset),
         status: "测试".into(),
     }
+}
+
+fn insert_history_row_with_source(
+    connection: &rusqlite::Connection,
+    row: &QuotaHistoryRow,
+    source: Option<&str>,
+) {
+    connection
+        .execute(
+            r#"
+            INSERT INTO quota_snapshots (
+                created_at, account_key, plan_type, limit_name, account_name, source,
+                five_hour_used_percent, five_hour_resets_at,
+                seven_day_used_percent, seven_day_resets_at, status
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11);
+            "#,
+            rusqlite::params![
+                row.created_at,
+                row.account_key,
+                row.plan_type,
+                row.limit_name,
+                row.account_name,
+                source,
+                row.five_hour_used_percent,
+                row.five_hour_resets_at,
+                row.seven_day_used_percent,
+                row.seven_day_resets_at,
+                row.status
+            ],
+        )
+        .unwrap();
 }
 
 fn temp_db_path(label: &str) -> PathBuf {

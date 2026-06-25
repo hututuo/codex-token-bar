@@ -1,9 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  FLOATING_DEFAULT_HEIGHT,
+  FLOATING_MIN_HEIGHT,
   DEFAULT_FLOATING_SETTINGS,
   sanitizeFloatingSettings,
 } from "./floatingSettings.ts";
+
+test("floating height separates Swift-style protection from the default expanded content", () => {
+  assert.equal(FLOATING_MIN_HEIGHT, 88);
+  assert.equal(FLOATING_DEFAULT_HEIGHT, 112);
+});
 
 test("sanitizeFloatingSettings keeps valid gradient palette values", () => {
   const settings = sanitizeFloatingSettings({

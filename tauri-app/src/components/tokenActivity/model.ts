@@ -1,5 +1,6 @@
 export { buildCalendarDays, buildMonthMarkers } from "./calendar";
 export { buildHeatmapDays, cellColor, cellLabel } from "./heatmap";
+export { hoverSummary } from "./hoverSummary";
 export { isInRange, summarizeRange } from "./rangeSummary";
 export { activityModes } from "./types";
 export type { ActivityMode, HeatmapDay, MonthMarker } from "./types";

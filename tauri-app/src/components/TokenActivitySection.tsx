@@ -6,6 +6,7 @@ import {
   buildCalendarDays,
   buildHeatmapDays,
   buildMonthMarkers,
+  hoverSummary,
   isInRange,
   summarizeRange,
   type ActivityMode,
@@ -19,6 +20,7 @@ export function TokenActivitySection({ days }: TokenActivitySectionProps) {
   const [mode, setMode] = useState<ActivityMode>("daily");
   const [rangeStart, setRangeStart] = useState<string | null>(null);
   const [rangeEnd, setRangeEnd] = useState<string | null>(null);
+  const [hoveredDay, setHoveredDay] = useState<ActivityDay | null>(null);
 
   const calendarDays = useMemo(() => buildCalendarDays(days), [days]);
   const heatmapDays = useMemo(() => buildHeatmapDays(calendarDays, mode), [calendarDays, mode]);
@@ -55,13 +57,18 @@ export function TokenActivitySection({ days }: TokenActivitySectionProps) {
         mode={mode}
         monthMarkers={monthMarkers}
         onDateSelect={chooseDate}
+        onDayHover={setHoveredDay}
+        hoveredDate={hoveredDay?.date ?? null}
         rangeEnd={rangeEnd}
         rangeStart={rangeStart}
       />
 
       <div className="range-summary">
-        <span>{summary.hint}</span>
-        <strong>{summary.value}</strong>
+        <span>{hoveredDay ? hoverSummary(hoveredDay, mode) : summary.hint}</span>
+        <strong>
+          <em>点两个日期可统计</em>
+          {summary.value}
+        </strong>
       </div>
     </section>
   );

@@ -114,25 +114,26 @@ pub(super) fn make_daily_history(
 }
 
 pub(super) fn sanitized_rows(rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow> {
+    let rows = suppress_recovered_usage_spikes(rows);
     let mut last_by_account: HashMap<String, QuotaHistoryRow> = HashMap::new();
-    let normalized = rows.into_iter()
+    rows.into_iter()
         .map(|row| {
-            let normalized = row.normalized_after(last_by_account.get(&row.account_key));
-            last_by_account.insert(row.account_key.clone(), normalized.clone());
+            let key = row.history_match_key();
+            let normalized = row.normalized_after(last_by_account.get(&key));
+            last_by_account.insert(key, normalized.clone());
             normalized
         })
-        .collect();
-    suppress_recovered_full_usage_spikes(normalized)
+        .collect()
 }
 
-fn suppress_recovered_full_usage_spikes(mut rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow> {
-    suppress_recovered_full_usage_spikes_for_window(
+fn suppress_recovered_usage_spikes(mut rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow> {
+    suppress_recovered_usage_spikes_for_window(
         &mut rows,
         |row| row.five_hour_used_percent,
         |row| row.five_hour_resets_at,
         |row, value| row.five_hour_used_percent = value,
     );
-    suppress_recovered_full_usage_spikes_for_window(
+    suppress_recovered_usage_spikes_for_window(
         &mut rows,
         |row| row.seven_day_used_percent,
         |row| row.seven_day_resets_at,
@@ -141,50 +142,30 @@ fn suppress_recovered_full_usage_spikes(mut rows: Vec<QuotaHistoryRow>) -> Vec<Q
     rows
 }
 
-fn suppress_recovered_full_usage_spikes_for_window(
+fn suppress_recovered_usage_spikes_for_window(
     rows: &mut [QuotaHistoryRow],
     used: impl Fn(&QuotaHistoryRow) -> Option<i32> + Copy,
     reset: impl Fn(&QuotaHistoryRow) -> Option<f64> + Copy,
     mut set_used: impl FnMut(&mut QuotaHistoryRow, Option<i32>),
 ) {
-    let mut index = 0;
-    while index < rows.len() {
+    for index in 0..rows.len() {
         let Some(current_used) = used(&rows[index]) else {
-            index += 1;
             continue;
         };
-        if current_used < 95 {
-            index += 1;
-            continue;
-        }
-
-        let current_account = rows[index].account_key.clone();
+        let current_account = rows[index].history_match_key();
         let current_reset = reset(&rows[index]);
-        let mut end = index + 1;
-        while end < rows.len()
-            && rows[end].account_key == current_account
-            && same_reset(reset(&rows[end]), current_reset)
-            && used(&rows[end]).is_some_and(|value| value >= 95)
-        {
-            end += 1;
-        }
-
-        let previous = previous_same_cycle_low(rows, index, &current_account, current_reset, used, reset);
-        let next = next_same_cycle_low(rows, end, &current_account, current_reset, used, reset);
+        let previous = previous_same_cycle_used(rows, index, &current_account, current_reset, used, reset);
+        let next = next_same_cycle_used(rows, index + 1, &current_account, current_reset, used, reset);
         if let (Some(previous_used), Some(next_used)) = (previous, next) {
             let recovered_floor = previous_used.max(next_used);
             if current_used - recovered_floor >= 20 {
-                for row in &mut rows[index..end] {
-                    set_used(row, Some(previous_used));
-                }
+                set_used(&mut rows[index], Some(previous_used));
             }
         }
-
-        index = end;
     }
 }
 
-fn previous_same_cycle_low(
+fn previous_same_cycle_used(
     rows: &[QuotaHistoryRow],
     index: usize,
     account_key: &str,
@@ -195,12 +176,11 @@ fn previous_same_cycle_low(
     rows[..index]
         .iter()
         .rev()
-        .find(|row| row.account_key == account_key && same_reset(reset(row), reset_at))
+        .find(|row| row.history_match_key() == account_key && same_reset(reset(row), reset_at))
         .and_then(used)
-        .filter(|value| *value <= 80)
 }
 
-fn next_same_cycle_low(
+fn next_same_cycle_used(
     rows: &[QuotaHistoryRow],
     index: usize,
     account_key: &str,
@@ -210,9 +190,8 @@ fn next_same_cycle_low(
 ) -> Option<i32> {
     rows[index..]
         .iter()
-        .find(|row| row.account_key == account_key && same_reset(reset(row), reset_at))
+        .find(|row| row.history_match_key() == account_key && same_reset(reset(row), reset_at))
         .and_then(used)
-        .filter(|value| *value <= 80)
 }
 
 fn same_reset(left: Option<f64>, right: Option<f64>) -> bool {

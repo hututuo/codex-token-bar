@@ -1,10 +1,12 @@
 import { LiveRateCard } from "../../components/LiveRateCard";
+import { CodexRadarStrip } from "../../components/CodexRadarStrip";
 import { QuotaStrip } from "../../components/QuotaStrip";
 import { StatsStrip } from "../../components/StatsStrip";
 import type { FloatingWindowSettings } from "../../floating/floatingSettings";
 import type {
   DashboardSnapshot,
   DisplaySurfaceSettings,
+  FloatingContentVisibility,
   FloatingUnreadEffect,
   LiveRateSnapshot,
   LiveThreadOption,
@@ -21,6 +23,8 @@ interface DashboardSummarySectionProps {
   onFloatingScaleChange: (scale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
   onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
+  onFloatingTextToneChange: (textTone: number) => void;
+  onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onLiveThreadSelect: (threadId: string) => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
@@ -38,6 +42,8 @@ export function DashboardSummarySection({
   onFloatingScaleChange,
   onFloatingUnreadEffectChange,
   onFloatingGradientChange,
+  onFloatingTextToneChange,
+  onFloatingContentVisibilityChange,
   onLiveThreadSelect,
   onToggleFloating,
   onToggleStatusTray,
@@ -48,14 +54,17 @@ export function DashboardSummarySection({
     <>
       <QuotaStrip snapshot={dashboard.quota} />
       <StatsStrip stats={dashboard.stats} />
+      <CodexRadarStrip />
       <LiveRateCard
         floatingEnabled={displaySurfaces.floatingWindowEnabled}
         floatingSettings={floatingSettings}
         statusTrayLiveTextEnabled={displaySurfaces.statusTrayLiveTextEnabled}
-      onFloatingOpacityChange={onFloatingOpacityChange}
-      onFloatingScaleChange={onFloatingScaleChange}
-      onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
-      onFloatingGradientChange={onFloatingGradientChange}
+        onFloatingOpacityChange={onFloatingOpacityChange}
+        onFloatingScaleChange={onFloatingScaleChange}
+        onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
+        onFloatingGradientChange={onFloatingGradientChange}
+        onFloatingTextToneChange={onFloatingTextToneChange}
+        onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
         onLiveThreadSelect={onLiveThreadSelect}
         onToggleFloating={onToggleFloating}
         onToggleStatusTray={onToggleStatusTray}

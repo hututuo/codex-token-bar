@@ -1,6 +1,12 @@
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
+import {
+  FLOATING_CONTENT_LABELS,
+  FLOATING_CONTENT_GROUPS,
+  reorderFloatingContent,
+  sanitizeFloatingContentVisibility,
+} from "../../floating/floatingContent";
 import type { FloatingWindowSettings } from "../../floating/floatingSettings";
-import type { FloatingUnreadEffect, PlatformCapabilities } from "../../types/dashboard";
+import type { FloatingContentGroup, FloatingContentVisibility, FloatingUnreadEffect, PlatformCapabilities } from "../../types/dashboard";
 
 const UNREAD_EFFECT_OPTIONS: Array<{ value: FloatingUnreadEffect; label: string }> = [
   { value: "off", label: "关" },
@@ -8,12 +14,22 @@ const UNREAD_EFFECT_OPTIONS: Array<{ value: FloatingUnreadEffect; label: string 
   { value: "shimmer", label: "扫光" },
 ];
 
+const UNREAD_EFFECT_DETAILS: Record<FloatingUnreadEffect, { title: string; subtitle: string }> = {
+  off: { title: "关", subtitle: "不显示动效" },
+  ripple: { title: "涟漪", subtitle: "有未读会话时显示圆形水波" },
+  shimmer: { title: "扫光", subtitle: "有未读会话时显示柔和光带" },
+};
+
+type SettingsCallout = "palette" | "unread" | "content";
+
 interface LiveRateSettingsPanelProps {
   floatingSettings: FloatingWindowSettings;
   floatingEnabled: boolean;
   onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
+  onFloatingTextToneChange: (textTone: number) => void;
+  onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
@@ -27,16 +43,23 @@ export function LiveRateSettingsPanel({
   onFloatingGradientChange,
   onFloatingOpacityChange,
   onFloatingScaleChange,
+  onFloatingTextToneChange,
+  onFloatingContentVisibilityChange,
   onFloatingUnreadEffectChange,
   onToggleFloating,
   onToggleStatusTray,
   platform,
   statusTrayLiveTextEnabled,
 }: LiveRateSettingsPanelProps) {
+  const [openCallout, setOpenCallout] = useState<SettingsCallout | null>(null);
   const opacityPercent = Math.round(floatingSettings.opacity * 100);
   const scalePercent = Math.round(floatingSettings.scale * 100);
   const opacityFill = ((opacityPercent - 40) / 60) * 100;
   const scaleFill = ((scalePercent - 90) / 48) * 100;
+  const textToneValue = Math.round(floatingSettings.textTone * 100);
+  const textToneFill = (textToneValue + 100) / 2;
+  const textToneLabel = textToneValue < 0 ? "自动" : `${textToneValue}%`;
+  const contentVisibility = sanitizeFloatingContentVisibility(floatingSettings.contentVisibility);
   const floatingAvailable = platform.floatingWindow.available;
   const floatingButtonLabel = floatingAvailable
     ? `显示：${floatingEnabled ? "悬浮窗" : "关闭"}`
@@ -78,78 +101,347 @@ export function LiveRateSettingsPanel({
           </button>
         </div>
       </div>
-      <label className="setting-slider">
-        <span>透明度</span>
-        <input
-          max="100"
-          min="40"
-          onChange={(event) => onFloatingOpacityChange(Number(event.currentTarget.value) / 100)}
-          style={{ "--range-fill": `${opacityFill}%` } as CSSProperties}
-          type="range"
-          value={opacityPercent}
-        />
-        <strong>{opacityPercent}%</strong>
-      </label>
-      <label className="setting-slider">
-        <span>悬浮窗大小</span>
-        <input
-          max="138"
-          min="90"
-          onChange={(event) => onFloatingScaleChange(Number(event.currentTarget.value) / 100)}
-          style={{ "--range-fill": `${scaleFill}%` } as CSSProperties}
-          type="range"
-          value={scalePercent}
-        />
-        <strong>{scalePercent}%</strong>
-      </label>
-      <div className="setting-segment" aria-label="未读提醒样式">
-        <span>未读提醒</span>
-        <div>
-          {UNREAD_EFFECT_OPTIONS.map((option) => (
-            <button
-              className={floatingSettings.unreadEffect === option.value ? "is-active" : ""}
-              key={option.value}
-              onClick={() => onFloatingUnreadEffectChange(option.value)}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
+      <div className="floating-appearance-compact">
+        <div className="floating-popup-buttons" aria-label="悬浮窗更多设置">
+          <button
+            aria-expanded={openCallout === "palette"}
+            className={openCallout === "palette" ? "is-active" : ""}
+            onClick={() => setOpenCallout((current) => current === "palette" ? null : "palette")}
+            type="button"
+          >
+            调色盘 <span>⌄</span>
+          </button>
+          <button
+            aria-expanded={openCallout === "unread"}
+            className={openCallout === "unread" ? "is-active" : ""}
+            onClick={() => setOpenCallout((current) => current === "unread" ? null : "unread")}
+            type="button"
+          >
+            提醒 <span>⌄</span>
+          </button>
+          <button
+            aria-expanded={openCallout === "content"}
+            className={openCallout === "content" ? "is-active" : ""}
+            onClick={() => setOpenCallout((current) => current === "content" ? null : "content")}
+            type="button"
+          >
+            内容 <span>⌄</span>
+          </button>
+        </div>
+        <div className="floating-appearance-sliders">
+          <label className="setting-slider">
+            <span>透明度</span>
+            <input
+              max="100"
+              min="40"
+              onChange={(event) => onFloatingOpacityChange(Number(event.currentTarget.value) / 100)}
+              style={{ "--range-fill": `${opacityFill}%` } as CSSProperties}
+              type="range"
+              value={opacityPercent}
+            />
+            <strong>{opacityPercent}%</strong>
+          </label>
+          <label className="setting-slider">
+            <span>大小</span>
+            <input
+              max="138"
+              min="90"
+              onChange={(event) => onFloatingScaleChange(Number(event.currentTarget.value) / 100)}
+              style={{ "--range-fill": `${scaleFill}%` } as CSSProperties}
+              type="range"
+              value={scalePercent}
+            />
+            <strong>{scalePercent}%</strong>
+          </label>
         </div>
       </div>
-      <div className="floating-palette" aria-label="悬浮窗渐变调色盘">
-        <span>调色盘</span>
-        <input
-          aria-label="渐变起始颜色"
-          onChange={(event) => onFloatingGradientChange({ gradientStart: event.currentTarget.value })}
-          type="color"
-          value={floatingSettings.gradientStart}
+      {openCallout === "palette" ? (
+        <PaletteSettingsCallout
+          floatingSettings={floatingSettings}
+          onClose={() => setOpenCallout(null)}
+          onFloatingGradientChange={onFloatingGradientChange}
         />
-        <input
-          aria-label="渐变结束颜色"
-          onChange={(event) => onFloatingGradientChange({ gradientEnd: event.currentTarget.value })}
-          type="color"
-          value={floatingSettings.gradientEnd}
+      ) : null}
+      {openCallout === "unread" ? (
+        <UnreadEffectCallout
+          selected={floatingSettings.unreadEffect}
+          onChange={(effect) => {
+            onFloatingUnreadEffectChange(effect);
+            setOpenCallout(null);
+          }}
+          onClose={() => setOpenCallout(null)}
         />
-        <select
-          aria-label="渐变方向"
-          onChange={(event) => onFloatingGradientChange({ gradientDirection: event.currentTarget.value as FloatingWindowSettings["gradientDirection"] })}
-          value={floatingSettings.gradientDirection}
+      ) : null}
+      {openCallout === "content" ? (
+        <ContentSettingsCallout
+          contentVisibility={contentVisibility}
+          textToneFill={textToneFill}
+          textToneLabel={textToneLabel}
+          textToneValue={textToneValue}
+          onClose={() => setOpenCallout(null)}
+          onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
+          onFloatingTextToneChange={onFloatingTextToneChange}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+interface SettingsCalloutShellProps {
+  children: ReactNode;
+  title: string;
+  subtitle?: string;
+  onClose: () => void;
+}
+
+function SettingsCalloutShell({ children, title, subtitle, onClose }: SettingsCalloutShellProps) {
+  return (
+    <div className="settings-callout" role="dialog" aria-label={title}>
+      <div className="settings-callout-head">
+        <div>
+          <strong>{title}</strong>
+          {subtitle ? <span>{subtitle}</span> : null}
+        </div>
+        <button aria-label="关闭" onClick={onClose} type="button">×</button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function PaletteSettingsCallout({
+  floatingSettings,
+  onClose,
+  onFloatingGradientChange,
+}: {
+  floatingSettings: FloatingWindowSettings;
+  onClose: () => void;
+  onFloatingGradientChange: LiveRateSettingsPanelProps["onFloatingGradientChange"];
+}) {
+  return (
+    <SettingsCalloutShell title="悬浮窗样式" onClose={onClose}>
+      <div className="settings-callout-section">
+        <span>颜色</span>
+        <label className="settings-callout-row">
+          <span>起始色</span>
+          <input
+            aria-label="渐变起始颜色"
+            onChange={(event) => onFloatingGradientChange({ gradientStart: event.currentTarget.value })}
+            type="color"
+            value={floatingSettings.gradientStart}
+          />
+        </label>
+        <label className="settings-callout-row">
+          <span>结束色</span>
+          <input
+            aria-label="渐变结束颜色"
+            onChange={(event) => onFloatingGradientChange({ gradientEnd: event.currentTarget.value })}
+            type="color"
+            value={floatingSettings.gradientEnd}
+          />
+        </label>
+      </div>
+      <div className="settings-callout-section">
+        <span>渐变</span>
+        <label className="settings-callout-row">
+          <span>方向</span>
+          <select
+            aria-label="渐变方向"
+            onChange={(event) => onFloatingGradientChange({ gradientDirection: event.currentTarget.value as FloatingWindowSettings["gradientDirection"] })}
+            value={floatingSettings.gradientDirection}
+          >
+            <option value="135deg">斜向</option>
+            <option value="90deg">横向</option>
+            <option value="180deg">纵向</option>
+            <option value="45deg">反斜</option>
+          </select>
+        </label>
+        <label className="settings-callout-row">
+          <span>类型</span>
+          <select
+            aria-label="渐变类型"
+            onChange={(event) => onFloatingGradientChange({ gradientType: event.currentTarget.value as FloatingWindowSettings["gradientType"] })}
+            value={floatingSettings.gradientType}
+          >
+            <option value="linear">线性</option>
+            <option value="radial">柔光</option>
+          </select>
+        </label>
+      </div>
+      <button
+        className="settings-callout-reset"
+        onClick={() => onFloatingGradientChange({
+          gradientStart: "#ffffff",
+          gradientEnd: "#daefff",
+          gradientDirection: "135deg",
+          gradientType: "linear",
+        })}
+        type="button"
+      >
+        恢复默认
+      </button>
+    </SettingsCalloutShell>
+  );
+}
+
+function UnreadEffectCallout({
+  selected,
+  onChange,
+  onClose,
+}: {
+  selected: FloatingUnreadEffect;
+  onChange: (effect: FloatingUnreadEffect) => void;
+  onClose: () => void;
+}) {
+  return (
+    <SettingsCalloutShell
+      title="提醒样式"
+      subtitle="有完成的会话还没点开时，悬浮窗用选中的样式提醒。"
+      onClose={onClose}
+    >
+      <div className="settings-callout-options">
+        {UNREAD_EFFECT_OPTIONS.map((option) => {
+          const details = UNREAD_EFFECT_DETAILS[option.value];
+          const active = selected === option.value;
+          return (
+            <button
+              className={active ? "is-active" : ""}
+              key={option.value}
+              onClick={() => onChange(option.value)}
+              type="button"
+            >
+              <span>{details.title}</span>
+              <em>{details.subtitle}</em>
+            </button>
+          );
+        })}
+      </div>
+    </SettingsCalloutShell>
+  );
+}
+
+function ContentSettingsCallout({
+  contentVisibility,
+  textToneFill,
+  textToneLabel,
+  textToneValue,
+  onClose,
+  onFloatingContentVisibilityChange,
+  onFloatingTextToneChange,
+}: {
+  contentVisibility: FloatingContentVisibility;
+  textToneFill: number;
+  textToneLabel: string;
+  textToneValue: number;
+  onClose: () => void;
+  onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
+  onFloatingTextToneChange: (textTone: number) => void;
+}) {
+  return (
+    <SettingsCalloutShell title="显示内容" subtitle="选择悬浮窗里显示哪些信息，并调整顺序。" onClose={onClose}>
+      <label className="setting-slider settings-callout-slider">
+        <span>字体颜色</span>
+        <input
+          max="100"
+          min="-100"
+          onChange={(event) => onFloatingTextToneChange(Number(event.currentTarget.value) / 100)}
+          style={{ "--range-fill": `${textToneFill}%` } as CSSProperties}
+          type="range"
+          value={textToneValue}
+        />
+        <strong>{textToneLabel}</strong>
+      </label>
+      <div className="floating-content-settings" aria-label="悬浮窗显示内容">
+        {contentVisibility.order.map((group, index) => (
+          <ContentSettingRow
+            group={group}
+            index={index}
+            key={group}
+            visibility={contentVisibility}
+            onChange={onFloatingContentVisibilityChange}
+          />
+        ))}
+      </div>
+    </SettingsCalloutShell>
+  );
+}
+
+interface ContentSettingRowProps {
+  group: FloatingContentGroup;
+  index: number;
+  visibility: FloatingContentVisibility;
+  onChange: (contentVisibility: FloatingContentVisibility) => void;
+}
+
+function ContentSettingRow({ group, index, visibility, onChange }: ContentSettingRowProps) {
+  const label = FLOATING_CONTENT_LABELS[group];
+  const checked = isFloatingGroupVisible(visibility, group);
+
+  function updateVisibility(visible: boolean) {
+    onChange(sanitizeFloatingContentVisibility({
+      ...visibility,
+      [visibilityKey(group)]: visible,
+    }));
+  }
+
+  function move(delta: number) {
+    const target = visibility.order[index + delta];
+    if (!target) {
+      return;
+    }
+    onChange(sanitizeFloatingContentVisibility({
+      ...visibility,
+      order: reorderFloatingContent(visibility.order, group, target),
+    }));
+  }
+
+  return (
+    <div className="floating-content-row">
+      <label>
+        <input
+          checked={checked}
+          onChange={(event) => updateVisibility(event.currentTarget.checked)}
+          type="checkbox"
+        />
+        <span>{label.title}</span>
+      </label>
+      <div>
+        <button
+          aria-label={`${label.title}上移`}
+          disabled={index === 0}
+          onClick={() => move(-1)}
+          type="button"
         >
-          <option value="135deg">斜向</option>
-          <option value="90deg">横向</option>
-          <option value="180deg">纵向</option>
-          <option value="45deg">反斜</option>
-        </select>
-        <select
-          aria-label="渐变类型"
-          onChange={(event) => onFloatingGradientChange({ gradientType: event.currentTarget.value as FloatingWindowSettings["gradientType"] })}
-          value={floatingSettings.gradientType}
+          ↑
+        </button>
+        <button
+          aria-label={`${label.title}下移`}
+          disabled={index === FLOATING_CONTENT_GROUPS.length - 1}
+          onClick={() => move(1)}
+          type="button"
         >
-          <option value="linear">线性</option>
-          <option value="radial">柔光</option>
-        </select>
+          ↓
+        </button>
       </div>
     </div>
   );
+}
+
+function isFloatingGroupVisible(visibility: FloatingContentVisibility, group: FloatingContentGroup): boolean {
+  return Boolean(visibility[visibilityKey(group)]);
+}
+
+function visibilityKey(group: FloatingContentGroup): keyof Omit<FloatingContentVisibility, "order"> {
+  switch (group) {
+    case "rateAndBar":
+      return "showRateAndBar";
+    case "usageStatus":
+      return "showUsageStatus";
+    case "metrics":
+      return "showMetrics";
+    case "quota":
+      return "showQuota";
+    case "radar":
+      return "showRadar";
+  }
 }

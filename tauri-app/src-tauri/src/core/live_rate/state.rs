@@ -1,7 +1,7 @@
 use crate::core::sqlite;
 use crate::models::LiveThreadOption;
 use rusqlite::{params, Connection, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Clone, Default)]
@@ -9,6 +9,12 @@ pub(super) struct UsageSummary {
     pub(super) total_tokens: u64,
     pub(super) today_tokens: u64,
     pub(super) today_requests: u32,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct RolloutThread {
+    pub(super) id: String,
+    pub(super) rollout_path: PathBuf,
 }
 
 pub(super) fn read_usage_summary(codex_home: &Path) -> Result<UsageSummary> {
@@ -118,6 +124,50 @@ pub(super) fn read_thread_options_result(
     rows.collect()
 }
 
+pub(super) fn read_recent_rollout_threads(
+    codex_home: &Path,
+    limit: usize,
+) -> Result<Vec<RolloutThread>> {
+    let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
+    if !column_exists(&connection, "threads", "rollout_path") {
+        return Ok(Vec::new());
+    }
+
+    let archived_filter = if column_exists(&connection, "threads", "archived") {
+        "COALESCE(archived, 0) = 0"
+    } else {
+        "1 = 1"
+    };
+    let source_filter = if column_exists(&connection, "threads", "thread_source") {
+        "COALESCE(thread_source, 'user') != 'subagent'"
+    } else {
+        "1 = 1"
+    };
+    let sql = format!(
+        r#"
+        SELECT id, rollout_path
+        FROM threads
+        WHERE {archived_filter}
+          AND {source_filter}
+          AND rollout_path IS NOT NULL
+          AND rollout_path <> ''
+        ORDER BY COALESCE(updated_at_ms, updated_at * 1000) DESC, id ASC
+        LIMIT ?1;
+        "#,
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params![limit as i64], |row| {
+        let id: String = row.get(0)?;
+        let rollout_path: String = row.get(1)?;
+        Ok(RolloutThread {
+            id,
+            rollout_path: normalize_rollout_path(codex_home, rollout_path),
+        })
+    })?;
+
+    rows.collect()
+}
+
 pub(super) fn read_thread_title(codex_home: &Path, thread_id: &str) -> Result<Option<String>> {
     let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
     let mut statement = connection.prepare(
@@ -182,6 +232,15 @@ fn compact_title(value: &str) -> String {
         title.push('…');
     }
     title
+}
+
+fn normalize_rollout_path(codex_home: &Path, rollout_path: String) -> PathBuf {
+    let path = PathBuf::from(rollout_path);
+    if path.is_absolute() {
+        path
+    } else {
+        codex_home.join(path)
+    }
 }
 
 fn open_read_only(path: &Path) -> Result<Connection> {

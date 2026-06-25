@@ -1,9 +1,20 @@
 import { useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
-import type { FloatingPanelSnapshot, FloatingUnreadEffect } from "../types/dashboard";
+import {
+  displayRadarNumber,
+  modelDisplayName,
+  percentText,
+  primaryModelRow,
+  type CodexRadarSnapshot,
+} from "../components/codexRadar/model";
+import type { FloatingContentGroup, FloatingPanelSnapshot, FloatingUnreadEffect, FloatingWindowSettings } from "../types/dashboard";
+import { embedsUsageStatusInRateRow, layoutFloatingContentGroups } from "./floatingContent";
+import { floatingTextPaletteForGroup } from "./floatingTextPalette";
 
 interface FloatingPanelSurfaceProps {
+  settings: FloatingWindowSettings;
   snapshot: FloatingPanelSnapshot;
+  radarSnapshot?: CodexRadarSnapshot | null;
   unreadEffect?: FloatingUnreadEffect;
   onClose?: () => void;
   onDragStart?: () => void;
@@ -14,6 +25,14 @@ function clampPercent(value: number): number {
     return 0;
   }
   return Math.min(100, Math.max(0, value * 100));
+}
+
+function rateFillPercent(tokensPerSecond: number, maxTokensPerSecond: number): number {
+  const maxValue = Number.isFinite(maxTokensPerSecond) && maxTokensPerSecond > 0 ? maxTokensPerSecond : 200;
+  if (!Number.isFinite(tokensPerSecond) || tokensPerSecond <= 0) {
+    return 0;
+  }
+  return Math.min(100, Math.max(0, (tokensPerSecond / maxValue) * 100));
 }
 
 function FloatingQuotaBar({ label, remainingPercent }: { label: string; remainingPercent: number }) {
@@ -37,48 +56,189 @@ function FloatingQuotaBar({ label, remainingPercent }: { label: string; remainin
   );
 }
 
+function FloatingRateMeter({ snapshot, statusText }: { snapshot: FloatingPanelSnapshot; statusText?: string }) {
+  const fillPercent = rateFillPercent(snapshot.tokensPerSecond, snapshot.maxTokensPerSecond);
+  const visibleFillPercent = fillPercent > 0 ? Math.max(3, fillPercent) : 0;
+  const hasStatusText = typeof statusText === "string" && statusText.length > 0;
+
+  return (
+    <span
+      className={`floating-rate-meter ${hasStatusText ? "floating-rate-meter--with-status" : "floating-rate-meter--solo"}`}
+      role="meter"
+      aria-label={`实时速率 ${snapshot.tokensPerSecond.toFixed(1)} tok/s，满格 ${Math.round(snapshot.maxTokensPerSecond || 200)} tok/s`}
+      aria-valuemin={0}
+      aria-valuemax={Math.round(snapshot.maxTokensPerSecond || 200)}
+      aria-valuenow={Number(snapshot.tokensPerSecond.toFixed(1))}
+      style={{ "--rate-fill": `${visibleFillPercent}%` } as CSSProperties}
+    >
+      {hasStatusText ? <em>{statusText}</em> : null}
+      <span className="floating-rate-track" aria-hidden="true">
+        <i />
+      </span>
+    </span>
+  );
+}
+
 export function FloatingPanelSurface({
+  settings,
   snapshot,
+  radarSnapshot,
   unreadEffect = "ripple",
   onClose,
   onDragStart,
 }: FloatingPanelSurfaceProps) {
   const shouldShowUnreadEffect = snapshot.unreadSummary.active && unreadEffect !== "off";
+  const groups = layoutFloatingContentGroups(settings.contentVisibility);
+  const attachedUsageStatus = embedsUsageStatusInRateRow(settings.contentVisibility);
+  const rootPalette = floatingTextPaletteForGroup(settings, groups[0] ?? "rateAndBar", 0, Math.max(groups.length, 1));
+  const rootStyle = {
+    "--floating-primary": rootPalette.primary,
+    "--floating-secondary": rootPalette.secondary,
+    "--floating-muted": rootPalette.muted,
+    "--floating-divider": rootPalette.divider,
+  } as CSSProperties;
 
   return (
     <aside
       className="floating-panel-surface"
       aria-label={`悬浮窗，${snapshot.unreadSummary.label}`}
       onMouseDown={onDragStart}
+      style={rootStyle}
       title={snapshot.unreadSummary.detail}
     >
       {shouldShowUnreadEffect ? <UnreadEffect effect={unreadEffect} /> : null}
-      <div className="floating-topline">
-        <span className="floating-rate-readout" aria-label={`${snapshot.tokensPerSecond.toFixed(1)} tok/s`}>
-          <strong>{snapshot.tokensPerSecond.toFixed(1)}</strong>
-          <span>tok/s</span>
-        </span>
-        {snapshot.trendLabel ? <em>{snapshot.trendLabel}</em> : null}
-        <button
-          type="button"
-          aria-label="关闭悬浮窗"
-          onMouseDown={(event) => event.stopPropagation()}
-          onClick={onClose}
-        >
-          ×
-        </button>
-      </div>
-      <div className="floating-metrics">
-        <span>{snapshot.totalTokensLabel}</span>
-        <span>{snapshot.todayTokensLabel}</span>
-        <span>{snapshot.requestsLabel}</span>
-      </div>
-      <div className="floating-quota">
-        <FloatingQuotaBar label={snapshot.fiveHourLabel} remainingPercent={snapshot.fiveHourRemainingPercent} />
-        <FloatingQuotaBar label={snapshot.sevenDayLabel} remainingPercent={snapshot.sevenDayRemainingPercent} />
+      <button
+        className="floating-close-button"
+        type="button"
+        aria-label="关闭悬浮窗"
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={onClose}
+      >
+        ×
+      </button>
+      <div className="floating-content">
+        {groups.map((group, index) => (
+          <FloatingContentRow
+            attachedUsageStatus={attachedUsageStatus}
+            group={group}
+            index={index}
+            key={group}
+            radarSnapshot={radarSnapshot}
+            settings={settings}
+            snapshot={snapshot}
+            total={groups.length}
+          />
+        ))}
       </div>
     </aside>
   );
+}
+
+interface FloatingContentRowProps {
+  attachedUsageStatus: boolean;
+  group: FloatingContentGroup;
+  index: number;
+  radarSnapshot?: CodexRadarSnapshot | null;
+  settings: FloatingWindowSettings;
+  snapshot: FloatingPanelSnapshot;
+  total: number;
+}
+
+function FloatingContentRow({
+  attachedUsageStatus,
+  group,
+  index,
+  radarSnapshot,
+  settings,
+  snapshot,
+  total,
+}: FloatingContentRowProps) {
+  const palette = floatingTextPaletteForGroup(settings, group, index, total);
+  const style = {
+    "--floating-primary": palette.primary,
+    "--floating-secondary": palette.secondary,
+    "--floating-muted": palette.muted,
+    "--floating-divider": palette.divider,
+  } as CSSProperties;
+
+  switch (group) {
+    case "rateAndBar":
+      return (
+        <div className="floating-row floating-topline" style={style}>
+          <span className="floating-rate-readout" aria-label={`${snapshot.tokensPerSecond.toFixed(1)} tok/s`}>
+            <strong>{snapshot.tokensPerSecond.toFixed(1)}</strong>
+            <span>tok/s</span>
+          </span>
+          <FloatingRateMeter snapshot={snapshot} statusText={attachedUsageStatus ? snapshot.trendLabel : undefined} />
+        </div>
+      );
+    case "usageStatus":
+      return (
+        <div className="floating-row floating-usage-status" style={style}>
+          <span className="floating-usage-status-card">{snapshot.trendLabel || "节奏待读取"}</span>
+        </div>
+      );
+    case "metrics":
+      return (
+        <div className="floating-row floating-metrics" style={style}>
+          <span>{snapshot.totalTokensLabel}</span>
+          <span>{snapshot.todayTokensLabel}</span>
+          <span>{snapshot.requestsLabel}</span>
+        </div>
+      );
+    case "radar":
+      return <FloatingRadarRow snapshot={radarSnapshot} style={style} />;
+    case "quota":
+      return (
+        <div className="floating-row floating-quota" style={style}>
+          <FloatingQuotaBar label={snapshot.fiveHourLabel} remainingPercent={snapshot.fiveHourRemainingPercent} />
+          <FloatingQuotaBar label={snapshot.sevenDayLabel} remainingPercent={snapshot.sevenDayRemainingPercent} />
+        </div>
+      );
+  }
+}
+
+function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot | null; style: CSSProperties }) {
+  if (!snapshot) {
+    return (
+      <div className="floating-row floating-radar" style={style}>
+        <span>Radar 待读取</span>
+        <strong>--</strong>
+      </div>
+    );
+  }
+
+  const primary = primaryModelRow(snapshot.modelIq);
+  const probability = snapshot.prediction.probability24H ?? snapshot.prediction.probability24h;
+  const probability48 = snapshot.prediction.probability48H ?? snapshot.prediction.probability48h;
+
+  return (
+    <div className="floating-row floating-radar" style={style}>
+      <div className="floating-radar-action">
+        <span>动作 {snapshot.recommendedAction || "--"}</span>
+        <em>24h {percentText(probability)} · 48h {percentText(probability48)}</em>
+      </div>
+      <div className="floating-radar-iq">
+        <strong>IQ {displayRadarNumber(primary.point.score, 1)}</strong>
+        <p>
+          {modelDisplayName(primary.point)} · {primary.point.passed}/{primary.point.tasks} · {compactRadarTokens(primary.point.totalTokens)}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function compactRadarTokens(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "--";
+  }
+  if (value >= 100_000_000) {
+    return `${displayRadarNumber(value / 100_000_000, 1)}亿`;
+  }
+  if (value >= 10_000) {
+    return `${displayRadarNumber(value / 10_000, 1)}万`;
+  }
+  return `${Math.round(value)}`;
 }
 
 function UnreadEffect({ effect }: { effect: FloatingUnreadEffect }) {

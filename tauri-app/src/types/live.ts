@@ -24,6 +24,7 @@ export interface LiveThreadOption {
 
 export interface FloatingPanelSnapshot {
   tokensPerSecond: number;
+  maxTokensPerSecond: number;
   trendLabel: string;
   totalTokensLabel: string;
   todayTokensLabel: string;

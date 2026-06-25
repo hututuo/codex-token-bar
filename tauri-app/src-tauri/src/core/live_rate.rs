@@ -1,13 +1,14 @@
 use crate::core::{unread, usage::token_count_jsonl};
 use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, LocalDataWarning};
+use logs::read_recent_log_rows;
+pub use monitor::LiveRateMonitorService;
 use rusqlite::Result;
+use rollout::{read_rollout_metrics, sync_rollout_offsets_to_current};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use logs::read_recent_log_rows;
-pub use monitor::LiveRateMonitorService;
 use state::{read_thread_options_result, read_thread_title, read_usage_summary, UsageSummary};
-use stream::{rollup_stream_rows, LiveRateRollup};
+use stream::{rollup_metric_events, rollup_stream_rows};
 
 const LOOKBACK_SECONDS: f64 = 8.0;
 const MAX_TOKENS_PER_SECOND: f64 = 200.0;
@@ -22,10 +23,11 @@ struct CachedPreciseUsageSummary {
 
 static PRECISE_USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedPreciseUsageSummary>>> = OnceLock::new();
 
-mod stream;
-mod state;
 mod logs;
 mod monitor;
+mod rollout;
+mod state;
+mod stream;
 
 pub fn read_snapshot(codex_home: &Path, selected_thread_id: Option<&str>) -> LiveRateSnapshot {
     match try_read_snapshot(codex_home, selected_thread_id) {
@@ -82,15 +84,34 @@ fn read_snapshot_result(
 ) -> Result<LiveRateSnapshot> {
     let mut warnings = Vec::new();
     let now = current_time_seconds();
-    let rows = read_recent_log_rows(codex_home, now - LOOKBACK_SECONDS)?;
-    let rollup = rollup_stream_rows(&rows, now, None);
-    let selected_rollup = selected_thread_id
-        .map(|thread_id| rollup_stream_rows(&rows, now, Some(thread_id)))
-        .unwrap_or_else(|| LiveRateRollup {
-            tokens_per_second: 0.0,
-            latest_thread_id: None,
-        });
+    let rows = match read_recent_log_rows(codex_home, now - LOOKBACK_SECONDS) {
+        Ok(rows) => rows,
+        Err(error) => {
+            warnings.push(live_rate_warning(format!(
+                "读取旧版实时输出流失败，已尝试新版 rollout：{}（{}）",
+                codex_home.join("logs_2.sqlite").display(),
+                error
+            )));
+            Vec::new()
+        }
+    };
+    let (rollup, selected_rollup) = if rows.is_empty() {
+        let metrics = read_rollout_metrics(codex_home, now);
+        let rollup = rollup_metric_events(&metrics, now, None);
+        let selected_rollup = selected_thread_id
+            .map(|thread_id| rollup_metric_events(&metrics, now, Some(thread_id)))
+            .unwrap_or_default();
+        (rollup, selected_rollup)
+    } else {
+        sync_rollout_offsets_to_current(codex_home);
+        let rollup = rollup_stream_rows(&rows, now, None);
+        let selected_rollup = selected_thread_id
+            .map(|thread_id| rollup_stream_rows(&rows, now, Some(thread_id)))
+            .unwrap_or_default();
+        (rollup, selected_rollup)
+    };
     let summary = read_precise_usage_summary_or_fallback(codex_home, &mut warnings);
+    let _observed_live_source_tokens = rollup.breakdown.observed_total();
     let thread_title = rollup
         .latest_thread_id
         .as_deref()
@@ -124,6 +145,7 @@ pub fn read_floating_snapshot_from_live(
     let unread_summary = unread::read_unread_summary(codex_home);
     FloatingPanelSnapshot {
         tokens_per_second: live.tokens_per_second,
+        max_tokens_per_second: live.max_tokens_per_second,
         trend_label: String::new(),
         total_tokens_label: format!("总 {}", compact_tokens(summary.total_tokens)),
         today_tokens_label: format!("今 {}", compact_tokens(live.total_tokens_today)),

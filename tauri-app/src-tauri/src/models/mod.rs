@@ -23,6 +23,6 @@ pub use quota::{
     ResetCreditSummary,
 };
 pub use settings::{
-    AppSettingsSnapshot, DisplaySurfaceSettingsSnapshot, FloatingWindowPositionSnapshot,
-    FloatingWindowSettingsSnapshot,
+    AppSettingsSnapshot, DisplaySurfaceSettingsSnapshot, FloatingContentVisibilitySnapshot,
+    FloatingWindowPositionSnapshot, FloatingWindowSettingsSnapshot,
 };

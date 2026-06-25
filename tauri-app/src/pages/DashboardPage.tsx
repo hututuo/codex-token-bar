@@ -5,6 +5,7 @@ import type {
   CodexHomeStatus,
   DashboardSnapshot,
   DisplaySurfaceSettings,
+  FloatingContentVisibility,
   FloatingUnreadEffect,
   LiveRateSnapshot,
   LiveThreadOption,
@@ -29,6 +30,8 @@ interface DashboardPageProps {
   onFloatingScaleChange: (scale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
   onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
+  onFloatingTextToneChange: (textTone: number) => void;
+  onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onLiveThreadSelect: (threadId: string) => void;
   onRefresh: () => Promise<void>;
   onToggleAutostart: () => void;
@@ -53,6 +56,8 @@ export function DashboardPage({
   onFloatingScaleChange,
   onFloatingUnreadEffectChange,
   onFloatingGradientChange,
+  onFloatingTextToneChange,
+  onFloatingContentVisibilityChange,
   onLiveThreadSelect,
   onRefresh,
   onToggleAutostart,
@@ -86,10 +91,12 @@ export function DashboardPage({
               floatingSettings={floatingSettings}
               liveRate={liveRate}
               liveThreadOptions={liveThreadOptions}
-          onFloatingOpacityChange={onFloatingOpacityChange}
-          onFloatingScaleChange={onFloatingScaleChange}
-          onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
-          onFloatingGradientChange={onFloatingGradientChange}
+              onFloatingOpacityChange={onFloatingOpacityChange}
+              onFloatingScaleChange={onFloatingScaleChange}
+              onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
+              onFloatingGradientChange={onFloatingGradientChange}
+              onFloatingTextToneChange={onFloatingTextToneChange}
+              onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
               onLiveThreadSelect={onLiveThreadSelect}
               onToggleFloating={onToggleFloating}
               onToggleStatusTray={onToggleStatusTray}

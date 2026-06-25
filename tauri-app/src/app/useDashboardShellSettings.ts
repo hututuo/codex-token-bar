@@ -12,6 +12,7 @@ import { desktopPlatform } from "../platform/desktop";
 import type {
   AutostartStatus,
   DisplaySurfaceSettings,
+  FloatingContentVisibility,
   FloatingUnreadEffect,
   FloatingWindowSettings,
   PlatformCapabilities,
@@ -38,6 +39,8 @@ export interface DashboardShellSettingsState {
   updateFloatingScale: (scale: number) => void;
   updateFloatingUnreadEffect: (unreadEffect: FloatingUnreadEffect) => void;
   updateFloatingGradient: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
+  updateFloatingTextTone: (textTone: number) => void;
+  updateFloatingContentVisibility: (contentVisibility: FloatingContentVisibility) => void;
 }
 
 export function useDashboardShellSettings({
@@ -100,6 +103,14 @@ export function useDashboardShellSettings({
     setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, ...patch }));
   }
 
+  function updateFloatingTextTone(textTone: number) {
+    setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, textTone }));
+  }
+
+  function updateFloatingContentVisibility(contentVisibility: FloatingContentVisibility) {
+    setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, contentVisibility }));
+  }
+
   async function completeSetupGuide() {
     const settings = await saveSetupGuideCompleted(true);
     if (!settings.setupGuideCompleted) {
@@ -122,5 +133,7 @@ export function useDashboardShellSettings({
     updateFloatingScale,
     updateFloatingUnreadEffect,
     updateFloatingGradient,
+    updateFloatingTextTone,
+    updateFloatingContentVisibility,
   };
 }

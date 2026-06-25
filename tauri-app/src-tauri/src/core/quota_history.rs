@@ -24,6 +24,7 @@ use time::UtcOffset;
 const HEARTBEAT_SECONDS: f64 = 60.0 * 60.0;
 const RETENTION_DAYS: i64 = 45;
 const RECENT_BIN_COUNT: usize = 289;
+const QUOTA_HISTORY_SOURCE: &str = "tauri";
 
 pub fn record_bundle(bundle: &AccountQuotaBundle) -> Result<(), String> {
     if !quota_available(&bundle.quota) {
@@ -136,7 +137,7 @@ impl QuotaHistoryDatabase {
         let now = now_unix();
         ensure_schema(&connection)?;
         let row = QuotaHistoryRow::from_bundle(bundle, now);
-        let latest = latest_trusted_row(&connection, &row.account_key)?;
+        let latest = latest_trusted_row(&connection, &row)?;
         let normalized = row.normalized_after(latest.as_ref());
         if latest
             .as_ref()
@@ -185,6 +186,7 @@ struct QuotaHistoryRow {
     plan_type: Option<String>,
     limit_name: Option<String>,
     account_name: Option<String>,
+    source: Option<String>,
     five_hour_used_percent: Option<i32>,
     five_hour_resets_at: Option<f64>,
     seven_day_used_percent: Option<i32>,
@@ -194,13 +196,23 @@ struct QuotaHistoryRow {
 
 impl QuotaHistoryRow {
     fn from_bundle(bundle: &AccountQuotaBundle, created_at: f64) -> Self {
+        let account_name =
+            Some(bundle.account.display_name.clone()).filter(|value| !value.trim().is_empty());
+        let plan_type = Some("Pro".to_string());
+        let limit_name = Some("codex".to_string());
+        let account_key = canonical_account_key(
+            account_name.as_deref(),
+            plan_type.as_deref(),
+            limit_name.as_deref(),
+            None,
+        );
         Self {
             created_at,
-            account_key: account_key(bundle),
-            plan_type: Some(bundle.account.plan_label.clone()).filter(|value| !value.trim().is_empty()),
-            limit_name: Some("codex".into()),
-            account_name: Some(bundle.account.display_name.clone())
-                .filter(|value| !value.trim().is_empty()),
+            account_key,
+            plan_type,
+            limit_name,
+            account_name,
+            source: Some(QUOTA_HISTORY_SOURCE.into()),
             five_hour_used_percent: percent_to_int(bundle.quota.five_hour.used_percent),
             five_hour_resets_at: bundle.quota.five_hour.resets_at_unix.map(|value| value as f64),
             seven_day_used_percent: percent_to_int(bundle.quota.seven_day.used_percent),
@@ -227,6 +239,27 @@ impl QuotaHistoryRow {
             previous.seven_day_resets_at,
         );
         normalized
+    }
+
+    fn history_match_key(&self) -> String {
+        canonical_account_key(
+            self.account_name.as_deref(),
+            self.plan_type.as_deref(),
+            self.limit_name.as_deref(),
+            Some(&self.account_key),
+        )
+    }
+
+    fn match_account_name(&self) -> Option<String> {
+        canonical_account_name(self.account_name.as_deref(), Some(&self.account_key))
+    }
+
+    fn match_plan_type(&self) -> Option<String> {
+        canonical_plan_type(self.plan_type.as_deref(), self.limit_name.as_deref())
+    }
+
+    fn match_limit_name(&self) -> Option<String> {
+        canonical_limit_name(self.limit_name.as_deref())
     }
 
     fn five_hour_remaining(&self) -> Option<f64> {
@@ -299,18 +332,63 @@ fn should_insert(row: &QuotaHistoryRow, latest: &QuotaHistoryRow, now: f64) -> b
     now - latest.created_at >= HEARTBEAT_SECONDS
 }
 
-fn account_key(bundle: &AccountQuotaBundle) -> String {
+fn canonical_account_key(
+    account_name: Option<&str>,
+    plan_type: Option<&str>,
+    limit_name: Option<&str>,
+    fallback_key: Option<&str>,
+) -> String {
+    let account_name = canonical_account_name(account_name, fallback_key);
+    let limit_name = canonical_limit_name(limit_name);
+    let plan_type = canonical_plan_type(plan_type, limit_name.as_deref());
     let mut parts = vec![
-        bundle.account.display_name.trim().to_string(),
-        bundle.account.plan_label.trim().to_string(),
-        "codex".into(),
+        account_name.unwrap_or_else(|| "default".into()),
+        plan_type.unwrap_or_default(),
+        limit_name.unwrap_or_default(),
     ];
-    parts.retain(|value| !value.is_empty());
-    if parts.is_empty() {
-        "default".into()
-    } else {
-        parts.join("|")
+    parts.retain(|value| !value.trim().is_empty());
+    parts.join("|")
+}
+
+fn canonical_account_name(account_name: Option<&str>, fallback_key: Option<&str>) -> Option<String> {
+    account_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            fallback_key
+                .and_then(|key| key.split('|').next())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn canonical_plan_type(plan_type: Option<&str>, limit_name: Option<&str>) -> Option<String> {
+    if is_codex_main_limit(limit_name) {
+        return Some("Pro".into());
     }
+    plan_type
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn canonical_limit_name(limit_name: Option<&str>) -> Option<String> {
+    if is_codex_main_limit(limit_name) {
+        return Some("codex".into());
+    }
+    limit_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn is_codex_main_limit(limit_name: Option<&str>) -> bool {
+    limit_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none_or(|value| value.eq_ignore_ascii_case("codex"))
 }
 
 fn percent_to_int(value: f64) -> Option<i32> {

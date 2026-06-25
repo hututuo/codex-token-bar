@@ -1,9 +1,12 @@
 import { type CSSProperties, useEffect, useState } from "react";
-import { readAppSettings } from "../api/client";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { readAppSettings, recordStartupEvent } from "../api/client";
+import { readCodexRadarSnapshot } from "../api/codexRadarClient";
+import type { CodexRadarSnapshot } from "../components/codexRadar/model";
 import { desktopPlatform } from "../platform/desktop";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
+import { floatingContentHeight } from "./floatingContent";
 import {
-  FLOATING_BASE_HEIGHT,
   FLOATING_BASE_WIDTH,
   DEFAULT_FLOATING_SETTINGS,
   sanitizeFloatingSettings,
@@ -19,11 +22,57 @@ export function FloatingWindowApp() {
     quotaIntervalMs: 180_000,
   });
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
+  const [radarSnapshot, setRadarSnapshot] = useState<CodexRadarSnapshot | null>(null);
   useFloatingWindowPlacement();
 
   useEffect(() => {
     document.documentElement.classList.add("floating-document");
     return () => document.documentElement.classList.remove("floating-document");
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const appWindow = getCurrentWindow();
+
+    const recordLayout = async () => {
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+      if (cancelled) {
+        return;
+      }
+
+      const surface = document.querySelector<HTMLElement>(".floating-panel-surface");
+      const close = document.querySelector<HTMLElement>(".floating-close-button");
+      const surfaceRect = surface?.getBoundingClientRect();
+      const closeRect = close?.getBoundingClientRect();
+      const [decorated, innerSize, outerSize, title] = await Promise.allSettled([
+        appWindow.isDecorated(),
+        appWindow.innerSize(),
+        appWindow.outerSize(),
+        appWindow.title(),
+      ]);
+      const label = [
+        "floating runtime",
+        `href=${window.location.href}`,
+        `decorated=${settledValue(decorated)}`,
+        `inner=${formatSize(settledValue(innerSize))}`,
+        `outer=${formatSize(settledValue(outerSize))}`,
+        `title=${String(settledValue(title))}`,
+        `viewport=${Math.round(window.innerWidth)}x${Math.round(window.innerHeight)}`,
+        `surface=${formatRect(surfaceRect)}`,
+        `close=${formatRect(closeRect)}`,
+      ].join(" ");
+      void recordStartupEvent(label);
+    };
+
+    void recordLayout().catch((error) => {
+      void recordStartupEvent(`floating runtime failed ${String(error)}`);
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -61,11 +110,36 @@ export function FloatingWindowApp() {
   }, []);
 
   useEffect(() => {
+    const height = floatingContentHeight(settings.contentVisibility);
     void desktopPlatform.resizeFloatingWindow(
       FLOATING_BASE_WIDTH * settings.scale,
-      FLOATING_BASE_HEIGHT * settings.scale,
+      height * settings.scale,
     );
-  }, [settings.scale]);
+  }, [settings.contentVisibility, settings.scale]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshRadar = async () => {
+      try {
+        const next = await readCodexRadarSnapshot();
+        if (!cancelled) {
+          setRadarSnapshot(next);
+        }
+      } catch {
+        if (!cancelled) {
+          setRadarSnapshot(null);
+        }
+      }
+    };
+
+    void refreshRadar();
+    const timer = window.setInterval(refreshRadar, 600_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   function closeFloatingWindow() {
     void desktopPlatform.hideFloatingWindow().then((visible) => {
@@ -95,7 +169,9 @@ export function FloatingWindowApp() {
   return (
     <main className="floating-window-shell" style={shellStyle}>
       <FloatingPanelSurface
+        settings={settings}
         snapshot={snapshot}
+        radarSnapshot={radarSnapshot}
         unreadEffect={settings.unreadEffect}
         onClose={closeFloatingWindow}
         onDragStart={startWindowDrag}
@@ -144,4 +220,26 @@ function mixRgb(
 
 function rgbToHex(color: { r: number; g: number; b: number }): string {
   return `#${[color.r, color.g, color.b].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function settledValue<T>(result: PromiseSettledResult<T>): T | string {
+  if (result.status === "fulfilled") {
+    return result.value;
+  }
+  return `error:${String(result.reason)}`;
+}
+
+function formatSize(value: unknown): string {
+  if (typeof value === "object" && value !== null && "width" in value && "height" in value) {
+    const size = value as { width: number; height: number };
+    return `${Math.round(size.width)}x${Math.round(size.height)}`;
+  }
+  return String(value);
+}
+
+function formatRect(rect: DOMRect | undefined): string {
+  if (!rect) {
+    return "missing";
+  }
+  return `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.width)}x${Math.round(rect.height)}`;
 }

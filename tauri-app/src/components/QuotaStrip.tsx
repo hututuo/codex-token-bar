@@ -78,34 +78,42 @@ export function QuotaStrip({ snapshot }: QuotaStripProps) {
   const credits = snapshot.resetCredit.credits ?? [];
 
   return (
-    <section className="quota-strip" aria-label="账户额度">
+    <section className={showResetDetails ? "quota-strip quota-strip--details-open" : "quota-strip"} aria-label="账户额度">
       <div className="quota-plan">
         <span>本地账户额度</span>
         <strong>本地读取</strong>
       </div>
       <QuotaBar quota={snapshot.fiveHour} />
       <QuotaBar quota={snapshot.sevenDay} />
-      <div className="quota-pace">
+      <button
+        type="button"
+        className="quota-side-card quota-reset-card"
+        aria-expanded={showResetDetails}
+        onClick={() => setShowResetDetails((value) => !value)}
+      >
+        <span>重置卡</span>
+        <strong>{snapshot.resetCredit.status}</strong>
+        <em>
+          {snapshot.resetCredit.availableCount} 张可用
+          <b aria-hidden="true">{showResetDetails ? "⌃" : "⌄"}</b>
+        </em>
+      </button>
+      <div className="quota-side-card quota-pace">
         <div className="quota-pace-title">
           <strong>{snapshot.paceLabel}</strong>
-          <button
-            type="button"
-            className="quota-detail-button"
-            aria-expanded={showResetDetails}
-            onClick={() => setShowResetDetails((value) => !value)}
-          >
-            重置卡详情
-          </button>
         </div>
-        <span>{snapshot.resetCredit.status}</span>
+        <span>7d 均速比较</span>
       </div>
       {showResetDetails ? (
         <div className="reset-credit-panel">
           <div className="reset-credit-panel-head">
-            <strong>重置卡详情</strong>
-            <span>
-              读到 {credits.length} 条明细，可用 {snapshot.resetCredit.availableCount} 张
-            </span>
+            <div>
+              <strong>重置卡详情</strong>
+              <span>
+                读到 {credits.length} 条明细，可用 {snapshot.resetCredit.availableCount} 张
+              </span>
+            </div>
+            <button aria-label="关闭重置卡详情" onClick={() => setShowResetDetails(false)} type="button">×</button>
           </div>
           {credits.length > 0 ? (
             <div className="reset-credit-list">

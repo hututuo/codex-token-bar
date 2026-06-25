@@ -37,10 +37,12 @@ export function DashboardApp() {
         liveThreadOptions={readyState.liveThreadOptions}
         platform={readyState.platform}
         onRefresh={reloadAll}
-          onFloatingOpacityChange={shellSettings.updateFloatingOpacity}
-          onFloatingScaleChange={shellSettings.updateFloatingScale}
-          onFloatingUnreadEffectChange={shellSettings.updateFloatingUnreadEffect}
-          onFloatingGradientChange={shellSettings.updateFloatingGradient}
+        onFloatingOpacityChange={shellSettings.updateFloatingOpacity}
+        onFloatingScaleChange={shellSettings.updateFloatingScale}
+        onFloatingUnreadEffectChange={shellSettings.updateFloatingUnreadEffect}
+        onFloatingGradientChange={shellSettings.updateFloatingGradient}
+        onFloatingTextToneChange={shellSettings.updateFloatingTextTone}
+        onFloatingContentVisibilityChange={shellSettings.updateFloatingContentVisibility}
         onLiveThreadSelect={setSelectedLiveThreadId}
         onToggleFloating={shellSettings.toggleFloatingWindow}
         onToggleStatusTray={shellSettings.toggleStatusTrayLiveText}

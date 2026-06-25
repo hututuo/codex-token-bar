@@ -1,7 +1,7 @@
 use crate::core::{app_paths, app_paths::home_dir};
 use crate::models::{
-    AppSettingsSnapshot, DisplaySurfaceSettingsSnapshot, FloatingWindowPositionSnapshot,
-    FloatingWindowSettingsSnapshot,
+    AppSettingsSnapshot, DisplaySurfaceSettingsSnapshot, FloatingContentVisibilitySnapshot,
+    FloatingWindowPositionSnapshot, FloatingWindowSettingsSnapshot,
 };
 use std::{
     io::ErrorKind,
@@ -114,7 +114,38 @@ fn sanitize_floating_settings(
         gradient_end: sanitize_hex_color(&settings.gradient_end, "#daefff").into(),
         gradient_direction: sanitize_gradient_direction(&settings.gradient_direction).into(),
         gradient_type: sanitize_gradient_type(&settings.gradient_type).into(),
+        text_tone: clamp_f64(settings.text_tone, -1.0, 1.0, -1.0),
+        content_visibility: sanitize_floating_content_visibility(settings.content_visibility),
     }
+}
+
+fn sanitize_floating_content_visibility(
+    visibility: FloatingContentVisibilitySnapshot,
+) -> FloatingContentVisibilitySnapshot {
+    FloatingContentVisibilitySnapshot {
+        show_rate_and_bar: visibility.show_rate_and_bar,
+        show_usage_status: visibility.show_usage_status,
+        show_metrics: visibility.show_metrics,
+        show_quota: visibility.show_quota,
+        show_radar: visibility.show_radar,
+        order: sanitize_floating_content_order(visibility.order),
+    }
+}
+
+fn sanitize_floating_content_order(order: Vec<String>) -> Vec<String> {
+    let defaults = ["rateAndBar", "usageStatus", "metrics", "radar", "quota"];
+    let mut next: Vec<String> = Vec::new();
+    for item in order {
+        if defaults.contains(&item.as_str()) && !next.iter().any(|existing| existing == &item) {
+            next.push(item);
+        }
+    }
+    for item in defaults {
+        if !next.iter().any(|existing| existing == item) {
+            next.push(item.into());
+        }
+    }
+    next
 }
 
 fn sanitize_unread_effect(value: &str) -> &'static str {
@@ -200,7 +231,12 @@ mod tests {
                 "gradientStart": "blue",
                 "gradientEnd": "#12",
                 "gradientDirection": "270deg",
-                "gradientType": "conic"
+                "gradientType": "conic",
+                "textTone": 4,
+                "contentVisibility": {
+                    "showRadar": false,
+                    "order": ["quota", "quota", "unknown", "rateAndBar"]
+                }
             }
         }"##;
 
@@ -215,6 +251,12 @@ mod tests {
         assert_eq!(sanitized.floating_window.gradient_end, "#daefff");
         assert_eq!(sanitized.floating_window.gradient_direction, "135deg");
         assert_eq!(sanitized.floating_window.gradient_type, "linear");
+        assert_eq!(sanitized.floating_window.text_tone, 1.0);
+        assert!(!sanitized.floating_window.content_visibility.show_radar);
+        assert_eq!(
+            sanitized.floating_window.content_visibility.order,
+            ["quota", "rateAndBar", "usageStatus", "metrics", "radar"]
+        );
         assert!(sanitized.display_surfaces.floating_window_enabled);
         assert!(sanitized.display_surfaces.status_tray_live_text_enabled);
         assert!(!sanitized.setup_guide_completed);
@@ -243,7 +285,12 @@ mod tests {
                 "gradientStart": "#ABCDEF",
                 "gradientEnd": "#123456",
                 "gradientDirection": "90deg",
-                "gradientType": "radial"
+                "gradientType": "radial",
+                "textTone": -0.5,
+                "contentVisibility": {
+                    "showUsageStatus": false,
+                    "order": ["metrics", "rateAndBar", "usageStatus", "radar", "quota"]
+                }
             },
             "setupGuideCompleted": true,
             "displaySurfaces": {
@@ -260,6 +307,12 @@ mod tests {
         assert_eq!(settings.floating_window.gradient_end, "#123456");
         assert_eq!(settings.floating_window.gradient_direction, "90deg");
         assert_eq!(settings.floating_window.gradient_type, "radial");
+        assert_eq!(settings.floating_window.text_tone, -0.5);
+        assert!(!settings.floating_window.content_visibility.show_usage_status);
+        assert_eq!(
+            settings.floating_window.content_visibility.order,
+            ["metrics", "rateAndBar", "usageStatus", "radar", "quota"]
+        );
         assert!(settings.setup_guide_completed);
         assert!(!settings.display_surfaces.floating_window_enabled);
         assert!(settings.display_surfaces.status_tray_live_text_enabled);

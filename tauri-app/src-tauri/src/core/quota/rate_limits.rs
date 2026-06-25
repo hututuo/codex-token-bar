@@ -89,8 +89,9 @@ fn parse_limit_card(value: &Value, fallback_id: &str) -> Option<ParsedLimitCard>
         .filter(|value| !value.is_empty())
         .unwrap_or(fallback_id)
         .to_string();
-    let five_hour = parse_window(value.get("primary"), "5h");
-    let seven_day = parse_window(value.get("secondary"), "7d");
+    let percent_scale = uses_percent_scale(value.get("primary"), value.get("secondary"));
+    let five_hour = parse_window(value.get("primary"), "5h", percent_scale);
+    let seven_day = parse_window(value.get("secondary"), "7d", percent_scale);
     if five_hour.is_none() && seven_day.is_none() {
         return None;
     }
@@ -101,9 +102,9 @@ fn parse_limit_card(value: &Value, fallback_id: &str) -> Option<ParsedLimitCard>
     })
 }
 
-fn parse_window(value: Option<&Value>, label: &str) -> Option<QuotaLimit> {
+fn parse_window(value: Option<&Value>, label: &str, percent_scale: bool) -> Option<QuotaLimit> {
     let value = value?;
-    let used = normalized_percent(value.get("usedPercent")?)?;
+    let used = normalized_percent(value.get("usedPercent")?, percent_scale)?;
     let reset_at_unix = value
         .get("resetsAt")
         .and_then(number)
@@ -121,9 +122,19 @@ fn parse_window(value: Option<&Value>, label: &str) -> Option<QuotaLimit> {
     })
 }
 
-fn normalized_percent(value: &Value) -> Option<f64> {
+fn uses_percent_scale(primary: Option<&Value>, secondary: Option<&Value>) -> bool {
+    [primary, secondary].into_iter().flatten().any(|window| {
+        window.get("windowDurationMins").is_some()
+            || window
+                .get("usedPercent")
+                .and_then(number)
+                .is_some_and(|raw| raw > 1.0)
+    })
+}
+
+fn normalized_percent(value: &Value, percent_scale: bool) -> Option<f64> {
     let raw = number(value)?;
-    if raw > 1.0 {
+    if percent_scale {
         Some(raw / 100.0)
     } else {
         Some(raw)
@@ -217,7 +228,7 @@ mod tests {
                     "limitName": "Codex",
                     "planType": "pro",
                     "primary": { "usedPercent": 25, "resetsAt": 1781715600 },
-                    "secondary": { "usedPercent": 0.2, "resetsAt": 1782144492 }
+                    "secondary": { "usedPercent": 20, "resetsAt": 1782144492 }
                 }
             }
         });
@@ -226,6 +237,60 @@ mod tests {
         assert_eq!(quota.five_hour.label, "5h");
         assert!((quota.five_hour.used_percent - 0.25).abs() < 0.001);
         assert!((quota.seven_day.remaining_percent - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn parses_one_percent_as_percent_not_full_usage() {
+        let result = json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "limitId": "codex",
+                    "primary": { "usedPercent": 1, "windowDurationMins": 300, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 50, "windowDurationMins": 10080, "resetsAt": 1782144492 }
+                }
+            }
+        });
+
+        let quota = parse_rate_limits(&result).unwrap();
+        assert!((quota.five_hour.used_percent - 0.01).abs() < 0.001);
+        assert!((quota.five_hour.remaining_percent - 0.99).abs() < 0.001);
+        assert!((quota.seven_day.used_percent - 0.50).abs() < 0.001);
+    }
+
+    #[test]
+    fn parses_seven_day_one_percent_as_percent_not_full_usage() {
+        let result = json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "limitId": "codex",
+                    "primary": { "usedPercent": 10, "windowDurationMins": 300, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 1, "windowDurationMins": 10080, "resetsAt": 1782144492 }
+                }
+            }
+        });
+
+        let quota = parse_rate_limits(&result).unwrap();
+        assert!((quota.five_hour.used_percent - 0.10).abs() < 0.001);
+        assert!((quota.seven_day.used_percent - 0.01).abs() < 0.001);
+        assert!((quota.seven_day.remaining_percent - 0.99).abs() < 0.001);
+    }
+
+    #[test]
+    fn preserves_legacy_fractional_percent_scale() {
+        let result = json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "limitId": "codex",
+                    "primary": { "usedPercent": 1.0, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 0.2, "resetsAt": 1782144492 }
+                }
+            }
+        });
+
+        let quota = parse_rate_limits(&result).unwrap();
+        assert!((quota.five_hour.used_percent - 1.0).abs() < 0.001);
+        assert!((quota.five_hour.remaining_percent - 0.0).abs() < 0.001);
+        assert!((quota.seven_day.used_percent - 0.20).abs() < 0.001);
     }
 
     #[test]

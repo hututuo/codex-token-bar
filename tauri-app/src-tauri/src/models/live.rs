@@ -32,6 +32,7 @@ pub struct LiveThreadOption {
 #[serde(rename_all = "camelCase")]
 pub struct FloatingPanelSnapshot {
     pub tokens_per_second: f64,
+    pub max_tokens_per_second: f64,
     pub trend_label: String,
     pub total_tokens_label: String,
     pub today_tokens_label: String,

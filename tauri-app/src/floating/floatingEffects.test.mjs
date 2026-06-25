@@ -66,13 +66,25 @@ test("ripple effect does not add a static center disk", () => {
 test("floating panel keeps muted pace text black metrics rounded corners and corner close button", () => {
   assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?border-radius: calc\(12px \* var\(--floating-scale\)\);/);
   assert.match(previewSource, /className="floating-rate-readout"/);
-  assert.match(stylesSource, /\.floating-topline\s*{[\s\S]*?grid-template-columns: calc\(96px \* var\(--floating-scale\)\) minmax\(0, 1fr\);[\s\S]*?padding-right: calc\(6px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-rate-readout\s*{[\s\S]*?grid-template-columns: calc\(68px \* var\(--floating-scale\)\) calc\(23px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-topline strong\s*{[\s\S]*?font-size: calc\(25px \* var\(--floating-scale\)\);[\s\S]*?font-variant-numeric: tabular-nums;/);
-  assert.match(stylesSource, /\.floating-rate-readout > span\s*{[\s\S]*?font-size: calc\(10\.8px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-topline em\s*{[\s\S]*?color: #2f3a48;[\s\S]*?white-space: nowrap;/);
-  assert.match(stylesSource, /\.floating-metrics\s*{[\s\S]*?color: #111827;/);
-  assert.match(stylesSource, /\.floating-topline button\s*{[\s\S]*?position: absolute;[\s\S]*?top: calc\(-7px \* var\(--floating-scale\)\);[\s\S]*?right: calc\(-7px \* var\(--floating-scale\)\);[\s\S]*?color: #111827;/);
+  assert.match(stylesSource, /\.floating-topline\s*{[\s\S]*?grid-template-columns: calc\(96px \* var\(--floating-scale\)\) minmax\(0, 1fr\);[\s\S]*?padding-right: calc\(25px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-rate-readout\s*{[\s\S]*?grid-template-columns: calc\(64px \* var\(--floating-scale\)\) calc\(23px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-topline strong\s*{[\s\S]*?font-size: calc\(20px \* var\(--floating-scale\)\);[\s\S]*?font-variant-numeric: tabular-nums;/);
+  assert.match(stylesSource, /\.floating-rate-readout > span\s*{[\s\S]*?font-size: calc\(8\.6px \* var\(--floating-scale\)\);/);
+  assert.match(previewSource, /function FloatingRateMeter/);
+  assert.match(previewSource, /floating-rate-meter--with-status/);
+  assert.match(previewSource, /floating-rate-meter--solo/);
+  assert.match(previewSource, /hasStatusText \? <em>{statusText}<\/em> : null/);
+  assert.match(previewSource, /tokensPerSecond \/ maxValue/);
+  assert.match(stylesSource, /\.floating-rate-track\s*{[\s\S]*?height: calc\(5\.5px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-rate-meter--with-status \.floating-rate-track\s*{[\s\S]*?top: calc\(22px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-rate-meter--solo \.floating-rate-track\s*{[\s\S]*?top: calc\(12\.25px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-rate-track i\s*{[\s\S]*?width: var\(--rate-fill, 0%\);/);
+  assert.match(stylesSource, /\.floating-rate-meter em\s*{[\s\S]*?font-size: calc\(10\.2px \* var\(--floating-scale\)\);[\s\S]*?white-space: nowrap;/);
+  assert.match(stylesSource, /\.floating-usage-status-card\s*{[\s\S]*?max-width: min\(calc\(174px \* var\(--floating-scale\)\), 100%\);[\s\S]*?font-size: calc\(13\.6px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-metrics\s*{[\s\S]*?font-size: calc\(9\.4px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?padding: calc\(7px \* var\(--floating-scale\)\) calc\(10px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-panel-surface > :not\(\.unread-effect\):not\(\.floating-close-button\)\s*{/);
+  assert.match(stylesSource, /\.floating-close-button\s*{[\s\S]*?position: absolute;[\s\S]*?top: calc\(1px \* var\(--floating-scale\)\);[\s\S]*?right: calc\(1px \* var\(--floating-scale\)\);/);
 });
 
 test("shimmer sweep exits the floating panel before the animation pause", () => {
@@ -90,7 +102,7 @@ test("shimmer sweep runs at sixty five percent of the previous speed", () => {
 });
 
 test("floating gradient palette exposes color direction and type controls", () => {
-  assert.match(settingsPanelSource, /aria-label="悬浮窗渐变调色盘"/);
+  assert.match(settingsPanelSource, /SettingsCalloutShell title="悬浮窗样式"/);
   assert.match(settingsPanelSource, /aria-label="渐变起始颜色"/);
   assert.match(settingsPanelSource, /aria-label="渐变结束颜色"/);
   assert.match(settingsPanelSource, /aria-label="渐变方向"/);

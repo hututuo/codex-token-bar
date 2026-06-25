@@ -44,6 +44,10 @@ pub struct FloatingWindowSettingsSnapshot {
     pub gradient_direction: String,
     #[serde(default = "default_floating_gradient_type")]
     pub gradient_type: String,
+    #[serde(default = "default_floating_text_tone")]
+    pub text_tone: f64,
+    #[serde(default)]
+    pub content_visibility: FloatingContentVisibilitySnapshot,
 }
 
 impl Default for FloatingWindowSettingsSnapshot {
@@ -56,6 +60,8 @@ impl Default for FloatingWindowSettingsSnapshot {
             gradient_end: default_floating_gradient_end(),
             gradient_direction: default_floating_gradient_direction(),
             gradient_type: default_floating_gradient_type(),
+            text_tone: default_floating_text_tone(),
+            content_visibility: FloatingContentVisibilitySnapshot::default(),
         }
     }
 }
@@ -86,6 +92,47 @@ fn default_floating_gradient_direction() -> String {
 
 fn default_floating_gradient_type() -> String {
     "linear".into()
+}
+
+fn default_floating_text_tone() -> f64 {
+    -1.0
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FloatingContentVisibilitySnapshot {
+    #[serde(default = "default_enabled")]
+    pub show_rate_and_bar: bool,
+    #[serde(default = "default_enabled")]
+    pub show_usage_status: bool,
+    #[serde(default = "default_enabled")]
+    pub show_metrics: bool,
+    #[serde(default = "default_enabled")]
+    pub show_quota: bool,
+    #[serde(default = "default_enabled")]
+    pub show_radar: bool,
+    #[serde(default = "default_floating_content_order")]
+    pub order: Vec<String>,
+}
+
+impl Default for FloatingContentVisibilitySnapshot {
+    fn default() -> Self {
+        Self {
+            show_rate_and_bar: default_enabled(),
+            show_usage_status: default_enabled(),
+            show_metrics: default_enabled(),
+            show_quota: default_enabled(),
+            show_radar: default_enabled(),
+            order: default_floating_content_order(),
+        }
+    }
+}
+
+fn default_floating_content_order() -> Vec<String> {
+    ["rateAndBar", "usageStatus", "metrics", "radar", "quota"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

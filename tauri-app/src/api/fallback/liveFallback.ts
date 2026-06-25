@@ -30,6 +30,7 @@ export const emptyUnreadSummary: UnreadSummary = {
 
 export const emptyFloatingPanelSnapshot: FloatingPanelSnapshot = {
   tokensPerSecond: 0,
+  maxTokensPerSecond: 200,
   trendLabel: "",
   totalTokensLabel: "总 0",
   todayTokensLabel: "今 0",

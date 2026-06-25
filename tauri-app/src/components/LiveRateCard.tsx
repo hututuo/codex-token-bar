@@ -1,4 +1,5 @@
 import type {
+  FloatingContentVisibility,
   FloatingUnreadEffect,
   LiveRateSnapshot,
   LiveThreadOption,
@@ -16,6 +17,8 @@ interface LiveRateCardProps {
   onFloatingScaleChange: (scale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
   onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
+  onFloatingTextToneChange: (textTone: number) => void;
+  onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onLiveThreadSelect: (threadId: string) => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
@@ -33,6 +36,8 @@ export function LiveRateCard({
   onFloatingScaleChange,
   onFloatingUnreadEffectChange,
   onFloatingGradientChange,
+  onFloatingTextToneChange,
+  onFloatingContentVisibilityChange,
   onLiveThreadSelect,
   onToggleFloating,
   onToggleStatusTray,
@@ -69,6 +74,8 @@ export function LiveRateCard({
           onFloatingScaleChange={onFloatingScaleChange}
           onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
           onFloatingGradientChange={onFloatingGradientChange}
+          onFloatingTextToneChange={onFloatingTextToneChange}
+          onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
           onToggleFloating={onToggleFloating}
           onToggleStatusTray={onToggleStatusTray}
           platform={platform}

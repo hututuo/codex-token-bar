@@ -3,9 +3,28 @@ use std::collections::{HashMap, HashSet};
 
 const WINDOW_SECONDS: f64 = 2.5;
 const MINIMUM_RATE_SPAN_SECONDS: f64 = 0.4;
+const COMPLETION_PAYLOAD_TOKENS_PER_SECOND: f64 = 55.0;
+const MINIMUM_COMPLETION_PAYLOAD_SECONDS: f64 = 1.0;
+const MAXIMUM_COMPLETION_PAYLOAD_SECONDS: f64 = 30.0;
+const DISTRIBUTION_STEP_SECONDS: f64 = 0.5;
 
 pub(super) fn rollup_stream_rows(
     rows: &[LogRow],
+    now: f64,
+    selected_thread_id: Option<&str>,
+) -> LiveRateRollup {
+    let metrics = rows
+        .iter()
+        .filter_map(|row| {
+            let event = stream_event(row)?;
+            metric_event(event, row)
+        })
+        .collect::<Vec<_>>();
+    rollup_metric_events(&metrics, now, selected_thread_id)
+}
+
+pub(super) fn rollup_metric_events(
+    metrics: &[LiveMetricEvent],
     now: f64,
     selected_thread_id: Option<&str>,
 ) -> LiveRateRollup {
@@ -14,21 +33,16 @@ pub(super) fn rollup_stream_rows(
     let mut tokens_by_key = HashMap::<String, u32>::new();
     let mut rolling_deltas = Vec::<(f64, u32)>::new();
     let mut latest_thread_id = None;
+    let mut breakdown = LiveTokenBreakdown::default();
     let window_start = now - WINDOW_SECONDS;
 
-    for row in rows {
-        let Some(event) = stream_event(row) else {
-            continue;
-        };
-        let Some(metric) = metric_event(event, row) else {
-            continue;
-        };
+    for metric in metrics {
         if let Some(selected_thread_id) = selected_thread_id {
             if metric.thread_id.as_deref() != Some(selected_thread_id) {
                 continue;
             }
         }
-        let fingerprint = metric.fingerprint(row);
+        let fingerprint = metric.fingerprint();
         if !seen.insert(fingerprint) {
             continue;
         }
@@ -39,6 +53,45 @@ pub(super) fn rollup_stream_rows(
             metric.item_id,
             metric.category.key()
         );
+        if !metric.category.contributes_to_live_rate() {
+            let tokens = metric
+                .exact_tokens
+                .unwrap_or_else(|| estimate_token_count(&metric.delta, metric.category));
+            breakdown.add(metric.category, tokens);
+            continue;
+        }
+        if metric.distributed {
+            let tokens = metric
+                .exact_tokens
+                .unwrap_or_else(|| estimate_token_count(&metric.delta, metric.category));
+            breakdown.add(metric.category, tokens);
+            for (time, delta_tokens) in
+                distributed_deltas(tokens, metric.start_timestamp, metric.timestamp)
+            {
+                if delta_tokens > 0 && time >= window_start && time <= now + 0.25 {
+                    rolling_deltas.push((time, delta_tokens));
+                }
+            }
+            if tokens > 0 && metric.timestamp >= window_start && metric.timestamp <= now + 0.25 {
+                if let Some(thread_id) = metric.thread_id.clone() {
+                    latest_thread_id = Some(thread_id);
+                }
+            }
+            continue;
+        }
+        if let Some(exact_tokens) = metric.exact_tokens {
+            breakdown.add(metric.category, exact_tokens);
+            if exact_tokens > 0
+                && metric.timestamp >= window_start
+                && metric.timestamp <= now + 0.25
+            {
+                rolling_deltas.push((metric.timestamp, exact_tokens));
+                if let Some(thread_id) = metric.thread_id.clone() {
+                    latest_thread_id = Some(thread_id);
+                }
+            }
+            continue;
+        }
         let text = text_by_key.entry(key.clone()).or_default();
         text.push_str(&metric.delta);
 
@@ -47,9 +100,10 @@ pub(super) fn rollup_stream_rows(
         tokens_by_key.insert(key, next_tokens);
 
         let delta_tokens = next_tokens.saturating_sub(previous_tokens);
+        breakdown.add(metric.category, delta_tokens);
         if delta_tokens > 0 && metric.timestamp >= window_start && metric.timestamp <= now + 0.25 {
             rolling_deltas.push((metric.timestamp, delta_tokens));
-            if let Some(thread_id) = metric.thread_id {
+            if let Some(thread_id) = metric.thread_id.clone() {
                 latest_thread_id = Some(thread_id);
             }
         }
@@ -63,7 +117,38 @@ pub(super) fn rollup_stream_rows(
         } else {
             None
         },
+        breakdown,
     }
+}
+
+fn distributed_deltas(tokens: u32, start_timestamp: Option<f64>, ending_at: f64) -> Vec<(f64, u32)> {
+    if tokens == 0 {
+        return Vec::new();
+    }
+    let estimated_duration = (f64::from(tokens) / COMPLETION_PAYLOAD_TOKENS_PER_SECOND)
+        .clamp(MINIMUM_COMPLETION_PAYLOAD_SECONDS, MAXIMUM_COMPLETION_PAYLOAD_SECONDS);
+    let start = start_timestamp
+        .map(|start| start.min(ending_at))
+        .unwrap_or(ending_at - estimated_duration);
+    let duration = (ending_at - start).max(estimated_duration).max(0.25);
+    let chunk_count = tokens
+        .min((duration / DISTRIBUTION_STEP_SECONDS).ceil().max(1.0) as u32)
+        .max(1);
+    let mut emitted = 0_u32;
+    let mut deltas = Vec::new();
+    for index in 1..=chunk_count {
+        let cumulative = ((f64::from(tokens) * f64::from(index) / f64::from(chunk_count)).round()
+            as u32)
+            .min(tokens);
+        let chunk_tokens = cumulative.saturating_sub(emitted);
+        emitted = cumulative;
+        if chunk_tokens == 0 {
+            continue;
+        }
+        let ratio = f64::from(index) / f64::from(chunk_count);
+        deltas.push((start + duration * ratio, chunk_tokens));
+    }
+    deltas
 }
 
 fn stream_event(row: &LogRow) -> Option<ResponseStreamEvent> {
@@ -100,6 +185,11 @@ fn metric_event(event: ResponseStreamEvent, row: &LogRow) -> Option<LiveMetricEv
         .or_else(|| event.item.as_ref().and_then(|item| item.id.clone()))
         .unwrap_or_else(|| "unknown".into());
 
+    let dedupe_key = event
+        .sequence_number
+        .is_none()
+        .then(|| format!("row:{}:{}:{}", row.id, event.event_type, delta));
+
     Some(LiveMetricEvent {
         event_type: event.event_type,
         timestamp: row.timestamp(),
@@ -108,6 +198,10 @@ fn metric_event(event: ResponseStreamEvent, row: &LogRow) -> Option<LiveMetricEv
         sequence_number: event.sequence_number,
         category,
         delta,
+        exact_tokens: None,
+        start_timestamp: None,
+        distributed: false,
+        dedupe_key,
     })
 }
 
@@ -222,42 +316,68 @@ struct ResponseStreamItem {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum LiveTokenCategory {
+pub(super) enum LiveTokenCategory {
     VisibleText,
     ToolArguments,
     PatchInput,
+    PatchApplied,
+    ToolOutput,
+    Reasoning,
 }
 
 impl LiveTokenCategory {
-    fn key(self) -> &'static str {
+    pub(super) fn key(self) -> &'static str {
         match self {
             LiveTokenCategory::VisibleText => "visibleText",
             LiveTokenCategory::ToolArguments => "toolArguments",
             LiveTokenCategory::PatchInput => "patchInput",
+            LiveTokenCategory::PatchApplied => "patchApplied",
+            LiveTokenCategory::ToolOutput => "toolOutput",
+            LiveTokenCategory::Reasoning => "reasoning",
         }
+    }
+
+    pub(super) fn contributes_to_live_rate(self) -> bool {
+        matches!(
+            self,
+            LiveTokenCategory::VisibleText
+                | LiveTokenCategory::ToolArguments
+                | LiveTokenCategory::PatchInput
+                | LiveTokenCategory::Reasoning
+        )
     }
 }
 
 #[derive(Debug)]
-struct LiveMetricEvent {
-    event_type: String,
-    timestamp: f64,
-    thread_id: Option<String>,
-    item_id: String,
-    sequence_number: Option<i64>,
-    category: LiveTokenCategory,
-    delta: String,
+pub(super) struct LiveMetricEvent {
+    pub(super) event_type: String,
+    pub(super) timestamp: f64,
+    pub(super) thread_id: Option<String>,
+    pub(super) item_id: String,
+    pub(super) sequence_number: Option<i64>,
+    pub(super) category: LiveTokenCategory,
+    pub(super) delta: String,
+    pub(super) exact_tokens: Option<u32>,
+    pub(super) start_timestamp: Option<f64>,
+    pub(super) distributed: bool,
+    pub(super) dedupe_key: Option<String>,
 }
 
 impl LiveMetricEvent {
-    fn fingerprint(&self, row: &LogRow) -> String {
+    fn fingerprint(&self) -> String {
+        if let Some(key) = &self.dedupe_key {
+            return key.clone();
+        }
         if let Some(sequence_number) = self.sequence_number {
             format!(
                 "{}:{}:{}:{}",
                 self.event_type, self.item_id, sequence_number, self.delta
             )
         } else {
-            format!("row:{}:{}:{}", row.id, self.event_type, self.delta)
+            format!(
+                "{}:{}:{:.6}:{}",
+                self.event_type, self.item_id, self.timestamp, self.delta
+            )
         }
     }
 }
@@ -265,4 +385,47 @@ impl LiveMetricEvent {
 pub(super) struct LiveRateRollup {
     pub(super) tokens_per_second: f64,
     pub(super) latest_thread_id: Option<String>,
+    pub(super) breakdown: LiveTokenBreakdown,
+}
+
+impl Default for LiveRateRollup {
+    fn default() -> Self {
+        Self {
+            tokens_per_second: 0.0,
+            latest_thread_id: None,
+            breakdown: LiveTokenBreakdown::default(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct LiveTokenBreakdown {
+    pub(super) visible_text: u32,
+    pub(super) tool_arguments: u32,
+    pub(super) patch_input: u32,
+    pub(super) patch_applied: u32,
+    pub(super) tool_output: u32,
+    pub(super) reasoning: u32,
+}
+
+impl LiveTokenBreakdown {
+    pub(super) fn observed_total(&self) -> u32 {
+        self.visible_text
+            + self.tool_arguments
+            + self.patch_input
+            + self.patch_applied
+            + self.tool_output
+            + self.reasoning
+    }
+
+    fn add(&mut self, category: LiveTokenCategory, tokens: u32) {
+        match category {
+            LiveTokenCategory::VisibleText => self.visible_text += tokens,
+            LiveTokenCategory::ToolArguments => self.tool_arguments += tokens,
+            LiveTokenCategory::PatchInput => self.patch_input += tokens,
+            LiveTokenCategory::PatchApplied => self.patch_applied += tokens,
+            LiveTokenCategory::ToolOutput => self.tool_output += tokens,
+            LiveTokenCategory::Reasoning => self.reasoning += tokens,
+        }
+    }
 }
