@@ -105,6 +105,20 @@ export interface CodexRadarModelIQComparisonRow {
   point: CodexRadarModelIQPoint;
 }
 
+export interface CodexRadarChartSeries {
+  id: string;
+  label: string;
+  points: CodexRadarChartPoint[];
+}
+
+export interface CodexRadarChartPoint {
+  rawLabel: string;
+  xLabel: string;
+  value: number;
+}
+
+export type CodexRadarQuotaWindow = "fiveHour" | "sevenDay";
+
 export interface CodexRadarQuotaRadar {
   date: string;
   source: string;
@@ -316,6 +330,51 @@ export function secondaryModelRows(modelIq: CodexRadarModelIQ): CodexRadarModelI
     .sort(preferredModelOrder);
 }
 
+export function modelIqChartSeries(modelIq: CodexRadarModelIQ): CodexRadarChartSeries[] {
+  const latestSeries: CodexRadarChartSeries = {
+    id: modelSeriesID(modelIq.latest),
+    label: modelDisplayName(modelIq.latest),
+    points: (modelIq.recentDays.length > 0 ? modelIq.recentDays : [modelIq.latest]).map(modelPointToChartPoint),
+  };
+
+  const preferredOrder = ["GPT-5.5 high", "GPT-5.5 medium", "GPT-5.4 xhigh"];
+  const comparisonSeries = Object.values(modelIq.comparisons ?? {})
+    .map((comparison) => ({
+      id: `${comparison.model}-${comparison.reasoningEffort}`,
+      label: comparison.label,
+      points: (comparison.recentDays.length > 0 ? comparison.recentDays : [comparison.latest]).map(modelPointToChartPoint),
+    }))
+    .sort((lhs, rhs) => {
+      const lhsIndex = preferredOrder.indexOf(lhs.label);
+      const rhsIndex = preferredOrder.indexOf(rhs.label);
+      const normalizedLhs = lhsIndex === -1 ? Number.MAX_SAFE_INTEGER : lhsIndex;
+      const normalizedRhs = rhsIndex === -1 ? Number.MAX_SAFE_INTEGER : rhsIndex;
+      return normalizedLhs === normalizedRhs ? lhs.label.localeCompare(rhs.label) : normalizedLhs - normalizedRhs;
+    });
+
+  return [latestSeries, ...comparisonSeries];
+}
+
+export function quotaChartSeries(quotaRadar: CodexRadarQuotaRadar, window: CodexRadarQuotaWindow): CodexRadarChartSeries[] {
+  return [
+    {
+      id: "quota-plus",
+      label: "Plus",
+      points: quotaRadar.trend.map((point) => quotaPointToChartPoint(point, valueForQuotaTier(point, window, "plus"))),
+    },
+    {
+      id: "quota-5x",
+      label: "5x Pro",
+      points: quotaRadar.trend.map((point) => quotaPointToChartPoint(point, valueForQuotaTier(point, window, "fiveX"))),
+    },
+    {
+      id: "quota-20x",
+      label: "20x Pro",
+      points: quotaRadar.trend.map((point) => quotaPointToChartPoint(point, valueForQuotaTier(point, window, "twentyX"))),
+    },
+  ];
+}
+
 export function modelDisplayName(point: CodexRadarModelIQPoint): string {
   const model = point.model?.toUpperCase() ?? "MODEL";
   return point.reasoningEffort ? `${model} ${point.reasoningEffort}` : model;
@@ -407,6 +466,44 @@ function reasoningEffortCostRank(effort: string | null | undefined): number {
 
 function modelSeriesID(point: CodexRadarModelIQPoint): string {
   return `${point.model ?? "model"}-${point.reasoningEffort ?? "default"}`;
+}
+
+function modelPointToChartPoint(point: CodexRadarModelIQPoint): CodexRadarChartPoint {
+  return {
+    rawLabel: point.date,
+    xLabel: shortDateLabel(point.date),
+    value: point.score,
+  };
+}
+
+function quotaPointToChartPoint(point: CodexRadarQuotaTrendPoint, value: number): CodexRadarChartPoint {
+  return {
+    rawLabel: point.date,
+    xLabel: shortDateLabel(point.date),
+    value,
+  };
+}
+
+function valueForQuotaTier(point: CodexRadarQuotaTrendPoint, window: CodexRadarQuotaWindow, tier: "plus" | "fiveX" | "twentyX"): number {
+  if (window === "fiveHour") {
+    switch (tier) {
+      case "plus":
+        return point.fiveHourPlus;
+      case "fiveX":
+        return point.fiveHour5x;
+      case "twentyX":
+        return point.fiveHour20x;
+    }
+  }
+
+  switch (tier) {
+    case "plus":
+      return point.sevenDay20x / 20;
+    case "fiveX":
+      return point.sevenDay20x / 4;
+    case "twentyX":
+      return point.sevenDay20x;
+  }
 }
 
 function normalizeModelIq(modelIq: Record<string, unknown>): CodexRadarModelIQ {

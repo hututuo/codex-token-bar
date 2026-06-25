@@ -1076,6 +1076,115 @@ button.quota-side-card:hover {
   font-weight: 660;
 }
 
+.codex-radar-chart-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.codex-radar-chart-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.codex-radar-chart-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-inset) 58%, transparent);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1;
+  padding: 0 8px;
+}
+
+.codex-radar-chart-toggle.is-active {
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel-solid));
+  color: var(--text);
+}
+
+.codex-radar-chart-toggle i {
+  width: 8px;
+  height: 3px;
+  border-radius: 999px;
+}
+
+.codex-radar-window-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-inset);
+  padding: 3px;
+}
+
+.codex-radar-window-selector button {
+  min-width: 46px;
+  height: 26px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.codex-radar-window-selector button.is-active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-strong);
+}
+
+.codex-radar-line-chart {
+  display: block;
+  width: 100%;
+  height: 155px;
+  overflow: visible;
+}
+
+.codex-radar-chart-bg {
+  fill: var(--panel-inset);
+}
+
+.codex-radar-chart-highlight {
+  fill: color-mix(in srgb, var(--accent-cyan, #16b8d8) 10%, transparent);
+}
+
+.codex-radar-chart-grid {
+  stroke: color-mix(in srgb, var(--line) 76%, transparent);
+  stroke-dasharray: 4 8;
+  stroke-width: 1;
+}
+
+.codex-radar-chart-line {
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.codex-radar-chart-point {
+  stroke-width: 1.4;
+}
+
+.codex-radar-chart-x-label,
+.codex-radar-chart-y-label,
+.codex-radar-chart-axis-title {
+  fill: var(--muted);
+  font-size: 9px;
+  font-weight: 620;
+}
+
+.codex-radar-chart-axis-title {
+  font-size: 10px;
+}
+
 .codex-radar-kv-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

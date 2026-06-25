@@ -1,18 +1,24 @@
 import { memo, startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { readCodexRadarSnapshot } from "../api/codexRadarClient";
 import {
+  type CodexRadarChartSeries,
   type CodexRadarModelIQComparisonRow,
   type CodexRadarModelIQPoint,
+  type CodexRadarQuotaWindow,
   displayRadarNumber,
   environmentCount,
   modelDisplayName,
+  modelIqChartSeries,
   percentText,
   primaryModelRow,
+  quotaChartSeries,
   secondaryModelRows,
+  shortDateLabel,
   type CodexRadarSnapshot,
 } from "./codexRadar/model";
 
 const RADAR_REFRESH_INTERVAL_MS = 600_000;
+const RADAR_CHART_COLORS = ["#18a7f2", "#ff8a2c", "#2f7df6", "#32b85f", "#a65af5"];
 
 export function CodexRadarStrip() {
   const [snapshot, setSnapshot] = useState<CodexRadarSnapshot | null>(null);
@@ -247,6 +253,17 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
   quotaRows: { tier: string; basis: string; fiveH: number; sevenD: number }[];
   snapshot: CodexRadarSnapshot;
 }) {
+  const [selectedModelSeriesIds, setSelectedModelSeriesIds] = useState<Set<string>>(new Set());
+  const [selectedQuotaWindow, setSelectedQuotaWindow] = useState<CodexRadarQuotaWindow>("fiveHour");
+  const [selectedQuotaTierIds, setSelectedQuotaTierIds] = useState<Set<string>>(new Set(["quota-plus", "quota-5x", "quota-20x"]));
+  const modelSeries = useMemo(() => modelIqChartSeries(snapshot.modelIq), [snapshot.modelIq]);
+  const activeModelSeriesIds = activeChartIds(modelSeries, selectedModelSeriesIds, modelSeries.slice(0, 2).map((series) => series.id));
+  const quotaSeries = useMemo(
+    () => (snapshot.modelIq.quotaRadar ? quotaChartSeries(snapshot.modelIq.quotaRadar, selectedQuotaWindow) : []),
+    [selectedQuotaWindow, snapshot.modelIq.quotaRadar],
+  );
+  const activeQuotaSeriesIds = activeChartIds(quotaSeries, selectedQuotaTierIds, quotaSeries.map((series) => series.id));
+
   return (
     <div className="codex-radar-detail-stack">
       <RadarDetailSection icon="bolt.badge.clock" title="速蹬窗口与预测">
@@ -286,7 +303,21 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
 
       <RadarDetailSection icon="brain.head.profile" title="降智雷达">
         <RadarDetailSubsection title="IQ 趋势">
-          <RadarTrendSummary points={snapshot.modelIq.recentDays} />
+          <RadarChartToggleRow
+            activeIds={activeModelSeriesIds}
+            onToggle={(id, isOn) => setSelectedModelSeriesIds((current) => toggleChartId(current, modelSeries, id, isOn, modelSeries.slice(0, 2).map((series) => series.id)))}
+            series={modelSeries}
+          />
+          <RadarLineChart
+            highlightRange={[90, 110]}
+            series={modelSeries}
+            valuePrefix="IQ "
+            visibleSeriesIds={activeModelSeriesIds}
+            xAxisTitle="评测日期"
+            yAxisTitle="IQ 指数"
+            yDomain={[50, 130]}
+            yTickValues={[120, 100, 80, 60]}
+          />
         </RadarDetailSubsection>
         <RadarDetailSubsection title="模型对比">
           <RadarTable
@@ -330,6 +361,23 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
                 ["修正变化", `${snapshot.modelIq.quotaRadar.adjustedDelta}%`],
                 ["rate", formatCost(snapshot.modelIq.quotaRadar.rate)],
               ]} />
+            </RadarDetailSubsection>
+            <RadarDetailSubsection title={`${quotaWindowTitle(selectedQuotaWindow)} 额度趋势`}>
+              <div className="codex-radar-chart-toolbar">
+                <RadarQuotaWindowSelector selection={selectedQuotaWindow} onSelect={setSelectedQuotaWindow} />
+                <RadarChartToggleRow
+                  activeIds={activeQuotaSeriesIds}
+                  onToggle={(id, isOn) => setSelectedQuotaTierIds((current) => toggleChartId(current, quotaSeries, id, isOn, quotaSeries.map((series) => series.id)))}
+                  series={quotaSeries}
+                />
+              </div>
+              <RadarLineChart
+                series={quotaSeries}
+                valuePrefix="$"
+                visibleSeriesIds={activeQuotaSeriesIds}
+                xAxisTitle="日期"
+                yAxisTitle={`${quotaWindowTitle(selectedQuotaWindow)}美元额度`}
+              />
             </RadarDetailSubsection>
             <RadarDetailSubsection title="套餐预估">
               <RadarTable
@@ -495,18 +543,222 @@ function RadarTable({ emptyText = "暂无数据", headers, rows }: { emptyText?:
   );
 }
 
-function RadarTrendSummary({ points }: { points: CodexRadarModelIQPoint[] }) {
-  const recent = points.slice(-6);
+function RadarChartToggleRow({
+  activeIds,
+  onToggle,
+  series,
+}: {
+  activeIds: Set<string>;
+  onToggle: (id: string, isOn: boolean) => void;
+  series: CodexRadarChartSeries[];
+}) {
+  if (series.length === 0) {
+    return null;
+  }
+
   return (
-    <div className="codex-radar-trend-summary">
-      {recent.length > 0 ? recent.map((point) => (
-        <span key={`${point.date}-${point.model ?? ""}-${point.reasoningEffort ?? ""}`}>
-          <em>{point.date || "--"}</em>
-          <b>IQ {displayRadarNumber(point.score)}</b>
-        </span>
-      )) : <p className="codex-radar-paragraph">暂无 IQ 趋势数据</p>}
+    <div className="codex-radar-chart-toggle-row">
+      {series.map((item, index) => {
+        const isActive = activeIds.has(item.id);
+        return (
+          <button
+            className={isActive ? "codex-radar-chart-toggle is-active" : "codex-radar-chart-toggle"}
+            key={item.id}
+            onClick={() => onToggle(item.id, !isActive)}
+            style={{ borderColor: isActive ? RADAR_CHART_COLORS[index % RADAR_CHART_COLORS.length] : undefined }}
+            type="button"
+          >
+            <i style={{ background: RADAR_CHART_COLORS[index % RADAR_CHART_COLORS.length] }} />
+            {compactModelLabel(item.label)}
+          </button>
+        );
+      })}
     </div>
   );
+}
+
+function RadarQuotaWindowSelector({
+  onSelect,
+  selection,
+}: {
+  onSelect: (selection: CodexRadarQuotaWindow) => void;
+  selection: CodexRadarQuotaWindow;
+}) {
+  return (
+    <div className="codex-radar-window-selector" role="tablist" aria-label="额度窗口">
+      {(["fiveHour", "sevenDay"] as CodexRadarQuotaWindow[]).map((window) => (
+        <button
+          aria-selected={selection === window}
+          className={selection === window ? "is-active" : undefined}
+          key={window}
+          onClick={() => onSelect(window)}
+          role="tab"
+          type="button"
+        >
+          {window === "fiveHour" ? "5h" : "7d"}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RadarLineChart({
+  highlightRange,
+  series,
+  valuePrefix,
+  visibleSeriesIds,
+  xAxisTitle,
+  yAxisTitle,
+  yDomain,
+  yTickValues,
+}: {
+  highlightRange?: [number, number];
+  series: CodexRadarChartSeries[];
+  valuePrefix: string;
+  visibleSeriesIds: Set<string>;
+  xAxisTitle: string;
+  yAxisTitle: string;
+  yDomain?: [number, number];
+  yTickValues?: number[];
+}) {
+  const visibleSeries = series.map((item, index) => ({ index, item })).filter(({ item }) => visibleSeriesIds.has(item.id));
+  const xLabels = uniqueLabels(visibleSeries.flatMap(({ item }) => item.points.map((point) => point.rawLabel)));
+  const values = visibleSeries.flatMap(({ item }) => item.points.map((point) => point.value)).filter(Number.isFinite);
+
+  if (visibleSeries.length === 0 || xLabels.length === 0 || values.length === 0) {
+    return <p className="codex-radar-paragraph">暂无趋势数据</p>;
+  }
+
+  const width = 760;
+  const height = 155;
+  const plot = { x: 52, y: 18, width: 684, height: 94 };
+  const axis = buildChartAxis(values, yDomain, yTickValues);
+  const xIndex = new Map(xLabels.map((label, index) => [label, index]));
+  const xPosition = (rawLabel: string) => plot.x + (plot.width * (xIndex.get(rawLabel) ?? 0)) / Math.max(xLabels.length - 1, 1);
+  const yPosition = (value: number) => plot.y + plot.height - ((value - axis.min) / Math.max(axis.max - axis.min, 1)) * plot.height;
+
+  return (
+    <svg className="codex-radar-line-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${yAxisTitle}趋势图`}>
+      <rect className="codex-radar-chart-bg" x={plot.x} y={plot.y} width={plot.width} height={plot.height} rx="8" />
+      {highlightRange ? (
+        <rect
+          className="codex-radar-chart-highlight"
+          x={plot.x}
+          y={Math.min(yPosition(highlightRange[0]), yPosition(highlightRange[1]))}
+          width={plot.width}
+          height={Math.max(1, Math.abs(yPosition(highlightRange[0]) - yPosition(highlightRange[1])))}
+          rx="0"
+        />
+      ) : null}
+      {axis.ticks.map((tick) => {
+        const y = yPosition(tick);
+        return (
+          <g key={tick}>
+            <line className="codex-radar-chart-grid" x1={plot.x} x2={plot.x + plot.width} y1={y} y2={y} />
+            <text className="codex-radar-chart-y-label" x={plot.x - 8} y={y + 3} textAnchor="end">
+              {valuePrefix}{displayRadarNumber(tick, tick >= 10 ? 0 : 2)}
+            </text>
+          </g>
+        );
+      })}
+      {visibleSeries.map(({ index, item }) => {
+        const points = item.points
+          .filter((point) => xIndex.has(point.rawLabel) && Number.isFinite(point.value))
+          .map((point) => ({ x: xPosition(point.rawLabel), y: yPosition(point.value), raw: point.rawLabel, value: point.value }));
+        const color = RADAR_CHART_COLORS[index % RADAR_CHART_COLORS.length];
+        const polyline = points.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
+        return (
+          <g key={item.id}>
+            {points.length > 1 ? <polyline className="codex-radar-chart-line" fill="none" points={polyline} stroke={color} /> : null}
+            {points.map((point) => (
+              <circle className="codex-radar-chart-point" cx={point.x} cy={point.y} fill="var(--panel-solid)" key={`${item.id}-${point.raw}`} r="3.1" stroke={color} />
+            ))}
+          </g>
+        );
+      })}
+      {xLabels.map((label, index) => {
+        if (xLabels.length > 8 && index % Math.ceil(xLabels.length / 6) !== 0 && index !== xLabels.length - 1) {
+          return null;
+        }
+        return (
+          <text className="codex-radar-chart-x-label" key={label} x={xPosition(label)} y={plot.y + plot.height + 20} textAnchor="middle">
+            {shortDateLabel(label)}
+          </text>
+        );
+      })}
+      <text className="codex-radar-chart-axis-title" x={plot.x} y={height - 5}>{xAxisTitle}</text>
+      <text className="codex-radar-chart-axis-title" x={plot.x + plot.width} y={height - 5} textAnchor="end">{yAxisTitle}</text>
+    </svg>
+  );
+}
+
+function activeChartIds(series: CodexRadarChartSeries[], selectedIds: Set<string>, fallbackIds: string[]): Set<string> {
+  const validIds = new Set(series.map((item) => item.id));
+  const active = new Set([...selectedIds].filter((id) => validIds.has(id)));
+  if (active.size > 0) {
+    return active;
+  }
+  return new Set(fallbackIds.filter((id) => validIds.has(id)));
+}
+
+function toggleChartId(
+  selectedIds: Set<string>,
+  series: CodexRadarChartSeries[],
+  id: string,
+  isOn: boolean,
+  fallbackIds: string[],
+): Set<string> {
+  const next = activeChartIds(series, selectedIds, fallbackIds);
+  if (isOn) {
+    next.add(id);
+  } else {
+    next.delete(id);
+    if (next.size === 0) {
+      next.add(id);
+    }
+  }
+  return next;
+}
+
+function buildChartAxis(values: number[], yDomain?: [number, number], yTickValues?: number[]): { min: number; max: number; ticks: number[] } {
+  if (yDomain) {
+    return {
+      min: yDomain[0],
+      max: yDomain[1],
+      ticks: yTickValues ?? [yDomain[1], (yDomain[0] + yDomain[1]) / 2, yDomain[0]],
+    };
+  }
+
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  const span = Math.max(rawMax - rawMin, 1);
+  const min = Math.max(0, rawMin - span * 0.16);
+  const max = rawMax + span * 0.16;
+  return {
+    min,
+    max,
+    ticks: [max, min + (max - min) * 0.66, min + (max - min) * 0.33, min],
+  };
+}
+
+function uniqueLabels(labels: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const label of labels) {
+    if (!seen.has(label)) {
+      seen.add(label);
+      result.push(label);
+    }
+  }
+  return result;
+}
+
+function quotaWindowTitle(window: CodexRadarQuotaWindow): string {
+  return window === "fiveHour" ? "5 小时" : "7 天";
+}
+
+function compactModelLabel(label: string): string {
+  return label.replaceAll("GPT-", "").replaceAll(" ", "-");
 }
 
 function RadarRoleCounts({ roleCounts }: { roleCounts: Record<string, number> }) {

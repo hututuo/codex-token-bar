@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeCodexRadarSnapshot, primaryModelRow, secondaryModelRows, shortDateLabel } from "./model.ts";
+import { modelIqChartSeries, normalizeCodexRadarSnapshot, primaryModelRow, quotaChartSeries, secondaryModelRows, shortDateLabel } from "./model.ts";
 
 const snapshot = {
   modelIq: {
@@ -91,6 +91,59 @@ test("secondaryModelRows excludes the selected primary model", () => {
 
 test("shortDateLabel compacts Codex Radar date labels", () => {
   assert.equal(shortDateLabel("2026-06-23-pm"), "6.23 pm");
+});
+
+test("modelIqChartSeries mirrors the Swift detail chart series", () => {
+  const series = modelIqChartSeries({
+    ...snapshot.modelIq,
+    recentDays: [
+      { ...snapshot.modelIq.latest, date: "2026-06-22-pm", score: 98 },
+      { ...snapshot.modelIq.latest, date: "2026-06-23-pm", score: 100 },
+    ],
+  });
+
+  assert.equal(series[0].id, "gpt-5.5-high");
+  assert.equal(series[0].label, "GPT-5.5 high");
+  assert.deepEqual(series[0].points.map((point) => point.xLabel), ["6.22 pm", "6.23 pm"]);
+  assert.deepEqual(series.slice(1).map((item) => item.label), ["GPT-5.5 medium", "GPT-5.4 xhigh"]);
+});
+
+test("quotaChartSeries computes 5h and 7d windows with Swift-compatible tier math", () => {
+  const quotaRadar = {
+    date: "2026-06-23",
+    source: "test",
+    updatedAt: "2026-06-23",
+    basisDate: "2026-06-23",
+    costUsd: 4,
+    totalTokens: 120000,
+    basisWindow: "5h",
+    basisWindowLabel: "5h",
+    adjustedDelta: 0,
+    rawDelta: 0,
+    offset: 0,
+    rate: 1,
+    rows: [],
+    trend: [{
+      date: "2026-06-23-pm",
+      source: "test",
+      updatedAt: "2026-06-23",
+      fiveHour20x: 200,
+      sevenDay20x: 1400,
+      fiveHour5x: 50,
+      fiveHourPlus: 10,
+      basisWindow: "5h",
+      basisWindowLabel: "5h",
+      rate: 1,
+      rawDelta: 0,
+      adjustedDelta: 0,
+      offset: 0,
+      costUsd: 4,
+      totalTokens: 120000,
+    }],
+  };
+
+  assert.deepEqual(quotaChartSeries(quotaRadar, "fiveHour").map((item) => item.points[0].value), [10, 50, 200]);
+  assert.deepEqual(quotaChartSeries(quotaRadar, "sevenDay").map((item) => item.points[0].value), [70, 350, 1400]);
 });
 
 test("normalizeCodexRadarSnapshot accepts the public snake_case feed", () => {
