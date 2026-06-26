@@ -112,7 +112,7 @@ test("floating panel keeps muted pace text black metrics rounded corners and cor
   assert.match(previewSource, /fullScale=\{settings\.tokenRateFullScale\}/);
   assert.match(previewSource, /floating-rate-meter--with-status/);
   assert.match(previewSource, /floating-rate-meter--solo/);
-  assert.match(previewSource, /hasStatusText \? <FloatingStatusText resetCreditLabel=\{resetCreditLabel\} text=\{statusText\} \/> : null/);
+  assert.match(previewSource, /hasStatusText \? <FloatingStatusText text=\{statusText\} \/> : null/);
   assert.match(previewSource, /rateFillStyle\(snapshot\.tokensPerSecond, scaleLimit\)/);
   assert.match(stylesSource, /\.floating-rate-track\s*{[\s\S]*?height: calc\(5\.5px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-rate-meter--with-status \.floating-rate-track\s*{[\s\S]*?top: calc\(22px \* var\(--floating-scale\)\);/);
@@ -126,14 +126,13 @@ test("floating panel keeps muted pace text black metrics rounded corners and cor
   assert.match(stylesSource, /\.floating-close-button\s*{[\s\S]*?position: absolute;[\s\S]*?top: calc\(1px \* var\(--floating-scale\)\);[\s\S]*?right: calc\(1px \* var\(--floating-scale\)\);/);
 });
 
-test("floating pace text reserves a right-side reset card count", () => {
-  assert.match(previewSource, /resetCreditLabel/);
+test("floating pace text keeps the Swift-style status and card count in one line", () => {
   assert.match(previewSource, /FloatingStatusText/);
-  assert.match(previewSource, /floatingResetCreditLabel/);
-  assert.match(previewSource, /snapshot\.resetCreditLabel/);
-  assert.match(stylesSource, /\.floating-status-text\s*{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) max-content;/);
+  assert.doesNotMatch(previewSource, /floatingResetCreditLabel/);
+  assert.doesNotMatch(previewSource, /resetCreditLabel=\{/);
+  assert.doesNotMatch(stylesSource, /\.floating-status-badge\s*{/);
+  assert.match(stylesSource, /\.floating-status-text\s*{[\s\S]*?display: block;/);
   assert.match(stylesSource, /\.floating-status-text em\s*{[\s\S]*?text-overflow: ellipsis;/);
-  assert.match(stylesSource, /\.floating-status-badge\s*{[\s\S]*?white-space: nowrap;/);
 });
 
 test("floating radar shows multiple sorted model IQ scores", () => {

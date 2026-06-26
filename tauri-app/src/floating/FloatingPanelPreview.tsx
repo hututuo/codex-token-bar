@@ -59,7 +59,6 @@ function FloatingRateMeter({
 }) {
   const scaleLimit = sanitizeRateFullScale(fullScale || snapshot.maxTokensPerSecond || 200);
   const hasStatusText = typeof statusText === "string" && statusText.length > 0;
-  const resetCreditLabel = floatingResetCreditLabel(snapshot);
 
   return (
     <span
@@ -71,7 +70,7 @@ function FloatingRateMeter({
       aria-valuenow={Number(formatLiveRateValue(snapshot.tokensPerSecond))}
       style={rateFillStyle(snapshot.tokensPerSecond, scaleLimit)}
     >
-      {hasStatusText ? <FloatingStatusText resetCreditLabel={resetCreditLabel} text={statusText} /> : null}
+      {hasStatusText ? <FloatingStatusText text={statusText} /> : null}
       <span className="floating-rate-track" aria-hidden="true">
         <i className="rate-fill" />
       </span>
@@ -79,11 +78,10 @@ function FloatingRateMeter({
   );
 }
 
-function FloatingStatusText({ resetCreditLabel, text }: { resetCreditLabel: string; text: string }) {
+function FloatingStatusText({ text }: { text: string }) {
   return (
     <span className="floating-status-text">
       <em>{text}</em>
-      <b className="floating-status-badge">{resetCreditLabel}</b>
     </span>
   );
 }
@@ -194,7 +192,6 @@ function FloatingContentRow({
         <div className="floating-row floating-usage-status" style={style}>
           <span className="floating-usage-status-card">
             <FloatingStatusText
-              resetCreditLabel={floatingResetCreditLabel(snapshot)}
               text={snapshot.trendLabel || "节奏待读取"}
             />
           </span>
@@ -218,10 +215,6 @@ function FloatingContentRow({
         </div>
       );
   }
-}
-
-function floatingResetCreditLabel(snapshot: FloatingPanelSnapshot): string {
-  return snapshot.resetCreditLabel || "卡--";
 }
 
 function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot | null; style: CSSProperties }) {

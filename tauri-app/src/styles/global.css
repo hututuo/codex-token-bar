@@ -3653,11 +3653,10 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-status-text {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) max-content;
-  gap: calc(5px * var(--floating-scale));
+  display: block;
   align-items: center;
   min-width: 0;
+  max-width: 100%;
 }
 
 .floating-rate-meter .floating-status-text {
@@ -3669,6 +3668,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-status-text em {
+  display: block;
   color: var(--floating-primary);
   font-size: calc(10.2px * var(--floating-scale));
   font-style: normal;
@@ -3676,18 +3676,6 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   line-height: 1;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.floating-status-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: calc(23px * var(--floating-scale));
-  color: var(--floating-secondary);
-  font-size: calc(8.9px * var(--floating-scale));
-  font-weight: 700;
-  line-height: 1;
   white-space: nowrap;
 }
 

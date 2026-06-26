@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import type { AccountQuotaBundle, FloatingPanelSnapshot } from "../types/dashboard";
 import { compactQuotaLabel } from "../utils/quota";
-import { compactFloatingPaceLabel, compactResetCreditLabel } from "./compactPanelLabels";
+import { compactFloatingUsageStatus } from "./compactPanelLabels";
 import { useCompactPanelQuota } from "./useCompactPanelQuota";
 import { useCompactPanelSnapshot } from "./useCompactPanelSnapshot";
 
@@ -54,13 +54,13 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
   const snapshot = useMemo(
     () => {
       const compactPaceLabel = quota.quota.paceLabel && quota.quota.paceLabel !== "额度待读取"
-        ? compactFloatingPaceLabel(quota.quota.paceLabel)
+        ? compactFloatingUsageStatus(quota.quota.paceLabel, quota.quota.resetCredit)
         : rawSnapshot.trendLabel;
 
       return {
         ...rawSnapshot,
         trendLabel: compactPaceLabel,
-        resetCreditLabel: compactResetCreditLabel(quota.quota.resetCredit),
+        resetCreditLabel: "",
         fiveHourLabel: quotaLabels.fiveHour,
         fiveHourRemainingPercent: quota.quota.fiveHour.remainingPercent,
         sevenDayLabel: quotaLabels.sevenDay,
