@@ -113,11 +113,11 @@ test("floating panel keeps muted pace text black metrics rounded corners and cor
   assert.match(previewSource, /floating-rate-meter--with-status/);
   assert.match(previewSource, /floating-rate-meter--solo/);
   assert.match(previewSource, /hasStatusText \? <em>{statusText}<\/em> : null/);
-  assert.match(previewSource, /tokensPerSecond \/ maxValue/);
+  assert.match(previewSource, /rateFillStyle\(snapshot\.tokensPerSecond, scaleLimit\)/);
   assert.match(stylesSource, /\.floating-rate-track\s*{[\s\S]*?height: calc\(5\.5px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-rate-meter--with-status \.floating-rate-track\s*{[\s\S]*?top: calc\(22px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-rate-meter--solo \.floating-rate-track\s*{[\s\S]*?top: calc\(12\.25px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-rate-track i\s*{[\s\S]*?width: var\(--rate-fill, 0%\);/);
+  assert.match(stylesSource, /\.rate-fill\s*{[\s\S]*?transform: scaleX\(var\(--rate-fill-scale, 0\)\);/);
   assert.match(stylesSource, /\.floating-rate-meter em\s*{[\s\S]*?font-size: calc\(10\.2px \* var\(--floating-scale\)\);[\s\S]*?white-space: nowrap;/);
   assert.match(stylesSource, /\.floating-usage-status-card\s*{[\s\S]*?max-width: min\(calc\(174px \* var\(--floating-scale\)\), 100%\);[\s\S]*?font-size: calc\(13\.6px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-metrics\s*{[\s\S]*?font-size: calc\(9\.4px \* var\(--floating-scale\)\);/);

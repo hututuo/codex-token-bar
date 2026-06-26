@@ -28,10 +28,12 @@ interface DashboardSummarySectionProps {
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onLiveRateReset: () => Promise<void>;
   onLiveThreadSelect: (threadId: string) => void;
+  onToggleLiveRate: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
   platform: PlatformCapabilities;
   radarRefreshGeneration: number;
+  liveRateEnabled: boolean;
   selectedLiveThreadId: string;
 }
 
@@ -50,10 +52,12 @@ export function DashboardSummarySection({
   onFloatingContentVisibilityChange,
   onLiveRateReset,
   onLiveThreadSelect,
+  onToggleLiveRate,
   onToggleFloating,
   onToggleStatusTray,
   platform,
   radarRefreshGeneration,
+  liveRateEnabled,
   selectedLiveThreadId,
 }: DashboardSummarySectionProps) {
   return (
@@ -65,6 +69,7 @@ export function DashboardSummarySection({
         floatingEnabled={displaySurfaces.floatingWindowEnabled}
         floatingSettings={floatingSettings}
         statusTrayLiveTextEnabled={displaySurfaces.statusTrayLiveTextEnabled}
+        liveRateEnabled={liveRateEnabled}
         onFloatingOpacityChange={onFloatingOpacityChange}
         onFloatingScaleChange={onFloatingScaleChange}
         onTokenRateFullScaleChange={onTokenRateFullScaleChange}
@@ -74,6 +79,7 @@ export function DashboardSummarySection({
         onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
         onLiveRateReset={onLiveRateReset}
         onLiveThreadSelect={onLiveThreadSelect}
+        onToggleLiveRate={onToggleLiveRate}
         onToggleFloating={onToggleFloating}
         onToggleStatusTray={onToggleStatusTray}
         liveThreadOptions={liveThreadOptions}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { readAppSettings } from "../api/client";
+import { formatLiveRateValue, rateFillStyle } from "../components/liveRate/rateDisplay";
 import {
   DEFAULT_FLOATING_SETTINGS,
   sanitizeFloatingSettings,
@@ -9,19 +10,13 @@ import { desktopPlatform } from "../platform/desktop";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
 import type { FloatingWindowSettings } from "../types/dashboard";
 
-function statusRateFillPercent(tokensPerSecond: number, fullScale: number): number {
-  if (!Number.isFinite(tokensPerSecond) || tokensPerSecond <= 0) {
-    return 0;
-  }
-  const scaleLimit = Number.isFinite(fullScale) && fullScale > 0 ? fullScale : DEFAULT_FLOATING_SETTINGS.tokenRateFullScale;
-  return Math.min(100, Math.max(7, (tokensPerSecond / scaleLimit) * 100));
-}
-
 export function StatusPanelApp() {
   const [active, setActive] = useState(false);
+  const [liveRateEnabled, setLiveRateEnabled] = useState(true);
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   const { snapshot, quotaLabels } = useCompactPanelData({
     active,
+    liveRateEnabled,
     quotaInitialDelayMs: 0,
     quotaIntervalMs: 180_000,
   });
@@ -34,6 +29,7 @@ export function StatusPanelApp() {
   useEffect(() => {
     let disposed = false;
     let unsubscribe: (() => void) | null = null;
+    let unsubscribeDisplay: (() => void) | null = null;
 
     void desktopPlatform.onFloatingSettingsChanged((payload) => {
       setSettings(sanitizeFloatingSettings(payload));
@@ -45,15 +41,29 @@ export function StatusPanelApp() {
       unsubscribe = handler;
     });
 
+    void desktopPlatform.onDisplaySurfacesChanged((payload) => {
+      setLiveRateEnabled(payload.liveRateEnabled);
+    }).then((handler) => {
+      if (disposed) {
+        handler();
+        return;
+      }
+      unsubscribeDisplay = handler;
+    });
+
     void readAppSettings().then((snapshot) => {
       if (snapshot?.floatingWindow) {
         setSettings(sanitizeFloatingSettings(snapshot.floatingWindow));
+      }
+      if (snapshot?.displaySurfaces) {
+        setLiveRateEnabled(snapshot.displaySurfaces.liveRateEnabled);
       }
     });
 
     return () => {
       disposed = true;
       unsubscribe?.();
+      unsubscribeDisplay?.();
     };
   }, []);
 
@@ -106,7 +116,7 @@ export function StatusPanelApp() {
         <header className="status-panel-head">
           <div>
             <span>Codex Token Bar</span>
-            <strong>{snapshot.tokensPerSecond.toFixed(1)}</strong>
+            <strong>{formatLiveRateValue(snapshot.tokensPerSecond)}</strong>
           </div>
           <div className="status-panel-rate-unit">
             <em>tok/s</em>
@@ -115,7 +125,7 @@ export function StatusPanelApp() {
         </header>
 
         <div className="status-panel-meter" aria-hidden="true">
-          <i style={{ width: `${statusRateFillPercent(snapshot.tokensPerSecond, settings.tokenRateFullScale)}%` }} />
+          <i className="rate-fill" style={rateFillStyle(snapshot.tokensPerSecond, settings.tokenRateFullScale)} />
         </div>
 
         <div className="status-panel-status">

@@ -2,7 +2,9 @@ import {
   notifyFloatingWindowHidden,
   onFloatingSettingsChanged,
   onFloatingWindowHidden,
+  onDisplaySurfacesChanged,
   onLiveRateSnapshot,
+  publishDisplaySurfaces,
   publishFloatingSettings,
 } from "./desktopEvents";
 import { isDesktopRuntimeAvailable } from "./desktopBridge";
@@ -39,6 +41,8 @@ export const desktopPlatform = {
   onFloatingWindowHidden,
   publishFloatingSettings,
   onFloatingSettingsChanged,
+  publishDisplaySurfaces,
+  onDisplaySurfacesChanged,
   resizeFloatingWindow,
   startFloatingWindowDrag,
   setFloatingWindowPosition,

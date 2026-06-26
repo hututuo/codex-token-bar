@@ -37,6 +37,7 @@ export interface DashboardShellSettingsState {
   showSetupGuide: boolean;
   completeSetupGuide: () => Promise<void>;
   toggleAutostart: () => void;
+  toggleLiveRate: () => void;
   toggleFloatingWindow: () => Promise<void>;
   toggleStatusTrayLiveText: () => void;
   updateFloatingOpacity: (opacity: number) => void;
@@ -63,6 +64,7 @@ export function useDashboardShellSettings({
     applyDisplaySurfaces,
     displaySurfaces,
     floatingVisible,
+    toggleLiveRate,
     toggleFloatingWindow,
     toggleStatusTrayLiveText,
   } = useDisplaySurfaceSettings({ platform, liveRate });
@@ -148,6 +150,7 @@ export function useDashboardShellSettings({
     showSetupGuide,
     completeSetupGuide,
     toggleAutostart,
+    toggleLiveRate,
     toggleFloatingWindow,
     toggleStatusTrayLiveText,
     updateFloatingOpacity,

@@ -1,25 +1,26 @@
 import type { CSSProperties } from "react";
 import type { LiveRateSnapshot } from "../../types/dashboard";
-import { clamp } from "../../utils/format";
+import { formatLiveRateValue, rateFillStyle, sanitizeRateFullScale } from "./rateDisplay";
 
 interface LiveRateMeterProps {
   fullScale: number;
+  liveRateEnabled: boolean;
   onFullScaleChange: (fullScale: number) => void;
   snapshot: LiveRateSnapshot;
 }
 
-export function LiveRateMeter({ fullScale, onFullScaleChange, snapshot }: LiveRateMeterProps) {
+export function LiveRateMeter({ fullScale, liveRateEnabled, onFullScaleChange, snapshot }: LiveRateMeterProps) {
   const scaleLimit = sanitizeFullScale(fullScale);
-  const progress = clamp(snapshot.tokensPerSecond / scaleLimit, 0, 1);
   const rangeFill = ((scaleLimit - 50) / 350) * 100;
+  const rateLabel = liveRateEnabled ? formatLiveRateValue(snapshot.tokensPerSecond) : "0.0";
 
   return (
     <div className="rate-meter">
       <div className="rate-meter-main">
         <div className="rate-readout">
-          <strong>{snapshot.tokensPerSecond.toFixed(1)}</strong>
+          <strong>{rateLabel}</strong>
           <span>tok/s</span>
-          <em>全会话输出</em>
+          <em>{liveRateEnabled ? "含输出与工具输入流" : "实时速率已关闭"}</em>
         </div>
         <div className="rate-bar-block">
           <div className="rate-bar-label">
@@ -27,7 +28,7 @@ export function LiveRateMeter({ fullScale, onFullScaleChange, snapshot }: LiveRa
             <span>量程 {scaleLimit} tok/s</span>
           </div>
           <div className="rate-track" aria-hidden="true">
-            <i style={{ width: `${Math.max(6, progress * 100)}%` }} />
+            <i className="rate-fill" style={rateFillStyle(liveRateEnabled ? snapshot.tokensPerSecond : 0, scaleLimit)} />
           </div>
         </div>
       </div>
@@ -49,8 +50,5 @@ export function LiveRateMeter({ fullScale, onFullScaleChange, snapshot }: LiveRa
 }
 
 function sanitizeFullScale(value: number): number {
-  if (!Number.isFinite(value)) {
-    return 200;
-  }
-  return Math.min(400, Math.max(50, Math.round(value / 10) * 10));
+  return sanitizeRateFullScale(value);
 }

@@ -29,6 +29,16 @@ export function pendingLiveRateSnapshot(): LiveRateSnapshot {
   };
 }
 
+export function disabledLiveRateSnapshot(selectedThreadId?: string | null): LiveRateSnapshot {
+  return {
+    ...emptyLiveRateSnapshot(selectedThreadId),
+    scopeLabel: "实时速率",
+    threadTitle: "实时速率已关闭",
+    selectedThreadTitle: selectedThreadId ? "实时速率已关闭" : "选择会话查看单会话速率",
+    warnings: [],
+  };
+}
+
 export function pendingRepairSnapshot(): ProviderRepairSnapshot {
   return {
     ...fallbackProviderRepairSnapshot,

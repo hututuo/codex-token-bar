@@ -460,12 +460,16 @@ function sanitizedQuotaDropValues(values: number[]): number[] {
   return values.filter((value, index) => {
     const previous = index > 0 ? values[index - 1] : null;
     const next = index + 1 < values.length ? values[index + 1] : null;
-    return !isFullUsageSpike(value, previous, next);
+    return !isZeroRemainingSpike(value, previous, next) && !isFullRemainingSpike(value, previous, next);
   });
 }
 
-function isFullUsageSpike(value: number, previous: number | null, next: number | null): boolean {
+function isZeroRemainingSpike(value: number, previous: number | null, next: number | null): boolean {
   return value <= 1 && previous !== null && previous >= 95 && (next === null || next >= 95);
+}
+
+function isFullRemainingSpike(value: number, previous: number | null, next: number | null): boolean {
+  return value >= 99 && previous !== null && next !== null && previous <= 95 && next <= 95;
 }
 
 function quotaPercentValue(value: number): number {

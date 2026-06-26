@@ -16,7 +16,9 @@ import { FloatingPanelSurface } from "./FloatingPanelPreview";
 import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
 
 export function FloatingWindowApp() {
+  const [liveRateEnabled, setLiveRateEnabled] = useState(true);
   const { snapshot } = useCompactPanelData({
+    liveRateEnabled,
     quotaInitialDelayMs: 8_000,
     quotaIntervalMs: 180_000,
   });
@@ -77,6 +79,7 @@ export function FloatingWindowApp() {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
+    let unlistenDisplay: (() => void) | null = null;
 
     void desktopPlatform.onFloatingSettingsChanged((payload) => {
       setSettings(sanitizeFloatingSettings(payload));
@@ -88,9 +91,20 @@ export function FloatingWindowApp() {
       }
     });
 
+    void desktopPlatform.onDisplaySurfacesChanged((payload) => {
+      setLiveRateEnabled(payload.liveRateEnabled);
+    }).then((listener) => {
+      if (disposed) {
+        listener();
+      } else {
+        unlistenDisplay = listener;
+      }
+    });
+
     return () => {
       disposed = true;
       unlisten?.();
+      unlistenDisplay?.();
     };
   }, []);
 
@@ -100,6 +114,7 @@ export function FloatingWindowApp() {
     void readAppSettings().then((settings) => {
       if (!cancelled && settings !== null) {
         setSettings(sanitizeFloatingSettings(settings.floatingWindow));
+        setLiveRateEnabled(settings.displaySurfaces.liveRateEnabled);
       }
     });
 

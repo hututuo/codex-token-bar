@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { saveDisplaySurfaces } from "../api/client";
+import { desktopPlatform } from "../platform/desktop";
 import {
   canUseFloatingWindow,
   canUseStatusTrayLiveText,
@@ -23,6 +24,7 @@ export interface DisplaySurfaceSettingsState {
   displaySurfaces: DisplaySurfaceSettings;
   floatingVisible: boolean;
   applyDisplaySurfaces: (settings: Partial<DisplaySurfaceSettings>) => void;
+  toggleLiveRate: () => void;
   toggleFloatingWindow: () => Promise<void>;
   toggleStatusTrayLiveText: () => void;
 }
@@ -46,7 +48,9 @@ export function useDisplaySurfaceSettings({
     setDisplaySurfaces((current) => {
       const sanitized = sanitizeDisplaySurfaces({ ...current, ...next });
       if (displaySettingsLoaded.current) {
-        void saveDisplaySurfaces(sanitized).catch(() => {});
+        void saveDisplaySurfaces(sanitized)
+          .then((settings) => desktopPlatform.publishDisplaySurfaces(settings.displaySurfaces))
+          .catch(() => {});
       }
       return sanitized;
     });
@@ -81,10 +85,17 @@ export function useDisplaySurfaceSettings({
     updateDisplaySurfaces,
   ]);
 
+  const toggleLiveRate = useCallback(() => {
+    updateDisplaySurfaces({
+      liveRateEnabled: !displaySurfaces.liveRateEnabled,
+    });
+  }, [displaySurfaces.liveRateEnabled, updateDisplaySurfaces]);
+
   return {
     displaySurfaces,
     floatingVisible,
     applyDisplaySurfaces,
+    toggleLiveRate,
     toggleFloatingWindow,
     toggleStatusTrayLiveText,
   };

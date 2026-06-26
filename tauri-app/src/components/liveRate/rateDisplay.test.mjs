@@ -1,0 +1,87 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { readFile } from "node:fs/promises";
+import {
+  formatLiveRateValue,
+  liveRateDisplayBucket,
+  rateFillScale,
+  smoothLiveRateSnapshot,
+  smoothLiveRateValue,
+} from "./rateDisplay.ts";
+
+function snapshot(overrides = {}) {
+  return {
+    scopeLabel: "全会话",
+    threadTitle: "正在汇总",
+    selectedThreadId: null,
+    selectedThreadTitle: "选择会话",
+    selectedTokensPerSecond: 0,
+    tokensPerSecond: 0,
+    totalTokens: 0,
+    totalTokensToday: 0,
+    requestsToday: 0,
+    maxTokensPerSecond: 200,
+    preciseEnabled: false,
+    unreadSummary: {
+      active: false,
+      count: 0,
+      label: "无",
+      detail: "无",
+      source: "test",
+    },
+    warnings: [],
+    ...overrides,
+  };
+}
+
+test("rate fill uses a transform-friendly 0-1 scale with a small visible floor", () => {
+  assert.equal(rateFillScale(0, 200), 0);
+  assert.equal(rateFillScale(1, 200), 0.03);
+  assert.equal(rateFillScale(40, 200), 0.2);
+  assert.equal(rateFillScale(999, 200), 1);
+});
+
+test("live rate display uses EMA and drops idle values to zero quickly", () => {
+  assert.equal(smoothLiveRateValue(10, 0.01), 0);
+  assert.equal(smoothLiveRateValue(10, 40), 18.4);
+  assert.equal(Number(smoothLiveRateValue(40, 10).toFixed(1)), 34.6);
+
+  const smoothed = smoothLiveRateSnapshot(
+    snapshot({ tokensPerSecond: 40, selectedTokensPerSecond: 5 }),
+    snapshot({ tokensPerSecond: 10, selectedTokensPerSecond: 1 }),
+  );
+  assert.equal(Number(smoothed.tokensPerSecond.toFixed(1)), 18.4);
+  assert.equal(Number(smoothed.selectedTokensPerSecond.toFixed(2)), 2.12);
+});
+
+test("live rate display buckets match visible precision", () => {
+  assert.equal(formatLiveRateValue(9.94), "9.9");
+  assert.equal(formatLiveRateValue(10.1), "10");
+  assert.equal(formatLiveRateValue(42.4), "42");
+
+  const first = liveRateDisplayBucket(snapshot({ tokensPerSecond: 42.1 }));
+  const second = liveRateDisplayBucket(snapshot({ tokensPerSecond: 42.4 }));
+  const third = liveRateDisplayBucket(snapshot({ tokensPerSecond: 42.6 }));
+  assert.equal(first, second);
+  assert.notEqual(second, third);
+});
+
+test("rate bars use shared transform fill styles instead of width animation", async () => {
+  const meter = await readFile(new URL("./LiveRateMeter.tsx", import.meta.url), "utf8");
+  const floating = await readFile(new URL("../../floating/FloatingPanelPreview.tsx", import.meta.url), "utf8");
+  const status = await readFile(new URL("../../status/StatusPanelApp.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
+
+  for (const source of [meter, floating, status]) {
+    assert.equal(source.includes("rateFillStyle("), true);
+    assert.equal(source.includes("formatLiveRateValue("), true);
+    assert.equal(source.includes('style={{ width:'), false);
+  }
+  assert.match(css, /\.rate-fill\s*{[\s\S]*?transform-origin: left center;[\s\S]*?transition: transform 200ms ease-out;/);
+  assert.match(css, /\.rate-fill\s*{[\s\S]*?transform: scaleX\(var\(--rate-fill-scale, 0\)\);/);
+  const floatingTrackBlock = css.slice(
+    css.indexOf(".floating-rate-track i {"),
+    css.indexOf(".floating-close-button {"),
+  );
+  assert.doesNotMatch(floatingTrackBlock, /transition: width/);
+});

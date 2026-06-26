@@ -65,7 +65,12 @@ export function pendingDashboardReadyState(): DashboardReadyState {
   return readyDashboardState(initialDashboardState) as DashboardReadyState;
 }
 
-export { initialDashboardState, pendingLiveRateSnapshot, pendingRepairSnapshot } from "./dashboardDefaults";
+export {
+  disabledLiveRateSnapshot,
+  initialDashboardState,
+  pendingLiveRateSnapshot,
+  pendingRepairSnapshot,
+} from "./dashboardDefaults";
 export {
   mergeLiveRate,
   mergeLiveThreadOptions,

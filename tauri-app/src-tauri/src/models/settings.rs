@@ -159,6 +159,8 @@ pub struct DisplaySurfaceSettingsSnapshot {
     #[serde(default = "default_enabled")]
     pub floating_window_enabled: bool,
     #[serde(default = "default_enabled")]
+    pub live_rate_enabled: bool,
+    #[serde(default = "default_enabled")]
     pub status_tray_live_text_enabled: bool,
 }
 
@@ -166,6 +168,7 @@ impl Default for DisplaySurfaceSettingsSnapshot {
     fn default() -> Self {
         Self {
             floating_window_enabled: default_enabled(),
+            live_rate_enabled: default_enabled(),
             status_tray_live_text_enabled: default_enabled(),
         }
     }

@@ -3,11 +3,13 @@ import type { PlatformCapabilities } from "../types/dashboard";
 
 export const DEFAULT_DISPLAY_SURFACES: DisplaySurfaceSettings = {
   floatingWindowEnabled: true,
+  liveRateEnabled: true,
   statusTrayLiveTextEnabled: true,
 };
 
 export const INACTIVE_DISPLAY_SURFACES: DisplaySurfaceSettings = {
   floatingWindowEnabled: false,
+  liveRateEnabled: true,
   statusTrayLiveTextEnabled: false,
 };
 
@@ -19,6 +21,10 @@ export function sanitizeDisplaySurfaces(
       typeof settings.floatingWindowEnabled === "boolean"
         ? settings.floatingWindowEnabled
         : DEFAULT_DISPLAY_SURFACES.floatingWindowEnabled,
+    liveRateEnabled:
+      typeof settings.liveRateEnabled === "boolean"
+        ? settings.liveRateEnabled
+        : DEFAULT_DISPLAY_SURFACES.liveRateEnabled,
     statusTrayLiveTextEnabled:
       typeof settings.statusTrayLiveTextEnabled === "boolean"
         ? settings.statusTrayLiveTextEnabled

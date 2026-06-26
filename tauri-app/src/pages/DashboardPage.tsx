@@ -38,12 +38,14 @@ interface DashboardPageProps {
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onLiveRateReset: () => Promise<void>;
   onLiveThreadSelect: (threadId: string) => void;
+  onToggleLiveRate: () => void;
   onRefresh: () => Promise<void>;
   onToggleAutostart: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
   radarRefreshGeneration: number;
   refreshing: boolean;
+  liveRateEnabled: boolean;
   selectedLiveThreadId: string;
 }
 
@@ -69,12 +71,14 @@ export function DashboardPage({
   onFloatingContentVisibilityChange,
   onLiveRateReset,
   onLiveThreadSelect,
+  onToggleLiveRate,
   onRefresh,
   onToggleAutostart,
   onToggleFloating,
   onToggleStatusTray,
   radarRefreshGeneration,
   refreshing,
+  liveRateEnabled,
   selectedLiveThreadId,
 }: DashboardPageProps) {
   const { analyticsReady, summaryReady } = useDashboardPageLifecycle();
@@ -117,10 +121,12 @@ export function DashboardPage({
               onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
               onLiveRateReset={onLiveRateReset}
               onLiveThreadSelect={onLiveThreadSelect}
+              onToggleLiveRate={onToggleLiveRate}
               onToggleFloating={onToggleFloating}
               onToggleStatusTray={onToggleStatusTray}
               platform={platform}
               radarRefreshGeneration={radarRefreshGeneration}
+              liveRateEnabled={liveRateEnabled}
               selectedLiveThreadId={selectedLiveThreadId}
             />
             {analyticsReady ? (

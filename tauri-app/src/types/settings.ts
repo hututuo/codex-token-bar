@@ -42,5 +42,6 @@ export interface FloatingWindowPosition {
 
 export interface DisplaySurfaceSettings {
   floatingWindowEnabled: boolean;
+  liveRateEnabled: boolean;
   statusTrayLiveTextEnabled: boolean;
 }

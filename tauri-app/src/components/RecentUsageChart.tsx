@@ -127,7 +127,7 @@ export function RecentUsageChart({
       <div className="recent-chart-head">
         <div className="recent-chart-title">
           <h2>{data.title}</h2>
-          <span className="recent-estimate-hint">点击图表估算额度</span>
+          <span className="recent-estimate-hint">点击起点/终点可估算额度</span>
           <span>{data.subtitle}</span>
         </div>
         <div className="recent-range-tabs" aria-label="曲线范围">

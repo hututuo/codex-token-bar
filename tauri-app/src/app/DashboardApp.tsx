@@ -8,6 +8,7 @@ import { useDashboardShellSettings } from "./useDashboardShellSettings";
 
 export function DashboardApp() {
   const [dashboardHydrated, setDashboardHydrated] = useState(false);
+  const [liveRateEnabled, setLiveRateEnabled] = useState(true);
 
   useDashboardHydration(setDashboardHydrated);
   useDashboardScrollReset();
@@ -22,12 +23,16 @@ export function DashboardApp() {
     restoreAutoCodexHome,
     selectedLiveThreadId,
     setSelectedLiveThreadId,
-  } = useDashboardData();
+  } = useDashboardData({ liveRateEnabled });
   const shellSettings = useDashboardShellSettings({
     dashboardHydrated,
     liveRate: readyState.liveRate,
     platform: state.platform,
   });
+
+  useEffect(() => {
+    setLiveRateEnabled(shellSettings.displaySurfaces.liveRateEnabled);
+  }, [shellSettings.displaySurfaces.liveRateEnabled]);
 
   return (
     <>
@@ -52,6 +57,7 @@ export function DashboardApp() {
         onFloatingContentVisibilityChange={shellSettings.updateFloatingContentVisibility}
         onLiveRateReset={resetLiveRate}
         onLiveThreadSelect={setSelectedLiveThreadId}
+        onToggleLiveRate={shellSettings.toggleLiveRate}
         onToggleFloating={shellSettings.toggleFloatingWindow}
         onToggleStatusTray={shellSettings.toggleStatusTrayLiveText}
         onCodexHomeChange={updateCodexHome}
@@ -59,6 +65,7 @@ export function DashboardApp() {
         onCustomAccountDisplayNameChange={shellSettings.updateCustomAccountDisplayName}
         onToggleAutostart={shellSettings.toggleAutostart}
         refreshing={refreshing}
+        liveRateEnabled={shellSettings.displaySurfaces.liveRateEnabled}
         selectedLiveThreadId={selectedLiveThreadId}
       />
       {shellSettings.showSetupGuide ? (

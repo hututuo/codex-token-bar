@@ -72,6 +72,36 @@ fn read_snapshot_deduplicates_sse_and_websocket_sequence_events() {
 }
 
 #[test]
+fn sqlite_tool_argument_deltas_are_distributed_to_avoid_fake_spikes() {
+    let root = temp_root("live-rate-sqlite-tool-args-distributed");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "工具输入摊分", 300);
+    let large_arguments = "x".repeat(900);
+    create_logs_database(&root, |connection, now| {
+        insert_log(
+            connection,
+            1,
+            "thread-a",
+            now,
+            "codex_api::sse::responses",
+            &format!(
+                r#"SSE event: {{"type":"response.function_call_arguments.delta","delta":"{large_arguments}","item_id":"call-a","sequence_number":1,"item":{{"id":"call-a","name":"shell"}}}}"#
+            ),
+        );
+    });
+
+    let snapshot = read_snapshot(&root, None);
+    assert!(snapshot.tokens_per_second > 0.0);
+    assert!(
+        snapshot.tokens_per_second < 90.0,
+        "tool input should be conservatively distributed, got {} tok/s",
+        snapshot.tokens_per_second
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn read_snapshot_includes_selected_thread_rate() {
     let root = temp_root("live-rate-selected-thread");
     fs::create_dir_all(&root).unwrap();

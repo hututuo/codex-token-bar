@@ -272,6 +272,7 @@ mod tests {
             ["quota", "rateAndBar", "usageStatus", "metrics", "radar"]
         );
         assert!(sanitized.display_surfaces.floating_window_enabled);
+        assert!(sanitized.display_surfaces.live_rate_enabled);
         assert!(sanitized.display_surfaces.status_tray_live_text_enabled);
         assert!(!sanitized.setup_guide_completed);
     }
@@ -339,6 +340,7 @@ mod tests {
         );
         assert!(settings.setup_guide_completed);
         assert!(!settings.display_surfaces.floating_window_enabled);
+        assert!(settings.display_surfaces.live_rate_enabled);
         assert!(settings.display_surfaces.status_tray_live_text_enabled);
     }
 
@@ -349,6 +351,7 @@ mod tests {
 
         assert!(settings.codex_home.is_none());
         assert!(settings.display_surfaces.floating_window_enabled);
+        assert!(settings.display_surfaces.live_rate_enabled);
         assert!(settings.display_surfaces.status_tray_live_text_enabled);
         assert!(!settings.setup_guide_completed);
     }

@@ -1863,6 +1863,51 @@ button.quota-side-card:hover {
   background: linear-gradient(90deg, var(--accent), #18c3d5);
 }
 
+.rate-fill {
+  width: 100%;
+  transform: scaleX(var(--rate-fill-scale, 0));
+  transform-origin: left center;
+  transition: transform 200ms ease-out;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rate-fill {
+    transition: none;
+  }
+}
+
+.live-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.live-rate-switch {
+  min-height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 720;
+  padding: 0 12px;
+}
+
+.live-rate-switch.is-active {
+  background: color-mix(in srgb, var(--accent) 88%, #35c4ff);
+  color: white;
+}
+
+.live-rate-note {
+  margin: -2px 0 0;
+  color: color-mix(in srgb, var(--muted) 84%, var(--text));
+  font-size: 10.5px;
+  font-weight: 560;
+  line-height: 1.35;
+}
+
 .session-row,
 .settings-panel {
   border-radius: 10px;
@@ -3609,12 +3654,8 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .floating-rate-track i {
   position: absolute;
   inset: 0 auto 0 0;
-  width: var(--rate-fill, 0%);
-  min-width: 0;
-  max-width: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, rgba(10, 172, 230, 0.98), rgba(34, 111, 232, 0.92));
-  transition: width 180ms ease-out;
 }
 
 .floating-close-button {

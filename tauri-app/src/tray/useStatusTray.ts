@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
+import { formatLiveRateValue } from "../components/liveRate/rateDisplay";
 import { desktopPlatform } from "../platform/desktop";
 import type { LiveRateSnapshot, PlatformCapabilities } from "../types/dashboard";
 
@@ -18,7 +19,7 @@ export function useStatusTray(
       liveTextAvailable
         ? {
             title: formatTrayTitle(liveRate),
-            tooltip: `Codex Token Bar · ${liveRate.tokensPerSecond.toFixed(1)} tok/s`,
+            tooltip: `Codex Token Bar · ${formatLiveRateValue(liveRate.tokensPerSecond)} tok/s`,
           }
         : {
             title: "CTB",
@@ -46,9 +47,5 @@ export function useStatusTray(
 }
 
 function formatTrayTitle(snapshot: Pick<LiveRateSnapshot, "tokensPerSecond">): string {
-  if (snapshot.tokensPerSecond >= 100) {
-    return `${Math.round(snapshot.tokensPerSecond)}/s`;
-  }
-
-  return `${snapshot.tokensPerSecond.toFixed(1)}/s`;
+  return `${formatLiveRateValue(snapshot.tokensPerSecond)}/s`;
 }

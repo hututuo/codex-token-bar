@@ -167,6 +167,27 @@ test("status tray live text reuses dashboard live rate instead of polling compac
   assert.equal(dashboardApp.includes("liveRate: readyState.liveRate"), true);
 });
 
+test("live rate switch stops the shared stream and preserves other refreshes", async () => {
+  const displaySettings = await readFile(new URL("../settings/displaySettings.ts", import.meta.url), "utf8");
+  const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
+  const liveFeed = await readFile(new URL("../state/useLiveRateFeed.ts", import.meta.url), "utf8");
+  const compactData = await readFile(new URL("../surfaces/useCompactPanelData.ts", import.meta.url), "utf8");
+  const floatingWindow = await readFile(new URL("../floating/FloatingWindowApp.tsx", import.meta.url), "utf8");
+  const statusPanel = await readFile(new URL("../status/StatusPanelApp.tsx", import.meta.url), "utf8");
+  const card = await readFile(new URL("../components/LiveRateCard.tsx", import.meta.url), "utf8");
+
+  assert.equal(displaySettings.includes("liveRateEnabled: true"), true);
+  assert.equal(dashboardData.includes("active: fastSnapshotLoaded && liveRateEnabled"), true);
+  assert.equal(dashboardData.includes("disabledLiveRateSnapshot(selectedLiveThreadId)"), true);
+  assert.equal(liveFeed.includes("stopLiveRateStream"), true);
+  assert.equal(liveFeed.includes("resetLiveRateMonitor"), true);
+  assert.equal(compactData.includes("active: active && liveRateEnabled"), true);
+  assert.equal(floatingWindow.includes("onDisplaySurfacesChanged"), true);
+  assert.equal(statusPanel.includes("onDisplaySurfacesChanged"), true);
+  assert.equal(card.includes("实时速率已关闭"), true);
+  assert.equal(card.includes("为避免之前那种日志写入烧硬盘"), true);
+});
+
 test("live rate surfaces subscribe to the shared stream instead of polling snapshots", async () => {
   const liveFeed = await readFile(new URL("../state/useLiveRateFeed.ts", import.meta.url), "utf8");
   const compactSnapshot = await readFile(new URL("../surfaces/useCompactPanelSnapshot.ts", import.meta.url), "utf8");

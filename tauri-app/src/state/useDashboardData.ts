@@ -16,6 +16,7 @@ import type {
   LiveThreadOption,
 } from "../types/dashboard";
 import {
+  disabledLiveRateSnapshot,
   initialDashboardState,
   mergeLiveRate,
   mergeLiveThreadOptions,
@@ -40,7 +41,14 @@ function dashboardIsVisible() {
   return document.visibilityState !== "hidden";
 }
 
-export function useDashboardData(source: DashboardDataSource = dashboardDataSource) {
+interface UseDashboardDataOptions {
+  liveRateEnabled?: boolean;
+  source?: DashboardDataSource;
+}
+
+export function useDashboardData(options: UseDashboardDataOptions = {}) {
+  const source = options.source ?? dashboardDataSource;
+  const liveRateEnabled = options.liveRateEnabled ?? true;
   const [state, setState] = useState<DashboardAppState>(initialDashboardState);
   const [fastSnapshotLoaded, setFastSnapshotLoaded] = useState(false);
   const [loadGeneration, setLoadGeneration] = useState(0);
@@ -185,11 +193,18 @@ export function useDashboardData(source: DashboardDataSource = dashboardDataSour
   });
 
   useLiveRateFeed({
-    active: fastSnapshotLoaded,
+    active: fastSnapshotLoaded && liveRateEnabled,
     selectedThreadId: selectedLiveThreadId,
     source,
     onSnapshot: mergeLiveRateSnapshot,
   });
+
+  useEffect(() => {
+    if (liveRateEnabled) {
+      return;
+    }
+    setState((current) => mergeLiveRate(current, disabledLiveRateSnapshot(selectedLiveThreadId)));
+  }, [liveRateEnabled, selectedLiveThreadId]);
 
   const readyState = useMemo(() => visibleDashboardState(state), [state]);
 

@@ -200,7 +200,10 @@ fn metric_event(event: ResponseStreamEvent, row: &LogRow) -> Option<LiveMetricEv
         delta,
         exact_tokens: None,
         start_timestamp: None,
-        distributed: false,
+        distributed: matches!(
+            category,
+            LiveTokenCategory::ToolArguments | LiveTokenCategory::PatchInput
+        ),
         dedupe_key,
     })
 }

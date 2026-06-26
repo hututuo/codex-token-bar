@@ -142,6 +142,23 @@ test("quotaConsumptionSelection ignores isolated full-usage quota spikes", () =>
   assert.equal(selection?.sevenDay.quotaDropPercent, 2);
 });
 
+test("quotaConsumptionSelection ignores isolated full remaining spikes before reset", () => {
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [
+      point(0, { inputTokens: 100_000, tokens: 100_000, calls: 1, fiveHourRemainingPercent: 0.8, sevenDayRemainingPercent: 0.7 }),
+      point(300, { inputTokens: 100_000, tokens: 100_000, calls: 1, fiveHourRemainingPercent: 1, sevenDayRemainingPercent: 1 }),
+      point(600, { inputTokens: 100_000, tokens: 100_000, calls: 1, fiveHourRemainingPercent: 0.78, sevenDayRemainingPercent: 0.69 }),
+    ],
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+
+  const selection = quotaConsumptionSelection(data, 0, 2, "gpt55");
+
+  assert.equal(selection?.fiveHour.quotaDropPercent, 2);
+  assert.equal(selection?.sevenDay.quotaDropPercent, 1);
+});
+
 test("clickQuotaSelection previews on hover, pins on second click, resets on third click", () => {
   let state = clickQuotaSelection({ startIndex: null, fixedEndIndex: null }, 4, 10);
 
@@ -159,7 +176,6 @@ test("RecentUsageChart exposes click-to-estimate quota UI", async () => {
   const source = await readFile(new URL("../RecentUsageChart.tsx", import.meta.url), "utf8");
 
   for (const expected of [
-    "点击图表估算额度",
     "点击起点/终点可估算额度",
     "quotaConsumptionSelection",
     "clickQuotaSelection",

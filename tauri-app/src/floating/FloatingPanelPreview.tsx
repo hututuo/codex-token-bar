@@ -6,6 +6,7 @@ import {
   secondaryModelRows,
   type CodexRadarSnapshot,
 } from "../components/codexRadar/model";
+import { formatLiveRateValue, rateFillStyle, sanitizeRateFullScale } from "../components/liveRate/rateDisplay";
 import type { FloatingContentGroup, FloatingPanelSnapshot, FloatingUnreadEffect, FloatingWindowSettings } from "../types/dashboard";
 import { embedsUsageStatusInRateRow, layoutFloatingContentGroups } from "./floatingContent";
 import { floatingTextPaletteForGroup } from "./floatingTextPalette";
@@ -24,14 +25,6 @@ function clampPercent(value: number): number {
     return 0;
   }
   return Math.min(100, Math.max(0, value * 100));
-}
-
-function rateFillPercent(tokensPerSecond: number, maxTokensPerSecond: number): number {
-  const maxValue = Number.isFinite(maxTokensPerSecond) && maxTokensPerSecond > 0 ? maxTokensPerSecond : 200;
-  if (!Number.isFinite(tokensPerSecond) || tokensPerSecond <= 0) {
-    return 0;
-  }
-  return Math.min(100, Math.max(0, (tokensPerSecond / maxValue) * 100));
 }
 
 function FloatingQuotaBar({ label, remainingPercent }: { label: string; remainingPercent: number }) {
@@ -64,24 +57,22 @@ function FloatingRateMeter({
   snapshot: FloatingPanelSnapshot;
   statusText?: string;
 }) {
-  const scaleLimit = Number.isFinite(fullScale) && fullScale > 0 ? fullScale : snapshot.maxTokensPerSecond || 200;
-  const fillPercent = rateFillPercent(snapshot.tokensPerSecond, scaleLimit);
-  const visibleFillPercent = fillPercent > 0 ? Math.max(3, fillPercent) : 0;
+  const scaleLimit = sanitizeRateFullScale(fullScale || snapshot.maxTokensPerSecond || 200);
   const hasStatusText = typeof statusText === "string" && statusText.length > 0;
 
   return (
     <span
       className={`floating-rate-meter ${hasStatusText ? "floating-rate-meter--with-status" : "floating-rate-meter--solo"}`}
       role="meter"
-      aria-label={`实时速率 ${snapshot.tokensPerSecond.toFixed(1)} tok/s，满格 ${Math.round(scaleLimit)} tok/s`}
+      aria-label={`实时速率 ${formatLiveRateValue(snapshot.tokensPerSecond)} tok/s，满格 ${Math.round(scaleLimit)} tok/s`}
       aria-valuemin={0}
       aria-valuemax={Math.round(scaleLimit)}
-      aria-valuenow={Number(snapshot.tokensPerSecond.toFixed(1))}
-      style={{ "--rate-fill": `${visibleFillPercent}%` } as CSSProperties}
+      aria-valuenow={Number(formatLiveRateValue(snapshot.tokensPerSecond))}
+      style={rateFillStyle(snapshot.tokensPerSecond, scaleLimit)}
     >
       {hasStatusText ? <em>{statusText}</em> : null}
       <span className="floating-rate-track" aria-hidden="true">
-        <i />
+        <i className="rate-fill" />
       </span>
     </span>
   );
@@ -177,8 +168,8 @@ function FloatingContentRow({
     case "rateAndBar":
       return (
         <div className="floating-row floating-topline" style={style}>
-          <span className="floating-rate-readout" aria-label={`${snapshot.tokensPerSecond.toFixed(1)} tok/s`}>
-            <strong>{snapshot.tokensPerSecond.toFixed(1)}</strong>
+          <span className="floating-rate-readout" aria-label={`${formatLiveRateValue(snapshot.tokensPerSecond)} tok/s`}>
+            <strong>{formatLiveRateValue(snapshot.tokensPerSecond)}</strong>
             <span>tok/s</span>
           </span>
           <FloatingRateMeter

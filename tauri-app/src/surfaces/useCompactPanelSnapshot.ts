@@ -15,6 +15,7 @@ export function useCompactPanelSnapshot({
 
   useEffect(() => {
     if (!active) {
+      setRawSnapshot(emptyFloatingPanelSnapshot);
       return;
     }
 
