@@ -13,7 +13,7 @@ export interface FloatingWindowSettings {
 
 export type FloatingUnreadEffect = "off" | "ripple" | "shimmer";
 export type FloatingGradientDirection = "135deg" | "90deg" | "180deg" | "45deg";
-export type FloatingGradientType = "linear" | "radial";
+export type FloatingGradientType = "linear" | "radial" | "conic";
 export type FloatingContentGroup = "rateAndBar" | "usageStatus" | "metrics" | "quota" | "radar";
 
 export interface FloatingContentVisibility {

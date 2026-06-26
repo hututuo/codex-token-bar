@@ -197,7 +197,7 @@ fn sanitize_gradient_direction(value: &str) -> String {
 
 fn sanitize_gradient_type(value: &str) -> String {
     match value {
-        "linear" | "radial" => value.into(),
+        "linear" | "radial" | "conic" => value.into(),
         _ => "linear".into(),
     }
 }
@@ -243,7 +243,7 @@ mod tests {
                 "gradientStart": "blue",
                 "gradientEnd": "#12",
                 "gradientDirection": "270deg",
-                "gradientType": "conic",
+                "gradientType": "mesh",
                 "textTone": 4,
                 "contentVisibility": {
                     "showRadar": false,
@@ -309,7 +309,7 @@ mod tests {
                 "gradientStart": "#ABCDEF",
                 "gradientEnd": "#123456",
                 "gradientDirection": "90deg",
-                "gradientType": "radial",
+                "gradientType": "conic",
                 "textTone": -0.5,
                 "contentVisibility": {
                     "showUsageStatus": false,
@@ -330,7 +330,7 @@ mod tests {
         assert_eq!(settings.floating_window.gradient_start, "#ABCDEF");
         assert_eq!(settings.floating_window.gradient_end, "#123456");
         assert_eq!(settings.floating_window.gradient_direction, "90deg");
-        assert_eq!(settings.floating_window.gradient_type, "radial");
+        assert_eq!(settings.floating_window.gradient_type, "conic");
         assert_eq!(settings.floating_window.text_tone, -0.5);
         assert!(!settings.floating_window.content_visibility.show_usage_status);
         assert_eq!(

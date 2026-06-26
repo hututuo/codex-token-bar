@@ -89,7 +89,7 @@ function sanitizeGradientDirection(value: unknown): FloatingWindowSettings["grad
 }
 
 function sanitizeGradientType(value: unknown): FloatingWindowSettings["gradientType"] {
-  if (value === "linear" || value === "radial") {
+  if (value === "linear" || value === "radial" || value === "conic") {
     return value;
   }
   return DEFAULT_FLOATING_SETTINGS.gradientType;

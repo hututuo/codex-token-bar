@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const previewSource = readFileSync(join(currentDir, "FloatingPanelPreview.tsx"), "utf8");
+const floatingWindowSource = readFileSync(join(currentDir, "FloatingWindowApp.tsx"), "utf8");
 const stylesSource = readFileSync(join(currentDir, "../styles/global.css"), "utf8");
 const settingsPanelSource = readFileSync(
   join(currentDir, "../components/liveRate/LiveRateSettingsPanel.tsx"),
@@ -108,4 +109,6 @@ test("floating gradient palette exposes color direction and type controls", () =
   assert.match(settingsPanelSource, /aria-label="渐变结束颜色"/);
   assert.match(settingsPanelSource, /aria-label="渐变方向"/);
   assert.match(settingsPanelSource, /aria-label="渐变类型"/);
+  assert.match(settingsPanelSource, /<option value="conic">环向<\/option>/);
+  assert.match(floatingWindowSource, /conic-gradient\(from \$\{settings\.gradientDirection\} at 50% 50%/);
 });

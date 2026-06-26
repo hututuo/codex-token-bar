@@ -265,6 +265,7 @@ function PaletteSettingsCallout({
           >
             <option value="linear">线性</option>
             <option value="radial">柔光</option>
+            <option value="conic">环向</option>
           </select>
         </label>
       </div>

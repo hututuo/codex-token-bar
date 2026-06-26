@@ -21,13 +21,13 @@ test("sanitizeFloatingSettings keeps valid gradient palette values", () => {
     gradientStart: "#ABCDEF",
     gradientEnd: "#123456",
     gradientDirection: "90deg",
-    gradientType: "radial",
+    gradientType: "conic",
   });
 
   assert.equal(settings.gradientStart, "#abcdef");
   assert.equal(settings.gradientEnd, "#123456");
   assert.equal(settings.gradientDirection, "90deg");
-  assert.equal(settings.gradientType, "radial");
+  assert.equal(settings.gradientType, "conic");
   assert.equal(settings.tokenRateFullScale, 260);
 });
 
@@ -40,7 +40,7 @@ test("sanitizeFloatingSettings falls back for invalid gradient palette values", 
     gradientStart: "blue",
     gradientEnd: "#12",
     gradientDirection: "270deg",
-    gradientType: "conic",
+    gradientType: "mesh",
   });
 
   assert.equal(settings.opacity, 1);
