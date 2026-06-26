@@ -136,6 +136,7 @@ pub fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
     Ok(summary)
 }
 
+#[cfg(test)]
 pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
     let snapshot = dashboard_snapshot(codex_home)?;
     let today = snapshot.activity_days.last();
@@ -144,6 +145,16 @@ pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, S
         today_tokens: today.map_or(0, |day| day.tokens),
         today_requests: today.map_or(0, |day| day.calls),
     })
+}
+
+pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
+    let cache = DASHBOARD_AGGREGATE_CACHE.get_or_init(|| Mutex::new(None));
+    cache
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().cloned())
+        .filter(|cached| cached.signature.codex_home == codex_home)
+        .map(|cached| cached.summary)
 }
 
 fn usage_summary_from_events(events: &[TokenEvent], local_offset: UtcOffset) -> TokenUsageSummary {
@@ -243,13 +254,17 @@ fn dashboard_scan_signature(codex_home: &Path, session_files: &[PathBuf]) -> Das
 }
 
 fn cached_dashboard_snapshot(signature: &DashboardScanSignature) -> Option<DashboardSnapshot> {
+    cached_dashboard_aggregate(signature).and_then(|cached| cached.snapshot)
+}
+
+fn cached_dashboard_aggregate(
+    signature: &DashboardScanSignature,
+) -> Option<CachedDashboardAggregate> {
     let cache = DASHBOARD_AGGREGATE_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(guard) = cache.lock() {
         if let Some(cached) = guard.as_ref() {
             if &cached.signature == signature {
-                if let Some(snapshot) = cached.snapshot.clone() {
-                    return Some(snapshot);
-                }
+                return Some(cached.clone());
             }
         }
     }
@@ -261,7 +276,7 @@ fn cached_dashboard_snapshot(signature: &DashboardScanSignature) -> Option<Dashb
             cached.snapshot.clone(),
             cached.summary.clone(),
         );
-        cached.snapshot
+        Some(cached)
     } else {
         None
     }

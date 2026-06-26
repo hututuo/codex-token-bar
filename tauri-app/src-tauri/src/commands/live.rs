@@ -140,10 +140,12 @@ impl LiveRateMonitorRegistry {
                     }
                 };
 
-                startup_trace::mark_performance(format!(
-                    "live_rate_stream_tick {}ms ok",
-                    started.elapsed().as_millis()
-                ));
+                let elapsed_ms = started.elapsed().as_millis();
+                if elapsed_ms > 50 {
+                    startup_trace::mark_performance(format!(
+                        "live_rate_stream_tick {elapsed_ms}ms slow"
+                    ));
+                }
                 let active = snapshot.tokens_per_second > 0.05
                     || snapshot.selected_tokens_per_second > 0.05;
                 let _ = app.emit(LIVE_RATE_SNAPSHOT_EVENT, snapshot);

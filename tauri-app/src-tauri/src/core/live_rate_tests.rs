@@ -125,12 +125,28 @@ fn read_snapshot_keeps_idle_state_with_warning_when_logs_database_is_missing() {
 }
 
 #[test]
-fn floating_snapshot_uses_precise_token_summary_when_available() {
+fn read_snapshot_uses_lightweight_state_summary_before_precise_cache_exists() {
     let root = temp_root("live-rate-precise-summary");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
     create_logs_database(&root, |_connection, _now| {});
     write_token_session(&root, 1_000, 40);
+
+    let snapshot = read_snapshot(&root, None);
+    assert_eq!(snapshot.total_tokens_today, 9_999_999);
+    assert_eq!(snapshot.requests_today, 1);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn floating_snapshot_uses_precise_token_summary_when_cached() {
+    let root = temp_root("live-rate-cached-precise-summary");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
+    create_logs_database(&root, |_connection, _now| {});
+    write_token_session(&root, 1_000, 40);
+    crate::core::usage::token_count_jsonl::dashboard_snapshot(&root).unwrap();
 
     let snapshot = read_snapshot(&root, None);
     assert_eq!(snapshot.total_tokens_today, 40);

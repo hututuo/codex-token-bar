@@ -15,6 +15,7 @@ use stream::{rollup_metric_events, rollup_stream_rows};
 const LOOKBACK_SECONDS: f64 = 8.0;
 const MAX_TOKENS_PER_SECOND: f64 = 200.0;
 const PRECISE_USAGE_SUMMARY_TTL: Duration = Duration::from_secs(30);
+const FALLBACK_USAGE_SUMMARY_TTL: Duration = Duration::from_secs(5);
 const UNREAD_SUMMARY_TTL: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
@@ -22,9 +23,11 @@ struct CachedPreciseUsageSummary {
     codex_home: PathBuf,
     summary: UsageSummary,
     refreshed_at: Instant,
+    precise: bool,
 }
 
-static PRECISE_USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedPreciseUsageSummary>>> = OnceLock::new();
+static PRECISE_USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedPreciseUsageSummary>>> =
+    OnceLock::new();
 static UNREAD_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUnreadSummary>>> = OnceLock::new();
 
 #[derive(Clone)]
@@ -32,6 +35,20 @@ struct CachedUnreadSummary {
     codex_home: PathBuf,
     summary: UnreadSummary,
     refreshed_at: Instant,
+    signature: UnreadStoreSignature,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct UnreadStoreSignature {
+    unread_state: StoreFileSignature,
+    state_database: StoreFileSignature,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StoreFileSignature {
+    exists: bool,
+    len: u64,
+    modified_at: Option<SystemTime>,
 }
 
 mod logs;
@@ -217,45 +234,61 @@ fn read_precise_usage_summary_or_fallback(
     let cache = PRECISE_USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(guard) = cache.lock() {
         if let Some(cached) = guard.as_ref() {
-            if cached.codex_home == codex_home && now.duration_since(cached.refreshed_at) <= PRECISE_USAGE_SUMMARY_TTL {
+            let ttl = if cached.precise {
+                PRECISE_USAGE_SUMMARY_TTL
+            } else {
+                FALLBACK_USAGE_SUMMARY_TTL
+            };
+            if cached.codex_home == codex_home && now.duration_since(cached.refreshed_at) <= ttl {
                 return cached.summary.clone();
             }
         }
     }
 
-    match token_count_jsonl::dashboard_usage_summary(codex_home) {
-        Ok(summary) => {
-            let summary = UsageSummary {
-                total_tokens: summary.total_tokens,
-                today_tokens: summary.today_tokens,
-                today_requests: summary.today_requests,
-            };
-            if let Ok(mut guard) = cache.lock() {
-                *guard = Some(CachedPreciseUsageSummary {
-                    codex_home: codex_home.to_path_buf(),
-                    summary: summary.clone(),
-                    refreshed_at: now,
-                });
-            }
-            summary
+    if let Some(summary) = token_count_jsonl::cached_dashboard_usage_summary(codex_home) {
+        let summary = UsageSummary {
+            total_tokens: summary.total_tokens,
+            today_tokens: summary.today_tokens,
+            today_requests: summary.today_requests,
+        };
+        if let Ok(mut guard) = cache.lock() {
+            *guard = Some(CachedPreciseUsageSummary {
+                codex_home: codex_home.to_path_buf(),
+                summary: summary.clone(),
+                refreshed_at: now,
+                precise: true,
+            });
         }
-        Err(error) => {
-            warnings.push(live_rate_summary_warning(format!(
-                "读取精确 token 汇总失败，已退回会话索引：{}（{}）",
-                codex_home.join("sessions").display(),
-                error
-            )));
-            read_usage_summary_or_default(codex_home, warnings)
-        }
+        return summary;
     }
+
+    let summary = read_usage_summary_or_default(codex_home, warnings);
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(CachedPreciseUsageSummary {
+            codex_home: codex_home.to_path_buf(),
+            summary: summary.clone(),
+            refreshed_at: now,
+            precise: false,
+        });
+    }
+    summary
 }
 
 fn read_unread_summary_cached(codex_home: &Path) -> UnreadSummary {
     let now = Instant::now();
+    let signature = unread_store_signature(codex_home);
     let cache = UNREAD_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(guard) = cache.lock() {
         if let Some(cached) = guard.as_ref() {
-            if cached.codex_home == codex_home && now.duration_since(cached.refreshed_at) <= UNREAD_SUMMARY_TTL {
+            if cached.codex_home == codex_home
+                && cached.signature == signature
+                && signature.unread_state.exists
+            {
+                return cached.summary.clone();
+            }
+            if cached.codex_home == codex_home
+                && now.duration_since(cached.refreshed_at) <= UNREAD_SUMMARY_TTL
+            {
                 return cached.summary.clone();
             }
         }
@@ -267,9 +300,31 @@ fn read_unread_summary_cached(codex_home: &Path) -> UnreadSummary {
             codex_home: codex_home.to_path_buf(),
             summary: summary.clone(),
             refreshed_at: now,
+            signature,
         });
     }
     summary
+}
+
+fn unread_store_signature(codex_home: &Path) -> UnreadStoreSignature {
+    UnreadStoreSignature {
+        unread_state: store_file_signature(&codex_home.join(".codex-global-state.json")),
+        state_database: store_file_signature(&codex_home.join("state_5.sqlite")),
+    }
+}
+
+fn store_file_signature(path: &Path) -> StoreFileSignature {
+    std::fs::metadata(path)
+        .map(|metadata| StoreFileSignature {
+            exists: true,
+            len: metadata.len(),
+            modified_at: metadata.modified().ok(),
+        })
+        .unwrap_or(StoreFileSignature {
+            exists: false,
+            len: 0,
+            modified_at: None,
+        })
 }
 
 fn read_thread_title_or_warn(
