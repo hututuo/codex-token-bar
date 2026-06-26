@@ -13,12 +13,16 @@ const settingsPanelSource = readFileSync(
   "utf8",
 );
 
-test("ripple uses compositor layers instead of realtime canvas drawing", () => {
-  assert.match(previewSource, /<FloatingUnreadRippleLayers \/>/);
-  assert.match(stylesSource, /\.unread-ripple-source/);
-  assert.match(stylesSource, /\.unread-ripple-ring/);
+test("ripple uses a Swift-style sprite image atlas instead of realtime DOM canvas drawing", () => {
+  assert.match(previewSource, /<FloatingUnreadRippleSprite \/>/);
+  assert.match(previewSource, /function renderRippleAtlas/);
+  assert.match(stylesSource, /\.unread-ripple-sprite/);
+  assert.match(previewSource, /<img/);
+  assert.match(previewSource, /URL\.createObjectURL/);
+  assert.match(previewSource, /URL\.revokeObjectURL/);
+  assert.match(previewSource, /canvas\.toBlob/);
   assert.doesNotMatch(previewSource, /<canvas/);
-  assert.doesNotMatch(previewSource, /getContext\("2d"\)/);
+  assert.doesNotMatch(previewSource, /toDataURL/);
   assert.doesNotMatch(previewSource, /window\.setInterval/);
   assert.doesNotMatch(previewSource, /drawUnreadRippleCanvasFrame/);
   assert.doesNotMatch(previewSource, /preserveAspectRatio="none"/);
@@ -26,40 +30,41 @@ test("ripple uses compositor layers instead of realtime canvas drawing", () => {
 });
 
 test("ripple renderer keeps the Swift-style reflection math", () => {
-  assert.doesNotMatch(previewSource, /--ripple-delay/);
-  assert.match(previewSource, /const RIPPLE_RINGS = \[/);
-  assert.match(previewSource, /const RIPPLE_SOURCES = \[/);
-  assert.match(previewSource, /data-ripple-source/);
-  assert.match(previewSource, /\{ x: 50, y: -50, strength: 0\.84, delay: 0\.24 \}/);
-  assert.match(previewSource, /\{ x: 50, y: 250, strength: 0\.52, delay: 0\.48 \}/);
-  assert.match(previewSource, /\{ x: -50, y: 50, strength: 0\.66, delay: 0\.34 \}/);
-  assert.match(previewSource, /unread-ripple-ring unread-ripple-ring--\$\{ringIndex\}/);
-  const ringMatches = previewSource.match(/\{ offset: -?\d+(?:\.\d+)?, alpha: \d(?:\.\d+)?, thickness: \d(?:\.\d+)? \}/g) ?? [];
+  assert.match(previewSource, /const RIPPLE_CYCLE_SECONDS = 3\.25/);
+  assert.match(previewSource, /const RIPPLE_ACTIVE_FRACTION = 0\.92/);
+  assert.match(previewSource, /const RIPPLE_TARGET_FPS = 30/);
+  assert.match(previewSource, /Math\.max\(Math\.max\(request\.width, request\.height\) \* 0\.82, request\.height \* 2\.25\)/);
+  assert.match(previewSource, /point: \{ x: center\.x, y: -center\.y \}, arrivalDistance: center\.y, strength: 0\.84, isDirect: false/);
+  assert.match(previewSource, /point: \{ x: center\.x, y: center\.y \+ 2 \* request\.height \}[\s\S]*?arrivalDistance: request\.height \+ center\.y[\s\S]*?strength: 0\.52[\s\S]*?isDirect: false/);
+  assert.match(previewSource, /point: \{ x: -center\.x, y: center\.y \}, arrivalDistance: center\.x, strength: 0\.66, isDirect: false/);
+  const ringMatches = previewSource.match(/\{ offset: -?\d+(?:\.\d+)? \* request\.scale, alpha: \d(?:\.\d+)?, thickness: \d(?:\.\d+)? \}/g) ?? [];
   assert.equal(ringMatches.length, 5);
 });
 
 test("ripple renderer avoids javascript frame timers", () => {
-  assert.doesNotMatch(previewSource, /requestAnimationFrame/);
   assert.doesNotMatch(previewSource, /setInterval/);
   assert.doesNotMatch(previewSource, /setTimeout/);
   assert.doesNotMatch(previewSource, /function refreshUnreadRippleLayout/);
 });
 
-test("ripple renderer keeps visible ring strength without edge rebound glow", () => {
-  assert.match(stylesSource, /opacity: calc\(var\(--ripple-ring-alpha, 1\) \* var\(--ripple-source-strength, 1\) \* 0\.64\);/);
-  assert.match(stylesSource, /border: var\(--ripple-ring-thickness, 2px\) solid rgba\(var\(--floating-effect-rgb\), 0\.62\);/);
-  assert.match(stylesSource, /rgba\(255, 255, 255, 0\.20\)/);
+test("ripple renderer keeps Swift frame cache budget without edge contact glow", () => {
+  assert.match(previewSource, /const RIPPLE_MAX_FRAME_SEQUENCE_BYTES = 48 \* 1024 \* 1024/);
+  assert.match(previewSource, /function cappedRippleBackingScale/);
   assert.doesNotMatch(previewSource, /function drawEdgeContact/);
   assert.doesNotMatch(previewSource, /function drawEdgeGlow/);
   assert.doesNotMatch(previewSource, /function gaussian/);
+  assert.doesNotMatch(previewSource, /amount \* 0\.27/);
 });
 
-test("ripple reaches panel edges with wider ring spacing", () => {
-  assert.match(stylesSource, /--ripple-max-radius: 265%/);
-  assert.match(previewSource, /offset: -8\.4/);
-  assert.match(previewSource, /offset: -16\.8/);
-  assert.match(previewSource, /offset: -25\.2/);
-  assert.match(previewSource, /offset: -33\.6/);
+test("ripple uses Swift ring spacing and discrete frame playback", () => {
+  assert.match(previewSource, /offset: -6\.2 \* request\.scale/);
+  assert.match(previewSource, /offset: -12\.4 \* request\.scale/);
+  assert.match(previewSource, /offset: -18\.6 \* request\.scale/);
+  assert.match(previewSource, /offset: -24\.8 \* request\.scale/);
+  assert.match(stylesSource, /animation-name: unread-ripple-sprite;/);
+  assert.match(stylesSource, /animation-duration: 3\.25s;/);
+  assert.match(stylesSource, /transform: translate3d\(0, var\(--ripple-frame-shift, -100%\), 0\);/);
+  assert.doesNotMatch(stylesSource, /background-position/);
 });
 
 test("ripple effect layer uses the actual floating panel edge", () => {
@@ -71,7 +76,14 @@ test("ripple effect layer uses the actual floating panel edge", () => {
 test("ripple effect does not add a static center disk", () => {
   const match = /\.unread-effect--ripple\s*{([\s\S]*?)}/.exec(stylesSource);
   assert.ok(match, "ripple effect style should exist");
+  assert.match(match[1], /background:\s*transparent;/);
   assert.doesNotMatch(match[1], /radial-gradient\(circle at 50% 50%/);
+});
+
+test("ripple sprite inherits the floating panel radius and renders against the outer effect layer", () => {
+  assert.match(previewSource, /const containerComputed = element\.parentElement \? getComputedStyle\(element\.parentElement\) : computed/);
+  assert.match(previewSource, /cornerRadius: readRippleCornerRadius\(containerComputed, width, height\)/);
+  assert.match(stylesSource, /\.unread-ripple-sprite\s*{[\s\S]*?border-radius: inherit;/);
 });
 
 test("floating panel keeps muted pace text black metrics rounded corners and corner close button", () => {

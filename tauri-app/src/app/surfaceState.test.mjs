@@ -280,6 +280,8 @@ test("debug launcher stages a runnable app and stops stale debug instances", asy
   );
 
   assert.equal(script.includes("stop_other_debug_apps"), true);
+  assert.equal(script.includes("wait_for_debug_apps_to_stop"), true);
+  assert.match(script, /stop_other_debug_apps\s*\n\s*wait_for_debug_apps_to_stop/);
   assert.equal(script.includes("stage_runnable_app"), true);
   assert.equal(script.includes("target/debug/run-bundle"), true);
 });

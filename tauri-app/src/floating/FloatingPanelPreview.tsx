@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import {
   displayRadarNumber,
   percentText,
@@ -261,29 +261,47 @@ function compactModelName(label: string): string {
     .trim();
 }
 
-const RIPPLE_RINGS = [
-  { offset: 0, alpha: 1, thickness: 2.4 },
-  { offset: -8.4, alpha: 0.66, thickness: 2.08 },
-  { offset: -16.8, alpha: 0.46, thickness: 1.82 },
-  { offset: -25.2, alpha: 0.34, thickness: 1.58 },
-  { offset: -33.6, alpha: 0.24, thickness: 1.36 },
-];
+const RIPPLE_CYCLE_SECONDS = 3.25;
+const RIPPLE_ACTIVE_FRACTION = 0.92;
+const RIPPLE_TARGET_FPS = 30;
+const RIPPLE_MAX_FRAME_SEQUENCE_BYTES = 48 * 1024 * 1024;
+const RIPPLE_MIN_BACKING_SCALE = 1;
+const RIPPLE_MAX_BACKING_SCALE = 2;
 
-const RIPPLE_SOURCES = [
-  { x: 50, y: 50, strength: 1, delay: 0 },
-  { x: 50, y: -50, strength: 0.84, delay: 0.24 },
-  { x: 50, y: 150, strength: 0.84, delay: 0.24 },
-  { x: 50, y: -150, strength: 0.52, delay: 0.48 },
-  { x: 50, y: 250, strength: 0.52, delay: 0.48 },
-  { x: -50, y: 50, strength: 0.66, delay: 0.34 },
-  { x: 150, y: 50, strength: 0.66, delay: 0.34 },
-];
+interface RippleAtlas {
+  descriptor: string;
+  frameCount: number;
+  frameShiftPercent: number;
+  url: string;
+}
+
+interface RippleRGB {
+  red: number;
+  green: number;
+  blue: number;
+}
+
+interface RippleRenderRequest {
+  backingScale: number;
+  color: RippleRGB;
+  cornerRadius: number;
+  height: number;
+  scale: number;
+  width: number;
+}
+
+interface RippleSource {
+  arrivalDistance: number;
+  isDirect: boolean;
+  point: { x: number; y: number };
+  strength: number;
+}
 
 function UnreadEffect({ effect }: { effect: FloatingUnreadEffect }) {
   if (effect === "ripple") {
     return (
       <span className="unread-effect unread-effect--ripple" aria-hidden="true">
-        <FloatingUnreadRippleLayers />
+        <FloatingUnreadRippleSprite />
       </span>
     );
   }
@@ -291,38 +309,380 @@ function UnreadEffect({ effect }: { effect: FloatingUnreadEffect }) {
   return <span className={`unread-effect unread-effect--${effect}`} aria-hidden="true" />;
 }
 
-function FloatingUnreadRippleLayers() {
+function FloatingUnreadRippleSprite() {
+  const spriteRef = useRef<HTMLSpanElement | null>(null);
+  const atlasUrlRef = useRef<string | null>(null);
+  const descriptorRef = useRef("");
+  const pendingDescriptorRef = useRef("");
+  const [atlas, setAtlas] = useState<RippleAtlas | null>(null);
+
+  useLayoutEffect(() => {
+    const element = spriteRef.current;
+    if (!element) {
+      return undefined;
+    }
+
+    let disposed = false;
+    const renderIfNeeded = async () => {
+      const request = readRippleRenderRequest(element);
+      if (!request) {
+        return;
+      }
+      const descriptor = rippleDescriptor(request);
+      if (descriptor === descriptorRef.current || descriptor === pendingDescriptorRef.current) {
+        return;
+      }
+      pendingDescriptorRef.current = descriptor;
+      const nextAtlas = await renderRippleAtlas(request, descriptor);
+      if (pendingDescriptorRef.current === descriptor) {
+        pendingDescriptorRef.current = "";
+      }
+      if (disposed || !nextAtlas) {
+        if (nextAtlas) {
+          URL.revokeObjectURL(nextAtlas.url);
+        }
+        return;
+      }
+      descriptorRef.current = descriptor;
+      if (atlasUrlRef.current) {
+        URL.revokeObjectURL(atlasUrlRef.current);
+      }
+      atlasUrlRef.current = nextAtlas.url;
+      setAtlas(nextAtlas);
+    };
+
+    void renderIfNeeded();
+    const resizeObserver = new ResizeObserver(() => {
+      void renderIfNeeded();
+    });
+    resizeObserver.observe(element);
+    return () => {
+      disposed = true;
+      resizeObserver.disconnect();
+      if (atlasUrlRef.current) {
+        URL.revokeObjectURL(atlasUrlRef.current);
+        atlasUrlRef.current = null;
+      }
+    };
+  }, []);
+
   return (
-    <>
-      {RIPPLE_SOURCES.map((source, sourceIndex) => (
-        <span
-          className="unread-ripple-source"
-          data-ripple-source={sourceIndex}
-          key={`${source.x}-${source.y}-${sourceIndex}`}
-          style={
-            {
-              "--ripple-source-x": `${source.x}%`,
-              "--ripple-source-y": `${source.y}%`,
-              "--ripple-source-strength": source.strength,
-              "--ripple-source-delay": `${source.delay}s`,
-            } as CSSProperties
-          }
-        >
-          {RIPPLE_RINGS.map((ring, ringIndex) => (
-            <span
-              className={`unread-ripple-ring unread-ripple-ring--${ringIndex}`}
-              key={ringIndex}
-              style={
-                {
-                  "--ripple-ring-offset": `${ring.offset}px`,
-                  "--ripple-ring-alpha": ring.alpha,
-                  "--ripple-ring-thickness": `${ring.thickness}px`,
-                } as CSSProperties
-              }
-            />
-          ))}
-        </span>
-      ))}
-    </>
+    <span
+      className="unread-ripple-sprite"
+      ref={spriteRef}
+      style={
+        atlas
+          ? ({
+              "--ripple-frame-count": atlas.frameCount,
+              "--ripple-frame-shift": `${atlas.frameShiftPercent}%`,
+            } as CSSProperties)
+          : undefined
+      }
+    >
+      {atlas ? (
+        <img
+          alt=""
+          aria-hidden="true"
+          className="unread-ripple-image"
+          draggable={false}
+          src={atlas.url}
+          style={{ animationTimingFunction: `steps(${Math.max(1, atlas.frameCount - 1)})` } as CSSProperties}
+        />
+      ) : null}
+    </span>
   );
+}
+
+function readRippleRenderRequest(element: HTMLElement): RippleRenderRequest | null {
+  const rect = element.getBoundingClientRect();
+  const width = Math.max(1, rect.width);
+  const height = Math.max(1, rect.height);
+  const frameCount = rippleBaseFrameCount();
+  const preferredScale = window.devicePixelRatio || RIPPLE_MAX_BACKING_SCALE;
+  const backingScale = cappedRippleBackingScale(width, height, preferredScale, frameCount);
+  if (!backingScale) {
+    return null;
+  }
+  const computed = getComputedStyle(element);
+  const containerComputed = element.parentElement ? getComputedStyle(element.parentElement) : computed;
+  return {
+    backingScale,
+    color: readFloatingEffectRGB(computed),
+    cornerRadius: readRippleCornerRadius(containerComputed, width, height),
+    height,
+    scale: readFloatingScale(computed),
+    width,
+  };
+}
+
+async function renderRippleAtlas(request: RippleRenderRequest, descriptor: string): Promise<RippleAtlas | null> {
+  const baseFrameCount = rippleBaseFrameCount();
+  const frameCount = baseFrameCount + 1;
+  const pixelWidth = Math.max(1, Math.ceil(request.width * request.backingScale));
+  const pixelHeight = Math.max(1, Math.ceil(request.height * request.backingScale));
+  const canvas = document.createElement("canvas");
+  canvas.width = pixelWidth;
+  canvas.height = pixelHeight * frameCount;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return null;
+  }
+
+  for (let index = 0; index < frameCount; index += 1) {
+    const phase = index === baseFrameCount ? 0 : index / baseFrameCount;
+    context.save();
+    context.translate(0, index * pixelHeight);
+    context.scale(request.backingScale, request.backingScale);
+    drawRippleFrame(context, request, phase);
+    context.restore();
+  }
+
+  const url = await canvasToObjectURL(canvas);
+  if (!url) {
+    return null;
+  }
+
+  return {
+    descriptor,
+    frameCount,
+    frameShiftPercent: -((frameCount - 1) / frameCount) * 100,
+    url,
+  };
+}
+
+function canvasToObjectURL(canvas: HTMLCanvasElement): Promise<string | null> {
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => {
+      resolve(blob ? URL.createObjectURL(blob) : null);
+    }, "image/png");
+  });
+}
+
+function drawRippleFrame(context: CanvasRenderingContext2D, request: RippleRenderRequest, phase: number) {
+  context.save();
+  roundedRectPath(context, 0, 0, request.width, request.height, request.cornerRadius);
+  context.clip();
+
+  const pulse = (Math.sin(phase * Math.PI * 2) + 1) / 2;
+  context.fillStyle = rgba(request.color, 0.020 + 0.014 * pulse);
+  context.fillRect(0, 0, request.width, request.height);
+
+  if (phase < RIPPLE_ACTIVE_FRACTION) {
+    drawCircularRippleReflections(context, request, phase / RIPPLE_ACTIVE_FRACTION);
+  }
+  context.restore();
+}
+
+function drawCircularRippleReflections(context: CanvasRenderingContext2D, request: RippleRenderRequest, phase: number) {
+  const fadeOut = smoothPulseFade(phase);
+  const center = { x: request.width / 2, y: request.height / 2 };
+  const maxRadius = Math.max(Math.max(request.width, request.height) * 0.82, request.height * 2.25);
+  const baseRadius = maxRadius * easeOutSine(phase);
+  const waveAlpha = fadeOut * (1.04 - 0.26 * phase);
+  const rings = [
+    { offset: 0 * request.scale, alpha: 1.00, thickness: 2.40 },
+    { offset: -6.2 * request.scale, alpha: 0.66, thickness: 2.08 },
+    { offset: -12.4 * request.scale, alpha: 0.46, thickness: 1.82 },
+    { offset: -18.6 * request.scale, alpha: 0.34, thickness: 1.58 },
+    { offset: -24.8 * request.scale, alpha: 0.24, thickness: 1.36 },
+  ];
+  const sources = rippleSources(request, center);
+
+  for (const ring of rings) {
+    const radius = baseRadius + ring.offset;
+    if (radius <= 1.4 * request.scale) {
+      continue;
+    }
+    const thickness = ring.thickness * request.scale;
+    for (const source of sources) {
+      const reflectionFade = source.isDirect
+        ? 1
+        : smoothStep((radius - source.arrivalDistance) / Math.max(12 * request.scale, 1));
+      if (reflectionFade <= 0.01) {
+        continue;
+      }
+      const alpha = waveAlpha * ring.alpha * source.strength * reflectionFade;
+      drawCircularRing(context, request.color, request.scale, source.point, radius, thickness, alpha);
+    }
+  }
+
+}
+
+function rippleSources(request: RippleRenderRequest, center: { x: number; y: number }): RippleSource[] {
+  return [
+    { point: center, arrivalDistance: 0, strength: 1.00, isDirect: true },
+    { point: { x: center.x, y: -center.y }, arrivalDistance: center.y, strength: 0.84, isDirect: false },
+    {
+      point: { x: center.x, y: request.height + (request.height - center.y) },
+      arrivalDistance: request.height - center.y,
+      strength: 0.84,
+      isDirect: false,
+    },
+    {
+      point: { x: center.x, y: center.y - 2 * request.height },
+      arrivalDistance: 2 * request.height - center.y,
+      strength: 0.52,
+      isDirect: false,
+    },
+    {
+      point: { x: center.x, y: center.y + 2 * request.height },
+      arrivalDistance: request.height + center.y,
+      strength: 0.52,
+      isDirect: false,
+    },
+    { point: { x: -center.x, y: center.y }, arrivalDistance: center.x, strength: 0.66, isDirect: false },
+    {
+      point: { x: request.width + (request.width - center.x), y: center.y },
+      arrivalDistance: request.width - center.x,
+      strength: 0.66,
+      isDirect: false,
+    },
+  ];
+}
+
+function drawCircularRing(
+  context: CanvasRenderingContext2D,
+  color: RippleRGB,
+  scale: number,
+  center: { x: number; y: number },
+  radius: number,
+  thickness: number,
+  alpha: number,
+) {
+  if (alpha <= 0.006) {
+    return;
+  }
+  const outerRadius = Math.max(radius + thickness / 2, 0.2);
+  const innerRadius = Math.max(radius - thickness / 2, 0.1);
+
+  context.save();
+  context.beginPath();
+  context.arc(center.x, center.y, outerRadius, 0, Math.PI * 2);
+  context.arc(center.x, center.y, innerRadius, 0, Math.PI * 2, true);
+  context.fillStyle = rgba(color, alpha * 0.54);
+  context.fill("evenodd");
+
+  context.beginPath();
+  context.arc(center.x, center.y, radius, 0, Math.PI * 2);
+  context.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.17})`;
+  context.lineWidth = Math.max(0.18, 0.24 * scale);
+  context.stroke();
+  context.restore();
+}
+
+function roundedRectPath(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+) {
+  const corner = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + corner, y);
+  context.lineTo(x + width - corner, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + corner);
+  context.lineTo(x + width, y + height - corner);
+  context.quadraticCurveTo(x + width, y + height, x + width - corner, y + height);
+  context.lineTo(x + corner, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - corner);
+  context.lineTo(x, y + corner);
+  context.quadraticCurveTo(x, y, x + corner, y);
+  context.closePath();
+}
+
+function rippleBaseFrameCount(): number {
+  return Math.max(1, Math.ceil(RIPPLE_CYCLE_SECONDS * RIPPLE_TARGET_FPS));
+}
+
+function cappedRippleBackingScale(width: number, height: number, preferredScale: number, frameCount: number): number | null {
+  const clampedPreferred = Math.min(Math.max(preferredScale, RIPPLE_MIN_BACKING_SCALE), RIPPLE_MAX_BACKING_SCALE);
+  if (estimatedRippleBytes(width, height, clampedPreferred, frameCount) <= RIPPLE_MAX_FRAME_SEQUENCE_BYTES) {
+    return clampedPreferred;
+  }
+
+  const logicalPixels = Math.max(width * height, 1);
+  let cappedScale = Math.min(
+    clampedPreferred,
+    Math.sqrt(RIPPLE_MAX_FRAME_SEQUENCE_BYTES / (logicalPixels * 4 * Math.max(frameCount, 1))),
+  ) * 0.99;
+  while (
+    cappedScale >= RIPPLE_MIN_BACKING_SCALE
+    && estimatedRippleBytes(width, height, cappedScale, frameCount) > RIPPLE_MAX_FRAME_SEQUENCE_BYTES
+  ) {
+    cappedScale -= 0.01;
+  }
+  if (
+    cappedScale >= RIPPLE_MIN_BACKING_SCALE
+    && estimatedRippleBytes(width, height, cappedScale, frameCount) <= RIPPLE_MAX_FRAME_SEQUENCE_BYTES
+  ) {
+    return cappedScale;
+  }
+  return null;
+}
+
+function estimatedRippleBytes(width: number, height: number, backingScale: number, frameCount: number): number {
+  const pixelWidth = Math.max(1, Math.ceil(width * backingScale));
+  const pixelHeight = Math.max(1, Math.ceil(height * backingScale));
+  return pixelWidth * pixelHeight * 4 * Math.max(1, frameCount);
+}
+
+function rippleDescriptor(request: RippleRenderRequest): string {
+  const color = request.color;
+  return [
+    Math.ceil(request.width * request.backingScale),
+    Math.ceil(request.height * request.backingScale),
+    Math.round(color.red),
+    Math.round(color.green),
+    Math.round(color.blue),
+    Math.round(request.cornerRadius * 100),
+    Math.round(request.scale * 100),
+  ].join(":");
+}
+
+function readFloatingEffectRGB(computed: CSSStyleDeclaration): RippleRGB {
+  const raw = computed.getPropertyValue("--floating-effect-rgb").trim();
+  const values = raw.split(",").map((value) => Number(value.trim()));
+  return {
+    red: Number.isFinite(values[0]) ? values[0] : 31,
+    green: Number.isFinite(values[1]) ? values[1] : 110,
+    blue: Number.isFinite(values[2]) ? values[2] : 210,
+  };
+}
+
+function readFloatingScale(computed: CSSStyleDeclaration): number {
+  const raw = Number(computed.getPropertyValue("--floating-scale").trim());
+  return Number.isFinite(raw) && raw > 0 ? raw : 1;
+}
+
+function readRippleCornerRadius(computed: CSSStyleDeclaration, width: number, height: number): number {
+  const raw = Number.parseFloat(computed.borderTopLeftRadius);
+  if (Number.isFinite(raw) && raw > 0) {
+    return Math.min(raw, width / 2, height / 2);
+  }
+  return Math.min(14, width / 2, height / 2);
+}
+
+function rgba(color: RippleRGB, alpha: number): string {
+  return `rgba(${color.red}, ${color.green}, ${color.blue}, ${Math.min(Math.max(alpha, 0), 1)})`;
+}
+
+function easeOutSine(value: number): number {
+  const clamped = Math.min(Math.max(value, 0), 1);
+  return Math.sin(clamped * Math.PI / 2);
+}
+
+function smoothStep(value: number): number {
+  const clamped = Math.min(Math.max(value, 0), 1);
+  return clamped * clamped * (3 - 2 * clamped);
+}
+
+function smoothPulseFade(value: number): number {
+  const fadeStart = 0.80;
+  if (value <= fadeStart) {
+    return 1;
+  }
+  const t = Math.min(Math.max((value - fadeStart) / (1 - fadeStart), 0), 1);
+  return 1 - smoothStep(t);
 }

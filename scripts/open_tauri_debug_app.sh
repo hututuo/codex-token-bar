@@ -57,6 +57,23 @@ stop_other_debug_apps() {
   done
 }
 
+wait_for_debug_apps_to_stop() {
+  local remaining
+  local i
+  for i in $(seq 1 50); do
+    remaining="$(debug_app_pids)"
+    if [[ -z "$remaining" ]]; then
+      return 0
+    fi
+    /bin/sleep 0.1
+  done
+
+  remaining="$(debug_app_pids)"
+  if [[ -n "$remaining" ]]; then
+    echo "Warning: stale Tauri debug app processes are still exiting: $remaining" >&2
+  fi
+}
+
 stop_legacy_built_app() {
   # Older versions opened Tauri's build output directly. Stop that instance
   # before rebuilding so the bundler never overwrites a live app bundle.
@@ -162,10 +179,19 @@ cleanup_old_run_bundles() {
 
 if [[ "$BUILD_FIRST" == "1" ]]; then
   stop_other_debug_apps
+  wait_for_debug_apps_to_stop
   stop_legacy_built_app
   (cd "$TAURI_DIR" && npm run tauri -- build --debug --bundles app)
   RUN_APP_PATH="$(stage_runnable_app)"
-elif ! RUN_APP_PATH="$(fresh_or_latest_runnable_app)"; then
+else
+  stop_other_debug_apps
+  wait_for_debug_apps_to_stop
+  if ! RUN_APP_PATH="$(fresh_or_latest_runnable_app)"; then
+    RUN_APP_PATH="$(stage_runnable_app)"
+  fi
+fi
+
+if [[ -z "${RUN_APP_PATH:-}" ]]; then
   RUN_APP_PATH="$(stage_runnable_app)"
 fi
 
