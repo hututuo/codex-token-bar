@@ -20,4 +20,7 @@ test("live commands that read local files run off the command thread", async () 
 
   assert.match(liveCommands, /async_runtime::spawn_blocking/);
   assert.match(liveCommands, /run_blocking_command/);
+  assert.match(liveCommands, /const ACTIVE_STREAM_HOLD: Duration = Duration::from_secs\(10\);/);
+  assert.match(liveCommands, /last_active_at/);
+  assert.match(liveCommands, /last_active\.elapsed\(\) <= ACTIVE_STREAM_HOLD/);
 });

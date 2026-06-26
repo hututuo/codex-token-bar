@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   displayRadarNumber,
   percentText,
@@ -99,6 +99,10 @@ export function FloatingPanelSurface({
   const groups = layoutFloatingContentGroups(settings.contentVisibility);
   const attachedUsageStatus = embedsUsageStatusInRateRow(settings.contentVisibility);
   const rootPalette = floatingTextPaletteForGroup(settings, groups[0] ?? "rateAndBar", 0, Math.max(groups.length, 1));
+  const effectRgb = useMemo(
+    () => effectRgbFromGradient(settings.gradientStart, settings.gradientEnd),
+    [settings.gradientStart, settings.gradientEnd],
+  );
   const rootStyle = {
     "--floating-primary": rootPalette.primary,
     "--floating-secondary": rootPalette.secondary,
@@ -114,7 +118,7 @@ export function FloatingPanelSurface({
       style={rootStyle}
       title={snapshot.unreadSummary.detail}
     >
-      {shouldShowUnreadEffect ? <UnreadEffect effect={unreadEffect} /> : null}
+      {shouldShowUnreadEffect ? <UnreadEffect effect={unreadEffect} effectRgb={effectRgb} /> : null}
       <button
         className="floating-close-button"
         type="button"
@@ -297,11 +301,11 @@ interface RippleSource {
   strength: number;
 }
 
-function UnreadEffect({ effect }: { effect: FloatingUnreadEffect }) {
+function UnreadEffect({ effect, effectRgb }: { effect: FloatingUnreadEffect; effectRgb: RippleRGB }) {
   if (effect === "ripple") {
     return (
       <span className="unread-effect unread-effect--ripple" aria-hidden="true">
-        <FloatingUnreadRippleSprite />
+        <FloatingUnreadRippleSprite effectRgb={effectRgb} />
       </span>
     );
   }
@@ -309,12 +313,21 @@ function UnreadEffect({ effect }: { effect: FloatingUnreadEffect }) {
   return <span className={`unread-effect unread-effect--${effect}`} aria-hidden="true" />;
 }
 
-function FloatingUnreadRippleSprite() {
+function FloatingUnreadRippleSprite({ effectRgb }: { effectRgb: RippleRGB }) {
   const spriteRef = useRef<HTMLSpanElement | null>(null);
   const atlasUrlRef = useRef<string | null>(null);
   const descriptorRef = useRef("");
   const pendingDescriptorRef = useRef("");
+  const renderGenerationRef = useRef(0);
   const [atlas, setAtlas] = useState<RippleAtlas | null>(null);
+  const normalizedEffectRgb = useMemo(() => normalizeRippleRGB(effectRgb), [effectRgb]);
+
+  useLayoutEffect(() => () => {
+    if (atlasUrlRef.current) {
+      URL.revokeObjectURL(atlasUrlRef.current);
+      atlasUrlRef.current = null;
+    }
+  }, []);
 
   useLayoutEffect(() => {
     const element = spriteRef.current;
@@ -324,7 +337,7 @@ function FloatingUnreadRippleSprite() {
 
     let disposed = false;
     const renderIfNeeded = async () => {
-      const request = readRippleRenderRequest(element);
+      const request = readRippleRenderRequest(element, normalizedEffectRgb);
       if (!request) {
         return;
       }
@@ -333,11 +346,13 @@ function FloatingUnreadRippleSprite() {
         return;
       }
       pendingDescriptorRef.current = descriptor;
+      const generation = renderGenerationRef.current + 1;
+      renderGenerationRef.current = generation;
       const nextAtlas = await renderRippleAtlas(request, descriptor);
       if (pendingDescriptorRef.current === descriptor) {
         pendingDescriptorRef.current = "";
       }
-      if (disposed || !nextAtlas) {
+      if (disposed || !nextAtlas || renderGenerationRef.current !== generation) {
         if (nextAtlas) {
           URL.revokeObjectURL(nextAtlas.url);
         }
@@ -359,12 +374,8 @@ function FloatingUnreadRippleSprite() {
     return () => {
       disposed = true;
       resizeObserver.disconnect();
-      if (atlasUrlRef.current) {
-        URL.revokeObjectURL(atlasUrlRef.current);
-        atlasUrlRef.current = null;
-      }
     };
-  }, []);
+  }, [normalizedEffectRgb]);
 
   return (
     <span
@@ -393,7 +404,7 @@ function FloatingUnreadRippleSprite() {
   );
 }
 
-function readRippleRenderRequest(element: HTMLElement): RippleRenderRequest | null {
+function readRippleRenderRequest(element: HTMLElement, effectRgb?: RippleRGB): RippleRenderRequest | null {
   const rect = element.getBoundingClientRect();
   const width = Math.max(1, rect.width);
   const height = Math.max(1, rect.height);
@@ -407,7 +418,7 @@ function readRippleRenderRequest(element: HTMLElement): RippleRenderRequest | nu
   const containerComputed = element.parentElement ? getComputedStyle(element.parentElement) : computed;
   return {
     backingScale,
-    color: readFloatingEffectRGB(computed),
+    color: effectRgb ?? readFloatingEffectRGB(computed),
     cornerRadius: readRippleCornerRadius(containerComputed, width, height),
     height,
     scale: readFloatingScale(computed),
@@ -654,6 +665,51 @@ function readFloatingEffectRGB(computed: CSSStyleDeclaration): RippleRGB {
 function readFloatingScale(computed: CSSStyleDeclaration): number {
   const raw = Number(computed.getPropertyValue("--floating-scale").trim());
   return Number.isFinite(raw) && raw > 0 ? raw : 1;
+}
+
+function effectRgbFromGradient(start: string, end: string): RippleRGB {
+  const mixed = mixRippleRGB(parseRippleHexColor(start), parseRippleHexColor(end), 0.58);
+  return normalizeRippleRGB({
+    red: Math.max(0, Math.round(mixed.red * 0.72)),
+    green: Math.max(0, Math.round(mixed.green * 0.82)),
+    blue: Math.min(255, Math.round(mixed.blue * 1.08 + 18)),
+  });
+}
+
+function parseRippleHexColor(value: string): RippleRGB {
+  const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value.trim());
+  if (!match) {
+    return { red: 31, green: 110, blue: 210 };
+  }
+  return {
+    red: Number.parseInt(match[1], 16),
+    green: Number.parseInt(match[2], 16),
+    blue: Number.parseInt(match[3], 16),
+  };
+}
+
+function mixRippleRGB(start: RippleRGB, end: RippleRGB, endWeight: number): RippleRGB {
+  const startWeight = 1 - endWeight;
+  return {
+    red: start.red * startWeight + end.red * endWeight,
+    green: start.green * startWeight + end.green * endWeight,
+    blue: start.blue * startWeight + end.blue * endWeight,
+  };
+}
+
+function normalizeRippleRGB(color: RippleRGB): RippleRGB {
+  return {
+    red: clampColorChannel(color.red),
+    green: clampColorChannel(color.green),
+    blue: clampColorChannel(color.blue),
+  };
+}
+
+function clampColorChannel(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(255, Math.max(0, Math.round(value)));
 }
 
 function readRippleCornerRadius(computed: CSSStyleDeclaration, width: number, height: number): number {

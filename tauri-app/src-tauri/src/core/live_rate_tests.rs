@@ -140,6 +140,32 @@ fn read_snapshot_uses_lightweight_state_summary_before_precise_cache_exists() {
 }
 
 #[test]
+fn fallback_usage_summary_invalidates_when_state_database_changes() {
+    let root = temp_root("live-rate-fallback-state-signature");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "旧大会话今天更新", 10);
+    create_logs_database(&root, |_connection, _now| {});
+
+    let first = read_snapshot(&root, None);
+    assert_eq!(first.total_tokens_today, 10);
+
+    {
+        let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
+        connection
+            .execute(
+                "UPDATE threads SET tokens_used = ?1, updated_at = CAST(strftime('%s', 'now') AS INTEGER) + 1 WHERE id = ?2;",
+                params![20, "thread-a"],
+            )
+            .unwrap();
+    }
+
+    let second = read_snapshot(&root, None);
+    assert_eq!(second.total_tokens_today, 20);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn floating_snapshot_uses_precise_token_summary_when_cached() {
     let root = temp_root("live-rate-cached-precise-summary");
     fs::create_dir_all(&root).unwrap();
@@ -161,6 +187,28 @@ fn floating_snapshot_uses_precise_token_summary_when_cached() {
 }
 
 #[test]
+fn floating_snapshot_rejects_stale_precise_summary_after_session_changes() {
+    let root = temp_root("live-rate-stale-precise-summary");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
+    create_logs_database(&root, |_connection, _now| {});
+    write_token_session(&root, 1_000, 40);
+    crate::core::usage::token_count_jsonl::dashboard_snapshot(&root).unwrap();
+
+    let cached = read_snapshot(&root, None);
+    assert_eq!(cached.total_tokens_today, 40);
+
+    append_token_count_to_first_session(&root, 80);
+    let changed = read_snapshot(&root, None);
+    assert_eq!(
+        changed.total_tokens_today, 9_999_999,
+        "stale precise cache should be rejected so live snapshot falls back to current state summary"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn read_thread_options_works_with_minimal_thread_schema() {
     let root = temp_root("live-thread-options");
     fs::create_dir_all(&root).unwrap();
@@ -171,6 +219,38 @@ fn read_thread_options_works_with_minimal_thread_schema() {
     assert_eq!(options.len(), 2);
     assert_eq!(options[0].title, "最近会话");
     assert_eq!(options[0].tokens_used, 300);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn monitor_keeps_fast_refresh_window_after_recent_activity() {
+    let root = temp_root("live-rate-monitor-active-window");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "共享监控会话", 300);
+    create_logs_database(&root, |connection, now| {
+        insert_log(
+            connection,
+            1,
+            "thread-a",
+            now,
+            "codex_api::sse::responses",
+            r#"SSE event: {"type":"response.output_text.delta","delta":"first stream text","item_id":"item-a","sequence_number":1}"#,
+        );
+    });
+
+    let monitor = LiveRateMonitorService::new(root.clone());
+    let first = monitor.snapshot(None);
+    assert!(first.tokens_per_second > 0.0);
+    let refreshes_after_first = monitor.test_refresh_count();
+
+    std::thread::sleep(Duration::from_millis(300));
+    let _second = monitor.snapshot(None);
+    assert_eq!(
+        monitor.test_refresh_count(),
+        refreshes_after_first + 1,
+        "recent activity should keep the monitor on the fast 250ms cadence"
+    );
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -579,6 +659,23 @@ fn write_token_session(root: &Path, yesterday_tokens: u64, today_tokens: u64) {
         yesterday.format(&Rfc3339).unwrap()
     )
     .unwrap();
+    writeln!(
+        output,
+        r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":{today_tokens}}}}}}}}}"#,
+        now.format(&Rfc3339).unwrap()
+    )
+    .unwrap();
+}
+
+fn append_token_count_to_first_session(root: &Path, today_tokens: u64) {
+    let file = fs::read_dir(root.join("sessions"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let now = OffsetDateTime::now_utc();
+    let mut output = fs::OpenOptions::new().append(true).open(file).unwrap();
     writeln!(
         output,
         r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":{today_tokens}}}}}}}}}"#,

@@ -148,13 +148,15 @@ pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, S
 }
 
 pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
-    let cache = DASHBOARD_AGGREGATE_CACHE.get_or_init(|| Mutex::new(None));
-    cache
-        .lock()
-        .ok()
-        .and_then(|guard| guard.as_ref().cloned())
-        .filter(|cached| cached.signature.codex_home == codex_home)
-        .map(|cached| cached.summary)
+    let sessions_root = codex_home.join("sessions");
+    if !sessions_root.exists() {
+        return None;
+    }
+
+    let mut warnings = Vec::new();
+    let session_files = jsonl_files(&sessions_root, &mut warnings);
+    let signature = dashboard_scan_signature(codex_home, &session_files);
+    cached_dashboard_aggregate(&signature).map(|cached| cached.summary)
 }
 
 fn usage_summary_from_events(events: &[TokenEvent], local_offset: UtcOffset) -> TokenUsageSummary {

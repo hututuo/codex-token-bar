@@ -7,6 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 const FAST_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const IDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const ACTIVE_REFRESH_HOLD: Duration = Duration::from_secs(10);
 
 pub struct LiveRateMonitorService {
     codex_home: PathBuf,
@@ -19,6 +20,7 @@ struct LiveRateMonitorState {
     selected_snapshot: Option<SelectedSnapshot>,
     last_signature: Option<LogStoreSignature>,
     last_refresh: Option<Instant>,
+    last_active_at: Option<Instant>,
     refresh_count: usize,
     signature_count: usize,
 }
@@ -101,6 +103,9 @@ impl LiveRateMonitorService {
         });
         state.last_signature = Some(signature);
         state.last_refresh = Some(Instant::now());
+        if snapshot.tokens_per_second > 0.05 || snapshot.selected_tokens_per_second > 0.05 {
+            state.last_active_at = Some(Instant::now());
+        }
         state.refresh_count += 1;
         snapshot
     }
@@ -116,6 +121,7 @@ impl LiveRateMonitorService {
         state.selected_snapshot = None;
         state.last_signature = None;
         state.last_refresh = None;
+        state.last_active_at = None;
     }
 
     #[cfg(test)]
@@ -183,9 +189,8 @@ impl LiveRateMonitorState {
 
     fn refresh_interval(&self) -> Duration {
         if self
-            .all_snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.tokens_per_second > 0.05)
+            .last_active_at
+            .is_some_and(|last_active| last_active.elapsed() <= ACTIVE_REFRESH_HOLD)
         {
             FAST_REFRESH_INTERVAL
         } else {

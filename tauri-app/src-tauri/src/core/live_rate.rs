@@ -24,6 +24,7 @@ struct CachedPreciseUsageSummary {
     summary: UsageSummary,
     refreshed_at: Instant,
     precise: bool,
+    state_database_signature: Option<StoreFileSignature>,
 }
 
 static PRECISE_USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedPreciseUsageSummary>>> =
@@ -240,7 +241,19 @@ fn read_precise_usage_summary_or_fallback(
                 FALLBACK_USAGE_SUMMARY_TTL
             };
             if cached.codex_home == codex_home && now.duration_since(cached.refreshed_at) <= ttl {
-                return cached.summary.clone();
+                if cached.precise {
+                    if let Some(summary) = token_count_jsonl::cached_dashboard_usage_summary(codex_home) {
+                        return UsageSummary {
+                            total_tokens: summary.total_tokens,
+                            today_tokens: summary.today_tokens,
+                            today_requests: summary.today_requests,
+                        };
+                    }
+                } else if cached.state_database_signature.as_ref()
+                    == Some(&state_database_signature(codex_home))
+                {
+                    return cached.summary.clone();
+                }
             }
         }
     }
@@ -257,6 +270,7 @@ fn read_precise_usage_summary_or_fallback(
                 summary: summary.clone(),
                 refreshed_at: now,
                 precise: true,
+                state_database_signature: None,
             });
         }
         return summary;
@@ -269,6 +283,7 @@ fn read_precise_usage_summary_or_fallback(
             summary: summary.clone(),
             refreshed_at: now,
             precise: false,
+            state_database_signature: Some(state_database_signature(codex_home)),
         });
     }
     summary
@@ -309,8 +324,12 @@ fn read_unread_summary_cached(codex_home: &Path) -> UnreadSummary {
 fn unread_store_signature(codex_home: &Path) -> UnreadStoreSignature {
     UnreadStoreSignature {
         unread_state: store_file_signature(&codex_home.join(".codex-global-state.json")),
-        state_database: store_file_signature(&codex_home.join("state_5.sqlite")),
+        state_database: state_database_signature(codex_home),
     }
+}
+
+fn state_database_signature(codex_home: &Path) -> StoreFileSignature {
+    store_file_signature(&codex_home.join("state_5.sqlite"))
 }
 
 fn store_file_signature(path: &Path) -> StoreFileSignature {

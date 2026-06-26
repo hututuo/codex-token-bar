@@ -14,7 +14,7 @@ const settingsPanelSource = readFileSync(
 );
 
 test("ripple uses a Swift-style sprite image atlas instead of realtime DOM canvas drawing", () => {
-  assert.match(previewSource, /<FloatingUnreadRippleSprite \/>/);
+  assert.match(previewSource, /<FloatingUnreadRippleSprite effectRgb=\{effectRgb\} \/>/);
   assert.match(previewSource, /function renderRippleAtlas/);
   assert.match(stylesSource, /\.unread-ripple-sprite/);
   assert.match(previewSource, /<img/);
@@ -84,6 +84,21 @@ test("ripple sprite inherits the floating panel radius and renders against the o
   assert.match(previewSource, /const containerComputed = element\.parentElement \? getComputedStyle\(element\.parentElement\) : computed/);
   assert.match(previewSource, /cornerRadius: readRippleCornerRadius\(containerComputed, width, height\)/);
   assert.match(stylesSource, /\.unread-ripple-sprite\s*{[\s\S]*?border-radius: inherit;/);
+});
+
+test("ripple atlas rebuilds on color changes without waiting for resize", () => {
+  assert.match(previewSource, /<FloatingUnreadRippleSprite[\s\S]*?effectRgb=\{effectRgb\}/);
+  assert.match(previewSource, /effectRgb: RippleRGB/);
+  assert.match(previewSource, /useMemo\(\(\) => normalizeRippleRGB\(effectRgb\), \[effectRgb\]\)/);
+  assert.match(previewSource, /}, \[normalizedEffectRgb\]\);/);
+});
+
+test("ripple atlas ignores stale async render results", () => {
+  assert.match(previewSource, /renderGenerationRef/);
+  assert.match(previewSource, /const generation = renderGenerationRef\.current \+ 1/);
+  assert.match(previewSource, /renderGenerationRef\.current = generation/);
+  assert.match(previewSource, /renderGenerationRef\.current !== generation/);
+  assert.match(previewSource, /URL\.revokeObjectURL\(nextAtlas\.url\)/);
 });
 
 test("floating panel keeps muted pace text black metrics rounded corners and corner close button", () => {

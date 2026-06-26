@@ -16,6 +16,7 @@ use tauri::{AppHandle, Emitter, State};
 const LIVE_RATE_SNAPSHOT_EVENT: &str = "live-rate-snapshot";
 const FAST_STREAM_INTERVAL: Duration = Duration::from_millis(250);
 const IDLE_STREAM_INTERVAL: Duration = Duration::from_secs(1);
+const ACTIVE_STREAM_HOLD: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Default)]
 pub struct LiveRateMonitorRegistry {
@@ -106,6 +107,7 @@ impl LiveRateMonitorRegistry {
     fn spawn_stream_loop(&self, app: AppHandle) {
         let registry = self.clone();
         async_runtime::spawn(async move {
+            let mut last_active_at: Option<Instant> = None;
             loop {
                 let selected_thread_id = match registry.stream_snapshot_request() {
                     Ok(selected_thread_id) => selected_thread_id,
@@ -148,8 +150,13 @@ impl LiveRateMonitorRegistry {
                 }
                 let active = snapshot.tokens_per_second > 0.05
                     || snapshot.selected_tokens_per_second > 0.05;
+                if active {
+                    last_active_at = Some(Instant::now());
+                }
+                let recently_active = last_active_at
+                    .is_some_and(|last_active| last_active.elapsed() <= ACTIVE_STREAM_HOLD);
                 let _ = app.emit(LIVE_RATE_SNAPSHOT_EVENT, snapshot);
-                sleep_stream_interval(if active {
+                sleep_stream_interval(if recently_active {
                     FAST_STREAM_INTERVAL
                 } else {
                     IDLE_STREAM_INTERVAL
