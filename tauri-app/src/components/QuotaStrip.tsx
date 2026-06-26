@@ -149,31 +149,39 @@ function QuotaStripView({ snapshot }: QuotaStripProps) {
         <span>7d 均速比较</span>
       </div>
       {showResetDetails ? (
-        <div className="reset-credit-panel">
-          <div className="reset-credit-panel-head">
-            <div>
-              <strong>重置卡详情</strong>
-              <span>{resetCreditPanelSubtitle(snapshot.resetCredit, displayCredits)}</span>
+        <div className="reset-credit-panel-layer" role="presentation" onMouseDown={() => setShowResetDetails(false)}>
+          <div
+            className="reset-credit-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label="重置卡详情"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="reset-credit-panel-head">
+              <div>
+                <strong>重置卡详情</strong>
+                <span>{resetCreditPanelSubtitle(snapshot.resetCredit, displayCredits)}</span>
+              </div>
+              <button aria-label="关闭重置卡详情" onClick={() => setShowResetDetails(false)} type="button">×</button>
             </div>
-            <button aria-label="关闭重置卡详情" onClick={() => setShowResetDetails(false)} type="button">×</button>
+            {displayCredits.length > 0 ? (
+              <div className="reset-credit-list">
+                {displayCredits.map((item, index) => (
+                  <ResetCreditItem
+                    expanded={expandedCredits.has(`${cardIdentifier(item.credit)}-${index}`)}
+                    index={index}
+                    item={item}
+                    key={`${cardIdentifier(item.credit)}-${index}`}
+                    onToggle={() => toggleCredit(item.credit, index)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="reset-credit-empty">
+                没有读到单张重置卡明细；当前接口状态：{snapshot.resetCredit.status}
+              </p>
+            )}
           </div>
-          {displayCredits.length > 0 ? (
-            <div className="reset-credit-list">
-              {displayCredits.map((item, index) => (
-                <ResetCreditItem
-                  expanded={expandedCredits.has(`${cardIdentifier(item.credit)}-${index}`)}
-                  index={index}
-                  item={item}
-                  key={`${cardIdentifier(item.credit)}-${index}`}
-                  onToggle={() => toggleCredit(item.credit, index)}
-                />
-              ))}
-            </div>
-          ) : (
-            <p className="reset-credit-empty">
-              没有读到单张重置卡明细；当前接口状态：{snapshot.resetCredit.status}
-            </p>
-          )}
         </div>
       ) : null}
     </section>

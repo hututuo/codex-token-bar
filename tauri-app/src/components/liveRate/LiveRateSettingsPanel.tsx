@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   FLOATING_CONTENT_LABELS,
   FLOATING_CONTENT_GROUPS,
@@ -7,6 +7,7 @@ import {
 } from "../../floating/floatingContent";
 import type { FloatingWindowSettings } from "../../floating/floatingSettings";
 import type { FloatingContentGroup, FloatingContentVisibility, FloatingUnreadEffect, PlatformCapabilities } from "../../types/dashboard";
+import { computeBoundedSettingsCalloutFrame, type CalloutFrame } from "./calloutPlacement";
 
 const UNREAD_EFFECT_OPTIONS: Array<{ value: FloatingUnreadEffect; label: string }> = [
   { value: "off", label: "关" },
@@ -21,6 +22,11 @@ const UNREAD_EFFECT_DETAILS: Record<FloatingUnreadEffect, { title: string; subti
 };
 
 type SettingsCallout = "palette" | "unread" | "content";
+const CALLOUT_DIMENSIONS: Record<SettingsCallout, { width: number; estimatedHeight: number }> = {
+  palette: { width: 340, estimatedHeight: 330 },
+  unread: { width: 332, estimatedHeight: 260 },
+  content: { width: 340, estimatedHeight: 390 },
+};
 
 interface LiveRateSettingsPanelProps {
   floatingSettings: FloatingWindowSettings;
@@ -52,6 +58,10 @@ export function LiveRateSettingsPanel({
   statusTrayLiveTextEnabled,
 }: LiveRateSettingsPanelProps) {
   const [openCallout, setOpenCallout] = useState<SettingsCallout | null>(null);
+  const [calloutFrame, setCalloutFrame] = useState<CalloutFrame | null>(null);
+  const paletteButtonRef = useRef<HTMLButtonElement | null>(null);
+  const unreadButtonRef = useRef<HTMLButtonElement | null>(null);
+  const contentButtonRef = useRef<HTMLButtonElement | null>(null);
   const opacityPercent = Math.round(floatingSettings.opacity * 100);
   const scalePercent = Math.round(floatingSettings.scale * 100);
   const opacityFill = ((opacityPercent - 40) / 60) * 100;
@@ -71,6 +81,43 @@ export function LiveRateSettingsPanel({
     : platform.statusTray.available
       ? "托盘图标已启用"
       : "状态栏待接入";
+  const calloutStyle = calloutFrame ? {
+    left: `${calloutFrame.left}px`,
+    right: "auto",
+    top: `${calloutFrame.top}px`,
+    width: `${calloutFrame.width}px`,
+    maxHeight: `${calloutFrame.maxHeight}px`,
+  } as CSSProperties : undefined;
+
+  useLayoutEffect(() => {
+    if (!openCallout) {
+      setCalloutFrame(null);
+      return undefined;
+    }
+
+    const anchor =
+      openCallout === "palette"
+        ? paletteButtonRef.current
+        : openCallout === "unread"
+          ? unreadButtonRef.current
+          : contentButtonRef.current;
+    if (!anchor) {
+      return undefined;
+    }
+
+    const updateFrame = () => {
+      const rect = anchor.getBoundingClientRect();
+      setCalloutFrame(computeBoundedSettingsCalloutFrame(
+        rect,
+        { width: window.innerWidth, height: window.innerHeight },
+        CALLOUT_DIMENSIONS[openCallout],
+      ));
+    };
+
+    updateFrame();
+    window.addEventListener("resize", updateFrame);
+    return () => window.removeEventListener("resize", updateFrame);
+  }, [openCallout]);
 
   return (
     <div className="settings-panel">
@@ -104,6 +151,7 @@ export function LiveRateSettingsPanel({
       <div className="floating-appearance-compact">
         <div className="floating-popup-buttons" aria-label="悬浮窗更多设置">
           <button
+            ref={paletteButtonRef}
             aria-expanded={openCallout === "palette"}
             className={openCallout === "palette" ? "is-active" : ""}
             onClick={() => setOpenCallout((current) => current === "palette" ? null : "palette")}
@@ -112,6 +160,7 @@ export function LiveRateSettingsPanel({
             调色盘 <span>⌄</span>
           </button>
           <button
+            ref={unreadButtonRef}
             aria-expanded={openCallout === "unread"}
             className={openCallout === "unread" ? "is-active" : ""}
             onClick={() => setOpenCallout((current) => current === "unread" ? null : "unread")}
@@ -120,6 +169,7 @@ export function LiveRateSettingsPanel({
             提醒 <span>⌄</span>
           </button>
           <button
+            ref={contentButtonRef}
             aria-expanded={openCallout === "content"}
             className={openCallout === "content" ? "is-active" : ""}
             onClick={() => setOpenCallout((current) => current === "content" ? null : "content")}
@@ -157,6 +207,7 @@ export function LiveRateSettingsPanel({
       </div>
       {openCallout === "palette" ? (
         <PaletteSettingsCallout
+          calloutStyle={calloutStyle}
           floatingSettings={floatingSettings}
           onClose={() => setOpenCallout(null)}
           onFloatingGradientChange={onFloatingGradientChange}
@@ -164,6 +215,7 @@ export function LiveRateSettingsPanel({
       ) : null}
       {openCallout === "unread" ? (
         <UnreadEffectCallout
+          calloutStyle={calloutStyle}
           selected={floatingSettings.unreadEffect}
           onChange={(effect) => {
             onFloatingUnreadEffectChange(effect);
@@ -174,6 +226,7 @@ export function LiveRateSettingsPanel({
       ) : null}
       {openCallout === "content" ? (
         <ContentSettingsCallout
+          calloutStyle={calloutStyle}
           contentVisibility={contentVisibility}
           textToneFill={textToneFill}
           textToneLabel={textToneLabel}
@@ -189,14 +242,15 @@ export function LiveRateSettingsPanel({
 
 interface SettingsCalloutShellProps {
   children: ReactNode;
+  calloutStyle?: CSSProperties;
   title: string;
   subtitle?: string;
   onClose: () => void;
 }
 
-function SettingsCalloutShell({ children, title, subtitle, onClose }: SettingsCalloutShellProps) {
+function SettingsCalloutShell({ children, calloutStyle, title, subtitle, onClose }: SettingsCalloutShellProps) {
   return (
-    <div className="settings-callout" role="dialog" aria-label={title}>
+    <div className="settings-callout" role="dialog" aria-label={title} style={calloutStyle}>
       <div className="settings-callout-head">
         <div>
           <strong>{title}</strong>
@@ -211,15 +265,17 @@ function SettingsCalloutShell({ children, title, subtitle, onClose }: SettingsCa
 
 function PaletteSettingsCallout({
   floatingSettings,
+  calloutStyle,
   onClose,
   onFloatingGradientChange,
 }: {
   floatingSettings: FloatingWindowSettings;
+  calloutStyle?: CSSProperties;
   onClose: () => void;
   onFloatingGradientChange: LiveRateSettingsPanelProps["onFloatingGradientChange"];
 }) {
   return (
-    <SettingsCalloutShell title="悬浮窗样式" onClose={onClose}>
+    <SettingsCalloutShell calloutStyle={calloutStyle} title="悬浮窗样式" onClose={onClose}>
       <div className="settings-callout-section">
         <span>颜色</span>
         <label className="settings-callout-row">
@@ -286,16 +342,19 @@ function PaletteSettingsCallout({
 }
 
 function UnreadEffectCallout({
+  calloutStyle,
   selected,
   onChange,
   onClose,
 }: {
+  calloutStyle?: CSSProperties;
   selected: FloatingUnreadEffect;
   onChange: (effect: FloatingUnreadEffect) => void;
   onClose: () => void;
 }) {
   return (
     <SettingsCalloutShell
+      calloutStyle={calloutStyle}
       title="提醒样式"
       subtitle="有完成的会话还没点开时，悬浮窗用选中的样式提醒。"
       onClose={onClose}
@@ -322,6 +381,7 @@ function UnreadEffectCallout({
 }
 
 function ContentSettingsCallout({
+  calloutStyle,
   contentVisibility,
   textToneFill,
   textToneLabel,
@@ -330,6 +390,7 @@ function ContentSettingsCallout({
   onFloatingContentVisibilityChange,
   onFloatingTextToneChange,
 }: {
+  calloutStyle?: CSSProperties;
   contentVisibility: FloatingContentVisibility;
   textToneFill: number;
   textToneLabel: string;
@@ -354,7 +415,7 @@ function ContentSettingsCallout({
   }
 
   return (
-    <SettingsCalloutShell title="显示内容" subtitle="选择悬浮窗里显示哪些信息，并调整顺序。" onClose={onClose}>
+    <SettingsCalloutShell calloutStyle={calloutStyle} title="显示内容" subtitle="选择悬浮窗里显示哪些信息，并调整顺序。" onClose={onClose}>
       <label className="setting-slider settings-callout-slider">
         <span>字体颜色</span>
         <input

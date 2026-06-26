@@ -718,15 +718,23 @@ button.quota-side-card:hover {
   background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--green) 38%, var(--accent)));
 }
 
+.reset-credit-panel-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 160;
+  display: grid;
+  align-items: start;
+  justify-items: center;
+  padding: clamp(58px, 8vh, 78px) 24px 24px;
+  background: transparent;
+}
+
 .reset-credit-panel {
-  position: absolute;
-  z-index: 30;
-  top: 41px;
-  right: 8px;
+  position: relative;
   display: grid;
   gap: 10px;
-  width: min(620px, calc(100% - 16px));
-  max-height: 410px;
+  width: min(560px, calc(100vw - 48px));
+  max-height: calc(100vh - 102px);
   overflow: auto;
   padding: 12px;
   border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
@@ -2211,13 +2219,14 @@ button.quota-side-card:hover {
 }
 
 .settings-callout {
-  position: absolute;
+  position: fixed;
   z-index: 40;
   top: 72px;
   right: 8px;
   display: grid;
   gap: 8px;
   width: min(340px, calc(100% - 16px));
+  overflow: auto;
   border: 1px solid color-mix(in srgb, var(--line-strong) 72%, var(--line));
   border-radius: 14px;
   background: var(--panel-solid);
