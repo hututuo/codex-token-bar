@@ -1773,6 +1773,29 @@ button.quota-side-card:hover {
   grid-template-rows: minmax(85px, auto) 30px;
   gap: 8px;
   min-width: 0;
+  position: relative;
+  border-radius: 12px;
+  transition: opacity 160ms ease, filter 160ms ease;
+}
+
+.live-left.is-live-disabled {
+  opacity: 0.50;
+  filter: saturate(0.58);
+}
+
+.live-left.is-live-disabled::after {
+  content: "实时速率已关闭";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  color: rgba(45, 55, 72, 0.72);
+  font-size: 13px;
+  font-weight: 750;
+  background: rgba(245, 248, 252, 0.36);
+  backdrop-filter: blur(1px);
+  pointer-events: none;
 }
 
 .rate-meter {
@@ -3779,14 +3802,12 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-radar-models {
-  display: flex;
-  gap: calc(5px * var(--floating-scale));
-  align-items: center;
-}
-
-.floating-radar-models span {
-  flex: 0 1 auto;
-  min-width: 0;
+  display: block;
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
+  letter-spacing: 0;
+  font-size: calc(7.9px * var(--floating-scale));
 }
 
 .floating-quota-bar {

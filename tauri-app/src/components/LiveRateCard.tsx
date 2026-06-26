@@ -56,7 +56,7 @@ export function LiveRateCard({
   statusTrayLiveTextEnabled,
 }: LiveRateCardProps) {
   return (
-    <section className="live-card" aria-label="实时速率">
+    <section className={liveRateEnabled ? "live-card" : "live-card is-live-disabled"} aria-label="实时速率">
       <div className="section-title-row">
         <div>
           <h2>全会话实时速度</h2>
@@ -88,7 +88,7 @@ export function LiveRateCard({
       </div>
 
       <div className="live-grid">
-        <div className="live-left">
+        <div className={liveRateEnabled ? "live-left" : "live-left is-live-disabled"}>
           <LiveRateMeter
             fullScale={floatingSettings.tokenRateFullScale}
             liveRateEnabled={liveRateEnabled}

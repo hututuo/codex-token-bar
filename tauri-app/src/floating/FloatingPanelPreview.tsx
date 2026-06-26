@@ -216,7 +216,7 @@ function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot |
   }
 
   const primary = primaryModelRow(snapshot.modelIq);
-  const secondary = secondaryModelRows(snapshot.modelIq).slice(0, 3);
+  const secondaryText = floatingRadarSecondaryIQText(snapshot);
   const probability = snapshot.prediction.probability24H ?? snapshot.prediction.probability24h;
   const probability48 = snapshot.prediction.probability48H ?? snapshot.prediction.probability48h;
 
@@ -229,30 +229,54 @@ function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot |
       <div className="floating-radar-iq">
         <strong>
           IQ {displayRadarNumber(primary.point.score, 1)}
-          <em>{compactModelName(primary.label)}</em>
+          <em>{floatingRadarPrimaryModelLabel(primary.label)}</em>
         </strong>
-        <p className="floating-radar-models">
-          {secondary.length > 0
-            ? secondary.map((row) => (
-                <span key={row.label}>
-                  {compactModelName(row.label)} {displayRadarNumber(row.point.score, 1)}
-                </span>
-              ))
-            : (
-                <span>{primary.point.passed}/{primary.point.tasks} 通过</span>
-              )}
-        </p>
+        <p className="floating-radar-models">{secondaryText}</p>
       </div>
     </div>
   );
 }
 
-function compactModelName(label: string): string {
+function floatingRadarSecondaryIQText(snapshot: CodexRadarSnapshot): string {
+  const rows = uniqueFloatingRadarRows(secondaryModelRows(snapshot.modelIq), 2);
+  if (rows.length === 0) {
+    const primary = primaryModelRow(snapshot.modelIq);
+    return `${primary.point.passed}/${primary.point.tasks} 通过`;
+  }
+  return rows
+    .map((row) => `${floatingRadarShortModelLabel(row.label)} ${displayRadarNumber(row.point.score, 1)}`)
+    .join("  ");
+}
+
+function uniqueFloatingRadarRows(rows: ReturnType<typeof secondaryModelRows>, limit: number): ReturnType<typeof secondaryModelRows> {
+  const seen = new Set<string>();
+  const result: ReturnType<typeof secondaryModelRows> = [];
+  for (const row of rows) {
+    const key = `${floatingRadarShortModelLabel(row.label)}:${row.point.model ?? ""}:${row.point.reasoningEffort ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(row);
+    if (result.length >= limit) {
+      break;
+    }
+  }
+  return result;
+}
+
+function floatingRadarPrimaryModelLabel(label: string): string {
   return label
     .replace(/^GPT-/, "")
-    .replace(/\bmedium\b/i, "med")
-    .replace(/\bxhigh\b/i, "xh")
-    .replace(/\bhigh\b/i, "high")
+    .replace(/\bxhigh\b/i, "X high")
+    .trim();
+}
+
+function floatingRadarShortModelLabel(label: string): string {
+  return label
+    .replace(/^GPT-5\.5\s+/i, "")
+    .replace(/^GPT-5\.4\s+/i, "5.4 ")
+    .replace(/\bxhigh\b/i, "X high")
     .trim();
 }
 

@@ -64,7 +64,7 @@ export function useDashboardShellSettings({
     applyDisplaySurfaces,
     displaySurfaces,
     floatingVisible,
-    toggleLiveRate,
+    toggleLiveRate: toggleLiveRateSurface,
     toggleFloatingWindow,
     toggleStatusTrayLiveText,
   } = useDisplaySurfaceSettings({ platform, liveRate });
@@ -124,6 +124,18 @@ export function useDashboardShellSettings({
 
   function updateFloatingContentVisibility(contentVisibility: FloatingContentVisibility) {
     setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, contentVisibility }));
+  }
+
+  function toggleLiveRate() {
+    const nextEnabled = !displaySurfaces.liveRateEnabled;
+    toggleLiveRateSurface();
+    setFloatingSettings((current) => sanitizeFloatingSettings({
+      ...current,
+      contentVisibility: {
+        ...current.contentVisibility,
+        showRateAndBar: nextEnabled,
+      },
+    }));
   }
 
   async function updateCustomAccountDisplayName(displayName: string) {

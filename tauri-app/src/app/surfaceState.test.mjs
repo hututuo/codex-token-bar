@@ -175,6 +175,8 @@ test("live rate switch stops the shared stream and preserves other refreshes", a
   const floatingWindow = await readFile(new URL("../floating/FloatingWindowApp.tsx", import.meta.url), "utf8");
   const statusPanel = await readFile(new URL("../status/StatusPanelApp.tsx", import.meta.url), "utf8");
   const card = await readFile(new URL("../components/LiveRateCard.tsx", import.meta.url), "utf8");
+  const shellSettings = await readFile(new URL("./useDashboardShellSettings.ts", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
 
   assert.equal(displaySettings.includes("liveRateEnabled: true"), true);
   assert.equal(dashboardData.includes("active: fastSnapshotLoaded && liveRateEnabled"), true);
@@ -185,7 +187,10 @@ test("live rate switch stops the shared stream and preserves other refreshes", a
   assert.equal(floatingWindow.includes("onDisplaySurfacesChanged"), true);
   assert.equal(statusPanel.includes("onDisplaySurfacesChanged"), true);
   assert.equal(card.includes("实时速率已关闭"), true);
+  assert.equal(card.includes("is-live-disabled"), true);
   assert.equal(card.includes("为避免之前那种日志写入烧硬盘"), true);
+  assert.equal(shellSettings.includes("showRateAndBar: nextEnabled"), true);
+  assert.match(styles, /\.live-left\.is-live-disabled::after\s*{[\s\S]*?content: "实时速率已关闭";[\s\S]*?pointer-events: none;/);
 });
 
 test("live rate surfaces subscribe to the shared stream instead of polling snapshots", async () => {

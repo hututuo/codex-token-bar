@@ -128,9 +128,12 @@ test("floating panel keeps muted pace text black metrics rounded corners and cor
 
 test("floating radar shows multiple sorted model IQ scores", () => {
   assert.match(previewSource, /secondaryModelRows/);
-  assert.match(previewSource, /secondaryModelRows\(snapshot\.modelIq\)\.slice\(0, 3\)/);
+  assert.match(previewSource, /uniqueFloatingRadarRows\(secondaryModelRows\(snapshot\.modelIq\), 2\)/);
   assert.match(previewSource, /className="floating-radar-models"/);
-  assert.match(previewSource, /compactModelName\(row\.label\)\} \{displayRadarNumber\(row\.point\.score, 1\)/);
+  assert.match(previewSource, /floatingRadarShortModelLabel\(row\.label\)} \$\{displayRadarNumber\(row\.point\.score, 1\)\}/);
+  assert.match(previewSource, /\.replace\(\/\^GPT-5\\\.5\\s\+\/i, ""\)/);
+  assert.match(previewSource, /\.replace\(\/\^GPT-5\\\.4\\s\+\/i, "5\.4 "\)/);
+  assert.match(stylesSource, /\.floating-radar-models\s*{[\s\S]*?display: block;[\s\S]*?text-overflow: clip;/);
 });
 
 test("clickable disclosure arrows are right aligned and vertically centered", () => {
