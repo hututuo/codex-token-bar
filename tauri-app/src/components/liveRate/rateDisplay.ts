@@ -30,7 +30,7 @@ export function formatLiveRateValue(value: number): string {
   if (!Number.isFinite(value) || value < ZERO_THRESHOLD) {
     return "0.0";
   }
-  return value < 10 ? value.toFixed(1) : String(Math.round(value));
+  return value.toFixed(1);
 }
 
 export function smoothLiveRateValue(previous: number, raw: number): number {

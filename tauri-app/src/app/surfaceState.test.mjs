@@ -106,14 +106,19 @@ test("dashboard quota refreshes independently every five minutes", async () => {
 
   assert.equal(dashboardData.includes("QUOTA_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000"), true);
   assert.equal(dashboardData.includes("setQuotaLoadGeneration((current) => current + 1)"), true);
+  assert.equal(dashboardData.includes("nextQuotaResetRefreshDelayMs(state.dashboard.quota)"), true);
+  assert.equal(dashboardData.includes("setForceNextQuotaLoad(true)"), true);
   assert.equal(deferredLoads.includes("quotaGeneration"), true);
   assert.equal(quotaLoad.includes("const isFirstQuotaLoad = quotaGeneration.current === null"), true);
 });
 
 test("compact surfaces refresh quota every minute", async () => {
   const compactData = await readFile(new URL("../surfaces/useCompactPanelData.ts", import.meta.url), "utf8");
+  const compactQuota = await readFile(new URL("../surfaces/useCompactPanelQuota.ts", import.meta.url), "utf8");
 
   assert.equal(compactData.includes("DEFAULT_QUOTA_INTERVAL_MS = 60_000"), true);
+  assert.equal(compactQuota.includes("nextQuotaResetRefreshDelayMs(quota.quota)"), true);
+  assert.equal(compactQuota.includes("readAccountQuota(true)"), true);
 });
 
 test("hidden status panel starts inactive and verifies window visibility before polling", async () => {

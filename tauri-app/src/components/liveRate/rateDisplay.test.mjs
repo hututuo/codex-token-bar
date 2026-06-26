@@ -56,13 +56,13 @@ test("live rate display uses EMA and drops idle values to zero quickly", () => {
 
 test("live rate display buckets match visible precision", () => {
   assert.equal(formatLiveRateValue(9.94), "9.9");
-  assert.equal(formatLiveRateValue(10.1), "10");
-  assert.equal(formatLiveRateValue(42.4), "42");
+  assert.equal(formatLiveRateValue(10.1), "10.1");
+  assert.equal(formatLiveRateValue(42.4), "42.4");
 
   const first = liveRateDisplayBucket(snapshot({ tokensPerSecond: 42.1 }));
   const second = liveRateDisplayBucket(snapshot({ tokensPerSecond: 42.4 }));
   const third = liveRateDisplayBucket(snapshot({ tokensPerSecond: 42.6 }));
-  assert.equal(first, second);
+  assert.notEqual(first, second);
   assert.notEqual(second, third);
 });
 

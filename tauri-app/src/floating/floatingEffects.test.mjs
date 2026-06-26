@@ -132,6 +132,8 @@ test("floating pace text keeps the Swift-style status and card count in one line
   assert.doesNotMatch(previewSource, /resetCreditLabel=\{/);
   assert.doesNotMatch(stylesSource, /\.floating-status-badge\s*{/);
   assert.match(stylesSource, /\.floating-status-text\s*{[\s\S]*?display: block;/);
+  assert.match(stylesSource, /\.floating-usage-status\s*{[\s\S]*?justify-content: flex-start;/);
+  assert.match(stylesSource, /\.floating-usage-status-card\s*{[\s\S]*?text-align: left;/);
   assert.match(stylesSource, /\.floating-status-text em\s*{[\s\S]*?text-overflow: ellipsis;/);
 });
 

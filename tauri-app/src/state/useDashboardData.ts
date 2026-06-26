@@ -29,6 +29,7 @@ import { loadInitialDashboardState } from "./loadInitialDashboardState";
 import { useDashboardActions } from "./useDashboardActions";
 import { useDeferredDashboardLoads } from "./useDeferredDashboardLoads";
 import { useLiveRateFeed } from "./useLiveRateFeed";
+import { nextQuotaResetRefreshDelayMs } from "../utils/quotaRefresh";
 
 const DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
 const DASHBOARD_BACKGROUND_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -175,6 +176,32 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       window.clearInterval(interval);
     };
   }, [dashboardReady, fastSnapshotLoaded, state.loading]);
+
+  useEffect(() => {
+    if (!fastSnapshotLoaded || !dashboardReady || state.loading || state.dashboard === null) {
+      return;
+    }
+
+    const delayMs = nextQuotaResetRefreshDelayMs(state.dashboard.quota);
+    if (delayMs === null) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setForceNextQuotaLoad(true);
+      setQuotaLoadGeneration((current) => current + 1);
+    }, delayMs);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    dashboardReady,
+    fastSnapshotLoaded,
+    state.dashboard?.quota.fiveHour.resetsAtUnix,
+    state.dashboard?.quota.sevenDay.resetsAtUnix,
+    state.loading,
+  ]);
 
   useDeferredDashboardLoads({
     active: fastSnapshotLoaded,

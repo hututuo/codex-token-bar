@@ -3738,7 +3738,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-usage-status {
-  justify-content: center;
+  justify-content: flex-start;
   color: var(--floating-secondary);
   min-height: calc(11px * var(--floating-scale));
   min-width: 0;
@@ -3755,7 +3755,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   font-weight: 650;
   line-height: 1;
   overflow: hidden;
-  text-align: center;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
