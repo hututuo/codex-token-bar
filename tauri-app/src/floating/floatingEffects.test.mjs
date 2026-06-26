@@ -13,49 +13,59 @@ const settingsPanelSource = readFileSync(
   "utf8",
 );
 
-test("ripple uses a canvas renderer instead of stretched svg waves", () => {
-  assert.match(previewSource, /<FloatingUnreadRippleCanvas \/>/);
-  assert.match(stylesSource, /\.unread-ripple-canvas/);
+test("ripple uses compositor layers instead of realtime canvas drawing", () => {
+  assert.match(previewSource, /<FloatingUnreadRippleLayers \/>/);
+  assert.match(stylesSource, /\.unread-ripple-source/);
+  assert.match(stylesSource, /\.unread-ripple-ring/);
+  assert.doesNotMatch(previewSource, /<canvas/);
+  assert.doesNotMatch(previewSource, /getContext\("2d"\)/);
+  assert.doesNotMatch(previewSource, /window\.setInterval/);
+  assert.doesNotMatch(previewSource, /drawUnreadRippleCanvasFrame/);
   assert.doesNotMatch(previewSource, /preserveAspectRatio="none"/);
   assert.doesNotMatch(previewSource, /<svg className="unread-ripple-svg"/);
 });
 
 test("ripple renderer keeps the Swift-style reflection math", () => {
   assert.doesNotMatch(previewSource, /--ripple-delay/);
-  assert.match(previewSource, /targetFrameIntervalMs = 1_000 \/ 30/);
-  assert.match(previewSource, /function drawCircularRippleReflections/);
-  assert.match(previewSource, /smoothStep\(\(radius - source\.arrivalDistance\)/);
-  assert.match(previewSource, /height \+ center\.y/);
+  assert.match(previewSource, /const RIPPLE_RINGS = \[/);
+  assert.match(previewSource, /const RIPPLE_SOURCES = \[/);
+  assert.match(previewSource, /data-ripple-source/);
+  assert.match(previewSource, /\{ x: 50, y: -50, strength: 0\.84, delay: 0\.24 \}/);
+  assert.match(previewSource, /\{ x: 50, y: 250, strength: 0\.52, delay: 0\.48 \}/);
+  assert.match(previewSource, /\{ x: -50, y: 50, strength: 0\.66, delay: 0\.34 \}/);
+  assert.match(previewSource, /unread-ripple-ring unread-ripple-ring--\$\{ringIndex\}/);
+  const ringMatches = previewSource.match(/\{ offset: -?\d+(?:\.\d+)?, alpha: \d(?:\.\d+)?, thickness: \d(?:\.\d+)? \}/g) ?? [];
+  assert.equal(ringMatches.length, 5);
 });
 
-test("ripple renderer uses cached layout with a real thirty fps timer", () => {
+test("ripple renderer avoids javascript frame timers", () => {
   assert.doesNotMatch(previewSource, /requestAnimationFrame/);
-  assert.match(previewSource, /window\.setInterval/);
-  assert.match(previewSource, /function refreshUnreadRippleLayout/);
+  assert.doesNotMatch(previewSource, /setInterval/);
+  assert.doesNotMatch(previewSource, /setTimeout/);
+  assert.doesNotMatch(previewSource, /function refreshUnreadRippleLayout/);
 });
 
 test("ripple renderer keeps visible ring strength without edge rebound glow", () => {
-  assert.match(previewSource, /alpha \* 1\.12/);
-  assert.match(previewSource, /alpha \* 0\.34/);
+  assert.match(stylesSource, /opacity: calc\(var\(--ripple-ring-alpha, 1\) \* var\(--ripple-source-strength, 1\) \* 0\.64\);/);
+  assert.match(stylesSource, /border: var\(--ripple-ring-thickness, 2px\) solid rgba\(var\(--floating-effect-rgb\), 0\.62\);/);
+  assert.match(stylesSource, /rgba\(255, 255, 255, 0\.20\)/);
   assert.doesNotMatch(previewSource, /function drawEdgeContact/);
   assert.doesNotMatch(previewSource, /function drawEdgeGlow/);
   assert.doesNotMatch(previewSource, /function gaussian/);
 });
 
 test("ripple reaches panel edges with wider ring spacing", () => {
-  assert.match(previewSource, /height \* 2\.65/);
-  assert.match(previewSource, /Math\.max\(width, height\) \* 1\.08/);
-  assert.match(previewSource, /const fadeStart = 0\.88/);
-  assert.match(previewSource, /offset: -8\.4 \* scale/);
-  assert.match(previewSource, /offset: -16\.8 \* scale/);
-  assert.match(previewSource, /offset: -25\.2 \* scale/);
-  assert.match(previewSource, /offset: -33\.6 \* scale/);
+  assert.match(stylesSource, /--ripple-max-radius: 265%/);
+  assert.match(previewSource, /offset: -8\.4/);
+  assert.match(previewSource, /offset: -16\.8/);
+  assert.match(previewSource, /offset: -25\.2/);
+  assert.match(previewSource, /offset: -33\.6/);
 });
 
 test("ripple effect layer uses the actual floating panel edge", () => {
   assert.match(stylesSource, /\.unread-effect\s*{[\s\S]*?inset: 0;[\s\S]*?border-radius: inherit;/);
   assert.doesNotMatch(stylesSource, /\.unread-effect\s*{[\s\S]*?inset: 5px;/);
-  assert.match(previewSource, /clipRadius: readCanvasBorderRadius\(canvas, width, height\)/);
+  assert.match(stylesSource, /\.unread-effect\s*{[\s\S]*?overflow: hidden;/);
 });
 
 test("ripple effect does not add a static center disk", () => {

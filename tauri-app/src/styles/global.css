@@ -3832,16 +3832,53 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .unread-effect--ripple {
+  --ripple-max-radius: 265%;
   animation: unread-ripple-glass 3.25s ease-in-out infinite;
 }
 
-.unread-ripple-canvas {
+.unread-effect--ripple::before {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  border-radius: inherit;
-  display: block;
+  background: rgba(var(--floating-effect-rgb), 0.036);
+  content: "";
+  animation: unread-ripple-tint 3.25s ease-in-out infinite;
+  will-change: opacity;
+}
+
+.unread-ripple-source {
+  position: absolute;
+  inset: 0;
+  contain: paint;
+}
+
+.unread-ripple-ring {
+  position: absolute;
+  left: var(--ripple-source-x, 50%);
+  top: var(--ripple-source-y, 50%);
+  width: calc(var(--ripple-max-radius) + var(--ripple-ring-offset, 0px));
+  aspect-ratio: 1;
+  border: var(--ripple-ring-thickness, 2px) solid rgba(var(--floating-effect-rgb), 0.62);
+  border-radius: 999px;
+  box-shadow:
+    inset 0 0 0 max(0.18px, calc(var(--ripple-ring-thickness, 2px) * 0.1)) rgba(255, 255, 255, 0.20),
+    0 0 calc(2.8px * var(--floating-scale)) rgba(var(--floating-effect-rgb), 0.12);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.018);
+  transform-origin: center;
+  animation: unread-ripple-ring 3.25s cubic-bezier(0.22, 0.65, 0.17, 1) infinite;
+  animation-delay: var(--ripple-source-delay, 0s);
+  will-change: transform, opacity;
+}
+
+.unread-ripple-ring--0 {
+  --ripple-ring-alpha-boost: 1;
+}
+
+.unread-ripple-ring--1,
+.unread-ripple-ring--2,
+.unread-ripple-ring--3,
+.unread-ripple-ring--4 {
+  border-color: rgba(var(--floating-effect-rgb), 0.54);
 }
 
 .unread-effect--shimmer {
@@ -3879,6 +3916,37 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   }
 }
 
+@keyframes unread-ripple-tint {
+  0%,
+  100% {
+    opacity: 0.46;
+  }
+  50% {
+    opacity: 0.86;
+  }
+}
+
+@keyframes unread-ripple-ring {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.018);
+  }
+  5% {
+    opacity: calc(var(--ripple-ring-alpha, 1) * var(--ripple-source-strength, 1) * 0.64);
+  }
+  74% {
+    opacity: calc(var(--ripple-ring-alpha, 1) * var(--ripple-source-strength, 1) * 0.46);
+  }
+  92% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
 @keyframes unread-shimmer-sweep {
   0% {
     transform: translateX(-30%) rotate(12deg);
@@ -3886,6 +3954,23 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   82%,
   100% {
     transform: translateX(560%) rotate(12deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .unread-effect--ripple,
+  .unread-effect--ripple::before,
+  .unread-ripple-ring {
+    animation: none;
+  }
+
+  .unread-effect--ripple::before {
+    opacity: 0.72;
+  }
+
+  .unread-ripple-ring {
+    opacity: calc(var(--ripple-ring-alpha, 1) * var(--ripple-source-strength, 1) * 0.18);
+    transform: translate(-50%, -50%) scale(0.84);
   }
 }
 
