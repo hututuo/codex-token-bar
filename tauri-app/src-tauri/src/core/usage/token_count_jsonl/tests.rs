@@ -568,7 +568,7 @@ fn token_event_cache_reads_only_appended_session_bytes() {
 }
 
 #[test]
-fn token_event_cache_migrates_legacy_entries_without_full_reparse() {
+fn token_event_cache_reparses_legacy_entries_without_parsed_size() {
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -577,13 +577,22 @@ fn token_event_cache_migrates_legacy_entries_without_full_reparse() {
         &file,
         &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
     );
-    let original_signature = super::token_event_cache::file_signature(&file).unwrap();
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(
+            handle,
+            r#"{{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170}},"last_token_usage":{{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}}}}}"#
+        )
+        .unwrap();
+    }
+
+    let full_signature = super::token_event_cache::file_signature(&file).unwrap();
     let cache_key = super::token_event_cache::file_cache_key(&root, &file);
     let mut files = HashMap::new();
     files.insert(
         cache_key,
         CachedSessionFile {
-            signature: original_signature,
+            signature: full_signature,
             parsed_size: 0,
             ended_with_newline: true,
             previous_total_tokens: None,
@@ -596,15 +605,6 @@ fn token_event_cache_migrates_legacy_entries_without_full_reparse() {
             }],
         },
     );
-
-    {
-        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
-        writeln!(
-            handle,
-            r#"{{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170}},"last_token_usage":{{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}}}}}"#
-        )
-        .unwrap();
-    }
 
     let mut warnings = Vec::new();
     let mut cache_changed = false;
@@ -619,8 +619,63 @@ fn token_event_cache_migrates_legacy_entries_without_full_reparse() {
     );
 
     assert_eq!(events.iter().map(|event| event.tokens).sum::<u64>(), 170);
+    assert_eq!(session_full_parse_count_for_testing(), 1);
+    assert!(cache_changed);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn token_event_cache_reads_tail_when_signature_matches_but_parsed_size_lags() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019elagging-0000-0000-0000-cache.jsonl");
+    let first_line = r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
+    let second_line = r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170},"last_token_usage":{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}"#;
+    write_lines(&file, &[first_line, second_line]);
+
+    let full_signature = super::token_event_cache::file_signature(&file).unwrap();
+    let parsed_size = (first_line.len() + 1) as u64;
+    let cache_key = super::token_event_cache::file_cache_key(&root, &file);
+    let first_timestamp =
+        OffsetDateTime::parse("2026-06-18T01:00:00Z", &Rfc3339).unwrap().unix_timestamp();
+    let mut files = HashMap::new();
+    files.insert(
+        cache_key.clone(),
+        CachedSessionFile {
+            signature: full_signature,
+            parsed_size,
+            ended_with_newline: true,
+            previous_total_tokens: Some(120),
+            events: vec![CachedTokenEvent {
+                timestamp_unix: first_timestamp,
+                tokens: 120,
+                input_tokens: 100,
+                cached_input_tokens: 20,
+                output_tokens: 20,
+            }],
+        },
+    );
+
+    let mut warnings = Vec::new();
+    let mut cache_changed = false;
+    reset_session_full_parse_count_for_testing();
+    let events = parse_session_file_cached(
+        &file,
+        "019elagging-0000-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+
+    assert_eq!(events.iter().map(|event| event.tokens).sum::<u64>(), 170);
     assert_eq!(session_full_parse_count_for_testing(), 0);
     assert!(cache_changed);
+    let updated = files.get(&cache_key).unwrap();
+    assert_eq!(updated.parsed_size, fs::metadata(&file).unwrap().len());
+    assert_eq!(updated.events.len(), 2);
 
     fs::remove_dir_all(root).unwrap();
 }

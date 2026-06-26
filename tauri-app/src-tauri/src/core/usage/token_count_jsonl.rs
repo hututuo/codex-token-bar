@@ -33,7 +33,7 @@ static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<Option<CachedDashboardAggregate
 static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 4;
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 5;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct TokenUsageSummary {

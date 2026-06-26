@@ -297,7 +297,7 @@ pub(super) fn parse_session_file_cached(
     };
 
     if let Some(entry) = files.get(&cache_key) {
-        if entry.signature == signature && entry.is_safe_to_reuse() {
+        if entry.signature == signature && entry.is_complete_and_safe_to_reuse() {
             return entry.to_events(session_id);
         }
     }
@@ -308,7 +308,7 @@ pub(super) fn parse_session_file_cached(
             && signature.size >= entry.signature.size
             && parsed_size > 0
             && entry.ended_with_newline
-            && entry.is_safe_to_reuse()
+            && entry.has_plausible_token_events()
         {
             let previous_total_tokens = entry.effective_previous_total_tokens();
             let parsed = parse_session_file_range(
@@ -318,7 +318,7 @@ pub(super) fn parse_session_file_cached(
                 previous_total_tokens,
                 warnings,
             );
-            if parsed.consumed_size >= parsed_size {
+            if parsed.consumed_size > parsed_size || signature.size == parsed_size {
                 let overlaps_cached_events = parsed.events.first().is_some_and(|first| {
                     entry
                         .events
@@ -336,6 +336,8 @@ pub(super) fn parse_session_file_cached(
                     *cache_changed = true;
                     return entry.to_events(session_id);
                 }
+            } else if !parsed.ended_with_newline {
+                return entry.to_events(session_id);
             }
         }
     }
@@ -402,10 +404,17 @@ impl CachedSessionFile {
         })
     }
 
-    fn is_safe_to_reuse(&self) -> bool {
-        self.events
-            .iter()
-            .all(CachedTokenEvent::has_plausible_token_total)
+    fn is_complete_and_safe_to_reuse(&self) -> bool {
+        self.parsed_size > 0
+            && self.parsed_size >= self.signature.size
+            && self.has_plausible_token_events()
+    }
+
+    fn has_plausible_token_events(&self) -> bool {
+        self.parsed_size > 0
+            && self.events
+                .iter()
+                .all(CachedTokenEvent::has_plausible_token_total)
     }
 }
 

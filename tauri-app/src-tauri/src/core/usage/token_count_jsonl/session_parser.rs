@@ -120,6 +120,7 @@ pub(super) fn parse_session_file_range(
         };
         let line_ended_with_newline = line.ends_with('\n');
         if !line_ended_with_newline && !is_complete_json_line(&line) {
+            ended_with_newline = false;
             break;
         }
         ended_with_newline = line_ended_with_newline;
