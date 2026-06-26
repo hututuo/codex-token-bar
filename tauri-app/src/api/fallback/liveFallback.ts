@@ -34,6 +34,7 @@ export const emptyFloatingPanelSnapshot: FloatingPanelSnapshot = {
   tokensPerSecond: 0,
   maxTokensPerSecond: 200,
   trendLabel: "",
+  resetCreditLabel: "卡--",
   totalTokensLabel: "总 0",
   todayTokensLabel: "今 0",
   requestsLabel: "次 0",

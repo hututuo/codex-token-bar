@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { AccountQuotaBundle, FloatingPanelSnapshot } from "../types/dashboard";
+import type { AccountQuotaBundle, FloatingPanelSnapshot, ResetCreditSummary } from "../types/dashboard";
 import { compactQuotaLabel } from "../utils/quota";
 import { useCompactPanelQuota } from "./useCompactPanelQuota";
 import { useCompactPanelSnapshot } from "./useCompactPanelSnapshot";
@@ -59,6 +59,7 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
       return {
         ...rawSnapshot,
         trendLabel: compactPaceLabel,
+        resetCreditLabel: compactResetCreditLabel(quota.quota.resetCredit),
         fiveHourLabel: quotaLabels.fiveHour,
         fiveHourRemainingPercent: quota.quota.fiveHour.remainingPercent,
         sevenDayLabel: quotaLabels.sevenDay,
@@ -74,4 +75,14 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
     quota,
     quotaLabels,
   };
+}
+
+function compactResetCreditLabel(summary: ResetCreditSummary): string {
+  if (summary.availableCount > 0) {
+    return `${summary.availableCount}卡`;
+  }
+  if (summary.status.includes("待读取")) {
+    return "卡--";
+  }
+  return "0卡";
 }

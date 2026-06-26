@@ -3652,22 +3652,42 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   height: calc(30px * var(--floating-scale));
 }
 
-.floating-rate-meter em {
+.floating-status-text {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: calc(5px * var(--floating-scale));
+  align-items: center;
+  min-width: 0;
+}
+
+.floating-rate-meter .floating-status-text {
   position: absolute;
   top: calc(5px * var(--floating-scale));
   left: 0;
   right: 0;
-  display: block;
   height: calc(13px * var(--floating-scale));
-  min-width: 0;
+}
+
+.floating-status-text em {
   color: var(--floating-primary);
   font-size: calc(10.2px * var(--floating-scale));
   font-style: normal;
   font-weight: 650;
   line-height: 1;
   overflow: hidden;
-  text-align: left;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.floating-status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: calc(23px * var(--floating-scale));
+  color: var(--floating-secondary);
+  font-size: calc(8.9px * var(--floating-scale));
+  font-weight: 700;
+  line-height: 1;
   white-space: nowrap;
 }
 
@@ -3737,8 +3757,10 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-usage-status-card {
+  position: relative;
   display: block;
   max-width: min(calc(174px * var(--floating-scale)), 100%);
+  min-height: calc(14px * var(--floating-scale));
   padding: 0 calc(6px * var(--floating-scale));
   color: var(--floating-primary);
   font-size: calc(13.6px * var(--floating-scale));

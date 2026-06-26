@@ -28,6 +28,7 @@ export interface FloatingPanelSnapshot {
   tokensPerSecond: number;
   maxTokensPerSecond: number;
   trendLabel: string;
+  resetCreditLabel: string;
   totalTokensLabel: string;
   todayTokensLabel: string;
   requestsLabel: string;
