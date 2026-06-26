@@ -3679,6 +3679,10 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   white-space: nowrap;
 }
 
+.floating-rate-meter .floating-status-text em {
+  text-align: left;
+}
+
 .floating-rate-track {
   position: absolute;
   left: 0;
@@ -3738,7 +3742,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-usage-status {
-  justify-content: flex-start;
+  justify-content: center;
   color: var(--floating-secondary);
   min-height: calc(11px * var(--floating-scale));
   min-width: 0;
@@ -3747,16 +3751,25 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .floating-usage-status-card {
   position: relative;
   display: block;
-  max-width: min(calc(174px * var(--floating-scale)), 100%);
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
   min-height: calc(14px * var(--floating-scale));
-  padding: 0 calc(6px * var(--floating-scale));
+  padding: 0 calc(2px * var(--floating-scale));
   color: var(--floating-primary);
   font-size: calc(13.6px * var(--floating-scale));
   font-weight: 650;
   line-height: 1;
-  overflow: hidden;
-  text-align: left;
-  text-overflow: ellipsis;
+  overflow: visible;
+  text-align: center;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.floating-usage-status-card .floating-status-text em {
+  overflow: visible;
+  text-align: center;
+  text-overflow: clip;
   white-space: nowrap;
 }
 

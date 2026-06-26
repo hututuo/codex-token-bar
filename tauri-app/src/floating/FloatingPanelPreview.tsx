@@ -192,7 +192,7 @@ function FloatingContentRow({
         <div className="floating-row floating-usage-status" style={style}>
           <span className="floating-usage-status-card">
             <FloatingStatusText
-              text={snapshot.trendLabel || "节奏待读取"}
+              text={`${snapshot.trendLabel || "节奏待读取"}${snapshot.resetCreditLabel || ""}`}
             />
           </span>
         </div>

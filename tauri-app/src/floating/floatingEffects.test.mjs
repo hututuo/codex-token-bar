@@ -119,7 +119,7 @@ test("floating panel keeps muted pace text black metrics rounded corners and cor
   assert.match(stylesSource, /\.floating-rate-meter--solo \.floating-rate-track\s*{[\s\S]*?top: calc\(12\.25px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.rate-fill\s*{[\s\S]*?transform: scaleX\(var\(--rate-fill-scale, 0\)\);/);
   assert.match(stylesSource, /\.floating-status-text em\s*{[\s\S]*?font-size: calc\(10\.2px \* var\(--floating-scale\)\);[\s\S]*?white-space: nowrap;/);
-  assert.match(stylesSource, /\.floating-usage-status-card\s*{[\s\S]*?max-width: min\(calc\(174px \* var\(--floating-scale\)\), 100%\);[\s\S]*?font-size: calc\(13\.6px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-usage-status-card\s*{[\s\S]*?width: 100%;[\s\S]*?max-width: 100%;[\s\S]*?font-size: calc\(13\.6px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-metrics\s*{[\s\S]*?font-size: calc\(9\.4px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?padding: calc\(7px \* var\(--floating-scale\)\) calc\(10px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-panel-surface > :not\(\.unread-effect\):not\(\.floating-close-button\)\s*{/);
@@ -130,10 +130,13 @@ test("floating pace text keeps the Swift-style status and card count in one line
   assert.match(previewSource, /FloatingStatusText/);
   assert.doesNotMatch(previewSource, /floatingResetCreditLabel/);
   assert.doesNotMatch(previewSource, /resetCreditLabel=\{/);
+  assert.match(previewSource, /snapshot\.resetCreditLabel \|\| ""/);
   assert.doesNotMatch(stylesSource, /\.floating-status-badge\s*{/);
   assert.match(stylesSource, /\.floating-status-text\s*{[\s\S]*?display: block;/);
-  assert.match(stylesSource, /\.floating-usage-status\s*{[\s\S]*?justify-content: flex-start;/);
-  assert.match(stylesSource, /\.floating-usage-status-card\s*{[\s\S]*?text-align: left;/);
+  assert.match(stylesSource, /\.floating-usage-status\s*{[\s\S]*?justify-content: center;/);
+  assert.match(stylesSource, /\.floating-usage-status-card\s*{[\s\S]*?box-sizing: border-box;[\s\S]*?width: 100%;[\s\S]*?text-align: center;[\s\S]*?white-space: nowrap;/);
+  assert.match(stylesSource, /\.floating-usage-status-card \.floating-status-text em\s*{[\s\S]*?text-overflow: clip;[\s\S]*?white-space: nowrap;/);
+  assert.match(stylesSource, /\.floating-rate-meter \.floating-status-text em\s*{[\s\S]*?text-align: left;/);
   assert.match(stylesSource, /\.floating-status-text em\s*{[\s\S]*?text-overflow: ellipsis;/);
 });
 

@@ -1,4 +1,7 @@
-import type { ResetCreditSummary } from "../types/dashboard";
+import type { ResetCreditDetail, ResetCreditSummary } from "../types/dashboard";
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 
 export function compactFloatingPaceLabel(label: string): string {
   const normalized = label.trim();
@@ -65,4 +68,50 @@ export function compactResetCreditLabel(summary: ResetCreditSummary): string {
 export function compactFloatingUsageStatus(label: string, summary: ResetCreditSummary): string {
   const pace = compactFloatingPaceLabel(label);
   return `${pace}${compactResetCreditLabel(summary)}`;
+}
+
+export function compactNearestResetCreditExpiryLabel(summary: ResetCreditSummary, now = new Date()): string {
+  const nearest = (summary.credits ?? [])
+    .filter((credit) => isAvailableCredit(credit, now))
+    .sort((left, right) => (expiresAtMillis(left) ?? Number.MAX_SAFE_INTEGER) - (expiresAtMillis(right) ?? Number.MAX_SAFE_INTEGER))[0];
+  if (!nearest) {
+    return "";
+  }
+
+  const expiresAt = expiresAtMillis(nearest);
+  if (expiresAt === null) {
+    return "";
+  }
+
+  const remaining = expiresAt - now.getTime();
+  if (remaining <= 0) {
+    return "";
+  }
+
+  if (remaining < DAY_MS) {
+    const hours = Math.max(1, Math.ceil(remaining / HOUR_MS));
+    return ` · 还有${hours}小时到期`;
+  }
+
+  const days = Math.max(1, Math.ceil(remaining / DAY_MS));
+  return ` · 还有${days}天到期`;
+}
+
+function isAvailableCredit(credit: ResetCreditDetail, now: Date): boolean {
+  if (credit.status !== "可用") {
+    return false;
+  }
+  if (credit.redeemedAt && credit.redeemedAt !== "未使用" && credit.redeemedAt !== "未提供") {
+    return false;
+  }
+  const expiresAt = expiresAtMillis(credit);
+  return expiresAt !== null && expiresAt > now.getTime();
+}
+
+function expiresAtMillis(credit: ResetCreditDetail): number | null {
+  const value = credit.expiresAtUnix;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return value > 10_000_000_000 ? value : value * 1000;
 }

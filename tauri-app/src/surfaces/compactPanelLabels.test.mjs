@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compactFloatingPaceLabel, compactFloatingUsageStatus, compactResetCreditLabel } from "./compactPanelLabels.ts";
+import {
+  compactFloatingPaceLabel,
+  compactFloatingUsageStatus,
+  compactNearestResetCreditExpiryLabel,
+  compactResetCreditLabel,
+} from "./compactPanelLabels.ts";
 
 test("compactFloatingPaceLabel mirrors the Swift floating compact status", () => {
   assert.equal(compactFloatingPaceLabel("余量很足，使劲蹬（多 12%）"), "余量足(余量高 12%)");
@@ -25,5 +30,66 @@ test("compactFloatingUsageStatus keeps pace and reset card count in one line", (
   assert.equal(
     compactFloatingUsageStatus("用得偏快，慢一点（低 8%）", { availableCount: 0, status: "0 张重置卡", credits: [] }),
     "慢一点(余量低 8%)",
+  );
+});
+
+function resetCredit(overrides) {
+  return {
+    cardId: "card",
+    title: "",
+    status: "可用",
+    summary: "",
+    resetType: "",
+    issuedAt: "",
+    grantedAtUnix: null,
+    expiresAt: "",
+    expiresAtUnix: null,
+    redeemStartedAt: "",
+    redeemedAt: "未使用",
+    source: "",
+    detailNote: "",
+    associatedUser: "",
+    profileImageUrl: "",
+    shortId: "",
+    ...overrides,
+  };
+}
+
+test("compactNearestResetCreditExpiryLabel describes the nearest available card expiry", () => {
+  const now = new Date("2026-06-26T10:00:00Z");
+  const day = 24 * 60 * 60;
+
+  assert.equal(
+    compactNearestResetCreditExpiryLabel({
+      availableCount: 2,
+      status: "2 张重置卡可用",
+      credits: [
+        resetCredit({ cardId: "late", expiresAtUnix: Date.parse("2026-06-30T10:00:00Z") / 1000 }),
+        resetCredit({ cardId: "soon", expiresAtUnix: Date.parse("2026-06-28T09:00:00Z") / 1000 }),
+      ],
+    }, now),
+    " · 还有2天到期",
+  );
+
+  assert.equal(
+    compactNearestResetCreditExpiryLabel({
+      availableCount: 1,
+      status: "1 张重置卡可用",
+      credits: [
+        resetCredit({ expiresAtUnix: Date.parse("2026-06-26T15:10:00Z") / 1000 }),
+      ],
+    }, now),
+    " · 还有6小时到期",
+  );
+
+  assert.equal(
+    compactNearestResetCreditExpiryLabel({
+      availableCount: 1,
+      status: "1 张重置卡可用",
+      credits: [
+        resetCredit({ status: "已使用", expiresAtUnix: Math.floor(now.getTime() / 1000) + day }),
+      ],
+    }, now),
+    "",
   );
 });

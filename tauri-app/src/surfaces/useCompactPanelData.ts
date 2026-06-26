@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import type { AccountQuotaBundle, FloatingPanelSnapshot } from "../types/dashboard";
 import { compactQuotaLabel } from "../utils/quota";
-import { compactFloatingUsageStatus } from "./compactPanelLabels";
+import { compactFloatingUsageStatus, compactNearestResetCreditExpiryLabel } from "./compactPanelLabels";
 import { useCompactPanelQuota } from "./useCompactPanelQuota";
 import { useCompactPanelSnapshot } from "./useCompactPanelSnapshot";
 
@@ -60,7 +60,7 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
       return {
         ...rawSnapshot,
         trendLabel: compactPaceLabel,
-        resetCreditLabel: "",
+        resetCreditLabel: compactNearestResetCreditExpiryLabel(quota.quota.resetCredit),
         fiveHourLabel: quotaLabels.fiveHour,
         fiveHourRemainingPercent: quota.quota.fiveHour.remainingPercent,
         sevenDayLabel: quotaLabels.sevenDay,
