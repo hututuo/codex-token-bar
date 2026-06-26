@@ -223,7 +223,7 @@ fn read_precise_usage_summary_or_fallback(
         }
     }
 
-    match token_count_jsonl::usage_summary(codex_home) {
+    match token_count_jsonl::dashboard_usage_summary(codex_home) {
         Ok(summary) => {
             let summary = UsageSummary {
                 total_tokens: summary.total_tokens,

@@ -245,9 +245,7 @@ function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot |
                 </span>
               ))
             : (
-                <span>
-                  {primary.point.passed}/{primary.point.tasks} · {compactRadarTokens(primary.point.totalTokens)}
-                </span>
+                <span>{primary.point.passed}/{primary.point.tasks} 通过</span>
               )}
         </p>
       </div>
@@ -262,19 +260,6 @@ function compactModelName(label: string): string {
     .replace(/\bxhigh\b/i, "xh")
     .replace(/\bhigh\b/i, "high")
     .trim();
-}
-
-function compactRadarTokens(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) {
-    return "--";
-  }
-  if (value >= 100_000_000) {
-    return `${displayRadarNumber(value / 100_000_000, 1)}亿`;
-  }
-  if (value >= 10_000) {
-    return `${displayRadarNumber(value / 10_000, 1)}万`;
-  }
-  return `${Math.round(value)}`;
 }
 
 function UnreadEffect({ effect }: { effect: FloatingUnreadEffect }) {

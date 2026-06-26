@@ -136,6 +136,39 @@ fn usage_summary_counts_today_from_token_events_not_thread_updated_at() {
 }
 
 #[test]
+fn dashboard_usage_summary_matches_dashboard_snapshot_metrics() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let now = OffsetDateTime::now_utc();
+    let yesterday = now - time::Duration::days(1);
+    let file = session_dir.join("rollout-019eaaaa-bbbb-cccc-dddd-eeeeffffffff.jsonl");
+    write_lines(
+        &file,
+        &[
+            &format!(
+                r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":1000}}}}}}}}"#,
+                yesterday.format(&Rfc3339).unwrap()
+            ),
+            &format!(
+                r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":40}}}}}}}}"#,
+                now.format(&Rfc3339).unwrap()
+            ),
+        ],
+    );
+
+    let dashboard = dashboard_snapshot(&root).unwrap();
+    let summary = dashboard_usage_summary(&root).unwrap();
+    let today = dashboard.activity_days.last().unwrap();
+
+    assert_eq!(summary.total_tokens, dashboard.stats.total_tokens);
+    assert_eq!(summary.today_tokens, today.tokens);
+    assert_eq!(summary.today_requests, today.calls);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn ranks_sessions_by_low_cache_hit_rate_with_thread_titles() {
     let root = temp_root();
     let session_dir = root.join("sessions");

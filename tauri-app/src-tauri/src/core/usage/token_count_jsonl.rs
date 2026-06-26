@@ -29,6 +29,7 @@ use token_event_cache::{file_cache_key, file_signature, CachedFileSignature};
 
 static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<Option<CachedDashboardAggregate>>> =
     OnceLock::new();
+#[cfg(test)]
 static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
@@ -107,6 +108,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     Ok(snapshot)
 }
 
+#[cfg(test)]
 pub fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
     let sessions_root = codex_home.join("sessions");
     if !sessions_root.exists() {
@@ -132,6 +134,16 @@ pub fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
     store_usage_summary(signature, summary.clone());
 
     Ok(summary)
+}
+
+pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
+    let snapshot = dashboard_snapshot(codex_home)?;
+    let today = snapshot.activity_days.last();
+    Ok(TokenUsageSummary {
+        total_tokens: snapshot.stats.total_tokens,
+        today_tokens: today.map_or(0, |day| day.tokens),
+        today_requests: today.map_or(0, |day| day.calls),
+    })
 }
 
 fn usage_summary_from_events(events: &[TokenEvent], local_offset: UtcOffset) -> TokenUsageSummary {
@@ -193,6 +205,7 @@ struct CachedDashboardAggregate {
     summary: TokenUsageSummary,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct CachedUsageSummary {
     signature: DashboardScanSignature,
@@ -271,6 +284,7 @@ fn store_dashboard_aggregate(
     save_persistent_dashboard_aggregate(&aggregate);
 }
 
+#[cfg(test)]
 fn cached_usage_summary(signature: &DashboardScanSignature) -> Option<TokenUsageSummary> {
     let cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(guard) = cache.lock() {
@@ -295,6 +309,7 @@ fn cached_usage_summary(signature: &DashboardScanSignature) -> Option<TokenUsage
     None
 }
 
+#[cfg(test)]
 fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSummary) {
     let cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = cache.lock() {
