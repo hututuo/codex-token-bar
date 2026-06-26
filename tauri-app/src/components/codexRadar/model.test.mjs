@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { comparisonModelRows, modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, primaryModelRow, quotaChartSeries, secondaryModelRows, shortDateLabel } from "./model.ts";
+import { modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, primaryModelRow, quotaChartSeries, secondaryModelRows, shortDateLabel } from "./model.ts";
 
 const snapshot = {
   modelIq: {
@@ -87,12 +87,6 @@ test("secondaryModelRows excludes the selected primary model", () => {
   const secondary = secondaryModelRows(snapshot.modelIq);
 
   assert.deepEqual(secondary.map((row) => row.label), ["GPT-5.4 xhigh", "GPT-5.5 high"]);
-});
-
-test("comparisonModelRows mirrors the Swift detail table order", () => {
-  const rows = comparisonModelRows(snapshot.modelIq);
-
-  assert.deepEqual(rows.map((row) => row.label), ["GPT-5.5 high", "GPT-5.5 medium", "GPT-5.4 xhigh"]);
 });
 
 test("shortDateLabel compacts Codex Radar date labels", () => {

@@ -5,7 +5,6 @@ import {
   type CodexRadarModelIQComparisonRow,
   type CodexRadarModelIQPoint,
   type CodexRadarQuotaWindow,
-  comparisonModelRows,
   displayRadarNumber,
   environmentCount,
   modelDisplayName,
@@ -80,7 +79,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
 
   const primary = useMemo(() => (snapshot ? primaryModelRow(snapshot.modelIq) : null), [snapshot]);
   const secondary = useMemo(() => (snapshot ? secondaryModelRows(snapshot.modelIq).slice(0, 3) : []), [snapshot]);
-  const allModels = useMemo(() => (snapshot ? comparisonModelRows(snapshot.modelIq) : []), [snapshot]);
+  const allModels = useMemo(() => (snapshot ? [primaryModelRow(snapshot.modelIq), ...secondaryModelRows(snapshot.modelIq)] : []), [snapshot]);
   const quotaRows = snapshot?.modelIq.quotaRadar?.rows ?? [];
   const probability24h = snapshot?.prediction.probability24H ?? snapshot?.prediction.probability24h;
   const probability48h = snapshot?.prediction.probability48H ?? snapshot?.prediction.probability48h;

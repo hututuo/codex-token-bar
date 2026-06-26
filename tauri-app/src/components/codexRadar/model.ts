@@ -367,26 +367,6 @@ export function secondaryModelRows(modelIq: CodexRadarModelIQ): CodexRadarModelI
     .sort(preferredModelOrder);
 }
 
-export function comparisonModelRows(modelIq: CodexRadarModelIQ): CodexRadarModelIQComparisonRow[] {
-  const latestRow = { label: modelDisplayName(modelIq.latest), point: modelIq.latest };
-  const preferredOrder = ["GPT-5.5 high", "GPT-5.5 medium", "GPT-5.4 xhigh"];
-  const comparisonRows = Object.values(modelIq.comparisons ?? {})
-    .filter((comparison) => comparison.latest)
-    .map((comparison) => ({
-      label: comparison.label,
-      point: comparison.latest,
-    }))
-    .sort((lhs, rhs) => {
-      const lhsIndex = preferredOrder.indexOf(lhs.label);
-      const rhsIndex = preferredOrder.indexOf(rhs.label);
-      const normalizedLhs = lhsIndex === -1 ? Number.MAX_SAFE_INTEGER : lhsIndex;
-      const normalizedRhs = rhsIndex === -1 ? Number.MAX_SAFE_INTEGER : rhsIndex;
-      return normalizedLhs === normalizedRhs ? lhs.label.localeCompare(rhs.label) : normalizedLhs - normalizedRhs;
-    });
-
-  return [latestRow, ...comparisonRows];
-}
-
 export function modelIqChartSeries(modelIq: CodexRadarModelIQ): CodexRadarChartSeries[] {
   const latestSeries: CodexRadarChartSeries = {
     id: modelSeriesID(modelIq.latest),
