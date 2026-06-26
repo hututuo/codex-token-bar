@@ -1,6 +1,7 @@
 import { useMemo } from "react";
-import type { AccountQuotaBundle, FloatingPanelSnapshot, ResetCreditSummary } from "../types/dashboard";
+import type { AccountQuotaBundle, FloatingPanelSnapshot } from "../types/dashboard";
 import { compactQuotaLabel } from "../utils/quota";
+import { compactFloatingPaceLabel, compactResetCreditLabel } from "./compactPanelLabels";
 import { useCompactPanelQuota } from "./useCompactPanelQuota";
 import { useCompactPanelSnapshot } from "./useCompactPanelSnapshot";
 
@@ -53,7 +54,7 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
   const snapshot = useMemo(
     () => {
       const compactPaceLabel = quota.quota.paceLabel && quota.quota.paceLabel !== "额度待读取"
-        ? quota.quota.paceLabel
+        ? compactFloatingPaceLabel(quota.quota.paceLabel)
         : rawSnapshot.trendLabel;
 
       return {
@@ -75,14 +76,4 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
     quota,
     quotaLabels,
   };
-}
-
-function compactResetCreditLabel(summary: ResetCreditSummary): string {
-  if (summary.availableCount > 0) {
-    return `${summary.availableCount}卡`;
-  }
-  if (summary.status.includes("待读取")) {
-    return "卡--";
-  }
-  return "0卡";
 }
