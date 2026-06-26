@@ -7,8 +7,10 @@ use tauri::{
     image::Image,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     webview::PageLoadEvent,
-    Manager, TitleBarStyle, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
+#[cfg(target_os = "macos")]
+use tauri::TitleBarStyle;
 
 const FLOATING_WINDOW_WIDTH: f64 = 296.0;
 const FLOATING_WINDOW_MIN_HEIGHT: f64 = 88.0;
@@ -528,9 +530,14 @@ fn create_floating_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         "floating",
         WebviewUrl::App("/index.html?surface=floating".into()),
     )
-    .title("Codex Token Bar Floating")
-    .hidden_title(true)
-    .title_bar_style(TitleBarStyle::Overlay)
+    .title("Codex Token Bar Floating");
+
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .hidden_title(true)
+        .title_bar_style(TitleBarStyle::Overlay);
+
+    let builder = builder
     .inner_size(FLOATING_WINDOW_WIDTH, FLOATING_WINDOW_DEFAULT_HEIGHT)
     .min_inner_size(
         FLOATING_WINDOW_WIDTH * FLOATING_WINDOW_MIN_SCALE,

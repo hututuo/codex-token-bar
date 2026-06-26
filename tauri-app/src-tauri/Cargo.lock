@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "codex-token-bar"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "reqwest 0.12.28",

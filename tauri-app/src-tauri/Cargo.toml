@@ -1,7 +1,7 @@
 [package]
 name = "codex-token-bar"
-version = "0.1.0"
-description = "Cross-platform Codex Token Bar prototype"
+version = "0.7.0"
+description = "Cross-platform Codex Token Bar for Windows"
 authors = ["Codex Token Bar"]
 edition = "2021"
 
