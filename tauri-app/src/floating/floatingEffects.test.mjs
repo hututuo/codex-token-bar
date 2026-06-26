@@ -107,6 +107,10 @@ test("floating gradient palette exposes color direction and type controls", () =
   assert.match(settingsPanelSource, /SettingsCalloutShell[\s\S]*?title="悬浮窗样式"/);
   assert.match(settingsPanelSource, /computeBoundedSettingsCalloutFrame/);
   assert.match(settingsPanelSource, /getBoundingClientRect\(\)/);
+  assert.match(settingsPanelSource, /window\.addEventListener\("pointerdown", closeForOutsidePointer, true\)/);
+  assert.match(settingsPanelSource, /window\.addEventListener\("focusin", closeForOutsideFocus, true\)/);
+  assert.match(settingsPanelSource, /window\.addEventListener\("keydown", closeForEscape, true\)/);
+  assert.match(settingsPanelSource, /window\.addEventListener\("blur", closeForWindowBlur\)/);
   assert.match(settingsPanelSource, /aria-label="渐变起始颜色"/);
   assert.match(settingsPanelSource, /aria-label="渐变结束颜色"/);
   assert.match(settingsPanelSource, /aria-label="渐变方向"/);

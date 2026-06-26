@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import {
   FLOATING_CONTENT_LABELS,
   FLOATING_CONTENT_GROUPS,
@@ -59,6 +59,7 @@ export function LiveRateSettingsPanel({
 }: LiveRateSettingsPanelProps) {
   const [openCallout, setOpenCallout] = useState<SettingsCallout | null>(null);
   const [calloutFrame, setCalloutFrame] = useState<CalloutFrame | null>(null);
+  const calloutRef = useRef<HTMLDivElement | null>(null);
   const paletteButtonRef = useRef<HTMLButtonElement | null>(null);
   const unreadButtonRef = useRef<HTMLButtonElement | null>(null);
   const contentButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -117,6 +118,54 @@ export function LiveRateSettingsPanel({
     updateFrame();
     window.addEventListener("resize", updateFrame);
     return () => window.removeEventListener("resize", updateFrame);
+  }, [openCallout]);
+
+  useLayoutEffect(() => {
+    if (!openCallout) {
+      return undefined;
+    }
+
+    const isInsideOpenCallout = (target: EventTarget | null) => {
+      if (!(target instanceof Node)) {
+        return false;
+      }
+      return Boolean(
+        calloutRef.current?.contains(target)
+          || paletteButtonRef.current?.contains(target)
+          || unreadButtonRef.current?.contains(target)
+          || contentButtonRef.current?.contains(target),
+      );
+    };
+
+    const closeForOutsidePointer = (event: PointerEvent) => {
+      if (!isInsideOpenCallout(event.target)) {
+        setOpenCallout(null);
+      }
+    };
+    const closeForOutsideFocus = (event: FocusEvent) => {
+      if (!isInsideOpenCallout(event.target)) {
+        setOpenCallout(null);
+      }
+    };
+    const closeForEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpenCallout(null);
+      }
+    };
+    const closeForWindowBlur = () => {
+      setOpenCallout(null);
+    };
+
+    window.addEventListener("pointerdown", closeForOutsidePointer, true);
+    window.addEventListener("focusin", closeForOutsideFocus, true);
+    window.addEventListener("keydown", closeForEscape, true);
+    window.addEventListener("blur", closeForWindowBlur);
+    return () => {
+      window.removeEventListener("pointerdown", closeForOutsidePointer, true);
+      window.removeEventListener("focusin", closeForOutsideFocus, true);
+      window.removeEventListener("keydown", closeForEscape, true);
+      window.removeEventListener("blur", closeForWindowBlur);
+    };
   }, [openCallout]);
 
   return (
@@ -207,6 +256,7 @@ export function LiveRateSettingsPanel({
       </div>
       {openCallout === "palette" ? (
         <PaletteSettingsCallout
+          calloutRef={calloutRef}
           calloutStyle={calloutStyle}
           floatingSettings={floatingSettings}
           onClose={() => setOpenCallout(null)}
@@ -215,6 +265,7 @@ export function LiveRateSettingsPanel({
       ) : null}
       {openCallout === "unread" ? (
         <UnreadEffectCallout
+          calloutRef={calloutRef}
           calloutStyle={calloutStyle}
           selected={floatingSettings.unreadEffect}
           onChange={(effect) => {
@@ -226,6 +277,7 @@ export function LiveRateSettingsPanel({
       ) : null}
       {openCallout === "content" ? (
         <ContentSettingsCallout
+          calloutRef={calloutRef}
           calloutStyle={calloutStyle}
           contentVisibility={contentVisibility}
           textToneFill={textToneFill}
@@ -242,15 +294,16 @@ export function LiveRateSettingsPanel({
 
 interface SettingsCalloutShellProps {
   children: ReactNode;
+  calloutRef: RefObject<HTMLDivElement | null>;
   calloutStyle?: CSSProperties;
   title: string;
   subtitle?: string;
   onClose: () => void;
 }
 
-function SettingsCalloutShell({ children, calloutStyle, title, subtitle, onClose }: SettingsCalloutShellProps) {
+function SettingsCalloutShell({ children, calloutRef, calloutStyle, title, subtitle, onClose }: SettingsCalloutShellProps) {
   return (
-    <div className="settings-callout" role="dialog" aria-label={title} style={calloutStyle}>
+    <div className="settings-callout" role="dialog" aria-label={title} ref={calloutRef} style={calloutStyle}>
       <div className="settings-callout-head">
         <div>
           <strong>{title}</strong>
@@ -264,18 +317,20 @@ function SettingsCalloutShell({ children, calloutStyle, title, subtitle, onClose
 }
 
 function PaletteSettingsCallout({
+  calloutRef,
   floatingSettings,
   calloutStyle,
   onClose,
   onFloatingGradientChange,
 }: {
+  calloutRef: RefObject<HTMLDivElement | null>;
   floatingSettings: FloatingWindowSettings;
   calloutStyle?: CSSProperties;
   onClose: () => void;
   onFloatingGradientChange: LiveRateSettingsPanelProps["onFloatingGradientChange"];
 }) {
   return (
-    <SettingsCalloutShell calloutStyle={calloutStyle} title="悬浮窗样式" onClose={onClose}>
+    <SettingsCalloutShell calloutRef={calloutRef} calloutStyle={calloutStyle} title="悬浮窗样式" onClose={onClose}>
       <div className="settings-callout-section">
         <span>颜色</span>
         <label className="settings-callout-row">
@@ -342,11 +397,13 @@ function PaletteSettingsCallout({
 }
 
 function UnreadEffectCallout({
+  calloutRef,
   calloutStyle,
   selected,
   onChange,
   onClose,
 }: {
+  calloutRef: RefObject<HTMLDivElement | null>;
   calloutStyle?: CSSProperties;
   selected: FloatingUnreadEffect;
   onChange: (effect: FloatingUnreadEffect) => void;
@@ -354,6 +411,7 @@ function UnreadEffectCallout({
 }) {
   return (
     <SettingsCalloutShell
+      calloutRef={calloutRef}
       calloutStyle={calloutStyle}
       title="提醒样式"
       subtitle="有完成的会话还没点开时，悬浮窗用选中的样式提醒。"
@@ -381,6 +439,7 @@ function UnreadEffectCallout({
 }
 
 function ContentSettingsCallout({
+  calloutRef,
   calloutStyle,
   contentVisibility,
   textToneFill,
@@ -390,6 +449,7 @@ function ContentSettingsCallout({
   onFloatingContentVisibilityChange,
   onFloatingTextToneChange,
 }: {
+  calloutRef: RefObject<HTMLDivElement | null>;
   calloutStyle?: CSSProperties;
   contentVisibility: FloatingContentVisibility;
   textToneFill: number;
@@ -415,7 +475,7 @@ function ContentSettingsCallout({
   }
 
   return (
-    <SettingsCalloutShell calloutStyle={calloutStyle} title="显示内容" subtitle="选择悬浮窗里显示哪些信息，并调整顺序。" onClose={onClose}>
+    <SettingsCalloutShell calloutRef={calloutRef} calloutStyle={calloutStyle} title="显示内容" subtitle="选择悬浮窗里显示哪些信息，并调整顺序。" onClose={onClose}>
       <label className="setting-slider settings-callout-slider">
         <span>字体颜色</span>
         <input
