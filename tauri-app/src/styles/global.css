@@ -602,6 +602,10 @@ button {
 }
 
 .quota-reset-card b {
+  display: inline-grid;
+  place-items: center;
+  width: 10px;
+  height: 10px;
   color: var(--muted);
   font-size: 10px;
   line-height: 1;
@@ -853,6 +857,10 @@ button.quota-side-card:hover {
 }
 
 .reset-credit-summary-row > b {
+  display: grid;
+  place-items: center;
+  width: 12px;
+  height: 14px;
   color: var(--muted);
   font-size: 11px;
   line-height: 1;
@@ -1139,7 +1147,21 @@ button.quota-side-card:hover {
 }
 
 .radar-detail-toggle {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
   min-width: 58px;
+}
+
+.radar-detail-toggle b {
+  display: inline-grid;
+  place-items: center;
+  width: 10px;
+  height: 12px;
+  font-size: 10px;
+  font-weight: 680;
+  line-height: 1;
 }
 
 .codex-radar-grid {
@@ -2007,6 +2029,11 @@ button.quota-side-card:hover {
 }
 
 .floating-popup-buttons button span {
+  display: inline-grid;
+  place-items: center;
+  width: 10px;
+  height: 12px;
+  flex: 0 0 auto;
   color: var(--muted);
   font-size: 10px;
   line-height: 1;
@@ -3678,10 +3705,22 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-radar strong {
+  display: flex;
+  gap: calc(4px * var(--floating-scale));
+  align-items: baseline;
   color: var(--floating-primary);
   font-size: calc(11.8px * var(--floating-scale));
   font-variant-numeric: tabular-nums;
   line-height: 1;
+}
+
+.floating-radar strong em {
+  color: var(--floating-primary);
+  font-size: calc(8.8px * var(--floating-scale));
+  font-style: normal;
+  font-weight: 680;
+  min-width: 0;
+  opacity: 0.88;
 }
 
 .floating-radar em {
@@ -3696,6 +3735,17 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   color: var(--floating-muted);
   font-size: calc(8.1px * var(--floating-scale));
   font-weight: 650;
+}
+
+.floating-radar-models {
+  display: flex;
+  gap: calc(5px * var(--floating-scale));
+  align-items: center;
+}
+
+.floating-radar-models span {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .floating-quota-bar {

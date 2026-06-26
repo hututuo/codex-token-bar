@@ -89,6 +89,20 @@ test("floating panel keeps muted pace text black metrics rounded corners and cor
   assert.match(stylesSource, /\.floating-close-button\s*{[\s\S]*?position: absolute;[\s\S]*?top: calc\(1px \* var\(--floating-scale\)\);[\s\S]*?right: calc\(1px \* var\(--floating-scale\)\);/);
 });
 
+test("floating radar shows multiple sorted model IQ scores", () => {
+  assert.match(previewSource, /secondaryModelRows/);
+  assert.match(previewSource, /secondaryModelRows\(snapshot\.modelIq\)\.slice\(0, 3\)/);
+  assert.match(previewSource, /className="floating-radar-models"/);
+  assert.match(previewSource, /compactModelName\(row\.label\)\} \{displayRadarNumber\(row\.point\.score, 1\)/);
+});
+
+test("clickable disclosure arrows are right aligned and vertically centered", () => {
+  assert.match(stylesSource, /\.floating-popup-buttons button span\s*{[\s\S]*?display: inline-grid;[\s\S]*?place-items: center;/);
+  assert.match(stylesSource, /\.quota-reset-card b\s*{[\s\S]*?display: inline-grid;[\s\S]*?place-items: center;/);
+  assert.match(stylesSource, /\.reset-credit-summary-row > b\s*{[\s\S]*?display: grid;[\s\S]*?place-items: center;/);
+  assert.match(stylesSource, /\.radar-detail-toggle b\s*{[\s\S]*?display: inline-grid;[\s\S]*?place-items: center;/);
+});
+
 test("shimmer sweep exits the floating panel before the animation pause", () => {
   const match = /@keyframes unread-shimmer-sweep[\s\S]*?translateX\((\d+)%\) rotate\(12deg\);[\s\S]*?}/.exec(stylesSource);
   assert.ok(match, "unread-shimmer-sweep keyframes should define an end translateX percent");

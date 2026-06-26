@@ -2,9 +2,9 @@ import { useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
 import {
   displayRadarNumber,
-  modelDisplayName,
   percentText,
   primaryModelRow,
+  secondaryModelRows,
   type CodexRadarSnapshot,
 } from "../components/codexRadar/model";
 import type { FloatingContentGroup, FloatingPanelSnapshot, FloatingUnreadEffect, FloatingWindowSettings } from "../types/dashboard";
@@ -222,6 +222,7 @@ function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot |
   }
 
   const primary = primaryModelRow(snapshot.modelIq);
+  const secondary = secondaryModelRows(snapshot.modelIq).slice(0, 3);
   const probability = snapshot.prediction.probability24H ?? snapshot.prediction.probability24h;
   const probability48 = snapshot.prediction.probability48H ?? snapshot.prediction.probability48h;
 
@@ -232,13 +233,35 @@ function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot |
         <em>24h {percentText(probability)} · 48h {percentText(probability48)}</em>
       </div>
       <div className="floating-radar-iq">
-        <strong>IQ {displayRadarNumber(primary.point.score, 1)}</strong>
-        <p>
-          {modelDisplayName(primary.point)} · {primary.point.passed}/{primary.point.tasks} · {compactRadarTokens(primary.point.totalTokens)}
+        <strong>
+          IQ {displayRadarNumber(primary.point.score, 1)}
+          <em>{compactModelName(primary.label)}</em>
+        </strong>
+        <p className="floating-radar-models">
+          {secondary.length > 0
+            ? secondary.map((row) => (
+                <span key={row.label}>
+                  {compactModelName(row.label)} {displayRadarNumber(row.point.score, 1)}
+                </span>
+              ))
+            : (
+                <span>
+                  {primary.point.passed}/{primary.point.tasks} · {compactRadarTokens(primary.point.totalTokens)}
+                </span>
+              )}
         </p>
       </div>
     </div>
   );
+}
+
+function compactModelName(label: string): string {
+  return label
+    .replace(/^GPT-/, "")
+    .replace(/\bmedium\b/i, "med")
+    .replace(/\bxhigh\b/i, "xh")
+    .replace(/\bhigh\b/i, "high")
+    .trim();
 }
 
 function compactRadarTokens(value: number): string {

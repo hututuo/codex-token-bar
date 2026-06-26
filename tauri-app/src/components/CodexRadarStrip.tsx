@@ -103,7 +103,8 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
           onClick={() => setShowDetails((value) => !value)}
           type="button"
         >
-          详情 {showDetails ? "⌃" : "⌄"}
+          <span>详情</span>
+          <b aria-hidden="true">{showDetails ? "⌃" : "⌄"}</b>
         </button>
         <button disabled={refreshing} onClick={() => void refresh(true)} type="button">
           {refreshing ? "刷新中" : "刷新"}
