@@ -50,7 +50,7 @@ Codex Token Bar 是一个本地优先的 Codex 用量仪表盘。它读取本机
 
 | 平台 | 实现 | 发布资产 | 说明 |
 |---|---|---|---|
-| macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.6.0-macos-arm64.dmg` | 当前 macOS 稳定线，带 Sparkle 更新检查。 |
+| macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.7.0-macos-arm64.dmg` | 当前 macOS 稳定线，带 Sparkle 更新检查。 |
 | Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.7.0-windows-x64-setup.exe` | 面向 Intel / AMD Windows 10/11。 |
 | Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.7.0-windows-arm64-setup.exe` | 面向 Windows on ARM；安装器进程可能经模拟运行，但 App 二进制是 ARM64。 |
 
@@ -76,12 +76,12 @@ Codex Token Bar 会读取 Codex 自己使用的本地账号接口，把“重置
 
 ### macOS
 
-1. 下载 `CodexTokenBar-v0.6.0-macos-arm64.dmg` 和 `SHA256SUMS-v0.6.0.txt`。
+1. 下载 `CodexTokenBar-v0.7.0-macos-arm64.dmg` 和 `SHA256SUMS-v0.7.0.txt`。
 2. 可选校验：
 
 ```bash
-shasum -a 256 CodexTokenBar-v0.6.0-macos-arm64.dmg
-cat SHA256SUMS-v0.6.0.txt
+shasum -a 256 CodexTokenBar-v0.7.0-macos-arm64.dmg
+cat SHA256SUMS-v0.7.0.txt
 ```
 
 3. 打开 DMG，把 `Codex Token Bar.app` 拖到 Applications。
@@ -175,7 +175,7 @@ macOS Swift 发布包：
 
 ```bash
 SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
-  scripts/build_release.sh v0.6.0
+  scripts/build_release.sh v0.7.0
 ```
 
 Windows Tauri 发布包：
@@ -229,7 +229,7 @@ There are now two official implementation lines:
 
 | Platform | Implementation | Release asset | Notes |
 |---|---|---|---|
-| macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.6.0-macos-arm64.dmg` | Current stable macOS line with Sparkle update checking. |
+| macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.7.0-macos-arm64.dmg` | Current stable macOS line with Sparkle update checking. |
 | Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.7.0-windows-x64-setup.exe` | For Intel / AMD Windows 10/11. |
 | Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.7.0-windows-arm64-setup.exe` | For Windows on ARM. The installer process may run under emulation, while the app binary is ARM64. |
 
@@ -255,12 +255,12 @@ Download the correct installer from [GitHub Releases](https://github.com/hututuo
 
 ### macOS
 
-1. Download `CodexTokenBar-v0.6.0-macos-arm64.dmg` and `SHA256SUMS-v0.6.0.txt`.
+1. Download `CodexTokenBar-v0.7.0-macos-arm64.dmg` and `SHA256SUMS-v0.7.0.txt`.
 2. Optionally verify:
 
 ```bash
-shasum -a 256 CodexTokenBar-v0.6.0-macos-arm64.dmg
-cat SHA256SUMS-v0.6.0.txt
+shasum -a 256 CodexTokenBar-v0.7.0-macos-arm64.dmg
+cat SHA256SUMS-v0.7.0.txt
 ```
 
 3. Open the DMG and drag `Codex Token Bar.app` to Applications.
@@ -352,7 +352,7 @@ macOS Swift release assets:
 
 ```bash
 SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
-  scripts/build_release.sh v0.6.0
+  scripts/build_release.sh v0.7.0
 ```
 
 Windows Tauri release assets:
