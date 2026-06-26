@@ -131,9 +131,14 @@ test("floating radar shows multiple sorted model IQ scores", () => {
   assert.match(previewSource, /uniqueFloatingRadarRows\(secondaryModelRows\(snapshot\.modelIq\), 2\)/);
   assert.match(previewSource, /className="floating-radar-models"/);
   assert.match(previewSource, /floatingRadarShortModelLabel\(row\.label\)} \$\{displayRadarNumber\(row\.point\.score, 1\)\}/);
+  const primaryLabelBody = /function floatingRadarPrimaryModelLabel\(label: string\): string \{([\s\S]*?)\n\}/.exec(previewSource)?.[1] ?? "";
+  assert.equal(primaryLabelBody.includes(".replace(/^GPT-/"), false);
+  assert.match(primaryLabelBody, /\.replace\(\/\\bxhigh\\b\/i, "X high"\)/);
   assert.match(previewSource, /\.replace\(\/\^GPT-5\\\.5\\s\+\/i, ""\)/);
   assert.match(previewSource, /\.replace\(\/\^GPT-5\\\.4\\s\+\/i, "5\.4 "\)/);
   assert.match(stylesSource, /\.floating-radar-models\s*{[\s\S]*?display: block;[\s\S]*?text-overflow: clip;/);
+  assert.match(stylesSource, /\.floating-radar\s*{[\s\S]*?grid-template-columns: minmax\(0, 0\.74fr\) minmax\(0, 1\.26fr\);/);
+  assert.match(stylesSource, /\.floating-radar strong\s*{[\s\S]*?display: grid;[\s\S]*?grid-template-columns: max-content minmax\(0, 1fr\);/);
 });
 
 test("clickable disclosure arrows are right aligned and vertically centered", () => {

@@ -267,7 +267,6 @@ function uniqueFloatingRadarRows(rows: ReturnType<typeof secondaryModelRows>, li
 
 function floatingRadarPrimaryModelLabel(label: string): string {
   return label
-    .replace(/^GPT-/, "")
     .replace(/\bxhigh\b/i, "X high")
     .trim();
 }

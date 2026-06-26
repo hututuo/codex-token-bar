@@ -188,9 +188,13 @@ test("live rate switch stops the shared stream and preserves other refreshes", a
   assert.equal(statusPanel.includes("onDisplaySurfacesChanged"), true);
   assert.equal(card.includes("实时速率已关闭"), true);
   assert.equal(card.includes("is-live-disabled"), true);
-  assert.equal(card.includes("为避免之前那种日志写入烧硬盘"), true);
+  assert.equal(card.includes("官方为避免高频日志写入损耗硬盘"), true);
+  assert.equal(card.includes("<LiveRateSessionRow"), false);
+  assert.equal(card.includes("LiveRateSessionRow"), false);
+  assert.equal(card.includes("live-heading-line"), true);
   assert.equal(shellSettings.includes("showRateAndBar: nextEnabled"), true);
   assert.match(styles, /\.live-left\.is-live-disabled::after\s*{[\s\S]*?content: "实时速率已关闭";[\s\S]*?pointer-events: none;/);
+  assert.match(styles, /\.live-heading-line\s*{[\s\S]*?display: flex;[\s\S]*?align-items: center;/);
 });
 
 test("live rate surfaces subscribe to the shared stream instead of polling snapshots", async () => {

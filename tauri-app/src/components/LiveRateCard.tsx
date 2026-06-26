@@ -2,12 +2,10 @@ import type {
   FloatingContentVisibility,
   FloatingUnreadEffect,
   LiveRateSnapshot,
-  LiveThreadOption,
   PlatformCapabilities,
 } from "../types/dashboard";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { LiveRateMeter } from "./liveRate/LiveRateMeter";
-import { LiveRateSessionRow } from "./liveRate/LiveRateSessionRow";
 import { LiveRateSettingsPanel } from "./liveRate/LiveRateSettingsPanel";
 
 interface LiveRateCardProps {
@@ -21,14 +19,11 @@ interface LiveRateCardProps {
   onFloatingTextToneChange: (textTone: number) => void;
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onLiveRateReset: () => Promise<void>;
-  onLiveThreadSelect: (threadId: string) => void;
   onToggleLiveRate: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
   liveRateEnabled: boolean;
-  liveThreadOptions: LiveThreadOption[];
   platform: PlatformCapabilities;
-  selectedLiveThreadId: string;
   snapshot: LiveRateSnapshot;
   statusTrayLiveTextEnabled: boolean;
 }
@@ -44,14 +39,11 @@ export function LiveRateCard({
   onFloatingTextToneChange,
   onFloatingContentVisibilityChange,
   onLiveRateReset,
-  onLiveThreadSelect,
   onToggleLiveRate,
   onToggleFloating,
   onToggleStatusTray,
   liveRateEnabled,
-  liveThreadOptions,
   platform,
-  selectedLiveThreadId,
   snapshot,
   statusTrayLiveTextEnabled,
 }: LiveRateCardProps) {
@@ -59,19 +51,21 @@ export function LiveRateCard({
     <section className={liveRateEnabled ? "live-card" : "live-card is-live-disabled"} aria-label="实时速率">
       <div className="section-title-row">
         <div>
-          <h2>全会话实时速度</h2>
+          <div className="live-heading-line">
+            <h2>全会话实时速度</h2>
+            <button
+              type="button"
+              className={liveRateEnabled ? "live-rate-switch is-active" : "live-rate-switch"}
+              onClick={onToggleLiveRate}
+              aria-pressed={liveRateEnabled}
+              title="关闭后停止实时速率监控，但不影响用量、额度和雷达统计"
+            >
+              实时速率 {liveRateEnabled ? "开" : "关"}
+            </button>
+          </div>
           <span>{liveRateEnabled ? "含输出与工具输入流 · 部分流式可能延迟" : "实时速率已关闭"}</span>
         </div>
         <div className="live-title-actions">
-          <button
-            type="button"
-            className={liveRateEnabled ? "live-rate-switch is-active" : "live-rate-switch"}
-            onClick={onToggleLiveRate}
-            aria-pressed={liveRateEnabled}
-            title="关闭后停止实时速率监控，但不影响用量、额度和雷达统计"
-          >
-            实时速率 {liveRateEnabled ? "开" : "关"}
-          </button>
           <button
             type="button"
             className="live-reset-button"
@@ -95,16 +89,10 @@ export function LiveRateCard({
             snapshot={snapshot}
             onFullScaleChange={onTokenRateFullScaleChange}
           />
-          <LiveRateSessionRow
-            liveThreadOptions={liveThreadOptions}
-            onLiveThreadSelect={onLiveThreadSelect}
-            selectedLiveThreadId={selectedLiveThreadId}
-          snapshot={snapshot}
-        />
-        <p className="live-rate-note">
-          为避免之前那种日志写入烧硬盘，很多流式输出日志已关闭；大部分速率只是估算，只用于判断 Codex 是否正在干活，不代表真实速率。
-        </p>
-      </div>
+          <p className="live-rate-note">
+            官方为避免高频日志写入损耗硬盘，砍掉了很多流式输出日志；大部分速率只是估算，只用于判断 Codex 是否正在干活，不代表真实速率。
+          </p>
+        </div>
 
         <LiveRateSettingsPanel
           floatingEnabled={floatingEnabled}

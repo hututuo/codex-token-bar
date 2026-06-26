@@ -78,13 +78,10 @@ export function DashboardSummarySection({
         onFloatingTextToneChange={onFloatingTextToneChange}
         onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
         onLiveRateReset={onLiveRateReset}
-        onLiveThreadSelect={onLiveThreadSelect}
         onToggleLiveRate={onToggleLiveRate}
         onToggleFloating={onToggleFloating}
         onToggleStatusTray={onToggleStatusTray}
-        liveThreadOptions={liveThreadOptions}
         platform={platform}
-        selectedLiveThreadId={selectedLiveThreadId}
         snapshot={liveRate}
       />
     </>

@@ -1770,7 +1770,7 @@ button.quota-side-card:hover {
 
 .live-left {
   display: grid;
-  grid-template-rows: minmax(85px, auto) 30px;
+  grid-template-rows: minmax(85px, auto) minmax(30px, auto);
   gap: 8px;
   min-width: 0;
   position: relative;
@@ -1906,6 +1906,17 @@ button.quota-side-card:hover {
   gap: 8px;
 }
 
+.live-heading-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.live-heading-line h2 {
+  margin: 0;
+}
+
 .live-rate-switch {
   min-height: 28px;
   border: 0;
@@ -1924,7 +1935,13 @@ button.quota-side-card:hover {
 }
 
 .live-rate-note {
-  margin: -2px 0 0;
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  margin: 0;
+  border-radius: 10px;
+  background: var(--panel-soft);
+  padding: 5px 9px;
   color: color-mix(in srgb, var(--muted) 84%, var(--text));
   font-size: 10.5px;
   font-weight: 560;
@@ -3735,8 +3752,8 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-radar {
   display: grid;
-  grid-template-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
-  gap: calc(7px * var(--floating-scale));
+  grid-template-columns: minmax(0, 0.74fr) minmax(0, 1.26fr);
+  gap: calc(6px * var(--floating-scale));
   align-items: stretch;
   min-height: calc(26px * var(--floating-scale));
   border-top: 1px solid var(--floating-divider);
@@ -3755,7 +3772,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-radar-iq {
   border-left: 1px solid var(--floating-divider);
-  padding-left: calc(7px * var(--floating-scale));
+  padding-left: calc(6px * var(--floating-scale));
 }
 
 .floating-radar span,
@@ -3769,21 +3786,23 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-radar strong {
-  display: flex;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
   gap: calc(4px * var(--floating-scale));
   align-items: baseline;
   color: var(--floating-primary);
-  font-size: calc(11.8px * var(--floating-scale));
+  font-size: calc(11.6px * var(--floating-scale));
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 
 .floating-radar strong em {
   color: var(--floating-primary);
-  font-size: calc(8.8px * var(--floating-scale));
+  font-size: calc(8.3px * var(--floating-scale));
   font-style: normal;
   font-weight: 680;
   min-width: 0;
+  text-overflow: clip;
   opacity: 0.88;
 }
 
@@ -3807,7 +3826,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   text-overflow: clip;
   white-space: nowrap;
   letter-spacing: 0;
-  font-size: calc(7.9px * var(--floating-scale));
+  font-size: calc(7.85px * var(--floating-scale));
 }
 
 .floating-quota-bar {
