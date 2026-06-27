@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Codex Token Bar"
 PRODUCT_NAME="CodexTokenBar"
 REPO="hututuo/codex-token-bar"
-VERSION="${1:-${APP_VERSION:-0.6.0}}"
+VERSION="${1:-${APP_VERSION:-0.7.0}}"
 VERSION="${VERSION#v}"
 BUILD="${APP_BUILD:-}"
 ARCH_LABEL="${ARCH_LABEL:-arm64}"
@@ -166,7 +166,12 @@ cp "$RELEASE_DIR/$VERSIONED_ZIP" "$RELEASE_DIR/$LEGACY_ZIP"
 DMG_STAGING="$(mktemp -d "$RELEASE_DIR/dmg-staging.XXXXXX")"
 DMG_DEVICE=""
 DMG_MOUNT=""
+RW_CHECK_MOUNT=""
 cleanup() {
+  if [[ -n "$RW_CHECK_MOUNT" ]]; then
+    hdiutil detach "$RW_CHECK_MOUNT" >/dev/null 2>&1 || true
+    rmdir "$RW_CHECK_MOUNT" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$DMG_MOUNT" ]]; then
     hdiutil detach "$DMG_MOUNT" >/dev/null 2>&1 || true
   elif [[ -n "$DMG_DEVICE" ]]; then
@@ -345,10 +350,13 @@ tell application "Finder"
   try
     close dmgWindow
   end try
+  delay 1
+  quit
 end tell
 APPLESCRIPT
 
 sync
+sleep 2
 if [[ ! -f "$DMG_MOUNT/.DS_Store" ]]; then
   echo "Finder DMG styling did not create .DS_Store; refusing to ship an unstyled DMG." >&2
   exit 1
@@ -361,6 +369,24 @@ rm -rf "$DMG_MOUNT/.fseventsd" "$DMG_MOUNT/.Trashes" "$DMG_MOUNT/.TemporaryItems
 hdiutil detach "$DMG_MOUNT" >/dev/null
 DMG_DEVICE=""
 DMG_MOUNT=""
+RW_CHECK_MOUNT="$(mktemp -d "${TMPDIR:-/tmp}/codex-token-bar-rw-check.XXXXXX")"
+hdiutil attach -readonly -noverify -noautoopen -mountpoint "$RW_CHECK_MOUNT" "$RW_DMG" >/dev/null
+if [[ ! -f "$RW_CHECK_MOUNT/.DS_Store" ]]; then
+  echo "Finder DMG styling was not persisted after remount; .DS_Store missing." >&2
+  exit 1
+fi
+if ! strings -a "$RW_CHECK_MOUNT/.DS_Store" | grep -q "backgroundImageAlias"; then
+  echo "Finder DMG styling was not persisted after remount; background image missing." >&2
+  exit 1
+fi
+if ! strings -a "$RW_CHECK_MOUNT/.DS_Store" | grep -q "dmg-background.png"; then
+  echo "Finder DMG styling was not persisted after remount; background path missing." >&2
+  exit 1
+fi
+hdiutil detach "$RW_CHECK_MOUNT" >/dev/null
+rmdir "$RW_CHECK_MOUNT" >/dev/null 2>&1 || true
+RW_CHECK_MOUNT=""
+open -g -a Finder >/dev/null 2>&1 || true
 
 hdiutil convert \
   "$RW_DMG" \

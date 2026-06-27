@@ -61,12 +61,12 @@ Codex Token Bar 会读取 Codex 自己使用的本地账号接口，把“重置
 
 推荐从 [GitHub Releases](https://github.com/hututuo/codex-token-bar/releases/latest) 下载最新 `.dmg`：
 
-1. 下载 `CodexTokenBar-v0.6.0-macos-arm64.dmg` 和 `SHA256SUMS-v0.6.0.txt`。
+1. 下载 `CodexTokenBar-v0.7.0-macos-arm64.dmg` 和 `SHA256SUMS-v0.7.0.txt`。
 2. 可选校验：
 
 ```bash
-shasum -a 256 CodexTokenBar-v0.6.0-macos-arm64.dmg
-cat SHA256SUMS-v0.6.0.txt
+shasum -a 256 CodexTokenBar-v0.7.0-macos-arm64.dmg
+cat SHA256SUMS-v0.7.0.txt
 ```
 
 3. 打开 DMG，把 `Codex Token Bar.app` 拖到 Applications。
@@ -151,7 +151,7 @@ scripts/package_app.sh debug
 
 ```bash
 SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
-  scripts/build_release.sh v0.6.0
+  scripts/build_release.sh v0.7.0
 ```
 
 发布脚本会生成 `.app`、DMG、Sparkle zip、兼容安装 zip、`SHA256SUMS` 和 `appcast.xml`。私钥文件不要提交到 Git。
@@ -210,12 +210,12 @@ This feature is read-only: the app displays the information but never calls the 
 
 Download the latest `.dmg` from [GitHub Releases](https://github.com/hututuo/codex-token-bar/releases/latest):
 
-1. Download `CodexTokenBar-v0.6.0-macos-arm64.dmg` and `SHA256SUMS-v0.6.0.txt`.
+1. Download `CodexTokenBar-v0.7.0-macos-arm64.dmg` and `SHA256SUMS-v0.7.0.txt`.
 2. Optionally verify:
 
 ```bash
-shasum -a 256 CodexTokenBar-v0.6.0-macos-arm64.dmg
-cat SHA256SUMS-v0.6.0.txt
+shasum -a 256 CodexTokenBar-v0.7.0-macos-arm64.dmg
+cat SHA256SUMS-v0.7.0.txt
 ```
 
 3. Open the DMG and drag `Codex Token Bar.app` to Applications.
@@ -294,7 +294,7 @@ Release assets:
 
 ```bash
 SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
-  scripts/build_release.sh v0.6.0
+  scripts/build_release.sh v0.7.0
 ```
 
 The release script produces the app bundle, DMG, Sparkle zip, compatibility zip, `SHA256SUMS`, and `appcast.xml`. Never commit the private key file.
