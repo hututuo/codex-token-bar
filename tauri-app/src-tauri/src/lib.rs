@@ -5,6 +5,10 @@ mod platform;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if platform::activate_existing_instance_and_exit() {
+        return;
+    }
+
     tauri::Builder::default()
         .manage(commands::live::LiveRateMonitorRegistry::default())
         .plugin(tauri_plugin_autostart::init(

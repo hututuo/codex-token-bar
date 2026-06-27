@@ -39,6 +39,16 @@ pub fn default_codex_home() -> PathBuf {
     settings::saved_codex_home().unwrap_or_else(automatic_codex_home)
 }
 
+#[cfg(target_os = "windows")]
+pub fn activate_existing_instance_and_exit() -> bool {
+    windows::activate_existing_instance_and_exit()
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn activate_existing_instance_and_exit() -> bool {
+    false
+}
+
 pub fn default_codex_home_status() -> CodexHomeStatus {
     let path = default_codex_home();
     CodexHomeStatus {

@@ -12,10 +12,11 @@ enum CodexBinaryPlatform {
 enum CodexBinaryCandidate {
     Explicit(PathBuf),
     ChildCommand { parent: PathBuf, command: &'static str },
+    DescendantCommand { root: PathBuf, command: &'static str },
     PathCommand(&'static str),
 }
 
-pub fn find_codex_binary() -> Option<PathBuf> {
+pub fn find_codex_binary_with_report() -> Result<CodexBinaryResolution, String> {
     let platform = current_codex_binary_platform();
     let home = if platform == CodexBinaryPlatform::Windows {
         std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
@@ -23,15 +24,33 @@ pub fn find_codex_binary() -> Option<PathBuf> {
         std::env::var_os("HOME")
     };
     let local_app_data = std::env::var_os("LOCALAPPDATA");
+    let program_files = std::env::var_os("ProgramFiles");
+    let program_files_x86 = std::env::var_os("ProgramFiles(x86)");
     let explicit = std::env::var_os("CODEX_CLI_PATH");
     let path_env = std::env::var_os("PATH");
     let candidates = codex_binary_candidates(
         home.as_deref(),
         local_app_data.as_deref(),
+        program_files.as_deref(),
+        program_files_x86.as_deref(),
         explicit.as_deref(),
         platform,
     );
-    find_codex_binary_from(&candidates, path_env.as_deref(), |path| path.is_file())
+    let checked = describe_candidates(&candidates);
+    if let Some(path) = find_codex_binary_from(&candidates, path_env.as_deref(), |path| path.is_file()) {
+        Ok(CodexBinaryResolution { path, checked })
+    } else {
+        Err(format!(
+            "未找到 Codex，可在 CODEX_CLI_PATH 指定 codex.exe。已检查：{}",
+            checked.join("；")
+        ))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexBinaryResolution {
+    pub path: PathBuf,
+    pub checked: Vec<String>,
 }
 
 fn current_codex_binary_platform() -> CodexBinaryPlatform {
@@ -47,6 +66,8 @@ fn current_codex_binary_platform() -> CodexBinaryPlatform {
 fn codex_binary_candidates(
     home: Option<&OsStr>,
     local_app_data: Option<&OsStr>,
+    program_files: Option<&OsStr>,
+    program_files_x86: Option<&OsStr>,
     explicit: Option<&OsStr>,
     platform: CodexBinaryPlatform,
 ) -> Vec<CodexBinaryCandidate> {
@@ -93,6 +114,38 @@ fn codex_binary_candidates(
                     .join("bin"),
                 command: "codex.exe",
             });
+            candidates.push(CodexBinaryCandidate::DescendantCommand {
+                root: Path::new(local_app_data).join("Programs").join("Codex"),
+                command: "codex.exe",
+            });
+            candidates.push(CodexBinaryCandidate::DescendantCommand {
+                root: Path::new(local_app_data).join("OpenAI").join("Codex"),
+                command: "codex.exe",
+            });
+            candidates.push(CodexBinaryCandidate::DescendantCommand {
+                root: Path::new(local_app_data).join("Codex"),
+                command: "codex.exe",
+            });
+        }
+        if let Some(program_files) = program_files {
+            candidates.push(CodexBinaryCandidate::DescendantCommand {
+                root: Path::new(program_files).join("Codex"),
+                command: "codex.exe",
+            });
+            candidates.push(CodexBinaryCandidate::DescendantCommand {
+                root: Path::new(program_files).join("OpenAI").join("Codex"),
+                command: "codex.exe",
+            });
+        }
+        if let Some(program_files_x86) = program_files_x86 {
+            candidates.push(CodexBinaryCandidate::DescendantCommand {
+                root: Path::new(program_files_x86).join("Codex"),
+                command: "codex.exe",
+            });
+            candidates.push(CodexBinaryCandidate::DescendantCommand {
+                root: Path::new(program_files_x86).join("OpenAI").join("Codex"),
+                command: "codex.exe",
+            });
         }
     }
 
@@ -116,6 +169,9 @@ where
         CodexBinaryCandidate::ChildCommand { parent, command } => {
             child_command(parent, command, &file_exists)
         }
+        CodexBinaryCandidate::DescendantCommand { root, command } => {
+            descendant_command(root, command, 8, &file_exists)
+        }
         CodexBinaryCandidate::PathCommand(command)
             if command_exists_in_path(command, path_env, &file_exists) =>
         {
@@ -123,6 +179,22 @@ where
         }
         _ => None,
     })
+}
+
+fn describe_candidates(candidates: &[CodexBinaryCandidate]) -> Vec<String> {
+    candidates
+        .iter()
+        .map(|candidate| match candidate {
+            CodexBinaryCandidate::Explicit(path) => path.display().to_string(),
+            CodexBinaryCandidate::ChildCommand { parent, command } => {
+                format!("{}\\*\\{}", parent.display(), command)
+            }
+            CodexBinaryCandidate::DescendantCommand { root, command } => {
+                format!("{}\\**\\{}", root.display(), command)
+            }
+            CodexBinaryCandidate::PathCommand(command) => format!("PATH:{command}"),
+        })
+        .collect()
 }
 
 fn command_exists_in_path<F>(command: &str, path_env: Option<&OsStr>, file_exists: &F) -> bool
@@ -149,6 +221,58 @@ where
     matches.pop()
 }
 
+fn descendant_command<F>(
+    root: &Path,
+    command: &str,
+    max_depth: usize,
+    file_exists: &F,
+) -> Option<PathBuf>
+where
+    F: Fn(&Path) -> bool,
+{
+    let mut matches = Vec::new();
+    collect_descendant_commands(root, command, max_depth, &mut matches, file_exists);
+    matches.sort();
+    matches.pop()
+}
+
+fn collect_descendant_commands<F>(
+    root: &Path,
+    command: &str,
+    remaining_depth: usize,
+    matches: &mut Vec<PathBuf>,
+    file_exists: &F,
+) where
+    F: Fn(&Path) -> bool,
+{
+    if remaining_depth == 0 {
+        return;
+    }
+
+    let candidate = root.join(command);
+    if file_exists(&candidate) {
+        matches.push(candidate);
+    }
+
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            collect_descendant_commands(
+                &entry.path(),
+                command,
+                remaining_depth.saturating_sub(1),
+                matches,
+                file_exists,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +282,8 @@ mod tests {
     fn macos_codex_binary_candidates_include_app_bundle_brew_and_path_command() {
         let candidates = codex_binary_candidates(
             Some(OsStr::new("/Users/local")),
+            None,
+            None,
             None,
             None,
             CodexBinaryPlatform::Macos,
@@ -186,6 +312,8 @@ mod tests {
         let candidates = codex_binary_candidates(
             Some(user_home.as_os_str()),
             Some(local_app_data.as_os_str()),
+            Some(OsStr::new(r"C:\Program Files")),
+            Some(OsStr::new(r"C:\Program Files (x86)")),
             Some(OsStr::new(r"C:\custom\codex.exe")),
             CodexBinaryPlatform::Windows,
         );
@@ -203,6 +331,38 @@ mod tests {
                 ),
                 CodexBinaryCandidate::ChildCommand {
                     parent: local_app_data.join("OpenAI").join("Codex").join("bin"),
+                    command: "codex.exe",
+                },
+                CodexBinaryCandidate::DescendantCommand {
+                    root: local_app_data.join("Programs").join("Codex"),
+                    command: "codex.exe",
+                },
+                CodexBinaryCandidate::DescendantCommand {
+                    root: local_app_data.join("OpenAI").join("Codex"),
+                    command: "codex.exe",
+                },
+                CodexBinaryCandidate::DescendantCommand {
+                    root: local_app_data.join("Codex"),
+                    command: "codex.exe",
+                },
+                CodexBinaryCandidate::DescendantCommand {
+                    root: PathBuf::from(r"C:\Program Files").join("Codex"),
+                    command: "codex.exe",
+                },
+                CodexBinaryCandidate::DescendantCommand {
+                    root: PathBuf::from(r"C:\Program Files")
+                        .join("OpenAI")
+                        .join("Codex"),
+                    command: "codex.exe",
+                },
+                CodexBinaryCandidate::DescendantCommand {
+                    root: PathBuf::from(r"C:\Program Files (x86)").join("Codex"),
+                    command: "codex.exe",
+                },
+                CodexBinaryCandidate::DescendantCommand {
+                    root: PathBuf::from(r"C:\Program Files (x86)")
+                        .join("OpenAI")
+                        .join("Codex"),
                     command: "codex.exe",
                 },
                 CodexBinaryCandidate::PathCommand("codex.exe"),
@@ -239,5 +399,58 @@ mod tests {
         .unwrap();
 
         assert_eq!(found, PathBuf::from("codex"));
+    }
+
+    #[test]
+    fn codex_binary_resolution_finds_nested_windows_desktop_binary() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-codex-binary-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let nested = root
+            .join("resources")
+            .join("app.asar.unpacked")
+            .join("bin")
+            .join("codex.exe");
+        std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        std::fs::write(&nested, []).unwrap();
+
+        let candidates = vec![CodexBinaryCandidate::DescendantCommand {
+            root: root.clone(),
+            command: "codex.exe",
+        }];
+
+        let found = find_codex_binary_from(&candidates, None, |path| path.is_file()).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+
+        assert_eq!(found, nested);
+    }
+
+    #[test]
+    fn missing_codex_report_lists_checked_windows_paths() {
+        let candidates = codex_binary_candidates(
+            Some(OsStr::new(r"C:\Users\local")),
+            Some(OsStr::new(r"C:\Users\local\AppData\Local")),
+            None,
+            None,
+            None,
+            CodexBinaryPlatform::Windows,
+        );
+
+        let checked = describe_candidates(&candidates).join("；");
+
+        assert!(checked.contains(r"C:\Users\local"));
+        assert!(checked.contains(".codex"));
+        assert!(checked.contains(".plugin-appserver"));
+        assert!(checked.contains(r"C:\Users\local\AppData\Local"));
+        assert!(checked.contains("Programs"));
+        assert!(checked.contains("Codex"));
+        assert!(checked.contains("**"));
+        assert!(checked.contains("codex.exe"));
+        assert!(checked.contains("PATH:codex.exe"));
     }
 }

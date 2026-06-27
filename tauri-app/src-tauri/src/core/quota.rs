@@ -1,7 +1,7 @@
 use crate::core::quota_history;
 use crate::models::{AccountInfo, AccountQuotaBundle, QuotaSnapshot, ResetCreditSummary};
 use auth::read_local_account_name;
-use codex_binary::find_codex_binary;
+use codex_binary::find_codex_binary_with_report;
 use rate_limits::parse_rate_limits;
 use reset_credit::read_reset_credits;
 use serde_json::{json, Value};
@@ -213,7 +213,7 @@ fn plan_label_from_quota(quota: &QuotaSnapshot) -> Option<String> {
 }
 
 fn read_rate_limits() -> Result<QuotaSnapshot, String> {
-    let codex = find_codex_binary().ok_or_else(|| "未找到 Codex".to_string())?;
+    let codex = find_codex_binary_with_report()?.path;
     let mut child = Command::new(codex)
         .args(["app-server", "--listen", "stdio://"])
         .stdin(Stdio::piped())
