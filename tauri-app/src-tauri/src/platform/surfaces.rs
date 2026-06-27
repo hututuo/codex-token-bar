@@ -5,6 +5,7 @@ use std::{
 };
 use tauri::{
     image::Image,
+    menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     webview::PageLoadEvent,
     Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
@@ -24,6 +25,8 @@ const DASHBOARD_WINDOW_MIN_HEIGHT: f64 = 720.0;
 const STATUS_PANEL_WIDTH: f64 = 336.0;
 const STATUS_PANEL_HEIGHT: f64 = 236.0;
 const STATUS_TRAY_ID: &str = "codex-token-bar-status";
+const STATUS_TRAY_SHOW_DASHBOARD_ID: &str = "status-tray-show-dashboard";
+const STATUS_TRAY_QUIT_ID: &str = "status-tray-quit";
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SurfaceSetupStatus {
@@ -183,29 +186,6 @@ fn create_floating_window_on_main_thread(app: &tauri::AppHandle) -> Result<(), S
         .map_err(|_| "创建悬浮窗超时".to_string())?
 }
 
-fn toggle_status_panel_window(app: &tauri::AppHandle) {
-    if cfg!(target_os = "windows") {
-        return;
-    }
-
-    if app.get_webview_window("status").is_none() {
-        let _ = show_status_panel_window(app);
-        return;
-    }
-
-    let Some(window) = app.get_webview_window("status") else {
-        return;
-    };
-
-    if window.is_visible().unwrap_or(false) {
-        let _ = window.hide();
-        return;
-    }
-
-    let _ = window.show();
-    let _ = window.set_focus();
-}
-
 pub fn set_status_tray_readout(
     app: &tauri::AppHandle,
     title: String,
@@ -227,10 +207,24 @@ fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
         return Ok(());
     }
 
+    let show_dashboard_item =
+        MenuItem::with_id(app, STATUS_TRAY_SHOW_DASHBOARD_ID, "打开主界面", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, STATUS_TRAY_QUIT_ID, "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_dashboard_item, &quit_item])?;
+
     let mut builder = TrayIconBuilder::with_id(STATUS_TRAY_ID)
         .title("0.0/s")
         .tooltip("Codex Token Bar")
+        .menu(&menu)
         .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| {
+            let event_id = event.id().as_ref();
+            if event_id == STATUS_TRAY_SHOW_DASHBOARD_ID {
+                let _ = show_dashboard_window(app);
+            } else if event_id == STATUS_TRAY_QUIT_ID {
+                app.exit(0);
+            }
+        })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
@@ -238,7 +232,7 @@ fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                toggle_status_panel_window(tray.app_handle());
+                let _ = show_dashboard_window(tray.app_handle());
             }
         });
 

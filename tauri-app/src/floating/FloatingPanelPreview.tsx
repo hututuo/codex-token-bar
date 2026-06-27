@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import {
   displayRadarNumber,
   percentText,
@@ -17,7 +17,8 @@ interface FloatingPanelSurfaceProps {
   radarSnapshot?: CodexRadarSnapshot | null;
   unreadEffect?: FloatingUnreadEffect;
   onClose?: () => void;
-  onDragStart?: () => void;
+  onDragStart?: (event: MouseEvent<HTMLElement>) => void;
+  onOpenDashboard?: () => void;
 }
 
 function clampPercent(value: number): number {
@@ -93,6 +94,7 @@ export function FloatingPanelSurface({
   unreadEffect = "ripple",
   onClose,
   onDragStart,
+  onOpenDashboard,
 }: FloatingPanelSurfaceProps) {
   const shouldShowUnreadEffect = snapshot.unreadSummary.active && unreadEffect !== "off";
   const groups = layoutFloatingContentGroups(settings.contentVisibility);
@@ -114,6 +116,7 @@ export function FloatingPanelSurface({
       className="floating-panel-surface"
       aria-label={`悬浮窗，${snapshot.unreadSummary.label}`}
       onMouseDown={onDragStart}
+      onDoubleClick={onOpenDashboard}
       style={rootStyle}
       title={snapshot.unreadSummary.detail}
     >
@@ -123,6 +126,7 @@ export function FloatingPanelSurface({
         type="button"
         aria-label="关闭悬浮窗"
         onMouseDown={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
         onClick={onClose}
       >
         ×

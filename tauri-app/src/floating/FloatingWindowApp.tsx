@@ -1,4 +1,4 @@
-import { type CSSProperties, useEffect, useState } from "react";
+import { type CSSProperties, type MouseEvent, useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { readAppSettings, recordStartupEvent } from "../api/client";
 import { readCodexRadarSnapshot } from "../api/codexRadarClient";
@@ -163,7 +163,15 @@ export function FloatingWindowApp() {
     });
   }
 
-  function startWindowDrag() {
+  function openDashboardWindow() {
+    void desktopPlatform.showDashboardWindow();
+  }
+
+  function startWindowDrag(event: MouseEvent<HTMLElement>) {
+    if (event.button !== 0 || event.detail >= 2) {
+      event.preventDefault();
+      return;
+    }
     void desktopPlatform.startFloatingWindowDrag();
   }
 
@@ -191,6 +199,7 @@ export function FloatingWindowApp() {
         unreadEffect={settings.unreadEffect}
         onClose={closeFloatingWindow}
         onDragStart={startWindowDrag}
+        onOpenDashboard={openDashboardWindow}
       />
     </main>
   );
