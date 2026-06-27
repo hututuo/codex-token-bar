@@ -15,6 +15,7 @@ struct DashboardView: View {
     @State private var liveMonitor = LiveRateMonitor()
     @AppStorage("floatingPanelEnabled") private var floatingPanelEnabled = true
     @AppStorage("statusBarPanelEnabled") private var statusBarPanelEnabled = false
+    @AppStorage("liveRateMonitoringEnabled") private var liveRateMonitoringEnabled = true
     @AppStorage("preciseTokenCountingEnabled") private var preciseTokenCountingEnabled = false
     @AppStorage("floatingPanelOpacity") private var floatingPanelOpacity = 0.88
     @AppStorage("floatingPanelScale") private var floatingPanelScale = FloatingTokenPanelMetrics.defaultScale
@@ -430,6 +431,8 @@ struct DashboardView: View {
                 monitor: liveMonitor,
                 floatingPanelEnabled: $floatingPanelEnabled,
                 statusBarPanelEnabled: $statusBarPanelEnabled,
+                liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
+                floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar,
                 preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
                 floatingPanelOpacity: $floatingPanelOpacity,
                 floatingPanelScale: $floatingPanelScale,
@@ -475,12 +478,20 @@ struct DashboardView: View {
     }
 
     private func refreshAllData() {
+        let trace = RefreshPerformanceProbe.begin("dashboard.manualRefresh", metadata: [
+            "providerSyncVisible": showingProviderSync ? "1" : "0"
+        ])
         store.refresh()
-        quotaStore.refresh()
+        trace?.mark("usageStore.refresh.called")
+        quotaStore.refresh(force: true)
+        trace?.mark("quotaStore.refresh.called")
         radarStore.refresh()
+        trace?.mark("radarStore.refresh.called")
         if showingProviderSync {
             providerSyncStore.scan(dataSource: store.currentDataSource)
+            trace?.mark("providerSync.scan.called")
         }
+        trace?.end("dispatched")
     }
 
     private var requestedInterfaceScale: CGFloat {

@@ -30,6 +30,37 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertTrue(source.contains("NSWorkspace.didWakeNotification"))
     }
 
+    func testManualAndAutomaticRefreshKeepUsingPreciseRefreshPath() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let projectRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
+        let usageStore = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexUsageStore.swift")
+        let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
+        let storeSource = try String(contentsOf: usageStore, encoding: .utf8)
+        let refreshBlock = try XCTUnwrap(dashboardSource.range(of: "private func refreshAllData()"))
+        let refreshSource = String(dashboardSource[refreshBlock.lowerBound...])
+
+        XCTAssertTrue(refreshSource.contains("store.refresh()"))
+        XCTAssertTrue(storeSource.contains("self?.refresh()"))
+        XCTAssertTrue(storeSource.contains("func refresh() {\n        refresh(includePreciseScan: true)\n    }"))
+    }
+
+    func testUsageRefreshStatusDescribesIncrementalTokenUpdate() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let projectRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let usageStore = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexUsageStore.swift")
+        let source = try String(contentsOf: usageStore, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("正在增量更新 token"))
+        XCTAssertFalse(source.contains("正在扫描 \\(dataSource.displayPath)/sessions"))
+    }
+
     func testInitialPreciseFailurePreservesFastUsageSnapshot() async {
         let source = CodexDataSource(
             codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/.codex"),

@@ -48,6 +48,7 @@ struct TokenQuotaMiniStrip: View {
 struct TokenQuotaMiniSegment: View {
     let window: AccountQuotaWindow
     @Environment(\.tokenDisplayScale) private var displayScale
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     private var fillFraction: CGFloat {
         CGFloat(Double(window.remainingPercent) / 100.0)
@@ -57,22 +58,23 @@ struct TokenQuotaMiniSegment: View {
         GeometryReader { proxy in
             let clampedFraction = min(max(fillFraction, 0), 1)
             let fillWidth = proxy.size.width * clampedFraction
+            let quotaSegmentShape = quotaSegmentShape(height: proxy.size.height)
             ZStack(alignment: .leading) {
                 ZStack(alignment: .leading) {
-                    Capsule()
+                    quotaSegmentShape
                         .fill(floatingTrackColor)
                     if fillWidth > 0 {
-                        Capsule()
+                        quotaSegmentShape
                             .fill(AppTheme.accentBlue.opacity(0.78))
                             .frame(width: min(proxy.size.width, max(proxy.size.height, fillWidth)), height: proxy.size.height)
                     }
                 }
-                .clipShape(Capsule())
-                .overlay(Capsule().stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
+                .clipShape(quotaSegmentShape)
+                .overlay(quotaSegmentShape.stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
 
                 Text("\(window.compactDisplayLabel) \(window.remainingPercent)% \(window.compactResetText)")
                     .font(.system(size: 9.4.scaled(by: displayScale), weight: .bold))
-                    .foregroundStyle(.primary.opacity(0.82))
+                    .foregroundStyle(textPalette.primaryColor)
                     .monospacedDigit()
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -83,6 +85,11 @@ struct TokenQuotaMiniSegment: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(window.displayLabel)额度")
         .accessibilityValue("剩余 \(window.remainingPercent)%，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
+    }
+
+    private func quotaSegmentShape(height: CGFloat) -> RoundedRectangle {
+        let quotaSegmentCornerRadius = max(4.scaled(by: displayScale), height * 0.34)
+        return RoundedRectangle(cornerRadius: quotaSegmentCornerRadius, style: .continuous)
     }
 
     private var floatingTrackColor: Color {
@@ -109,7 +116,7 @@ struct TokenDisplayUsageStatusLine: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 13.6.scaled(by: displayScale), weight: .semibold))
+            .font(.system(size: 9.5.scaled(by: displayScale), weight: .semibold))
             .foregroundStyle(textPalette.primaryColor)
             .lineLimit(1)
             .minimumScaleFactor(0.82)
@@ -157,10 +164,10 @@ struct TokenDisplayRadarStrip: View {
                         .foregroundStyle(modelPalette.primaryColor)
                         .monospacedDigit()
                     Text(primary?.modelDisplayName ?? "模型 --")
-                        .font(.system(size: 7.7.scaled(by: displayScale), weight: .semibold))
+                        .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
                         .foregroundStyle(modelPalette.primaryColor)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.66)
+                        .minimumScaleFactor(0.82)
                 }
                 Text(tokenDisplayRadarSecondaryIQText(snapshot))
                     .font(.system(size: 8.1.scaled(by: displayScale), weight: .semibold))
@@ -227,7 +234,7 @@ struct TokenDisplayRateBar: View {
             let contentHeight = usageStatus == nil ? barHeight : statusHeight + statusBarGap + barHeight
             let contentTop = max(0, (height - contentHeight) / 2)
             let barWidth = max(1, proxy.size.width)
-            let fillWidth = max(3.scaled(by: displayScale), barWidth * fillFraction)
+            let minimumFillFraction = 3.scaled(by: displayScale) / barWidth
             let statusCenterY = contentTop + statusHeight / 2
             let barCenterY = usageStatus == nil
                 ? height / 2
@@ -237,7 +244,7 @@ struct TokenDisplayRateBar: View {
             ZStack(alignment: .topLeading) {
                 if let usageStatus {
                     Text(usageStatus)
-                        .font(.system(size: 10.2.scaled(by: displayScale), weight: .semibold))
+                        .font(.system(size: 9.1.scaled(by: displayScale), weight: .semibold))
                         .foregroundStyle(statusPalette.primaryColor)
                         .lineLimit(1)
                         .minimumScaleFactor(0.86)
@@ -250,15 +257,13 @@ struct TokenDisplayRateBar: View {
                     Capsule()
                         .fill(floatingTrackColor)
                         .overlay(Capsule().stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
-                    Capsule()
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.cyan.opacity(0.98), Color.blue.opacity(0.92)],
-                                startPoint: .bottom,
-                                endPoint: .top
-                            )
-                        )
-                        .frame(width: fillWidth)
+                    SmoothRateFillBar(
+                        fraction: Double(fillFraction),
+                        minimumFraction: Double(minimumFillFraction),
+                        colors: [Color.cyan.opacity(0.98), Color.blue.opacity(0.92)],
+                        startPoint: .bottom,
+                        endPoint: .top
+                    )
                 }
                 .frame(width: barWidth, height: barHeight, alignment: .leading)
                 .position(x: barWidth / 2, y: barCenterY)

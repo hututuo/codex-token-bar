@@ -107,19 +107,34 @@ private struct AccountQuotaResetCreditButton: View {
         snapshot.compactResetCreditSummary ?? "重置卡"
     }
 
+    private var nearestText: String {
+        snapshot.compactNearestResetCreditRemainingText ?? "到期未知"
+    }
+
     var body: some View {
         Button {
             isPresented.toggle()
         } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: 7) {
                 Image(systemName: "bolt.clock.fill")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(AppTheme.accentBlue)
-                Text(summaryText)
-                    .font(.system(size: 10.5, weight: .bold))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(summaryText)
+                        .font(.system(size: 10.5, weight: .bold))
+                        .foregroundStyle(.primary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+
+                    Text("最近 \(nearestText)")
+                        .font(.system(size: 8.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.76)
+                }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 Image(systemName: isPresented ? "chevron.up" : "chevron.down")
@@ -127,8 +142,8 @@ private struct AccountQuotaResetCreditButton: View {
                     .foregroundStyle(.secondary.opacity(0.80))
             }
             .padding(.horizontal, 9)
-            .padding(.vertical, 7)
-            .frame(width: 138, alignment: .leading)
+            .padding(.vertical, 6)
+            .frame(width: 154, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(AppTheme.calloutBackground)
@@ -139,10 +154,10 @@ private struct AccountQuotaResetCreditButton: View {
             )
         }
         .buttonStyle(.plain)
-        .help("查看每张重置机会的到期时间")
+        .help("\(summaryText)，最近 \(nearestText)。点击查看每张重置机会。")
         .accessibilityLabel("重置卡")
-        .accessibilityValue(summaryText)
-        .accessibilityHint("查看每张重置机会的详细状态和到期时间")
+        .accessibilityValue("\(summaryText)，最近 \(nearestText)")
+        .accessibilityHint("查看每张重置机会的剩余时间和到期信息")
         .anchorPreference(key: AccountQuotaResetCreditButtonBoundsKey.self, value: .bounds) { anchor in
             anchor
         }
@@ -155,13 +170,13 @@ struct AccountQuotaResetCreditDetailView: View {
     let onClose: () -> Void
 
     private var visibleCredits: [AccountQuotaResetCredit] {
-        snapshot.resetCredits
+        snapshot.sortedResetCreditsForDisplay
     }
 
     var body: some View {
         SettingsCalloutContainer(
             title: "重置卡详情",
-            subtitle: "共 \(visibleCredits.count) 张明细 · 可用 \(snapshot.availableResetCreditCount) 张",
+            subtitle: "\(snapshot.resetCreditReadSummary) · 按最近到期排序",
             systemImage: "bolt.clock.fill",
             imageResourceName: "ResetCreditIcon",
             closeAction: onClose
@@ -175,7 +190,7 @@ struct AccountQuotaResetCreditDetailView: View {
                     .background(AppTheme.calloutOptionBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 10) {
+                    VStack(spacing: 7) {
                         ForEach(Array(visibleCredits.enumerated()), id: \.element.id) { index, credit in
                             AccountQuotaResetCreditRow(index: index + 1, credit: credit)
                         }
@@ -196,62 +211,86 @@ struct AccountQuotaResetCreditDetailView: View {
 private struct AccountQuotaResetCreditRow: View {
     let index: Int
     let credit: AccountQuotaResetCredit
+    @State private var isExpanded = false
 
     private var statusColor: Color {
         credit.isAvailable ? AppTheme.accentBlue : .secondary
     }
 
+    private var remainingProgress: CGFloat {
+        CGFloat(credit.remainingProgress(relativeTo: Date()) ?? (credit.isAvailable ? 1 : 0))
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .center, spacing: 10) {
-                AccountQuotaResetCreditAvatarView(credit: credit)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(credit.titleText)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-
-                    Text("第 \(index) 张 · \(credit.profileUserText)")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    isExpanded.toggle()
                 }
+            } label: {
+                HStack(alignment: .center, spacing: 10) {
+                    AccountQuotaResetCreditAvatarView(credit: credit)
 
-                Spacer(minLength: 4)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 7) {
+                            Text(credit.compactRemainingTimeText)
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(credit.isAvailable ? .primary : .secondary)
+                                .monospacedDigit()
+                                .lineLimit(1)
 
-                Text(credit.statusText)
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(statusColor)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(statusColor.opacity(0.12), in: Capsule())
+                            Text("第 \(index) 张")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        GeometryReader { proxy in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(AppTheme.raisedBackground)
+                                Capsule()
+                                    .fill(statusColor.opacity(credit.isAvailable ? 0.76 : 0.34))
+                                    .frame(width: max(0, proxy.size.width * remainingProgress))
+                            }
+                        }
+                        .frame(height: 7)
+                    }
+
+                    Spacer(minLength: 4)
+
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.secondary.opacity(0.82))
+                        .frame(width: 18, height: 18)
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
-            SettingsCalloutSection {
-                SettingsCalloutRow(title: "状态", value: credit.detailedStatusText, systemImage: "circle.fill", isEmphasized: credit.isAvailable)
-                SettingsCalloutRow(title: "类型", value: credit.detailedResetTypeText, systemImage: "bolt.horizontal")
-                SettingsCalloutRow(title: "标题", value: credit.titleText, systemImage: "tag")
-                SettingsCalloutRow(title: "获得原因", value: credit.descriptionSummaryText, systemImage: "text.alignleft")
-                SettingsCalloutRow(title: "关联用户", value: credit.profileUserText, systemImage: "person.crop.circle", isEmphasized: credit.profileUserText != "未提供关联用户")
-                SettingsCalloutRow(title: "头像", value: credit.profileImageSummaryText, systemImage: "photo")
-                SettingsCalloutRow(title: "发放时间", value: credit.detailedGrantedText, systemImage: "gift")
-                SettingsCalloutRow(title: "到期时间", value: credit.detailedExpiryText, systemImage: "calendar", isEmphasized: credit.isAvailable)
-                SettingsCalloutRow(title: "剩余时间", value: credit.remainingTimeText, systemImage: "hourglass", isEmphasized: credit.isAvailable)
-                SettingsCalloutRow(title: "兑换状态", value: credit.redeemStateText, systemImage: "arrow.triangle.2.circlepath")
-                SettingsCalloutRow(title: "开始兑换", value: credit.detailedRedeemStartedText, systemImage: "clock.arrow.circlepath")
-                SettingsCalloutRow(title: "使用完成", value: credit.detailedRedeemedText ?? "未使用", systemImage: "checkmark.circle")
-                SettingsCalloutRow(title: "卡片编号", value: credit.cardIdentifierText, systemImage: "number", isLast: true)
+            if isExpanded {
+                SettingsCalloutSection {
+                    SettingsCalloutRow(title: "原因", value: credit.descriptionSummaryText, systemImage: "text.alignleft")
+                    SettingsCalloutRow(title: "关联用户", value: credit.profileUserText, systemImage: "person.crop.circle", isEmphasized: credit.profileUserText != "未提供关联用户")
+                    SettingsCalloutRow(title: "到期时间", value: credit.detailedExpiryText, systemImage: "calendar", isEmphasized: credit.isAvailable)
+                    SettingsCalloutRow(title: "剩余时间", value: credit.remainingTimeText, systemImage: "hourglass", isEmphasized: credit.isAvailable)
+                    SettingsCalloutRow(title: "卡片编号", value: credit.cardIdentifierText, systemImage: "number", isLast: true)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(11)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.calloutOptionBackground, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .stroke(AppTheme.border.opacity(0.65), lineWidth: 1)
         )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("第 \(index) 张重置卡")
+        .accessibilityValue("\(credit.remainingTimeText)，\(credit.profileUserText)")
+        .accessibilityHint(isExpanded ? "点击收起详情" : "点击展开详情")
     }
 }
 

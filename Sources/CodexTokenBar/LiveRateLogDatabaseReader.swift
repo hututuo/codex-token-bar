@@ -38,21 +38,7 @@ final class LiveRateLogDatabaseReader: LiveRateLogReading, @unchecked Sendable {
         SELECT id, thread_id, ts, ts_nanos, target, feedback_log_body
         FROM logs
         WHERE id > \(afterID)
-          AND (
-            (
-              target = 'codex_api::sse::responses'
-              AND (
-                feedback_log_body LIKE 'SSE event:%'
-                OR feedback_log_body LIKE '%thread.id=%'
-                OR feedback_log_body LIKE '%thread_id=%'
-                OR feedback_log_body LIKE '%conversation.id=%'
-              )
-            )
-            OR (
-              target = 'codex_api::endpoint::responses_websocket'
-              AND feedback_log_body LIKE '%websocket event:%'
-            )
-          )
+          AND \(usableStreamRowsPredicate)
         ORDER BY id ASC
         LIMIT 2000;
         """
@@ -64,23 +50,39 @@ final class LiveRateLogDatabaseReader: LiveRateLogReading, @unchecked Sendable {
         SELECT id, thread_id, ts, ts_nanos, target, feedback_log_body
         FROM logs
         WHERE ts >= \(sinceSeconds)
-          AND (
-            (
-              target = 'codex_api::sse::responses'
-              AND (
-                feedback_log_body LIKE 'SSE event:%'
-                OR feedback_log_body LIKE '%thread.id=%'
-                OR feedback_log_body LIKE '%thread_id=%'
-                OR feedback_log_body LIKE '%conversation.id=%'
-              )
-            )
-            OR (
-              target = 'codex_api::endpoint::responses_websocket'
-              AND feedback_log_body LIKE '%websocket event:%'
-            )
-          )
+          AND \(usableStreamRowsPredicate)
         ORDER BY id ASC
         LIMIT 2000;
+        """
+    }
+
+    private static var usableStreamRowsPredicate: String {
+        let usefulTypes = """
+        (
+          feedback_log_body LIKE '%"type":"response.output_text.delta"%'
+          OR feedback_log_body LIKE '%"type":"response.function_call_arguments.delta"%'
+          OR feedback_log_body LIKE '%"type":"response.custom_tool_call_input.delta"%'
+          OR feedback_log_body LIKE '%"type":"response.output_item.added"%'
+        )
+        """
+        return """
+        (
+          (
+            target = 'codex_api::sse::responses'
+            AND feedback_log_body LIKE 'SSE event:%'
+            AND \(usefulTypes)
+          )
+          OR (
+            target = 'codex_api::endpoint::responses_websocket'
+            AND feedback_log_body LIKE '%websocket event:%'
+            AND \(usefulTypes)
+          )
+          OR (
+            target = 'log'
+            AND feedback_log_body LIKE 'Received message %'
+            AND \(usefulTypes)
+          )
+        )
         """
     }
 }

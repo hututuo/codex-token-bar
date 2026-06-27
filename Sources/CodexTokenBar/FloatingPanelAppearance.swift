@@ -450,6 +450,7 @@ struct FloatingPanelAppearance: Equatable {
     static let defaultStyle = FloatingPanelGradientStyle.linear.rawValue
     static let defaultUnreadEffect = FloatingPanelUnreadEffect.ripple.rawValue
     static let defaultTextWhiteOverride = -1.0
+    private static let textPaletteCache = FloatingPanelTextPaletteCache()
 
     var startHex: String
     var endHex: String
@@ -503,6 +504,18 @@ struct FloatingPanelAppearance: Equatable {
         automaticStrength: Double = 1,
         visibility: FloatingPanelContentVisibility
     ) -> FloatingPanelTextPaletteSet {
+        let cacheKey = FloatingPanelTextPaletteCacheKey(
+            appearance: self,
+            panelSize: panelSize,
+            scale: scale,
+            opacity: opacity,
+            automaticStrength: automaticStrength,
+            visibility: visibility
+        )
+        if let cached = Self.textPaletteCache.value(for: cacheKey) {
+            return cached
+        }
+
         let panelRect = CGRect(
             x: 0,
             y: 0,
@@ -551,7 +564,7 @@ struct FloatingPanelAppearance: Equatable {
             .map { _, rect in
                 standaloneUsageStatusTextPalette(in: rect, panelSize: panelRect.size, scale: scale, opacity: opacity, automaticStrength: automaticStrength)
             }
-        return FloatingPanelTextPaletteSet(
+        let result = FloatingPanelTextPaletteSet(
             controlPalette: palette(in: controlRect, panelSize: panelRect.size, opacity: opacity, automaticStrength: automaticStrength),
             rowPalettes: rowPalettes,
             metricPalettes: metricRegionPalettes,
@@ -560,6 +573,16 @@ struct FloatingPanelAppearance: Equatable {
             radarActionPalette: radarRegionPalettes?.action,
             radarModelPalette: radarRegionPalettes?.model
         ).harmonizedForUnifiedAutomaticTone()
+        Self.textPaletteCache.store(result, for: cacheKey)
+        return result
+    }
+
+    static func resetTextPaletteCacheForTesting() {
+        textPaletteCache.reset()
+    }
+
+    static func textPaletteCacheMissCountForTesting() -> Int {
+        textPaletteCache.missCount
     }
 
     private var averagedRGB: FloatingPanelRGB {
@@ -673,8 +696,11 @@ struct FloatingPanelAppearance: Equatable {
         let slotWidth = max(1, (rect.width - spacing * 2) / 3)
         let offsets: [FloatingPanelMetricTextRegion: CGFloat] = [
             .total: -FloatingTokenPanelMetrics.metricOutset * scale,
-            .today: 0,
-            .requests: FloatingTokenPanelMetrics.metricOutset * scale,
+            .today: FloatingTokenPanelMetrics.metricTodayNudge * scale,
+            .requests: (
+                FloatingTokenPanelMetrics.metricOutset
+                + FloatingTokenPanelMetrics.metricRequestsNudge(for: 100)
+            ) * scale,
         ]
         return Dictionary(uniqueKeysWithValues: FloatingPanelMetricTextRegion.allCases.enumerated().map { index, region in
             let slotX = rect.minX + CGFloat(index) * (slotWidth + spacing)
@@ -929,6 +955,90 @@ private struct FloatingPanelRGB {
             green: green + (other.green - green) * progress,
             blue: blue + (other.blue - blue) * progress
         )
+    }
+}
+
+private struct FloatingPanelTextPaletteCacheKey: Equatable {
+    let startHex: String
+    let endHex: String
+    let directionRaw: String
+    let styleRaw: String
+    let panelWidth: Int
+    let panelHeight: Int
+    let scale: Int
+    let opacity: Int
+    let automaticStrength: Int
+    let showRateAndBar: Bool
+    let showUsageStatus: Bool
+    let showMetrics: Bool
+    let showQuota: Bool
+    let showRadar: Bool
+    let groupOrder: [FloatingPanelContentGroup]
+
+    init(
+        appearance: FloatingPanelAppearance,
+        panelSize: NSSize,
+        scale: CGFloat,
+        opacity: Double,
+        automaticStrength: Double,
+        visibility: FloatingPanelContentVisibility
+    ) {
+        startHex = appearance.startHex
+        endHex = appearance.endHex
+        directionRaw = appearance.directionRaw
+        styleRaw = appearance.styleRaw
+        panelWidth = Self.quantize(panelSize.width)
+        panelHeight = Self.quantize(panelSize.height)
+        self.scale = Self.quantize(scale)
+        self.opacity = Self.quantize(opacity)
+        self.automaticStrength = Self.quantize(automaticStrength)
+        showRateAndBar = visibility.showRateAndBar
+        showUsageStatus = visibility.showUsageStatus
+        showMetrics = visibility.showMetrics
+        showQuota = visibility.showQuota
+        showRadar = visibility.showRadar
+        groupOrder = visibility.groupOrder
+    }
+
+    private static func quantize(_ value: CGFloat) -> Int {
+        Int((Double(value) * 1000).rounded())
+    }
+
+    private static func quantize(_ value: Double) -> Int {
+        Int((value * 1000).rounded())
+    }
+}
+
+private final class FloatingPanelTextPaletteCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entry: (key: FloatingPanelTextPaletteCacheKey, value: FloatingPanelTextPaletteSet)?
+    private var misses = 0
+
+    var missCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return misses
+    }
+
+    func value(for key: FloatingPanelTextPaletteCacheKey) -> FloatingPanelTextPaletteSet? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard entry?.key == key else { return nil }
+        return entry?.value
+    }
+
+    func store(_ value: FloatingPanelTextPaletteSet, for key: FloatingPanelTextPaletteCacheKey) {
+        lock.lock()
+        defer { lock.unlock() }
+        misses += 1
+        entry = (key, value)
+    }
+
+    func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        entry = nil
+        misses = 0
     }
 }
 

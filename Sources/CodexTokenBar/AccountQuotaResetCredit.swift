@@ -143,8 +143,20 @@ struct AccountQuotaResetCredit: Equatable, Identifiable, Sendable {
     }
 
     var remainingTimeText: String {
+        remainingTimeText(relativeTo: Date())
+    }
+
+    var compactRemainingTimeText: String {
+        compactRemainingTimeText(relativeTo: Date())
+    }
+
+    var compactExpiryCountdownText: String {
+        compactExpiryCountdownText(relativeTo: Date())
+    }
+
+    func remainingTimeText(relativeTo now: Date) -> String {
         guard let expiresAt else { return "到期时间未知" }
-        let interval = expiresAt.timeIntervalSinceNow
+        let interval = expiresAt.timeIntervalSince(now)
         if interval <= 0 {
             return "已经到期"
         }
@@ -158,6 +170,65 @@ struct AccountQuotaResetCredit: Equatable, Identifiable, Sendable {
             return "约 \(hours) 小时后到期"
         }
         return "不到 1 小时后到期"
+    }
+
+    func compactRemainingTimeText(relativeTo now: Date) -> String {
+        guard let expiresAt else { return "剩余未知" }
+        let interval = expiresAt.timeIntervalSince(now)
+        if interval <= 0 {
+            return "已到期"
+        }
+        let totalMinutes = max(0, Int(interval / 60))
+        let days = totalMinutes / (24 * 60)
+        let hours = (totalMinutes % (24 * 60)) / 60
+        let minutes = totalMinutes % 60
+        if days > 0 {
+            return hours > 0 ? "剩 \(days)天\(hours)h" : "剩 \(days)天"
+        }
+        if hours > 0 {
+            return minutes > 0 ? "剩 \(hours)h\(minutes)m" : "剩 \(hours)h"
+        }
+        return "剩 <1h"
+    }
+
+    func compactExpiryCountdownText(relativeTo now: Date) -> String {
+        guard let expiresAt else { return "未知" }
+        let interval = expiresAt.timeIntervalSince(now)
+        if interval <= 0 {
+            return "已到期"
+        }
+        if interval > 24 * 60 * 60 {
+            let days = Int(ceil(interval / (24 * 60 * 60)))
+            return "\(days)天"
+        }
+        let hours = max(1, Int(ceil(interval / (60 * 60))))
+        return "\(hours)h"
+    }
+
+    func remainingProgress(relativeTo now: Date) -> Double? {
+        guard let grantedAt, let expiresAt else { return nil }
+        let total = expiresAt.timeIntervalSince(grantedAt)
+        guard total > 0 else { return nil }
+        return min(1, max(0, expiresAt.timeIntervalSince(now) / total))
+    }
+
+    static func displaySortPrecedes(_ lhs: AccountQuotaResetCredit, _ rhs: AccountQuotaResetCredit) -> Bool {
+        if lhs.isAvailable != rhs.isAvailable {
+            return lhs.isAvailable && !rhs.isAvailable
+        }
+        switch (lhs.expiresAt, rhs.expiresAt) {
+        case let (lhsDate?, rhsDate?):
+            if lhsDate != rhsDate {
+                return lhsDate < rhsDate
+            }
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        case (nil, nil):
+            break
+        }
+        return lhs.id.localizedStandardCompare(rhs.id) == .orderedAscending
     }
 
     private static func shortDate(_ date: Date) -> String {

@@ -28,37 +28,70 @@ private enum AccountQuotaReader {
     }
 
     static func read() async -> Result<AccountQuotaSnapshot, Error> {
+        let trace = RefreshPerformanceProbe.begin("accountQuotaReader.read")
         var lastError: Error?
         for attempt in 1...3 {
+            trace?.mark("attempt.begin", metadata: ["attempt": String(attempt)])
             let result = readOnce()
             switch result {
             case .success(let snapshot):
+                trace?.mark("attempt.success", metadata: [
+                    "attempt": String(attempt),
+                    "available": snapshot.isAvailable ? "1" : "0"
+                ])
                 if snapshot.isAvailable || attempt == 3 {
-                    return .success(await snapshotByAddingResetCredits(to: snapshot))
+                    let enriched = await snapshotByAddingResetCredits(to: snapshot)
+                    trace?.end("ok", metadata: [
+                        "attempt": String(attempt),
+                        "available": enriched.isAvailable ? "1" : "0",
+                        "resetCredits": String(enriched.availableResetCreditCount)
+                    ])
+                    return .success(enriched)
                 }
                 lastError = ReaderError.emptyRateLimits
             case .failure(let error):
+                trace?.mark("attempt.failed", metadata: [
+                    "attempt": String(attempt),
+                    "error": error.localizedDescription
+                ])
                 if attempt == 3 {
+                    trace?.end("failed", metadata: [
+                        "attempt": String(attempt),
+                        "error": error.localizedDescription
+                    ])
                     return .failure(error)
                 }
                 lastError = error
             }
+            trace?.mark("attempt.sleep", metadata: ["attempt": String(attempt)])
             try? await Task.sleep(nanoseconds: 350_000_000)
         }
+        trace?.end("failed", metadata: ["error": (lastError ?? ReaderError.invalidResponse).localizedDescription])
         return .failure(lastError ?? ReaderError.invalidResponse)
     }
 
     private static func snapshotByAddingResetCredits(to snapshot: AccountQuotaSnapshot) async -> AccountQuotaSnapshot {
-        guard let resetCredits = await readResetCredits() else { return snapshot }
+        let trace = RefreshPerformanceProbe.begin("accountQuotaReader.addResetCredits")
+        guard let resetCredits = await readResetCredits() else {
+            trace?.end("unavailable")
+            return snapshot
+        }
         var enriched = snapshot
         enriched.resetCreditsAvailableCount = resetCredits.availableCount
         enriched.resetCredits = resetCredits.credits
+        trace?.end("ok", metadata: [
+            "available": String(resetCredits.availableCount),
+            "credits": String(resetCredits.credits.count)
+        ])
         return enriched
     }
 
     private static func readOnce() -> Result<AccountQuotaSnapshot, Error> {
+        let trace = RefreshPerformanceProbe.begin("accountQuotaReader.readOnce")
         do {
+            trace?.mark("findCodexBinary.begin")
             let codexPath = try findCodexBinary()
+            trace?.mark("findCodexBinary.end", metadata: ["path": codexPath])
             let process = Process()
             process.executableURL = URL(fileURLWithPath: codexPath)
             process.arguments = ["app-server", "--listen", "stdio://"]
@@ -71,7 +104,9 @@ private enum AccountQuotaReader {
             process.standardError = error
 
             let reader = JSONLineReader(handle: output.fileHandleForReading)
+            trace?.mark("process.run.begin")
             try process.run()
+            trace?.mark("process.run.end", metadata: ["pid": String(process.processIdentifier)])
             defer {
                 output.fileHandleForReading.readabilityHandler = nil
                 if process.isRunning {
@@ -80,6 +115,7 @@ private enum AccountQuotaReader {
             }
 
             let writer = input.fileHandleForWriting
+            trace?.mark("initialize.write.begin")
             try write([
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -96,15 +132,25 @@ private enum AccountQuotaReader {
                     ]
                 ]
             ], to: writer)
+            trace?.mark("initialize.write.end")
 
             let deadline = Date().addingTimeInterval(12)
             var didSendRead = false
+            var waitCount = 0
 
             while Date() < deadline {
+                waitCount += 1
                 if let message = try reader.next(timeout: 0.5) {
+                    let messageID = (message["id"] as? Int).map(String.init) ?? "none"
+                    trace?.mark("message.received", metadata: [
+                        "id": messageID,
+                        "waitCount": String(waitCount)
+                    ])
                     if let id = message["id"] as? Int, id == 1, message["result"] != nil, !didSendRead {
+                        trace?.mark("initialized.write.begin")
                         try write(["jsonrpc": "2.0", "method": "initialized"], to: writer)
                         try write(["jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read"], to: writer)
+                        trace?.mark("initialized.write.end")
                         didSendRead = true
                         continue
                     }
@@ -112,27 +158,45 @@ private enum AccountQuotaReader {
                     if let id = message["id"] as? Int, id == 2 {
                         if let error = message["error"] as? [String: Any],
                            let message = error["message"] as? String {
+                            trace?.end("server-error", metadata: ["error": message])
                             return .failure(ReaderError.serverError(message))
                         }
                         guard let result = message["result"] as? [String: Any] else {
+                            trace?.end("invalid-response")
                             return .failure(ReaderError.invalidResponse)
                         }
-                        return .success(parse(result))
+                        trace?.mark("parse.begin")
+                        let snapshot = parse(result)
+                        trace?.mark("parse.end", metadata: [
+                            "available": snapshot.isAvailable ? "1" : "0",
+                            "cards": String(snapshot.limitCards.count)
+                        ])
+                        trace?.end("ok", metadata: [
+                            "waitCount": String(waitCount),
+                            "available": snapshot.isAvailable ? "1" : "0"
+                        ])
+                        return .success(snapshot)
                     }
                 }
             }
 
             if process.isRunning {
+                trace?.mark("timeout.terminate.begin")
                 process.terminate()
                 process.waitUntilExit()
+                trace?.mark("timeout.terminate.end")
             }
             if let stderr = try? error.fileHandleForReading.readToEnd(),
                let text = String(data: stderr, encoding: .utf8),
                !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return .failure(ReaderError.serverError(text.trimmingCharacters(in: .whitespacesAndNewlines)))
+                let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                trace?.end("server-error", metadata: ["error": message])
+                return .failure(ReaderError.serverError(message))
             }
+            trace?.end("invalid-response-timeout")
             return .failure(ReaderError.invalidResponse)
         } catch {
+            trace?.end("failed", metadata: ["error": error.localizedDescription])
             return .failure(error)
         }
     }
@@ -230,10 +294,14 @@ private enum AccountQuotaReader {
     }
 
     private static func readResetCredits() async -> ResetCreditsSnapshot? {
+        let trace = RefreshPerformanceProbe.begin("accountQuotaReader.readResetCredits")
+        trace?.mark("readAccessToken.begin")
         guard let accessToken = readAccessToken(),
               let url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits") else {
+            trace?.end("missing-access-token-or-url")
             return nil
         }
+        trace?.mark("readAccessToken.end")
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -250,22 +318,36 @@ private enum AccountQuotaReader {
         defer { session.finishTasksAndInvalidate() }
 
         do {
+            trace?.mark("http.begin")
             let (data, response) = try await session.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            trace?.mark("http.end", metadata: [
+                "status": String(statusCode),
+                "bytes": String(data.count)
+            ])
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                trace?.end("invalid-response", metadata: ["status": String(statusCode)])
                 return nil
             }
 
+            trace?.mark("parseResetCredits.begin")
             let credits = parseResetCredits(object["credits"])
             let availableCount = (object["available_count"] as? NSNumber)?.intValue
                 ?? (object["available_count"] as? Int)
                 ?? credits.filter(\.isAvailable).count
-            return ResetCreditsSnapshot(
+            let snapshot = ResetCreditsSnapshot(
                 availableCount: max(0, availableCount),
                 credits: credits
             )
+            trace?.end("ok", metadata: [
+                "available": String(snapshot.availableCount),
+                "credits": String(snapshot.credits.count)
+            ])
+            return snapshot
         } catch {
+            trace?.end("failed", metadata: ["error": error.localizedDescription])
             return nil
         }
     }

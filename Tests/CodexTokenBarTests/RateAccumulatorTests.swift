@@ -92,6 +92,96 @@ final class RateAccumulatorTests: XCTestCase {
         XCTAssertEqual(accumulator.rollingRate(now: 20.5, windowSeconds: 2.5, minimumSpan: 0.4), 0, accuracy: 0.001)
     }
 
+    func testToolInputPayloadDrivesLiveRollingRate() {
+        var accumulator = RateAccumulator(resetsOnNewItem: false)
+
+        accumulator.addDistributed(
+            tokens: 800,
+            category: .toolArguments,
+            key: "tool-input",
+            startTimestamp: 10,
+            endingAt: 20,
+            windowSeconds: 2.5
+        )
+
+        XCTAssertEqual(accumulator.breakdown.toolArguments, 800)
+        XCTAssertEqual(accumulator.outputTokens, 800)
+        XCTAssertGreaterThan(accumulator.rollingRate(now: 20.5, windowSeconds: 2.5, minimumSpan: 0.4), 0)
+    }
+
+    func testToolInputDeltaUsesConservativeLiveRateInsteadOfInstantSpike() {
+        var accumulator = RateAccumulator(resetsOnNewItem: false)
+
+        accumulator.add(
+            delta: String(repeating: "x", count: 160),
+            category: .toolArguments,
+            key: "tool-input",
+            at: 20,
+            windowSeconds: 2.5,
+            estimator: { $0.count }
+        )
+
+        XCTAssertEqual(accumulator.breakdown.toolArguments, 160)
+        XCTAssertEqual(accumulator.outputTokens, 160)
+        XCTAssertGreaterThan(accumulator.rollingRate(now: 20, windowSeconds: 2.5, minimumSpan: 0.4), 0)
+        XCTAssertLessThan(accumulator.rollingRate(now: 20, windowSeconds: 2.5, minimumSpan: 0.4), 90)
+    }
+
+    func testParallelToolInputDisplayRateIsCappedForOneSession() {
+        var accumulator = RateAccumulator(resetsOnNewItem: false)
+
+        for index in 0..<8 {
+            accumulator.add(
+                delta: String(repeating: "x", count: 180),
+                category: .toolArguments,
+                key: "tool-input-\(index)",
+                at: 20,
+                windowSeconds: 2.5,
+                estimator: { $0.count }
+            )
+        }
+
+        XCTAssertEqual(accumulator.breakdown.toolArguments, 1_440)
+        XCTAssertEqual(accumulator.outputTokens, 1_440)
+        XCTAssertLessThanOrEqual(accumulator.rollingRate(now: 20, windowSeconds: 2.5, minimumSpan: 0.4), 80)
+    }
+
+    func testDenseVisibleTextDisplayRateIsCappedForOneSession() {
+        var accumulator = RateAccumulator(resetsOnNewItem: false)
+
+        for index in 0..<120 {
+            accumulator.add(
+                delta: "中",
+                category: .visibleText,
+                key: "message",
+                at: 20 + Double(index) * 0.001,
+                windowSeconds: 2.5,
+                estimator: { $0.count }
+            )
+        }
+
+        XCTAssertEqual(accumulator.breakdown.visibleText, 120)
+        XCTAssertEqual(accumulator.outputTokens, 120)
+        XCTAssertLessThanOrEqual(accumulator.rollingRate(now: 20.2, windowSeconds: 2.5, minimumSpan: 0.4), 80)
+    }
+
+    func testReasoningPayloadDoesNotDriveLiveRollingRate() {
+        var accumulator = RateAccumulator(resetsOnNewItem: false)
+
+        accumulator.addDistributed(
+            tokens: 600,
+            category: .reasoning,
+            key: "reasoning",
+            startTimestamp: 10,
+            endingAt: 20,
+            windowSeconds: 2.5
+        )
+
+        XCTAssertEqual(accumulator.breakdown.reasoning, 600)
+        XCTAssertEqual(accumulator.outputTokens, 600)
+        XCTAssertEqual(accumulator.rollingRate(now: 20.5, windowSeconds: 2.5, minimumSpan: 0.4), 0, accuracy: 0.001)
+    }
+
     func testDuplicateVisibleCompletionFromAgentAndMessageCountsOnce() {
         var accumulator = RateAccumulator(resetsOnNewItem: false)
         let text = "可以，先按这个修。"

@@ -172,20 +172,13 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
         resetCredits.filter(\.isAvailable)
     }
 
+    var sortedResetCreditsForDisplay: [AccountQuotaResetCredit] {
+        resetCredits.sorted(by: AccountQuotaResetCredit.displaySortPrecedes)
+    }
+
     var nearestExpiringResetCredit: AccountQuotaResetCredit? {
         availableResetCredits
-            .sorted {
-                switch ($0.expiresAt, $1.expiresAt) {
-                case let (lhs?, rhs?):
-                    return lhs < rhs
-                case (_?, nil):
-                    return true
-                case (nil, _?):
-                    return false
-                case (nil, nil):
-                    return $0.id.localizedStandardCompare($1.id) == .orderedAscending
-                }
-            }
+            .sorted(by: AccountQuotaResetCredit.displaySortPrecedes)
             .first
     }
 
@@ -204,12 +197,25 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
         return " · \(count)卡"
     }
 
+    var compactResetCreditStandaloneSuffix: String {
+        let count = availableResetCreditCount
+        guard count > 0 else { return "" }
+        guard let countdown = nearestExpiringResetCredit?.compactExpiryCountdownText else {
+            return " · \(count)卡"
+        }
+        return " · \(count)卡 · 近\(countdown)到期"
+    }
+
     var resetCreditDetailSummary: String {
         let countText = compactResetCreditSummary ?? "暂无可用重置卡"
         if let nearestExpiringResetCredit {
             return "\(countText) · 最近 \(nearestExpiringResetCredit.compactExpiryText)"
         }
         return countText
+    }
+
+    var compactNearestResetCreditRemainingText: String? {
+        nearestExpiringResetCredit?.compactRemainingTimeText
     }
 
     var resetCreditReadSummary: String {
@@ -387,4 +393,3 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
         }
     }
 }
-

@@ -127,7 +127,14 @@ final class CodexRadarStore: ObservableObject {
     }
 
     func refresh() {
-        guard !isRefreshing else { return }
+        let trace = RefreshPerformanceProbe.begin("radarStore.refresh", metadata: [
+            "alreadyRefreshing": isRefreshing ? "1" : "0",
+            "hasSnapshot": snapshot == nil ? "0" : "1"
+        ])
+        guard !isRefreshing else {
+            trace?.end("skipped-refresh-in-flight")
+            return
+        }
         isRefreshing = true
         status = snapshot == nil ? "正在读取 Codex 雷达..." : "正在更新 Codex 雷达..."
 
@@ -135,20 +142,29 @@ final class CodexRadarStore: ObservableObject {
         let feedReader = feedReader
         Task.detached(priority: .utility) {
             do {
+                trace?.mark("currentJSON.begin")
                 let snapshot = try await reader.readRadar()
+                trace?.mark("currentJSON.end", metadata: [
+                    "monitoredAt": snapshot.monitoredAt,
+                    "action": snapshot.recommendedAction
+                ])
                 let feedURL = URL(string: snapshot.links.rss)
+                trace?.mark("rss.begin", metadata: ["hasURL": feedURL == nil ? "0" : "1"])
                 let feedItems = await Self.readFeedIfAvailable(feedURL, feedReader: feedReader)
+                trace?.mark("rss.end", metadata: ["items": String(feedItems.count)])
                 await MainActor.run {
                     self.snapshot = snapshot
                     self.feedItems = feedItems
                     self.status = "Codex 雷达 · 更新于 \(DateFormatter.statusString(from: Date()))"
                     self.isRefreshing = false
                 }
+                trace?.end("ok")
             } catch {
                 await MainActor.run {
                     self.status = "Codex 雷达读取失败：\(error.localizedDescription)"
                     self.isRefreshing = false
                 }
+                trace?.end("failed", metadata: ["error": error.localizedDescription])
             }
         }
     }

@@ -8,6 +8,8 @@ extension LiveRateMonitor {
             marker = "SSE event: "
         case "codex_api::endpoint::responses_websocket":
             marker = "websocket event: "
+        case "log":
+            marker = "Received message "
         default:
             return nil
         }
@@ -19,7 +21,15 @@ extension LiveRateMonitor {
 
     nonisolated static func metricEvents(from streamEvent: ResponseStreamEvent, row: LogRow, toolNames: [String: String]) -> [LiveMetricEvent] {
         let timestamp = TimeInterval(row.ts) + TimeInterval(row.tsNanos) / 1_000_000_000
-        let source: LiveMetricSource = row.target == "codex_api::sse::responses" ? .sse : .websocket
+        let source: LiveMetricSource
+        switch row.target {
+        case "codex_api::sse::responses":
+            source = .sse
+        case "codex_api::endpoint::responses_websocket":
+            source = .websocket
+        default:
+            source = .bridgedLog
+        }
         let itemID = streamEvent.itemID ?? streamEvent.item?.id ?? "unknown"
         let turnID = streamEvent.item?.metadata?.turnID
         let callID = streamEvent.item?.callID

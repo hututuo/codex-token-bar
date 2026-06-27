@@ -48,6 +48,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(FloatingTokenPanelMetrics.verticalPadding, 6, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rowSpacing, 2, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rateRowHeight, 28, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.usageStatusRowHeight, 20, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.metricRowHeight, 11, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.quotaRowHeight, 15.5, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.radarRowHeight, 24, accuracy: 0.001)
@@ -456,6 +457,41 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertGreaterThan(ratePalette.primaryWhite - radarPalette.primaryWhite, 0.45)
     }
 
+    func testFloatingPanelTextPalettesReuseCachedSamplingForUnchangedLayout() {
+        FloatingPanelAppearance.resetTextPaletteCacheForTesting()
+        let appearance = FloatingPanelAppearance(
+            startHex: "#FAF9FF",
+            endHex: "#00C2EF",
+            directionRaw: FloatingPanelGradientDirection.topLeadingToBottomTrailing.rawValue,
+            styleRaw: FloatingPanelGradientStyle.linear.rawValue
+        )
+        let size = FloatingTokenPanelMetrics.size(scale: 1.14, visibility: .default)
+
+        _ = appearance.textPalettes(
+            panelSize: size,
+            scale: 1.14,
+            opacity: 0.98,
+            visibility: .default
+        )
+        XCTAssertEqual(FloatingPanelAppearance.textPaletteCacheMissCountForTesting(), 1)
+
+        _ = appearance.textPalettes(
+            panelSize: size,
+            scale: 1.14,
+            opacity: 0.98,
+            visibility: .default
+        )
+        XCTAssertEqual(FloatingPanelAppearance.textPaletteCacheMissCountForTesting(), 1)
+
+        _ = appearance.textPalettes(
+            panelSize: size,
+            scale: 1.14,
+            opacity: 0.88,
+            visibility: .default
+        )
+        XCTAssertEqual(FloatingPanelAppearance.textPaletteCacheMissCountForTesting(), 2)
+    }
+
     func testTopSafetyInsetOnlyAppearsWhenFirstRenderedGroupNeedsControlClearance() {
         let rateOnlyWithoutUsageStatus = FloatingPanelContentVisibility(
             showRateAndBar: true,
@@ -740,6 +776,9 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let componentsSource = try String(contentsOf: components, encoding: .utf8)
 
         XCTAssertTrue(surfaceSource.contains("usageStatus: visibility.embedsUsageStatusInRateRow ? snapshot.compactUsageStatus : nil"))
+        XCTAssertTrue(surfaceSource.contains("TokenDisplayUsageStatusLine(text: snapshot.standaloneUsageStatus)"))
+        XCTAssertTrue(surfaceSource.contains("usageStatus(resetCreditSuffix: quota.compactResetCreditCountSuffix)"))
+        XCTAssertTrue(surfaceSource.contains("usageStatus(resetCreditSuffix: quota.compactResetCreditStandaloneSuffix)"))
         XCTAssertTrue(surfaceSource.contains("ForEach(visibility.layoutGroups)"))
         XCTAssertTrue(surfaceSource.contains("case .usageStatus:"))
         XCTAssertTrue(componentsSource.contains("let usageStatus: String?"))
@@ -753,7 +792,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertFalse(standaloneLine.contains("Capsule()"))
     }
 
-    func testFloatingPanelTextUsesReadableToneExceptQuotaSegments() throws {
+    func testFloatingPanelTextUsesReadableToneIncludingQuotaSegments() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -807,13 +846,85 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertFalse(surfaceSource.contains(".offset(x: 3.scaled(by: displayScale), y: 1.5.scaled(by: displayScale))"))
         XCTAssertFalse(surfaceSource.contains(".offset(y: 2.scaled(by: displayScale))"))
         XCTAssertTrue(rateBar.contains("let statusPalette = embeddedUsageStatusTextPalette ?? textPalette"))
-        XCTAssertTrue(standaloneLine.contains("size: 13.6.scaled(by: displayScale)"))
+        XCTAssertTrue(standaloneLine.contains("size: 9.5.scaled(by: displayScale)"))
+        XCTAssertTrue(rateBar.contains("size: 9.1.scaled(by: displayScale)"))
         XCTAssertTrue(standaloneLine.contains(".foregroundStyle(textPalette.primaryColor)"))
         XCTAssertTrue(rateBar.contains(".foregroundStyle(statusPalette.primaryColor)"))
         XCTAssertTrue(metric.contains(".foregroundStyle(textPalette.secondaryColor)"))
         XCTAssertTrue(metric.contains(".foregroundStyle(textPalette.primaryColor)"))
-        XCTAssertFalse(quotaSegment.contains("tokenDisplayTextPalette"))
-        XCTAssertTrue(quotaSegment.contains(".foregroundStyle(.primary.opacity(0.82))"))
+        XCTAssertTrue(quotaSegment.contains("@Environment(\\.tokenDisplayTextPalette) private var textPalette"))
+        XCTAssertTrue(quotaSegment.contains(".foregroundStyle(textPalette.primaryColor)"))
+        XCTAssertFalse(quotaSegment.contains(".foregroundStyle(.primary.opacity(0.82))"))
+    }
+
+    func testFloatingPanelRadarModelLabelStaysReadableBesideIQ() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let components = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurfaceComponents.swift")
+        let componentsSource = try String(contentsOf: components, encoding: .utf8)
+        let radarStrip = try XCTUnwrap(sourceBlock(
+            named: "TokenDisplayRadarStrip",
+            in: componentsSource,
+            endingBefore: "private func tokenDisplayRadarProbabilityText"
+        ))
+
+        XCTAssertTrue(radarStrip.contains("size: 11.8.scaled(by: displayScale)"))
+        XCTAssertTrue(radarStrip.contains("size: 8.4.scaled(by: displayScale)"))
+        XCTAssertTrue(radarStrip.contains(".minimumScaleFactor(0.82)"))
+        XCTAssertFalse(radarStrip.contains("size: 7.7.scaled(by: displayScale)"))
+        XCTAssertFalse(radarStrip.contains(".minimumScaleFactor(0.66)"))
+    }
+
+    func testFloatingPanelQuotaBarsUseSlightlySquarerShapeAndAlignedMetrics() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let components = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurfaceComponents.swift")
+        let surface = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurface.swift")
+        let metrics = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelMetrics.swift")
+        let componentsSource = try String(contentsOf: components, encoding: .utf8)
+        let surfaceSource = try String(contentsOf: surface, encoding: .utf8)
+        let metricsSource = try String(contentsOf: metrics, encoding: .utf8)
+        let quotaSegment = try XCTUnwrap(sourceBlock(
+            named: "TokenQuotaMiniSegment",
+            in: componentsSource,
+            endingBefore: "struct TokenDisplayUsageStatusLine"
+        ))
+        guard let metricRowStart = surfaceSource.range(of: "private var metricRow: some View")?.lowerBound,
+              let metricRowEnd = surfaceSource[metricRowStart...].range(of: "\n    }\n}")?.lowerBound
+        else {
+            XCTFail("TokenDisplayCard must keep a metricRow block")
+            return
+        }
+        let metricRow = String(surfaceSource[metricRowStart..<metricRowEnd])
+
+        XCTAssertTrue(quotaSegment.contains("quotaSegmentShape(height: proxy.size.height)"))
+        XCTAssertTrue(quotaSegment.contains("RoundedRectangle(cornerRadius: quotaSegmentCornerRadius"))
+        XCTAssertFalse(quotaSegment.contains("Capsule()\n                        .fill(floatingTrackColor)"))
+        XCTAssertTrue(metricsSource.contains("static let metricOutset: CGFloat = 14.5"))
+        XCTAssertTrue(metricsSource.contains("static let metricTodayNudge: CGFloat = -4.5"))
+        XCTAssertTrue(metricsSource.contains("static let metricRequestsNudge: CGFloat = 8"))
+        XCTAssertTrue(metricsSource.contains("static func metricRequestsNudge(for requestCount: Int) -> CGFloat"))
+        XCTAssertTrue(metricRow.contains("FloatingTokenPanelMetrics.metricTodayNudge.scaled(by: displayScale)"))
+        XCTAssertTrue(metricRow.contains("FloatingTokenPanelMetrics.metricRequestsNudge(for: snapshot.todayRequests).scaled(by: displayScale)"))
+        XCTAssertEqual(
+            FloatingTokenPanelMetrics.metricRequestsNudge(for: 99),
+            FloatingTokenPanelMetrics.metricRequestsNudge + FloatingTokenPanelMetrics.metricRequestsDigitCompensation,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            FloatingTokenPanelMetrics.metricRequestsNudge(for: 999),
+            FloatingTokenPanelMetrics.metricRequestsNudge,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            FloatingTokenPanelMetrics.metricRequestsNudge(for: 1_000),
+            FloatingTokenPanelMetrics.metricRequestsNudge - FloatingTokenPanelMetrics.metricRequestsDigitCompensation,
+            accuracy: 0.001
+        )
     }
 
     private func sourceBlock(named name: String, in source: String, endingBefore marker: String) -> String? {

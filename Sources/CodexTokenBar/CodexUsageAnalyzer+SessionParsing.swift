@@ -30,19 +30,99 @@ extension CodexUsageAnalyzer {
     }
 
     func parseSession(file: URL, sessionID: String) -> [TokenEvent] {
-        let cacheKey = sessionCacheKey(for: file)
-        if let cacheKey {
-            if let events = Self.sessionEventCache.events(for: file.path, key: cacheKey) {
-                return events
-            }
+        guard let cacheKey = sessionCacheKey(for: file) else {
+            return parseFullSession(file: file, sessionID: sessionID).events
+        }
+        let cachePath = cacheKey.path
+
+        if let cached = Self.sessionEventCache.cachedSession(for: cachePath, key: cacheKey) {
+            RefreshPerformanceProbe.event("usageAnalyzer.session.cacheHit", metadata: [
+                "file": file.lastPathComponent,
+                "size": String(cacheKey.size),
+                "events": String(cached.events.count)
+            ])
+            return cached.events
         }
 
+        if let cached = Self.sessionEventCache.appendableSession(for: cachePath, currentKey: cacheKey) {
+            let trace = RefreshPerformanceProbe.begin("usageAnalyzer.session.incrementalParse", metadata: [
+                "file": file.lastPathComponent,
+                "size": String(cacheKey.size),
+                "previousSize": String(cached.key.size),
+                "lastOffset": String(cached.lastOffset),
+                "appendBytes": String(cacheKey.size > cached.lastOffset ? cacheKey.size - cached.lastOffset : 0)
+            ])
+            let appended = parseSession(
+                file: file,
+                sessionID: sessionID,
+                startingAt: cached.lastOffset,
+                previousTotal: cached.previousTotalTokens
+            )
+            let events = cached.events + appended.events
+            Self.sessionEventCache.recordIncrementalSessionParseForTesting()
+            Self.sessionEventCache.store(
+                Self.SessionEventCache.CachedSession(
+                    key: cacheKey,
+                    events: events,
+                    lastOffset: appended.lastOffset,
+                    endedWithNewline: appended.endedWithNewline,
+                    previousTotalTokens: appended.previousTotalTokens,
+                    canIncrementFromOffset: appended.endedWithNewline,
+                    migratedFromLegacyCache: false
+                ),
+                for: cachePath
+            )
+            trace?.end("ok", metadata: [
+                "newEvents": String(appended.events.count),
+                "totalEvents": String(events.count),
+                "lastOffset": String(appended.lastOffset),
+                "endedWithNewline": appended.endedWithNewline ? "1" : "0"
+            ])
+            return events
+        }
+
+        let trace = RefreshPerformanceProbe.begin("usageAnalyzer.session.fullParse", metadata: [
+            "file": file.lastPathComponent,
+            "size": String(cacheKey.size)
+        ])
+        let result = parseFullSession(file: file, sessionID: sessionID)
+        Self.sessionEventCache.recordFullSessionParseForTesting()
+        Self.sessionEventCache.store(
+            Self.SessionEventCache.CachedSession(
+                key: cacheKey,
+                events: result.events,
+                lastOffset: result.lastOffset,
+                endedWithNewline: result.endedWithNewline,
+                previousTotalTokens: result.previousTotalTokens,
+                canIncrementFromOffset: result.endedWithNewline,
+                migratedFromLegacyCache: false
+            ),
+            for: cachePath
+        )
+        trace?.end("ok", metadata: [
+            "events": String(result.events.count),
+            "lastOffset": String(result.lastOffset),
+            "endedWithNewline": result.endedWithNewline ? "1" : "0"
+        ])
+        return result.events
+    }
+
+    private func parseFullSession(file: URL, sessionID: String) -> SessionParseResult {
+        parseSession(file: file, sessionID: sessionID, startingAt: 0, previousTotal: nil)
+    }
+
+    private func parseSession(
+        file: URL,
+        sessionID: String,
+        startingAt offset: UInt64,
+        previousTotal initialPreviousTotal: Int?
+    ) -> SessionParseResult {
         var events: [TokenEvent] = []
-        var previousTotal: Int?
+        var previousTotal = initialPreviousTotal
         var currentUserPrompt = ""
         var assistantFragments: [String] = []
         let forkReplayCutoff = forkedSessionReplayCutoff(for: file)
-        streamSessionLines(from: file) { lineString in
+        let stream = streamSessionLines(from: file, startingAt: offset) { lineString in
             if let message = extractPayloadMessage(from: lineString, expectedType: "user_message") {
                 currentUserPrompt = message
                 assistantFragments.removeAll(keepingCapacity: true)
@@ -93,11 +173,12 @@ extension CodexUsageAnalyzer {
             assistantFragments.removeAll(keepingCapacity: true)
         }
 
-        if let cacheKey {
-            Self.sessionEventCache.store(events, for: file.path, key: cacheKey)
-        }
-
-        return events
+        return SessionParseResult(
+            events: events,
+            lastOffset: stream.lastOffset,
+            endedWithNewline: stream.endedWithNewline,
+            previousTotalTokens: previousTotal
+        )
     }
 
     private func forkedSessionReplayCutoff(for file: URL) -> Date? {
@@ -208,9 +289,15 @@ extension CodexUsageAnalyzer {
 
     private func sessionCacheKey(for file: URL) -> SessionCacheKey? {
         guard let attributes = try? fileManager.attributesOfItem(atPath: file.path) else { return nil }
-        let size = attributes[.size] as? UInt64 ?? 0
+        let size = (attributes[.size] as? NSNumber)?.uint64Value
+            ?? attributes[.size] as? UInt64
+            ?? 0
         let modifiedAt = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        return SessionCacheKey(path: file.path, size: size, modifiedAt: modifiedAt)
+        return SessionCacheKey(
+            path: file.resolvingSymlinksInPath().path,
+            size: size,
+            modifiedAt: modifiedAt
+        )
     }
 
     private func readFirstLinePrefix(from file: URL, maxBytes: Int = 262_144) -> String? {
@@ -232,11 +319,21 @@ extension CodexUsageAnalyzer {
         return String(decoding: data, as: UTF8.self)
     }
 
-    private func streamSessionLines(from file: URL, handleLine: (String) -> Void) {
-        guard let handle = try? FileHandle(forReadingFrom: file) else { return }
+    private func streamSessionLines(
+        from file: URL,
+        startingAt offset: UInt64 = 0,
+        handleLine: (String) -> Void
+    ) -> SessionLineStreamResult {
+        guard let handle = try? FileHandle(forReadingFrom: file) else {
+            return SessionLineStreamResult(lastOffset: offset, endedWithNewline: true)
+        }
         defer { try? handle.close() }
+        if offset > 0 {
+            try? handle.seek(toOffset: offset)
+        }
 
         var pending = Data()
+        var pendingStartOffset = offset
         let newline = Data([0x0A])
         let tokenNeedle = Data(#""token_count""#.utf8)
         let userMessageNeedle = Data(#""user_message""#.utf8)
@@ -248,6 +345,7 @@ extension CodexUsageAnalyzer {
             pending.append(data)
 
             var searchStart = pending.startIndex
+            var consumedOffset = pendingStartOffset
             while let newlineRange = pending[searchStart...].range(of: newline) {
                 let lineRange = searchStart..<newlineRange.lowerBound
                 let lineData = pending[lineRange]
@@ -256,11 +354,14 @@ extension CodexUsageAnalyzer {
                     || lineData.range(of: agentMessageNeedle) != nil {
                     handleLine(String(decoding: lineData, as: UTF8.self))
                 }
+                let consumedBytes = pending.distance(from: pending.startIndex, to: newlineRange.upperBound)
+                consumedOffset = pendingStartOffset + UInt64(consumedBytes)
                 searchStart = newlineRange.upperBound
             }
 
             if searchStart > pending.startIndex {
                 pending.removeSubrange(pending.startIndex..<searchStart)
+                pendingStartOffset = consumedOffset
             }
         }
 
@@ -270,6 +371,10 @@ extension CodexUsageAnalyzer {
             || pending.range(of: agentMessageNeedle) != nil {
             handleLine(String(decoding: pending, as: UTF8.self))
         }
+        if !pending.isEmpty {
+            pendingStartOffset += UInt64(pending.count)
+        }
+        return SessionLineStreamResult(lastOffset: pendingStartOffset, endedWithNewline: pending.isEmpty)
     }
 
     private func parseDate(_ value: String) -> Date? {

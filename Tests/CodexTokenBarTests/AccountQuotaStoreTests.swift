@@ -78,6 +78,37 @@ final class AccountQuotaStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.sevenDay?.usedPercent, 90)
     }
 
+    func testAutomaticRefreshSkipsSoonAfterSuccessfulManualRefresh() async {
+        let reset = Date().addingTimeInterval(60 * 60)
+        let firstSnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: reset),
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 40, resetsAt: reset),
+            planType: "pro",
+            limitName: "codex",
+            accountName: "测试用户",
+            status: "额度已读取",
+            updatedAt: Date()
+        )
+        let reader = SequentialQuotaReader(results: [
+            .success(firstSnapshot),
+            .failure(QuotaTestError())
+        ])
+        let store = AccountQuotaStore(quotaReader: reader)
+
+        store.refresh(force: true)
+        await waitUntil("manual quota refresh") {
+            store.snapshot.fiveHour?.usedPercent == 20
+        }
+
+        store.refresh(force: false)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        let readCount = await reader.currentReadCount()
+        XCTAssertEqual(readCount, 1)
+        XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 20)
+        XCTAssertEqual(store.snapshot.status, "额度已读取")
+    }
+
     private func waitUntil(
         _ label: String,
         timeout: TimeInterval = 2,
@@ -94,16 +125,22 @@ final class AccountQuotaStoreTests: XCTestCase {
 
 private actor SequentialQuotaReader: QuotaReading {
     private var results: [Result<AccountQuotaSnapshot, Error>]
+    private(set) var readCount = 0
 
     init(results: [Result<AccountQuotaSnapshot, Error>]) {
         self.results = results
     }
 
     func readQuota() async -> Result<AccountQuotaSnapshot, Error> {
+        readCount += 1
         guard !results.isEmpty else {
             return .failure(QuotaTestError())
         }
         return results.removeFirst()
+    }
+
+    func currentReadCount() -> Int {
+        readCount
     }
 }
 

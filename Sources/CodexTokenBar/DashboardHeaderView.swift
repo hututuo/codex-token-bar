@@ -165,18 +165,21 @@ struct HeaderView: View {
                     }
                     .buttonStyle(.bordered)
                     .disabled(isRefreshing)
+                    .accessibilityLabel(isRefreshing ? "刷新中" : "立即刷新")
 
                     Button(action: onChangeDirectory) {
                         Label("更改目录", systemImage: "folder")
                             .font(.system(size: 13, weight: .medium))
                     }
                     .buttonStyle(.bordered)
+                    .accessibilityLabel("更改目录")
 
                     Button(action: onOpenProviderSync) {
                         Label("会话消失修复", systemImage: "wrench.and.screwdriver")
                             .font(.system(size: 13, weight: .medium))
                     }
                     .buttonStyle(.bordered)
+                    .accessibilityLabel("会话消失修复")
                 }
                 .font(.system(size: 14))
                 .padding(.leading, 12)

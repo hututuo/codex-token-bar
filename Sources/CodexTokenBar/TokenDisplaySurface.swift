@@ -183,6 +183,14 @@ struct TokenDisplaySnapshot {
     }
 
     var compactUsageStatus: String {
+        usageStatus(resetCreditSuffix: quota.compactResetCreditCountSuffix)
+    }
+
+    var standaloneUsageStatus: String {
+        usageStatus(resetCreditSuffix: quota.compactResetCreditStandaloneSuffix)
+    }
+
+    private func usageStatus(resetCreditSuffix: String) -> String {
         guard quota.isAvailable else {
             if quota.status.contains("失败") {
                 return "读取失败"
@@ -191,16 +199,16 @@ struct TokenDisplaySnapshot {
         }
 
         if let pace = quota.sevenDayPaceStatus {
-            return "\(pace.compactTitle)(\(pace.compactDetail))\(quota.compactResetCreditCountSuffix)"
+            return "\(pace.compactTitle)(\(pace.compactDetail))\(resetCreditSuffix)"
         }
 
         if let sevenDay = quota.sevenDay {
-            return "7d剩\(sevenDay.remainingPercent)%\(quota.compactResetCreditCountSuffix)"
+            return "7d剩\(sevenDay.remainingPercent)%\(resetCreditSuffix)"
         }
         if let fiveHour = quota.fiveHour {
-            return "5h剩\(fiveHour.remainingPercent)%\(quota.compactResetCreditCountSuffix)"
+            return "5h剩\(fiveHour.remainingPercent)%\(resetCreditSuffix)"
         }
-        return "额度已读\(quota.compactResetCreditCountSuffix)"
+        return "额度已读\(resetCreditSuffix)"
     }
 }
 
@@ -237,7 +245,7 @@ struct TokenDisplayCard: View {
                             .environment(\.tokenDisplayTextPalette, palette(for: .rateAndBar))
                             .frame(height: rateRowHeight, alignment: .center)
                     case .usageStatus:
-                        TokenDisplayUsageStatusLine(text: snapshot.compactUsageStatus)
+                        TokenDisplayUsageStatusLine(text: snapshot.standaloneUsageStatus)
                             .environment(\.tokenDisplayTextPalette, standaloneUsageStatusTextPalette ?? palette(for: .usageStatus))
                             .frame(height: usageStatusRowHeight, alignment: .center)
                     case .metrics:
@@ -388,9 +396,13 @@ struct TokenDisplayCard: View {
                 .offset(x: -FloatingTokenPanelMetrics.metricOutset.scaled(by: displayScale))
             TokenDisplayMetric(label: "今", value: snapshot.todayTokens.abbreviatedTokens)
                 .environment(\.tokenDisplayTextPalette, metricPalette(for: .today))
+                .offset(x: FloatingTokenPanelMetrics.metricTodayNudge.scaled(by: displayScale))
             TokenDisplayMetric(label: "次", value: "\(snapshot.todayRequests)")
                 .environment(\.tokenDisplayTextPalette, metricPalette(for: .requests))
-                .offset(x: FloatingTokenPanelMetrics.metricOutset.scaled(by: displayScale))
+                .offset(
+                    x: FloatingTokenPanelMetrics.metricOutset.scaled(by: displayScale)
+                        + FloatingTokenPanelMetrics.metricRequestsNudge(for: snapshot.todayRequests).scaled(by: displayScale)
+                )
         }
         .frame(maxWidth: .infinity, alignment: .center)
     }

@@ -4,6 +4,7 @@ struct RateAccumulator {
     // Completion-only payloads arrive after a tool/edit finishes. Spread them with
     // a conservative virtual rate so the live gauge does not show a completion spike.
     private static let completionPayloadTokensPerSecond: Double = 55
+    private static let liveDisplayTokensPerSecondCap: Double = 80
     private static let minimumCompletionPayloadSeconds: TimeInterval = 1
     private static let maximumCompletionPayloadSeconds: TimeInterval = 30
     private static let distributionStepSeconds: TimeInterval = 0.5
@@ -66,6 +67,10 @@ struct RateAccumulator {
         outputCharacters += delta.count
 
         guard deltaTokens > 0 else { return }
+        if category.usesConservativeDeltaLiveRate {
+            addDistributedLiveRate(tokens: deltaTokens, category: category, key: key, endingAt: timestamp, windowSeconds: windowSeconds)
+            return
+        }
         add(tokens: deltaTokens, category: category, key: key, at: timestamp, windowSeconds: windowSeconds)
     }
 
@@ -101,6 +106,39 @@ struct RateAccumulator {
         }
         lastDeltaAt = timestamp
         rollingDeltas.append((timestamp, tokens))
+        prune(now: timestamp, windowSeconds: windowSeconds)
+    }
+
+    private mutating func addDistributedLiveRate(
+        tokens: Int,
+        category: LiveTokenCategory,
+        key: String,
+        endingAt timestamp: TimeInterval,
+        windowSeconds: TimeInterval
+    ) {
+        addToBreakdown(tokens: tokens, category: category)
+        guard category.contributesToLiveRate else { return }
+
+        let duration = estimatedDistributionDuration(tokens: tokens)
+        let start = timestamp - duration
+        if firstDeltaAt == nil {
+            firstDeltaAt = start
+        } else if let existing = firstDeltaAt {
+            firstDeltaAt = min(existing, start)
+        }
+        lastDeltaAt = timestamp
+
+        let chunkCount = max(1, min(tokens, Int(ceil(duration / Self.distributionStepSeconds))))
+        var emitted = 0
+        for index in 1...chunkCount {
+            let cumulative = Int((Double(tokens) * Double(index) / Double(chunkCount)).rounded())
+            let chunkTokens = cumulative - emitted
+            emitted = cumulative
+            guard chunkTokens > 0 else { continue }
+            let ratio = Double(index) / Double(chunkCount)
+            rollingDeltas.append((start + duration * ratio, chunkTokens))
+        }
+
         prune(now: timestamp, windowSeconds: windowSeconds)
     }
 
@@ -211,7 +249,8 @@ struct RateAccumulator {
         let visibleDeltas = rollingDeltas.filter { $0.time <= now }
         guard let first = visibleDeltas.first else { return 0 }
         let span = max(minimumSpan, min(windowSeconds, now - first.time))
-        return Double(visibleDeltas.reduce(0) { $0 + $1.tokens }) / span
+        let rawRate = Double(visibleDeltas.reduce(0) { $0 + $1.tokens }) / span
+        return min(rawRate, Self.liveDisplayTokensPerSecondCap)
     }
 
     func hasRecentActivity(now: TimeInterval, windowSeconds: TimeInterval) -> Bool {
@@ -266,12 +305,21 @@ struct RateAccumulator {
     }
 }
 
-private extension LiveTokenCategory {
+extension LiveTokenCategory {
     var contributesToLiveRate: Bool {
         switch self {
-        case .visibleText, .toolArguments, .patchInput, .reasoning:
+        case .visibleText, .toolArguments, .patchInput:
             return true
-        case .patchApplied, .toolOutput:
+        case .patchApplied, .toolOutput, .reasoning:
+            return false
+        }
+    }
+
+    var usesConservativeDeltaLiveRate: Bool {
+        switch self {
+        case .toolArguments, .patchInput:
+            return true
+        case .visibleText, .patchApplied, .toolOutput, .reasoning:
             return false
         }
     }

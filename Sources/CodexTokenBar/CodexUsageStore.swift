@@ -50,7 +50,14 @@ final class CodexUsageStore: ObservableObject {
     }
 
     private func refresh(includePreciseScan: Bool) {
-        guard !isRefreshing else { return }
+        let trace = RefreshPerformanceProbe.begin("usageStore.refresh", metadata: [
+            "includePreciseScan": includePreciseScan ? "1" : "0",
+            "alreadyRefreshing": isRefreshing ? "1" : "0"
+        ])
+        guard !isRefreshing else {
+            trace?.end("skipped-refresh-in-flight")
+            return
+        }
         dataSource = resolver.resolve()
         updateDataSourceLabels()
 
@@ -59,6 +66,7 @@ final class CodexUsageStore: ObservableObject {
             status = "未找到本地 Codex 数据目录"
             isInitialLoading = false
             didFinishInitialLoad = true
+            trace?.end("no-data-source")
             return
         }
 
@@ -69,37 +77,59 @@ final class CodexUsageStore: ObservableObject {
             isInitialLoading = true
             status = "正在读取本地索引..."
         } else {
-            status = "正在扫描 \(dataSource.displayPath)/sessions..."
+            status = "正在增量更新 token..."
         }
 
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 let source = dataSource
+                trace?.mark("task.started", metadata: [
+                    "source": source.displayPath,
+                    "origin": source.originLabel
+                ])
                 if isFirstLoad || !includePreciseScan {
                     if includePreciseScan {
+                        trace?.mark("fastSnapshot.begin")
                         if let quickSnapshot = try? await self.snapshotLoader.loadFastSnapshot(dataSource: source) {
                             self.snapshot = quickSnapshot
-                            self.status = "\(source.originLabel) · state_5.sqlite · 正在扫描精确 token..."
+                            self.status = "\(source.originLabel) · state_5.sqlite · 正在增量更新 token..."
+                            trace?.mark("fastSnapshot.end", metadata: [
+                                "tokens": String(quickSnapshot.stats.totalTokens),
+                                "threads": String(quickSnapshot.stats.totalThreads)
+                            ])
                         }
                     } else {
+                        trace?.mark("fastSnapshot.begin")
                         let quickSnapshot = try await self.snapshotLoader.loadFastSnapshot(dataSource: source)
                         self.snapshot = quickSnapshot
                         self.status = "\(source.originLabel) · state_5.sqlite · 准备扫描精确 token..."
+                        trace?.mark("fastSnapshot.end", metadata: [
+                            "tokens": String(quickSnapshot.stats.totalTokens),
+                            "threads": String(quickSnapshot.stats.totalThreads)
+                        ])
                     }
                 }
 
                 if includePreciseScan {
+                    trace?.mark("preciseSnapshot.begin")
                     let loaded = try await self.snapshotLoader.loadSnapshot(dataSource: source)
                     self.snapshot = loaded
                     self.didRunPreciseScan = true
                     self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
+                    trace?.mark("preciseSnapshot.end", metadata: [
+                        "tokens": String(loaded.stats.totalTokens),
+                        "calls": String(loaded.stats.totalCalls),
+                        "threads": String(loaded.stats.totalThreads)
+                    ])
                 }
+                trace?.end("ok")
             } catch {
                 if !hasExistingSnapshot && !self.hasDisplayableSnapshot(self.snapshot) {
                     self.snapshot = .empty
                 }
                 self.status = "读取失败：\(error.localizedDescription)"
+                trace?.end("failed", metadata: ["error": error.localizedDescription])
             }
             self.isRefreshing = false
             self.didFinishInitialLoad = true
