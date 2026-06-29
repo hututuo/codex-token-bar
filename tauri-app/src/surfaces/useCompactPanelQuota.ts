@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { readAccountQuota } from "../api/client";
 import { emptyAccountQuotaBundle } from "../api/fallback";
 import type { AccountQuotaBundle } from "../types/dashboard";
 import { nextQuotaResetRefreshDelayMs } from "../utils/quotaRefresh";
+import { useWakeRefresh } from "../utils/useWakeRefresh";
 
 interface CompactPanelQuotaOptions {
   active: boolean;
@@ -19,28 +20,33 @@ export function useCompactPanelQuota({
 }: CompactPanelQuotaOptions): AccountQuotaBundle {
   const [quota, setQuota] = useState<AccountQuotaBundle>(() => emptyAccountQuotaBundle());
   const inFlight = useRef(false);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  const refreshQuota = useCallback(async (forceRefresh = false) => {
+    if (!active || !enabled || inFlight.current) {
+      return;
+    }
+
+    inFlight.current = true;
+    try {
+      const next = await readAccountQuota(forceRefresh);
+      if (mounted.current && next !== null) {
+        setQuota(next);
+      }
+    } finally {
+      inFlight.current = false;
+    }
+  }, [active, enabled]);
 
   useEffect(() => {
     if (!active || !enabled) {
       return;
-    }
-
-    let cancelled = false;
-
-    async function refreshQuota(forceRefresh = false) {
-      if (inFlight.current) {
-        return;
-      }
-
-      inFlight.current = true;
-      try {
-        const next = await readAccountQuota(forceRefresh);
-        if (!cancelled && next !== null) {
-          setQuota(next);
-        }
-      } finally {
-        inFlight.current = false;
-      }
     }
 
     const firstTimer = window.setTimeout(() => {
@@ -51,11 +57,10 @@ export function useCompactPanelQuota({
     }, intervalMs);
 
     return () => {
-      cancelled = true;
       window.clearTimeout(firstTimer);
       window.clearInterval(interval);
     };
-  }, [active, enabled, initialDelayMs, intervalMs]);
+  }, [active, enabled, initialDelayMs, intervalMs, refreshQuota]);
 
   useEffect(() => {
     if (!active || !enabled) {
@@ -67,25 +72,11 @@ export function useCompactPanelQuota({
       return;
     }
 
-    let cancelled = false;
-    const timer = window.setTimeout(async () => {
-      if (inFlight.current) {
-        return;
-      }
-
-      inFlight.current = true;
-      try {
-        const next = await readAccountQuota(true);
-        if (!cancelled && next !== null) {
-          setQuota(next);
-        }
-      } finally {
-        inFlight.current = false;
-      }
+    const timer = window.setTimeout(() => {
+      void refreshQuota(true);
     }, delayMs);
 
     return () => {
-      cancelled = true;
       window.clearTimeout(timer);
     };
   }, [
@@ -93,7 +84,15 @@ export function useCompactPanelQuota({
     enabled,
     quota.quota.fiveHour.resetsAtUnix,
     quota.quota.sevenDay.resetsAtUnix,
+    refreshQuota,
   ]);
+
+  useWakeRefresh({
+    active: active && enabled,
+    onWake: () => {
+      void refreshQuota(true);
+    },
+  });
 
   return quota;
 }

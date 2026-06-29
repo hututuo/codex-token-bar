@@ -30,6 +30,7 @@ import { useDashboardActions } from "./useDashboardActions";
 import { useDeferredDashboardLoads } from "./useDeferredDashboardLoads";
 import { useLiveRateFeed } from "./useLiveRateFeed";
 import { nextQuotaResetRefreshDelayMs } from "../utils/quotaRefresh";
+import { useWakeRefresh } from "../utils/useWakeRefresh";
 
 const DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
 const DASHBOARD_BACKGROUND_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -202,6 +203,16 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     state.dashboard?.quota.sevenDay.resetsAtUnix,
     state.loading,
   ]);
+
+  const refreshQuotaAfterWake = useCallback(() => {
+    setForceNextQuotaLoad(true);
+    setQuotaLoadGeneration((current) => current + 1);
+  }, []);
+
+  useWakeRefresh({
+    active: fastSnapshotLoaded && dashboardReady && !state.loading,
+    onWake: refreshQuotaAfterWake,
+  });
 
   useDeferredDashboardLoads({
     active: fastSnapshotLoaded,

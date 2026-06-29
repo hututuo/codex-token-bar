@@ -118,7 +118,21 @@ test("compact surfaces refresh quota every minute", async () => {
 
   assert.equal(compactData.includes("DEFAULT_QUOTA_INTERVAL_MS = 60_000"), true);
   assert.equal(compactQuota.includes("nextQuotaResetRefreshDelayMs(quota.quota)"), true);
-  assert.equal(compactQuota.includes("readAccountQuota(true)"), true);
+  assert.equal(compactQuota.includes("refreshQuota(true)"), true);
+});
+
+test("dashboard and compact quota force refresh after system wake", async () => {
+  const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
+  const compactQuota = await readFile(new URL("../surfaces/useCompactPanelQuota.ts", import.meta.url), "utf8");
+  const wakeRefresh = await readFile(new URL("../utils/useWakeRefresh.ts", import.meta.url), "utf8");
+
+  assert.equal(wakeRefresh.includes("WAKE_REFRESH_GAP_MS = 2 * 60 * 1000"), true);
+  assert.equal(wakeRefresh.includes("window.addEventListener(\"focus\", handleWakeCheck)"), true);
+  assert.equal(wakeRefresh.includes("document.addEventListener(\"visibilitychange\", handleWakeCheck)"), true);
+  assert.equal(dashboardData.includes("useWakeRefresh({"), true);
+  assert.equal(dashboardData.includes("setForceNextQuotaLoad(true)"), true);
+  assert.equal(compactQuota.includes("useWakeRefresh({"), true);
+  assert.equal(compactQuota.includes("void refreshQuota(true)"), true);
 });
 
 test("hidden status panel starts inactive and verifies window visibility before polling", async () => {
