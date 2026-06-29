@@ -90,22 +90,19 @@ fn empty_recent_usage(
 }
 
 fn read_stats(connection: &Connection) -> Result<DashboardStats> {
-    let (total_tokens, peak_thread_tokens, total_threads): (i64, i64, i64) =
-        connection.query_row(
-            r#"
-            SELECT COALESCE(SUM(tokens_used), 0) AS total_tokens,
-                   COALESCE(MAX(tokens_used), 0) AS peak_thread_tokens,
-                   COUNT(*) AS total_threads
-            FROM threads;
-            "#,
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
+    let total_threads: i64 = connection.query_row(
+        r#"
+        SELECT COUNT(*) AS total_threads
+        FROM threads;
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
 
     Ok(DashboardStats {
-        total_tokens: to_u64(total_tokens),
+        total_tokens: 0,
         peak_day_tokens: 0,
-        peak_thread_tokens: to_u64(peak_thread_tokens),
+        peak_thread_tokens: 0,
         current_streak_days: 0,
         longest_streak_days: 0,
         total_calls: 0,
@@ -138,10 +135,6 @@ fn placeholder_quota() -> QuotaSnapshot {
     }
 }
 
-fn to_u64(value: i64) -> u64 {
-    u64::try_from(value).unwrap_or(0)
-}
-
 fn to_u32(value: i64) -> u32 {
     u32::try_from(value).unwrap_or(0)
 }
@@ -162,7 +155,7 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn dashboard_snapshot_reads_state_sqlite_summary_and_recent_bins() {
+    fn dashboard_snapshot_uses_safe_placeholders_instead_of_state_token_sums() {
         let root = std::env::temp_dir().join(format!(
             "codex-token-bar-tauri-state-sqlite-{}-{}",
             std::process::id(),
@@ -195,9 +188,9 @@ mod tests {
         drop(connection);
 
         let snapshot = dashboard_snapshot(&root).unwrap();
-        assert_eq!(snapshot.stats.total_tokens, 300);
+        assert_eq!(snapshot.stats.total_tokens, 0);
         assert_eq!(snapshot.stats.peak_day_tokens, 0);
-        assert_eq!(snapshot.stats.peak_thread_tokens, 180);
+        assert_eq!(snapshot.stats.peak_thread_tokens, 0);
         assert_eq!(snapshot.stats.current_streak_days, 0);
         assert_eq!(snapshot.stats.longest_streak_days, 0);
         assert_eq!(snapshot.stats.total_calls, 0);

@@ -159,6 +159,20 @@ pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenU
     cached_dashboard_aggregate(&signature).map(|cached| cached.summary)
 }
 
+pub(crate) fn cached_dashboard_snapshot_for_startup(
+    codex_home: &Path,
+) -> Option<DashboardSnapshot> {
+    let sessions_root = codex_home.join("sessions");
+    if !sessions_root.exists() {
+        return None;
+    }
+
+    let mut warnings = Vec::new();
+    let session_files = jsonl_files(&sessions_root, &mut warnings);
+    let signature = dashboard_scan_signature(codex_home, &session_files);
+    cached_dashboard_snapshot(&signature).map(snapshot_with_generated_at)
+}
+
 fn usage_summary_from_events(events: &[TokenEvent], local_offset: UtcOffset) -> TokenUsageSummary {
     let today = OffsetDateTime::now_utc().to_offset(local_offset).date();
     let mut summary = TokenUsageSummary::default();
