@@ -347,7 +347,9 @@ fn explain_quota_error(error: &str) -> String {
 
 fn read_rate_limits() -> Result<QuotaSnapshot, String> {
     let codex = find_codex_binary_with_report()?.path;
-    let mut child = Command::new(codex)
+    let mut command = Command::new(codex);
+    configure_quota_child_process(&mut command);
+    let mut child = command
         .args(["app-server", "--listen", "stdio://"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -446,6 +448,20 @@ fn read_rate_limits() -> Result<QuotaSnapshot, String> {
         }
     }
     Err("额度读取超时".into())
+}
+
+fn configure_quota_child_process(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = command;
+    }
 }
 
 fn write_json_line(stdin: &mut std::process::ChildStdin, value: &Value) -> Result<(), String> {
