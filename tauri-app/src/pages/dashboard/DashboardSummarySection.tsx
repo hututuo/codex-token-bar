@@ -28,6 +28,7 @@ interface DashboardSummarySectionProps {
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onLiveRateReset: () => Promise<void>;
   onLiveThreadSelect: (threadId: string) => void;
+  onQuotaRefresh: () => void;
   onToggleLiveRate: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
@@ -52,6 +53,7 @@ export function DashboardSummarySection({
   onFloatingContentVisibilityChange,
   onLiveRateReset,
   onLiveThreadSelect,
+  onQuotaRefresh,
   onToggleLiveRate,
   onToggleFloating,
   onToggleStatusTray,
@@ -62,7 +64,7 @@ export function DashboardSummarySection({
 }: DashboardSummarySectionProps) {
   return (
     <>
-      <QuotaStrip snapshot={dashboard.quota} warnings={dashboard.warnings} />
+      <QuotaStrip onRetryQuotaRefresh={onQuotaRefresh} snapshot={dashboard.quota} warnings={dashboard.warnings} />
       <StatsStrip stats={dashboard.stats} />
       <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />
       <LiveRateCard

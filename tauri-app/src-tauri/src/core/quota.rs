@@ -18,6 +18,11 @@ const SUCCESS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
 const HISTORY_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const FORCED_REFRESH_COALESCE_TTL: Duration = Duration::from_secs(5);
+const RATE_LIMIT_READ_ATTEMPTS: usize = 3;
+const RATE_LIMIT_READ_TIMEOUT: Duration = Duration::from_secs(12);
+const RATE_LIMIT_RETRY_DELAY: Duration = Duration::from_millis(350);
+pub(super) const RESET_CREDIT_READ_ATTEMPTS: usize = 3;
+pub(super) const RESET_CREDIT_TIMEOUT: Duration = Duration::from_secs(14);
 
 mod auth;
 mod codex_binary;
@@ -273,10 +278,10 @@ fn reset_credit_failure_status(error: &str) -> String {
 fn compact_error_message(error: &str) -> String {
     let text = error.split_whitespace().collect::<Vec<_>>().join(" ");
     let text = text.trim();
-    if text.chars().count() <= 180 {
+    if text.chars().count() <= 720 {
         return text.to_string();
     }
-    let mut truncated = text.chars().take(180).collect::<String>();
+    let mut truncated = text.chars().take(720).collect::<String>();
     truncated.push('…');
     truncated
 }
@@ -305,7 +310,10 @@ fn explain_quota_error(error: &str) -> String {
             "读取超时：本地 Codex 或网络接口在限定时间内没有返回。请稍后点立即刷新重试。原始信息：{compact}"
         );
     }
-    if lower.contains("dns")
+    if lower.contains("error sending request")
+        || lower.contains("failed to fetch")
+        || lower.contains("request error")
+        || lower.contains("dns")
         || lower.contains("network")
         || lower.contains("connection")
         || lower.contains("connect")
@@ -346,6 +354,23 @@ fn explain_quota_error(error: &str) -> String {
 }
 
 fn read_rate_limits() -> Result<QuotaSnapshot, String> {
+    let mut errors = Vec::new();
+    for attempt in 1..=RATE_LIMIT_READ_ATTEMPTS {
+        match read_rate_limits_once(RATE_LIMIT_READ_TIMEOUT) {
+            Ok(snapshot) => return Ok(snapshot),
+            Err(error) => errors.push(format!("第 {attempt} 次：{}", compact_error_message(&error))),
+        }
+        if attempt < RATE_LIMIT_READ_ATTEMPTS {
+            thread::sleep(RATE_LIMIT_RETRY_DELAY);
+        }
+    }
+    Err(format!(
+        "额度读取失败，已重试 {RATE_LIMIT_READ_ATTEMPTS} 次：{}",
+        errors.join("；")
+    ))
+}
+
+fn read_rate_limits_once(timeout: Duration) -> Result<QuotaSnapshot, String> {
     let codex = find_codex_binary_with_report()?.path;
     let mut command = Command::new(codex);
     configure_quota_child_process(&mut command);
@@ -401,7 +426,7 @@ fn read_rate_limits() -> Result<QuotaSnapshot, String> {
         }),
     )?;
 
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + timeout;
     let mut read_sent = false;
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -447,7 +472,7 @@ fn read_rate_limits() -> Result<QuotaSnapshot, String> {
             return Err(trimmed.to_string());
         }
     }
-    Err("额度读取超时".into())
+    Err(format!("额度读取超时（{} 秒）", timeout.as_secs()))
 }
 
 fn configure_quota_child_process(command: &mut Command) {
@@ -543,6 +568,15 @@ mod tests {
     }
 
     #[test]
+    fn quota_read_timeouts_match_swift_retry_budget() {
+        assert_eq!(RATE_LIMIT_READ_ATTEMPTS, 3);
+        assert_eq!(RATE_LIMIT_READ_TIMEOUT, Duration::from_secs(12));
+        assert_eq!(RATE_LIMIT_RETRY_DELAY, Duration::from_millis(350));
+        assert_eq!(RESET_CREDIT_READ_ATTEMPTS, 3);
+        assert_eq!(RESET_CREDIT_TIMEOUT, Duration::from_secs(14));
+    }
+
+    #[test]
     fn quota_failure_bundle_keeps_failure_reason_visible() {
         let codex_home = std::env::temp_dir().join(format!(
             "codex-token-bar-quota-failure-{}",
@@ -575,13 +609,13 @@ mod tests {
     }
 
     #[test]
-    fn compact_error_message_normalizes_and_truncates() {
+    fn compact_error_message_keeps_long_diagnostics_visible() {
         let compact = compact_error_message(" first line\n\nsecond\tline ");
         assert_eq!(compact, "first line second line");
 
-        let long = "错".repeat(220);
+        let long = "错".repeat(900);
         let compact = compact_error_message(&long);
-        assert_eq!(compact.chars().count(), 181);
+        assert_eq!(compact.chars().count(), 721);
         assert!(compact.ends_with('…'));
     }
 
@@ -589,6 +623,7 @@ mod tests {
     fn quota_error_explanation_names_common_failure_types() {
         assert!(explain_quota_error("未找到 access token").contains("登录凭证缺失"));
         assert!(explain_quota_error("error sending request for url: dns error").contains("网络连接失败"));
+        assert!(explain_quota_error("failed to fetch codex rate limits: error sending request for url (https://chatgpt.com/backend-api/wham/usage)").contains("网络连接失败"));
         assert!(explain_quota_error("HTTP 401 Unauthorized").contains("登录或权限失败"));
         assert!(explain_quota_error("额度读取超时").contains("读取超时"));
         assert!(explain_quota_error("invalid json response").contains("接口响应解析失败"));

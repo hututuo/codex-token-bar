@@ -43,7 +43,7 @@ export function readUsageSummarySnapshot(): Promise<UsageSummarySnapshot | null>
 
 export function readUsageCacheStatus(): Promise<UsageCacheStatus> {
   return callCommand("read_usage_cache_status", {
-    namespace: "tauri-usage-cache-2026-07-v3",
+    namespace: "tauri-usage-cache-2026-07-v4",
     initialized: true,
     initializedAt: null,
   });
@@ -53,6 +53,6 @@ export function readAccountQuota(forceRefresh = false): Promise<AccountQuotaBund
   return callCommandOptional(
     "read_account_quota",
     { forceRefresh },
-    12_000,
+    90_000,
   );
 }

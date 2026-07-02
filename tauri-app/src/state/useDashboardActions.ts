@@ -64,6 +64,14 @@ export function useDashboardActions({
     setRadarRefreshGeneration,
   ]);
 
+  const reloadQuota = useCallback(() => {
+    setForceNextQuotaLoad(true);
+    setQuotaLoadGeneration((current) => current + 1);
+  }, [
+    setForceNextQuotaLoad,
+    setQuotaLoadGeneration,
+  ]);
+
   const updateCodexHome = useCallback(async (path: string) => {
     setSelectedLiveThreadId("");
     setState((current) => ({ ...current, loading: true }));
@@ -84,6 +92,7 @@ export function useDashboardActions({
 
   return {
     reloadAll,
+    reloadQuota,
     updateCodexHome,
     restoreAutoCodexHome,
     updateProviderRepair,

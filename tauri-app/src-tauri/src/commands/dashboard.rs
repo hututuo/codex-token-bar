@@ -106,7 +106,7 @@ pub async fn read_account_quota(force_refresh: Option<bool>) -> Result<AccountQu
         "read_account_quota force={} {}ms {}",
         forced,
         started.elapsed().as_millis(),
-        result_status(&result)
+        account_quota_result_status(&result)
     ));
     startup_trace::mark_once("command read_account_quota end");
     result
@@ -117,5 +117,129 @@ fn result_status<T>(result: &Result<T, String>) -> &'static str {
         "ok"
     } else {
         "error"
+    }
+}
+
+fn account_quota_result_status(result: &Result<AccountQuotaBundle, String>) -> String {
+    match result {
+        Err(error) => format!("error {}", compact_trace_text(error)),
+        Ok(bundle) => {
+            let quota_available = bundle.quota.five_hour.resets_at_unix.is_some()
+                || bundle.quota.seven_day.resets_at_unix.is_some();
+            let status = if quota_available {
+                "quota_success"
+            } else {
+                "quota_placeholder"
+            };
+            if bundle.warnings.is_empty() {
+                status.to_string()
+            } else {
+                let warnings = bundle
+                    .warnings
+                    .iter()
+                    .map(|warning| {
+                        format!(
+                            "{}:{}",
+                            warning.source,
+                            compact_trace_text(&warning.message)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|");
+                format!("{status} warnings=[{warnings}]")
+            }
+        }
+    }
+}
+
+fn compact_trace_text(text: &str) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= 1200 {
+        compact
+    } else {
+        let mut truncated = compact.chars().take(1200).collect::<String>();
+        truncated.push('…');
+        truncated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{
+        AccountInfo, AccountQuotaBundle, QuotaLimit, QuotaSnapshot, ResetCreditSummary,
+    };
+
+    #[test]
+    fn account_quota_trace_status_distinguishes_placeholder_bundle_from_real_quota() {
+        let mut quota = placeholder_quota_for_test();
+        quota.pace_label = "额度读取失败".into();
+        let placeholder = Ok(AccountQuotaBundle {
+            account: AccountInfo {
+                display_name: "本地用户".into(),
+                plan_label: "Pro".into(),
+            },
+            quota,
+            quota_history_daily: Vec::new(),
+            quota_history_24h: Vec::new(),
+            quota_history_7d: Vec::new(),
+            quota_history_30d: Vec::new(),
+            warnings: vec![],
+        });
+
+        assert_eq!(account_quota_result_status(&placeholder), "quota_placeholder");
+    }
+
+    #[test]
+    fn account_quota_trace_keeps_full_retry_diagnostics() {
+        let long_warning = format!(
+            "额度读取失败：网络连接失败：{}",
+            "failed to fetch codex rate limits: error sending request for url (https://chatgpt.com/backend-api/wham/usage)；".repeat(8)
+        );
+        let placeholder = Ok(AccountQuotaBundle {
+            account: AccountInfo {
+                display_name: "本地用户".into(),
+                plan_label: "Pro".into(),
+            },
+            quota: placeholder_quota_for_test(),
+            quota_history_daily: Vec::new(),
+            quota_history_24h: Vec::new(),
+            quota_history_7d: Vec::new(),
+            quota_history_30d: Vec::new(),
+            warnings: vec![crate::models::LocalDataWarning {
+                source: "account_quota".into(),
+                message: long_warning,
+            }],
+        });
+
+        let status = account_quota_result_status(&placeholder);
+        assert!(status.contains("quota_placeholder warnings=[account_quota:"));
+        assert!(status.contains("backend-api/wham/usage"));
+        assert!(!status.contains('…'));
+    }
+
+    fn placeholder_quota_for_test() -> QuotaSnapshot {
+        QuotaSnapshot {
+            five_hour: QuotaLimit {
+                label: "5h".into(),
+                used_percent: 0.0,
+                remaining_percent: 0.0,
+                resets_at: "待读取".into(),
+                resets_at_unix: None,
+            },
+            seven_day: QuotaLimit {
+                label: "7d".into(),
+                used_percent: 0.0,
+                remaining_percent: 0.0,
+                resets_at: "待读取".into(),
+                resets_at_unix: None,
+            },
+            pace_label: "待读取".into(),
+            reset_credit: ResetCreditSummary {
+                available_count: 0,
+                status: "重置卡待读取".into(),
+                credits: Vec::new(),
+            },
+        }
     }
 }

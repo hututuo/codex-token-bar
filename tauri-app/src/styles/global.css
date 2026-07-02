@@ -709,7 +709,8 @@ button.quota-side-card:hover {
   grid-column: 2 / -1;
   display: flex;
   gap: 7px;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: space-between;
   min-width: 0;
   margin-top: 1px;
   border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
@@ -717,6 +718,13 @@ button.quota-side-card:hover {
   background: color-mix(in srgb, var(--accent) 8%, var(--panel-solid));
   padding: 4px 8px;
   color: color-mix(in srgb, var(--accent) 74%, var(--text));
+}
+
+.quota-read-warning-main {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+  min-width: 0;
 }
 
 .quota-read-warning strong {
@@ -732,6 +740,22 @@ button.quota-side-card:hover {
   font-weight: 500;
   line-height: 1.28;
   white-space: normal;
+}
+
+.quota-warning-refresh {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  color: color-mix(in srgb, var(--accent) 86%, var(--text));
+  padding: 3px 8px;
+  font-size: 9px;
+  font-weight: 680;
+  line-height: 1;
+}
+
+.quota-warning-refresh:hover {
+  background: color-mix(in srgb, var(--accent) 17%, transparent);
 }
 
 .quota-plan span,

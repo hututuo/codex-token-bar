@@ -22,6 +22,7 @@ export function DashboardApp() {
     reloadAll,
     updateCodexHome,
     restoreAutoCodexHome,
+    reloadQuota,
     selectedLiveThreadId,
     setSelectedLiveThreadId,
   } = useDashboardData({ liveRateEnabled });
@@ -59,6 +60,7 @@ export function DashboardApp() {
         onFloatingContentVisibilityChange={shellSettings.updateFloatingContentVisibility}
         onLiveRateReset={resetLiveRate}
         onLiveThreadSelect={setSelectedLiveThreadId}
+        onQuotaRefresh={reloadQuota}
         onToggleLiveRate={shellSettings.toggleLiveRate}
         onToggleFloating={shellSettings.toggleFloatingWindow}
         onToggleStatusTray={shellSettings.toggleStatusTrayLiveText}

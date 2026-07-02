@@ -31,6 +31,11 @@ import { useDashboardActions } from "./useDashboardActions";
 import { useDeferredDashboardLoads } from "./useDeferredDashboardLoads";
 import { useLiveRateFeed } from "./useLiveRateFeed";
 import { nextQuotaResetRefreshDelayMs } from "../utils/quotaRefresh";
+import {
+  LIVE_USAGE_ACTIVITY_HOLD_MS,
+  liveRateHasUsageRefreshActivity,
+  usageRefreshIntervalMs,
+} from "../utils/usageRefreshCadence";
 import { useWakeRefresh } from "../utils/useWakeRefresh";
 
 const DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
@@ -61,9 +66,12 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const [dashboardVisible, setDashboardVisible] = useState(dashboardIsVisible);
   const [refreshTaskCount, setRefreshTaskCount] = useState(0);
   const [usageCacheInitializing, setUsageCacheInitializing] = useState(false);
+  const [lastLiveActivityAtMs, setLastLiveActivityAtMs] = useState(0);
+  const lastLiveActivityAtMsRef = useRef(0);
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
   const {
     reloadAll,
+    reloadQuota,
     updateCodexHome,
     restoreAutoCodexHome,
     updateProviderRepair,
@@ -93,9 +101,25 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     });
   }, [markRenderCommit]);
 
-  const mergeLiveRateSnapshot = useCallback((liveRate: LiveRateSnapshot) => {
-    setState((current) => mergeLiveRate(current, liveRate));
+  const markLiveUsageActivity = useCallback((liveRate: LiveRateSnapshot) => {
+    if (!liveRateHasUsageRefreshActivity(liveRate)) {
+      return;
+    }
+
+    const nowMs = Date.now();
+    lastLiveActivityAtMsRef.current = nowMs;
+    setLastLiveActivityAtMs((current) => {
+      if (current > 0 && nowMs - current < LIVE_USAGE_ACTIVITY_HOLD_MS) {
+        return current;
+      }
+      return nowMs;
+    });
   }, []);
+
+  const mergeLiveRateSnapshot = useCallback((liveRate: LiveRateSnapshot) => {
+    markLiveUsageActivity(liveRate);
+    setState((current) => mergeLiveRate(current, liveRate));
+  }, [markLiveUsageActivity]);
 
   const mergeThreadOptions = useCallback((liveThreadOptions: LiveThreadOption[]) => {
     startTransition(() => {
@@ -162,9 +186,13 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       return;
     }
 
-    const intervalMs = dashboardVisible
+    const baselineIntervalMs = dashboardVisible
       ? DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS
       : DASHBOARD_BACKGROUND_AUTO_REFRESH_INTERVAL_MS;
+    const intervalMs = usageRefreshIntervalMs({
+      baselineIntervalMs,
+      lastLiveActivityAtMs,
+    });
     const interval = window.setInterval(() => {
       setLoadGeneration((current) => current + 1);
     }, intervalMs);
@@ -172,7 +200,31 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     return () => {
       window.clearInterval(interval);
     };
-  }, [dashboardReady, dashboardVisible, fastSnapshotLoaded, state.loading]);
+  }, [dashboardReady, dashboardVisible, fastSnapshotLoaded, lastLiveActivityAtMs, state.loading]);
+
+  useEffect(() => {
+    if (lastLiveActivityAtMs <= 0) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      const latestActivityAtMs = lastLiveActivityAtMsRef.current;
+      if (
+        latestActivityAtMs > 0
+        && Date.now() - latestActivityAtMs < LIVE_USAGE_ACTIVITY_HOLD_MS
+      ) {
+        setLastLiveActivityAtMs(latestActivityAtMs);
+        return;
+      }
+
+      lastLiveActivityAtMsRef.current = 0;
+      setLastLiveActivityAtMs(0);
+    }, LIVE_USAGE_ACTIVITY_HOLD_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [lastLiveActivityAtMs]);
 
   useEffect(() => {
     if (!fastSnapshotLoaded || !dashboardReady || state.loading) {
@@ -253,6 +305,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     if (liveRateEnabled) {
       return;
     }
+    lastLiveActivityAtMsRef.current = 0;
+    setLastLiveActivityAtMs(0);
     setState((current) => mergeLiveRate(current, disabledLiveRateSnapshot(selectedLiveThreadId)));
   }, [liveRateEnabled, selectedLiveThreadId]);
 
@@ -265,6 +319,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     usageCacheInitializing,
     radarRefreshGeneration,
     reloadAll,
+    reloadQuota,
     updateCodexHome,
     restoreAutoCodexHome,
     updateProviderRepair,

@@ -99,8 +99,24 @@ test("dashboard precise data refreshes every three minutes when visible and five
   assert.equal(dashboardData.includes("setLoadGeneration((current) => current + 1)"), true);
 });
 
+test("live activity temporarily accelerates usage refresh cadence", async () => {
+  const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
+  const compactSnapshot = await readFile(new URL("../surfaces/useCompactPanelSnapshot.ts", import.meta.url), "utf8");
+  const cadence = await readFile(new URL("../utils/usageRefreshCadence.ts", import.meta.url), "utf8");
+
+  assert.equal(cadence.includes("ACTIVE_USAGE_REFRESH_INTERVAL_MS = 30_000"), true);
+  assert.equal(cadence.includes("LIVE_USAGE_ACTIVITY_HOLD_MS = 31_000"), true);
+  assert.equal(cadence.includes("liveRateHasUsageRefreshActivity"), true);
+  assert.equal(cadence.includes("usageRefreshIntervalMs"), true);
+  assert.equal(dashboardData.includes("markLiveUsageActivity(liveRate)"), true);
+  assert.equal(dashboardData.includes("usageRefreshIntervalMs({"), true);
+  assert.equal(compactSnapshot.includes("markLiveUsageActivity(liveRate)"), true);
+  assert.equal(compactSnapshot.includes("usageRefreshIntervalMs({"), true);
+});
+
 test("dashboard quota refreshes independently every five minutes", async () => {
   const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
+  const dashboardClient = await readFile(new URL("../api/dashboardClient.ts", import.meta.url), "utf8");
   const deferredLoads = await readFile(new URL("../state/useDeferredDashboardLoads.ts", import.meta.url), "utf8");
   const quotaLoad = await readFile(new URL("../state/useDeferredQuotaLoad.ts", import.meta.url), "utf8");
 
@@ -108,8 +124,30 @@ test("dashboard quota refreshes independently every five minutes", async () => {
   assert.equal(dashboardData.includes("setQuotaLoadGeneration((current) => current + 1)"), true);
   assert.equal(dashboardData.includes("nextQuotaResetRefreshDelayMs(state.dashboard.quota)"), true);
   assert.equal(dashboardData.includes("setForceNextQuotaLoad(true)"), true);
+  assert.equal(dashboardClient.includes("90_000"), true);
   assert.equal(deferredLoads.includes("quotaGeneration"), true);
   assert.equal(quotaLoad.includes("const isFirstQuotaLoad = quotaGeneration.current === null"), true);
+});
+
+test("quota warning retry refreshes only quota data", async () => {
+  const actions = await readFile(new URL("../state/useDashboardActions.ts", import.meta.url), "utf8");
+  const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
+  const dashboardPage = await readFile(new URL("../pages/DashboardPage.tsx", import.meta.url), "utf8");
+  const summary = await readFile(new URL("../pages/dashboard/DashboardSummarySection.tsx", import.meta.url), "utf8");
+  const quotaStrip = await readFile(new URL("../components/QuotaStrip.tsx", import.meta.url), "utf8");
+
+  const reloadQuotaBody = actions.slice(
+    actions.indexOf("const reloadQuota"),
+    actions.indexOf("const updateCodexHome"),
+  );
+  assert.equal(reloadQuotaBody.includes("setForceNextQuotaLoad(true)"), true);
+  assert.equal(reloadQuotaBody.includes("setQuotaLoadGeneration((current) => current + 1)"), true);
+  assert.equal(reloadQuotaBody.includes("setLoadGeneration"), false);
+  assert.equal(reloadQuotaBody.includes("setRadarRefreshGeneration"), false);
+  assert.equal(dashboardApp.includes("onQuotaRefresh={reloadQuota}"), true);
+  assert.equal(dashboardPage.includes("onQuotaRefresh={onQuotaRefresh}"), true);
+  assert.equal(summary.includes("onRetryQuotaRefresh={onQuotaRefresh}"), true);
+  assert.equal(quotaStrip.includes("aria-label=\"只刷新额度\""), true);
 });
 
 test("usage cache initialization shows inline notice without blocking dashboard", async () => {
@@ -123,7 +161,7 @@ test("usage cache initialization shows inline notice without blocking dashboard"
   const lib = await readFile(new URL("../../src-tauri/src/lib.rs", import.meta.url), "utf8");
 
   assert.equal(dashboardClient.includes("read_usage_cache_status"), true);
-  assert.equal(dashboardClient.includes("tauri-usage-cache-2026-07-v3"), true);
+  assert.equal(dashboardClient.includes("tauri-usage-cache-2026-07-v4"), true);
   assert.equal(dataSource.includes("readUsageCacheStatus"), true);
   assert.equal(preciseLoad.includes("source.readUsageCacheStatus()"), true);
   assert.equal(preciseLoad.includes("onUsageCacheStatus?.(cacheStatus)"), true);

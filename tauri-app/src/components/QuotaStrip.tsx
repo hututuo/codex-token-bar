@@ -11,6 +11,7 @@ import {
 } from "./quota/resetCredits";
 
 interface QuotaStripProps {
+  onRetryQuotaRefresh?: () => void;
   snapshot: QuotaSnapshot;
   warnings?: LocalDataWarning[];
 }
@@ -98,7 +99,7 @@ function ResetCreditItem({
   );
 }
 
-function QuotaStripView({ snapshot, warnings = [] }: QuotaStripProps) {
+function QuotaStripView({ onRetryQuotaRefresh, snapshot, warnings = [] }: QuotaStripProps) {
   const [showResetDetails, setShowResetDetails] = useState(false);
   const [expandedCredits, setExpandedCredits] = useState<Set<string>>(() => new Set());
   const displayCredits = useMemo(
@@ -152,8 +153,20 @@ function QuotaStripView({ snapshot, warnings = [] }: QuotaStripProps) {
       </div>
       {quotaWarnings.length > 0 ? (
         <div className="quota-read-warning" role="status">
-          <strong>读取失败原因</strong>
-          <span>{quotaWarnings.join("；")}</span>
+          <div className="quota-read-warning-main">
+            <strong>读取失败原因</strong>
+            <span>{quotaWarnings.join("；")}</span>
+          </div>
+          {onRetryQuotaRefresh ? (
+            <button
+              aria-label="只刷新额度"
+              className="quota-warning-refresh"
+              onClick={onRetryQuotaRefresh}
+              type="button"
+            >
+              刷新
+            </button>
+          ) : null}
         </div>
       ) : null}
       {showResetDetails ? (
