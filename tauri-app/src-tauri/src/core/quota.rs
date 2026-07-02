@@ -1,8 +1,10 @@
 use crate::core::quota_history;
-use crate::models::{AccountInfo, AccountQuotaBundle, QuotaSnapshot, ResetCreditSummary};
+use crate::models::{
+    AccountInfo, AccountQuotaBundle, LocalDataWarning, QuotaSnapshot, ResetCreditSummary,
+};
 use auth::read_local_account_name;
 use codex_binary::find_codex_binary_with_report;
-use rate_limits::parse_rate_limits;
+use rate_limits::{parse_rate_limits, placeholder_quota};
 use reset_credit::read_reset_credits;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -140,10 +142,17 @@ fn quota_available(quota: &QuotaSnapshot) -> bool {
 fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, String> {
     let mut bundle = match read_rate_limits() {
         Ok(mut quota) => {
-            quota.reset_credit = read_reset_credits(codex_home).unwrap_or_else(|_| ResetCreditSummary {
-                available_count: 0,
-                status: "重置卡获取失败".into(),
-                credits: Vec::new(),
+            let mut warnings = Vec::new();
+            quota.reset_credit = read_reset_credits(codex_home).unwrap_or_else(|error| {
+                warnings.push(quota_warning(
+                    "reset_credit",
+                    format!("重置卡读取失败：{}", explain_quota_error(&error)),
+                ));
+                ResetCreditSummary {
+                    available_count: 0,
+                    status: reset_credit_failure_status(&error),
+                    credits: Vec::new(),
+                }
             });
             let mut bundle = AccountQuotaBundle {
                 account: account_info(codex_home, Some(&quota)),
@@ -152,7 +161,7 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
                 quota_history_24h: Vec::new(),
                 quota_history_7d: Vec::new(),
                 quota_history_30d: Vec::new(),
-                warnings: Vec::new(),
+                warnings,
             };
             if let Err(error) = quota_history::record_bundle(&bundle) {
                 bundle.warnings.push(quota_history::warning(error));
@@ -160,19 +169,57 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
             refresh_quota_histories(&mut bundle, true);
             bundle
         }
-        Err(error) => return Err(format!("额度读取失败：{error}")),
+        Err(error) => quota_failure_bundle(codex_home, error),
     };
 
     if bundle.quota.reset_credit.status == "重置卡待读取" {
-        bundle.quota.reset_credit =
-            read_reset_credits(codex_home).unwrap_or_else(|_| ResetCreditSummary {
+        bundle.quota.reset_credit = read_reset_credits(codex_home).unwrap_or_else(|error| {
+            bundle.warnings.push(quota_warning(
+                "reset_credit",
+                format!("重置卡读取失败：{}", explain_quota_error(&error)),
+            ));
+            ResetCreditSummary {
                 available_count: 0,
-                status: "重置卡获取失败".into(),
+                status: reset_credit_failure_status(&error),
                 credits: Vec::new(),
-            });
+            }
+        });
     }
 
     Ok(bundle)
+}
+
+fn quota_failure_bundle(codex_home: &Path, error: String) -> AccountQuotaBundle {
+    let mut quota = placeholder_quota();
+    quota.pace_label = "额度读取失败".into();
+    quota.reset_credit = read_reset_credits(codex_home).unwrap_or_else(|reset_error| {
+        ResetCreditSummary {
+            available_count: 0,
+            status: reset_credit_failure_status(&reset_error),
+            credits: Vec::new(),
+        }
+    });
+
+    let mut bundle = AccountQuotaBundle {
+        account: account_info(codex_home, Some(&quota)),
+        quota,
+        quota_history_daily: Vec::new(),
+        quota_history_24h: Vec::new(),
+        quota_history_7d: Vec::new(),
+        quota_history_30d: Vec::new(),
+        warnings: vec![quota_warning(
+            "account_quota",
+            format!("额度读取失败：{}", explain_quota_error(&error)),
+        )],
+    };
+    if bundle.quota.reset_credit.status.starts_with("重置卡读取失败") {
+        bundle.warnings.push(quota_warning(
+            "reset_credit",
+            bundle.quota.reset_credit.status.clone(),
+        ));
+    }
+    refresh_quota_histories(&mut bundle, true);
+    bundle
 }
 
 fn refresh_quota_histories(bundle: &mut AccountQuotaBundle, force_refresh: bool) {
@@ -210,6 +257,92 @@ fn plan_label_from_quota(quota: &QuotaSnapshot) -> Option<String> {
     } else {
         None
     }
+}
+
+fn quota_warning(source: &str, message: String) -> LocalDataWarning {
+    LocalDataWarning {
+        source: source.into(),
+        message,
+    }
+}
+
+fn reset_credit_failure_status(error: &str) -> String {
+    format!("重置卡读取失败：{}", explain_quota_error(error))
+}
+
+fn compact_error_message(error: &str) -> String {
+    let text = error.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = text.trim();
+    if text.chars().count() <= 180 {
+        return text.to_string();
+    }
+    let mut truncated = text.chars().take(180).collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
+fn explain_quota_error(error: &str) -> String {
+    let compact = compact_error_message(error);
+    let lower = compact.to_lowercase();
+
+    if lower.contains("未找到 access token") || lower.contains("access token") {
+        return format!(
+            "登录凭证缺失：没有从 Codex 目录的 auth.json 读到 access token。请确认 Codex 已登录，且 Codex 目录选对。原始信息：{compact}"
+        );
+    }
+    if compact.contains("未找到 Codex") || lower.contains("codex_cli_path") {
+        return format!(
+            "Codex 命令不可用：没有找到可用的 Codex app-server。请确认 Codex Desktop 已安装，或设置 CODEX_CLI_PATH。原始信息：{compact}"
+        );
+    }
+    if compact.contains("启动 Codex 失败") || compact.contains("Codex stdout 不可用") || compact.contains("Codex stdin 不可用") {
+        return format!(
+            "Codex 本地服务启动失败：无法通过本机 Codex app-server 读取额度。请重启 Codex 后再点立即刷新。原始信息：{compact}"
+        );
+    }
+    if compact.contains("额度读取超时") || lower.contains("timed out") || lower.contains("timeout") || compact.contains("超时") {
+        return format!(
+            "读取超时：本地 Codex 或网络接口在限定时间内没有返回。请稍后点立即刷新重试。原始信息：{compact}"
+        );
+    }
+    if lower.contains("dns")
+        || lower.contains("network")
+        || lower.contains("connection")
+        || lower.contains("connect")
+        || compact.contains("网络")
+        || compact.contains("连接")
+    {
+        return format!(
+            "网络连接失败：请求 ChatGPT 额度接口时网络不可用、DNS 失败或连接被中断。原始信息：{compact}"
+        );
+    }
+    if lower.contains("http 401") || lower.contains("http 403") {
+        return format!(
+            "登录或权限失败：额度接口返回 {compact}，可能是登录过期、账号无权限或 access token 已失效。请重新登录 Codex/ChatGPT 后刷新。"
+        );
+    }
+    if lower.contains("http 429") {
+        return format!(
+            "请求过于频繁：额度接口返回 {compact}。请稍等一会儿再刷新。"
+        );
+    }
+    if lower.contains("http 5") {
+        return format!(
+            "服务端错误：额度接口返回 {compact}。这通常是 ChatGPT 服务临时异常，稍后刷新即可。"
+        );
+    }
+    if lower.contains("http ") {
+        return format!(
+            "接口返回异常：额度接口返回 {compact}。如果持续出现，请截图这个原因。"
+        );
+    }
+    if lower.contains("json") || compact.contains("解析") || compact.contains("响应为空") || lower.contains("expected") {
+        return format!(
+            "接口响应解析失败：本地收到了额度响应，但格式不是当前版本能识别的结构。原始信息：{compact}"
+        );
+    }
+
+    format!("未知原因：{compact}")
 }
 
 fn read_rate_limits() -> Result<QuotaSnapshot, String> {
@@ -391,6 +524,58 @@ mod tests {
         assert_eq!(SUCCESS_CACHE_TTL, Duration::from_secs(5 * 60));
         assert_eq!(HISTORY_CACHE_TTL, Duration::from_secs(5 * 60));
         assert_eq!(FAILURE_CACHE_TTL, Duration::from_secs(15));
+    }
+
+    #[test]
+    fn quota_failure_bundle_keeps_failure_reason_visible() {
+        let codex_home = std::env::temp_dir().join(format!(
+            "codex-token-bar-quota-failure-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let bundle = quota_failure_bundle(
+            &codex_home,
+            "Codex stdout 不可用\n请确认 Codex Desktop 已启动".to_string(),
+        );
+
+        assert_eq!(bundle.quota.pace_label, "额度读取失败");
+        assert!(bundle.warnings.iter().any(|warning| {
+            warning.source == "account_quota"
+                && warning.message.contains("Codex 本地服务启动失败")
+                && warning.message.contains("Codex stdout 不可用 请确认 Codex Desktop 已启动")
+        }));
+        assert!(bundle
+            .warnings
+            .iter()
+            .any(|warning| warning.source == "reset_credit" && warning.message.contains("重置卡读取失败")));
+        assert!(bundle
+            .quota
+            .reset_credit
+            .status
+            .starts_with("重置卡读取失败"));
+    }
+
+    #[test]
+    fn compact_error_message_normalizes_and_truncates() {
+        let compact = compact_error_message(" first line\n\nsecond\tline ");
+        assert_eq!(compact, "first line second line");
+
+        let long = "错".repeat(220);
+        let compact = compact_error_message(&long);
+        assert_eq!(compact.chars().count(), 181);
+        assert!(compact.ends_with('…'));
+    }
+
+    #[test]
+    fn quota_error_explanation_names_common_failure_types() {
+        assert!(explain_quota_error("未找到 access token").contains("登录凭证缺失"));
+        assert!(explain_quota_error("error sending request for url: dns error").contains("网络连接失败"));
+        assert!(explain_quota_error("HTTP 401 Unauthorized").contains("登录或权限失败"));
+        assert!(explain_quota_error("额度读取超时").contains("读取超时"));
+        assert!(explain_quota_error("invalid json response").contains("接口响应解析失败"));
     }
 
     #[test]

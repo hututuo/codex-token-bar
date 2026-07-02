@@ -1,5 +1,5 @@
 import { memo, useMemo, useState } from "react";
-import type { QuotaLimit, QuotaSnapshot, ResetCreditDetail } from "../types/dashboard";
+import type { LocalDataWarning, QuotaLimit, QuotaSnapshot, ResetCreditDetail } from "../types/dashboard";
 import { formatPercent } from "../utils/format";
 import {
   cardIdentifier,
@@ -12,6 +12,7 @@ import {
 
 interface QuotaStripProps {
   snapshot: QuotaSnapshot;
+  warnings?: LocalDataWarning[];
 }
 
 function QuotaBar({ quota }: { quota: QuotaLimit }) {
@@ -97,7 +98,7 @@ function ResetCreditItem({
   );
 }
 
-function QuotaStripView({ snapshot }: QuotaStripProps) {
+function QuotaStripView({ snapshot, warnings = [] }: QuotaStripProps) {
   const [showResetDetails, setShowResetDetails] = useState(false);
   const [expandedCredits, setExpandedCredits] = useState<Set<string>>(() => new Set());
   const displayCredits = useMemo(
@@ -106,6 +107,7 @@ function QuotaStripView({ snapshot }: QuotaStripProps) {
   );
   const nearestResetCredit = nearestResetCreditCompactText(snapshot.resetCredit);
   const resetCreditSummary = resetCreditCountText(snapshot.resetCredit);
+  const quotaWarnings = useMemo(() => quotaReadWarnings(warnings), [warnings]);
 
   function toggleCredit(credit: ResetCreditDetail, index: number) {
     const key = `${cardIdentifier(credit)}-${index}`;
@@ -148,6 +150,12 @@ function QuotaStripView({ snapshot }: QuotaStripProps) {
         </div>
         <span>7d 均速比较</span>
       </div>
+      {quotaWarnings.length > 0 ? (
+        <div className="quota-read-warning" role="status">
+          <strong>读取失败原因</strong>
+          <span>{quotaWarnings.join("；")}</span>
+        </div>
+      ) : null}
       {showResetDetails ? (
         <div className="reset-credit-panel-layer" role="presentation" onMouseDown={() => setShowResetDetails(false)}>
           <div
@@ -186,6 +194,15 @@ function QuotaStripView({ snapshot }: QuotaStripProps) {
       ) : null}
     </section>
   );
+}
+
+function quotaReadWarnings(warnings: LocalDataWarning[]): string[] {
+  const sources = new Set(["account_quota", "reset_credit"]);
+  return warnings
+    .filter((warning) => sources.has(warning.source))
+    .map((warning) => warning.message)
+    .filter((message, index, messages) => message.length > 0 && messages.indexOf(message) === index)
+    .slice(0, 2);
 }
 
 export const QuotaStrip = memo(QuotaStripView);

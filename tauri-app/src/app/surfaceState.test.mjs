@@ -112,6 +112,33 @@ test("dashboard quota refreshes independently every five minutes", async () => {
   assert.equal(quotaLoad.includes("const isFirstQuotaLoad = quotaGeneration.current === null"), true);
 });
 
+test("usage cache initialization shows inline notice without blocking dashboard", async () => {
+  const dashboardClient = await readFile(new URL("../api/dashboardClient.ts", import.meta.url), "utf8");
+  const dataSource = await readFile(new URL("../data/dashboardDataSource.ts", import.meta.url), "utf8");
+  const preciseLoad = await readFile(new URL("../state/usePreciseDashboardLoad.ts", import.meta.url), "utf8");
+  const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
+  const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
+  const dashboardPage = await readFile(new URL("../pages/DashboardPage.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
+  const lib = await readFile(new URL("../../src-tauri/src/lib.rs", import.meta.url), "utf8");
+
+  assert.equal(dashboardClient.includes("read_usage_cache_status"), true);
+  assert.equal(dashboardClient.includes("tauri-usage-cache-2026-07-v3"), true);
+  assert.equal(dataSource.includes("readUsageCacheStatus"), true);
+  assert.equal(preciseLoad.includes("source.readUsageCacheStatus()"), true);
+  assert.equal(preciseLoad.includes("onUsageCacheStatus?.(cacheStatus)"), true);
+  assert.equal(preciseLoad.includes("onUsageCacheInitialized?.()"), true);
+  assert.equal(dashboardData.includes("const [usageCacheInitializing, setUsageCacheInitializing] = useState(false)"), true);
+  assert.equal(dashboardData.includes("setUsageCacheInitializing(!status.initialized)"), true);
+  assert.equal(dashboardData.includes("usageCacheInitializing,"), true);
+  assert.equal(dashboardApp.includes("usageCacheInitializing={usageCacheInitializing}"), true);
+  assert.equal(dashboardPage.includes("UsageCacheInitializationNotice"), true);
+  assert.equal(dashboardPage.includes("正在初始化本地统计缓存"), true);
+  assert.equal(dashboardPage.includes("首次打开或更新后可能需要一点时间，只读取本机 Codex 记录，不上传数据。"), true);
+  assert.equal(styles.includes(".usage-cache-notice"), true);
+  assert.equal(lib.includes("commands::dashboard::read_usage_cache_status"), true);
+});
+
 test("compact surfaces refresh quota every minute", async () => {
   const compactData = await readFile(new URL("../surfaces/useCompactPanelData.ts", import.meta.url), "utf8");
   const compactQuota = await readFile(new URL("../surfaces/useCompactPanelQuota.ts", import.meta.url), "utf8");
@@ -187,10 +214,13 @@ test("status tray live text reuses dashboard live rate instead of polling compac
 });
 
 test("live rate switch stops the shared stream and preserves other refreshes", async () => {
+  const apiClient = await readFile(new URL("../api/client.ts", import.meta.url), "utf8");
+  const dashboardClient = await readFile(new URL("../api/dashboardClient.ts", import.meta.url), "utf8");
   const displaySettings = await readFile(new URL("../settings/displaySettings.ts", import.meta.url), "utf8");
   const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
   const liveFeed = await readFile(new URL("../state/useLiveRateFeed.ts", import.meta.url), "utf8");
   const compactData = await readFile(new URL("../surfaces/useCompactPanelData.ts", import.meta.url), "utf8");
+  const compactSnapshot = await readFile(new URL("../surfaces/useCompactPanelSnapshot.ts", import.meta.url), "utf8");
   const floatingWindow = await readFile(new URL("../floating/FloatingWindowApp.tsx", import.meta.url), "utf8");
   const statusPanel = await readFile(new URL("../status/StatusPanelApp.tsx", import.meta.url), "utf8");
   const card = await readFile(new URL("../components/LiveRateCard.tsx", import.meta.url), "utf8");
@@ -200,14 +230,20 @@ test("live rate switch stops the shared stream and preserves other refreshes", a
   assert.equal(displaySettings.includes("liveRateEnabled: true"), true);
   assert.equal(dashboardData.includes("active: fastSnapshotLoaded && liveRateEnabled"), true);
   assert.equal(dashboardData.includes("disabledLiveRateSnapshot(selectedLiveThreadId)"), true);
+  assert.equal(apiClient.includes("readUsageSummarySnapshot"), true);
+  assert.equal(dashboardClient.includes("read_usage_summary_snapshot"), true);
   assert.equal(liveFeed.includes("stopLiveRateStream"), true);
   assert.equal(liveFeed.includes("resetLiveRateMonitor"), true);
-  assert.equal(compactData.includes("active: active && liveRateEnabled"), true);
+  assert.equal(compactData.includes("active,"), true);
+  assert.equal(compactData.includes("liveRateEnabled,"), true);
+  assert.equal(compactData.includes("active: active && liveRateEnabled"), false);
+  assert.equal(compactSnapshot.includes("readUsageSummarySnapshot"), true);
+  assert.equal(compactSnapshot.includes("mergeFloatingUsageSummary"), true);
   assert.equal(floatingWindow.includes("onDisplaySurfacesChanged"), true);
   assert.equal(statusPanel.includes("onDisplaySurfacesChanged"), true);
   assert.equal(card.includes("实时速率已关闭"), true);
   assert.equal(card.includes("is-live-disabled"), true);
-  assert.equal(card.includes("官方为避免高频日志写入损耗硬盘"), true);
+  assert.equal(card.includes("官方为减少磁盘写入关闭了部分流式日志"), true);
   assert.equal(card.includes("<LiveRateSessionRow"), false);
   assert.equal(card.includes("LiveRateSessionRow"), false);
   assert.equal(card.includes("live-heading-line"), true);
@@ -287,6 +323,16 @@ test("manual dashboard refresh forces codex radar without clearing dashboard", a
   assert.equal(radarStrip.includes("interface CodexRadarStripProps"), true);
   assert.equal(radarStrip.includes("readCodexRadarSnapshot({ force })"), true);
   assert.equal(radarStrip.includes("void refresh(true)"), true);
+});
+
+test("dashboard quota strip receives local data warnings for quota failure details", async () => {
+  const summarySection = await readFile(new URL("../pages/dashboard/DashboardSummarySection.tsx", import.meta.url), "utf8");
+  const quotaStrip = await readFile(new URL("../components/QuotaStrip.tsx", import.meta.url), "utf8");
+
+  assert.equal(summarySection.includes("warnings={dashboard.warnings}"), true);
+  assert.equal(quotaStrip.includes("function quotaReadWarnings(warnings: LocalDataWarning[]): string[]"), true);
+  assert.equal(quotaStrip.includes('"account_quota"'), true);
+  assert.equal(quotaStrip.includes('"reset_credit"'), true);
 });
 
 test("live rate updates do not force heavy analytics rerenders", async () => {

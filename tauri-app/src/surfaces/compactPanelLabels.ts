@@ -25,10 +25,10 @@ export function compactFloatingPaceLabel(label: string): string {
     return withDetail("余量足", delta);
   }
   if (normalized.includes("节奏很好") || normalized.includes("节奏稳") || normalized.includes("可以冲")) {
-    return withDetail("节奏稳", delta);
+    return stableWithDetail(delta);
   }
   if (normalized.includes("略有余量") || normalized.includes("正好贴着") || normalized.includes("贴近均速")) {
-    return withDetail("节奏稳", delta || compactInlineDelta(normalized));
+    return stableWithDetail(delta || compactInlineDelta(normalized));
   }
   return normalized.replace(/（[^）]*）/g, "").trim();
 }
@@ -40,7 +40,7 @@ function compactQuotaDelta(label: string): string {
     return "";
   }
   const direction = match[1] === "多" ? "高" : match[1];
-  return `余量${direction} ${match[2]}%`;
+  return `余量${direction}${match[2]}%`;
 }
 
 function compactRemainingDetail(label: string): string {
@@ -58,16 +58,20 @@ function withDetail(prefix: string, detail: string): string {
   return detail ? `${prefix}(${detail})` : prefix;
 }
 
+function stableWithDetail(detail: string): string {
+  return detail ? `节奏稳(${detail})` : "节奏稳（正好贴线）";
+}
+
 export function compactResetCreditLabel(summary: ResetCreditSummary): string {
   if (summary.availableCount > 0) {
-    return ` · ${summary.availableCount}卡`;
+    return `·${summary.availableCount}卡`;
   }
   return "";
 }
 
-export function compactFloatingUsageStatus(label: string, summary: ResetCreditSummary): string {
+export function compactFloatingUsageStatus(label: string, summary: ResetCreditSummary, now = new Date()): string {
   const pace = compactFloatingPaceLabel(label);
-  return `${pace}${compactResetCreditLabel(summary)}`;
+  return `${pace}${compactResetCreditLabel(summary)}${compactNearestResetCreditExpiryLabel(summary, now)}`;
 }
 
 export function compactNearestResetCreditExpiryLabel(summary: ResetCreditSummary, now = new Date()): string {
@@ -88,13 +92,18 @@ export function compactNearestResetCreditExpiryLabel(summary: ResetCreditSummary
     return "";
   }
 
+  if (remaining < HOUR_MS) {
+    const minutes = Math.max(1, Math.ceil(remaining / (60 * 1000)));
+    return `·${minutes}m到期`;
+  }
+
   if (remaining < DAY_MS) {
     const hours = Math.max(1, Math.ceil(remaining / HOUR_MS));
-    return ` · 还有${hours}小时到期`;
+    return `·${hours}h到期`;
   }
 
   const days = Math.max(1, Math.ceil(remaining / DAY_MS));
-  return ` · 还有${days}天到期`;
+  return `·${days}d到期`;
 }
 
 function isAvailableCredit(credit: ResetCreditDetail, now: Date): boolean {

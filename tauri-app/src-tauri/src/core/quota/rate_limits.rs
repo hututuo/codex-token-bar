@@ -3,7 +3,7 @@ use serde_json::Value;
 use time::macros::format_description;
 use time::{OffsetDateTime, UtcOffset};
 
-fn placeholder_quota() -> QuotaSnapshot {
+pub(super) fn placeholder_quota() -> QuotaSnapshot {
     QuotaSnapshot {
         five_hour: QuotaLimit {
             label: "5h".into(),
