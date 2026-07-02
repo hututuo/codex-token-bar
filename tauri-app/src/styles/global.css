@@ -319,6 +319,25 @@ button {
   opacity: 0.55;
 }
 
+.update-status {
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 560;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-status--available {
+  color: var(--accent-strong);
+}
+
+.update-status--error {
+  color: var(--red);
+}
+
 .toolbar-button--wide {
   min-width: 128px;
 }

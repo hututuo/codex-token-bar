@@ -16,6 +16,11 @@ import { DashboardSummarySection } from "./dashboard/DashboardSummarySection";
 import { useDashboardPageLifecycle } from "./dashboard/useDashboardPageLifecycle";
 import { downloadDashboardCsv, downloadDashboardPng } from "../utils/dashboardExport";
 
+interface AppUpdateViewState {
+  kind: "idle" | "checking" | "available" | "installing" | "error";
+  message: string;
+}
+
 interface DashboardPageProps {
   autostartStatus: AutostartStatus;
   codexHome: CodexHomeStatus;
@@ -29,6 +34,7 @@ interface DashboardPageProps {
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
   onCustomAccountDisplayNameChange: (displayName: string) => Promise<void>;
+  onCheckForUpdate: () => Promise<void>;
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
   onTokenRateFullScaleChange: (fullScale: number) => void;
@@ -47,6 +53,7 @@ interface DashboardPageProps {
   usageCacheInitializing: boolean;
   radarRefreshGeneration: number;
   refreshing: boolean;
+  appUpdateState: AppUpdateViewState;
   liveRateEnabled: boolean;
   selectedLiveThreadId: string;
 }
@@ -64,6 +71,7 @@ export function DashboardPage({
   onCodexHomeChange,
   onCodexHomeReset,
   onCustomAccountDisplayNameChange,
+  onCheckForUpdate,
   onFloatingOpacityChange,
   onFloatingScaleChange,
   onTokenRateFullScaleChange,
@@ -82,6 +90,7 @@ export function DashboardPage({
   usageCacheInitializing,
   radarRefreshGeneration,
   refreshing,
+  appUpdateState,
   liveRateEnabled,
   selectedLiveThreadId,
 }: DashboardPageProps) {
@@ -99,6 +108,7 @@ export function DashboardPage({
           onCodexHomeChange={onCodexHomeChange}
           onCodexHomeReset={onCodexHomeReset}
           onCustomAccountDisplayNameChange={onCustomAccountDisplayNameChange}
+          onCheckForUpdate={onCheckForUpdate}
           onExportCsv={() => downloadDashboardCsv(dashboard)}
           onExportPng={() => {
             void downloadDashboardPng(dashboard);
@@ -106,6 +116,7 @@ export function DashboardPage({
           onRefresh={onRefresh}
           onToggleAutostart={onToggleAutostart}
           refreshing={refreshing}
+          appUpdateState={appUpdateState}
         />
 
         {usageCacheInitializing ? <UsageCacheInitializationNotice /> : null}

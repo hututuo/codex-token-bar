@@ -11,11 +11,14 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(commands::live::LiveRateMonitorRegistry::default())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
         .setup(|app| {
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
             platform::setup_desktop_surfaces(app)?;
             Ok(())
         })

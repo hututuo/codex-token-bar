@@ -11,11 +11,16 @@ interface DashboardHeaderProps {
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
   onCustomAccountDisplayNameChange: (displayName: string) => Promise<void>;
+  onCheckForUpdate: () => Promise<void>;
   onExportCsv: () => void;
   onExportPng: () => void;
   onRefresh: () => Promise<void>;
   onToggleAutostart: () => void;
   refreshing: boolean;
+  appUpdateState: {
+    kind: "idle" | "checking" | "available" | "installing" | "error";
+    message: string;
+  };
 }
 
 export function DashboardHeader({
@@ -27,11 +32,13 @@ export function DashboardHeader({
   onCodexHomeChange,
   onCodexHomeReset,
   onCustomAccountDisplayNameChange,
+  onCheckForUpdate,
   onExportCsv,
   onExportPng,
   onRefresh,
   onToggleAutostart,
   refreshing,
+  appUpdateState,
 }: DashboardHeaderProps) {
   const [editingPath, setEditingPath] = useState(false);
   const [editingDisplayName, setEditingDisplayName] = useState(false);
@@ -50,6 +57,8 @@ export function DashboardHeader({
     second: "2-digit",
   }).format(new Date(generatedAt));
   const sourceLabel = codexHome.source === "manual" ? "手动目录" : codexHome.exists ? "自动发现" : "等待选择";
+  const updateBusy = appUpdateState.kind === "checking" || appUpdateState.kind === "installing";
+  const updateButtonLabel = appUpdateState.kind === "available" ? "安装更新" : "检查更新";
 
   function beginEditDisplayName() {
     setDisplayNameDraft(resolvedDisplayName);
@@ -108,6 +117,12 @@ export function DashboardHeader({
         <button className="toolbar-button" disabled={refreshing} onClick={onRefresh} type="button">
           立即刷新
         </button>
+        <button className="toolbar-button" disabled={updateBusy} onClick={onCheckForUpdate} type="button">
+          {updateButtonLabel}
+        </button>
+        {appUpdateState.message ? (
+          <span className={`update-status update-status--${appUpdateState.kind}`}>{appUpdateState.message}</span>
+        ) : null}
         <button className="toolbar-button" onClick={onExportCsv} type="button">
           导出 CSV
         </button>

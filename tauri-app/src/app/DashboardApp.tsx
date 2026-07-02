@@ -1,17 +1,31 @@
 import { useEffect, useState } from "react";
 import { recordStartupEvent } from "../api/client";
 import { resetLiveRateMonitor } from "../api/liveClient";
+import { checkAppUpdate, installAppUpdate, type UpdateAvailability } from "../api/updateClient";
 import { SetupGuide } from "../components/SetupGuide";
 import { DashboardPage } from "../pages/DashboardPage";
 import { useDashboardData } from "../state/useDashboardData";
 import { useDashboardShellSettings } from "./useDashboardShellSettings";
 
+type AppUpdateState =
+  | { kind: "idle"; message: string; update: null }
+  | { kind: "checking"; message: string; update: null }
+  | { kind: "available"; message: string; update: UpdateAvailability & { status: "available" } }
+  | { kind: "installing"; message: string; update: UpdateAvailability & { status: "available" } }
+  | { kind: "error"; message: string; update: null };
+
 export function DashboardApp() {
   const [dashboardHydrated, setDashboardHydrated] = useState(false);
   const [liveRateEnabled, setLiveRateEnabled] = useState(true);
+  const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>({
+    kind: "idle",
+    message: "",
+    update: null,
+  });
 
   useDashboardHydration(setDashboardHydrated);
   useDashboardScrollReset();
+  useStartupUpdateCheck(setAppUpdateState);
 
   const {
     state,
@@ -67,8 +81,10 @@ export function DashboardApp() {
         onCodexHomeChange={updateCodexHome}
         onCodexHomeReset={restoreAutoCodexHome}
         onCustomAccountDisplayNameChange={shellSettings.updateCustomAccountDisplayName}
+        onCheckForUpdate={() => handleCheckForUpdate(appUpdateState, setAppUpdateState)}
         onToggleAutostart={shellSettings.toggleAutostart}
         refreshing={refreshing}
+        appUpdateState={appUpdateState}
         liveRateEnabled={shellSettings.displaySurfaces.liveRateEnabled}
         selectedLiveThreadId={selectedLiveThreadId}
       />
@@ -93,6 +109,111 @@ export function DashboardApp() {
 
 async function resetLiveRate() {
   await resetLiveRateMonitor();
+}
+
+function useStartupUpdateCheck(setAppUpdateState: (state: AppUpdateState) => void) {
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void checkAppUpdate()
+        .then((result) => {
+          if (cancelled || result.status !== "available") {
+            return;
+          }
+          setAppUpdateState({
+            kind: "available",
+            message: `发现新版本 ${result.version}`,
+            update: result,
+          });
+        })
+        .catch(() => {
+          // Startup checks stay quiet; the manual button reports detailed failures.
+        });
+    }, 5_000);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [setAppUpdateState]);
+}
+
+async function handleCheckForUpdate(
+  appUpdateState: AppUpdateState,
+  setAppUpdateState: (state: AppUpdateState) => void,
+) {
+  if (appUpdateState.kind === "available" && appUpdateState.update) {
+    const confirmed = window.confirm(`安装 Codex Token Bar ${appUpdateState.update.version} 更新？安装时应用会自动重启。`);
+    if (!confirmed) {
+      return;
+    }
+    await installPendingUpdate(appUpdateState.update, setAppUpdateState);
+    return;
+  }
+
+  setAppUpdateState({ kind: "checking", message: "正在检查更新...", update: null });
+  try {
+    const result = await checkAppUpdate();
+    if (result.status === "available") {
+      setAppUpdateState({
+        kind: "available",
+        message: `发现新版本 ${result.version}`,
+        update: result,
+      });
+      const confirmed = window.confirm(`发现 Codex Token Bar ${result.version}。现在下载并安装吗？`);
+      if (confirmed) {
+        await installPendingUpdate(result, setAppUpdateState);
+      }
+      return;
+    }
+    setAppUpdateState({
+      kind: "idle",
+      message: result.message,
+      update: null,
+    });
+  } catch (error) {
+    setAppUpdateState({
+      kind: "error",
+      message: updateErrorMessage(error),
+      update: null,
+    });
+  }
+}
+
+async function installPendingUpdate(
+  update: UpdateAvailability & { status: "available" },
+  setAppUpdateState: (state: AppUpdateState) => void,
+) {
+  setAppUpdateState({
+    kind: "installing",
+    message: "正在下载更新...",
+    update,
+  });
+  try {
+    await installAppUpdate(update.update, (message) => {
+      setAppUpdateState({
+        kind: "installing",
+        message,
+        update,
+      });
+    });
+  } catch (error) {
+    setAppUpdateState({
+      kind: "error",
+      message: updateErrorMessage(error),
+      update: null,
+    });
+  }
+}
+
+function updateErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return `检查更新失败：${error.message}`;
+  }
+  if (typeof error === "string" && error.trim()) {
+    return `检查更新失败：${error}`;
+  }
+  return "检查更新失败，请稍后重试。";
 }
 
 function useDashboardHydration(setDashboardHydrated: (hydrated: boolean) => void) {

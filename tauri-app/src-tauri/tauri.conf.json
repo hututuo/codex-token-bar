@@ -18,6 +18,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
@@ -28,6 +29,17 @@
     "macOS": {
       "infoPlist": "Info.plist",
       "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhBODAzRjI0RTYwNkVGRDYKUldUVzd3Ym1KRCtBaWdCaUhacUpGVXhMK0h4UkZsUWpYbUFHcm5FaHpvVGVHMzV6QVd6dlNjYUYK",
+      "endpoints": [
+        "https://github.com/hututuo/codex-token-bar/releases/latest/download/latest-windows.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

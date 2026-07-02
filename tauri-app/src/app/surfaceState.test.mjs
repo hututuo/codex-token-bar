@@ -373,6 +373,44 @@ test("dashboard quota strip receives local data warnings for quota failure detai
   assert.equal(quotaStrip.includes('"reset_credit"'), true);
 });
 
+test("windows updater lane uses signed Tauri metadata and a dashboard entry", async () => {
+  const packageJson = await readFile(new URL("../../package.json", import.meta.url), "utf8");
+  const cargoToml = await readFile(new URL("../../src-tauri/Cargo.toml", import.meta.url), "utf8");
+  const tauriConfig = await readFile(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8");
+  const lib = await readFile(new URL("../../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const capability = await readFile(new URL("../../src-tauri/capabilities/default.json", import.meta.url), "utf8");
+  const updateClient = await readFile(new URL("../api/updateClient.ts", import.meta.url), "utf8");
+  const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
+  const dashboardPage = await readFile(new URL("../pages/DashboardPage.tsx", import.meta.url), "utf8");
+  const header = await readFile(new URL("../components/DashboardHeader.tsx", import.meta.url), "utf8");
+  const buildScript = await readFile(new URL("../../../scripts/build_tauri_windows_release.ps1", import.meta.url), "utf8");
+
+  assert.equal(packageJson.includes('"@tauri-apps/plugin-updater"'), true);
+  assert.equal(packageJson.includes('"@tauri-apps/plugin-process"'), true);
+  assert.equal(cargoToml.includes("tauri-plugin-updater"), true);
+  assert.equal(cargoToml.includes("tauri-plugin-process"), true);
+  assert.equal(tauriConfig.includes('"createUpdaterArtifacts": true'), true);
+  assert.equal(tauriConfig.includes("latest-windows.json"), true);
+  assert.equal(tauriConfig.includes('"installMode": "passive"'), true);
+  assert.equal(lib.includes("tauri_plugin_updater::Builder::new().build()"), true);
+  assert.equal(lib.includes("tauri_plugin_process::init()"), true);
+  assert.equal(capability.includes("updater:default"), true);
+  assert.equal(capability.includes("process:allow-restart"), true);
+  assert.equal(updateClient.includes("checkAppUpdate"), true);
+  assert.equal(updateClient.includes("installAppUpdate"), true);
+  assert.equal(updateClient.includes("downloadAndInstall"), true);
+  assert.equal(updateClient.includes("relaunch()"), true);
+  assert.equal(dashboardApp.includes("useStartupUpdateCheck"), true);
+  assert.equal(dashboardPage.includes("onCheckForUpdate"), true);
+  assert.equal(header.includes("检查更新"), true);
+  assert.equal(header.includes("安装更新"), true);
+  assert.equal(buildScript.includes("TAURI_SIGNING_PRIVATE_KEY_PATH"), true);
+  assert.equal(buildScript.includes(".sig"), true);
+  assert.equal(buildScript.includes("latest-windows.json"), true);
+  assert.equal(buildScript.includes("windows-x86_64"), true);
+  assert.equal(buildScript.includes("windows-aarch64"), true);
+});
+
 test("live rate updates do not force heavy analytics rerenders", async () => {
   const analyticsSection = await readFile(
     new URL("../pages/dashboard/DashboardAnalyticsSection.tsx", import.meta.url),
