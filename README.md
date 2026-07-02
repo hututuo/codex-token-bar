@@ -51,8 +51,8 @@ Codex Token Bar 是一个本地优先的 Codex 用量仪表盘。它读取本机
 | 平台 | 实现 | 发布资产 | 说明 |
 |---|---|---|---|
 | macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.7.0-macos-arm64.dmg` | 当前 macOS 稳定线，带 Sparkle 更新检查。 |
-| Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.7.0-windows-x64-setup.exe` | 面向 Intel / AMD Windows 10/11。 |
-| Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.7.0-windows-arm64-setup.exe` | 面向 Windows on ARM；安装器进程可能经模拟运行，但 App 二进制是 ARM64。 |
+| Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.7.1-windows-x64-setup.exe` | 面向 Intel / AMD Windows 10/11，带 Tauri 自动更新。 |
+| Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.7.1-windows-arm64-setup.exe` | 面向 Windows on ARM，带 Tauri 自动更新；安装器进程可能经模拟运行，但 App 二进制是 ARM64。 |
 
 ## 为什么
 
@@ -96,13 +96,13 @@ curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/instal
 
 ### Windows
 
-1. Windows x64 下载 `CodexTokenBar-v0.7.0-windows-x64-setup.exe`。
-2. Windows ARM64 下载 `CodexTokenBar-v0.7.0-windows-arm64-setup.exe`。
+1. Windows x64 下载 `CodexTokenBar-v0.7.1-windows-x64-setup.exe`。
+2. Windows ARM64 下载 `CodexTokenBar-v0.7.1-windows-arm64-setup.exe`。
 3. 可选校验：
 
 ```powershell
-Get-FileHash .\CodexTokenBar-v0.7.0-windows-x64-setup.exe -Algorithm SHA256
-Get-Content .\SHA256SUMS-v0.7.0-windows.txt
+Get-FileHash .\CodexTokenBar-v0.7.1-windows-x64-setup.exe -Algorithm SHA256
+Get-Content .\SHA256SUMS-v0.7.1-windows.txt
 ```
 
 Windows 构建暂未使用商业代码签名证书。首次下载运行时，Microsoft Defender SmartScreen 可能提示未知发布者；请只从本仓库官方 Release 下载，并在运行前核对 SHA256。
@@ -113,7 +113,7 @@ Windows 10/11 通常已经内置或自动安装 WebView2 Runtime；如果系统�
 
 macOS Swift 版内置 Sparkle 更新检查。首次引导或菜单栏可以开启“自动检查更新”；开启后，App 会定期读取 GitHub 上的 `appcast.xml`，发现更高版本后弹窗提示，由你确认后再安装，不会静默替换应用。
 
-Windows Tauri 版当前先通过 GitHub Releases 手动更新；后续会把跨平台自动更新接入统一发布流程。
+Windows Tauri 版从 v0.7.1 开始接入内置更新检查。主界面可点击“检查更新”，App 会读取 GitHub Release 里的 `latest-windows.json`，验证 Tauri updater 签名后再进入安装流程。Windows 更新 metadata 与 macOS Sparkle appcast 分开维护，不会混用。
 
 ## 可选：Codex Desktop 侧边栏补丁
 
@@ -181,10 +181,10 @@ SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.
 Windows Tauri 发布包：
 
 ```powershell
-.\scripts\build_tauri_windows_release.ps1 -Version 0.7.0 -Arch both
+.\scripts\build_tauri_windows_release.ps1 -Version 0.7.1 -Arch both
 ```
 
-发布脚本会分别生成 Windows x64 / ARM64 NSIS 安装器和 `SHA256SUMS-v0.7.0-windows.txt`。Windows 安装器当前未代码签名。
+发布脚本会分别生成 Windows x64 / ARM64 NSIS 安装器、对应 `.sig` 更新签名、`latest-windows.json` 和 `SHA256SUMS-v0.7.1-windows.txt`。Windows 安装器当前未使用商业代码签名证书；`.sig` 只用于 Tauri 自动更新校验。
 
 ## License
 
@@ -230,8 +230,8 @@ There are now two official implementation lines:
 | Platform | Implementation | Release asset | Notes |
 |---|---|---|---|
 | macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.7.0-macos-arm64.dmg` | Current stable macOS line with Sparkle update checking. |
-| Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.7.0-windows-x64-setup.exe` | For Intel / AMD Windows 10/11. |
-| Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.7.0-windows-arm64-setup.exe` | For Windows on ARM. The installer process may run under emulation, while the app binary is ARM64. |
+| Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.7.1-windows-x64-setup.exe` | For Intel / AMD Windows 10/11, with Tauri auto-update. |
+| Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.7.1-windows-arm64-setup.exe` | For Windows on ARM, with Tauri auto-update. The installer process may run under emulation, while the app binary is ARM64. |
 
 ## Why
 
@@ -275,13 +275,13 @@ curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/instal
 
 ### Windows
 
-1. Download `CodexTokenBar-v0.7.0-windows-x64-setup.exe` for Windows x64.
-2. Download `CodexTokenBar-v0.7.0-windows-arm64-setup.exe` for Windows ARM64.
+1. Download `CodexTokenBar-v0.7.1-windows-x64-setup.exe` for Windows x64.
+2. Download `CodexTokenBar-v0.7.1-windows-arm64-setup.exe` for Windows ARM64.
 3. Optionally verify:
 
 ```powershell
-Get-FileHash .\CodexTokenBar-v0.7.0-windows-x64-setup.exe -Algorithm SHA256
-Get-Content .\SHA256SUMS-v0.7.0-windows.txt
+Get-FileHash .\CodexTokenBar-v0.7.1-windows-x64-setup.exe -Algorithm SHA256
+Get-Content .\SHA256SUMS-v0.7.1-windows.txt
 ```
 
 The Windows build is currently unsigned with a commercial code-signing certificate. Microsoft Defender SmartScreen may warn about an unknown publisher on first launch. Download only from the official release page and verify the SHA256 checksum before running.
@@ -292,7 +292,7 @@ Windows 10/11 usually includes or automatically installs WebView2 Runtime. If it
 
 The macOS Swift build includes Sparkle update checking. You can enable automatic update checks from the first-run guide or the macOS app menu. When enabled, the app periodically reads the GitHub `appcast.xml`; if a newer version is available, it asks you before installing.
 
-The Windows Tauri build currently updates through GitHub Releases manually. Cross-platform automatic updates will be added later.
+The Windows Tauri build uses built-in update checking starting from v0.7.1. Click "Check for Updates" in the dashboard; the app reads `latest-windows.json` from GitHub Releases, verifies the Tauri updater signature, and then starts the installer flow. Windows update metadata is separate from the macOS Sparkle appcast.
 
 ## Optional Codex Desktop Sidebar Patch
 
@@ -358,10 +358,10 @@ SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.
 Windows Tauri release assets:
 
 ```powershell
-.\scripts\build_tauri_windows_release.ps1 -Version 0.7.0 -Arch both
+.\scripts\build_tauri_windows_release.ps1 -Version 0.7.1 -Arch both
 ```
 
-The Windows release script produces separate x64 / ARM64 NSIS installers and `SHA256SUMS-v0.7.0-windows.txt`. Windows installers are currently unsigned.
+The Windows release script produces separate x64 / ARM64 NSIS installers, matching `.sig` updater signatures, `latest-windows.json`, and `SHA256SUMS-v0.7.1-windows.txt`. Windows installers are currently not signed with a commercial code-signing certificate; `.sig` is for Tauri updater verification.
 
 ## License
 
