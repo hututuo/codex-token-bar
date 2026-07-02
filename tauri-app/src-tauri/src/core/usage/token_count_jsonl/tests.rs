@@ -539,6 +539,36 @@ fn token_event_cache_persists_sessions_as_sharded_files() {
 }
 
 #[test]
+fn token_event_cache_ignores_previous_shard_versions() {
+    let root = temp_root();
+    let cache_dir = root.join("token-event-cache-shards");
+    let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
+    let home = root.join("codex-home");
+    fs::create_dir_all(cache_dir.join("home-a")).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        cache_dir.join("home-a").join("old.json"),
+        serde_json::json!({
+            "version": 4,
+            "homeKey": "home-a",
+            "codexHome": home.to_string_lossy(),
+            "cacheKey": "sessions/old.jsonl",
+            "session": cached_file_with_one_event(20),
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut warnings = Vec::new();
+    let loaded = TokenEventCache::load(&mut warnings);
+
+    assert!(warnings.is_empty());
+    assert!(loaded.homes.is_empty());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn token_event_cache_removes_deleted_session_shards() {
     let root = temp_root();
     let cache_dir = root.join("token-event-cache-shards");

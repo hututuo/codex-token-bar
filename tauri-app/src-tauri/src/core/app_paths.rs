@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 const APP_DIRECTORY_NAME: &str = "CodexTokenBar";
 const TAURI_DIRECTORY_NAME: &str = "CodexTokenBarTauri";
-pub const TAURI_USAGE_CACHE_NAMESPACE: &str = "tauri-usage-cache-2026-07-v3";
+pub const TAURI_USAGE_CACHE_NAMESPACE: &str = "tauri-usage-cache-2026-07-v4";
 const HISTORY_REPAIR_DIRECTORY_NAME: &str = "CodexHistoryRepair";
 
 pub fn home_dir() -> PathBuf {
