@@ -7,13 +7,11 @@ use crate::models::LocalDataWarning;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use time::OffsetDateTime;
 
 const TOKEN_EVENT_CACHE_VERSION: u32 = 4;
-const LEGACY_TOKEN_EVENT_CACHE_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,46 +83,7 @@ impl TokenEventCache {
             return cache;
         }
 
-        Self::load_legacy_json(warnings)
-    }
-
-    fn load_legacy_json(warnings: &mut Vec<LocalDataWarning>) -> Self {
-        let Some(path) = app_paths::token_event_cache_path() else {
-            return Self::default();
-        };
-        let data = match fs::read(&path) {
-            Ok(data) => data,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Self::default(),
-            Err(error) => {
-                warnings.push(token_cache_warning(format!(
-                    "读取精确 token 缓存失败：{}（{}）",
-                    path.display(),
-                    error
-                )));
-                return Self::default();
-            }
-        };
-        let cache = match serde_json::from_slice::<Self>(&data) {
-            Ok(cache) => cache,
-            Err(error) => {
-                warnings.push(token_cache_warning(format!(
-                    "精确 token 缓存不是有效 JSON：{}（{}）",
-                    path.display(),
-                    error
-                )));
-                return Self::default();
-            }
-        };
-        if cache.version == TOKEN_EVENT_CACHE_VERSION
-            || cache.version == LEGACY_TOKEN_EVENT_CACHE_VERSION
-        {
-            Self {
-                version: TOKEN_EVENT_CACHE_VERSION,
-                homes: cache.homes,
-            }
-        } else {
-            Self::default()
-        }
+        Self::default()
     }
 
     pub(super) fn save(&self) -> Result<(), String> {

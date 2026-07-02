@@ -1,6 +1,8 @@
 use crate::commands::local_source;
 use crate::core::dashboard::DashboardDataSource;
 use crate::core::startup_trace;
+use crate::core::usage::cache_lifecycle::{self, UsageCacheStatus};
+use crate::core::usage::token_count_jsonl::{self, TokenUsageSummary};
 use crate::models::{
     AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, PlatformCapabilities,
 };
@@ -68,6 +70,27 @@ pub async fn read_precise_dashboard_snapshot() -> Result<DashboardSnapshot, Stri
         result_status(&result)
     ));
     result
+}
+
+#[tauri::command]
+pub async fn read_usage_summary_snapshot() -> Result<TokenUsageSummary, String> {
+    let started = Instant::now();
+    let codex_home = platform::default_codex_home();
+    let result = run_blocking_command(move || {
+        token_count_jsonl::usage_summary_snapshot(&codex_home)
+    })
+    .await;
+    startup_trace::mark_performance(format!(
+        "read_usage_summary_snapshot {}ms {}",
+        started.elapsed().as_millis(),
+        result_status(&result)
+    ));
+    result
+}
+
+#[tauri::command]
+pub fn read_usage_cache_status() -> UsageCacheStatus {
+    cache_lifecycle::usage_cache_status()
 }
 
 #[tauri::command]

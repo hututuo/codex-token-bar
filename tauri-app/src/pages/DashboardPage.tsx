@@ -43,6 +43,7 @@ interface DashboardPageProps {
   onToggleAutostart: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
+  usageCacheInitializing: boolean;
   radarRefreshGeneration: number;
   refreshing: boolean;
   liveRateEnabled: boolean;
@@ -76,6 +77,7 @@ export function DashboardPage({
   onToggleAutostart,
   onToggleFloating,
   onToggleStatusTray,
+  usageCacheInitializing,
   radarRefreshGeneration,
   refreshing,
   liveRateEnabled,
@@ -103,6 +105,8 @@ export function DashboardPage({
           onToggleAutostart={onToggleAutostart}
           refreshing={refreshing}
         />
+
+        {usageCacheInitializing ? <UsageCacheInitializationNotice /> : null}
 
         {summaryReady ? (
           <>
@@ -144,5 +148,17 @@ export function DashboardPage({
         )}
       </section>
     </main>
+  );
+}
+
+function UsageCacheInitializationNotice() {
+  return (
+    <section className="usage-cache-notice" aria-label="本地统计缓存初始化提示">
+      <span className="usage-cache-notice-dot" aria-hidden="true" />
+      <div>
+        <strong>正在初始化本地统计缓存</strong>
+        <span>首次打开或更新后可能需要一点时间，只读取本机 Codex 记录，不上传数据。</span>
+      </div>
+    </section>
   );
 }

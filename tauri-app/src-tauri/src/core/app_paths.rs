@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
 const APP_DIRECTORY_NAME: &str = "CodexTokenBar";
+const TAURI_DIRECTORY_NAME: &str = "CodexTokenBarTauri";
+pub const TAURI_USAGE_CACHE_NAMESPACE: &str = "tauri-usage-cache-2026-07-v3";
 const HISTORY_REPAIR_DIRECTORY_NAME: &str = "CodexHistoryRepair";
 
 pub fn home_dir() -> PathBuf {
@@ -34,7 +36,7 @@ pub fn token_event_cache_path() -> Option<PathBuf> {
 
     #[cfg(not(test))]
     {
-        app_cache_dir().map(|path| path.join("token-events-cache-v2.json"))
+        tauri_usage_cache_dir().map(|path| path.join("token-events-cache-legacy.json"))
     }
 }
 
@@ -46,7 +48,7 @@ pub fn token_event_cache_directory() -> Option<PathBuf> {
 
     #[cfg(not(test))]
     {
-        app_cache_dir().map(|path| path.join("token-events-cache-v3"))
+        tauri_usage_cache_dir().map(|path| path.join("session-token-events"))
     }
 }
 
@@ -58,8 +60,60 @@ pub fn token_aggregate_cache_path() -> Option<PathBuf> {
 
     #[cfg(not(test))]
     {
-        app_cache_dir().map(|path| path.join("token-aggregate-cache-v1.json"))
+        tauri_usage_cache_dir().map(|path| path.join("dashboard-aggregate.json"))
     }
+}
+
+pub fn tauri_usage_cache_namespace() -> &'static str {
+    TAURI_USAGE_CACHE_NAMESPACE
+}
+
+pub fn tauri_cache_state_path() -> Option<PathBuf> {
+    tauri_app_support_dir().map(|path| path.join("cache-state.json"))
+}
+
+pub fn tauri_usage_cache_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        if let Some(path) = std::env::var_os("CODEX_TOKEN_BAR_TAURI_USAGE_CACHE_DIR") {
+            return Some(PathBuf::from(path));
+        }
+    }
+
+    tauri_app_cache_dir().map(|path| path.join(TAURI_USAGE_CACHE_NAMESPACE))
+}
+
+pub fn discardable_usage_cache_cleanup_targets() -> Vec<PathBuf> {
+    let mut targets = Vec::new();
+
+    if let Some(shared_cache) = app_cache_dir() {
+        targets.push(shared_cache.join("token-events-cache-v2.json"));
+        targets.push(shared_cache.join("token-events-cache-v3"));
+        targets.push(shared_cache.join("token-aggregate-cache-v1.json"));
+        targets.push(shared_cache.join("session-token-events-v2"));
+        targets.push(shared_cache.join("session-token-events-v3"));
+        targets.push(shared_cache.join("session-token-events-v4"));
+        targets.push(shared_cache.join("session-token-events-v5"));
+        targets.push(shared_cache.join("session-token-events-v6"));
+        targets.push(shared_cache.join("usage-snapshot-cache-v1.json"));
+    }
+
+    if let Some(tauri_cache_root) = tauri_app_cache_dir() {
+        if let Ok(entries) = std::fs::read_dir(&tauri_cache_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let is_current_namespace = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == TAURI_USAGE_CACHE_NAMESPACE);
+                if !is_current_namespace {
+                    targets.push(path);
+                }
+            }
+        }
+    }
+
+    targets
 }
 
 pub fn provider_repair_backup_root() -> Result<PathBuf, String> {
@@ -72,12 +126,40 @@ fn app_support_dir() -> Option<PathBuf> {
     app_support_base_dir().map(|path| path.join(APP_DIRECTORY_NAME))
 }
 
-#[cfg(not(test))]
 fn app_cache_dir() -> Option<PathBuf> {
     app_cache_base_dir().map(|path| path.join(APP_DIRECTORY_NAME))
 }
 
+fn tauri_app_support_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        if let Some(path) = std::env::var_os("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR") {
+            return Some(PathBuf::from(path));
+        }
+    }
+
+    app_support_base_dir().map(|path| path.join(TAURI_DIRECTORY_NAME))
+}
+
+fn tauri_app_cache_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        if let Some(path) = std::env::var_os("CODEX_TOKEN_BAR_TAURI_CACHE_DIR") {
+            return Some(PathBuf::from(path));
+        }
+    }
+
+    app_cache_base_dir().map(|path| path.join(TAURI_DIRECTORY_NAME))
+}
+
 fn app_support_base_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        if let Some(path) = std::env::var_os("CODEX_TOKEN_BAR_SUPPORT_BASE_DIR") {
+            return Some(PathBuf::from(path));
+        }
+    }
+
     if cfg!(target_os = "windows") {
         std::env::var_os("APPDATA")
             .map(PathBuf::from)
@@ -99,8 +181,14 @@ fn app_support_base_dir() -> Option<PathBuf> {
     }
 }
 
-#[cfg(not(test))]
 fn app_cache_base_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        if let Some(path) = std::env::var_os("CODEX_TOKEN_BAR_CACHE_BASE_DIR") {
+            return Some(PathBuf::from(path));
+        }
+    }
+
     if cfg!(target_os = "windows") {
         std::env::var_os("LOCALAPPDATA")
             .or_else(|| std::env::var_os("APPDATA"))

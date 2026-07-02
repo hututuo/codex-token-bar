@@ -6,6 +6,7 @@ import {
   readLiveThreadOptions,
   readPlatformCapabilities,
   readPreciseDashboardSnapshot,
+  readUsageCacheStatus,
   resetCodexHome,
   setCodexHome,
 } from "../api/client";
@@ -16,6 +17,7 @@ import type {
   LiveRateSnapshot,
   LiveThreadOption,
   PlatformCapabilities,
+  UsageCacheStatus,
 } from "../types/dashboard";
 
 export interface DashboardDataSource {
@@ -25,6 +27,7 @@ export interface DashboardDataSource {
   readPlatformCapabilities: () => Promise<PlatformCapabilities>;
   readDashboardSnapshot: () => Promise<DashboardSnapshot>;
   readPreciseDashboardSnapshot: () => Promise<DashboardSnapshot | null>;
+  readUsageCacheStatus: () => Promise<UsageCacheStatus>;
   readAccountQuota: (forceRefresh?: boolean) => Promise<AccountQuotaBundle | null>;
   readLiveRateSnapshot: (selectedThreadId?: string | null) => Promise<LiveRateSnapshot>;
   readLiveThreadOptions: () => Promise<LiveThreadOption[]>;
@@ -37,6 +40,7 @@ export const dashboardDataSource: DashboardDataSource = {
   readPlatformCapabilities,
   readDashboardSnapshot,
   readPreciseDashboardSnapshot,
+  readUsageCacheStatus,
   readAccountQuota,
   readLiveRateSnapshot,
   readLiveThreadOptions,

@@ -1,14 +1,16 @@
 import { useEffect, useRef } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
-import type { DashboardSnapshot } from "../types/dashboard";
+import type { DashboardSnapshot, UsageCacheStatus } from "../types/dashboard";
 
 interface PreciseDashboardLoadOptions {
   active: boolean;
   dashboardReady: boolean;
   loading: boolean;
   generation: number;
-  source: Pick<DashboardDataSource, "readPreciseDashboardSnapshot">;
+  source: Pick<DashboardDataSource, "readPreciseDashboardSnapshot" | "readUsageCacheStatus">;
   onPreciseDashboard: (snapshot: DashboardSnapshot) => void;
+  onUsageCacheInitialized?: () => void;
+  onUsageCacheStatus?: (status: UsageCacheStatus) => void;
   onLoadEnd?: () => void;
   onLoadStart?: () => void;
 }
@@ -20,6 +22,8 @@ export function usePreciseDashboardLoad({
   generation,
   source,
   onPreciseDashboard,
+  onUsageCacheInitialized,
+  onUsageCacheStatus,
   onLoadEnd,
   onLoadStart,
 }: PreciseDashboardLoadOptions) {
@@ -36,9 +40,14 @@ export function usePreciseDashboardLoad({
     async function loadPreciseSnapshot() {
       onLoadStart?.();
       try {
+        const cacheStatus = await source.readUsageCacheStatus();
+        if (!cancelled) {
+          onUsageCacheStatus?.(cacheStatus);
+        }
         const precise = await source.readPreciseDashboardSnapshot();
         if (!cancelled && precise !== null) {
           onPreciseDashboard(precise);
+          onUsageCacheInitialized?.();
         }
       } finally {
         onLoadEnd?.();
@@ -50,5 +59,16 @@ export function usePreciseDashboardLoad({
     return () => {
       cancelled = true;
     };
-  }, [active, dashboardReady, generation, loading, onLoadEnd, onLoadStart, onPreciseDashboard, source]);
+  }, [
+    active,
+    dashboardReady,
+    generation,
+    loading,
+    onLoadEnd,
+    onLoadStart,
+    onPreciseDashboard,
+    onUsageCacheInitialized,
+    onUsageCacheStatus,
+    source,
+  ]);
 }

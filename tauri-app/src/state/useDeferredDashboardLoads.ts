@@ -1,5 +1,10 @@
 import type { DashboardDataSource } from "../data/dashboardDataSource";
-import type { AccountQuotaBundle, DashboardSnapshot, LiveThreadOption } from "../types/dashboard";
+import type {
+  AccountQuotaBundle,
+  DashboardSnapshot,
+  LiveThreadOption,
+  UsageCacheStatus,
+} from "../types/dashboard";
 import { useDeferredQuotaLoad } from "./useDeferredQuotaLoad";
 import { useLiveThreadOptionsLoad } from "./useLiveThreadOptionsLoad";
 import { usePreciseDashboardLoad } from "./usePreciseDashboardLoad";
@@ -13,9 +18,14 @@ interface DeferredDashboardLoadsOptions {
   forceQuotaRefresh: boolean;
   source: Pick<
     DashboardDataSource,
-    "readPreciseDashboardSnapshot" | "readAccountQuota" | "readLiveThreadOptions"
+    | "readPreciseDashboardSnapshot"
+    | "readUsageCacheStatus"
+    | "readAccountQuota"
+    | "readLiveThreadOptions"
   >;
   onPreciseDashboard: (snapshot: DashboardSnapshot) => void;
+  onUsageCacheInitialized: () => void;
+  onUsageCacheStatus: (status: UsageCacheStatus) => void;
   onQuota: (quota: AccountQuotaBundle) => void;
   onLiveThreadOptions: (options: LiveThreadOption[]) => void;
   onForceQuotaRefreshConsumed: () => void;
@@ -32,6 +42,8 @@ export function useDeferredDashboardLoads({
   forceQuotaRefresh,
   source,
   onPreciseDashboard,
+  onUsageCacheInitialized,
+  onUsageCacheStatus,
   onQuota,
   onLiveThreadOptions,
   onForceQuotaRefreshConsumed,
@@ -44,6 +56,8 @@ export function useDeferredDashboardLoads({
     generation,
     loading,
     onPreciseDashboard,
+    onUsageCacheInitialized,
+    onUsageCacheStatus,
     onLoadEnd: onRefreshTaskEnd,
     onLoadStart: onRefreshTaskStart,
     source,

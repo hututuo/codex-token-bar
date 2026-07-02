@@ -86,3 +86,15 @@ export interface DashboardSnapshot {
   cacheUsage: TokenCacheUsage;
   warnings: LocalDataWarning[];
 }
+
+export interface UsageCacheStatus {
+  namespace: string;
+  initialized: boolean;
+  initializedAt: string | null;
+}
+
+export interface UsageSummarySnapshot {
+  totalTokens: number;
+  todayTokens: number;
+  todayRequests: number;
+}

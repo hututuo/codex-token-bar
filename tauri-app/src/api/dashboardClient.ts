@@ -3,6 +3,8 @@ import type {
   CodexHomeStatus,
   DashboardSnapshot,
   PlatformCapabilities,
+  UsageSummarySnapshot,
+  UsageCacheStatus,
 } from "../types/dashboard";
 import {
   emptyDashboardSnapshot,
@@ -33,6 +35,18 @@ export function readDashboardSnapshot(): Promise<DashboardSnapshot> {
 
 export function readPreciseDashboardSnapshot(): Promise<DashboardSnapshot | null> {
   return callCommandOptional("read_precise_dashboard_snapshot", undefined, 30_000);
+}
+
+export function readUsageSummarySnapshot(): Promise<UsageSummarySnapshot | null> {
+  return callCommandOptional("read_usage_summary_snapshot", undefined, 8_000);
+}
+
+export function readUsageCacheStatus(): Promise<UsageCacheStatus> {
+  return callCommand("read_usage_cache_status", {
+    namespace: "tauri-usage-cache-2026-07-v3",
+    initialized: true,
+    initializedAt: null,
+  });
 }
 
 export function readAccountQuota(forceRefresh = false): Promise<AccountQuotaBundle | null> {

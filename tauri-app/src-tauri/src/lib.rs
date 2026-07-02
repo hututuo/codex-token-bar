@@ -37,6 +37,8 @@ pub fn run() {
             commands::dashboard::read_account_quota,
             commands::dashboard::read_dashboard_snapshot,
             commands::dashboard::read_precise_dashboard_snapshot,
+            commands::dashboard::read_usage_summary_snapshot,
+            commands::dashboard::read_usage_cache_status,
             commands::live::read_live_rate_snapshot,
             commands::live::read_live_thread_options,
             commands::live::reset_live_rate_monitor,

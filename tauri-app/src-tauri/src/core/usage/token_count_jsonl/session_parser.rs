@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 
+const FORK_REPLAY_EXIT_GRACE: Duration = Duration::seconds(2);
+
 #[cfg(test)]
 static SESSION_FULL_PARSE_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -25,6 +27,12 @@ struct ParsedUsageLine {
     timestamp: OffsetDateTime,
     total: Option<ParsedUsage>,
     last: Option<ParsedUsage>,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedMessageLine {
+    timestamp: OffsetDateTime,
+    message: String,
 }
 
 pub(super) struct SessionParseResult {
@@ -91,11 +99,9 @@ pub(super) fn parse_session_file_range(
         }
     }
     let reader = BufReader::new(handle);
-    let fork_replay_cutoff = if start_offset == 0 {
-        fork_replay_cutoff(file)
-    } else {
-        None
-    };
+    let fork_replay_started_at = forked_session_replay_started_at(file);
+    let mut fork_replay_active = fork_replay_started_at.is_some();
+    let mut last_skipped_fork_replay_token_at: Option<OffsetDateTime> = None;
     let mut previous_total = initial_previous_total;
     let mut current_user_prompt = String::new();
     let mut assistant_fragments = Vec::<String>::new();
@@ -125,15 +131,23 @@ pub(super) fn parse_session_file_range(
         }
         ended_with_newline = line_ended_with_newline;
         let line = line.trim_end_matches(['\r', '\n']);
-        if let Some(message) = extract_payload_message(line, "user_message") {
-            current_user_prompt = message;
+        if let Some(message_line) = parse_payload_message_line(line, "user_message") {
+            if fork_replay_active {
+                let replay_reference = last_skipped_fork_replay_token_at.or(fork_replay_started_at);
+                if replay_reference
+                    .is_some_and(|reference| message_line.timestamp - reference > FORK_REPLAY_EXIT_GRACE)
+                {
+                    fork_replay_active = false;
+                }
+            }
+            current_user_prompt = message_line.message;
             assistant_fragments.clear();
             consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         }
 
-        if let Some(message) = extract_payload_message(line, "agent_message") {
-            assistant_fragments.push(message);
+        if let Some(message_line) = parse_payload_message_line(line, "agent_message") {
+            assistant_fragments.push(message_line.message);
             consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         }
@@ -146,7 +160,11 @@ pub(super) fn parse_session_file_range(
             consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         };
-        if fork_replay_cutoff.is_some_and(|cutoff| usage_line.timestamp <= cutoff) {
+        if fork_replay_active {
+            last_skipped_fork_replay_token_at = Some(usage_line.timestamp);
+            if let Some(total_tokens) = usage_line.total.as_ref().map(|usage| usage.total_tokens) {
+                previous_total = Some(total_tokens);
+            }
             consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         }
@@ -166,6 +184,7 @@ pub(super) fn parse_session_file_range(
             last_tokens.unwrap_or(0)
         };
 
+        consumed_size = consumed_size.saturating_add(bytes_read as u64);
         if delta == 0 {
             continue;
         }
@@ -184,7 +203,6 @@ pub(super) fn parse_session_file_range(
             assistant_response: excerpt(&assistant_fragments.join(" "), 220),
         });
         assistant_fragments.clear();
-        consumed_size = consumed_size.saturating_add(bytes_read as u64);
     }
 
     SessionParseResult {
@@ -217,11 +235,12 @@ fn is_complete_json_line(line: &str) -> bool {
     serde_json::from_str::<Value>(line).is_ok()
 }
 
-fn extract_payload_message(line: &str, expected_type: &str) -> Option<String> {
+fn parse_payload_message_line(line: &str, expected_type: &str) -> Option<ParsedMessageLine> {
     if !line.contains("\"payload\"") || !line.contains(expected_type) {
         return None;
     }
     let value: Value = serde_json::from_str(line).ok()?;
+    let timestamp = parse_timestamp(value.get("timestamp")?.as_str()?)?;
     let payload = value.get("payload")?;
     if payload.get("type")?.as_str()? != expected_type {
         return None;
@@ -230,7 +249,10 @@ fn extract_payload_message(line: &str, expected_type: &str) -> Option<String> {
     if normalized.is_empty() {
         None
     } else {
-        Some(normalized)
+        Some(ParsedMessageLine {
+            timestamp,
+            message: normalized,
+        })
     }
 }
 
@@ -253,30 +275,36 @@ fn normalize_excerpt_text(value: &str) -> String {
         .to_string()
 }
 
-fn fork_replay_cutoff(file: &Path) -> Option<OffsetDateTime> {
-    let handle = fs::File::open(file).ok()?;
+fn forked_session_replay_started_at(file: &Path) -> Option<OffsetDateTime> {
+    let Some(handle) = fs::File::open(file).ok() else {
+        return None;
+    };
     let mut reader = BufReader::new(handle);
     let mut first_line = String::new();
-    if reader.read_line(&mut first_line).ok()? == 0 {
+    let Some(bytes_read) = reader.read_line(&mut first_line).ok() else {
+        return None;
+    };
+    if bytes_read == 0 {
         return None;
     }
     if !first_line.contains("session_meta") || !first_line.contains("forked_from_id") {
         return None;
     }
-    let value: Value = serde_json::from_str(&first_line).ok()?;
-    if value.get("type")?.as_str()? != "session_meta" {
+    let Some(value) = serde_json::from_str::<Value>(&first_line).ok() else {
+        return None;
+    };
+    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
         return None;
     }
-    let payload = value.get("payload")?;
-    let forked_from_id = payload.get("forked_from_id")?.as_str()?.trim();
-    if forked_from_id.is_empty() {
+    let timestamp = parse_timestamp(value.get("timestamp")?.as_str()?)?;
+    let Some(payload) = value.get("payload") else {
         return None;
-    }
-    let timestamp = value
-        .get("timestamp")
+    };
+    payload
+        .get("forked_from_id")
         .and_then(Value::as_str)
-        .or_else(|| payload.get("timestamp").and_then(Value::as_str))?;
-    parse_timestamp(timestamp).map(|date| date + Duration::seconds(30))
+        .is_some_and(|forked_from_id| !forked_from_id.trim().is_empty())
+        .then_some(timestamp)
 }
 
 fn parse_usage_line(line: &str) -> Option<ParsedUsageLine> {

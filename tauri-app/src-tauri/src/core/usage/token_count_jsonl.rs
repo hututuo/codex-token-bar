@@ -1,3 +1,4 @@
+use super::cache_lifecycle;
 use crate::core::app_paths;
 use crate::models::{
     AccountInfo, DashboardSnapshot, LocalDataWarning, QuotaLimit, QuotaSnapshot,
@@ -5,6 +6,7 @@ use crate::models::{
 };
 #[cfg(test)]
 use std::collections::HashMap;
+use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,18 +26,20 @@ mod token_event_cache;
 use aggregates::{activity_days, recent_usage, recent_usage_30d, recent_usage_7d, stats};
 use event_loader::load_token_events_from_files;
 use ranking::{cache_hit_ranking, cache_usage, sanitize_cache_usage_for_persistence};
-use session_files::jsonl_files;
+use session_files::jsonl_files_for_codex_home;
 use token_event_cache::{file_cache_key, file_signature, CachedFileSignature};
 
 static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<Option<CachedDashboardAggregate>>> =
     OnceLock::new();
+static USAGE_SUMMARY_REFRESH_IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 #[cfg(test)]
 static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 5;
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 7;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TokenUsageSummary {
     pub total_tokens: u64,
     pub today_tokens: u64,
@@ -55,15 +59,11 @@ struct TokenEvent {
 }
 
 pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String> {
-    let sessions_root = codex_home.join("sessions");
-    if !sessions_root.exists() {
-        return Err(format!("{} not found", sessions_root.display()));
-    }
-
     let mut warnings = Vec::new();
-    let session_files = jsonl_files(&sessions_root, &mut warnings);
+    let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings);
     let signature = dashboard_scan_signature(codex_home, &session_files);
     if let Some(snapshot) = cached_dashboard_snapshot(&signature) {
+        cache_lifecycle::mark_usage_cache_ready_after_success();
         return Ok(snapshot_with_generated_at(snapshot));
     }
 
@@ -105,19 +105,15 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         warnings,
     };
     store_dashboard_aggregate(signature, Some(snapshot.clone()), summary);
+    cache_lifecycle::mark_usage_cache_ready_after_success();
     Ok(snapshot)
 }
 
 #[cfg(test)]
 pub fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
-    let sessions_root = codex_home.join("sessions");
-    if !sessions_root.exists() {
-        return Err(format!("{} not found", sessions_root.display()));
-    }
-
     let mut events = Vec::new();
     let mut warnings = Vec::new();
-    let session_files = jsonl_files(&sessions_root, &mut warnings);
+    let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings);
     let signature = dashboard_scan_signature(codex_home, &session_files);
     if let Some(summary) = cached_usage_summary(&signature) {
         return Ok(summary);
@@ -136,7 +132,6 @@ pub fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
     Ok(summary)
 }
 
-#[cfg(test)]
 pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
     let snapshot = dashboard_snapshot(codex_home)?;
     let today = snapshot.activity_days.last();
@@ -147,14 +142,17 @@ pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, S
     })
 }
 
-pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
-    let sessions_root = codex_home.join("sessions");
-    if !sessions_root.exists() {
-        return None;
+pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, String> {
+    if let Some(summary) = cached_dashboard_usage_summary(codex_home) {
+        return Ok(summary);
     }
+    schedule_usage_summary_refresh(codex_home);
+    Err("精确 token summary 尚未就绪，正在后台初始化".into())
+}
 
+pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
     let mut warnings = Vec::new();
-    let session_files = jsonl_files(&sessions_root, &mut warnings);
+    let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings);
     let signature = dashboard_scan_signature(codex_home, &session_files);
     cached_dashboard_aggregate(&signature).map(|cached| cached.summary)
 }
@@ -162,13 +160,8 @@ pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenU
 pub(crate) fn cached_dashboard_snapshot_for_startup(
     codex_home: &Path,
 ) -> Option<DashboardSnapshot> {
-    let sessions_root = codex_home.join("sessions");
-    if !sessions_root.exists() {
-        return None;
-    }
-
     let mut warnings = Vec::new();
-    let session_files = jsonl_files(&sessions_root, &mut warnings);
+    let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings);
     let signature = dashboard_scan_signature(codex_home, &session_files);
     cached_dashboard_snapshot(&signature).map(snapshot_with_generated_at)
 }
@@ -186,6 +179,27 @@ fn usage_summary_from_events(events: &[TokenEvent], local_offset: UtcOffset) -> 
     }
 
     summary
+}
+
+fn schedule_usage_summary_refresh(codex_home: &Path) {
+    let key = codex_home.to_path_buf();
+    let in_flight = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(mut guard) = in_flight.lock() {
+        if !guard.insert(key.clone()) {
+            return;
+        }
+    } else {
+        return;
+    }
+
+    std::thread::spawn(move || {
+        let _ = dashboard_usage_summary(&key);
+        if let Some(in_flight) = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get() {
+            if let Ok(mut guard) = in_flight.lock() {
+                guard.remove(&key);
+            }
+        }
+    });
 }
 
 fn no_token_events_error(warnings: &[LocalDataWarning]) -> String {
@@ -242,6 +256,8 @@ struct CachedUsageSummary {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct DashboardScanSignature {
     codex_home: PathBuf,
+    local_date: String,
+    utc_offset_seconds: i32,
     session_files: Vec<SessionFileSignature>,
 }
 
@@ -252,6 +268,16 @@ struct SessionFileSignature {
 }
 
 fn dashboard_scan_signature(codex_home: &Path, session_files: &[PathBuf]) -> DashboardScanSignature {
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    dashboard_scan_signature_at(codex_home, session_files, OffsetDateTime::now_utc(), local_offset)
+}
+
+fn dashboard_scan_signature_at(
+    codex_home: &Path,
+    session_files: &[PathBuf],
+    now_utc: OffsetDateTime,
+    local_offset: UtcOffset,
+) -> DashboardScanSignature {
     let mut file_signatures = session_files
         .iter()
         .filter_map(|file| {
@@ -265,8 +291,20 @@ fn dashboard_scan_signature(codex_home: &Path, session_files: &[PathBuf]) -> Das
 
     DashboardScanSignature {
         codex_home: codex_home.to_path_buf(),
+        local_date: local_date_string(now_utc.to_offset(local_offset)),
+        utc_offset_seconds: local_offset.whole_seconds(),
         session_files: file_signatures,
     }
+}
+
+fn local_date_string(date_time: OffsetDateTime) -> String {
+    let date = date_time.date();
+    format!(
+        "{:04}-{:02}-{:02}",
+        date.year(),
+        u8::from(date.month()),
+        date.day()
+    )
 }
 
 fn cached_dashboard_snapshot(signature: &DashboardScanSignature) -> Option<DashboardSnapshot> {
@@ -453,6 +491,10 @@ pub(super) fn reset_dashboard_aggregate_build_count_for_testing() {
     let summary_cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = summary_cache.lock() {
         *guard = None;
+    }
+    let in_flight = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(mut guard) = in_flight.lock() {
+        guard.clear();
     }
 }
 

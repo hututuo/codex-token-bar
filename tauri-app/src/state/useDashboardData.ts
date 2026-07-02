@@ -14,6 +14,7 @@ import type {
   DashboardSnapshot,
   LiveRateSnapshot,
   LiveThreadOption,
+  UsageCacheStatus,
 } from "../types/dashboard";
 import {
   disabledLiveRateSnapshot,
@@ -59,6 +60,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const [forceNextQuotaLoad, setForceNextQuotaLoad] = useState(false);
   const [dashboardVisible, setDashboardVisible] = useState(dashboardIsVisible);
   const [refreshTaskCount, setRefreshTaskCount] = useState(0);
+  const [usageCacheInitializing, setUsageCacheInitializing] = useState(false);
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
   const {
     reloadAll,
@@ -99,6 +101,14 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     startTransition(() => {
       setState((current) => mergeLiveThreadOptions(current, liveThreadOptions));
     });
+  }, []);
+
+  const updateUsageCacheStatus = useCallback((status: UsageCacheStatus) => {
+    setUsageCacheInitializing(!status.initialized);
+  }, []);
+
+  const markUsageCacheInitialized = useCallback(() => {
+    setUsageCacheInitializing(false);
   }, []);
 
   const consumeForcedQuotaRefresh = useCallback(() => {
@@ -223,6 +233,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     forceQuotaRefresh: forceNextQuotaLoad,
     source,
     onPreciseDashboard: mergePreciseSnapshot,
+    onUsageCacheInitialized: markUsageCacheInitialized,
+    onUsageCacheStatus: updateUsageCacheStatus,
     onQuota: mergeQuotaSnapshot,
     onLiveThreadOptions: mergeThreadOptions,
     onForceQuotaRefreshConsumed: consumeForcedQuotaRefresh,
@@ -250,6 +262,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     state,
     readyState,
     refreshing: state.loading || refreshTaskCount > 0,
+    usageCacheInitializing,
     radarRefreshGeneration,
     reloadAll,
     updateCodexHome,

@@ -3,7 +3,8 @@ use super::token_event_cache::{
     CachedSessionFile, CachedTokenEvent, TokenEventCache,
 };
 use super::session_parser::{
-    reset_session_full_parse_count_for_testing, session_full_parse_count_for_testing,
+    parse_session_file_full_result, reset_session_full_parse_count_for_testing,
+    session_full_parse_count_for_testing,
 };
 use super::*;
 use rusqlite::Connection;
@@ -13,7 +14,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use time::format_description::well_known::Rfc3339;
-use time::OffsetDateTime;
+use time::{OffsetDateTime, UtcOffset};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -85,7 +86,7 @@ fn parses_token_count_totals_as_deltas() {
 }
 
 #[test]
-fn skips_fork_replay_window() {
+fn skips_pure_fork_replay_even_after_thirty_seconds() {
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -95,12 +96,95 @@ fn skips_fork_replay_window() {
         &[
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
             r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":100}}}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:40Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":20}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:05:40Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":300},"last_token_usage":{"total_tokens":200}}}}"#,
+        ],
+    );
+
+    let mut warnings = Vec::new();
+    let events = parse_session_file_full_result(&file, "019eaaaa-bbbb-cccc-dddd-eeeeffffffff", &mut warnings);
+    assert_eq!(events.events.iter().map(|event| event.tokens).sum::<u64>(), 0);
+    assert_eq!(events.previous_total_tokens, Some(300));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn keeps_skipping_fork_replay_when_copied_user_message_is_near_last_replay_token() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019efork-copy-0000-0000-eeeeffffffff.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":500},"last_token_usage":{"total_tokens":500}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:11Z","type":"event_msg","payload":{"type":"user_message","message":"父会话复制问题"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:12Z","type":"event_msg","payload":{"type":"agent_message","message":"父会话复制回答"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:13Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":620},"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
+    );
+
+    let mut warnings = Vec::new();
+    let parsed = parse_session_file_full_result(
+        &file,
+        "019efork-copy-0000-0000-eeeeffffffff",
+        &mut warnings,
+    );
+    assert_eq!(parsed.events.iter().map(|event| event.tokens).sum::<u64>(), 0);
+    assert_eq!(parsed.previous_total_tokens, Some(620));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn counts_new_call_after_fork_replay_user_message() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019efork-new-0000-0000-eeeeffffffff.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
+            r#"{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":500},"last_token_usage":{"total_tokens":500}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:10:00Z","type":"event_msg","payload":{"type":"user_message","message":"新分支问题"}}"#,
+            r#"{"timestamp":"2026-06-18T01:10:30Z","type":"event_msg","payload":{"type":"agent_message","message":"新分支回答"}}"#,
+            r#"{"timestamp":"2026-06-18T01:11:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":90,"cached_input_tokens":20,"output_tokens":30,"total_tokens":620},"last_token_usage":{"input_tokens":90,"cached_input_tokens":20,"output_tokens":30,"total_tokens":120}}}}"#,
         ],
     );
 
     let snapshot = dashboard_snapshot(&root).unwrap();
-    assert_eq!(snapshot.stats.total_tokens, 20);
+    assert_eq!(snapshot.stats.total_tokens, 120);
+    assert_eq!(snapshot.stats.total_calls, 1);
+
+    let mut warnings = Vec::new();
+    let parsed = parse_session_file_full_result(
+        &file,
+        "019efork-new-0000-0000-eeeeffffffff",
+        &mut warnings,
+    );
+    assert_eq!(parsed.events[0].user_prompt, "新分支问题");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn parent_thread_without_forked_from_id_still_counts() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eparent-0000-0000-0000-count.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"parent_thread_id":"parent"}}"#,
+            r#"{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":42}}}}"#,
+        ],
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    assert_eq!(snapshot.stats.total_tokens, 42);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -164,6 +248,78 @@ fn dashboard_usage_summary_matches_dashboard_snapshot_metrics() {
     assert_eq!(summary.total_tokens, dashboard.stats.total_tokens);
     assert_eq!(summary.today_tokens, today.tokens);
     assert_eq!(summary.today_requests, today.calls);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dashboard_scan_signature_changes_when_local_date_changes() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019edate-0000-0000-0000-signature.jsonl");
+    write_lines(
+        &file,
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+    );
+    let files = vec![file];
+    let offset = UtcOffset::from_hms(8, 0, 0).unwrap();
+    let before_midnight = OffsetDateTime::parse("2026-06-18T15:59:59Z", &Rfc3339).unwrap();
+    let after_midnight = OffsetDateTime::parse("2026-06-18T16:00:01Z", &Rfc3339).unwrap();
+
+    let before = dashboard_scan_signature_at(&root, &files, before_midnight, offset);
+    let after = dashboard_scan_signature_at(&root, &files, after_midnight, offset);
+
+    assert_ne!(before, after);
+    assert_eq!(before.local_date, "2026-06-18");
+    assert_eq!(after.local_date, "2026-06-19");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dashboard_snapshot_includes_active_state_rollout_path() {
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let active_dir = root.join("active-rollouts");
+    fs::create_dir_all(&active_dir).unwrap();
+    let rollout_path = active_dir.join("rollout-019eactive-0000-0000-0000-stateonly.jsonl");
+    let timestamp = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
+    write_lines(
+        &rollout_path,
+        &[format!(
+            r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":70,"cached_input_tokens":20,"output_tokens":7,"total_tokens":77}}}}}}}}"#
+        )],
+    );
+    create_state_database_with_rollout(&root, "019eactive-0000-0000-0000-stateonly", &rollout_path);
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+
+    assert_eq!(snapshot.stats.total_tokens, 77);
+    assert_eq!(snapshot.stats.total_calls, 1);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dashboard_snapshot_deduplicates_rollout_path_already_under_sessions() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let rollout_path = session_dir.join("rollout-019ededup-0000-0000-0000-samefile.jsonl");
+    let timestamp = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
+    write_lines(
+        &rollout_path,
+        &[format!(
+            r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":70,"cached_input_tokens":20,"output_tokens":7,"total_tokens":77}}}}}}}}"#
+        )],
+    );
+    create_state_database_with_rollout(&root, "019ededup-0000-0000-0000-samefile", &rollout_path);
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+
+    assert_eq!(snapshot.stats.total_tokens, 77);
+    assert_eq!(snapshot.stats.total_calls, 1);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -479,6 +635,36 @@ fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
 }
 
 #[test]
+fn usage_summary_snapshot_cache_miss_schedules_one_background_build() {
+    let root = temp_root();
+    let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
+    let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019esummary-0000-0000-0000-background.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+
+    reset_dashboard_aggregate_build_count_for_testing();
+    assert!(usage_summary_snapshot(&root).is_err());
+    assert!(usage_summary_snapshot(&root).is_err());
+    assert!(usage_summary_snapshot(&root).is_err());
+
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        if let Ok(summary) = usage_summary_snapshot(&root) {
+            assert_eq!(summary.total_tokens, 120);
+            assert_eq!(dashboard_aggregate_build_count_for_testing(&root), 1);
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+    }
+
+    panic!("usage summary background build did not finish");
+}
+
+#[test]
 fn token_event_cache_partitions_entries_by_codex_home() {
     let root = temp_root();
     let home_a = root.join("codex-a");
@@ -676,6 +862,54 @@ fn token_event_cache_reads_tail_when_signature_matches_but_parsed_size_lags() {
     let updated = files.get(&cache_key).unwrap();
     assert_eq!(updated.parsed_size, fs::metadata(&file).unwrap().len());
     assert_eq!(updated.events.len(), 2);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn token_event_cache_advances_offset_past_zero_delta_lines() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019ezero-0000-0000-0000-cache.jsonl");
+    let first_line = r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
+    let zero_line = r#"{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"total_tokens":0}}}}"#;
+    let second_line = r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170},"last_token_usage":{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}"#;
+    write_lines(&file, &[first_line, zero_line]);
+
+    let mut warnings = Vec::new();
+    let mut files = HashMap::new();
+    let mut cache_changed = false;
+    reset_session_full_parse_count_for_testing();
+    let first = parse_session_file_cached(
+        &file,
+        "019ezero-0000-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+    assert_eq!(first.iter().map(|event| event.tokens).sum::<u64>(), 120);
+    let cache_key = super::token_event_cache::file_cache_key(&root, &file);
+    let parsed_size_after_zero = files.get(&cache_key).unwrap().parsed_size;
+    assert_eq!(parsed_size_after_zero, fs::metadata(&file).unwrap().len());
+
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(handle, "{second_line}").unwrap();
+    }
+    let second = parse_session_file_cached(
+        &file,
+        "019ezero-0000-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+
+    assert_eq!(second.iter().map(|event| event.tokens).sum::<u64>(), 170);
+    assert_eq!(session_full_parse_count_for_testing(), 1);
+    assert_eq!(files.get(&cache_key).unwrap().events.len(), 2);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1019,6 +1253,34 @@ fn create_state_database(root: &Path, low_id: &str, high_id: &str) {
         .execute(
             "INSERT INTO threads (id, title, first_user_message, preview, updated_at, updated_at_ms) VALUES (?1, '高命中会话', '', '', 1781719200, 1781719200000);",
             [high_id],
+        )
+        .unwrap();
+}
+
+fn create_state_database_with_rollout(root: &Path, thread_id: &str, rollout_path: &Path) {
+    let db_path = root.join("state_5.sqlite");
+    let connection = Connection::open(&db_path).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                first_user_message TEXT,
+                preview TEXT,
+                rollout_path TEXT,
+                updated_at INTEGER NOT NULL,
+                updated_at_ms INTEGER,
+                archived INTEGER DEFAULT 0,
+                thread_source TEXT DEFAULT 'user'
+            );
+            "#,
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO threads (id, title, first_user_message, preview, rollout_path, updated_at, updated_at_ms, archived, thread_source) VALUES (?1, '活跃会话', '', '', ?2, 1781715600, 1781715600000, 0, 'user');",
+            rusqlite::params![thread_id, rollout_path.to_string_lossy()],
         )
         .unwrap();
 }

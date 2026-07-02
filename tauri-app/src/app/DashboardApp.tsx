@@ -17,6 +17,7 @@ export function DashboardApp() {
     state,
     readyState,
     refreshing,
+    usageCacheInitializing,
     radarRefreshGeneration,
     reloadAll,
     updateCodexHome,
@@ -47,6 +48,7 @@ export function DashboardApp() {
         liveThreadOptions={readyState.liveThreadOptions}
         platform={readyState.platform}
         onRefresh={reloadAll}
+        usageCacheInitializing={usageCacheInitializing}
         radarRefreshGeneration={radarRefreshGeneration}
         onFloatingOpacityChange={shellSettings.updateFloatingOpacity}
         onFloatingScaleChange={shellSettings.updateFloatingScale}

@@ -10,6 +10,8 @@ export {
   readDashboardSnapshot,
   readPlatformCapabilities,
   readPreciseDashboardSnapshot,
+  readUsageCacheStatus,
+  readUsageSummarySnapshot,
   resetCodexHome,
   setCodexHome,
 } from "./dashboardClient";
