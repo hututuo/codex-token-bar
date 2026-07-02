@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import {
+  displayRawRate,
   formatLiveRateValue,
   liveRateDisplayBucket,
   rateFillScale,
@@ -54,10 +55,24 @@ test("live rate display uses EMA and drops idle values to zero quickly", () => {
   assert.equal(Number(smoothed.selectedTokensPerSecond.toFixed(2)), 2.12);
 });
 
+test("selected session display is capped without capping global rate", () => {
+  assert.equal(displayRawRate(220, "allSessions"), 220);
+  assert.equal(displayRawRate(220, "selectedSession"), 80);
+  assert.equal(displayRawRate(-1, "selectedSession"), 0);
+
+  const smoothed = smoothLiveRateSnapshot(
+    snapshot({ tokensPerSecond: 220, selectedTokensPerSecond: 220 }),
+    snapshot({ tokensPerSecond: 0, selectedTokensPerSecond: 0 }),
+  );
+  assert.equal(smoothed.tokensPerSecond, 220);
+  assert.equal(smoothed.selectedTokensPerSecond, 80);
+});
+
 test("live rate display buckets match visible precision", () => {
   assert.equal(formatLiveRateValue(9.94), "9.9");
   assert.equal(formatLiveRateValue(10.1), "10.1");
   assert.equal(formatLiveRateValue(42.4), "42.4");
+  assert.equal(formatLiveRateValue(80), "80.0");
 
   const first = liveRateDisplayBucket(snapshot({ tokensPerSecond: 42.1 }));
   const second = liveRateDisplayBucket(snapshot({ tokensPerSecond: 42.4 }));

@@ -39,6 +39,10 @@ fn read_recent_log_rows_from_connection(connection: &Connection, since: f64) -> 
             target = 'codex_api::endpoint::responses_websocket'
             AND feedback_log_body LIKE '%websocket event:%'
           )
+          OR (
+            target = 'log'
+            AND feedback_log_body LIKE 'Received message %'
+          )
         ORDER BY id ASC
         LIMIT 2000;
         "#,

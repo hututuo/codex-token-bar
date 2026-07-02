@@ -17,56 +17,6 @@ pub(super) struct RolloutThread {
     pub(super) rollout_path: PathBuf,
 }
 
-pub(super) fn read_usage_summary(codex_home: &Path) -> Result<UsageSummary> {
-    let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
-    connection.query_row(
-        r#"
-        SELECT
-          COALESCE(SUM(tokens_used), 0),
-          COALESCE(SUM(
-            CASE
-              WHEN date(
-                CASE
-                  WHEN COALESCE(updated_at_ms, updated_at) > 9999999999
-                    THEN COALESCE(updated_at_ms, updated_at) / 1000
-                  ELSE COALESCE(updated_at_ms, updated_at)
-                END,
-                'unixepoch',
-                'localtime'
-              ) = date('now', 'localtime') THEN tokens_used
-              ELSE 0
-            END
-          ), 0),
-          COALESCE(SUM(
-            CASE
-              WHEN date(
-                CASE
-                  WHEN COALESCE(updated_at_ms, updated_at) > 9999999999
-                    THEN COALESCE(updated_at_ms, updated_at) / 1000
-                  ELSE COALESCE(updated_at_ms, updated_at)
-                END,
-                'unixepoch',
-                'localtime'
-              ) = date('now', 'localtime') THEN 1
-              ELSE 0
-            END
-          ), 0)
-        FROM threads;
-        "#,
-        [],
-        |row| {
-            let total_tokens: i64 = row.get(0)?;
-            let today_tokens: i64 = row.get(1)?;
-            let today_requests: i64 = row.get(2)?;
-            Ok(UsageSummary {
-                total_tokens: u64::try_from(total_tokens).unwrap_or(0),
-                today_tokens: u64::try_from(today_tokens).unwrap_or(0),
-                today_requests: u32::try_from(today_requests).unwrap_or(0),
-            })
-        },
-    )
-}
-
 pub(super) fn read_thread_options_result(
     codex_home: &Path,
     limit: usize,

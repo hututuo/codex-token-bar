@@ -6,16 +6,16 @@ use logs::read_recent_log_rows;
 pub use monitor::LiveRateMonitorService;
 use rusqlite::Result;
 use rollout::{read_rollout_metrics, sync_rollout_offsets_to_current};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use state::{read_thread_options_result, read_thread_title, read_usage_summary, UsageSummary};
+use state::{read_thread_options_result, read_thread_title, UsageSummary};
 use stream::{rollup_metric_events, rollup_stream_rows};
 
 const LOOKBACK_SECONDS: f64 = 8.0;
 const MAX_TOKENS_PER_SECOND: f64 = 200.0;
 const PRECISE_USAGE_SUMMARY_TTL: Duration = Duration::from_secs(30);
-const FALLBACK_USAGE_SUMMARY_TTL: Duration = Duration::from_secs(5);
 const UNREAD_SUMMARY_TTL: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
@@ -23,11 +23,11 @@ struct CachedPreciseUsageSummary {
     codex_home: PathBuf,
     summary: UsageSummary,
     refreshed_at: Instant,
-    precise: bool,
-    state_database_signature: Option<StoreFileSignature>,
 }
 
 static PRECISE_USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedPreciseUsageSummary>>> =
+    OnceLock::new();
+static PRECISE_USAGE_SUMMARY_REFRESH_IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> =
     OnceLock::new();
 static UNREAD_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUnreadSummary>>> = OnceLock::new();
 
@@ -210,54 +210,12 @@ fn live_rate_thread_title_warning(message: String) -> LocalDataWarning {
     }
 }
 
-fn read_usage_summary_or_default(
-    codex_home: &Path,
-    warnings: &mut Vec<LocalDataWarning>,
-) -> UsageSummary {
-    match read_usage_summary(codex_home) {
-        Ok(summary) => summary,
-        Err(error) => {
-            warnings.push(live_rate_summary_warning(format!(
-                "读取实时速率汇总失败：{}（{}）",
-                codex_home.join("state_5.sqlite").display(),
-                error
-            )));
-            UsageSummary::default()
-        }
-    }
-}
-
 fn read_precise_usage_summary_or_fallback(
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> UsageSummary {
     let now = Instant::now();
     let cache = PRECISE_USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(guard) = cache.lock() {
-        if let Some(cached) = guard.as_ref() {
-            let ttl = if cached.precise {
-                PRECISE_USAGE_SUMMARY_TTL
-            } else {
-                FALLBACK_USAGE_SUMMARY_TTL
-            };
-            if cached.codex_home == codex_home && now.duration_since(cached.refreshed_at) <= ttl {
-                if cached.precise {
-                    if let Some(summary) = token_count_jsonl::cached_dashboard_usage_summary(codex_home) {
-                        return UsageSummary {
-                            total_tokens: summary.total_tokens,
-                            today_tokens: summary.today_tokens,
-                            today_requests: summary.today_requests,
-                        };
-                    }
-                } else if cached.state_database_signature.as_ref()
-                    == Some(&state_database_signature(codex_home))
-                {
-                    return cached.summary.clone();
-                }
-            }
-        }
-    }
-
     if let Some(summary) = token_count_jsonl::cached_dashboard_usage_summary(codex_home) {
         let summary = UsageSummary {
             total_tokens: summary.total_tokens,
@@ -269,24 +227,51 @@ fn read_precise_usage_summary_or_fallback(
                 codex_home: codex_home.to_path_buf(),
                 summary: summary.clone(),
                 refreshed_at: now,
-                precise: true,
-                state_database_signature: None,
             });
         }
         return summary;
     }
 
-    let summary = read_usage_summary_or_default(codex_home, warnings);
-    if let Ok(mut guard) = cache.lock() {
-        *guard = Some(CachedPreciseUsageSummary {
-            codex_home: codex_home.to_path_buf(),
-            summary: summary.clone(),
-            refreshed_at: now,
-            precise: false,
-            state_database_signature: Some(state_database_signature(codex_home)),
-        });
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached) = guard.as_ref() {
+            if cached.codex_home == codex_home {
+                if now.duration_since(cached.refreshed_at) > PRECISE_USAGE_SUMMARY_TTL {
+                    schedule_precise_usage_summary_refresh(codex_home);
+                }
+                warnings.push(live_rate_summary_warning(
+                    "精确 token 缓存正在更新，实时栏暂用上一版安全统计".into(),
+                ));
+                return cached.summary.clone();
+            }
+        }
     }
-    summary
+
+    schedule_precise_usage_summary_refresh(codex_home);
+    warnings.push(live_rate_summary_warning(
+        "精确 token 缓存尚未就绪，已忽略 state_5.sqlite 的重复线程口径".into(),
+    ));
+    UsageSummary::default()
+}
+
+fn schedule_precise_usage_summary_refresh(codex_home: &Path) {
+    let codex_home = codex_home.to_path_buf();
+    let in_flight = PRECISE_USAGE_SUMMARY_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(mut guard) = in_flight.lock() {
+        if !guard.insert(codex_home.clone()) {
+            return;
+        }
+    } else {
+        return;
+    }
+
+    std::thread::spawn(move || {
+        let _ = token_count_jsonl::dashboard_snapshot(&codex_home);
+        if let Some(in_flight) = PRECISE_USAGE_SUMMARY_REFRESH_IN_FLIGHT.get() {
+            if let Ok(mut guard) = in_flight.lock() {
+                guard.remove(&codex_home);
+            }
+        }
+    });
 }
 
 fn read_unread_summary_cached(codex_home: &Path) -> UnreadSummary {

@@ -33,8 +33,8 @@ fn read_snapshot_counts_recent_stream_deltas() {
     let snapshot = read_snapshot(&root, None);
     assert!(snapshot.tokens_per_second > 0.0);
     assert_eq!(snapshot.thread_title, "实时测速测试");
-    assert_eq!(snapshot.total_tokens_today, 300);
-    assert_eq!(snapshot.requests_today, 1);
+    assert_eq!(snapshot.total_tokens_today, 0);
+    assert_eq!(snapshot.requests_today, 0);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -102,6 +102,29 @@ fn sqlite_tool_argument_deltas_are_distributed_to_avoid_fake_spikes() {
 }
 
 #[test]
+fn read_snapshot_counts_received_message_log_stream_delta() {
+    let root = temp_root("live-rate-log-target-received-message");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "log target 会话", 300);
+    create_logs_database(&root, |connection, now| {
+        insert_log(
+            connection,
+            1,
+            "thread-a",
+            now,
+            "log",
+            r#"Received message {"type":"response.output_text.delta","delta":"new codex log target visible stream","item_id":"item-a","sequence_number":1}"#,
+        );
+    });
+
+    let snapshot = read_snapshot(&root, None);
+    assert!(snapshot.tokens_per_second > 0.0);
+    assert_eq!(snapshot.thread_title, "log target 会话");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn read_snapshot_includes_selected_thread_rate() {
     let root = temp_root("live-rate-selected-thread");
     fs::create_dir_all(&root).unwrap();
@@ -145,17 +168,21 @@ fn read_snapshot_keeps_idle_state_with_warning_when_logs_database_is_missing() {
     let snapshot = read_snapshot(&root, None);
 
     assert_eq!(snapshot.tokens_per_second, 0.0);
-    assert_eq!(snapshot.total_tokens_today, 300);
+    assert_eq!(snapshot.total_tokens_today, 0);
     assert!(snapshot
         .warnings
         .iter()
         .any(|warning| warning.source == "live_rate_stream"));
+    assert!(snapshot
+        .warnings
+        .iter()
+        .any(|warning| warning.source == "live_rate_summary"));
 
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn read_snapshot_uses_lightweight_state_summary_before_precise_cache_exists() {
+fn read_snapshot_uses_safe_shell_before_precise_cache_exists() {
     let root = temp_root("live-rate-precise-summary");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
@@ -163,21 +190,51 @@ fn read_snapshot_uses_lightweight_state_summary_before_precise_cache_exists() {
     write_token_session(&root, 1_000, 40);
 
     let snapshot = read_snapshot(&root, None);
-    assert_eq!(snapshot.total_tokens_today, 9_999_999);
-    assert_eq!(snapshot.requests_today, 1);
+    assert_eq!(snapshot.total_tokens_today, 0);
+    assert_eq!(snapshot.requests_today, 0);
+    assert!(snapshot
+        .warnings
+        .iter()
+        .any(|warning| warning.source == "live_rate_summary"));
 
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn fallback_usage_summary_invalidates_when_state_database_changes() {
+fn read_snapshot_backgrounds_precise_summary_after_safe_shell() {
+    let root = temp_root("live-rate-background-precise-summary");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
+    create_logs_database(&root, |_connection, _now| {});
+    write_token_session(&root, 1_000, 40);
+
+    let first = read_snapshot(&root, None);
+    assert_eq!(first.total_tokens_today, 0);
+
+    for _ in 0..50 {
+        std::thread::sleep(Duration::from_millis(20));
+        let snapshot = read_snapshot(&root, None);
+        if snapshot.total_tokens_today == 40 {
+            assert_eq!(snapshot.requests_today, 1);
+            assert_eq!(snapshot.total_tokens, 1_040);
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+        assert_ne!(snapshot.total_tokens_today, 9_999_999);
+    }
+
+    panic!("background precise summary did not become available");
+}
+
+#[test]
+fn state_token_summary_is_not_used_for_live_totals() {
     let root = temp_root("live-rate-fallback-state-signature");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "旧大会话今天更新", 10);
     create_logs_database(&root, |_connection, _now| {});
 
     let first = read_snapshot(&root, None);
-    assert_eq!(first.total_tokens_today, 10);
+    assert_eq!(first.total_tokens_today, 0);
 
     {
         let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
@@ -190,7 +247,7 @@ fn fallback_usage_summary_invalidates_when_state_database_changes() {
     }
 
     let second = read_snapshot(&root, None);
-    assert_eq!(second.total_tokens_today, 20);
+    assert_eq!(second.total_tokens_today, 0);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -231,8 +288,8 @@ fn floating_snapshot_rejects_stale_precise_summary_after_session_changes() {
     append_token_count_to_first_session(&root, 80);
     let changed = read_snapshot(&root, None);
     assert_eq!(
-        changed.total_tokens_today, 9_999_999,
-        "stale precise cache should be rejected so live snapshot falls back to current state summary"
+        changed.total_tokens_today, 40,
+        "stale precise cache should keep the last safe precise summary instead of falling back to duplicated state summary"
     );
 
     fs::remove_dir_all(root).unwrap();
@@ -404,7 +461,7 @@ fn read_snapshot_falls_back_to_rollout_assistant_message_when_logs_have_no_new_r
 }
 
 #[test]
-fn read_snapshot_ignores_agent_message_duplicate_and_distributes_assistant_message() {
+fn read_snapshot_counts_agent_message_but_deduplicates_response_item_copy() {
     let root = temp_root("live-rate-rollout-duplicate-message");
     fs::create_dir_all(&root).unwrap();
     let rollout_path = root.join("sessions/rollout-thread-a.jsonl");
@@ -438,6 +495,99 @@ fn read_snapshot_ignores_agent_message_duplicate_and_distributes_assistant_messa
     );
 
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn read_snapshot_counts_rollout_agent_message_when_response_item_is_missing() {
+    let root = temp_root("live-rate-rollout-agent-message");
+    fs::create_dir_all(&root).unwrap();
+    let rollout_path = root.join("sessions/rollout-thread-a.jsonl");
+    create_state_database(&root, "thread-a", "rollout agent 会话", 300);
+    set_thread_rollout_path(&root, "thread-a", &rollout_path);
+    create_logs_database(&root, |_connection, _now| {});
+    fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+    fs::File::create(&rollout_path).unwrap();
+
+    let _ = read_snapshot(&root, None);
+    append_rollout_line(
+        &rollout_path,
+        "event_msg",
+        r#"{"type":"agent_message","message":"rollout agent message visible output"}"#,
+    );
+
+    let snapshot = read_snapshot(&root, None);
+    assert!(snapshot.tokens_per_second > 0.0);
+    assert_eq!(snapshot.thread_title, "rollout agent 会话");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rollout_token_count_reasoning_does_not_drive_live_rate() {
+    let root = temp_root("live-rate-rollout-reasoning-not-live");
+    fs::create_dir_all(&root).unwrap();
+    let rollout_path = root.join("sessions/rollout-thread-a.jsonl");
+    create_state_database(&root, "thread-a", "rollout reasoning 会话", 300);
+    set_thread_rollout_path(&root, "thread-a", &rollout_path);
+    create_logs_database(&root, |_connection, _now| {});
+    fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+    fs::File::create(&rollout_path).unwrap();
+
+    let _ = read_snapshot(&root, None);
+    append_rollout_line(
+        &rollout_path,
+        "event_msg",
+        r#"{"type":"token_count","info":{"last_token_usage":{"reasoning_output_tokens":10000}}}"#,
+    );
+
+    let now = current_time_seconds();
+    let metrics = rollout::read_rollout_metrics(&root, now);
+    let rollup = stream::rollup_metric_events(&metrics, now, None);
+    assert!(rollup.breakdown.reasoning > 0);
+    assert_eq!(rollup.tokens_per_second, 0.0);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn live_rate_display_cap_is_applied_per_session_before_global_sum() {
+    let now = current_time_seconds();
+    let metrics = vec![
+        exact_visible_metric("thread-a", "item-a", now, 100),
+        exact_visible_metric("thread-b", "item-b", now, 100),
+    ];
+
+    let all = stream::rollup_metric_events(&metrics, now, None);
+    let selected = stream::rollup_metric_events(&metrics, now, Some("thread-a"));
+
+    assert_eq!(all.tokens_per_second, 160.0);
+    assert_eq!(selected.tokens_per_second, 80.0);
+}
+
+#[test]
+fn live_rate_unknown_events_are_not_forced_into_one_global_cap_bucket() {
+    let now = current_time_seconds();
+    let metrics = vec![
+        exact_visible_metric_without_thread("item-a", now, 100),
+        exact_visible_metric_without_thread("item-b", now, 100),
+    ];
+
+    let all = stream::rollup_metric_events(&metrics, now, None);
+
+    assert_eq!(all.tokens_per_second, 160.0);
+}
+
+#[test]
+fn live_rate_same_thread_still_caps_multiple_items_to_one_session() {
+    let now = current_time_seconds();
+    let metrics = vec![
+        exact_visible_metric("thread-a", "item-a", now, 100),
+        exact_visible_metric("thread-a", "item-b", now, 100),
+    ];
+
+    let all = stream::rollup_metric_events(&metrics, now, None);
+
+    assert_eq!(all.tokens_per_second, 80.0);
 }
 
 #[test]
@@ -731,4 +881,45 @@ fn insert_log(
             params![id, ts, target, feedback_log_body, thread_id],
         )
         .unwrap();
+}
+
+fn exact_visible_metric(
+    thread_id: &str,
+    item_id: &str,
+    timestamp: f64,
+    tokens: u32,
+) -> stream::LiveMetricEvent {
+    stream::LiveMetricEvent {
+        event_type: "test.visible".into(),
+        timestamp,
+        thread_id: Some(thread_id.into()),
+        item_id: item_id.into(),
+        sequence_number: Some(i64::from(tokens)),
+        category: stream::LiveTokenCategory::VisibleText,
+        delta: String::new(),
+        exact_tokens: Some(tokens),
+        start_timestamp: None,
+        distributed: false,
+        dedupe_key: None,
+    }
+}
+
+fn exact_visible_metric_without_thread(
+    item_id: &str,
+    timestamp: f64,
+    tokens: u32,
+) -> stream::LiveMetricEvent {
+    stream::LiveMetricEvent {
+        event_type: "test.visible".into(),
+        timestamp,
+        thread_id: None,
+        item_id: item_id.into(),
+        sequence_number: Some(i64::from(tokens)),
+        category: stream::LiveTokenCategory::VisibleText,
+        delta: String::new(),
+        exact_tokens: Some(tokens),
+        start_timestamp: None,
+        distributed: false,
+        dedupe_key: None,
+    }
 }

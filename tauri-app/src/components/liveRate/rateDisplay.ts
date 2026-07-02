@@ -5,6 +5,9 @@ const ALPHA_UP = 0.28;
 const ALPHA_DOWN = 0.18;
 const ZERO_THRESHOLD = 0.05;
 const MIN_VISIBLE_FILL = 0.03;
+const SELECTED_SESSION_DISPLAY_CAP = 80;
+
+export type RateDisplayScope = "selectedSession" | "allSessions";
 
 export function sanitizeRateFullScale(value: number): number {
   if (!Number.isFinite(value)) {
@@ -24,6 +27,11 @@ export function rateFillScale(tokensPerSecond: number, fullScale: number): numbe
 
 export function rateFillStyle(tokensPerSecond: number, fullScale: number): CSSProperties {
   return { "--rate-fill-scale": String(rateFillScale(tokensPerSecond, fullScale)) } as CSSProperties;
+}
+
+export function displayRawRate(raw: number, scope: RateDisplayScope): number {
+  const value = Number.isFinite(raw) ? Math.max(0, raw) : 0;
+  return scope === "selectedSession" ? Math.min(value, SELECTED_SESSION_DISPLAY_CAP) : value;
 }
 
 export function formatLiveRateValue(value: number): string {
@@ -50,10 +58,13 @@ export function smoothLiveRateSnapshot(
 ): LiveRateSnapshot {
   return {
     ...snapshot,
-    tokensPerSecond: smoothLiveRateValue(previous?.tokensPerSecond ?? 0, snapshot.tokensPerSecond),
+    tokensPerSecond: smoothLiveRateValue(
+      previous?.tokensPerSecond ?? 0,
+      displayRawRate(snapshot.tokensPerSecond, "allSessions"),
+    ),
     selectedTokensPerSecond: smoothLiveRateValue(
       previous?.selectedTokensPerSecond ?? 0,
-      snapshot.selectedTokensPerSecond,
+      displayRawRate(snapshot.selectedTokensPerSecond, "selectedSession"),
     ),
   };
 }

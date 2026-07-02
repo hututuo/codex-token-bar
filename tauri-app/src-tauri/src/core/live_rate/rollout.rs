@@ -237,7 +237,22 @@ fn rollout_line_metrics(
     }
 
     if record_type == "event_msg" && payload_type == "agent_message" {
-        return Vec::new();
+        let text = message_text(&Value::Object(payload.clone()));
+        if text.is_empty() {
+            return Vec::new();
+        }
+        return vec![metric_with_dedupe(
+            thread_id,
+            timestamp,
+            "rollout.agent_message",
+            key_prefix,
+            LiveTokenCategory::VisibleText,
+            text.clone(),
+            true,
+            None,
+            None,
+            visible_text_dedupe_key(thread_id, timestamp, &text),
+        )];
     }
 
     if record_type == "response_item"
@@ -248,16 +263,17 @@ fn rollout_line_metrics(
         if text.is_empty() {
             return Vec::new();
         }
-        return vec![metric(
+        return vec![metric_with_dedupe(
             thread_id,
             timestamp,
             "rollout.assistant_message",
             key_prefix,
             LiveTokenCategory::VisibleText,
-            text,
+            text.clone(),
             true,
             None,
             None,
+            visible_text_dedupe_key(thread_id, timestamp, &text),
         )];
     }
 
@@ -353,6 +369,32 @@ fn metric(
     start_timestamp: Option<f64>,
 ) -> LiveMetricEvent {
     let dedupe_key = format!("{event_type}:{thread_id}:{item_id}:{timestamp:.6}:{delta}");
+    metric_with_dedupe(
+        thread_id,
+        timestamp,
+        event_type,
+        item_id,
+        category,
+        delta.clone(),
+        distributed,
+        exact_tokens,
+        start_timestamp,
+        dedupe_key,
+    )
+}
+
+fn metric_with_dedupe(
+    thread_id: &str,
+    timestamp: f64,
+    event_type: &str,
+    item_id: String,
+    category: LiveTokenCategory,
+    delta: String,
+    distributed: bool,
+    exact_tokens: Option<u32>,
+    start_timestamp: Option<f64>,
+    dedupe_key: String,
+) -> LiveMetricEvent {
     LiveMetricEvent {
         event_type: event_type.into(),
         timestamp,
@@ -366,6 +408,20 @@ fn metric(
         distributed,
         dedupe_key: Some(dedupe_key),
     }
+}
+
+fn visible_text_dedupe_key(thread_id: &str, timestamp: f64, text: &str) -> String {
+    let bucket = timestamp.floor() as i64;
+    format!("rollout.visible:{thread_id}:{bucket}:{}", fnv1a64(text))
+}
+
+fn fnv1a64(text: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn message_text(value: &Value) -> String {

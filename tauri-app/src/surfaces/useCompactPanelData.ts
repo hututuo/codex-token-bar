@@ -34,7 +34,8 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
   const quotaIntervalMs = options.quotaIntervalMs ?? DEFAULT_QUOTA_INTERVAL_MS;
 
   const rawSnapshot = useCompactPanelSnapshot({
-    active: active && liveRateEnabled,
+    active,
+    liveRateEnabled,
   });
   const quota = useCompactPanelQuota({
     active,
@@ -53,14 +54,15 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
 
   const snapshot = useMemo(
     () => {
-      const compactPaceLabel = quota.quota.paceLabel && quota.quota.paceLabel !== "额度待读取"
+      const hasQuotaPace = quota.quota.paceLabel && quota.quota.paceLabel !== "额度待读取";
+      const compactPaceLabel = hasQuotaPace
         ? compactFloatingUsageStatus(quota.quota.paceLabel, quota.quota.resetCredit)
         : rawSnapshot.trendLabel;
 
       return {
         ...rawSnapshot,
         trendLabel: compactPaceLabel,
-        resetCreditLabel: compactNearestResetCreditExpiryLabel(quota.quota.resetCredit),
+        resetCreditLabel: hasQuotaPace ? "" : compactNearestResetCreditExpiryLabel(quota.quota.resetCredit),
         fiveHourLabel: quotaLabels.fiveHour,
         fiveHourRemainingPercent: quota.quota.fiveHour.remainingPercent,
         sevenDayLabel: quotaLabels.sevenDay,

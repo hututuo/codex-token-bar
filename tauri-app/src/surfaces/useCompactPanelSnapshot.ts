@@ -1,21 +1,55 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { emptyFloatingPanelSnapshot } from "../api/fallback";
+import { readUsageSummarySnapshot } from "../api/dashboardClient";
 import { readLiveRateSnapshot } from "../api/liveClient";
 import { desktopPlatform } from "../platform/desktop";
-import type { FloatingPanelSnapshot, LiveRateSnapshot } from "../types/dashboard";
+import type { FloatingPanelSnapshot, UsageSummarySnapshot } from "../types/dashboard";
+import {
+  disabledFloatingLiveSnapshot,
+  floatingSnapshotForLiveRate,
+  mergeFloatingUsageSummary,
+} from "./compactPanelSnapshotModel";
 
 interface CompactPanelSnapshotOptions {
   active: boolean;
+  liveRateEnabled: boolean;
 }
 
 export function useCompactPanelSnapshot({
   active,
+  liveRateEnabled,
 }: CompactPanelSnapshotOptions): FloatingPanelSnapshot {
   const [rawSnapshot, setRawSnapshot] = useState<FloatingPanelSnapshot>(emptyFloatingPanelSnapshot);
+  const usageSummaryRef = useRef<UsageSummarySnapshot | null>(null);
 
   useEffect(() => {
     if (!active) {
+      usageSummaryRef.current = null;
       setRawSnapshot(emptyFloatingPanelSnapshot);
+      return;
+    }
+
+    let cancelled = false;
+    const refreshUsageSummary = async () => {
+      const summary = await readUsageSummarySnapshot();
+      if (!cancelled && summary) {
+        usageSummaryRef.current = summary;
+        setRawSnapshot((current) => mergeFloatingUsageSummary(current, summary));
+      }
+    };
+
+    void refreshUsageSummary();
+    const timer = setInterval(refreshUsageSummary, 60_000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [active]);
+
+  useEffect(() => {
+    if (!active || !liveRateEnabled) {
+      setRawSnapshot(disabledFloatingLiveSnapshot);
       return;
     }
 
@@ -24,7 +58,7 @@ export function useCompactPanelSnapshot({
 
     void desktopPlatform.onLiveRateSnapshot((liveRate) => {
       if (!cancelled) {
-        setRawSnapshot(floatingSnapshotFromLiveRate(liveRate));
+        setRawSnapshot(floatingSnapshotForLiveRate(liveRate, usageSummaryRef.current));
       }
     }).then((listener) => {
       if (cancelled) {
@@ -37,7 +71,7 @@ export function useCompactPanelSnapshot({
     void desktopPlatform.startLiveRateStream(null, false);
     void readLiveRateSnapshot(null).then((liveRate) => {
       if (!cancelled) {
-        setRawSnapshot(floatingSnapshotFromLiveRate(liveRate));
+        setRawSnapshot(floatingSnapshotForLiveRate(liveRate, usageSummaryRef.current));
       }
     });
 
@@ -46,30 +80,7 @@ export function useCompactPanelSnapshot({
       unlisten?.();
       void desktopPlatform.stopLiveRateStream();
     };
-  }, [active]);
+  }, [active, liveRateEnabled]);
 
   return rawSnapshot;
-}
-
-function floatingSnapshotFromLiveRate(snapshot: LiveRateSnapshot): FloatingPanelSnapshot {
-  return {
-    ...emptyFloatingPanelSnapshot,
-    tokensPerSecond: snapshot.tokensPerSecond,
-    maxTokensPerSecond: snapshot.maxTokensPerSecond,
-    totalTokensLabel: `总 ${compactTokens(snapshot.totalTokens)}`,
-    todayTokensLabel: `今 ${compactTokens(snapshot.totalTokensToday)}`,
-    requestsLabel: `次 ${snapshot.requestsToday}`,
-    unread: snapshot.unreadSummary.active,
-    unreadSummary: snapshot.unreadSummary,
-  };
-}
-
-function compactTokens(value: number): string {
-  if (value >= 100_000_000) {
-    return `${(value / 100_000_000).toFixed(1)}亿`;
-  }
-  if (value >= 10_000) {
-    return `${(value / 10_000).toFixed(1)}万`;
-  }
-  return String(Math.max(0, Math.round(value)));
 }

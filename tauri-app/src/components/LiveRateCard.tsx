@@ -90,7 +90,7 @@ export function LiveRateCard({
             onFullScaleChange={onTokenRateFullScaleChange}
           />
           <p className="live-rate-note">
-            官方为避免高频日志写入损耗硬盘，砍掉了很多流式输出日志；大部分速率只是估算，只用于判断 Codex 是否正在干活，不代表真实速率。
+            官方为减少磁盘写入关闭了部分流式日志，因此这里显示的是估算速率，主要用于判断 Codex 是否正在工作，不代表真实 tok/s。
           </p>
         </div>
 

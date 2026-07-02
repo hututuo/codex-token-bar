@@ -7,6 +7,7 @@ const COMPLETION_PAYLOAD_TOKENS_PER_SECOND: f64 = 55.0;
 const MINIMUM_COMPLETION_PAYLOAD_SECONDS: f64 = 1.0;
 const MAXIMUM_COMPLETION_PAYLOAD_SECONDS: f64 = 30.0;
 const DISTRIBUTION_STEP_SECONDS: f64 = 0.5;
+const SINGLE_SESSION_DISPLAY_CAP: f64 = 80.0;
 
 pub(super) fn rollup_stream_rows(
     rows: &[LogRow],
@@ -31,7 +32,7 @@ pub(super) fn rollup_metric_events(
     let mut seen = HashSet::<String>::new();
     let mut text_by_key = HashMap::<String, String>::new();
     let mut tokens_by_key = HashMap::<String, u32>::new();
-    let mut rolling_deltas = Vec::<(f64, u32)>::new();
+    let mut rolling_deltas = Vec::<(String, f64, u32)>::new();
     let mut latest_thread_id = None;
     let mut breakdown = LiveTokenBreakdown::default();
     let window_start = now - WINDOW_SECONDS;
@@ -69,7 +70,7 @@ pub(super) fn rollup_metric_events(
                 distributed_deltas(tokens, metric.start_timestamp, metric.timestamp)
             {
                 if delta_tokens > 0 && time >= window_start && time <= now + 0.25 {
-                    rolling_deltas.push((time, delta_tokens));
+                    rolling_deltas.push((thread_rate_key(metric), time, delta_tokens));
                 }
             }
             if tokens > 0 && metric.timestamp >= window_start && metric.timestamp <= now + 0.25 {
@@ -85,7 +86,7 @@ pub(super) fn rollup_metric_events(
                 && metric.timestamp >= window_start
                 && metric.timestamp <= now + 0.25
             {
-                rolling_deltas.push((metric.timestamp, exact_tokens));
+                rolling_deltas.push((thread_rate_key(metric), metric.timestamp, exact_tokens));
                 if let Some(thread_id) = metric.thread_id.clone() {
                     latest_thread_id = Some(thread_id);
                 }
@@ -102,14 +103,28 @@ pub(super) fn rollup_metric_events(
         let delta_tokens = next_tokens.saturating_sub(previous_tokens);
         breakdown.add(metric.category, delta_tokens);
         if delta_tokens > 0 && metric.timestamp >= window_start && metric.timestamp <= now + 0.25 {
-            rolling_deltas.push((metric.timestamp, delta_tokens));
+            rolling_deltas.push((thread_rate_key(metric), metric.timestamp, delta_tokens));
             if let Some(thread_id) = metric.thread_id.clone() {
                 latest_thread_id = Some(thread_id);
             }
         }
     }
 
-    let tokens_per_second = rolling_rate(&rolling_deltas, now);
+    let tokens_per_second = if selected_thread_id.is_some() {
+        rolling_rate_for_entries(
+            &rolling_deltas
+                .iter()
+                .map(|(_, time, tokens)| (*time, *tokens))
+                .collect::<Vec<_>>(),
+            now,
+        )
+        .min(SINGLE_SESSION_DISPLAY_CAP)
+    } else {
+        rolling_rate_by_thread(&rolling_deltas, now)
+            .into_values()
+            .map(|rate| rate.min(SINGLE_SESSION_DISPLAY_CAP))
+            .sum()
+    };
     LiveRateRollup {
         tokens_per_second,
         latest_thread_id: if tokens_per_second > 0.0 {
@@ -155,6 +170,7 @@ fn stream_event(row: &LogRow) -> Option<ResponseStreamEvent> {
     let marker = match row.target.as_str() {
         "codex_api::sse::responses" => "SSE event: ",
         "codex_api::endpoint::responses_websocket" => "websocket event: ",
+        "log" => "Received message ",
         _ => return None,
     };
     let (_, json_text) = row.feedback_log_body.split_once(marker)?;
@@ -208,7 +224,37 @@ fn metric_event(event: ResponseStreamEvent, row: &LogRow) -> Option<LiveMetricEv
     })
 }
 
-fn rolling_rate(rolling_deltas: &[(f64, u32)], now: f64) -> f64 {
+fn thread_rate_key(metric: &LiveMetricEvent) -> String {
+    if let Some(thread_id) = metric.thread_id.as_deref().filter(|value| !value.is_empty()) {
+        return format!("thread:{thread_id}");
+    }
+    if metric.item_id != "unknown" && !metric.item_id.is_empty() {
+        return format!("unknown-item:{}", metric.item_id);
+    }
+    if let Some(sequence_number) = metric.sequence_number {
+        return format!("unknown-seq:{}:{sequence_number}", metric.event_type);
+    }
+    format!("unknown-event:{}:{:.3}", metric.event_type, metric.timestamp)
+}
+
+fn rolling_rate_by_thread(
+    rolling_deltas: &[(String, f64, u32)],
+    now: f64,
+) -> HashMap<String, f64> {
+    let mut grouped = HashMap::<String, Vec<(f64, u32)>>::new();
+    for (thread_id, time, tokens) in rolling_deltas {
+        grouped
+            .entry(thread_id.clone())
+            .or_default()
+            .push((*time, *tokens));
+    }
+    grouped
+        .into_iter()
+        .map(|(thread_id, entries)| (thread_id, rolling_rate_for_entries(&entries, now)))
+        .collect()
+}
+
+fn rolling_rate_for_entries(rolling_deltas: &[(f64, u32)], now: f64) -> f64 {
     let visible: Vec<(f64, u32)> = rolling_deltas
         .iter()
         .copied()
@@ -346,7 +392,6 @@ impl LiveTokenCategory {
             LiveTokenCategory::VisibleText
                 | LiveTokenCategory::ToolArguments
                 | LiveTokenCategory::PatchInput
-                | LiveTokenCategory::Reasoning
         )
     }
 }
