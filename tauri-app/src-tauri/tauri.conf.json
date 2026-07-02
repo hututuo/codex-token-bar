@@ -33,7 +33,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhBODAzRjI0RTYwNkVGRDYKUldUVzd3Ym1KRCtBaWdCaUhacUpGVXhMK0h4UkZsUWpYbUFHcm5FaHpvVGVHMzV6QVd6dlNjYUYK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNFMUI3M0M0MjhDNjY5OUEKUldTYWFjWW94SE1iUHJ5dG53aWJOdUFyaU9JdWlTTDliRm1HR3dSZHI4WG04MlNlemdmTDB5Q0YK",
       "endpoints": [
         "https://github.com/hututuo/codex-token-bar/releases/latest/download/latest-windows.json"
       ],
