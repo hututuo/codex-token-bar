@@ -24,6 +24,28 @@ function Assert-Command {
     }
 }
 
+function Invoke-Checked {
+    param(
+        [string]$Label,
+        [scriptblock]$Command
+    )
+
+    & $Command | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Label failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Write-Utf8NoBom {
+    param(
+        [string]$Path,
+        [string]$Content
+    )
+
+    $Encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $Encoding)
+}
+
 function Build-Target {
     param(
         [string]$Label,
@@ -42,7 +64,7 @@ function Build-Target {
 
     Push-Location $TauriDir
     try {
-        npm run tauri -- build --target $RustTarget | Out-Host
+        Invoke-Checked "tauri build $RustTarget" { npm run tauri -- build --target $RustTarget }
     } finally {
         Pop-Location
     }
@@ -92,13 +114,19 @@ Assert-Command "cargo"
 if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PATH -and -not $env:TAURI_SIGNING_PRIVATE_KEY) {
     throw "Missing Tauri updater signing key. Set TAURI_SIGNING_PRIVATE_KEY_PATH to the private key file before building Windows updater assets."
 }
+if ($env:TAURI_SIGNING_PRIVATE_KEY_PATH -and -not $env:TAURI_SIGNING_PRIVATE_KEY) {
+    if (-not (Test-Path $env:TAURI_SIGNING_PRIVATE_KEY_PATH)) {
+        throw "Tauri updater signing key file not found: $env:TAURI_SIGNING_PRIVATE_KEY_PATH"
+    }
+    $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw -Path $env:TAURI_SIGNING_PRIVATE_KEY_PATH
+}
 
 Push-Location $TauriDir
 try {
     if (-not $SkipNpmCi) {
-        npm ci | Out-Host
+        Invoke-Checked "npm ci" { npm ci }
     }
-    npm run build | Out-Host
+    Invoke-Checked "npm run build" { npm run build }
 } finally {
     Pop-Location
 }
@@ -130,7 +158,7 @@ $UpdateMetadata = [ordered]@{
     pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     platforms = $Platforms
 }
-$UpdateMetadata | ConvertTo-Json -Depth 5 | Set-Content -Path $LatestJsonPath -Encoding UTF8
+Write-Utf8NoBom -Path $LatestJsonPath -Content (($UpdateMetadata | ConvertTo-Json -Depth 5) + [Environment]::NewLine)
 
 $ChecksumPath = Join-Path $ReleaseDir ("SHA256SUMS-v{0}-windows.txt" -f $Version)
 $ChecksumLines = Get-ChildItem -Path $ReleaseDir -File |
@@ -140,7 +168,7 @@ $ChecksumLines = Get-ChildItem -Path $ReleaseDir -File |
         $Hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
         "{0}  {1}" -f $Hash, $_.Name
     }
-$ChecksumLines | Set-Content -Path $ChecksumPath -Encoding UTF8
+Write-Utf8NoBom -Path $ChecksumPath -Content (($ChecksumLines -join [Environment]::NewLine) + [Environment]::NewLine)
 
 Write-Host "==> Windows release assets ready"
 Write-Host "Directory: $ReleaseDir"
