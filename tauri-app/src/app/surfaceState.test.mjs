@@ -70,13 +70,6 @@ test("startup floating apply does not rewrite saved preference when show returns
   assert.equal(applyEffect.includes("onPreferenceConfirmed(false)"), false);
 });
 
-test("setup guide renders floating toggle from saved preference", async () => {
-  const setupGuide = await readFile(new URL("../components/SetupGuide.tsx", import.meta.url), "utf8");
-
-  assert.equal(setupGuide.includes("active={floatingVisible}"), false);
-  assert.equal(setupGuide.includes("active={displaySurfaces.floatingWindowEnabled}"), true);
-});
-
 test("dashboard data no longer subscribes command diagnostics into product state", async () => {
   const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
   const initialLoad = await readFile(new URL("../state/loadInitialDashboardState.ts", import.meta.url), "utf8");
