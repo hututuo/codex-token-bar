@@ -187,7 +187,7 @@ function FloatingContentRow({
           <FloatingRateMeter
             fullScale={settings.tokenRateFullScale}
             snapshot={snapshot}
-            statusText={attachedUsageStatus ? snapshot.trendLabel : undefined}
+            statusText={attachedUsageStatus ? `${snapshot.trendLabel}${snapshot.resetCreditRateBarLabel ?? snapshot.resetCreditLabel ?? ""}` : undefined}
           />
         </div>
       );
@@ -196,7 +196,7 @@ function FloatingContentRow({
         <div className="floating-row floating-usage-status" style={style}>
           <span className="floating-usage-status-card">
             <FloatingStatusText
-              text={`${snapshot.trendLabel || "节奏待读取"}${snapshot.resetCreditLabel || ""}`}
+              text={`${snapshot.trendLabel || "节奏待读取"}${snapshot.resetCreditStandaloneLabel ?? snapshot.resetCreditLabel ?? ""}`}
             />
           </span>
         </div>

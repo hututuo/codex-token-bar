@@ -72,6 +72,14 @@ test("compact panel uses live summary only as fallback before trusted summary ex
   assert.equal(snapshot.requestsLabel, "次 9");
 });
 
+test("compact panel fallback snapshot does not leak reset card placeholder", () => {
+  const snapshot = floatingSnapshotForLiveRate(liveRateSnapshot(), null);
+
+  assert.equal(snapshot.resetCreditLabel, "");
+  assert.equal(snapshot.resetCreditRateBarLabel, "");
+  assert.equal(snapshot.resetCreditStandaloneLabel, "");
+});
+
 function liveRateSnapshot(overrides) {
   return {
     scopeLabel: "全会话",

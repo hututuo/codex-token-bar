@@ -3,8 +3,9 @@ import test from "node:test";
 import {
   compactFloatingPaceLabel,
   compactFloatingUsageStatus,
-  compactNearestResetCreditExpiryLabel,
-  compactResetCreditLabel,
+  compactResetCreditCountSuffix,
+  compactResetCreditRateBarSuffix,
+  compactResetCreditStandaloneSuffix,
 } from "./compactPanelLabels.ts";
 
 test("compactFloatingPaceLabel mirrors the Swift floating compact status", () => {
@@ -17,13 +18,13 @@ test("compactFloatingPaceLabel mirrors the Swift floating compact status", () =>
   assert.equal(compactFloatingPaceLabel("额度掉太快，先刹一脚（余量低 36%）"), "刹一脚(余量低36%)");
 });
 
-test("compactResetCreditLabel appends only available reset credits like Swift", () => {
-  assert.equal(compactResetCreditLabel({ availableCount: 5, status: "5 张重置卡可用", credits: [] }), "·5卡");
-  assert.equal(compactResetCreditLabel({ availableCount: 0, status: "重置卡待读取", credits: [] }), "");
-  assert.equal(compactResetCreditLabel({ availableCount: 0, status: "0 张重置卡", credits: [] }), "");
+test("compact reset credit count suffix appends only available reset credits like Swift", () => {
+  assert.equal(compactResetCreditCountSuffix({ availableCount: 5, status: "5 张重置卡可用", credits: [] }), " · 5卡");
+  assert.equal(compactResetCreditCountSuffix({ availableCount: 0, status: "重置卡待读取", credits: [] }), "");
+  assert.equal(compactResetCreditCountSuffix({ availableCount: 0, status: "0 张重置卡", credits: [] }), "");
 });
 
-test("compactFloatingUsageStatus keeps pace and reset card count in one line", () => {
+test("compactFloatingUsageStatus keeps pace and standalone reset card suffix in one line", () => {
   const now = new Date("2026-06-26T10:00:00Z");
   assert.equal(
     compactFloatingUsageStatus("用得偏快，慢一点（低 8%）", {
@@ -31,7 +32,7 @@ test("compactFloatingUsageStatus keeps pace and reset card count in one line", (
       status: "5 张重置卡可用",
       credits: [resetCredit({ expiresAtUnix: Date.parse("2026-06-28T09:00:00Z") / 1000 })],
     }, now),
-    "慢一点(余量低8%)·5卡·2d到期",
+    "慢一点(余量低8%) · 5卡 · 近2天到期",
   );
   assert.equal(
     compactFloatingUsageStatus("用得偏快，慢一点（低 8%）", { availableCount: 0, status: "0 张重置卡", credits: [] }),
@@ -61,12 +62,12 @@ function resetCredit(overrides) {
   };
 }
 
-test("compactNearestResetCreditExpiryLabel describes the nearest available card expiry", () => {
+test("compact reset credit suffixes describe the nearest available card expiry", () => {
   const now = new Date("2026-06-26T10:00:00Z");
   const day = 24 * 60 * 60;
 
   assert.equal(
-    compactNearestResetCreditExpiryLabel({
+    compactResetCreditRateBarSuffix({
       availableCount: 2,
       status: "2 张重置卡可用",
       credits: [
@@ -74,39 +75,54 @@ test("compactNearestResetCreditExpiryLabel describes the nearest available card 
         resetCredit({ cardId: "soon", expiresAtUnix: Date.parse("2026-06-28T09:00:00Z") / 1000 }),
       ],
     }, now),
-    "·2d到期",
+    " · 2卡 · 2天",
   );
 
   assert.equal(
-    compactNearestResetCreditExpiryLabel({
+    compactResetCreditRateBarSuffix({
       availableCount: 1,
       status: "1 张重置卡可用",
       credits: [
         resetCredit({ expiresAtUnix: Date.parse("2026-06-26T15:10:00Z") / 1000 }),
       ],
     }, now),
-    "·6h到期",
+    " · 1卡 · 6h",
   );
 
   assert.equal(
-    compactNearestResetCreditExpiryLabel({
+    compactResetCreditStandaloneSuffix({
       availableCount: 1,
       status: "1 张重置卡可用",
       credits: [
         resetCredit({ expiresAtUnix: Date.parse("2026-06-26T10:45:00Z") / 1000 }),
       ],
     }, now),
-    "·45m到期",
+    " · 1卡 · 近45m到期",
   );
 
   assert.equal(
-    compactNearestResetCreditExpiryLabel({
+    compactResetCreditRateBarSuffix({
       availableCount: 1,
       status: "1 张重置卡可用",
       credits: [
         resetCredit({ status: "已使用", expiresAtUnix: Math.floor(now.getTime() / 1000) + day }),
       ],
     }, now),
-    "",
+    " · 1卡",
   );
+});
+
+test("compact reset credit suffixes do not invent expiry details for empty failed or expired states", () => {
+  const now = new Date("2026-06-26T10:00:00Z");
+  const expired = resetCredit({ expiresAtUnix: Date.parse("2026-06-26T09:00:00Z") / 1000 });
+  const used = resetCredit({ redeemedAt: "2026-06-26T09:00:00Z", expiresAtUnix: Date.parse("2026-06-27T10:00:00Z") / 1000 });
+
+  for (const summary of [
+    { availableCount: 0, status: "重置卡待读取", credits: [] },
+    { availableCount: 0, status: "获取失败", credits: [] },
+    { availableCount: 0, status: "0 张重置卡", credits: [expired, used] },
+  ]) {
+    assert.equal(compactResetCreditRateBarSuffix(summary, now), "");
+    assert.equal(compactResetCreditStandaloneSuffix(summary, now), "");
+  }
 });

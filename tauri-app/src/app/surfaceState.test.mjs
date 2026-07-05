@@ -161,7 +161,8 @@ test("usage cache initialization shows inline notice without blocking dashboard"
   const lib = await readFile(new URL("../../src-tauri/src/lib.rs", import.meta.url), "utf8");
 
   assert.equal(dashboardClient.includes("read_usage_cache_status"), true);
-  assert.equal(dashboardClient.includes("tauri-usage-cache-2026-07-v4"), true);
+  assert.equal(dashboardClient.includes("tauri-usage-cache-2026-07-v5"), true);
+  assert.equal(dashboardClient.includes("tauri-usage-cache-2026-07-v4"), false);
   assert.equal(dataSource.includes("readUsageCacheStatus"), true);
   assert.equal(preciseLoad.includes("source.readUsageCacheStatus()"), true);
   assert.equal(preciseLoad.includes("onUsageCacheStatus?.(cacheStatus)"), true);
@@ -175,6 +176,17 @@ test("usage cache initialization shows inline notice without blocking dashboard"
   assert.equal(dashboardPage.includes("首次打开或更新后可能需要一点时间，只读取本机 Codex 记录，不上传数据。"), true);
   assert.equal(styles.includes(".usage-cache-notice"), true);
   assert.equal(lib.includes("commands::dashboard::read_usage_cache_status"), true);
+});
+
+test("cache hit ranking exposes latest sort affordance", async () => {
+  const ranking = await readFile(new URL("../components/CacheHitRanking.tsx", import.meta.url), "utf8");
+  const model = await readFile(new URL("../components/cacheHitRanking/model.ts", import.meta.url), "utf8");
+
+  assert.equal(model.includes('sortOrder: CacheRankingSortOrder'), true);
+  assert.equal(model.includes('"latest"'), true);
+  assert.equal(ranking.includes("setSortOrder"), true);
+  assert.equal(ranking.includes("最新"), true);
+  assert.equal(ranking.includes("低命中"), true);
 });
 
 test("compact surfaces refresh quota every minute", async () => {

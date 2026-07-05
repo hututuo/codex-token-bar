@@ -1,9 +1,11 @@
 import type { TokenCacheUsage, TokenCacheBreakdown } from "../../types/usage";
 
 export type CacheRankingScope = "sessions" | "turns";
+export type CacheRankingSortOrder = "lowHit" | "latest";
 
 export interface CacheRankingOptions {
   scope: CacheRankingScope;
+  sortOrder?: CacheRankingSortOrder;
   excludesSingleTurnSessions: boolean;
   excludesFirstTurns: boolean;
   minimumInputTokens?: number;
@@ -16,6 +18,7 @@ export interface CacheRankingDisplayItem {
   subtitle: string;
   context: string | null;
   breakdown: TokenCacheBreakdown;
+  sortDate: string | null;
 }
 
 export function buildCacheRankingItems(
@@ -33,6 +36,7 @@ export function buildCacheRankingItems(
           subtitle: sessionSubtitle(session.breakdown, session.lastUpdated),
           context: null,
           breakdown: session.breakdown,
+          sortDate: session.lastUpdated,
         }))
     : cacheUsage.turns
         .filter((turn) => !options.excludesFirstTurns || turn.turnIndexInSession > 1)
@@ -42,27 +46,26 @@ export function buildCacheRankingItems(
           subtitle: `答：${turn.assistantResponse?.trim() || "暂无可见回答"}`,
           context: `${turn.sessionTitle || fallbackSessionTitle(turn.sessionId)} · 第 ${turn.turnIndexInSession} 轮 · ${formatMonthDayTime(turn.timestamp)}`,
           breakdown: turn.breakdown,
+          sortDate: turn.timestamp,
         }));
 
   return source
     .filter((item) => item.breakdown.inputTokens >= minimumInputTokens && item.breakdown.calls > 0)
-    .sort((left, right) => {
-      const rateDelta = cacheHitRate(left.breakdown) - cacheHitRate(right.breakdown);
-      if (Math.abs(rateDelta) > 0.0001) return rateDelta;
-      return uncachedInputTokens(right.breakdown) - uncachedInputTokens(left.breakdown);
-    })
+    .sort((left, right) => compareRankingItems(left, right, options.sortOrder ?? "lowHit"))
     .slice(0, limit);
 }
 
 export function rankingSubtitle(
   scope: CacheRankingScope,
+  sortOrder: CacheRankingSortOrder,
   excludesSingleTurnSessions: boolean,
   excludesFirstTurns: boolean,
 ) {
+  const prefix = sortOrder === "latest" ? "最新优先" : "低命中优先";
   if (scope === "sessions") {
-    return excludesSingleTurnSessions ? "低命中优先 · 已排除只有一轮的会话" : "低命中优先 · 包含单轮会话";
+    return excludesSingleTurnSessions ? `${prefix} · 已排除只有一轮的会话` : `${prefix} · 包含单轮会话`;
   }
-  return excludesFirstTurns ? "低命中优先 · 已排除每个会话首轮" : "低命中优先 · 包含首轮";
+  return excludesFirstTurns ? `${prefix} · 已排除每个会话首轮` : `${prefix} · 包含首轮`;
 }
 
 export function cacheHitRate(breakdown: TokenCacheBreakdown) {
@@ -71,6 +74,41 @@ export function cacheHitRate(breakdown: TokenCacheBreakdown) {
 
 export function uncachedInputTokens(breakdown: TokenCacheBreakdown) {
   return Math.max(0, breakdown.inputTokens - breakdown.cachedInputTokens);
+}
+
+function compareRankingItems(
+  left: CacheRankingDisplayItem,
+  right: CacheRankingDisplayItem,
+  sortOrder: CacheRankingSortOrder,
+) {
+  if (sortOrder === "latest") {
+    const dateDelta = compareSortDates(left.sortDate, right.sortDate);
+    if (dateDelta !== 0) {
+      return dateDelta;
+    }
+  }
+  return compareLowHit(left.breakdown, right.breakdown);
+}
+
+function compareSortDates(left: string | null, right: string | null) {
+  const leftTime = parsedTime(left);
+  const rightTime = parsedTime(right);
+  if (leftTime !== null && rightTime !== null && leftTime !== rightTime) {
+    return rightTime - leftTime;
+  }
+  if (leftTime !== null && rightTime === null) {
+    return -1;
+  }
+  if (leftTime === null && rightTime !== null) {
+    return 1;
+  }
+  return 0;
+}
+
+function compareLowHit(left: TokenCacheBreakdown, right: TokenCacheBreakdown) {
+  const rateDelta = cacheHitRate(left) - cacheHitRate(right);
+  if (Math.abs(rateDelta) > 0.0001) return rateDelta;
+  return uncachedInputTokens(right) - uncachedInputTokens(left);
 }
 
 function sessionSubtitle(breakdown: TokenCacheBreakdown, lastUpdated: string | null) {
@@ -91,4 +129,10 @@ function formatMonthDayTime(value: string | null) {
   const hour = `${date.getHours()}`.padStart(2, "0");
   const minute = `${date.getMinutes()}`.padStart(2, "0");
   return `${month}/${day} ${hour}:${minute}`;
+}
+
+function parsedTime(value: string | null) {
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? null : time;
 }

@@ -7,6 +7,7 @@ import {
   rankingSubtitle,
   uncachedInputTokens,
   type CacheRankingScope,
+  type CacheRankingSortOrder,
 } from "./cacheHitRanking/model";
 
 interface CacheHitRankingProps {
@@ -16,15 +17,17 @@ interface CacheHitRankingProps {
 
 export function CacheHitRanking({ cacheUsage, legacyItems = [] }: CacheHitRankingProps) {
   const [scope, setScope] = useState<CacheRankingScope>("sessions");
+  const [sortOrder, setSortOrder] = useState<CacheRankingSortOrder>("lowHit");
   const [excludesSingleTurnSessions, setExcludesSingleTurnSessions] = useState(true);
   const [excludesFirstTurns, setExcludesFirstTurns] = useState(true);
   const rankingItems = useMemo(
     () => buildCacheRankingItems(cacheUsage, {
       scope,
+      sortOrder,
       excludesSingleTurnSessions,
       excludesFirstTurns,
     }),
-    [cacheUsage, excludesFirstTurns, excludesSingleTurnSessions, scope],
+    [cacheUsage, excludesFirstTurns, excludesSingleTurnSessions, scope, sortOrder],
   );
   const fallbackItems = cacheUsage.sessions.length === 0 && cacheUsage.turns.length === 0 ? legacyItems : [];
   const hasRows = rankingItems.length > 0 || fallbackItems.length > 0;
@@ -34,7 +37,7 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [] }: CacheHitRankin
       <div className="section-title-row">
         <div>
           <h2>缓存命中排行</h2>
-          <span>{rankingSubtitle(scope, excludesSingleTurnSessions, excludesFirstTurns)}</span>
+          <span>{rankingSubtitle(scope, sortOrder, excludesSingleTurnSessions, excludesFirstTurns)}</span>
         </div>
         <div className="ranking-controls" aria-label="缓存命中排行控制">
           <button
@@ -48,6 +51,26 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [] }: CacheHitRankin
             <span>{(scope === "sessions" ? excludesSingleTurnSessions : excludesFirstTurns) ? "✓" : ""}</span>
             {scope === "sessions" ? "排除单轮会话" : "排除首轮"}
           </button>
+          <div className="ranking-scope-tabs" role="tablist" aria-label="排序方式">
+            <button
+              type="button"
+              className={sortOrder === "lowHit" ? "is-active" : ""}
+              onClick={() => setSortOrder("lowHit")}
+              role="tab"
+              aria-selected={sortOrder === "lowHit"}
+            >
+              低命中
+            </button>
+            <button
+              type="button"
+              className={sortOrder === "latest" ? "is-active" : ""}
+              onClick={() => setSortOrder("latest")}
+              role="tab"
+              aria-selected={sortOrder === "latest"}
+            >
+              最新
+            </button>
+          </div>
           <div className="ranking-scope-tabs" role="tablist" aria-label="排行类型">
             <button
               type="button"

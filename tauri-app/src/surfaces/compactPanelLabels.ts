@@ -62,19 +62,42 @@ function stableWithDetail(detail: string): string {
   return detail ? `节奏稳(${detail})` : "节奏稳（正好贴线）";
 }
 
-export function compactResetCreditLabel(summary: ResetCreditSummary): string {
+export function compactResetCreditCountSuffix(summary: ResetCreditSummary): string {
   if (summary.availableCount > 0) {
-    return `·${summary.availableCount}卡`;
+    return ` · ${summary.availableCount}卡`;
   }
   return "";
 }
 
+export function compactResetCreditRateBarSuffix(summary: ResetCreditSummary, now = new Date()): string {
+  const count = summary.availableCount ?? 0;
+  if (count <= 0) {
+    return "";
+  }
+  const countdown = nearestResetCreditExpiryCountdown(summary, now);
+  return countdown ? ` · ${count}卡 · ${countdown}` : ` · ${count}卡`;
+}
+
+export function compactResetCreditStandaloneSuffix(summary: ResetCreditSummary, now = new Date()): string {
+  const count = summary.availableCount ?? 0;
+  if (count <= 0) {
+    return "";
+  }
+  const countdown = nearestResetCreditExpiryCountdown(summary, now);
+  return countdown ? ` · ${count}卡 · 近${countdown}到期` : ` · ${count}卡`;
+}
+
 export function compactFloatingUsageStatus(label: string, summary: ResetCreditSummary, now = new Date()): string {
   const pace = compactFloatingPaceLabel(label);
-  return `${pace}${compactResetCreditLabel(summary)}${compactNearestResetCreditExpiryLabel(summary, now)}`;
+  return `${pace}${compactResetCreditStandaloneSuffix(summary, now)}`;
 }
 
 export function compactNearestResetCreditExpiryLabel(summary: ResetCreditSummary, now = new Date()): string {
+  const countdown = nearestResetCreditExpiryCountdown(summary, now);
+  return countdown ? ` · ${countdown}到期` : "";
+}
+
+function nearestResetCreditExpiryCountdown(summary: ResetCreditSummary, now = new Date()): string {
   const nearest = (summary.credits ?? [])
     .filter((credit) => isAvailableCredit(credit, now))
     .sort((left, right) => (expiresAtMillis(left) ?? Number.MAX_SAFE_INTEGER) - (expiresAtMillis(right) ?? Number.MAX_SAFE_INTEGER))[0];
@@ -94,16 +117,16 @@ export function compactNearestResetCreditExpiryLabel(summary: ResetCreditSummary
 
   if (remaining < HOUR_MS) {
     const minutes = Math.max(1, Math.ceil(remaining / (60 * 1000)));
-    return `·${minutes}m到期`;
+    return `${minutes}m`;
   }
 
   if (remaining < DAY_MS) {
     const hours = Math.max(1, Math.ceil(remaining / HOUR_MS));
-    return `·${hours}h到期`;
+    return `${hours}h`;
   }
 
   const days = Math.max(1, Math.ceil(remaining / DAY_MS));
-  return `·${days}d到期`;
+  return `${days}天`;
 }
 
 function isAvailableCredit(credit: ResetCreditDetail, now: Date): boolean {
