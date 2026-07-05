@@ -324,7 +324,7 @@ struct DashboardView: View {
             updateUsageRefreshCadence()
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
-            refreshAllData()
+            refreshAllData(trigger: .systemWake)
         }
         .onDisappear {
             usageRefreshCadenceRecoveryTask?.cancel()
@@ -407,7 +407,9 @@ struct DashboardView: View {
                 dataSourceLabel: store.dataSourceLabel,
                 dataSourceOrigin: store.dataSourceOrigin,
                 isRefreshing: store.isRefreshing,
-                onRefresh: refreshAllData,
+                onRefresh: {
+                    refreshAllData()
+                },
                 onChangeDirectory: store.chooseDataSourceDirectory,
                 onOpenProviderSync: {
                     showingProviderSync = true
@@ -483,19 +485,30 @@ struct DashboardView: View {
         )
     }
 
-    private func refreshAllData() {
-        let trace = RefreshPerformanceProbe.begin("dashboard.manualRefresh", metadata: [
+    private func refreshAllData(trigger: DashboardRefreshTrigger = .manual) {
+        let plan = DashboardRefreshPlan.make(trigger: trigger, providerSyncVisible: showingProviderSync)
+        let trace = RefreshPerformanceProbe.begin(trigger.traceName, metadata: [
+            "trigger": trigger.traceValue,
             "providerSyncVisible": showingProviderSync ? "1" : "0"
         ])
-        store.refresh()
-        trace?.mark("usageStore.refresh.called")
-        quotaStore.refresh(force: true)
-        trace?.mark("quotaStore.refresh.called")
-        radarStore.refresh()
-        trace?.mark("radarStore.refresh.called")
-        if showingProviderSync {
-            providerSyncStore.scan(dataSource: store.currentDataSource)
-            trace?.mark("providerSync.scan.called")
+        for action in plan.actions {
+            switch action {
+            case .refreshUsage:
+                store.refresh()
+                trace?.mark("usageStore.refresh.called")
+            case let .refreshQuota(force):
+                quotaStore.refresh(force: force)
+                trace?.mark("quotaStore.refresh.called")
+            case .refreshRadar:
+                radarStore.refresh()
+                trace?.mark("radarStore.refresh.called")
+            case .scanProviders:
+                providerSyncStore.scan(dataSource: store.currentDataSource)
+                trace?.mark("providerSync.scan.called")
+            case .reloadQuotaHistoryTimeline:
+                quotaHistoryStore.reload()
+                trace?.mark("quotaHistory.reload.called")
+            }
         }
         trace?.end("dispatched")
     }
