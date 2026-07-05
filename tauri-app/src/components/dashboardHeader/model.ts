@@ -15,3 +15,7 @@ export function committedCustomAccountDisplayName(
   }
   return nextName;
 }
+
+export function shouldCommitDisplayNameOnKey(key: string): boolean {
+  return key === "Enter";
+}

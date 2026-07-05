@@ -261,7 +261,6 @@ test("live rate switch stops the shared stream and preserves other refreshes", a
   const compactSnapshot = await readFile(new URL("../surfaces/useCompactPanelSnapshot.ts", import.meta.url), "utf8");
   const floatingWindow = await readFile(new URL("../floating/FloatingWindowApp.tsx", import.meta.url), "utf8");
   const statusPanel = await readFile(new URL("../status/StatusPanelApp.tsx", import.meta.url), "utf8");
-  const card = await readFile(new URL("../components/LiveRateCard.tsx", import.meta.url), "utf8");
   const shellSettings = await readFile(new URL("./useDashboardShellSettings.ts", import.meta.url), "utf8");
   const styles = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
 
@@ -279,12 +278,6 @@ test("live rate switch stops the shared stream and preserves other refreshes", a
   assert.equal(compactSnapshot.includes("mergeFloatingUsageSummary"), true);
   assert.equal(floatingWindow.includes("onDisplaySurfacesChanged"), true);
   assert.equal(statusPanel.includes("onDisplaySurfacesChanged"), true);
-  assert.equal(card.includes("实时速率已关闭"), true);
-  assert.equal(card.includes("is-live-disabled"), true);
-  assert.equal(card.includes("官方为减少磁盘写入关闭了部分流式日志"), true);
-  assert.equal(card.includes("<LiveRateSessionRow"), false);
-  assert.equal(card.includes("LiveRateSessionRow"), false);
-  assert.equal(card.includes("live-heading-line"), true);
   assert.equal(shellSettings.includes("showRateAndBar: nextEnabled"), true);
   assert.match(styles, /\.live-left\.is-live-disabled::after\s*{[\s\S]*?content: "实时速率已关闭";[\s\S]*?pointer-events: none;/);
   assert.match(styles, /\.live-heading-line\s*{[\s\S]*?display: flex;[\s\S]*?align-items: center;/);
@@ -314,14 +307,12 @@ test("live rate card exposes Swift-style reset action", async () => {
   const apiClient = await readFile(new URL("../api/client.ts", import.meta.url), "utf8");
   const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
   const dashboardPage = await readFile(new URL("../pages/DashboardPage.tsx", import.meta.url), "utf8");
-  const card = await readFile(new URL("../components/LiveRateCard.tsx", import.meta.url), "utf8");
 
   assert.equal(liveClient.includes("resetLiveRateMonitor"), true);
   assert.equal(liveClient.includes('"reset_live_rate_monitor"'), true);
   assert.equal(apiClient.includes("resetLiveRateMonitor"), true);
   assert.equal(dashboardApp.includes("onLiveRateReset={resetLiveRate}"), true);
   assert.equal(dashboardPage.includes("onLiveRateReset"), true);
-  assert.equal(card.includes("重置整体速率"), true);
 });
 
 test("manual dashboard refresh keeps the current snapshot visible", async () => {

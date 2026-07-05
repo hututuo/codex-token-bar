@@ -44,9 +44,18 @@ test("LiveRateCard does not show stream failure warning when live rate is disabl
       }),
     }));
 
+    assert.match(html, /live-card is-live-disabled/);
+    assert.match(html, /live-left is-live-disabled/);
+    assert.match(html, /live-heading-line/);
+    assert.match(html, /aria-pressed="false"/);
+    assert.match(html, />实时速率 关</);
     assert.match(html, /实时速率已关闭/);
+    assert.match(html, /官方为减少磁盘写入关闭了部分流式日志/);
+    assert.match(html, /class="live-reset-button" disabled=""/);
+    assert.match(html, /aria-label="重置整体速率"/);
     assert.doesNotMatch(html, /实时速率降级/);
     assert.doesNotMatch(html, />重试</);
+    assert.doesNotMatch(html, /LiveRateSessionRow/);
   });
 });
 

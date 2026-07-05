@@ -3,6 +3,7 @@ import { CodexHomeEditor } from "./dashboardHeader/CodexHomeEditor";
 import {
   committedCustomAccountDisplayName,
   resolveAccountDisplayName,
+  shouldCommitDisplayNameOnKey,
 } from "./dashboardHeader/model";
 import { useEffect, useState, type KeyboardEvent } from "react";
 
@@ -84,7 +85,7 @@ export function DashboardHeader({
   }
 
   function handleDisplayNameKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Enter") {
+    if (shouldCommitDisplayNameOnKey(event.key)) {
       event.currentTarget.blur();
     }
   }

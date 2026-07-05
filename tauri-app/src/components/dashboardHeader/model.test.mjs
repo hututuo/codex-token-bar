@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -7,6 +8,7 @@ import { withSsrModules } from "../../test/ssrHarness.mjs";
 import {
   committedCustomAccountDisplayName,
   resolveAccountDisplayName,
+  shouldCommitDisplayNameOnKey,
 } from "./model.ts";
 
 function renderComponent(Component, props) {
@@ -22,6 +24,36 @@ test("custom display-name commit trims draft and only skips unchanged custom val
   assert.equal(committedCustomAccountDisplayName("  New Alias  ", "Old Alias"), "New Alias");
   assert.equal(committedCustomAccountDisplayName("  Old Alias  ", "Old Alias"), null);
   assert.equal(committedCustomAccountDisplayName("Official User", ""), "Official User");
+});
+
+test("display-name edit commits only on Enter key", () => {
+  assert.equal(shouldCommitDisplayNameOnKey("Enter"), true);
+  assert.equal(shouldCommitDisplayNameOnKey("Escape"), false);
+  assert.equal(shouldCommitDisplayNameOnKey("Tab"), false);
+});
+
+test("DashboardHeader edit mode keeps a narrow blur and Enter wiring guard", async () => {
+  const source = await readFile(new URL("../DashboardHeader.tsx", import.meta.url), "utf8");
+  const editBlock = source.slice(
+    source.indexOf("{editingDisplayName ? ("),
+    source.indexOf(") : ("),
+  );
+  const keyHandler = source.slice(
+    source.indexOf("function handleDisplayNameKeyDown"),
+    source.indexOf("return ("),
+  );
+  const buttonBlock = source.slice(
+    source.indexOf("<button"),
+    source.indexOf("</button>") + "</button>".length,
+  );
+
+  assert.equal(buttonBlock.includes("onClick={beginEditDisplayName}"), true);
+  assert.equal(buttonBlock.includes("account-name-pencil"), true);
+  assert.equal(editBlock.includes("className=\"account-name-edit\""), true);
+  assert.equal(editBlock.includes("onBlur={commitDisplayName}"), true);
+  assert.equal(editBlock.includes("onKeyDown={handleDisplayNameKeyDown}"), true);
+  assert.equal(keyHandler.includes("shouldCommitDisplayNameOnKey(event.key)"), true);
+  assert.equal(keyHandler.includes("event.currentTarget.blur()"), true);
 });
 
 test("DashboardHeader renders the resolved account name without the local diagnostics strip", async () => {
