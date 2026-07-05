@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
@@ -441,10 +442,18 @@ fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) {
     let Ok(data) = serde_json::to_vec(&payload) else {
         return;
     };
-    let temp_path = path.with_extension("json.tmp");
+    let temp_path = unique_cache_temp_path(&path, "json.tmp");
     if fs::write(&temp_path, data).is_ok() {
         let _ = fs::rename(temp_path, path);
     }
+}
+
+fn unique_cache_temp_path(path: &Path, label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    path.with_extension(format!("{label}-{}-{nanos}", std::process::id()))
 }
 
 #[derive(Deserialize, Serialize)]

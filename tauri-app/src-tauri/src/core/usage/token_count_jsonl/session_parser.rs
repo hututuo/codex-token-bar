@@ -7,9 +7,7 @@ use std::path::Path;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 use time::format_description::well_known::Rfc3339;
-use time::{Duration, OffsetDateTime};
-
-const FORK_REPLAY_EXIT_GRACE: Duration = Duration::seconds(2);
+use time::OffsetDateTime;
 
 #[cfg(test)]
 static SESSION_FULL_PARSE_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -31,7 +29,6 @@ struct ParsedUsageLine {
 
 #[derive(Clone, Debug)]
 struct ParsedMessageLine {
-    timestamp: OffsetDateTime,
     message: String,
 }
 
@@ -148,13 +145,8 @@ pub(super) fn parse_session_file_range(
         ended_with_newline = line_ended_with_newline;
         let line = line.trim_end_matches(['\r', '\n']);
         if let Some(message_line) = parse_payload_message_line(line, "user_message") {
-            if fork_replay_active {
-                let replay_reference = last_skipped_fork_replay_token_at.or(fork_replay_started_at);
-                if replay_reference
-                    .is_some_and(|reference| message_line.timestamp - reference > FORK_REPLAY_EXIT_GRACE)
-                {
-                    fork_replay_active = false;
-                }
+            if fork_replay_active && last_skipped_fork_replay_token_at.is_some() {
+                fork_replay_active = false;
             }
             current_user_prompt = message_line.message;
             assistant_fragments.clear();
@@ -258,7 +250,7 @@ fn parse_payload_message_line(line: &str, expected_type: &str) -> Option<ParsedM
         return None;
     }
     let value: Value = serde_json::from_str(line).ok()?;
-    let timestamp = parse_timestamp(value.get("timestamp")?.as_str()?)?;
+    let _timestamp = parse_timestamp(value.get("timestamp")?.as_str()?)?;
     let payload = value.get("payload")?;
     if payload.get("type")?.as_str()? != expected_type {
         return None;
@@ -267,10 +259,7 @@ fn parse_payload_message_line(line: &str, expected_type: &str) -> Option<ParsedM
     if normalized.is_empty() {
         None
     } else {
-        Some(ParsedMessageLine {
-            timestamp,
-            message: normalized,
-        })
+        Some(ParsedMessageLine { message: normalized })
     }
 }
 

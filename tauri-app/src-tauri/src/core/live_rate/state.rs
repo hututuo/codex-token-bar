@@ -88,17 +88,11 @@ pub(super) fn read_recent_rollout_threads(
     } else {
         "1 = 1"
     };
-    let source_filter = if column_exists(&connection, "threads", "thread_source") {
-        "COALESCE(thread_source, 'user') != 'subagent'"
-    } else {
-        "1 = 1"
-    };
     let sql = format!(
         r#"
         SELECT id, rollout_path
         FROM threads
         WHERE {archived_filter}
-          AND {source_filter}
           AND rollout_path IS NOT NULL
           AND rollout_path <> ''
         ORDER BY COALESCE(updated_at_ms, updated_at * 1000) DESC, id ASC

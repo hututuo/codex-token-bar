@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 use time::OffsetDateTime;
 
 const TOKEN_EVENT_CACHE_VERSION: u32 = 6;
@@ -108,7 +108,7 @@ impl TokenEventCache {
         }
         let data = serde_json::to_vec(self)
             .map_err(|error| format!("序列化精确 token 缓存失败：{error}"))?;
-        let temp_path = path.with_extension("json.tmp");
+        let temp_path = unique_temp_path(&path, "json.tmp");
         fs::write(&temp_path, data).map_err(|error| {
             format!("写入精确 token 缓存失败：{}（{}）", temp_path.display(), error)
         })?;
@@ -165,8 +165,7 @@ impl TokenEventCache {
     }
 
     fn save_sharded(&self, directory: &Path) -> Result<(), String> {
-        let temp_directory = directory.with_extension("tmp");
-        let _ = fs::remove_dir_all(&temp_directory);
+        let temp_directory = unique_temp_path(directory, "tmp");
         fs::create_dir_all(&temp_directory).map_err(|error| {
             format!(
                 "创建精确 token 分片缓存目录失败：{}（{}）",
@@ -470,6 +469,15 @@ fn stable_path_fingerprint(value: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("{hash:016x}")
+}
+
+fn unique_temp_path(path: &Path, label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let suffix = format!("{label}-{}-{nanos}", std::process::id());
+    path.with_extension(suffix)
 }
 
 fn collect_json_files(root: &Path, files: &mut Vec<PathBuf>) {

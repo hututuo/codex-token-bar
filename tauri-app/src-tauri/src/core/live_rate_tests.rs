@@ -697,6 +697,31 @@ fn read_snapshot_aggregates_multiple_rollout_paths() {
 }
 
 #[test]
+fn read_snapshot_counts_subagent_active_rollout_path() {
+    let root = temp_root("live-rate-subagent-rollout");
+    fs::create_dir_all(&root).unwrap();
+    let rollout_path = root.join("sessions/rollout-subagent.jsonl");
+    create_state_database(&root, "thread-subagent", "subagent rollout", 300);
+    mark_thread_source(&root, "thread-subagent", "subagent");
+    set_thread_rollout_path(&root, "thread-subagent", &rollout_path);
+    create_logs_database(&root, |_connection, _now| {});
+    fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+    fs::File::create(&rollout_path).unwrap();
+
+    let _ = read_snapshot(&root, None);
+    append_rollout_line(
+        &rollout_path,
+        "response_item",
+        r#"{"type":"message","role":"assistant","content":[{"type":"output_text","text":"subagent active rollout should count as real work"}]}"#,
+    );
+
+    let snapshot = read_snapshot(&root, None);
+    assert!(snapshot.tokens_per_second > 0.0);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn read_snapshot_handles_missing_or_truncated_rollout_files() {
     let root = temp_root("live-rate-rollout-missing");
     fs::create_dir_all(&root).unwrap();
@@ -766,6 +791,19 @@ fn set_thread_rollout_path(root: &Path, thread_id: &str, rollout_path: &Path) {
         .execute(
             "UPDATE threads SET rollout_path = ?1 WHERE id = ?2;",
             params![rollout_path.to_string_lossy(), thread_id],
+        )
+        .unwrap();
+}
+
+fn mark_thread_source(root: &Path, thread_id: &str, thread_source: &str) {
+    let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
+    connection
+        .execute("ALTER TABLE threads ADD COLUMN thread_source TEXT DEFAULT 'user';", [])
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE threads SET thread_source = ?1 WHERE id = ?2;",
+            params![thread_source, thread_id],
         )
         .unwrap();
 }

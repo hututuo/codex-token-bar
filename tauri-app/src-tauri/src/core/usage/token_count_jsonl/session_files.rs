@@ -66,17 +66,11 @@ fn collect_state_rollout_files(
     } else {
         "1 = 1"
     };
-    let source_filter = if column_exists(&connection, "threads", "thread_source") {
-        "COALESCE(thread_source, 'user') != 'subagent'"
-    } else {
-        "1 = 1"
-    };
     let sql = format!(
         r#"
         SELECT rollout_path
         FROM threads
         WHERE {archived_filter}
-          AND {source_filter}
           AND rollout_path IS NOT NULL
           AND rollout_path <> '';
         "#
