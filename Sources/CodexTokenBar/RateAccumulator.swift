@@ -255,6 +255,10 @@ struct RateAccumulator {
         rollingDeltas.contains { $0.time <= now && now - $0.time <= windowSeconds }
     }
 
+    func hasRetainedRollingActivity(now: TimeInterval, windowSeconds: TimeInterval) -> Bool {
+        rollingDeltas.contains { $0.time > now || now - $0.time <= windowSeconds }
+    }
+
     private mutating func addToBreakdown(tokens: Int, category: LiveTokenCategory) {
         switch category {
         case .visibleText:

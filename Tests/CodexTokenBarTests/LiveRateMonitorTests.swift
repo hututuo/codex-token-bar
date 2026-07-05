@@ -67,44 +67,6 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertTrue(monitorSource.contains("await readRolloutUpdates(now:"))
     }
 
-    func testPollStillReadsRolloutJsonlAfterSqliteStreamRows() throws {
-        let projectRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let monitorSourceURL = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateMonitor.swift")
-        let monitorSource = try String(contentsOf: monitorSourceURL, encoding: .utf8)
-
-        let globalRowsRange = try XCTUnwrap(monitorSource.range(of: "for row in globalRows {"))
-        let rolloutRange = try XCTUnwrap(
-            monitorSource.range(
-                of: "await readRolloutUpdates(now:",
-                range: globalRowsRange.upperBound..<monitorSource.endIndex
-            )
-        )
-        let snapshotRange = try XCTUnwrap(
-            monitorSource.range(
-                of: "updateSnapshots(now:",
-                range: rolloutRange.upperBound..<monitorSource.endIndex
-            )
-        )
-
-        XCTAssertLessThan(rolloutRange.lowerBound, snapshotRange.lowerBound)
-    }
-
-    func testPollUsesRolloutOnlyWhenSqliteRowsHaveNoUsableStreamMetrics() throws {
-        let projectRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let monitorSourceURL = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateMonitor.swift")
-        let monitorSource = try String(contentsOf: monitorSourceURL, encoding: .utf8)
-
-        XCTAssertTrue(monitorSource.contains("var processedStreamEvents = false"))
-        XCTAssertTrue(monitorSource.contains("if add(row: row) {"))
-        XCTAssertTrue(monitorSource.contains("if !processedStreamEvents {"))
-    }
-
     func testLiveRateLogReaderReturnsOnlyUsableStreamDeltaRowsAndAttribution() throws {
         let databaseURL = try makeDatabaseURL()
         let driver = SQLiteDatabaseDriver(url: databaseURL)
@@ -430,6 +392,116 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(LiveRateMonitor.displayRawRate(220, scope: .allSessions), 220, accuracy: 0.001)
         XCTAssertEqual(LiveRateMonitor.combinedAllSessionsDisplayRate([220]), 80, accuracy: 0.001)
         XCTAssertEqual(LiveRateMonitor.combinedAllSessionsDisplayRate([220, 90, 60]), 220, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testPollBatchCountsDistinctStreamAndRolloutVisibleOutput() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        let streamRow = LiveRateMonitor.LogRow(
+            id: 1,
+            threadID: "thread-1",
+            ts: 1_000,
+            tsNanos: 0,
+            target: "codex_api::sse::responses",
+            feedbackLogBody: #"SSE event: {"type":"response.output_text.delta","delta":"stream visible","item_id":"msg-stream","sequence_number":1}"#
+        )
+        let rolloutEvent = RolloutMetricEvent(
+            timestamp: 1_000.1,
+            key: "msg-rollout",
+            category: .visibleText,
+            text: "rollout visible"
+        )
+
+        monitor.testProcessPollInputs(
+            streamRows: [streamRow],
+            rolloutReads: [LiveRateMonitor.RolloutRead(threadID: "thread-1", path: "/tmp/rollout.jsonl", newOffset: 1, events: [rolloutEvent])],
+            now: 1_000.2
+        )
+
+        let expected = monitor.estimateTokenCount("stream visible", category: .visibleText)
+            + monitor.estimateTokenCount("rollout visible", category: .visibleText)
+        XCTAssertEqual(monitor.snapshot.breakdown.visibleText, expected)
+        XCTAssertGreaterThan(monitor.snapshot.rollingTokensPerSecond, 0)
+    }
+
+    @MainActor
+    func testPollBatchDeduplicatesSameVisibleOutputAcrossStreamAndRollout() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        let streamRow = LiveRateMonitor.LogRow(
+            id: 1,
+            threadID: "thread-1",
+            ts: 1_000,
+            tsNanos: 0,
+            target: "codex_api::sse::responses",
+            feedbackLogBody: #"SSE event: {"type":"response.output_text.delta","delta":"same visible","item_id":"msg-1","sequence_number":1}"#
+        )
+        let duplicateRollout = RolloutMetricEvent(
+            timestamp: 1_000.1,
+            key: "msg-1",
+            category: .visibleText,
+            text: "same visible"
+        )
+
+        monitor.testProcessPollInputs(
+            streamRows: [streamRow],
+            rolloutReads: [LiveRateMonitor.RolloutRead(threadID: "thread-1", path: "/tmp/rollout.jsonl", newOffset: 1, events: [duplicateRollout])],
+            now: 1_000.2
+        )
+
+        XCTAssertEqual(
+            monitor.snapshot.breakdown.visibleText,
+            monitor.estimateTokenCount("same visible", category: .visibleText)
+        )
+    }
+
+    @MainActor
+    func testUnattributedStreamEventsUseOneStableDisplayBucket() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "selected-thread")
+        let first = LiveRateMonitor.LogRow(
+            id: 1,
+            threadID: nil,
+            ts: 1_000,
+            tsNanos: 0,
+            target: "log",
+            feedbackLogBody: #"Received message {"type":"response.output_text.delta","delta":"one","item_id":"msg-a","sequence_number":1}"#
+        )
+        let second = LiveRateMonitor.LogRow(
+            id: 2,
+            threadID: nil,
+            ts: 1_000,
+            tsNanos: 100_000_000,
+            target: "log",
+            feedbackLogBody: #"Received message {"type":"response.output_text.delta","delta":"two","item_id":"msg-b","sequence_number":1}"#
+        )
+
+        monitor.testProcessPollInputs(streamRows: [first, second], rolloutReads: [], now: 1_000.2)
+
+        XCTAssertEqual(monitor.testTotalSessionRateKeys, [LiveRateMonitor.unattributedLiveRateSessionKey])
+    }
+
+    @MainActor
+    func testInactiveTotalSessionRateBucketsAreEvictedAfterWindowExpires() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        let first = RolloutMetricEvent(timestamp: 1_000, key: "msg-1", category: .visibleText, text: "first")
+        let second = RolloutMetricEvent(timestamp: 1_000, key: "msg-2", category: .visibleText, text: "second")
+
+        monitor.testProcessPollInputs(
+            streamRows: [],
+            rolloutReads: [
+                LiveRateMonitor.RolloutRead(threadID: "thread-1", path: "/tmp/one.jsonl", newOffset: 1, events: [first]),
+                LiveRateMonitor.RolloutRead(threadID: "thread-2", path: "/tmp/two.jsonl", newOffset: 1, events: [second])
+            ],
+            now: 1_000.1
+        )
+        XCTAssertEqual(monitor.testTotalSessionRateKeys, ["thread-1", "thread-2"])
+
+        monitor.testRefreshSnapshots(now: 1_004)
+
+        XCTAssertTrue(monitor.testTotalSessionRateKeys.isEmpty)
     }
 
     func testDisplayBucketIgnoresHighSpeedDecimalNoise() {

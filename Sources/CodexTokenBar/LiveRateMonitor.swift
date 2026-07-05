@@ -34,6 +34,7 @@ final class LiveRateMonitor: ObservableObject {
     private let startupBackfillSeconds: TimeInterval = 4.0
     private let minimumRateSpanSeconds: TimeInterval = 0.4
     nonisolated private static let selectedSessionDisplayRateCap: Double = 80
+    nonisolated static let unattributedLiveRateSessionKey = "unattributed-stream"
     private var timer: Timer?
     var logsDirectorySource: DispatchSourceFileSystemObject?
     var watchedLogsDirectory = ""
@@ -64,6 +65,8 @@ final class LiveRateMonitor: ObservableObject {
     var itemCallIDs: [String: String] = [:]
     var countedStreamFingerprints = RecentFingerprintSet(limit: 4_096)
     var countedRolloutFingerprints = RecentFingerprintSet(limit: 4_096)
+    var countedStreamVisibleFingerprints = RecentFingerprintSet(limit: 4_096)
+    var countedRolloutVisibleFingerprints = RecentFingerprintSet(limit: 4_096)
     var tokenEncoder: CoreBpe?
 
     struct LogStoreSignature: Equatable {
@@ -326,32 +329,16 @@ final class LiveRateMonitor: ObservableObject {
                 globalRows = []
             }
 
-            guard !globalRows.isEmpty else {
-                let processedRolloutEvents = shouldReadRollout ? await readRolloutUpdates(now: now) : false
-                if !processedRolloutEvents {
-                    updateSnapshots(now: now)
-                }
-                return
+            let processedStreamEvents = processStreamRows(globalRows)
+            let processedRolloutEvents = shouldReadRollout
+                ? await readRolloutUpdates(now: Date().timeIntervalSince1970)
+                : false
+            let processedEvents = processedStreamEvents || processedRolloutEvents
+            if processedEvents {
+                lastPollProcessedRows = true
+                extendFastPolling(from: Date().timeIntervalSince1970)
             }
-            lastPollProcessedRows = true
-            extendFastPolling(from: Date().timeIntervalSince1970)
-
-            var processedStreamEvents = false
-            for row in globalRows {
-                lastGlobalLogID = max(lastGlobalLogID, row.id)
-                if add(row: row) {
-                    processedStreamEvents = true
-                }
-            }
-
-            if !processedStreamEvents {
-                let processedRolloutEvents = shouldReadRollout ? await readRolloutUpdates(now: Date().timeIntervalSince1970) : false
-                if !processedRolloutEvents {
-                    updateSnapshots(now: Date().timeIntervalSince1970)
-                }
-            } else {
-                updateSnapshots(now: Date().timeIntervalSince1970)
-            }
+            updateSnapshots(now: Date().timeIntervalSince1970)
         } catch {
             snapshot.status = "读取日志失败：\(error.localizedDescription)"
         }
@@ -367,29 +354,40 @@ final class LiveRateMonitor: ObservableObject {
             let reads = try await Task.detached(priority: .utility) {
                 try Self.rolloutReads(options: options, offsets: offsets)
             }.value
-            var processedEvents = false
-
-            for read in reads {
-                rolloutOffsets[read.path] = read.newOffset
-                let events = read.events.filter { shouldCountRolloutEvent($0, threadID: read.threadID) }
-                guard !events.isEmpty else { continue }
-                processedEvents = true
-                add(events: events, threadID: read.threadID, keyThreadID: "all", to: &totalRate)
-                add(events: events, threadID: read.threadID, keyThreadID: read.threadID, toTotalSessionRateFor: read.threadID)
-                if read.threadID == threadID {
-                    add(events: events, threadID: read.threadID, keyThreadID: read.threadID, to: &selectedRate)
-                }
-            }
-
-            guard processedEvents else { return false }
-            lastPollProcessedRows = true
-            extendFastPolling(from: now)
-            updateSnapshots(now: Date().timeIntervalSince1970)
-            return true
+            return processRolloutReads(reads, now: now)
         } catch {
             snapshot.status = "读取会话流失败：\(error.localizedDescription)"
             return false
         }
+    }
+
+    private func processStreamRows(_ rows: [LogRow]) -> Bool {
+        var processedStreamEvents = false
+        for row in rows {
+            lastGlobalLogID = max(lastGlobalLogID, row.id)
+            if add(row: row) {
+                processedStreamEvents = true
+            }
+        }
+        return processedStreamEvents
+    }
+
+    private func processRolloutReads(_ reads: [RolloutRead], now: TimeInterval) -> Bool {
+        var processedEvents = false
+
+        for read in reads {
+            rolloutOffsets[read.path] = read.newOffset
+            let events = read.events.filter { shouldCountRolloutEvent($0, threadID: read.threadID) }
+            guard !events.isEmpty else { continue }
+            processedEvents = true
+            add(events: events, threadID: read.threadID, keyThreadID: "all", to: &totalRate)
+            add(events: events, threadID: read.threadID, keyThreadID: read.threadID, toTotalSessionRateFor: read.threadID)
+            if read.threadID == threadID {
+                add(events: events, threadID: read.threadID, keyThreadID: read.threadID, to: &selectedRate)
+            }
+        }
+
+        return processedEvents
     }
 
     private func add(row: LogRow) -> Bool {
@@ -399,8 +397,8 @@ final class LiveRateMonitor: ObservableObject {
 
         var processedEvent = false
         for event in Self.metricEvents(from: streamEvent, row: row, toolNames: itemToolNames) {
-            guard shouldCountStreamEvent(event) else { continue }
             let resolvedThreadID = resolveThreadID(for: event)
+            guard shouldCountStreamEvent(event, resolvedThreadID: resolvedThreadID) else { continue }
             if add(event: event, keyThreadID: "all", to: &totalRate) {
                 processedEvent = true
             }
@@ -479,7 +477,7 @@ final class LiveRateMonitor: ObservableObject {
         return false
     }
 
-    private func shouldCountStreamEvent(_ event: LiveMetricEvent) -> Bool {
+    private func shouldCountStreamEvent(_ event: LiveMetricEvent, resolvedThreadID: String?) -> Bool {
         guard event.source != .rollout,
               let category = event.category,
               !event.text.isEmpty else {
@@ -487,7 +485,18 @@ final class LiveRateMonitor: ObservableObject {
         }
         let sequence = event.sequenceNumber.map(String.init) ?? "text:\(event.text.hashValue)"
         let fingerprint = "\(event.itemID):\(category.rawValue):\(sequence)"
-        return countedStreamFingerprints.insertIfNew(fingerprint)
+        guard countedStreamFingerprints.insertIfNew(fingerprint) else { return false }
+        if let visibleFingerprint = Self.crossSourceVisibleFingerprint(
+            itemID: event.itemID,
+            category: category,
+            text: event.text
+        ) {
+            guard !countedRolloutVisibleFingerprints.contains(visibleFingerprint) else {
+                return false
+            }
+            _ = countedStreamVisibleFingerprints.insertIfNew(visibleFingerprint)
+        }
+        return true
     }
 
     private func shouldCountRolloutEvent(_ event: RolloutMetricEvent, threadID: String) -> Bool {
@@ -500,7 +509,28 @@ final class LiveRateMonitor: ObservableObject {
             String(event.exactTokens ?? -1),
             String(event.exactOutputTokens ?? -1)
         ].joined(separator: ":")
-        return countedRolloutFingerprints.insertIfNew(fingerprint)
+        guard countedRolloutFingerprints.insertIfNew(fingerprint) else { return false }
+        if let visibleFingerprint = Self.crossSourceVisibleFingerprint(
+            itemID: event.key,
+            category: event.category,
+            text: event.text
+        ) {
+            guard !countedStreamVisibleFingerprints.contains(visibleFingerprint) else {
+                _ = countedRolloutVisibleFingerprints.insertIfNew(visibleFingerprint)
+                return false
+            }
+            _ = countedRolloutVisibleFingerprints.insertIfNew(visibleFingerprint)
+        }
+        return true
+    }
+
+    nonisolated private static func crossSourceVisibleFingerprint(
+        itemID: String,
+        category: LiveTokenCategory?,
+        text: String
+    ) -> String? {
+        guard category == .visibleText, !text.isEmpty else { return nil }
+        return "\(itemID):visibleText:\(text.hashValue)"
     }
 
     private func updateTraceAttribution(from row: LogRow) {
@@ -546,8 +576,11 @@ final class LiveRateMonitor: ObservableObject {
     private func updateSnapshots(now: TimeInterval) {
         selectedRate.prune(now: now, windowSeconds: windowSeconds)
         totalRate.prune(now: now, windowSeconds: windowSeconds)
-        for key in totalSessionRates.keys {
+        for key in Array(totalSessionRates.keys) {
             totalSessionRates[key]?.prune(now: now, windowSeconds: windowSeconds)
+            if totalSessionRates[key]?.hasRetainedRollingActivity(now: now, windowSeconds: windowSeconds) != true {
+                totalSessionRates.removeValue(forKey: key)
+            }
         }
 
         guard now - lastSnapshotPublishAt >= snapshotPublishInterval || !hasActiveRollingWindow(now: now) else {
@@ -660,9 +693,7 @@ final class LiveRateMonitor: ObservableObject {
 
     nonisolated static func unattributedDisplaySessionKey(for event: LiveMetricEvent) -> String {
         if let threadID = event.threadID, !threadID.isEmpty { return threadID }
-        if let turnID = event.turnID, !turnID.isEmpty { return "turn:\(turnID)" }
-        if let callID = event.callID, !callID.isEmpty { return "call:\(callID)" }
-        return "item:\(event.itemID)"
+        return unattributedLiveRateSessionKey
     }
 
     nonisolated static func displayBucket(_ value: Double) -> Int {
@@ -708,6 +739,47 @@ final class LiveRateMonitor: ObservableObject {
 
 #if DEBUG
 extension LiveRateMonitor {
+    func testPrepareForLiveRateProcessing(
+        selectedThreadID id: String,
+        threadOptions options: [LiveThreadOption] = []
+    ) {
+        threadID = id
+        selectedThreadID = id
+        threadOptions = options
+        snapshot.threadID = id
+        snapshot.threadTitle = "Test selected"
+        totalSnapshot.threadID = "all"
+        totalSnapshot.threadTitle = "全会话输出汇总"
+        selectedRate.clear()
+        totalRate.clear()
+        totalSessionRates.removeAll()
+        selectedSmoothedTokensPerSecond = 0
+        totalSmoothedTokensPerSecond = 0
+        clearStreamState()
+    }
+
+    func testProcessPollInputs(
+        streamRows: [LogRow],
+        rolloutReads: [RolloutRead],
+        now: TimeInterval
+    ) {
+        let processedStreamEvents = processStreamRows(streamRows)
+        let processedRolloutEvents = processRolloutReads(rolloutReads, now: now)
+        if processedStreamEvents || processedRolloutEvents {
+            lastPollProcessedRows = true
+            extendFastPolling(from: now)
+        }
+        updateSnapshots(now: now)
+    }
+
+    func testRefreshSnapshots(now: TimeInterval) {
+        updateSnapshots(now: now)
+    }
+
+    var testTotalSessionRateKeys: [String] {
+        totalSessionRates.keys.sorted()
+    }
+
     nonisolated static func testMaxLogID(logsDB: String, threadID: String) throws -> Int {
         try maxLogID(logsDB: logsDB, threadID: threadID)
     }

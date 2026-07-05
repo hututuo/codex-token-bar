@@ -68,5 +68,7 @@ extension LiveRateMonitor {
         itemCallIDs.removeAll()
         countedStreamFingerprints.removeAll()
         countedRolloutFingerprints.removeAll()
+        countedStreamVisibleFingerprints.removeAll()
+        countedRolloutVisibleFingerprints.removeAll()
     }
 }
