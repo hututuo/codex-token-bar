@@ -62,15 +62,16 @@ function stableWithDetail(detail: string): string {
   return detail ? `节奏稳(${detail})` : "节奏稳（正好贴线）";
 }
 
-export function compactResetCreditCountSuffix(summary: ResetCreditSummary): string {
-  if (summary.availableCount > 0) {
-    return ` · ${summary.availableCount}卡`;
+export function compactResetCreditCountSuffix(summary: ResetCreditSummary, now = new Date()): string {
+  const count = availableResetCreditCount(summary, now);
+  if (count > 0) {
+    return ` · ${count}卡`;
   }
   return "";
 }
 
 export function compactResetCreditRateBarSuffix(summary: ResetCreditSummary, now = new Date()): string {
-  const count = summary.availableCount ?? 0;
+  const count = availableResetCreditCount(summary, now);
   if (count <= 0) {
     return "";
   }
@@ -79,7 +80,7 @@ export function compactResetCreditRateBarSuffix(summary: ResetCreditSummary, now
 }
 
 export function compactResetCreditStandaloneSuffix(summary: ResetCreditSummary, now = new Date()): string {
-  const count = summary.availableCount ?? 0;
+  const count = availableResetCreditCount(summary, now);
   if (count <= 0) {
     return "";
   }
@@ -99,7 +100,7 @@ export function compactNearestResetCreditExpiryLabel(summary: ResetCreditSummary
 
 function nearestResetCreditExpiryCountdown(summary: ResetCreditSummary, now = new Date()): string {
   const nearest = (summary.credits ?? [])
-    .filter((credit) => isAvailableCredit(credit, now))
+    .filter((credit) => isExpiringAvailableCredit(credit, now))
     .sort((left, right) => (expiresAtMillis(left) ?? Number.MAX_SAFE_INTEGER) - (expiresAtMillis(right) ?? Number.MAX_SAFE_INTEGER))[0];
   if (!nearest) {
     return "";
@@ -129,11 +130,25 @@ function nearestResetCreditExpiryCountdown(summary: ResetCreditSummary, now = ne
   return `${days}天`;
 }
 
+function availableResetCreditCount(summary: ResetCreditSummary, now: Date): number {
+  const reportedCount = Math.max(0, Math.trunc(summary.availableCount ?? 0));
+  const detailCount = (summary.credits ?? []).filter((credit) => isAvailableCredit(credit, now)).length;
+  return Math.max(reportedCount, detailCount);
+}
+
 function isAvailableCredit(credit: ResetCreditDetail, now: Date): boolean {
   if (credit.status !== "可用") {
     return false;
   }
   if (credit.redeemedAt && credit.redeemedAt !== "未使用" && credit.redeemedAt !== "未提供") {
+    return false;
+  }
+  const expiresAt = expiresAtMillis(credit);
+  return expiresAt === null || expiresAt > now.getTime();
+}
+
+function isExpiringAvailableCredit(credit: ResetCreditDetail, now: Date): boolean {
+  if (!isAvailableCredit(credit, now)) {
     return false;
   }
   const expiresAt = expiresAtMillis(credit);

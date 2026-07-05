@@ -43,8 +43,8 @@ export function nearestResetCreditCompactText(
   return nearest ? `最近 ${nearest.compactRemainingText}` : null;
 }
 
-export function resetCreditCountText(summary: ResetCreditSummary): string {
-  const count = summary.availableCount ?? 0;
+export function resetCreditCountText(summary: ResetCreditSummary, now: Date = new Date()): string {
+  const count = availableResetCreditCount(summary, now);
   if (count > 0 || (summary.credits?.length ?? 0) > 0) {
     return `${count} 张重置卡`;
   }
@@ -56,8 +56,18 @@ export function resetCreditPanelSubtitle(
   displayItems: ResetCreditDisplayItem[],
 ): string {
   const total = displayItems.length;
-  const available = summary.availableCount ?? displayItems.filter((item) => item.isAvailable).length;
+  const reported = Math.max(0, Math.trunc(summary.availableCount ?? 0));
+  const available = Math.max(reported, displayItems.filter((item) => item.isAvailable).length);
   return `共 ${total} 张；可用 ${available} 张 · 按最近到期排序`;
+}
+
+export function availableResetCreditCount(
+  summary: ResetCreditSummary,
+  now: Date = new Date(),
+): number {
+  const reported = Math.max(0, Math.trunc(summary.availableCount ?? 0));
+  const fromDetails = (summary.credits ?? []).filter((credit) => isAvailableResetCredit(credit, now)).length;
+  return Math.max(reported, fromDetails);
 }
 
 export function displaySortPrecedes(

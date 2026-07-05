@@ -94,3 +94,19 @@ test("reset credit summary keeps count and exposes nearest remaining time", () =
   assert.equal(nearestResetCreditCompactText(summary, now), "最近 剩 4h20m");
   assert.equal(resetCreditPanelSubtitle(summary, displayItems), "共 2 张；可用 2 张 · 按最近到期排序");
 });
+
+test("reset credit summary falls back to available details when reported count is stale", () => {
+  const summary = {
+    availableCount: 0,
+    status: "重置卡详情可用",
+    credits: [
+      credit({ cardId: "available", expiresAtUnix: nowUnix + 4 * 60 * 60 }),
+      credit({ cardId: "used", redeemedAt: "2026-06-25 20:00", expiresAtUnix: nowUnix + 6 * 60 * 60 }),
+      credit({ cardId: "expired", expiresAtUnix: nowUnix - 60 }),
+    ],
+  };
+  const displayItems = prepareResetCreditsForDisplay(summary.credits, now);
+
+  assert.equal(resetCreditCountText(summary, now), "1 张重置卡");
+  assert.equal(resetCreditPanelSubtitle(summary, displayItems), "共 3 张；可用 1 张 · 按最近到期排序");
+});
