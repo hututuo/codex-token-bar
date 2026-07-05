@@ -19,6 +19,7 @@ interface DashboardHeaderProps {
   onCheckForUpdate: () => Promise<void>;
   onExportCsv: () => void;
   onExportPng: () => void;
+  onOpenProviderRepair: () => void;
   onRefresh: () => Promise<void>;
   onToggleAutostart: () => void;
   refreshing: boolean;
@@ -40,6 +41,7 @@ export function DashboardHeader({
   onCheckForUpdate,
   onExportCsv,
   onExportPng,
+  onOpenProviderRepair,
   onRefresh,
   onToggleAutostart,
   refreshing,
@@ -142,6 +144,14 @@ export function DashboardHeader({
         </button>
         <button className="toolbar-button" onClick={() => setEditingPath((value) => !value)} type="button">
           {editingPath ? "收起目录" : "更改目录"}
+        </button>
+        <button
+          className="toolbar-button"
+          onClick={onOpenProviderRepair}
+          title="找回消失的历史会话"
+          type="button"
+        >
+          会话消失修复
         </button>
         <button
           className={autostartStatus.enabled ? "toolbar-button is-active" : "toolbar-button"}

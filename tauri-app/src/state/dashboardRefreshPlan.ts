@@ -28,6 +28,11 @@ export interface DashboardWakeRefreshContextInput {
   visibleRefreshIntervalMs: number;
 }
 
+export interface ManualDashboardRefreshInput {
+  providerRepairVisible: boolean;
+  dispatchers: DashboardRefreshDispatchers;
+}
+
 export function makeDashboardWakeRefreshContext({
   dashboardGeneratedAt,
   dashboardVisible,
@@ -73,6 +78,16 @@ export function makeDashboardRefreshPlan(
     actions.push("radar");
   }
   return actions;
+}
+
+export function applyManualDashboardRefresh({
+  providerRepairVisible,
+  dispatchers,
+}: ManualDashboardRefreshInput) {
+  const plan = makeDashboardRefreshPlan("manual", {
+    providerVisible: providerRepairVisible,
+  });
+  applyDashboardRefreshPlan(plan, dispatchers);
 }
 
 export function applyDashboardRefreshPlan(

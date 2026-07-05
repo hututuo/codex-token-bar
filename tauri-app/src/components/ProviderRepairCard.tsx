@@ -22,11 +22,17 @@ import { ProviderRepairSteps } from "./providerRepair/ProviderRepairSteps";
 
 interface ProviderRepairCardProps {
   id?: string;
+  onBusyChange?: (busy: boolean) => void;
   onSnapshotChange: (snapshot: ProviderRepairSnapshot) => void;
   snapshot: ProviderRepairSnapshot;
 }
 
-export function ProviderRepairCard({ id, onSnapshotChange, snapshot }: ProviderRepairCardProps) {
+export function ProviderRepairCard({
+  id,
+  onBusyChange,
+  onSnapshotChange,
+  snapshot,
+}: ProviderRepairCardProps) {
   const [backups, setBackups] = useState<ProviderRepairBackupInfo[]>([]);
   const [activeBackupId, setActiveBackupId] = useState<string | null>(null);
   const [message, setMessage] = useState(snapshot.status);
@@ -36,6 +42,13 @@ export function ProviderRepairCard({ id, onSnapshotChange, snapshot }: ProviderR
   useEffect(() => {
     setMessage(snapshot.status);
   }, [snapshot.status]);
+
+  useEffect(() => {
+    onBusyChange?.(busyAction !== null);
+    return () => {
+      onBusyChange?.(false);
+    };
+  }, [busyAction, onBusyChange]);
 
   useEffect(() => {
     let cancelled = false;

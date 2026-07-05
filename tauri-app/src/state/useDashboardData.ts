@@ -56,12 +56,14 @@ function dashboardIsVisible() {
 
 interface UseDashboardDataOptions {
   liveRateEnabled?: boolean;
+  providerRepairVisible?: boolean;
   source?: DashboardDataSource;
 }
 
 export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const source = options.source ?? dashboardDataSource;
   const liveRateEnabled = options.liveRateEnabled ?? true;
+  const providerRepairVisible = options.providerRepairVisible ?? false;
   const [state, setState] = useState<DashboardAppState>(initialDashboardState);
   const [fastSnapshotLoaded, setFastSnapshotLoaded] = useState(false);
   const [loadGeneration, setLoadGeneration] = useState(0);
@@ -85,6 +87,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     setSelectedLiveThreadId,
   } = useDashboardActions({
     source,
+    providerRepairVisible,
     setState,
     setFastSnapshotLoaded,
     setLoadGeneration,

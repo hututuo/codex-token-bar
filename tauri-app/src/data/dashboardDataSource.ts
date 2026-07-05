@@ -7,6 +7,7 @@ import {
   readPlatformCapabilities,
   readPreciseDashboardSnapshot,
   readUsageCacheStatus,
+  scanProviderRepair,
   resetCodexHome,
   setCodexHome,
 } from "../api/client";
@@ -17,6 +18,7 @@ import type {
   LiveRateSnapshot,
   LiveThreadOption,
   PlatformCapabilities,
+  ProviderRepairSnapshot,
   UsageCacheStatus,
 } from "../types/dashboard";
 
@@ -31,6 +33,7 @@ export interface DashboardDataSource {
   readAccountQuota: (forceRefresh?: boolean) => Promise<AccountQuotaBundle | null>;
   readLiveRateSnapshot: (selectedThreadId?: string | null) => Promise<LiveRateSnapshot>;
   readLiveThreadOptions: () => Promise<LiveThreadOption[]>;
+  scanProviderRepair: () => Promise<ProviderRepairSnapshot>;
 }
 
 export const dashboardDataSource: DashboardDataSource = {
@@ -44,4 +47,5 @@ export const dashboardDataSource: DashboardDataSource = {
   readAccountQuota,
   readLiveRateSnapshot,
   readLiveThreadOptions,
+  scanProviderRepair,
 };

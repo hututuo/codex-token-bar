@@ -1,0 +1,66 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { withSsrModules } from "../../test/ssrHarness.mjs";
+
+function renderComponent(Component, props) {
+  return renderToStaticMarkup(React.createElement(Component, props));
+}
+
+test("DashboardHeader renders restrained provider repair entry", async () => {
+  await withSsrModules(async (load) => {
+    const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
+    const html = renderComponent(DashboardHeader, headerProps());
+
+    const button = findButton(html, "会话消失修复");
+    assert.match(button.attrs, /class="toolbar-button/);
+    assert.match(button.attrs, /title="找回消失的历史会话"/);
+  });
+});
+
+function findButton(html, text) {
+  const pattern = new RegExp(`<button(?<attrs>[^>]*)>${text}</button>`);
+  const match = html.match(pattern);
+  assert.ok(match, `Expected button "${text}" in ${html}`);
+  return {
+    attrs: match.groups.attrs,
+  };
+}
+
+function headerProps(overrides = {}) {
+  return {
+    account: {
+      displayName: "Test User",
+      planLabel: "Plus",
+    },
+    appUpdateState: {
+      kind: "idle",
+      message: "",
+    },
+    autostartStatus: {
+      available: true,
+      enabled: false,
+      status: "disabled",
+      message: "ready",
+    },
+    codexHome: {
+      exists: true,
+      path: "/Users/test/.codex",
+      source: "auto",
+    },
+    customAccountDisplayName: "",
+    generatedAt: "2026-07-06T03:20:00.000Z",
+    onCheckForUpdate: async () => {},
+    onCodexHomeChange: async () => {},
+    onCodexHomeReset: async () => {},
+    onCustomAccountDisplayNameChange: async () => {},
+    onExportCsv: () => {},
+    onExportPng: () => {},
+    onOpenProviderRepair: () => {},
+    onRefresh: async () => {},
+    onToggleAutostart: () => {},
+    refreshing: false,
+    ...overrides,
+  };
+}

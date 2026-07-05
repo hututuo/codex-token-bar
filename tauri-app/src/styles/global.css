@@ -399,6 +399,78 @@ button {
   padding: 20px;
 }
 
+.repair-overlay {
+  position: fixed;
+  z-index: 48;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: color-mix(in srgb, var(--page) 64%, transparent);
+}
+
+.repair-panel {
+  display: grid;
+  gap: 12px;
+  width: min(980px, calc(100vw - 48px));
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: var(--panel-solid);
+  padding: 18px;
+}
+
+.repair-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.repair-panel-head span,
+.repair-panel-head p,
+.repair-panel-foot span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 640;
+}
+
+.repair-panel-head h2 {
+  margin: 2px 0 4px;
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 760;
+}
+
+.repair-panel-head p {
+  margin: 0;
+}
+
+.repair-panel-close {
+  flex: 0 0 auto;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 680;
+  padding: 5px 12px;
+}
+
+.repair-panel-close:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.repair-panel-foot {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
 .setup-head {
   display: flex;
   align-items: center;

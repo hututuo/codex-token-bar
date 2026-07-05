@@ -8,6 +8,7 @@ import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type { ProviderRepairSnapshot } from "../types/dashboard";
 import {
   applyDashboardRefreshPlan,
+  applyManualDashboardRefresh,
   makeDashboardRefreshPlan,
 } from "./dashboardRefreshPlan";
 import type { DashboardAppState } from "./dashboardState";
@@ -21,7 +22,9 @@ interface DashboardActionsOptions {
     | "getCodexHome"
     | "readPlatformCapabilities"
     | "readDashboardSnapshot"
+    | "scanProviderRepair"
   >;
+  providerRepairVisible: boolean;
   setState: Dispatch<SetStateAction<DashboardAppState>>;
   setFastSnapshotLoaded: Dispatch<SetStateAction<boolean>>;
   setLoadGeneration: Dispatch<SetStateAction<number>>;
@@ -32,6 +35,7 @@ interface DashboardActionsOptions {
 
 export function useDashboardActions({
   source,
+  providerRepairVisible,
   setState,
   setFastSnapshotLoaded,
   setLoadGeneration,
@@ -56,22 +60,33 @@ export function useDashboardActions({
     source,
   ]);
 
+  const updateProviderRepair = useCallback((repair: ProviderRepairSnapshot) => {
+    setState((current) => ({ ...current, repair }));
+  }, [setState]);
+
   const reloadAll = useCallback(async () => {
-    const plan = makeDashboardRefreshPlan("manual", { providerVisible: false });
-    applyDashboardRefreshPlan(plan, {
-      refreshPreciseUsage: () => setLoadGeneration((current) => current + 1),
-      refreshQuota: () => {
-        setForceNextQuotaLoad(true);
-        setQuotaLoadGeneration((current) => current + 1);
+    applyManualDashboardRefresh({
+      providerRepairVisible,
+      dispatchers: {
+        refreshPreciseUsage: () => setLoadGeneration((current) => current + 1),
+        refreshQuota: () => {
+          setForceNextQuotaLoad(true);
+          setQuotaLoadGeneration((current) => current + 1);
+        },
+        refreshRadar: () => setRadarRefreshGeneration((current) => current + 1),
+        scanProviders: () => {
+          void source.scanProviderRepair().then(updateProviderRepair);
+        },
       },
-      refreshRadar: () => setRadarRefreshGeneration((current) => current + 1),
-      scanProviders: () => {},
     });
   }, [
+    providerRepairVisible,
+    source,
     setForceNextQuotaLoad,
     setLoadGeneration,
     setQuotaLoadGeneration,
     setRadarRefreshGeneration,
+    updateProviderRepair,
   ]);
 
   const reloadQuota = useCallback(() => {
@@ -103,10 +118,6 @@ export function useDashboardActions({
     await source.resetCodexHome();
     await reloadInitialSnapshot();
   }, [reloadInitialSnapshot, setState, source]);
-
-  const updateProviderRepair = useCallback((repair: ProviderRepairSnapshot) => {
-    setState((current) => ({ ...current, repair }));
-  }, [setState]);
 
   return {
     reloadAll,

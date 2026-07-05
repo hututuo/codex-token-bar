@@ -10,9 +10,11 @@ import type {
   LiveRateSnapshot,
   LiveThreadOption,
   PlatformCapabilities,
+  ProviderRepairSnapshot,
 } from "../types/dashboard";
 import { DashboardAnalyticsSection } from "./dashboard/DashboardAnalyticsSection";
 import { DashboardSummarySection } from "./dashboard/DashboardSummarySection";
+import { ProviderRepairPanel } from "./dashboard/ProviderRepairPanel";
 import { useDashboardPageLifecycle } from "./dashboard/useDashboardPageLifecycle";
 import { downloadDashboardCsv, downloadDashboardPng } from "../utils/dashboardExport";
 
@@ -45,6 +47,9 @@ interface DashboardPageProps {
   onLiveRateReset: () => Promise<void>;
   onLiveRateRetry: () => void;
   onLiveThreadSelect: (threadId: string) => void;
+  onProviderRepairClose: () => void;
+  onProviderRepairOpen: () => void;
+  onProviderRepairSnapshotChange: (snapshot: ProviderRepairSnapshot) => void;
   onQuotaRefresh: () => void;
   onToggleLiveRate: () => void;
   onRefresh: () => Promise<void>;
@@ -52,6 +57,8 @@ interface DashboardPageProps {
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
   usageCacheInitializing: boolean;
+  providerRepairOpen: boolean;
+  providerRepairSnapshot: ProviderRepairSnapshot;
   radarRefreshGeneration: number;
   refreshing: boolean;
   appUpdateState: AppUpdateViewState;
@@ -83,6 +90,9 @@ export function DashboardPage({
   onLiveRateReset,
   onLiveRateRetry,
   onLiveThreadSelect,
+  onProviderRepairClose,
+  onProviderRepairOpen,
+  onProviderRepairSnapshotChange,
   onQuotaRefresh,
   onToggleLiveRate,
   onRefresh,
@@ -90,6 +100,8 @@ export function DashboardPage({
   onToggleFloating,
   onToggleStatusTray,
   usageCacheInitializing,
+  providerRepairOpen,
+  providerRepairSnapshot,
   radarRefreshGeneration,
   refreshing,
   appUpdateState,
@@ -115,6 +127,7 @@ export function DashboardPage({
           onExportPng={() => {
             void downloadDashboardPng(dashboard);
           }}
+          onOpenProviderRepair={onProviderRepairOpen}
           onRefresh={onRefresh}
           onToggleAutostart={onToggleAutostart}
           refreshing={refreshing}
@@ -164,6 +177,12 @@ export function DashboardPage({
           </section>
         )}
       </section>
+      <ProviderRepairPanel
+        onClose={onProviderRepairClose}
+        onSnapshotChange={onProviderRepairSnapshotChange}
+        open={providerRepairOpen}
+        snapshot={providerRepairSnapshot}
+      />
     </main>
   );
 }

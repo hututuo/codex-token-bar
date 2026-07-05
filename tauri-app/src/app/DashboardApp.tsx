@@ -17,6 +17,7 @@ type AppUpdateState =
 export function DashboardApp() {
   const [dashboardHydrated, setDashboardHydrated] = useState(false);
   const [liveRateEnabled, setLiveRateEnabled] = useState(true);
+  const [providerRepairOpen, setProviderRepairOpen] = useState(false);
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>({
     kind: "idle",
     message: "",
@@ -38,9 +39,13 @@ export function DashboardApp() {
     updateCodexHome,
     restoreAutoCodexHome,
     reloadQuota,
+    updateProviderRepair,
     selectedLiveThreadId,
     setSelectedLiveThreadId,
-  } = useDashboardData({ liveRateEnabled });
+  } = useDashboardData({
+    liveRateEnabled,
+    providerRepairVisible: providerRepairOpen,
+  });
   const shellSettings = useDashboardShellSettings({
     dashboardHydrated,
     liveRate: readyState.liveRate,
@@ -76,10 +81,15 @@ export function DashboardApp() {
         onLiveRateReset={resetLiveRate}
         onLiveRateRetry={retryLiveRateStream}
         onLiveThreadSelect={setSelectedLiveThreadId}
+        onProviderRepairClose={() => setProviderRepairOpen(false)}
+        onProviderRepairOpen={() => setProviderRepairOpen(true)}
+        onProviderRepairSnapshotChange={updateProviderRepair}
         onQuotaRefresh={reloadQuota}
         onToggleLiveRate={shellSettings.toggleLiveRate}
         onToggleFloating={shellSettings.toggleFloatingWindow}
         onToggleStatusTray={shellSettings.toggleStatusTrayLiveText}
+        providerRepairOpen={providerRepairOpen}
+        providerRepairSnapshot={readyState.repair}
         onCodexHomeChange={updateCodexHome}
         onCodexHomeReset={restoreAutoCodexHome}
         onCustomAccountDisplayNameChange={shellSettings.updateCustomAccountDisplayName}

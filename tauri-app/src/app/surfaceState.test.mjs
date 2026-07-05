@@ -319,8 +319,8 @@ test("manual dashboard refresh keeps the current snapshot visible", async () => 
     actions.indexOf("const reloadAll ="),
   );
 
-  assert.equal(reloadAll.includes("makeDashboardRefreshPlan(\"manual\""), true);
-  assert.equal(reloadAll.includes("applyDashboardRefreshPlan(plan"), true);
+  assert.equal(reloadAll.includes("applyManualDashboardRefresh({"), true);
+  assert.equal(reloadAll.includes("providerRepairVisible,"), true);
   assert.equal(reloadAll.includes("setFastSnapshotLoaded(false)"), false);
   assert.equal(reloadAll.includes("loading: true"), false);
   assert.equal(reloadAll.includes("loadInitialDashboardState"), false);

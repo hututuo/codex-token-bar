@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   applyDashboardRefreshPlan,
+  applyManualDashboardRefresh,
   makeDashboardRefreshPlan,
   makeDashboardWakeRefreshContext,
 } from "./dashboardRefreshPlan.ts";
@@ -69,6 +70,21 @@ test("manual refresh dispatches precise usage forced quota and radar without pro
     forceQuota: 1,
     radar: 1,
     providerScan: 0,
+  });
+});
+
+test("manual refresh dispatches provider scan only while the repair surface is visible", () => {
+  assert.deepEqual(manualDispatchCounts(false), {
+    preciseUsage: 1,
+    forceQuota: 1,
+    radar: 1,
+    providerScan: 0,
+  });
+  assert.deepEqual(manualDispatchCounts(true), {
+    preciseUsage: 1,
+    forceQuota: 1,
+    radar: 1,
+    providerScan: 1,
   });
 });
 
@@ -198,3 +214,32 @@ test("applyDashboardRefreshPlan dispatches actions in plan order", () => {
 
   assert.deepEqual(calls, ["preciseUsage", "forceQuota", "radar"]);
 });
+
+function manualDispatchCounts(providerRepairVisible) {
+  const counts = {
+    preciseUsage: 0,
+    forceQuota: 0,
+    radar: 0,
+    providerScan: 0,
+  };
+
+  applyManualDashboardRefresh({
+    providerRepairVisible,
+    dispatchers: {
+      refreshPreciseUsage: () => {
+        counts.preciseUsage += 1;
+      },
+      refreshQuota: () => {
+        counts.forceQuota += 1;
+      },
+      refreshRadar: () => {
+        counts.radar += 1;
+      },
+      scanProviders: () => {
+        counts.providerScan += 1;
+      },
+    },
+  });
+
+  return counts;
+}
