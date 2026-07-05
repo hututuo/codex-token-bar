@@ -19,7 +19,14 @@ pub(super) fn parse_reset_credit_summary(value: &Value) -> ResetCreditSummary {
     let available = value
         .get("available_count")
         .and_then(|value| value.as_u64())
-        .or_else(|| Some(credits.iter().filter(|credit| credit.status == "可用").count() as u64))
+        .or_else(|| {
+            Some(
+                credits
+                    .iter()
+                    .filter(|credit| is_counted_available_credit(credit))
+                    .count() as u64,
+            )
+        })
         .unwrap_or(0);
     let available_count = u32::try_from(available).unwrap_or(u32::MAX);
     ResetCreditSummary {
@@ -146,6 +153,8 @@ fn parse_reset_credit_detail(value: &Value, index: usize) -> ResetCreditDetail {
 fn human_reset_status(status: &str, value: &Value) -> String {
     if value.get("redeemed_at").is_some_and(|value| !value.is_null())
         || value.get("redeemedAt").is_some_and(|value| !value.is_null())
+        || value.get("used_at").is_some_and(|value| !value.is_null())
+        || value.get("usedAt").is_some_and(|value| !value.is_null())
     {
         return "已使用".into();
     }
@@ -158,6 +167,13 @@ fn human_reset_status(status: &str, value: &Value) -> String {
         other if other.trim().is_empty() => "未知".into(),
         other => other.to_string(),
     }
+}
+
+fn is_counted_available_credit(credit: &ResetCreditDetail) -> bool {
+    if credit.status != "可用" {
+        return false;
+    }
+    matches!(credit.redeemed_at.as_str(), "" | "未使用" | "未提供")
 }
 
 fn associated_user_label(value: &Value) -> Option<String> {
@@ -358,5 +374,41 @@ mod tests {
         assert_eq!(summary.credits.len(), 2);
         assert_eq!(summary.credits[0].status, "可用");
         assert_eq!(summary.credits[1].status, "已使用");
+    }
+
+    #[test]
+    fn reset_credit_fallback_count_excludes_used_timestamps() {
+        let summary = parse_reset_credit_summary(&json!({
+            "credits": [
+                { "status": "available", "id": "available-reset-card" },
+                { "status": "available", "id": "used-snake", "used_at": "2026-06-12T01:00:00Z" },
+                { "status": "available", "id": "used-camel", "usedAt": "2026-06-12T01:00:00Z" },
+                { "status": "expired", "id": "expired-reset-card" },
+                { "status": "used", "id": "used-reset-card" }
+            ]
+        }));
+
+        assert_eq!(summary.available_count, 1);
+        assert_eq!(summary.status, "1 张重置卡可用");
+        assert_eq!(summary.credits[1].status, "已使用");
+        assert_eq!(summary.credits[2].status, "已使用");
+        assert_eq!(summary.credits[3].status, "已过期");
+        assert_eq!(summary.credits[4].status, "已使用");
+    }
+
+    #[test]
+    fn reset_credit_explicit_available_count_preserves_api_count_floor() {
+        let summary = parse_reset_credit_summary(&json!({
+            "available_count": 2,
+            "credits": [
+                { "status": "available", "id": "used-snake", "used_at": "2026-06-12T01:00:00Z" },
+                { "status": "expired", "id": "expired-reset-card" }
+            ]
+        }));
+
+        assert_eq!(summary.available_count, 2);
+        assert_eq!(summary.status, "2 张重置卡可用");
+        assert_eq!(summary.credits[0].status, "已使用");
+        assert_eq!(summary.credits[1].status, "已过期");
     }
 }

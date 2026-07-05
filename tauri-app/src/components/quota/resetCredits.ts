@@ -4,12 +4,17 @@ const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 
+export type ResetCreditExpiryState = "future" | "unknown" | "past";
+
 export interface ResetCreditDisplayItem {
   credit: ResetCreditDetail;
   compactRemainingText: string;
   detailedRemainingText: string;
+  expiryState: ResetCreditExpiryState;
+  hasFutureExpiry: boolean;
+  isCountdownEligible: boolean;
+  isCountedAvailable: boolean;
   remainingProgress: number;
-  isAvailable: boolean;
 }
 
 export interface ResetCreditPanelModel {
@@ -35,13 +40,21 @@ export function prepareResetCreditsForDisplay(
       }
       return 0;
     })
-    .map((credit) => ({
-      credit,
-      compactRemainingText: compactRemainingTimeText(credit, now),
-      detailedRemainingText: detailedRemainingTimeText(credit, now),
-      remainingProgress: remainingProgress(credit, now),
-      isAvailable: isAvailableResetCredit(credit, now),
-    }));
+    .map((credit) => {
+      const isCountedAvailable = isCountedAvailableResetCredit(credit);
+      const expiryState = resetCreditExpiryState(credit, now);
+      const hasFutureExpiry = expiryState === "future";
+      return {
+        credit,
+        compactRemainingText: compactRemainingTimeText(credit, now),
+        detailedRemainingText: detailedRemainingTimeText(credit, now),
+        expiryState,
+        hasFutureExpiry,
+        isCountdownEligible: isCountedAvailable && hasFutureExpiry,
+        isCountedAvailable,
+        remainingProgress: remainingProgress(credit, now),
+      };
+    });
 }
 
 export function nearestResetCreditCompactText(
@@ -49,7 +62,7 @@ export function nearestResetCreditCompactText(
   now: Date = new Date(),
 ): string | null {
   const nearest = prepareResetCreditsForDisplay(summary.credits ?? [], now)
-    .find((item) => item.isAvailable && hasFutureResetCreditExpiry(item.credit, now));
+    .find((item) => item.isCountdownEligible);
   return nearest ? `最近 ${nearest.compactRemainingText}` : null;
 }
 
@@ -68,7 +81,12 @@ export function resetCreditPanelSubtitle(
 ): string {
   const total = displayItems.length;
   const available = availableResetCreditCount(summary, now);
-  return `共 ${total} 张；可用 ${available} 张 · 按最近到期排序`;
+  if (total === 0 && available > 0) {
+    return `共 0 张；可用 ${available} 张 · 单卡明细暂不可用`;
+  }
+  const hasFutureExpiry = displayItems.some((item) => item.isCountdownEligible);
+  const sortDescription = hasFutureExpiry ? "按最近到期排序" : "按状态和到期信息排序";
+  return `共 ${total} 张；可用 ${available} 张 · ${sortDescription}`;
 }
 
 export function availableResetCreditCount(
@@ -90,7 +108,7 @@ export function resetCreditPanelModel(
     availableText: `${available} 张可用`,
     countText: resetCreditCountText(summary, now),
     displayItems,
-    emptyText: resetCreditEmptyText(summary),
+    emptyText: resetCreditEmptyText(summary, available),
     nearestText: nearestResetCreditCompactText(summary, now),
     subtitle: resetCreditPanelSubtitle(summary, displayItems, now),
   };
@@ -100,7 +118,11 @@ export function resetCreditDetailKey(credit: ResetCreditDetail, index: number): 
   return `${cardIdentifier(credit)}-${index}`;
 }
 
-export function resetCreditEmptyText(summary: ResetCreditSummary): string {
+export function resetCreditEmptyText(summary: ResetCreditSummary, availableCount?: number): string {
+  const available = availableCount ?? availableResetCreditCount(summary);
+  if ((summary.credits?.length ?? 0) === 0 && available > 0) {
+    return `已读到 ${available} 张可用重置卡，但暂时没有单卡明细。`;
+  }
   return `没有读到单张重置卡明细；当前接口状态：${summary.status}`;
 }
 
@@ -109,10 +131,10 @@ export function displaySortPrecedes(
   right: ResetCreditDetail,
   now: Date = new Date(),
 ): boolean {
-  const leftAvailable = isAvailableResetCredit(left, now);
-  const rightAvailable = isAvailableResetCredit(right, now);
-  if (leftAvailable !== rightAvailable) {
-    return leftAvailable;
+  const leftGroup = displaySortGroup(left, now);
+  const rightGroup = displaySortGroup(right, now);
+  if (leftGroup !== rightGroup) {
+    return leftGroup < rightGroup;
   }
 
   const leftExpiry = timestampMillis(left.expiresAtUnix);
@@ -133,12 +155,21 @@ export function displaySortPrecedes(
   }) < 0;
 }
 
-export function isAvailableResetCredit(credit: ResetCreditDetail, now: Date = new Date()): boolean {
-  if (!isCountedAvailableResetCredit(credit)) {
-    return false;
+function displaySortGroup(credit: ResetCreditDetail, now: Date): number {
+  if (isCountedAvailableResetCredit(credit)) {
+    switch (resetCreditExpiryState(credit, now)) {
+      case "future":
+        return 0;
+      case "unknown":
+        return 1;
+      case "past":
+        return 2;
+    }
   }
-  const expiresAt = timestampMillis(credit.expiresAtUnix);
-  return expiresAt === null || expiresAt > now.getTime();
+  if (credit.status === "已过期") {
+    return 3;
+  }
+  return 4;
 }
 
 function isCountedAvailableResetCredit(credit: ResetCreditDetail): boolean {
@@ -151,9 +182,12 @@ function isCountedAvailableResetCredit(credit: ResetCreditDetail): boolean {
   return true;
 }
 
-function hasFutureResetCreditExpiry(credit: ResetCreditDetail, now: Date): boolean {
+function resetCreditExpiryState(credit: ResetCreditDetail, now: Date): ResetCreditExpiryState {
   const expiresAt = timestampMillis(credit.expiresAtUnix);
-  return expiresAt !== null && expiresAt > now.getTime();
+  if (expiresAt === null) {
+    return "unknown";
+  }
+  return expiresAt > now.getTime() ? "future" : "past";
 }
 
 export function compactRemainingTimeText(
@@ -212,7 +246,10 @@ export function remainingProgress(
   if (grantedAt !== null && expiresAt !== null && expiresAt > grantedAt) {
     return clamp01((expiresAt - now.getTime()) / (expiresAt - grantedAt));
   }
-  return isAvailableResetCredit(credit, now) ? 1 : 0;
+  if (!isCountedAvailableResetCredit(credit)) {
+    return 0;
+  }
+  return resetCreditExpiryState(credit, now) === "past" ? 0 : 1;
 }
 
 export function cardIdentifier(credit: ResetCreditDetail): string {

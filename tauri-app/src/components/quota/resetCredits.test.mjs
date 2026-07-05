@@ -43,14 +43,29 @@ test("reset credits sort available cards first by nearest expiry", () => {
       credit({ cardId: "used", status: "已使用", expiresAtUnix: nowUnix + 60 }),
       credit({ cardId: "later", expiresAtUnix: nowUnix + 7 * 24 * 60 * 60 }),
       credit({ cardId: "soon", expiresAtUnix: nowUnix + 2 * 60 * 60 }),
+      credit({ cardId: "past-available", expiresAtUnix: nowUnix - 60 }),
+      credit({ cardId: "unknown-available", expiresAtUnix: null }),
       credit({ cardId: "expired", status: "已过期", expiresAtUnix: nowUnix - 60 }),
     ],
     now,
   );
 
-  assert.deepEqual(sorted.map((item) => item.credit.cardId), ["soon", "later", "expired", "used"]);
-  assert.equal(sorted[0].isAvailable, true);
-  assert.equal(sorted[2].isAvailable, false);
+  assert.deepEqual(sorted.map((item) => item.credit.cardId), [
+    "soon",
+    "later",
+    "unknown-available",
+    "past-available",
+    "expired",
+    "used",
+  ]);
+  assert.equal(sorted[0].isCountedAvailable, true);
+  assert.equal(sorted[0].hasFutureExpiry, true);
+  assert.equal(sorted[0].isCountdownEligible, true);
+  assert.equal(sorted[2].isCountedAvailable, true);
+  assert.equal(sorted[2].expiryState, "unknown");
+  assert.equal(sorted[3].isCountedAvailable, true);
+  assert.equal(sorted[3].expiryState, "past");
+  assert.equal(sorted[4].isCountedAvailable, false);
 });
 
 test("reset credit remaining time has compact and detailed variants", () => {
@@ -141,6 +156,7 @@ test("reset credit panel model does not leak entity details for empty failed or 
   for (const summary of [
     { availableCount: 0, status: "重置卡待读取", credits: [] },
     { availableCount: 0, status: "获取失败", credits: [] },
+    { availableCount: 0, status: "0 张重置卡", credits: [] },
     { availableCount: 0, status: "0 张重置卡", credits: [expired, used] },
   ]) {
     const model = resetCreditPanelModel(summary, now);
@@ -150,6 +166,24 @@ test("reset credit panel model does not leak entity details for empty failed or 
     assert.equal(model.countText.includes("卡--"), false);
     assert.equal(model.emptyText.includes("卡--"), false);
   }
+});
+
+test("reset credit panel model explains reported count when single-card details are missing", () => {
+  const summary = {
+    availableCount: 2,
+    status: "2 张重置卡可用",
+    credits: [],
+  };
+
+  const model = resetCreditPanelModel(summary, now);
+
+  assert.equal(model.countText, "2 张重置卡");
+  assert.equal(model.availableText, "2 张可用");
+  assert.equal(model.nearestText, null);
+  assert.equal(model.subtitle, "共 0 张；可用 2 张 · 单卡明细暂不可用");
+  assert.equal(model.emptyText, "已读到 2 张可用重置卡，但暂时没有单卡明细。");
+  assert.equal(model.emptyText.includes("最近"), false);
+  assert.equal(model.emptyText.includes("卡--"), false);
 });
 
 test("reset credit panel model counts status-available expired details without nearest expiry", () => {
@@ -166,8 +200,12 @@ test("reset credit panel model counts status-available expired details without n
   assert.equal(model.countText, "1 张重置卡");
   assert.equal(model.availableText, "1 张可用");
   assert.equal(model.nearestText, null);
-  assert.equal(model.subtitle, "共 1 张；可用 1 张 · 按最近到期排序");
+  assert.equal(model.subtitle, "共 1 张；可用 1 张 · 按状态和到期信息排序");
   assert.equal(model.displayItems[0].compactRemainingText, "已到期");
+  assert.equal(model.displayItems[0].isCountedAvailable, true);
+  assert.equal(model.displayItems[0].hasFutureExpiry, false);
+  assert.equal(model.displayItems[0].isCountdownEligible, false);
+  assert.equal(model.displayItems[0].expiryState, "past");
 });
 
 test("reset credit panel model counts available unknown-expiry details without fake nearest expiry", () => {
@@ -184,8 +222,12 @@ test("reset credit panel model counts available unknown-expiry details without f
   assert.equal(model.countText, "1 张重置卡");
   assert.equal(model.availableText, "1 张可用");
   assert.equal(model.nearestText, null);
-  assert.equal(model.subtitle, "共 1 张；可用 1 张 · 按最近到期排序");
+  assert.equal(model.subtitle, "共 1 张；可用 1 张 · 按状态和到期信息排序");
   assert.equal(model.displayItems[0].compactRemainingText, "到期未知");
+  assert.equal(model.displayItems[0].isCountedAvailable, true);
+  assert.equal(model.displayItems[0].hasFutureExpiry, false);
+  assert.equal(model.displayItems[0].isCountdownEligible, false);
+  assert.equal(model.displayItems[0].expiryState, "unknown");
 });
 
 test("reset credit detail keys use card identifiers with index fallback", () => {

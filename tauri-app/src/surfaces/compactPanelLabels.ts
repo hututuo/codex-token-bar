@@ -100,7 +100,7 @@ export function compactNearestResetCreditExpiryLabel(summary: ResetCreditSummary
 
 function nearestResetCreditExpiryCountdown(summary: ResetCreditSummary, now = new Date()): string {
   const nearest = (summary.credits ?? [])
-    .filter((credit) => isExpiringAvailableCredit(credit, now))
+    .filter((credit) => isFutureExpiringAvailableCredit(credit, now))
     .sort((left, right) => (expiresAtMillis(left) ?? Number.MAX_SAFE_INTEGER) - (expiresAtMillis(right) ?? Number.MAX_SAFE_INTEGER))[0];
   if (!nearest) {
     return "";
@@ -136,14 +136,6 @@ function availableResetCreditCount(summary: ResetCreditSummary, now: Date): numb
   return Math.max(reportedCount, detailCount);
 }
 
-function isAvailableCredit(credit: ResetCreditDetail, now: Date): boolean {
-  if (!isCountedAvailableCredit(credit)) {
-    return false;
-  }
-  const expiresAt = expiresAtMillis(credit);
-  return expiresAt === null || expiresAt > now.getTime();
-}
-
 function isCountedAvailableCredit(credit: ResetCreditDetail): boolean {
   if (credit.status !== "可用") {
     return false;
@@ -154,8 +146,8 @@ function isCountedAvailableCredit(credit: ResetCreditDetail): boolean {
   return true;
 }
 
-function isExpiringAvailableCredit(credit: ResetCreditDetail, now: Date): boolean {
-  if (!isAvailableCredit(credit, now)) {
+function isFutureExpiringAvailableCredit(credit: ResetCreditDetail, now: Date): boolean {
+  if (!isCountedAvailableCredit(credit)) {
     return false;
   }
   const expiresAt = expiresAtMillis(credit);

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   compactFloatingPaceLabel,
   compactFloatingUsageStatus,
+  compactNearestResetCreditExpiryLabel,
   compactResetCreditCountSuffix,
   compactResetCreditRateBarSuffix,
   compactResetCreditStandaloneSuffix,
@@ -154,6 +155,14 @@ test("compact reset credit suffixes describe the nearest available card expiry",
     }, now),
     " · 1卡",
   );
+  assert.equal(
+    compactNearestResetCreditExpiryLabel({
+      availableCount: 0,
+      status: "重置卡详情可用",
+      credits: [resetCredit({ expiresAtUnix: null })],
+    }, now),
+    "",
+  );
 
   assert.equal(
     compactResetCreditRateBarSuffix({
@@ -171,6 +180,14 @@ test("compact reset credit suffixes describe the nearest available card expiry",
       credits: [resetCredit({ expiresAtUnix: Date.parse("2026-06-26T09:00:00Z") / 1000 })],
     }, now),
     " · 1卡",
+  );
+  assert.equal(
+    compactNearestResetCreditExpiryLabel({
+      availableCount: 0,
+      status: "重置卡详情可用",
+      credits: [resetCredit({ expiresAtUnix: Date.parse("2026-06-26T09:00:00Z") / 1000 })],
+    }, now),
+    "",
   );
 });
 

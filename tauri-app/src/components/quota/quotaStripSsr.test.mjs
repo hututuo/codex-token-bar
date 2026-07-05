@@ -69,6 +69,59 @@ test("QuotaStrip omits the retry button when no retry handler is provided", asyn
   });
 });
 
+test("QuotaStrip renders reset-credit count without fake nearest text when expiry is unknown or past", async () => {
+  await withSsrModules(async (load) => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    const html = renderComponent(QuotaStrip, {
+      snapshot: {
+        ...quotaSnapshot,
+        resetCredit: {
+          availableCount: 0,
+          status: "重置卡详情可用",
+          credits: [
+            resetCredit({ cardId: "unknown", expiresAtUnix: null }),
+            resetCredit({ cardId: "past", expiresAtUnix: Math.floor((Date.now() - 60 * 60 * 1000) / 1000) }),
+          ],
+        },
+      },
+      warnings: [],
+    });
+
+    assert.match(html, />2 张重置卡</);
+    assert.match(html, />2 张可用/);
+    assert.doesNotMatch(html, /最近/);
+    assert.doesNotMatch(html, /到期未知/);
+    assert.doesNotMatch(html, /已到期/);
+    assert.doesNotMatch(html, /卡--/);
+  });
+});
+
+test("QuotaStrip renders reset-credit nearest text only for future-expiring details", async () => {
+  await withSsrModules(async (load) => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    const html = renderComponent(QuotaStrip, {
+      snapshot: {
+        ...quotaSnapshot,
+        resetCredit: {
+          availableCount: 3,
+          status: "3 张重置卡可用",
+          credits: [
+            resetCredit({ cardId: "unknown", expiresAtUnix: null }),
+            resetCredit({ cardId: "future", expiresAtUnix: Math.floor((Date.now() + (4 * 60 + 20) * 60 * 1000) / 1000) }),
+          ],
+        },
+      },
+      warnings: [],
+    });
+
+    assert.match(html, />3 张重置卡</);
+    assert.match(html, />3 张可用/);
+    assert.match(html, /最近 剩 4h/);
+    assert.doesNotMatch(html, /最近 到期未知/);
+    assert.doesNotMatch(html, /最近 已到期/);
+  });
+});
+
 test("DashboardSummarySection passes dashboard warnings through to QuotaStrip rendering", async () => {
   await withSsrModules(async (load) => {
     const { DashboardSummarySection } = await load("/src/pages/dashboard/DashboardSummarySection.tsx");
@@ -135,6 +188,28 @@ function dashboardFixture() {
       turns: [],
     },
     warnings: quotaWarnings,
+  };
+}
+
+function resetCredit(overrides = {}) {
+  return {
+    cardId: "card",
+    title: "一次免费额度重置",
+    status: "可用",
+    summary: "",
+    resetType: "codex_rate_limits",
+    issuedAt: "2026-06-25 00:00",
+    grantedAtUnix: Date.parse("2026-06-25T00:00:00Z") / 1000,
+    expiresAt: "2026-06-28 03:00",
+    expiresAtUnix: Date.parse("2026-06-28T03:00:00Z") / 1000,
+    redeemStartedAt: "未提供",
+    redeemedAt: "未使用",
+    source: "invite",
+    detailNote: "邀请获得",
+    associatedUser: "user_1",
+    profileImageUrl: "",
+    shortId: "card",
+    ...overrides,
   };
 }
 
