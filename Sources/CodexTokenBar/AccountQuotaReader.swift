@@ -298,7 +298,7 @@ private enum AccountQuotaReader {
                 severity: .warning,
                 message: "未找到登录 token",
                 rawCause: "auth.json missing or access_token empty",
-                retryable: true,
+                retryable: false,
                 occurredAt: Date()
             )
             trace?.end("missing-access-token")

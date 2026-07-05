@@ -53,6 +53,27 @@ final class AccountQuotaDiagnosticsTests: XCTestCase {
         XCTAssertEqual(diagnostic.rawCause, underlying.rawCause)
         XCTAssertTrue(diagnostic.retryable)
     }
+
+    func testResetCreditAuthMissingFailureIsNotRetryable() {
+        let underlying = AccountQuotaDiagnostic(
+            source: .resetCredit,
+            category: .authMissing,
+            severity: .warning,
+            message: "未找到登录 token",
+            rawCause: "auth.json missing",
+            retryable: true,
+            occurredAt: Date(timeIntervalSince1970: 1_000)
+        )
+
+        let diagnostic = AccountQuotaDiagnostic.resetCreditFailure(
+            underlying: underlying,
+            occurredAt: Date(timeIntervalSince1970: 1_001)
+        )
+
+        XCTAssertEqual(diagnostic.category, .resetCreditFailure)
+        XCTAssertEqual(diagnostic.underlyingCategory, .authMissing)
+        XCTAssertFalse(diagnostic.retryable)
+    }
 }
 
 private struct QuotaDiagnosticTestError: LocalizedError {

@@ -118,7 +118,7 @@ struct AccountQuotaDiagnostic: LocalizedError, Equatable, Sendable {
             rawCause: underlying.rawCause,
             underlyingCategory: underlying.category,
             httpStatus: underlying.httpStatus,
-            retryable: underlying.retryable,
+            retryable: underlying.category == .authMissing ? false : underlying.retryable,
             occurredAt: occurredAt ?? underlying.occurredAt
         )
     }
