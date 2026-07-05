@@ -56,6 +56,26 @@ struct DashboardRefreshContext: Equatable {
         self.radarVisible = radarVisible
         self.radarStale = radarStale
     }
+
+    static func fromSurfaces(
+        providerSyncVisible: Bool,
+        appActive: Bool,
+        dashboardWindowVisible: Bool,
+        floatingPanelEnabled: Bool,
+        statusBarPanelEnabled: Bool,
+        usageStale: Bool,
+        radarDetailsVisible: Bool,
+        floatingPanelShowRadar: Bool,
+        radarStale: Bool
+    ) -> DashboardRefreshContext {
+        DashboardRefreshContext(
+            providerSyncVisible: providerSyncVisible,
+            dashboardVisible: appActive || floatingPanelEnabled || statusBarPanelEnabled,
+            usageStale: usageStale,
+            radarVisible: dashboardWindowVisible || radarDetailsVisible || (floatingPanelEnabled && floatingPanelShowRadar),
+            radarStale: radarStale
+        )
+    }
 }
 
 struct DashboardRefreshPlan: Equatable {

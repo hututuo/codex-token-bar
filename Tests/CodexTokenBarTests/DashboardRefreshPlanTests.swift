@@ -109,6 +109,67 @@ final class DashboardRefreshPlanTests: XCTestCase {
         XCTAssertFalse(plan.actions.contains(.scanProviders))
     }
 
+    func testRefreshContextTreatsDashboardWindowAsRadarVisibleEvenWhenFloatingRadarIsOff() {
+        let context = DashboardRefreshContext.fromSurfaces(
+            providerSyncVisible: false,
+            appActive: false,
+            dashboardWindowVisible: true,
+            floatingPanelEnabled: false,
+            statusBarPanelEnabled: false,
+            usageStale: false,
+            radarDetailsVisible: false,
+            floatingPanelShowRadar: false,
+            radarStale: false
+        )
+
+        XCTAssertTrue(context.radarVisible)
+    }
+
+    func testRefreshContextRequiresFloatingPanelEnabledForFloatingRadarPreference() {
+        let disabledPanel = DashboardRefreshContext.fromSurfaces(
+            providerSyncVisible: false,
+            appActive: false,
+            dashboardWindowVisible: false,
+            floatingPanelEnabled: false,
+            statusBarPanelEnabled: false,
+            usageStale: false,
+            radarDetailsVisible: false,
+            floatingPanelShowRadar: true,
+            radarStale: false
+        )
+        let enabledPanel = DashboardRefreshContext.fromSurfaces(
+            providerSyncVisible: false,
+            appActive: false,
+            dashboardWindowVisible: false,
+            floatingPanelEnabled: true,
+            statusBarPanelEnabled: false,
+            usageStale: false,
+            radarDetailsVisible: false,
+            floatingPanelShowRadar: true,
+            radarStale: false
+        )
+
+        XCTAssertFalse(disabledPanel.radarVisible)
+        XCTAssertTrue(enabledPanel.radarVisible)
+    }
+
+    func testRefreshContextStatusBarContributesToUsageVisibilityButNotRadarVisibility() {
+        let context = DashboardRefreshContext.fromSurfaces(
+            providerSyncVisible: false,
+            appActive: false,
+            dashboardWindowVisible: false,
+            floatingPanelEnabled: false,
+            statusBarPanelEnabled: true,
+            usageStale: false,
+            radarDetailsVisible: false,
+            floatingPanelShowRadar: false,
+            radarStale: false
+        )
+
+        XCTAssertTrue(context.dashboardVisible)
+        XCTAssertFalse(context.radarVisible)
+    }
+
     func testDashboardRefreshUsesRefreshContext() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -117,7 +178,7 @@ final class DashboardRefreshPlanTests: XCTestCase {
         let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
         let source = try String(contentsOf: dashboardView, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("DashboardRefreshContext("))
+        XCTAssertTrue(source.contains("DashboardRefreshContext.fromSurfaces("))
         XCTAssertTrue(source.contains("DashboardRefreshPlan.make(trigger: trigger, context:"))
     }
 }

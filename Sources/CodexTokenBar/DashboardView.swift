@@ -488,11 +488,15 @@ struct DashboardView: View {
     }
 
     private func refreshAllData(trigger: DashboardRefreshTrigger = .manual) {
-        let context = DashboardRefreshContext(
+        let context = DashboardRefreshContext.fromSurfaces(
             providerSyncVisible: showingProviderSync,
-            dashboardVisible: NSApp.isActive || floatingPanelEnabled || statusBarPanelEnabled,
+            appActive: NSApp.isActive,
+            dashboardWindowVisible: hasVisibleDashboardWindow(),
+            floatingPanelEnabled: floatingPanelEnabled,
+            statusBarPanelEnabled: statusBarPanelEnabled,
             usageStale: Date().timeIntervalSince(store.snapshot.generatedAt) >= 5 * 60,
-            radarVisible: showingCodexRadarDetails || floatingPanelShowRadar,
+            radarDetailsVisible: showingCodexRadarDetails,
+            floatingPanelShowRadar: floatingPanelShowRadar,
             radarStale: radarStore.snapshot == nil
         )
         let plan = DashboardRefreshPlan.make(trigger: trigger, context: context)
