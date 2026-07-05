@@ -9,7 +9,7 @@ use reset_credit::read_reset_credits;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -374,23 +374,26 @@ fn read_rate_limits_once(timeout: Duration) -> Result<QuotaSnapshot, String> {
     let codex = find_codex_binary_with_report()?.path;
     let mut command = Command::new(codex);
     configure_quota_child_process(&mut command);
-    let mut child = command
+    let child = command
         .args(["app-server", "--listen", "stdio://"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("启动 Codex 失败：{error}"))?;
+    let mut child = QuotaChildGuard::new(child);
 
     let stdout = child
+        .child_mut()
         .stdout
         .take()
         .ok_or_else(|| "Codex stdout 不可用".to_string())?;
     let mut stdin = child
+        .child_mut()
         .stdin
         .take()
         .ok_or_else(|| "Codex stdin 不可用".to_string())?;
-    let stderr = child.stderr.take();
+    let stderr = child.child_mut().stderr.take();
     let (sender, receiver) = mpsc::channel();
 
     thread::spawn(move || {
@@ -400,11 +403,6 @@ fn read_rate_limits_once(timeout: Duration) -> Result<QuotaSnapshot, String> {
             }
         }
     });
-
-    let cleanup = |child: &mut std::process::Child| {
-        let _ = child.kill();
-        let _ = child.wait();
-    };
 
     write_json_line(
         &mut stdin,
@@ -448,7 +446,7 @@ fn read_rate_limits_once(timeout: Duration) -> Result<QuotaSnapshot, String> {
         }
 
         if message.get("id").and_then(Value::as_i64) == Some(2) {
-            cleanup(&mut child);
+            child.cleanup();
             if let Some(error) = message
                 .get("error")
                 .and_then(|value| value.get("message"))
@@ -463,7 +461,7 @@ fn read_rate_limits_once(timeout: Duration) -> Result<QuotaSnapshot, String> {
         }
     }
 
-    cleanup(&mut child);
+    child.cleanup();
     if let Some(mut stderr) = stderr {
         let mut text = String::new();
         let _ = std::io::Read::read_to_string(&mut stderr, &mut text);
@@ -473,6 +471,56 @@ fn read_rate_limits_once(timeout: Duration) -> Result<QuotaSnapshot, String> {
         }
     }
     Err(format!("额度读取超时（{} 秒）", timeout.as_secs()))
+}
+
+trait QuotaChildProcess {
+    fn kill_for_cleanup(&mut self);
+    fn wait_for_cleanup(&mut self);
+}
+
+impl QuotaChildProcess for Child {
+    fn kill_for_cleanup(&mut self) {
+        let _ = self.kill();
+    }
+
+    fn wait_for_cleanup(&mut self) {
+        let _ = self.wait();
+    }
+}
+
+struct QuotaChildGuard<C: QuotaChildProcess> {
+    child: C,
+    cleaned: bool,
+}
+
+impl<C: QuotaChildProcess> QuotaChildGuard<C> {
+    fn new(child: C) -> Self {
+        Self {
+            child,
+            cleaned: false,
+        }
+    }
+
+    fn cleanup(&mut self) {
+        if self.cleaned {
+            return;
+        }
+        self.child.kill_for_cleanup();
+        self.child.wait_for_cleanup();
+        self.cleaned = true;
+    }
+}
+
+impl QuotaChildGuard<Child> {
+    fn child_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+}
+
+impl<C: QuotaChildProcess> Drop for QuotaChildGuard<C> {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
 }
 
 fn configure_quota_child_process(command: &mut Command) {
@@ -574,6 +622,44 @@ mod tests {
         assert_eq!(RATE_LIMIT_RETRY_DELAY, Duration::from_millis(350));
         assert_eq!(RESET_CREDIT_READ_ATTEMPTS, 3);
         assert_eq!(RESET_CREDIT_TIMEOUT, Duration::from_secs(14));
+    }
+
+    #[test]
+    fn quota_child_guard_cleans_up_on_early_drop() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        #[derive(Clone)]
+        struct ProbeChild {
+            killed: Arc<AtomicBool>,
+            waited: Arc<AtomicBool>,
+        }
+
+        impl QuotaChildProcess for ProbeChild {
+            fn kill_for_cleanup(&mut self) {
+                self.killed.store(true, Ordering::Relaxed);
+            }
+
+            fn wait_for_cleanup(&mut self) {
+                self.waited.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let child = ProbeChild {
+            killed: Arc::new(AtomicBool::new(false)),
+            waited: Arc::new(AtomicBool::new(false)),
+        };
+        let killed = child.killed.clone();
+        let waited = child.waited.clone();
+
+        {
+            let _guard = QuotaChildGuard::new(child);
+        }
+
+        assert!(killed.load(Ordering::Relaxed));
+        assert!(waited.load(Ordering::Relaxed));
     }
 
     #[test]
