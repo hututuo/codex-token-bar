@@ -625,15 +625,10 @@ struct DashboardView: View {
     }
 
     private func scheduleUsageRefreshCadenceRecovery(after delay: TimeInterval?) {
-        usageRefreshCadenceRecoveryTask?.cancel()
-        guard let delay else {
-            usageRefreshCadenceRecoveryTask = nil
-            return
-        }
-        usageRefreshCadenceRecoveryTask = Task { @MainActor in
-            let nanoseconds = UInt64(max(0.1, delay) * 1_000_000_000)
-            try? await Task.sleep(nanoseconds: nanoseconds)
-            guard !Task.isCancelled else { return }
+        UsageRefreshCadenceRecoveryScheduler.schedule(
+            replacing: &usageRefreshCadenceRecoveryTask,
+            after: delay
+        ) {
             updateUsageRefreshCadence()
         }
     }
