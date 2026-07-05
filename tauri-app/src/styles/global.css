@@ -1350,6 +1350,35 @@ button.quota-side-card:hover {
   line-height: 1;
 }
 
+.codex-radar-diagnostics {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, #c97924 34%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, #c97924 10%, var(--panel-soft));
+  color: var(--text);
+  padding: 6px 8px;
+}
+
+.codex-radar-diagnostics strong {
+  flex: 0 0 auto;
+  color: #8a4a12;
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.codex-radar-diagnostics span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .codex-radar-grid {
   display: grid;
   grid-template-columns: 0.82fr 1.08fr 1.12fr 0.98fr;

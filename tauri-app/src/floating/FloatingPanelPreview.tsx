@@ -1,5 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import {
+  codexRadarDiagnosticLabel,
   displayRadarNumber,
   percentText,
   primaryModelRow,
@@ -234,13 +235,14 @@ function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot |
 
   const primary = primaryModelRow(snapshot.modelIq);
   const secondaryText = floatingRadarSecondaryIQText(snapshot);
+  const diagnosticLabel = codexRadarDiagnosticLabel(snapshot);
   const probability = snapshot.prediction.probability24H ?? snapshot.prediction.probability24h;
   const probability48 = snapshot.prediction.probability48H ?? snapshot.prediction.probability48h;
 
   return (
     <div className="floating-row floating-radar" style={style}>
       <div className="floating-radar-action">
-        <span>动作 {snapshot.recommendedAction || "--"}</span>
+        <span>{diagnosticLabel ? `${diagnosticLabel} · ` : ""}动作 {snapshot.recommendedAction || "--"}</span>
         <em>24h {percentText(probability)} · 48h {percentText(probability48)}</em>
       </div>
       <div className="floating-radar-iq">

@@ -1,7 +1,10 @@
 import {
+  codexRadarSurfaceStatus,
   normalizeCodexRadarSnapshot,
   parseCodexRadarFeedXml,
+  type CodexRadarDiagnostic,
   type CodexRadarFeedItem,
+  type CodexRadarReadState,
   type CodexRadarSnapshot,
 } from "../components/codexRadar/model";
 import { withTimeout } from "../platform/runtime";
@@ -10,24 +13,88 @@ const CODEX_RADAR_ENDPOINT = "https://codexradar.com/current.json";
 const CODEX_RADAR_CACHE_MS = 600_000;
 
 let cachedSnapshot: { snapshot: CodexRadarSnapshot; readAt: number } | null = null;
-let inFlightRead: Promise<CodexRadarSnapshot> | null = null;
+let inFlightStateRead: Promise<CodexRadarReadState> | null = null;
 
 export async function readCodexRadarSnapshot(options: { force?: boolean } = {}): Promise<CodexRadarSnapshot> {
-  const now = Date.now();
-  if (!options.force && cachedSnapshot && now - cachedSnapshot.readAt < CODEX_RADAR_CACHE_MS) {
-    return cachedSnapshot.snapshot;
+  const state = await readCodexRadarState(cachedSnapshot?.snapshot ?? null, options);
+  if (!state.snapshot) {
+    throw new Error(state.statusText);
   }
-  if (!options.force && inFlightRead) {
-    return inFlightRead;
-  }
-
-  inFlightRead = fetchCodexRadarSnapshot().finally(() => {
-    inFlightRead = null;
-  });
-  return inFlightRead;
+  return state.snapshot;
 }
 
-async function fetchCodexRadarSnapshot(): Promise<CodexRadarSnapshot> {
+export async function readCodexRadarState(
+  previousSnapshot: CodexRadarSnapshot | null = null,
+  options: { force?: boolean } = {},
+): Promise<CodexRadarReadState> {
+  const now = Date.now();
+  if (!options.force && cachedSnapshot && now - cachedSnapshot.readAt < CODEX_RADAR_CACHE_MS) {
+    return stateFromSnapshot(cachedSnapshot.snapshot);
+  }
+  if (!options.force && inFlightStateRead) {
+    return inFlightStateRead;
+  }
+
+  inFlightStateRead = fetchCodexRadarState(previousSnapshot ?? cachedSnapshot?.snapshot ?? null).finally(() => {
+    inFlightStateRead = null;
+  });
+  return inFlightStateRead;
+}
+
+async function fetchCodexRadarState(previousSnapshot: CodexRadarSnapshot | null): Promise<CodexRadarReadState> {
+  const refreshedAt = new Date().toISOString();
+  try {
+    const baseSnapshot = await fetchCodexRadarRootSnapshot();
+    const feed = await fetchCodexRadarFeedState(baseSnapshot.links.rss, previousSnapshot);
+    const snapshot = withRadarState({
+      ...baseSnapshot,
+      feedItems: feed.items,
+    }, {
+      diagnostics: feed.diagnostics,
+      feedStaleDataDisplayed: feed.staleDataDisplayed,
+      lastSuccessfulRefreshAt: refreshedAt,
+    });
+    cachedSnapshot = {
+      snapshot,
+      readAt: Date.now(),
+    };
+    return stateFromSnapshot(snapshot);
+  } catch (error) {
+    const diagnostic = diagnosticFromError(error, "root");
+    if (previousSnapshot) {
+      const snapshot = withRadarState(previousSnapshot, {
+        diagnostics: [
+          diagnostic,
+          {
+            category: "stale_cached_data",
+            source: "cache",
+            message: "Codex 雷达暂时无法刷新，正在显示上次成功数据。",
+            rawCause: diagnostic.rawCause,
+            retryable: true,
+          },
+        ],
+        lastFailureAt: refreshedAt,
+        staleDataDisplayed: true,
+      });
+      cachedSnapshot = {
+        snapshot,
+        readAt: Date.now(),
+      };
+      return stateFromSnapshot(snapshot);
+    }
+    return {
+      snapshot: null,
+      diagnostics: [diagnostic],
+      statusText: diagnostic.message,
+      lastSuccessfulRefreshAt: null,
+      lastFailureAt: refreshedAt,
+      staleDataDisplayed: false,
+      feedStaleDataDisplayed: false,
+    };
+  }
+}
+
+async function fetchCodexRadarRootSnapshot(): Promise<CodexRadarSnapshot> {
   const response = await withTimeout(
     fetch(CODEX_RADAR_ENDPOINT, {
       cache: "no-store",
@@ -42,22 +109,19 @@ async function fetchCodexRadarSnapshot(): Promise<CodexRadarSnapshot> {
     throw new Error(`Codex Radar HTTP ${response.status}`);
   }
 
-  const baseSnapshot = normalizeCodexRadarSnapshot(await response.json());
-  const feedItems = await fetchCodexRadarFeed(baseSnapshot.links.rss);
-  const snapshot = {
-    ...baseSnapshot,
-    feedItems,
-  };
-  cachedSnapshot = {
-    snapshot,
-    readAt: Date.now(),
-  };
-  return snapshot;
+  const raw = await response.json();
+  if (!isUsableRadarPayload(raw)) {
+    throw new Error("Codex Radar 空数据");
+  }
+  return normalizeCodexRadarSnapshot(raw);
 }
 
-async function fetchCodexRadarFeed(feedUrl: string): Promise<CodexRadarFeedItem[]> {
+async function fetchCodexRadarFeedState(
+  feedUrl: string,
+  previousSnapshot: CodexRadarSnapshot | null,
+): Promise<{ diagnostics: CodexRadarDiagnostic[]; items: CodexRadarFeedItem[]; staleDataDisplayed: boolean }> {
   if (!feedUrl) {
-    return [];
+    return { diagnostics: [], items: [], staleDataDisplayed: false };
   }
 
   try {
@@ -71,10 +135,125 @@ async function fetchCodexRadarFeed(feedUrl: string): Promise<CodexRadarFeedItem[
       18_000,
     );
     if (!response.ok) {
-      return [];
+      throw new Error(`Codex Radar RSS HTTP ${response.status}`);
     }
-    return parseCodexRadarFeedXml(await response.text());
-  } catch {
-    return [];
+    return { diagnostics: [], items: parseCodexRadarFeedXml(await response.text()), staleDataDisplayed: false };
+  } catch (error) {
+    const previousItems = previousSnapshot?.feedItems ?? [];
+    const diagnostic = diagnosticFromError(error, "feed");
+    return {
+      diagnostics: [diagnostic],
+      items: previousItems,
+      staleDataDisplayed: previousItems.length > 0,
+    };
   }
+}
+
+function stateFromSnapshot(snapshot: CodexRadarSnapshot): CodexRadarReadState {
+  const diagnostics = snapshot.diagnostics ?? [];
+  return {
+    snapshot,
+    diagnostics,
+    statusText: codexRadarSurfaceStatus(snapshot, diagnostics),
+    lastSuccessfulRefreshAt: snapshot.lastSuccessfulRefreshAt ?? null,
+    lastFailureAt: snapshot.lastFailureAt ?? null,
+    staleDataDisplayed: snapshot.staleDataDisplayed,
+    feedStaleDataDisplayed: snapshot.feedStaleDataDisplayed,
+  };
+}
+
+function withRadarState(
+  snapshot: CodexRadarSnapshot,
+  overrides: {
+    diagnostics?: CodexRadarDiagnostic[];
+    feedStaleDataDisplayed?: boolean;
+    lastFailureAt?: string;
+    lastSuccessfulRefreshAt?: string;
+    staleDataDisplayed?: boolean;
+  } = {},
+): CodexRadarSnapshot {
+  return {
+    ...snapshot,
+    diagnostics: overrides.diagnostics ?? [],
+    lastFailureAt: overrides.lastFailureAt ?? null,
+    lastSuccessfulRefreshAt: overrides.lastSuccessfulRefreshAt ?? snapshot.lastSuccessfulRefreshAt ?? null,
+    staleDataDisplayed: overrides.staleDataDisplayed ?? false,
+    feedStaleDataDisplayed: overrides.feedStaleDataDisplayed ?? false,
+  };
+}
+
+function diagnosticFromError(error: unknown, source: "root" | "feed"): CodexRadarDiagnostic {
+  const rawCause = error instanceof Error ? error.message : String(error);
+  const category = source === "feed" ? "rss_failure" : categoryFromError(rawCause);
+  return {
+    category,
+    source,
+    message: source === "feed"
+      ? `Codex 雷达 RSS 读取失败：${rawCause}`
+      : `Codex 雷达读取失败：${rawCause}`,
+    rawCause,
+    retryable: true,
+  };
+}
+
+function categoryFromError(rawCause: string): CodexRadarDiagnostic["category"] {
+  if (/timed out|timeout/i.test(rawCause)) {
+    return "timeout";
+  }
+  const httpStatus = /HTTP\s+(\d{3})/i.exec(rawCause)?.[1];
+  if (httpStatus) {
+    const status = Number(httpStatus);
+    if (status === 401 || status === 403) {
+      return "http_auth";
+    }
+    if (status === 429) {
+      return "http_rate_limited";
+    }
+    if (status >= 500) {
+      return "http_server";
+    }
+    return "http_other";
+  }
+  if (/json|parse|syntax/i.test(rawCause)) {
+    return "parse_failure";
+  }
+  if (/empty payload|空数据/i.test(rawCause)) {
+    return "empty_radar_payload";
+  }
+  if (/fetch|network|failed to fetch/i.test(rawCause)) {
+    return "network_fetch";
+  }
+  return "unknown";
+}
+
+function isUsableRadarPayload(raw: unknown): boolean {
+  const payload = recordValue(raw);
+  const modelIq = recordValue(payload.modelIq ?? payload.model_iq);
+  const latestModel = recordValue(modelIq.latest);
+  return Boolean(
+    stringRecordValue(payload, "monitoredAt", "monitored_at")
+      && Object.keys(recordValue(payload.window)).length > 0
+      && Object.keys(recordValue(payload.prediction)).length > 0
+      && Object.keys(modelIq).length > 0
+      && (Object.keys(latestModel).length > 0 || Object.keys(recordValue(modelIq.comparisons)).length > 0),
+  );
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringRecordValue(record: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.length > 0) {
+      return value;
+    }
+  }
+  return "";
+}
+
+export function __resetCodexRadarCacheForTests(): void {
+  cachedSnapshot = null;
+  inFlightStateRead = null;
 }

@@ -1,7 +1,10 @@
 import { memo, startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { readCodexRadarSnapshot } from "../api/codexRadarClient";
+import { readCodexRadarState } from "../api/codexRadarClient";
 import {
+  codexRadarDiagnosticLabel,
+  codexRadarSurfaceStatus,
   type CodexRadarChartSeries,
+  type CodexRadarDiagnostic,
   type CodexRadarModelIQComparisonRow,
   type CodexRadarModelIQPoint,
   type CodexRadarQuotaWindow,
@@ -26,6 +29,7 @@ interface CodexRadarStripProps {
 
 function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const [snapshot, setSnapshot] = useState<CodexRadarSnapshot | null>(null);
+  const [diagnostics, setDiagnostics] = useState<CodexRadarDiagnostic[]>([]);
   const [status, setStatus] = useState("Codex 雷达待读取");
   const [refreshing, setRefreshing] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
@@ -43,11 +47,12 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       setStatus(snapshotRef.current ? "正在更新 Codex 雷达..." : "正在读取 Codex 雷达...");
     });
     try {
-      const next = await readCodexRadarSnapshot({ force });
-      snapshotRef.current = next;
+      const next = await readCodexRadarState(snapshotRef.current, { force });
+      snapshotRef.current = next.snapshot;
       startTransition(() => {
-        setSnapshot(next);
-        setStatus(`10分钟刷新 · ${next.monitoredAt}`);
+        setSnapshot(next.snapshot);
+        setDiagnostics(next.diagnostics);
+        setStatus(next.statusText);
       });
     } catch (error) {
       startTransition(() => {
@@ -110,6 +115,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
           {refreshing ? "刷新中" : "刷新"}
         </button>
       </div>
+      <CodexRadarDiagnosticsNotice diagnostics={diagnostics} snapshot={snapshot} />
 
       <div className="codex-radar-grid">
         <RadarBlock icon="W" title="速蹬窗口">
@@ -163,6 +169,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       {showDetails ? (
         <CodexRadarDetailOverlay
           allModels={allModels}
+          diagnostics={diagnostics}
           isRefreshing={refreshing}
           onClose={() => setShowDetails(false)}
           onRefresh={() => void refresh(true)}
@@ -182,6 +189,7 @@ export const CodexRadarStrip = memo(CodexRadarStripView);
 
 function CodexRadarDetailOverlay({
   allModels,
+  diagnostics,
   isRefreshing,
   onClose,
   onRefresh,
@@ -193,6 +201,7 @@ function CodexRadarDetailOverlay({
   status,
 }: {
   allModels: CodexRadarModelIQComparisonRow[];
+  diagnostics: CodexRadarDiagnostic[];
   isRefreshing: boolean;
   onClose: () => void;
   onRefresh: () => void;
@@ -244,6 +253,7 @@ function CodexRadarDetailOverlay({
           ) : (
             <div className="codex-radar-detail-loading">
               <span className="codex-radar-spinner" aria-hidden="true" />
+              <CodexRadarDiagnosticsNotice diagnostics={diagnostics} snapshot={snapshot} />
               <p>{status}</p>
             </div>
           )}
@@ -285,6 +295,7 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
 
   return (
     <div className="codex-radar-detail-stack">
+      <CodexRadarDiagnosticsNotice snapshot={snapshot} />
       <RadarDetailSection icon="bolt.badge.clock" title="速蹬窗口与预测">
         <RadarDetailSubsection title="窗口摘要">
           <RadarKeyValueGrid rows={[
@@ -477,6 +488,26 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
     </div>
   );
 });
+
+export function CodexRadarDiagnosticsNotice({
+  diagnostics = [],
+  snapshot,
+}: {
+  diagnostics?: CodexRadarDiagnostic[];
+  snapshot: CodexRadarSnapshot | null;
+}) {
+  const label = codexRadarDiagnosticLabel(snapshot, diagnostics);
+  if (!label) {
+    return null;
+  }
+
+  return (
+    <div className="codex-radar-diagnostics" role="status">
+      <strong>{label}</strong>
+      <span>{codexRadarSurfaceStatus(snapshot, diagnostics)}</span>
+    </div>
+  );
+}
 
 function RadarBlock({ children, icon, title }: { children: ReactNode; icon: string; title: string }) {
   return (

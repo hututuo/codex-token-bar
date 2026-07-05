@@ -1,7 +1,7 @@
-import { type CSSProperties, type MouseEvent, useEffect, useState } from "react";
+import { type CSSProperties, type MouseEvent, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { readAppSettings, recordStartupEvent } from "../api/client";
-import { readCodexRadarSnapshot } from "../api/codexRadarClient";
+import { readCodexRadarState } from "../api/codexRadarClient";
 import type { CodexRadarSnapshot } from "../components/codexRadar/model";
 import { desktopPlatform } from "../platform/desktop";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
@@ -24,6 +24,7 @@ export function FloatingWindowApp() {
   });
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   const [radarSnapshot, setRadarSnapshot] = useState<CodexRadarSnapshot | null>(null);
+  const radarSnapshotRef = useRef<CodexRadarSnapshot | null>(null);
   useFloatingWindowPlacement();
 
   useEffect(() => {
@@ -135,15 +136,10 @@ export function FloatingWindowApp() {
     let cancelled = false;
 
     const refreshRadar = async () => {
-      try {
-        const next = await readCodexRadarSnapshot();
-        if (!cancelled) {
-          setRadarSnapshot(next);
-        }
-      } catch {
-        if (!cancelled) {
-          setRadarSnapshot(null);
-        }
+      const next = await readCodexRadarState(radarSnapshotRef.current);
+      if (!cancelled) {
+        radarSnapshotRef.current = next.snapshot;
+        setRadarSnapshot(next.snapshot);
       }
     };
 

@@ -14,6 +14,44 @@ export interface CodexRadarSnapshot {
   modelIq: CodexRadarModelIQ;
   codexEnvironment: CodexRadarEnvironment;
   feedItems: CodexRadarFeedItem[];
+  diagnostics: CodexRadarDiagnostic[];
+  lastSuccessfulRefreshAt?: string | null;
+  lastFailureAt?: string | null;
+  staleDataDisplayed: boolean;
+  feedStaleDataDisplayed: boolean;
+}
+
+export type CodexRadarDiagnosticCategory =
+  | "network_fetch"
+  | "timeout"
+  | "http_auth"
+  | "http_rate_limited"
+  | "http_server"
+  | "http_other"
+  | "parse_failure"
+  | "empty_radar_payload"
+  | "rss_failure"
+  | "stale_cached_data"
+  | "unknown";
+
+export type CodexRadarDiagnosticSource = "root" | "feed" | "cache";
+
+export interface CodexRadarDiagnostic {
+  category: CodexRadarDiagnosticCategory;
+  source: CodexRadarDiagnosticSource;
+  message: string;
+  rawCause?: string | null;
+  retryable: boolean;
+}
+
+export interface CodexRadarReadState {
+  snapshot: CodexRadarSnapshot | null;
+  diagnostics: CodexRadarDiagnostic[];
+  statusText: string;
+  lastSuccessfulRefreshAt?: string | null;
+  lastFailureAt?: string | null;
+  staleDataDisplayed: boolean;
+  feedStaleDataDisplayed: boolean;
 }
 
 export interface CodexRadarWindow {
@@ -323,7 +361,43 @@ export function normalizeCodexRadarSnapshot(raw: unknown): CodexRadarSnapshot {
       roleCounts: numberRecord(read(environment, "roleCounts", "role_counts")),
     },
     feedItems: arrayValue(read(source, "feedItems", "feed_items")).map(normalizeFeedItem),
+    diagnostics: arrayValue(read(source, "diagnostics")).map(normalizeDiagnostic).filter((item): item is CodexRadarDiagnostic => item !== null),
+    lastSuccessfulRefreshAt: nullableString(read(source, "lastSuccessfulRefreshAt", "last_successful_refresh_at")),
+    lastFailureAt: nullableString(read(source, "lastFailureAt", "last_failure_at")),
+    staleDataDisplayed: booleanValue(read(source, "staleDataDisplayed", "stale_data_displayed")),
+    feedStaleDataDisplayed: booleanValue(read(source, "feedStaleDataDisplayed", "feed_stale_data_displayed")),
   };
+}
+
+export function codexRadarSurfaceStatus(snapshot: CodexRadarSnapshot | null, diagnostics: CodexRadarDiagnostic[] = []): string {
+  if (snapshot?.staleDataDisplayed) {
+    const diagnostic = snapshot.diagnostics.find((item) => item.source === "root") ?? diagnostics.find((item) => item.source === "root");
+    return `Codex 雷达读取失败，显示上次成功数据${diagnostic?.rawCause ? `：${diagnostic.rawCause}` : ""}`;
+  }
+  if (snapshot?.feedStaleDataDisplayed) {
+    return "Codex 雷达已更新，RSS 提醒暂用上次成功数据";
+  }
+  if (diagnostics.length > 0) {
+    return diagnostics[0].message;
+  }
+  if (snapshot) {
+    return `10分钟刷新 · ${snapshot.monitoredAt}`;
+  }
+  return "Codex 雷达待读取";
+}
+
+export function codexRadarDiagnosticLabel(snapshot: CodexRadarSnapshot | null, diagnostics: CodexRadarDiagnostic[] = []): string {
+  const activeDiagnostics = snapshot?.diagnostics.length ? snapshot.diagnostics : diagnostics;
+  if (snapshot?.staleDataDisplayed) {
+    return "雷达旧数据";
+  }
+  if (snapshot?.feedStaleDataDisplayed) {
+    return "RSS 旧数据";
+  }
+  if (activeDiagnostics.length > 0) {
+    return "雷达读取失败";
+  }
+  return "";
 }
 
 export function parseCodexRadarFeedXml(xml: string): CodexRadarFeedItem[] {
@@ -739,6 +813,42 @@ function normalizeFeedItem(raw: unknown): CodexRadarFeedItem {
     pubDate: normalizedText(read(item, "pubDate", "pub_date")),
     description: normalizedText(read(item, "description")),
   };
+}
+
+function normalizeDiagnostic(raw: unknown): CodexRadarDiagnostic | null {
+  const diagnostic = asRecord(raw);
+  const category = stringValue(read(diagnostic, "category")) as CodexRadarDiagnosticCategory;
+  const source = stringValue(read(diagnostic, "source")) as CodexRadarDiagnosticSource;
+  if (!isCodexRadarDiagnosticCategory(category) || !isCodexRadarDiagnosticSource(source)) {
+    return null;
+  }
+  return {
+    category,
+    source,
+    message: stringValue(read(diagnostic, "message")),
+    rawCause: nullableString(read(diagnostic, "rawCause", "raw_cause")),
+    retryable: booleanValue(read(diagnostic, "retryable")),
+  };
+}
+
+function isCodexRadarDiagnosticCategory(value: string): value is CodexRadarDiagnosticCategory {
+  return [
+    "network_fetch",
+    "timeout",
+    "http_auth",
+    "http_rate_limited",
+    "http_server",
+    "http_other",
+    "parse_failure",
+    "empty_radar_payload",
+    "rss_failure",
+    "stale_cached_data",
+    "unknown",
+  ].includes(value);
+}
+
+function isCodexRadarDiagnosticSource(value: string): value is CodexRadarDiagnosticSource {
+  return value === "root" || value === "feed" || value === "cache";
 }
 
 function isCompleteFeedItem(item: CodexRadarFeedItem): boolean {

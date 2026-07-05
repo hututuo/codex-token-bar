@@ -338,7 +338,7 @@ test("codex radar refresh generation remains wired to the summary strip", async 
   assert.equal(dashboardPage.includes("radarRefreshGeneration: number"), true);
   assert.equal(summarySection.includes("<CodexRadarStrip refreshGeneration={radarRefreshGeneration} />"), true);
   assert.equal(radarStrip.includes("interface CodexRadarStripProps"), true);
-  assert.equal(radarStrip.includes("readCodexRadarSnapshot({ force })"), true);
+  assert.equal(radarStrip.includes("readCodexRadarState(snapshotRef.current, { force })"), true);
   assert.equal(radarStrip.includes("void refresh(true)"), true);
 });
 
