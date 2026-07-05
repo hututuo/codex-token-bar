@@ -225,6 +225,47 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertFalse(store.snapshot.dailyUsage.isEmpty)
     }
 
+    func testInFlightRefreshFromOldSourceDoesNotOverwriteNewSourceSnapshot() async {
+        let sourceA = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/source-a/.codex"),
+            origin: .userSelected
+        )
+        let sourceB = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/source-b/.codex"),
+            origin: .userSelected
+        )
+        let resolver = MutableCodexDataSourceResolver(source: sourceA)
+        let loader = SuspendedDashboardSnapshotLoader()
+        let store = CodexUsageStore(
+            resolver: resolver,
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("old source precise request") {
+            await loader.hasPendingPreciseRequest(for: sourceA)
+        }
+
+        resolver.source = sourceB
+        store.refresh()
+        await waitUntil("new source precise request") {
+            await loader.hasPendingPreciseRequest(for: sourceB)
+        }
+
+        await loader.completePreciseRequest(for: sourceB, with: makeSnapshot(totalTokens: 22_000, dayTokens: 2_200))
+        await waitUntil("new source snapshot published") {
+            store.snapshot.stats.totalTokens == 22_000 && store.currentDataSource == sourceB
+        }
+
+        await loader.completePreciseRequest(for: sourceA, with: makeSnapshot(totalTokens: 11_000, dayTokens: 1_100))
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(store.snapshot.stats.totalTokens, 22_000)
+        XCTAssertEqual(store.currentDataSource, sourceB)
+        XCTAssertFalse(store.status.contains(sourceA.displayPath))
+    }
+
     private func makeSnapshot(totalTokens: Int, dayTokens: Int) -> DashboardSnapshot {
         let now = Date(timeIntervalSince1970: 1_800)
         return DashboardSnapshot(
@@ -252,14 +293,30 @@ final class CodexUsageStoreTests: XCTestCase {
     private func waitUntil(
         _ label: String,
         timeout: TimeInterval = 2,
-        predicate: @escaping @MainActor () -> Bool
+        predicate: @escaping @MainActor () async -> Bool
     ) async {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if predicate() { return }
+            if await predicate() { return }
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
         XCTFail("Timed out waiting for \(label)")
+    }
+}
+
+private final class MutableCodexDataSourceResolver: CodexDataSourceResolving {
+    var source: CodexDataSource?
+
+    init(source: CodexDataSource?) {
+        self.source = source
+    }
+
+    func resolve() -> CodexDataSource? {
+        source
+    }
+
+    func saveSelectedDirectory(_ directory: URL) -> CodexDataSource? {
+        source
     }
 }
 
@@ -304,6 +361,28 @@ private actor SequentialDashboardSnapshotLoader: DashboardSnapshotLoading {
             throw UsageStoreTestError()
         }
         return try results.removeFirst().get()
+    }
+}
+
+private actor SuspendedDashboardSnapshotLoader: DashboardSnapshotLoading {
+    private var preciseContinuations: [String: CheckedContinuation<DashboardSnapshot, Error>] = [:]
+
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        .empty
+    }
+
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        try await withCheckedThrowingContinuation { continuation in
+            preciseContinuations[dataSource.codexHome.path] = continuation
+        }
+    }
+
+    func hasPendingPreciseRequest(for dataSource: CodexDataSource) -> Bool {
+        preciseContinuations[dataSource.codexHome.path] != nil
+    }
+
+    func completePreciseRequest(for dataSource: CodexDataSource, with snapshot: DashboardSnapshot) {
+        preciseContinuations.removeValue(forKey: dataSource.codexHome.path)?.resume(returning: snapshot)
     }
 }
 

@@ -18,6 +18,9 @@ final class CodexUsageStore: ObservableObject {
     private var dataSource: CodexDataSource?
     private var timer: Timer?
     private var initialPreciseTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
+    private var refreshGeneration = 0
+    private var activeRefreshSourceID: String?
     private var refreshInterval: TimeInterval = 300
     private var didFinishInitialLoad = false
     private var didRunPreciseScan = false
@@ -51,18 +54,30 @@ final class CodexUsageStore: ObservableObject {
     }
 
     private func refresh(includePreciseScan: Bool) {
+        let resolvedDataSource = resolver.resolve()
+        let requestedSourceID = resolvedDataSource.map { refreshSourceID(for: $0) }
         let trace = RefreshPerformanceProbe.begin("usageStore.refresh", metadata: [
             "includePreciseScan": includePreciseScan ? "1" : "0",
-            "alreadyRefreshing": isRefreshing ? "1" : "0"
+            "alreadyRefreshing": isRefreshing ? "1" : "0",
+            "source": resolvedDataSource?.displayPath ?? "nil"
         ])
-        guard !isRefreshing else {
+        if isRefreshing, requestedSourceID == activeRefreshSourceID {
             trace?.end("skipped-refresh-in-flight")
             return
         }
-        dataSource = resolver.resolve()
+        if isRefreshing {
+            refreshTask?.cancel()
+            refreshGeneration += 1
+            isRefreshing = false
+            trace?.mark("cancelled-stale-refresh")
+        }
+        dataSource = resolvedDataSource
         updateDataSourceLabels()
 
         guard let dataSource else {
+            refreshTask?.cancel()
+            refreshGeneration += 1
+            activeRefreshSourceID = nil
             snapshot = .empty
             status = "未找到本地 Codex 数据目录"
             isInitialLoading = false
@@ -76,6 +91,10 @@ final class CodexUsageStore: ObservableObject {
         let hasExistingSnapshot = didFinishInitialLoad || hasDisplayableSnapshot(snapshot)
         let needsCacheInitialization = includePreciseScan && !UsageCacheLifecycle.isCurrentCachePrepared
         isRefreshing = true
+        refreshGeneration += 1
+        let generation = refreshGeneration
+        let sourceID = refreshSourceID(for: dataSource)
+        activeRefreshSourceID = sourceID
         isPreparingUsageCache = needsCacheInitialization
         if isFirstLoad {
             isInitialLoading = true
@@ -88,7 +107,7 @@ final class CodexUsageStore: ObservableObject {
                 : "正在增量更新 token..."
         }
 
-        Task { @MainActor [weak self] in
+        refreshTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 let source = dataSource
@@ -100,6 +119,10 @@ final class CodexUsageStore: ObservableObject {
                     if includePreciseScan {
                         trace?.mark("fastSnapshot.begin")
                         if let quickSnapshot = try? await self.snapshotLoader.loadFastSnapshot(dataSource: source) {
+                            guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else {
+                                trace?.end("stale-after-fastSnapshot")
+                                return
+                            }
                             self.snapshot = quickSnapshot
                             self.status = needsCacheInitialization
                                 ? "\(source.originLabel) · state_5.sqlite · 正在初始化本地统计缓存..."
@@ -112,6 +135,10 @@ final class CodexUsageStore: ObservableObject {
                     } else {
                         trace?.mark("fastSnapshot.begin")
                         let quickSnapshot = try await self.snapshotLoader.loadFastSnapshot(dataSource: source)
+                        guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else {
+                            trace?.end("stale-after-fastSnapshot")
+                            return
+                        }
                         self.snapshot = quickSnapshot
                         self.status = "\(source.originLabel) · state_5.sqlite · 准备扫描精确 token..."
                         trace?.mark("fastSnapshot.end", metadata: [
@@ -124,6 +151,10 @@ final class CodexUsageStore: ObservableObject {
                 if includePreciseScan {
                     trace?.mark("preciseSnapshot.begin")
                     let loaded = try await self.snapshotLoader.loadSnapshot(dataSource: source)
+                    guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else {
+                        trace?.end("stale-after-preciseSnapshot")
+                        return
+                    }
                     self.snapshot = loaded
                     self.didRunPreciseScan = true
                     UsageCacheLifecycle.markCurrentCachePrepared()
@@ -136,17 +167,34 @@ final class CodexUsageStore: ObservableObject {
                 }
                 trace?.end("ok")
             } catch {
+                guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else {
+                    trace?.end("stale-failed", metadata: ["error": error.localizedDescription])
+                    return
+                }
                 if !hasExistingSnapshot && !self.hasDisplayableSnapshot(self.snapshot) {
                     self.snapshot = .empty
                 }
                 self.status = "读取失败：\(error.localizedDescription)"
                 trace?.end("failed", metadata: ["error": error.localizedDescription])
             }
-            self.isRefreshing = false
-            self.didFinishInitialLoad = true
-            self.isInitialLoading = false
-            self.isPreparingUsageCache = false
+            if self.isCurrentRefresh(generation: generation, sourceID: sourceID) {
+                self.isRefreshing = false
+                self.activeRefreshSourceID = nil
+                self.didFinishInitialLoad = true
+                self.isInitialLoading = false
+                self.isPreparingUsageCache = false
+            }
         }
+    }
+
+    private func isCurrentRefresh(generation: Int, sourceID: String) -> Bool {
+        !Task.isCancelled
+            && refreshGeneration == generation
+            && activeRefreshSourceID == sourceID
+    }
+
+    private func refreshSourceID(for dataSource: CodexDataSource) -> String {
+        dataSource.codexHome.resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     private func hasDisplayableSnapshot(_ snapshot: DashboardSnapshot) -> Bool {
