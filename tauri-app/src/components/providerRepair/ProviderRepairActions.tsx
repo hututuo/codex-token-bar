@@ -1,3 +1,5 @@
+import { buildProviderRepairActionModel } from "./actionModel";
+
 interface ProviderRepairActionsProps {
   activeBackupId: string | null;
   busy: boolean;
@@ -15,20 +17,50 @@ export function ProviderRepairActions({
   onSync,
   onVerify,
 }: ProviderRepairActionsProps) {
+  const actions = buildProviderRepairActionModel({ activeBackupId, busy });
+  const missingBackupNote = !busy && !activeBackupId ? actions.sync.reason : null;
+
   return (
-    <div className="repair-actions">
-      <button disabled={busy} onClick={onScan} type="button">
-        1 扫描
-      </button>
-      <button disabled={busy} onClick={onBackup} type="button">
-        2 创建备份
-      </button>
-      <button disabled={busy || !activeBackupId} onClick={onSync} type="button">
-        3 同步修复
-      </button>
-      <button disabled={busy} onClick={onVerify} type="button">
-        4 验证
-      </button>
-    </div>
+    <>
+      <div className="repair-actions">
+        <button
+          disabled={actions.scan.disabled}
+          onClick={onScan}
+          title={actions.scan.reason ?? undefined}
+          type="button"
+        >
+          {actions.scan.label}
+        </button>
+        <button
+          disabled={actions.backup.disabled}
+          onClick={onBackup}
+          title={actions.backup.reason ?? undefined}
+          type="button"
+        >
+          {actions.backup.label}
+        </button>
+        <button
+          disabled={actions.sync.disabled}
+          onClick={onSync}
+          title={actions.sync.reason ?? undefined}
+          type="button"
+        >
+          {actions.sync.label}
+        </button>
+        <button
+          disabled={actions.verify.disabled}
+          onClick={onVerify}
+          title={actions.verify.reason ?? undefined}
+          type="button"
+        >
+          {actions.verify.label}
+        </button>
+      </div>
+      {missingBackupNote ? (
+        <p className="repair-action-note" role="status">
+          {missingBackupNote}
+        </p>
+      ) : null}
+    </>
   );
 }

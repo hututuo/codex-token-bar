@@ -3502,6 +3502,13 @@ input[type="range"]::-moz-range-thumb {
   opacity: 0.48;
 }
 
+.repair-action-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 620;
+}
+
 .repair-backups {
   display: grid;
   gap: 8px;

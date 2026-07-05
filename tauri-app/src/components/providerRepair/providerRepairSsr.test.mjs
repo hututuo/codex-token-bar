@@ -1,0 +1,155 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { withSsrModules } from "../../test/ssrHarness.mjs";
+
+function renderComponent(Component, props) {
+  return renderToStaticMarkup(React.createElement(Component, props));
+}
+
+test("ProviderRepairActions keeps sync disabled until a real backup is selected", async () => {
+  await withSsrModules(async (load) => {
+    const { buildProviderRepairActionModel } = await load("/src/components/providerRepair/actionModel.ts");
+    const { ProviderRepairActions } = await load("/src/components/providerRepair/ProviderRepairActions.tsx");
+
+    const model = buildProviderRepairActionModel({ activeBackupId: null, busy: false });
+    assert.equal(model.sync.disabled, true);
+    assert.equal(model.sync.reason, "请先创建备份，再进行同步修复。");
+    assert.equal(model.backup.disabled, false);
+
+    const html = renderComponent(ProviderRepairActions, actionProps({ activeBackupId: null }));
+    const syncButton = findButton(html, "3 同步修复");
+    assert.match(syncButton.attrs, /disabled=""/);
+    assert.match(syncButton.attrs, /title="请先创建备份，再进行同步修复。"/);
+    assert.match(html, /请先创建备份，再进行同步修复。/);
+  });
+});
+
+test("ProviderRepairActions disables conflicting actions while an operation is in flight", async () => {
+  await withSsrModules(async (load) => {
+    const { buildProviderRepairActionModel } = await load("/src/components/providerRepair/actionModel.ts");
+    const { ProviderRepairActions } = await load("/src/components/providerRepair/ProviderRepairActions.tsx");
+
+    const model = buildProviderRepairActionModel({ activeBackupId: "backup-1", busy: true });
+    assert.deepEqual(Object.values(model).map((action) => action.disabled), [true, true, true, true]);
+    assert.equal(model.sync.reason, "正在执行修复操作，请等待当前步骤完成。");
+
+    const html = renderComponent(ProviderRepairActions, actionProps({ activeBackupId: "backup-1", busy: true }));
+    for (const label of ["1 扫描", "2 创建备份", "3 同步修复", "4 验证"]) {
+      assert.match(findButton(html, label).attrs, /disabled=""/);
+    }
+    assert.doesNotMatch(html, /请先创建备份/);
+  });
+});
+
+test("ProviderRepairBackups does not expose rollback without a backup", async () => {
+  await withSsrModules(async (load) => {
+    const { ProviderRepairBackups } = await load("/src/components/providerRepair/ProviderRepairBackups.tsx");
+    const html = renderComponent(ProviderRepairBackups, backupsProps({ backups: [] }));
+
+    assert.match(html, /暂无备份/);
+    assert.match(html, /创建备份后，会在这里显示可回滚的时间点。/);
+    assert.doesNotMatch(html, /repair-rollback-button/);
+    assert.doesNotMatch(html, />回滚</);
+  });
+});
+
+test("ProviderRepairBackups renders rollback only for real backups and disables it while busy", async () => {
+  await withSsrModules(async (load) => {
+    const { ProviderRepairBackups } = await load("/src/components/providerRepair/ProviderRepairBackups.tsx");
+    const html = renderComponent(ProviderRepairBackups, backupsProps({
+      activeBackupId: "backup-1",
+      backups: [backupFixture()],
+      busy: true,
+    }));
+
+    assert.match(html, /repair-backup repair-backup--active/);
+    assert.match(html, /JSONL 7 · SQLite 已备份 · 索引 已备份/);
+    assert.match(html, /目录 \.\.\.\/test\/\.codex/);
+    const rollbackButton = findButton(html, "回滚");
+    assert.match(rollbackButton.attrs, /class="repair-rollback-button"/);
+    assert.match(rollbackButton.attrs, /disabled=""/);
+  });
+});
+
+test("ProviderRepairCard SSR starts from safe non-destructive actions", async () => {
+  await withSsrModules(async (load) => {
+    const { ProviderRepairCard } = await load("/src/components/ProviderRepairCard.tsx");
+    const html = renderComponent(ProviderRepairCard, {
+      id: "provider-repair",
+      onSnapshotChange: () => {},
+      snapshot: snapshotFixture(),
+    });
+
+    assert.match(html, /aria-label="会话消失修复"/);
+    assert.match(html, /provider codex · 本地扫描 · 7 个会话文件/);
+    assert.match(html, /请先创建备份，再进行同步修复。/);
+    assert.match(findButton(html, "3 同步修复").attrs, /disabled=""/);
+    assert.doesNotMatch(html, /repair-rollback-button/);
+  });
+});
+
+function findButton(html, text) {
+  const pattern = new RegExp(`<button(?<attrs>[^>]*)>${text}</button>`);
+  const match = html.match(pattern);
+  assert.ok(match, `Expected button "${text}" in ${html}`);
+  return {
+    attrs: match.groups.attrs,
+  };
+}
+
+function actionProps(overrides = {}) {
+  return {
+    activeBackupId: "backup-1",
+    busy: false,
+    onBackup: () => {},
+    onScan: () => {},
+    onSync: () => {},
+    onVerify: () => {},
+    ...overrides,
+  };
+}
+
+function backupsProps(overrides = {}) {
+  return {
+    activeBackupId: null,
+    backups: [],
+    busy: false,
+    onRollback: () => {},
+    onSelectBackup: () => {},
+    ...overrides,
+  };
+}
+
+function backupFixture(overrides = {}) {
+  return {
+    id: "backup-1",
+    createdAt: "2026-07-06T02:50:00Z",
+    path: "/tmp/provider-repair/backup-1",
+    codexHome: "/Users/test/.codex",
+    codexHomeFingerprint: "fingerprint",
+    targetProvider: "codex",
+    sessionFiles: 7,
+    stateDatabase: true,
+    sessionIndex: true,
+    ...overrides,
+  };
+}
+
+function snapshotFixture(overrides = {}) {
+  return {
+    detectedProvider: "codex",
+    providerSource: "本地扫描",
+    sessionFilesFound: 7,
+    inconsistentCount: 0,
+    status: "扫描完成，等待用户确认。",
+    steps: [
+      { label: "扫描", status: "已扫描", done: true, healthy: true },
+      { label: "备份", status: "未备份", done: false, healthy: true },
+      { label: "修复", status: "未修复", done: false, healthy: true },
+      { label: "验证", status: "未验证", done: false, healthy: true },
+    ],
+    ...overrides,
+  };
+}
