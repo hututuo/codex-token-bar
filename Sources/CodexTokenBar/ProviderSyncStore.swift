@@ -1,5 +1,72 @@
 import Foundation
 
+protocol ProviderSyncRunning: Sendable {
+    func scan(codexHome: URL, includeArchivedSessions: Bool) async throws -> ProviderSyncSnapshot
+    func sync(
+        codexHome: URL,
+        includeArchivedSessions: Bool,
+        targetProviderOverride: String?,
+        dryRunOnly: Bool
+    ) async throws -> ProviderSyncSnapshot
+    func verify(
+        codexHome: URL,
+        includeArchivedSessions: Bool,
+        targetProviderOverride: String?
+    ) async throws -> ProviderSyncSnapshot
+    func rollbackLatest(codexHome: URL) async throws -> ProviderSyncSnapshot
+    func rollback(codexHome: URL, backupPath: String) async throws -> ProviderSyncSnapshot
+}
+
+struct LiveProviderSyncRunner: ProviderSyncRunning {
+    func scan(codexHome: URL, includeArchivedSessions: Bool) async throws -> ProviderSyncSnapshot {
+        try await Task.detached(priority: .utility) {
+            try ProviderSyncEngine().scan(codexHome: codexHome, includeArchivedSessions: includeArchivedSessions)
+        }.value
+    }
+
+    func sync(
+        codexHome: URL,
+        includeArchivedSessions: Bool,
+        targetProviderOverride: String?,
+        dryRunOnly: Bool
+    ) async throws -> ProviderSyncSnapshot {
+        try await Task.detached(priority: .utility) {
+            try ProviderSyncEngine().sync(
+                codexHome: codexHome,
+                includeArchivedSessions: includeArchivedSessions,
+                targetProviderOverride: targetProviderOverride,
+                dryRunOnly: dryRunOnly
+            )
+        }.value
+    }
+
+    func verify(
+        codexHome: URL,
+        includeArchivedSessions: Bool,
+        targetProviderOverride: String?
+    ) async throws -> ProviderSyncSnapshot {
+        try await Task.detached(priority: .utility) {
+            try ProviderSyncEngine().verify(
+                codexHome: codexHome,
+                includeArchivedSessions: includeArchivedSessions,
+                targetProviderOverride: targetProviderOverride
+            )
+        }.value
+    }
+
+    func rollbackLatest(codexHome: URL) async throws -> ProviderSyncSnapshot {
+        try await Task.detached(priority: .utility) {
+            try ProviderSyncEngine().rollbackLatest(codexHome: codexHome)
+        }.value
+    }
+
+    func rollback(codexHome: URL, backupPath: String) async throws -> ProviderSyncSnapshot {
+        try await Task.detached(priority: .utility) {
+            try ProviderSyncEngine().rollback(codexHome: codexHome, backupPath: backupPath)
+        }.value
+    }
+}
+
 @MainActor
 final class ProviderSyncStore: ObservableObject {
     @Published private(set) var snapshot = ProviderSyncSnapshot()
@@ -11,32 +78,43 @@ final class ProviderSyncStore: ObservableObject {
     @Published private(set) var hasRepaired = false
     @Published private(set) var hasVerified = false
 
+    private let runner: any ProviderSyncRunning
     private var task: Task<Void, Never>?
+    private var operationGeneration = 0
+    private var activeOperationKind: OperationKind?
+
+    init(runner: any ProviderSyncRunning = LiveProviderSyncRunner()) {
+        self.runner = runner
+    }
 
     func scan(dataSource: CodexDataSource?) {
-        run(dataSource: dataSource, operationKind: .scan) { engine, source in
-            try engine.scan(codexHome: source.codexHome, includeArchivedSessions: self.includeArchivedSessions)
+        let includeArchivedSessions = includeArchivedSessions
+        run(dataSource: dataSource, operationKind: .scan) { runner, source in
+            try await runner.scan(codexHome: source.codexHome, includeArchivedSessions: includeArchivedSessions)
         }
     }
 
     func sync(dataSource: CodexDataSource?) {
-        run(dataSource: dataSource, operationKind: self.dryRunOnly ? .backup : .sync) { engine, source in
-            let targetProvider = self.effectiveTargetProvider()
-            return try engine.sync(
+        let includeArchivedSessions = includeArchivedSessions
+        let dryRunOnly = dryRunOnly
+        let targetProvider = effectiveTargetProvider()
+        run(dataSource: dataSource, operationKind: dryRunOnly ? .backup : .sync) { runner, source in
+            try await runner.sync(
                 codexHome: source.codexHome,
-                includeArchivedSessions: self.includeArchivedSessions,
+                includeArchivedSessions: includeArchivedSessions,
                 targetProviderOverride: targetProvider,
-                dryRunOnly: self.dryRunOnly
+                dryRunOnly: dryRunOnly
             )
         }
     }
 
     func backup(dataSource: CodexDataSource?) {
-        run(dataSource: dataSource, operationKind: .backup) { engine, source in
-            let targetProvider = self.effectiveTargetProvider()
-            return try engine.sync(
+        let includeArchivedSessions = includeArchivedSessions
+        let targetProvider = effectiveTargetProvider()
+        run(dataSource: dataSource, operationKind: .backup) { runner, source in
+            try await runner.sync(
                 codexHome: source.codexHome,
-                includeArchivedSessions: self.includeArchivedSessions,
+                includeArchivedSessions: includeArchivedSessions,
                 targetProviderOverride: targetProvider,
                 dryRunOnly: true
             )
@@ -44,25 +122,26 @@ final class ProviderSyncStore: ObservableObject {
     }
 
     func verify(dataSource: CodexDataSource?) {
-        run(dataSource: dataSource, operationKind: .verify) { engine, source in
-            let targetProvider = self.effectiveTargetProvider()
-            return try engine.verify(
+        let includeArchivedSessions = includeArchivedSessions
+        let targetProvider = effectiveTargetProvider()
+        run(dataSource: dataSource, operationKind: .verify) { runner, source in
+            try await runner.verify(
                 codexHome: source.codexHome,
-                includeArchivedSessions: self.includeArchivedSessions,
+                includeArchivedSessions: includeArchivedSessions,
                 targetProviderOverride: targetProvider
             )
         }
     }
 
     func rollbackLatest(dataSource: CodexDataSource?) {
-        run(dataSource: dataSource, operationKind: .rollback) { engine, source in
-            try engine.rollbackLatest(codexHome: source.codexHome)
+        run(dataSource: dataSource, operationKind: .rollback) { runner, source in
+            try await runner.rollbackLatest(codexHome: source.codexHome)
         }
     }
 
     func rollback(dataSource: CodexDataSource?, backup: ProviderSyncBackupRecord) {
-        run(dataSource: dataSource, operationKind: .rollback) { engine, source in
-            try engine.rollback(codexHome: source.codexHome, backupPath: backup.path)
+        run(dataSource: dataSource, operationKind: .rollback) { runner, source in
+            try await runner.rollback(codexHome: source.codexHome, backupPath: backup.path)
         }
     }
 
@@ -77,15 +156,35 @@ final class ProviderSyncStore: ObservableObject {
         case sync
         case verify
         case rollback
+
+        var isDestructive: Bool {
+            switch self {
+            case .scan, .verify:
+                false
+            case .backup, .sync, .rollback:
+                true
+            }
+        }
     }
 
     private func run(
         dataSource: CodexDataSource?,
         operationKind: OperationKind,
-        operation: @escaping (ProviderSyncEngine, CodexDataSource) throws -> ProviderSyncSnapshot
+        operation: @escaping @Sendable (any ProviderSyncRunning, CodexDataSource) async throws -> ProviderSyncSnapshot
     ) {
+        if let activeOperationKind,
+           activeOperationKind.isDestructive || operationKind.isDestructive {
+            var blocked = snapshot
+            blocked.isWorking = true
+            blocked.status = "已有修复操作进行中，请等待完成"
+            snapshot = blocked
+            return
+        }
+
         task?.cancel()
         guard let dataSource else {
+            operationGeneration += 1
+            activeOperationKind = nil
             snapshot.status = "没有可用的 Codex Home"
             return
         }
@@ -96,28 +195,40 @@ final class ProviderSyncStore: ObservableObject {
         working.status = "处理中..."
         snapshot = working
 
+        operationGeneration += 1
+        let generation = operationGeneration
+        activeOperationKind = operationKind
+        let runner = runner
         task = Task {
-            let result = await Task.detached(priority: .utility) {
-                do {
-                    return Result<ProviderSyncSnapshot, Error>.success(try operation(ProviderSyncEngine(), dataSource))
-                } catch {
-                    return Result<ProviderSyncSnapshot, Error>.failure(error)
-                }
-            }.value
+            let result: Result<ProviderSyncSnapshot, Error>
+            do {
+                result = .success(try await operation(runner, dataSource))
+            } catch {
+                result = .failure(error)
+            }
+
+            guard !Task.isCancelled else { return }
 
             await MainActor.run {
+                guard isCurrentOperation(generation: generation) else { return }
                 switch result {
                 case .success(let next):
                     snapshot = next
+                    activeOperationKind = nil
                     markCompleted(operationKind)
                 case .failure(let error):
                     var failed = snapshot
                     failed.isWorking = false
                     failed.status = error.localizedDescription
                     snapshot = failed
+                    activeOperationKind = nil
                 }
             }
         }
+    }
+
+    private func isCurrentOperation(generation: Int) -> Bool {
+        operationGeneration == generation
     }
 
     private func markCompleted(_ operationKind: OperationKind) {
