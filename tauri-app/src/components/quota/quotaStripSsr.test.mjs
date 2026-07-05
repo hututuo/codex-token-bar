@@ -229,6 +229,55 @@ test("DashboardSummarySection passes structured quota diagnostics through to Quo
   });
 });
 
+test("DashboardSummarySection links refresh state to live-rate cache wait copy", async () => {
+  await withSsrModules(async (load) => {
+    const { DashboardSummarySection } = await load("/src/pages/dashboard/DashboardSummarySection.tsx");
+    const html = renderComponent(DashboardSummarySection, {
+      dashboard: dashboardFixture(),
+      displaySurfaces: {
+        floatingWindowEnabled: true,
+        liveRateEnabled: true,
+        statusTrayLiveTextEnabled: false,
+      },
+      floatingSettings: floatingSettingsFixture(),
+      liveRate: liveRateFixture({
+        warnings: [
+          {
+            source: "live_rate_summary",
+            message: "精确 token 缓存尚未就绪，已忽略 state_5.sqlite 的重复线程口径",
+          },
+        ],
+      }),
+      liveThreadOptions: [],
+      onFloatingOpacityChange: () => {},
+      onFloatingScaleChange: () => {},
+      onTokenRateFullScaleChange: () => {},
+      onFloatingUnreadEffectChange: () => {},
+      onFloatingGradientChange: () => {},
+      onFloatingTextToneChange: () => {},
+      onFloatingContentVisibilityChange: () => {},
+      onLiveRateReset: async () => {},
+      onLiveRateRetry: () => {},
+      onLiveThreadSelect: () => {},
+      onQuotaRefresh: () => {},
+      onToggleLiveRate: () => {},
+      onToggleFloating: () => {},
+      onToggleStatusTray: () => {},
+      platform: platformFixture(),
+      radarRefreshGeneration: 0,
+      refreshing: true,
+      liveRateEnabled: true,
+      selectedLiveThreadId: "",
+      usageCacheInitializing: true,
+    });
+
+    assert.match(html, /实时速率准备中/);
+    assert.match(html, /刷新仍在扫描精确 token 缓存，请稍后。/);
+    assert.doesNotMatch(html, /实时速率降级/);
+    assert.doesNotMatch(html, />重试</);
+  });
+});
+
 function dashboardFixture() {
   return {
     generatedAt: "2026-07-05T00:00:00Z",
@@ -298,7 +347,7 @@ function quotaDiagnostic(overrides = {}) {
   };
 }
 
-function liveRateFixture() {
+function liveRateFixture(overrides = {}) {
   return {
     scopeLabel: "all",
     threadTitle: "全部会话",
@@ -319,6 +368,7 @@ function liveRateFixture() {
       source: "test",
     },
     warnings: [],
+    ...overrides,
   };
 }
 

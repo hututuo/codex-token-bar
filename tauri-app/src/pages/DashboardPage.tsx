@@ -160,8 +160,10 @@ export function DashboardPage({
               onToggleStatusTray={onToggleStatusTray}
               platform={platform}
               radarRefreshGeneration={radarRefreshGeneration}
+              refreshing={refreshing}
               liveRateEnabled={liveRateEnabled}
               selectedLiveThreadId={selectedLiveThreadId}
+              usageCacheInitializing={usageCacheInitializing}
             />
             {analyticsReady ? (
               <DashboardAnalyticsSection dashboard={dashboard} />

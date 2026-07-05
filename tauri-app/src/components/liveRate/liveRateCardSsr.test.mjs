@@ -29,6 +29,33 @@ test("LiveRateCard renders stream failure warning and retry affordance", async (
   });
 });
 
+test("LiveRateCard treats precise summary cache warnings as a wait state during refresh", async () => {
+  await withSsrModules(async (load) => {
+    const { LiveRateCard } = await load("/src/components/LiveRateCard.tsx");
+    const html = renderComponent(LiveRateCard, cardProps({
+      refreshing: true,
+      usageCacheInitializing: true,
+      snapshot: liveRateSnapshot({
+        warnings: [
+          {
+            source: "live_rate_summary",
+            message: "精确 token 缓存尚未就绪，已忽略 state_5.sqlite 的重复线程口径",
+          },
+        ],
+      }),
+    }));
+
+    assert.match(html, /role="status"/);
+    assert.match(html, /实时速率准备中/);
+    assert.match(html, /刷新仍在扫描精确 token 缓存，请稍后/);
+    assert.match(html, /class="live-rate-warning is-pending"/);
+    assert.match(html, /class="live-reset-button" disabled=""/);
+    assert.match(html, /title="刷新仍在扫描精确 token 缓存，请稍后。"/);
+    assert.doesNotMatch(html, /实时速率降级/);
+    assert.doesNotMatch(html, />重试</);
+  });
+});
+
 test("LiveRateCard does not show stream failure warning when live rate is disabled", async () => {
   await withSsrModules(async (load) => {
     const { LiveRateCard } = await load("/src/components/LiveRateCard.tsx");
@@ -79,6 +106,8 @@ function cardProps(overrides = {}) {
     platform: platformFixture(),
     snapshot: liveRateSnapshot(),
     statusTrayLiveTextEnabled: true,
+    refreshing: false,
+    usageCacheInitializing: false,
     ...overrides,
   };
 }

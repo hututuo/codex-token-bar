@@ -35,8 +35,10 @@ interface DashboardSummarySectionProps {
   onToggleStatusTray: () => void;
   platform: PlatformCapabilities;
   radarRefreshGeneration: number;
+  refreshing: boolean;
   liveRateEnabled: boolean;
   selectedLiveThreadId: string;
+  usageCacheInitializing: boolean;
 }
 
 export function DashboardSummarySection({
@@ -61,8 +63,10 @@ export function DashboardSummarySection({
   onToggleStatusTray,
   platform,
   radarRefreshGeneration,
+  refreshing,
   liveRateEnabled,
   selectedLiveThreadId,
+  usageCacheInitializing,
 }: DashboardSummarySectionProps) {
   return (
     <>
@@ -92,7 +96,9 @@ export function DashboardSummarySection({
         onToggleFloating={onToggleFloating}
         onToggleStatusTray={onToggleStatusTray}
         platform={platform}
+        refreshing={refreshing}
         snapshot={liveRate}
+        usageCacheInitializing={usageCacheInitializing}
       />
     </>
   );

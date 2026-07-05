@@ -7,6 +7,7 @@ import type {
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { LiveRateMeter } from "./liveRate/LiveRateMeter";
 import { LiveRateSettingsPanel } from "./liveRate/LiveRateSettingsPanel";
+import { liveRateNotice } from "./liveRate/liveRateNotice";
 
 interface LiveRateCardProps {
   floatingSettings: FloatingWindowSettings;
@@ -25,8 +26,10 @@ interface LiveRateCardProps {
   onToggleStatusTray: () => void;
   liveRateEnabled: boolean;
   platform: PlatformCapabilities;
+  refreshing?: boolean;
   snapshot: LiveRateSnapshot;
   statusTrayLiveTextEnabled: boolean;
+  usageCacheInitializing?: boolean;
 }
 
 export function LiveRateCard({
@@ -46,10 +49,21 @@ export function LiveRateCard({
   onToggleStatusTray,
   liveRateEnabled,
   platform,
+  refreshing = false,
   snapshot,
   statusTrayLiveTextEnabled,
+  usageCacheInitializing = false,
 }: LiveRateCardProps) {
-  const liveWarnings = liveRateEnabled ? snapshot.warnings : [];
+  const notice = liveRateNotice(snapshot, {
+    liveRateEnabled,
+    refreshing,
+    usageCacheInitializing,
+  });
+  const resetDisabled = !liveRateEnabled || notice?.kind === "pending";
+  const resetTitle =
+    notice?.kind === "pending"
+      ? notice.message
+      : "清空当前滚动窗口，重新统计整体速率";
 
   return (
     <section className={liveRateEnabled ? "live-card" : "live-card is-live-disabled"} aria-label="实时速率">
@@ -73,11 +87,11 @@ export function LiveRateCard({
           <button
             type="button"
             className="live-reset-button"
-            disabled={!liveRateEnabled}
+            disabled={resetDisabled}
             onClick={() => {
               void onLiveRateReset();
             }}
-            title="清空当前滚动窗口，重新统计整体速率"
+            title={resetTitle}
             aria-label="重置整体速率"
           >
             重置整体速率
@@ -85,13 +99,13 @@ export function LiveRateCard({
         </div>
       </div>
 
-      {liveWarnings.length > 0 ? (
-        <div className="live-rate-warning" role="status">
+      {notice !== null ? (
+        <div className={notice.kind === "pending" ? "live-rate-warning is-pending" : "live-rate-warning"} role="status">
           <div>
-            <strong>实时速率降级</strong>
-            <span>{liveWarnings.map((warning) => warning.message).join("；")}</span>
+            <strong>{notice.title}</strong>
+            <span>{notice.message}</span>
           </div>
-          <button type="button" onClick={onLiveRateRetry}>重试</button>
+          {notice.retryable ? <button type="button" onClick={onLiveRateRetry}>重试</button> : null}
         </div>
       ) : null}
 

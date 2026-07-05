@@ -1181,6 +1181,18 @@ button.quota-side-card:hover {
   transform: translateY(1px);
 }
 
+.live-reset-button:disabled {
+  border-color: var(--line);
+  background: var(--panel-soft);
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.live-reset-button:disabled:active {
+  transform: none;
+}
+
 .ranking-controls {
   display: flex;
   align-items: center;
@@ -2165,6 +2177,15 @@ button.quota-side-card:hover {
   font-size: 12px;
   font-weight: 730;
   padding: 0 12px;
+}
+
+.live-rate-warning.is-pending {
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--line));
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel-soft));
+}
+
+.live-rate-warning.is-pending strong {
+  color: color-mix(in srgb, var(--accent) 66%, var(--text));
 }
 
 .live-heading-line {
