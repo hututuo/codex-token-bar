@@ -4,31 +4,138 @@ import test from "node:test";
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
 test("mergeQuota aligns quota history by startUnix instead of array position", async () => {
-  const source = await readFile(new URL("./dashboardMergers.ts", import.meta.url), "utf8");
+  return withSsrModules(async (load) => {
+    const { mergeQuota } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      recentUsage24h: [
+        recentUsagePoint({ label: "00:00", startUnix: 100, tokens: 10 }),
+        recentUsagePoint({ label: "01:00", startUnix: 200, tokens: 20 }),
+        recentUsagePoint({ label: "02:00", startUnix: 300, tokens: 30 }),
+      ],
+    });
+    const quota = quotaBundleFixture({
+      quotaHistory24h: [
+        quotaHistoryPoint({ label: "02:00", startUnix: 300, fiveHourRemainingPercent: 0.3, sevenDayRemainingPercent: 0.7 }),
+        quotaHistoryPoint({ label: "00:00", startUnix: 100, fiveHourRemainingPercent: 0.1, sevenDayRemainingPercent: 0.9 }),
+        quotaHistoryPoint({ label: "extra", startUnix: 999, fiveHourRemainingPercent: 0.9, sevenDayRemainingPercent: 0.1 }),
+      ],
+    });
 
-  assert.equal(source.includes("new Map(historyPoints.map((point) => [point.startUnix, point]))"), true);
-  assert.equal(source.includes("historyByStart.get(point.startUnix)"), true);
-  assert.equal(source.includes("historyPoints[index]"), false);
+    const next = mergeQuota(state, quota);
+
+    assert.deepEqual(next.dashboard.recentUsage24h.map((point) => point.startUnix), [100, 200, 300]);
+    assert.deepEqual(next.dashboard.recentUsage24h.map((point) => point.tokens), [10, 20, 30]);
+    assert.deepEqual(next.dashboard.recentUsage24h.map((point) => point.fiveHourRemainingPercent), [0.1, null, 0.3]);
+    assert.deepEqual(next.dashboard.recentUsage24h.map((point) => point.sevenDayRemainingPercent), [0.9, null, 0.7]);
+  });
 });
 
-test("mergeQuota carries daily quota history for the heatmap", async () => {
-  const source = await readFile(new URL("./dashboardMergers.ts", import.meta.url), "utf8");
+test("mergeQuota carries daily quota history for the activity heatmap", async () => {
+  return withSsrModules(async (load) => {
+    const { mergeQuota } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      activityDays: [
+        activityDay({ date: "2026-07-04", tokens: 400 }),
+        activityDay({ date: "2026-07-05", tokens: 500 }),
+      ],
+    });
+    const quota = quotaBundleFixture({
+      quotaHistoryDaily: [
+        quotaHistoryDay({ date: "2026-07-05", fiveHourRemainingPercent: 0.42, sevenDayRemainingPercent: 0.84 }),
+        quotaHistoryDay({ date: "2026-07-06", fiveHourRemainingPercent: 0.1, sevenDayRemainingPercent: 0.2 }),
+      ],
+    });
 
-  assert.equal(source.includes("quota.quotaHistoryDaily"), true);
-  assert.equal(source.includes("mergeActivityQuotaHistory"), true);
-  assert.equal(source.includes("new Map(historyDays.map((day) => [day.date, day]))"), true);
+    const next = mergeQuota(state, quota);
+
+    assert.deepEqual(next.dashboard.activityDays.map((day) => day.date), ["2026-07-04", "2026-07-05"]);
+    assert.deepEqual(next.dashboard.activityDays.map((day) => day.tokens), [400, 500]);
+    assert.deepEqual(next.dashboard.activityDays.map((day) => day.fiveHourRemainingPercent), [null, 0.42]);
+    assert.deepEqual(next.dashboard.activityDays.map((day) => day.sevenDayRemainingPercent), [null, 0.84]);
+  });
 });
 
 test("precise dashboard merge preserves already loaded quota overlays", async () => {
-  const source = await readFile(new URL("./dashboardMergers.ts", import.meta.url), "utf8");
+  return withSsrModules(async (load) => {
+    const { mergePreciseDashboard } = await load("/src/state/dashboardMergers.ts");
+    const currentQuota = quotaSnapshotFixture({
+      paceLabel: "已加载额度",
+    });
+    const state = stateWithDashboard({
+      account: { displayName: "已加载账户", planLabel: "Pro" },
+      quota: currentQuota,
+      activityDays: [
+        activityDay({ date: "2026-07-04", fiveHourRemainingPercent: 0.4, sevenDayRemainingPercent: 0.8 }),
+      ],
+      recentUsage24h: [
+        recentUsagePoint({ label: "24h", startUnix: 100, fiveHourRemainingPercent: 0.41, sevenDayRemainingPercent: 0.81 }),
+      ],
+      recentUsage7d: [
+        recentUsagePoint({ label: "7d", startUnix: 700, fiveHourRemainingPercent: 0.47, sevenDayRemainingPercent: 0.87 }),
+      ],
+      recentUsage30d: [
+        recentUsagePoint({ label: "30d", startUnix: 3000, fiveHourRemainingPercent: 0.43, sevenDayRemainingPercent: 0.83 }),
+      ],
+      warnings: [{ source: "usage_cache", message: "旧缓存提醒" }],
+      diagnostics: [quotaDiagnostic({ source: "usage_cache", message: "旧缓存诊断" })],
+    });
+    const precise = dashboardFixture({
+      generatedAt: "2026-07-06T01:00:00Z",
+      account: { displayName: "精确快照占位账户", planLabel: "Unknown" },
+      quota: quotaSnapshotFixture({ paceLabel: "精确快照占位额度" }),
+      stats: {
+        totalTokens: 999,
+        peakDayTokens: 500,
+        peakThreadTokens: 300,
+        currentStreakDays: 2,
+        longestStreakDays: 3,
+        totalCalls: 9,
+        totalThreads: 4,
+      },
+      activityDays: [
+        activityDay({ date: "2026-07-04", tokens: 44, fiveHourRemainingPercent: null, sevenDayRemainingPercent: null }),
+        activityDay({ date: "2026-07-05", tokens: 55, fiveHourRemainingPercent: null, sevenDayRemainingPercent: null }),
+      ],
+      recentUsage24h: [
+        recentUsagePoint({ label: "24h", startUnix: 100, tokens: 11, fiveHourRemainingPercent: null, sevenDayRemainingPercent: null }),
+      ],
+      recentUsage7d: [
+        recentUsagePoint({ label: "7d", startUnix: 700, tokens: 77, fiveHourRemainingPercent: null, sevenDayRemainingPercent: null }),
+      ],
+      recentUsage30d: [
+        recentUsagePoint({ label: "30d", startUnix: 3000, tokens: 30, fiveHourRemainingPercent: null, sevenDayRemainingPercent: null }),
+      ],
+      warnings: [{ source: "token_count", message: "新精确提醒" }],
+      diagnostics: [quotaDiagnostic({ source: "token_count", message: "新精确诊断" })],
+    });
 
-  assert.equal(source.includes("activityDays: mergeActivityQuotaHistory(precise.activityDays, state.dashboard.activityDays)"), true);
-  assert.equal(source.includes("recentUsage24h: mergeQuotaHistory(precise.recentUsage24h, state.dashboard.recentUsage24h)"), true);
-  assert.equal(source.includes("recentUsage7d: mergeQuotaHistory(precise.recentUsage7d, state.dashboard.recentUsage7d)"), true);
-  assert.equal(source.includes("recentUsage30d: mergeQuotaHistory(precise.recentUsage30d, state.dashboard.recentUsage30d)"), true);
+    const next = mergePreciseDashboard(state, precise);
+
+    assert.equal(next.dashboard.generatedAt, "2026-07-06T01:00:00Z");
+    assert.equal(next.dashboard.stats.totalTokens, 999);
+    assert.deepEqual(next.dashboard.account, { displayName: "已加载账户", planLabel: "Pro" });
+    assert.equal(next.dashboard.quota, currentQuota);
+    assert.deepEqual(next.dashboard.activityDays.map((day) => [day.date, day.tokens, day.fiveHourRemainingPercent]), [
+      ["2026-07-04", 44, 0.4],
+      ["2026-07-05", 55, null],
+    ]);
+    assert.deepEqual(next.dashboard.recentUsage24h.map((point) => [point.startUnix, point.tokens, point.fiveHourRemainingPercent]), [
+      [100, 11, 0.41],
+    ]);
+    assert.deepEqual(next.dashboard.recentUsage7d.map((point) => [point.startUnix, point.tokens, point.sevenDayRemainingPercent]), [
+      [700, 77, 0.87],
+    ]);
+    assert.deepEqual(next.dashboard.recentUsage30d.map((point) => [point.startUnix, point.tokens, point.fiveHourRemainingPercent]), [
+      [3000, 30, 0.43],
+    ]);
+    assert.deepEqual(next.dashboard.warnings.map((warning) => warning.message), ["旧缓存提醒", "新精确提醒"]);
+    assert.deepEqual(next.dashboard.diagnostics.map((diagnostic) => diagnostic.message), ["旧缓存诊断", "新精确诊断"]);
+  });
 });
 
 test("dashboard snapshots do not synchronously apply quota history", async () => {
+  // This is an architecture guard: quota-history overlays should stay in the frontend merge layer,
+  // not in the Rust fast/precise snapshot builders.
   const dashboardSource = await readFile(new URL("../../src-tauri/src/core/dashboard.rs", import.meta.url), "utf8");
   const stateSqliteSource = await readFile(new URL("../../src-tauri/src/core/usage/state_sqlite.rs", import.meta.url), "utf8");
   const tokenCountSource = await readFile(new URL("../../src-tauri/src/core/usage/token_count_jsonl.rs", import.meta.url), "utf8");
@@ -162,7 +269,7 @@ function quotaBundleFixture(overrides = {}) {
   };
 }
 
-function quotaSnapshotFixture() {
+function quotaSnapshotFixture(overrides = {}) {
   return {
     fiveHour: {
       label: "5h",
@@ -184,6 +291,54 @@ function quotaSnapshotFixture() {
       credits: [],
     },
     paceLabel: "稳定",
+    ...overrides,
+  };
+}
+
+function activityDay(overrides = {}) {
+  return {
+    date: "2026-07-05",
+    tokens: 0,
+    calls: 0,
+    cacheHitRate: 0,
+    fiveHourRemainingPercent: null,
+    sevenDayRemainingPercent: null,
+    ...overrides,
+  };
+}
+
+function recentUsagePoint(overrides = {}) {
+  return {
+    label: "00:00",
+    startUnix: 0,
+    tokens: 0,
+    calls: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    cacheHitRate: null,
+    fiveHourRemainingPercent: null,
+    sevenDayRemainingPercent: null,
+    ...overrides,
+  };
+}
+
+function quotaHistoryDay(overrides = {}) {
+  return {
+    date: "2026-07-05",
+    fiveHourRemainingPercent: null,
+    sevenDayRemainingPercent: null,
+    ...overrides,
+  };
+}
+
+function quotaHistoryPoint(overrides = {}) {
+  return {
+    label: "00:00",
+    startUnix: 0,
+    fiveHourRemainingPercent: null,
+    sevenDayRemainingPercent: null,
+    ...overrides,
   };
 }
 
