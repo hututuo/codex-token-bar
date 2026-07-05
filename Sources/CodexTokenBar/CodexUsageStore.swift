@@ -8,6 +8,7 @@ final class CodexUsageStore: ObservableObject {
     @Published private(set) var status: String = "正在加载本地 Codex 用量..."
     @Published private(set) var isRefreshing = false
     @Published private(set) var isInitialLoading = true
+    @Published private(set) var isPreparingUsageCache = false
     @Published private(set) var dataSourceLabel: String = "查找 Codex 目录..."
     @Published private(set) var dataSourceOrigin: String = "自动"
     @Published var selectedMode: ActivityMode = .daily
@@ -65,6 +66,7 @@ final class CodexUsageStore: ObservableObject {
             snapshot = .empty
             status = "未找到本地 Codex 数据目录"
             isInitialLoading = false
+            isPreparingUsageCache = false
             didFinishInitialLoad = true
             trace?.end("no-data-source")
             return
@@ -72,12 +74,18 @@ final class CodexUsageStore: ObservableObject {
 
         let isFirstLoad = !didFinishInitialLoad
         let hasExistingSnapshot = didFinishInitialLoad || hasDisplayableSnapshot(snapshot)
+        let needsCacheInitialization = includePreciseScan && !UsageCacheLifecycle.isCurrentCachePrepared
         isRefreshing = true
+        isPreparingUsageCache = needsCacheInitialization
         if isFirstLoad {
             isInitialLoading = true
-            status = "正在读取本地索引..."
+            status = needsCacheInitialization
+                ? "正在建立本地统计缓存..."
+                : "正在读取本地索引..."
         } else {
-            status = "正在增量更新 token..."
+            status = needsCacheInitialization
+                ? "正在建立本地统计缓存..."
+                : "正在增量更新 token..."
         }
 
         Task { @MainActor [weak self] in
@@ -93,7 +101,9 @@ final class CodexUsageStore: ObservableObject {
                         trace?.mark("fastSnapshot.begin")
                         if let quickSnapshot = try? await self.snapshotLoader.loadFastSnapshot(dataSource: source) {
                             self.snapshot = quickSnapshot
-                            self.status = "\(source.originLabel) · state_5.sqlite · 正在增量更新 token..."
+                            self.status = needsCacheInitialization
+                                ? "\(source.originLabel) · state_5.sqlite · 正在初始化本地统计缓存..."
+                                : "\(source.originLabel) · state_5.sqlite · 正在增量更新 token..."
                             trace?.mark("fastSnapshot.end", metadata: [
                                 "tokens": String(quickSnapshot.stats.totalTokens),
                                 "threads": String(quickSnapshot.stats.totalThreads)
@@ -116,6 +126,7 @@ final class CodexUsageStore: ObservableObject {
                     let loaded = try await self.snapshotLoader.loadSnapshot(dataSource: source)
                     self.snapshot = loaded
                     self.didRunPreciseScan = true
+                    UsageCacheLifecycle.markCurrentCachePrepared()
                     self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
                     trace?.mark("preciseSnapshot.end", metadata: [
                         "tokens": String(loaded.stats.totalTokens),
@@ -134,6 +145,7 @@ final class CodexUsageStore: ObservableObject {
             self.isRefreshing = false
             self.didFinishInitialLoad = true
             self.isInitialLoading = false
+            self.isPreparingUsageCache = false
         }
     }
 

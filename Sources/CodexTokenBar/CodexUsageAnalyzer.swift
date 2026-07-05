@@ -44,6 +44,13 @@ final class CodexUsageAnalyzer {
             "source": dataSource.displayPath
         ])
         do {
+            if let cachedPreciseSnapshot = cachedPreciseSnapshot() {
+                trace?.end("precise-cache", metadata: [
+                    "tokens": String(cachedPreciseSnapshot.stats.totalTokens),
+                    "threads": String(cachedPreciseSnapshot.stats.totalThreads)
+                ])
+                return cachedPreciseSnapshot
+            }
             let snapshot = try loadFromStateSQLite(includeTimeSeries: false)
             trace?.end("ok", metadata: [
                 "tokens": String(snapshot.stats.totalTokens),
@@ -56,19 +63,26 @@ final class CodexUsageAnalyzer {
         }
     }
 
+    private func cachedPreciseSnapshot() -> DashboardSnapshot? {
+        let sessionFiles = usageJSONLFiles()
+        guard !sessionFiles.isEmpty else {
+            return nil
+        }
+        let signature = sessionTreeSignature(for: sessionFiles)
+        return Self.sessionEventCache.snapshot(for: dataSource.codexHome.path, signature: signature)
+    }
+
     private func loadFromTokenCountJSONL() throws -> DashboardSnapshot {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.preciseJSONL", metadata: [
             "sessionsRoot": dataSource.sessionsRoot.path
         ])
-        let sessionsRoot = dataSource.sessionsRoot
-        guard fileManager.fileExists(atPath: sessionsRoot.path) else {
-            trace?.end("missing-sessions-root")
-            throw NSError(domain: "CodexTokenBar", code: 5, userInfo: [NSLocalizedDescriptionKey: "\(dataSource.displayPath)/sessions not found"])
-        }
-
         trace?.mark("jsonlFiles.begin")
-        let sessionFiles = jsonlFiles(under: sessionsRoot)
+        let sessionFiles = usageJSONLFiles()
         trace?.mark("jsonlFiles.end", metadata: ["count": String(sessionFiles.count)])
+        guard !sessionFiles.isEmpty else {
+            trace?.end("missing-token-jsonl-files")
+            throw NSError(domain: "CodexTokenBar", code: 5, userInfo: [NSLocalizedDescriptionKey: "\(dataSource.displayPath) has no token JSONL files"])
+        }
         trace?.mark("signature.begin")
         let signature = sessionTreeSignature(for: sessionFiles)
         trace?.mark("signature.end", metadata: [

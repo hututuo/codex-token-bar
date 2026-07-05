@@ -8,12 +8,16 @@ extension CodexUsageAnalyzer {
     }
 
     struct SessionTreeSignature: Codable, Equatable {
+        let localDate: String
+        let utcOffsetSeconds: Int
         let files: [SessionCacheKey]
         let stateDatabase: SessionCacheKey?
     }
 
     final class SessionEventCache: @unchecked Sendable {
-        private static let persistentCacheVersion = 6
+        private static let persistentCacheVersion = 7
+        private static let appCacheDirectoryName = "CodexTokenBarSwift"
+        static let cacheNamespace = "swift-usage-cache-2026-07-v2"
         private static let cacheDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_DIR"
 
         private struct LegacyPersistentEntry: Codable {
@@ -36,6 +40,8 @@ extension CodexUsageAnalyzer {
             let endedWithNewline: Bool
             let previousTotalTokens: Int?
             let canIncrementFromOffset: Bool
+            let forkReplayActive: Bool
+            let lastSkippedForkReplayTokenAt: TimeInterval?
             let events: [PersistentEvent]
         }
 
@@ -58,6 +64,8 @@ extension CodexUsageAnalyzer {
             let endedWithNewline: Bool
             let previousTotalTokens: Int?
             let canIncrementFromOffset: Bool
+            let forkReplayActive: Bool
+            let lastSkippedForkReplayTokenAt: Date?
             let migratedFromLegacyCache: Bool
             let persistentEventsForMigration: [PersistentEvent]?
 
@@ -68,6 +76,8 @@ extension CodexUsageAnalyzer {
                 endedWithNewline: Bool,
                 previousTotalTokens: Int?,
                 canIncrementFromOffset: Bool,
+                forkReplayActive: Bool,
+                lastSkippedForkReplayTokenAt: Date?,
                 migratedFromLegacyCache: Bool
             ) {
                 self.init(
@@ -77,6 +87,8 @@ extension CodexUsageAnalyzer {
                     endedWithNewline: endedWithNewline,
                     previousTotalTokens: previousTotalTokens,
                     canIncrementFromOffset: canIncrementFromOffset,
+                    forkReplayActive: forkReplayActive,
+                    lastSkippedForkReplayTokenAt: lastSkippedForkReplayTokenAt,
                     migratedFromLegacyCache: migratedFromLegacyCache,
                     persistentEventsForMigration: nil
                 )
@@ -89,6 +101,8 @@ extension CodexUsageAnalyzer {
                 endedWithNewline: Bool,
                 previousTotalTokens: Int?,
                 canIncrementFromOffset: Bool,
+                forkReplayActive: Bool,
+                lastSkippedForkReplayTokenAt: Date?,
                 migratedFromLegacyCache: Bool,
                 persistentEventsForMigration: [PersistentEvent]?
             ) {
@@ -98,6 +112,8 @@ extension CodexUsageAnalyzer {
                 self.endedWithNewline = endedWithNewline
                 self.previousTotalTokens = previousTotalTokens
                 self.canIncrementFromOffset = canIncrementFromOffset
+                self.forkReplayActive = forkReplayActive
+                self.lastSkippedForkReplayTokenAt = lastSkippedForkReplayTokenAt
                 self.migratedFromLegacyCache = migratedFromLegacyCache
                 self.persistentEventsForMigration = persistentEventsForMigration
             }
@@ -114,6 +130,8 @@ extension CodexUsageAnalyzer {
                     endedWithNewline: true,
                     previousTotalTokens: nil,
                     canIncrementFromOffset: false,
+                    forkReplayActive: false,
+                    lastSkippedForkReplayTokenAt: nil,
                     migratedFromLegacyCache: true,
                     persistentEventsForMigration: persistentEvents
                 )
@@ -317,6 +335,8 @@ extension CodexUsageAnalyzer {
                         endedWithNewline: value.endedWithNewline,
                         previousTotalTokens: value.previousTotalTokens,
                         canIncrementFromOffset: value.canIncrementFromOffset,
+                        forkReplayActive: value.forkReplayActive,
+                        lastSkippedForkReplayTokenAt: value.lastSkippedForkReplayTokenAt?.timeIntervalSince1970,
                         events: value.persistentEventsForMigration ?? value.events.map(Self.persistentEvent)
                     )
                     let file = PersistentSessionFile(version: Self.persistentCacheVersion, entry: entry)
@@ -357,24 +377,15 @@ extension CodexUsageAnalyzer {
 
             let trace = RefreshPerformanceProbe.begin("usageCache.loadPersistent")
             trace?.mark("loadV6.begin")
-            var loaded = Self.loadV6SessionCache()
+            let loaded = Self.loadV6SessionCache()
             trace?.mark("loadV6.end", metadata: ["sessions": String(loaded.count)])
-            let loadedFromLegacy = loaded.isEmpty
-            if loadedFromLegacy {
-                trace?.mark("loadLegacyV5.begin")
-                loaded = Self.loadLegacyV5SessionCache()
-                trace?.mark("loadLegacyV5.end", metadata: ["sessions": String(loaded.count)])
-            }
 
             for (path, value) in loaded where storage[path] == nil {
                 storage[path] = value
             }
-            if loadedFromLegacy, !loaded.isEmpty {
-                dirtyPaths.formUnion(loaded.keys)
-            }
             trace?.end("ok", metadata: [
                 "sessions": String(loaded.count),
-                "legacy": loadedFromLegacy ? "1" : "0"
+                "namespace": Self.cacheNamespace
             ])
         }
 
@@ -405,6 +416,8 @@ extension CodexUsageAnalyzer {
                     endedWithNewline: entry.endedWithNewline,
                     previousTotalTokens: entry.previousTotalTokens,
                     canIncrementFromOffset: entry.canIncrementFromOffset,
+                    forkReplayActive: entry.forkReplayActive,
+                    lastSkippedForkReplayTokenAt: entry.lastSkippedForkReplayTokenAt.map(Date.init(timeIntervalSince1970:)),
                     migratedFromLegacyCache: false
                 )
             }
@@ -480,23 +493,34 @@ extension CodexUsageAnalyzer {
 
         private static var sessionCacheDirectory: URL? {
             cacheRootURL?
-                .appendingPathComponent("CodexTokenBar", isDirectory: true)
+                .appendingPathComponent(appCacheDirectoryName, isDirectory: true)
+                .appendingPathComponent(cacheNamespace, isDirectory: true)
                 .appendingPathComponent("session-token-events-v6", isDirectory: true)
         }
 
         private static var snapshotCacheURL: URL? {
             cacheRootURL?
-                .appendingPathComponent("CodexTokenBar", isDirectory: true)
+                .appendingPathComponent(appCacheDirectoryName, isDirectory: true)
+                .appendingPathComponent(cacheNamespace, isDirectory: true)
                 .appendingPathComponent("session-token-snapshots-v6.json")
         }
 
         private static var legacyCacheURLs: [URL] {
             guard let cacheRootURL else { return [] }
-            return [2, 3, 4].map { version in
+            let oldSharedFiles = [2, 3, 4, 5].map { version in
                 cacheRootURL
                     .appendingPathComponent("CodexTokenBar", isDirectory: true)
                     .appendingPathComponent("session-token-events-v\(version).json")
             }
+            let oldSharedDirectories = [
+                cacheRootURL
+                    .appendingPathComponent("CodexTokenBar", isDirectory: true)
+                    .appendingPathComponent("session-token-events-v6", isDirectory: true),
+                cacheRootURL
+                    .appendingPathComponent("CodexTokenBar", isDirectory: true)
+                    .appendingPathComponent("session-token-snapshots-v6.json")
+            ]
+            return oldSharedFiles + oldSharedDirectories
         }
 
         private static var cacheRootURL: URL? {
@@ -639,6 +663,8 @@ extension CodexUsageAnalyzer {
         let lastOffset: UInt64
         let endedWithNewline: Bool
         let previousTotalTokens: Int?
+        let forkReplayActive: Bool
+        let lastSkippedForkReplayTokenAt: Date?
     }
 
     struct SessionLineStreamResult {

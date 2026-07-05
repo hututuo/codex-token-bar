@@ -4,6 +4,18 @@ import XCTest
 
 @MainActor
 final class CodexUsageStoreTests: XCTestCase {
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+    }
+
+    override func tearDownWithError() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+        try super.tearDownWithError()
+    }
+
     func testVisibleDashboardRefreshesFasterThanCompactOnlySurfaces() throws {
         let testFile = URL(fileURLWithPath: #filePath)
         let projectRoot = testFile
@@ -59,6 +71,51 @@ final class CodexUsageStoreTests: XCTestCase {
 
         XCTAssertTrue(source.contains("正在增量更新 token"))
         XCTAssertFalse(source.contains("正在扫描 \\(dataSource.displayPath)/sessions"))
+    }
+
+    func testUsageCacheInitializationUsesInlineNoticeInsteadOfBlockingOverlay() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let projectRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let usageStore = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexUsageStore.swift")
+        let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
+        let headerView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardHeaderView.swift")
+        let storeSource = try String(contentsOf: usageStore, encoding: .utf8)
+        let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
+        let headerSource = try String(contentsOf: headerView, encoding: .utf8)
+
+        XCTAssertTrue(storeSource.contains("UsageCacheLifecycle.isCurrentCachePrepared"))
+        XCTAssertTrue(storeSource.contains("UsageCacheLifecycle.markCurrentCachePrepared()"))
+        XCTAssertTrue(storeSource.contains("isPreparingUsageCache"))
+        XCTAssertTrue(dashboardSource.contains("if store.isPreparingUsageCache"))
+        XCTAssertTrue(dashboardSource.contains("UsageCacheInitializationNotice(status: store.status)"))
+        XCTAssertFalse(dashboardSource.contains("if store.isInitialLoading {\n                InitialLoadingOverlay"))
+        XCTAssertTrue(headerSource.contains("首次打开或更新后可能需要一点时间，只读取本机 Codex 记录，不上传数据。"))
+    }
+
+    func testUsageCacheLifecycleMarksCurrentNamespacePrepared() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let stateRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexUsageStoreCacheState-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stateRoot, withIntermediateDirectories: true)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", stateRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", stateRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            try? FileManager.default.removeItem(at: stateRoot)
+        }
+
+        UsageCacheLifecycle.clearStateForTesting()
+        XCTAssertFalse(UsageCacheLifecycle.isCurrentCachePrepared)
+
+        UsageCacheLifecycle.markCurrentCachePrepared()
+
+        XCTAssertTrue(UsageCacheLifecycle.isCurrentCachePrepared)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stateRoot.appendingPathComponent("cache-state.json").path))
     }
 
     func testInitialPreciseFailurePreservesFastUsageSnapshot() async {

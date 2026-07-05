@@ -44,6 +44,48 @@ struct InitialLoadingOverlay: View {
     }
 }
 
+struct UsageCacheInitializationNotice: View {
+    let status: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+                .progressViewStyle(.circular)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("正在初始化本地统计缓存")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text("首次打开或更新后可能需要一点时间，只读取本机 Codex 记录，不上传数据。")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 10)
+
+            Text(status)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 280, alignment: .trailing)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(AppTheme.panelBackground.opacity(0.92))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(AppTheme.border, lineWidth: 1)
+        )
+        .accessibilityLabel("正在初始化本地统计缓存")
+    }
+}
+
 struct HeaderView: View {
     let snapshot: DashboardSnapshot
     let quotaSnapshot: AccountQuotaSnapshot

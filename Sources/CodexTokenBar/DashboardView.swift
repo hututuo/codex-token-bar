@@ -82,12 +82,6 @@ struct DashboardView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if store.isInitialLoading {
-                InitialLoadingOverlay(status: store.status)
-                    .transition(.opacity)
-                    .zIndex(10)
-            }
-
             if showingResetCreditDetails {
                 GeometryReader { proxy in
                     ZStack(alignment: .top) {
@@ -418,6 +412,10 @@ struct DashboardView: View {
             )
 
             StatStrip(stats: store.snapshot.stats)
+
+            if store.isPreparingUsageCache {
+                UsageCacheInitializationNotice(status: store.status)
+            }
 
             CodexRadarStrip(
                 snapshot: radarStore.snapshot,
