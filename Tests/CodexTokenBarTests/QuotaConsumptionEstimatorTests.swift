@@ -84,40 +84,6 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     func testSelectionReportsSevenDayToFiveHourBudgetRatioAndDivergence() throws {
-        func selection(fiveHourBudget: Double, sevenDayBudget: Double) -> QuotaConsumptionSelection {
-            QuotaConsumptionSelection(
-                startIndex: 0,
-                endIndex: 1,
-                bucketCount: 2,
-                startDate: Date(timeIntervalSince1970: 0),
-                endDate: Date(timeIntervalSince1970: 600),
-                priceCard: .officialAPI(.gpt55),
-                breakdown: .empty,
-                fiveHour: QuotaConsumptionEstimate(
-                    selectedCostUSD: 1,
-                    impliedWindowBudgetUSD: fiveHourBudget,
-                    quotaDropPercent: 10,
-                    inputTokens: 0,
-                    cachedInputTokens: 0,
-                    outputTokens: 0,
-                    calls: 0,
-                    cacheHitRate: 0,
-                    confidence: .measured
-                ),
-                sevenDay: QuotaConsumptionEstimate(
-                    selectedCostUSD: 1,
-                    impliedWindowBudgetUSD: sevenDayBudget,
-                    quotaDropPercent: 1.1,
-                    inputTokens: 0,
-                    cachedInputTokens: 0,
-                    outputTokens: 0,
-                    calls: 0,
-                    cacheHitRate: 0,
-                    confidence: .measured
-                )
-            )
-        }
-
         let highDivergence = selection(fiveHourBudget: 10, sevenDayBudget: 76)
         let lowDivergence = selection(fiveHourBudget: 10, sevenDayBudget: 44)
         let normal = selection(fiveHourBudget: 10, sevenDayBudget: 60)
@@ -289,24 +255,154 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     func testRecentUsageChartExposesClickToEstimateQuotaUI() throws {
         let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
         let componentSource = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChartComponents.swift", encoding: .utf8)
-        let estimatorSource = try String(contentsOfFile: "Sources/CodexTokenBar/QuotaConsumptionEstimator.swift", encoding: .utf8)
 
         XCTAssertTrue(source.contains("@AppStorage(\"recentChartQuotaEstimateModel\")"))
         XCTAssertTrue(source.contains("consumptionSelectionState"))
-        XCTAssertTrue(estimatorSource.contains("fixedEndIndex"))
         XCTAssertTrue(source.contains("quotaConsumptionSelection("))
         XCTAssertTrue(source.contains("onClick:"))
-        XCTAssertTrue(source.contains("点击图表估算额度"))
         XCTAssertTrue(source.contains("y: plot.minY - 58"))
-        XCTAssertTrue(componentSource.contains("点击图表可估算额度"))
-        XCTAssertTrue(componentSource.contains("xmark.circle.fill"))
         XCTAssertTrue(componentSource.contains("onClose:"))
-        XCTAssertTrue(componentSource.contains("倍率"))
-        XCTAssertTrue(componentSource.contains("偏离 6x"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateModelSelector"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateOverlay"))
-        XCTAssertTrue(componentSource.contains("本段消耗"))
-        XCTAssertTrue(componentSource.contains("反推总额度"))
-        XCTAssertTrue(componentSource.contains("官方 API"))
+    }
+
+    func testEstimateAffordancePresentationProvidesChartHelpAndModelOptions() {
+        XCTAssertEqual(RecentChartQuotaEstimateAffordancePresentation.headerLabel, "点击图表估算额度")
+        XCTAssertEqual(
+            RecentChartQuotaEstimateAffordancePresentation.headerHelp,
+            "第一下定起点，移动鼠标实时预览，第二下固定终点；再次点击重新选择。"
+        )
+        XCTAssertEqual(
+            RecentChartQuotaEstimateAffordancePresentation.inlineInstruction,
+            "第一下定起点，移动实时预览，第二下固定终点；第三下重新选择。"
+        )
+        XCTAssertEqual(RecentChartQuotaEstimateAffordancePresentation.hoverInstruction, "点击起点/终点可估算额度")
+        XCTAssertEqual(RecentChartQuotaEstimateAffordancePresentation.hoverAccessibilityPrompt, "点击图表可估算额度")
+
+        let option = RecentChartQuotaEstimateAffordancePresentation.modelOption(
+            for: .gpt54Mini,
+            selectedModel: .gpt55
+        )
+
+        XCTAssertEqual(option.groupLabel, "官方 API")
+        XCTAssertEqual(option.shortTitle, "mini")
+        XCTAssertEqual(option.accessibilityLabel, "官方 API 定价 GPT-5.4 mini")
+        XCTAssertEqual(option.accessibilityValue, "未选择")
+    }
+
+    func testOverlayPresentationBuildsSummaryAndAccessibilityForMeasuredSelection() throws {
+        let selection = selection(fiveHourBudget: 92, sevenDayBudget: 552)
+        let presentation = QuotaConsumptionEstimatorOverlayPresentation(selection: selection)
+        let expectedRange = "\(DateFormatter.hourMinute.string(from: selection.startDate))-\(DateFormatter.hourMinute.string(from: selection.endDate))"
+
+        XCTAssertEqual(presentation.costTitle, "本段消耗")
+        XCTAssertEqual(presentation.costText, "$1.18")
+        XCTAssertEqual(presentation.timeRangeText, expectedRange)
+        XCTAssertEqual(presentation.cacheHitText, "命中 40%")
+        XCTAssertEqual(presentation.estimateTitle, "反推总额度")
+        XCTAssertEqual(presentation.fiveHourChip.title, "5h")
+        XCTAssertEqual(presentation.fiveHourChip.detail, "$92.0 · 降 10%")
+        XCTAssertEqual(presentation.sevenDayChip.title, "7d")
+        XCTAssertEqual(presentation.sevenDayChip.detail, "$552 · 降 1.1%")
+        XCTAssertEqual(presentation.ratioTitle, "倍率")
+        XCTAssertEqual(presentation.budgetRatioText, "6.0x")
+        XCTAssertEqual(presentation.ratioHelpText, "7d/5h，正常约 6x")
+        XCTAssertFalse(presentation.showsRatioWarning)
+        XCTAssertNil(presentation.ratioWarningText)
+        XCTAssertEqual(presentation.closeAccessibilityLabel, "关闭额度估算")
+        XCTAssertEqual(presentation.accessibilityLabel, "额度估算")
+        XCTAssertEqual(
+            presentation.accessibilityValue,
+            "本段消耗 $1.18，5 小时 反推总额度 $92.0，下降 10%，7 天 反推总额度 $552，下降 1.1%，倍率 6.0x"
+        )
+    }
+
+    func testOverlayPresentationShowsRatioWarningOnlyForDivergentSelection() {
+        let divergent = QuotaConsumptionEstimatorOverlayPresentation(selection: selection(fiveHourBudget: 10, sevenDayBudget: 76))
+        let normal = QuotaConsumptionEstimatorOverlayPresentation(selection: selection(fiveHourBudget: 10, sevenDayBudget: 60))
+
+        XCTAssertTrue(divergent.showsRatioWarning)
+        XCTAssertEqual(divergent.ratioWarningText, "偏离 6x，误差可能较大")
+        XCTAssertEqual(divergent.ratioWarningDetailText, "可能因 7d 下降太少、颗粒度太低或其他误差。")
+        XCTAssertFalse(normal.showsRatioWarning)
+        XCTAssertNil(normal.ratioWarningText)
+        XCTAssertNil(normal.ratioWarningDetailText)
+    }
+
+    func testEstimatePresentationExplainsUnavailableStates() {
+        let insufficient = QuotaConsumptionEstimate(
+            selectedCostUSD: 1,
+            impliedWindowBudgetUSD: nil,
+            quotaDropPercent: 0,
+            inputTokens: 1,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            calls: 1,
+            cacheHitRate: 0,
+            confidence: .insufficientQuotaMovement
+        )
+        let noToken = QuotaConsumptionEstimate(
+            selectedCostUSD: 0,
+            impliedWindowBudgetUSD: nil,
+            quotaDropPercent: 0,
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            calls: 0,
+            cacheHitRate: 0,
+            confidence: .noTokenUsage
+        )
+
+        XCTAssertEqual(QuotaConsumptionEstimatePresentation(title: "5h", estimate: insufficient).detail, "下降太小")
+        XCTAssertEqual(
+            QuotaConsumptionEstimatePresentation(title: "5h", estimate: insufficient).accessibilityText,
+            "额度下降太小，不能反推"
+        )
+        XCTAssertEqual(QuotaConsumptionEstimatePresentation(title: "7d", estimate: noToken).detail, "无 token")
+        XCTAssertEqual(
+            QuotaConsumptionEstimatePresentation(title: "7d", estimate: noToken).accessibilityText,
+            "没有 token 用量"
+        )
+    }
+
+    private func selection(fiveHourBudget: Double, sevenDayBudget: Double) -> QuotaConsumptionSelection {
+        QuotaConsumptionSelection(
+            startIndex: 0,
+            endIndex: 1,
+            bucketCount: 2,
+            startDate: Date(timeIntervalSince1970: 0),
+            endDate: Date(timeIntervalSince1970: 600),
+            priceCard: .officialAPI(.gpt55),
+            breakdown: TokenCacheBreakdown(
+                inputTokens: 180_000,
+                cachedInputTokens: 72_000,
+                outputTokens: 20_000,
+                reasoningOutputTokens: 0,
+                totalTokens: 200_000,
+                calls: 2
+            ),
+            fiveHour: QuotaConsumptionEstimate(
+                selectedCostUSD: 1,
+                impliedWindowBudgetUSD: fiveHourBudget,
+                quotaDropPercent: 10,
+                inputTokens: 0,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                calls: 0,
+                cacheHitRate: 0,
+                confidence: .measured
+            ),
+            sevenDay: QuotaConsumptionEstimate(
+                selectedCostUSD: 1,
+                impliedWindowBudgetUSD: sevenDayBudget,
+                quotaDropPercent: 1.1,
+                inputTokens: 0,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                calls: 0,
+                cacheHitRate: 0,
+                confidence: .measured
+            )
+        )
     }
 }

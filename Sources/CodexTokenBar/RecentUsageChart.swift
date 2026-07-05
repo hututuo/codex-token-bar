@@ -182,7 +182,7 @@ struct RecentUsageChart: View {
                 HStack(spacing: 10) {
                     Text(selectedRange.title)
                         .font(.system(size: 19, weight: .semibold))
-                    Label("点击图表估算额度", systemImage: "cursorarrow.click.2")
+                    Label(RecentChartQuotaEstimateAffordancePresentation.headerLabel, systemImage: "cursorarrow.click.2")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(AppTheme.accentBlue)
                         .padding(.horizontal, 9)
@@ -192,12 +192,12 @@ struct RecentUsageChart: View {
                             Capsule()
                                 .stroke(AppTheme.accentBlue.opacity(0.28), lineWidth: 1)
                         )
-                        .help("第一下定起点，移动鼠标实时预览，第二下固定终点；再次点击重新选择。")
+                        .help(RecentChartQuotaEstimateAffordancePresentation.headerHelp)
                 }
                 Text(selectedRange.subtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                Text("第一下定起点，移动实时预览，第二下固定终点；第三下重新选择。")
+                Text(RecentChartQuotaEstimateAffordancePresentation.inlineInstruction)
                     .font(.system(size: 10))
                     .foregroundStyle(AppTheme.accentBlue.opacity(0.82))
             }

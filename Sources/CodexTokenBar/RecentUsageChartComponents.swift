@@ -95,26 +95,30 @@ struct RecentChartQuotaEstimateModelSelector: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Text("官方 API")
+            Text(RecentChartQuotaEstimateAffordancePresentation.modelOption(for: selectedModel, selectedModel: selectedModel).groupLabel)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
 
             ForEach(OfficialAPIPriceModel.allCases) { model in
+                let option = RecentChartQuotaEstimateAffordancePresentation.modelOption(
+                    for: model,
+                    selectedModel: selectedModel
+                )
                 Button {
                     selectedModel = model
                 } label: {
-                    Text(model.shortTitle)
+                    Text(option.shortTitle)
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(selectedModel == model ? AppTheme.accentBlue : .secondary)
                         .frame(width: 34, height: 22)
                         .background(
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
                                 .fill(selectedModel == model ? AppTheme.accentBlue.opacity(0.12) : Color.clear)
-                        )
+                    )
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("官方 API 定价 \(model.title)")
-                .accessibilityValue(selectedModel == model ? "已选择" : "未选择")
+                .accessibilityLabel(option.accessibilityLabel)
+                .accessibilityValue(option.accessibilityValue)
             }
         }
         .padding(.leading, 8)
@@ -133,50 +137,52 @@ struct RecentChartQuotaEstimateOverlay: View {
     let onClose: () -> Void
 
     var body: some View {
+        let presentation = QuotaConsumptionEstimatorOverlayPresentation(selection: selection)
+
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("本段消耗")
+                    Text(presentation.costTitle)
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
-                    Text(selection.breakdown.costText(selection.priceCard))
+                    Text(presentation.costText)
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(AppTheme.accentBlue)
-                    Text(selection.timeRangeText)
+                    Text(presentation.timeRangeText)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
-                    Text("命中 \(selection.breakdown.cacheHitRate.percentString)")
+                    Text(presentation.cacheHitText)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(AppTheme.accentCyan)
                 }
 
                 HStack(spacing: 7) {
-                    Text("反推总额度")
+                    Text(presentation.estimateTitle)
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
-                    QuotaEstimateChip(title: "5h", estimate: selection.fiveHour, color: .purple)
-                    QuotaEstimateChip(title: "7d", estimate: selection.sevenDay, color: .green)
+                    QuotaEstimateChip(presentation: presentation.fiveHourChip, color: .purple)
+                    QuotaEstimateChip(presentation: presentation.sevenDayChip, color: .green)
                 }
 
                 HStack(spacing: 6) {
-                    Text("倍率")
+                    Text(presentation.ratioTitle)
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
-                    Text(selection.budgetRatioText)
+                    Text(presentation.budgetRatioText)
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(selection.hasDivergentBudgetRatio ? .orange : .primary)
-                    Text("7d/5h，正常约 6x")
+                        .foregroundStyle(presentation.showsRatioWarning ? .orange : .primary)
+                    Text(presentation.ratioHelpText)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
-                    if selection.hasDivergentBudgetRatio {
-                        Text("偏离 6x，误差可能较大")
+                    if let ratioWarningText = presentation.ratioWarningText {
+                        Text(ratioWarningText)
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.orange)
                     }
                 }
 
-                if selection.hasDivergentBudgetRatio {
-                    Text("可能因 7d 下降太少、颗粒度太低或其他误差。")
+                if let ratioWarningDetailText = presentation.ratioWarningDetailText {
+                    Text(ratioWarningDetailText)
                         .font(.system(size: 9, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
@@ -192,7 +198,7 @@ struct RecentChartQuotaEstimateOverlay: View {
                     .frame(width: 22, height: 22)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("关闭额度估算")
+            .accessibilityLabel(presentation.closeAccessibilityLabel)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -203,22 +209,21 @@ struct RecentChartQuotaEstimateOverlay: View {
                 .stroke(AppTheme.borderStrong, lineWidth: 1)
         )
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("额度估算")
-        .accessibilityValue("本段消耗 \(selection.breakdown.costText(selection.priceCard))，5 小时 \(selection.fiveHour.accessibilityText)，7 天 \(selection.sevenDay.accessibilityText)，倍率 \(selection.budgetRatioText)")
+        .accessibilityLabel(presentation.accessibilityLabel)
+        .accessibilityValue(presentation.accessibilityValue)
     }
 }
 
 private struct QuotaEstimateChip: View {
-    let title: String
-    let estimate: QuotaConsumptionEstimate
+    let presentation: QuotaConsumptionEstimatePresentation
     let color: Color
 
     var body: some View {
         HStack(spacing: 5) {
-            Text(title)
+            Text(presentation.title)
                 .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(color)
-            Text(detail)
+            Text(presentation.detail)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.primary)
         }
@@ -229,89 +234,14 @@ private struct QuotaEstimateChip: View {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .stroke(color.opacity(0.22), lineWidth: 1)
         )
-        .accessibilityLabel("\(title) 额度估算")
-        .accessibilityValue(detail)
-    }
-
-    private var detail: String {
-        switch estimate.confidence {
-        case .measured:
-            return "\(estimate.budgetText) · 降 \(estimate.quotaDropPercent.oneDecimalPercent)"
-        case .insufficientQuotaMovement:
-            return "下降太小"
-        case .noTokenUsage:
-            return "无 token"
-        }
+        .accessibilityLabel(presentation.accessibilityLabel)
+        .accessibilityValue(presentation.detail)
     }
 }
 
 extension View {
     func chartBubblePlacement(tokenX: CGFloat, plot: CGRect) -> some View {
         modifier(ChartBubblePlacementModifier(tokenX: tokenX, plot: plot))
-    }
-}
-
-private extension OfficialAPIPriceModel {
-    var shortTitle: String {
-        switch self {
-        case .gpt55: "5.5"
-        case .gpt54: "5.4"
-        case .gpt54Mini: "mini"
-        }
-    }
-}
-
-private extension QuotaConsumptionSelection {
-    var timeRangeText: String {
-        "\(DateFormatter.hourMinute.string(from: startDate))-\(DateFormatter.hourMinute.string(from: endDate))"
-    }
-
-    var budgetRatioText: String {
-        guard let sevenDayToFiveHourBudgetRatio else { return "--" }
-        return String(format: "%.1fx", sevenDayToFiveHourBudgetRatio)
-    }
-}
-
-private extension QuotaConsumptionEstimate {
-    var accessibilityText: String {
-        switch confidence {
-        case .measured:
-            return "反推总额度 \(budgetText)，下降 \(quotaDropPercent.oneDecimalPercent)"
-        case .insufficientQuotaMovement:
-            return "额度下降太小，不能反推"
-        case .noTokenUsage:
-            return "没有 token 用量"
-        }
-    }
-
-    var budgetText: String {
-        guard let impliedWindowBudgetUSD else { return "--" }
-        return "$\(Self.moneyString(impliedWindowBudgetUSD))"
-    }
-
-    static func moneyString(_ value: Double) -> String {
-        if value >= 100 {
-            return String(format: "%.0f", value)
-        }
-        if value >= 10 {
-            return String(format: "%.1f", value)
-        }
-        return String(format: "%.2f", value)
-    }
-}
-
-private extension TokenCacheBreakdown {
-    func costText(_ priceCard: QuotaConsumptionPriceCard) -> String {
-        "$\(QuotaConsumptionEstimate.moneyString(priceCard.costUSD(for: self)))"
-    }
-}
-
-private extension Double {
-    var oneDecimalPercent: String {
-        if rounded() == self {
-            return "\(Int(self))%"
-        }
-        return String(format: "%.1f%%", self)
     }
 }
 
@@ -373,7 +303,7 @@ struct ChartHoverBubble: View {
                     .foregroundStyle(.secondary)
             }
             if isHovering {
-                Text("点击起点/终点可估算额度")
+                Text(RecentChartQuotaEstimateAffordancePresentation.hoverInstruction)
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(AppTheme.accentBlue)
             }
@@ -411,7 +341,7 @@ struct ChartHoverBubble: View {
             parts.append("7 天额度 \(percentText(sevenDayRemaining))")
         }
         if isHovering {
-            parts.append("点击图表可估算额度")
+            parts.append(RecentChartQuotaEstimateAffordancePresentation.hoverAccessibilityPrompt)
         }
         return parts.joined(separator: "；")
     }
