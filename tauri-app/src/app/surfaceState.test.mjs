@@ -26,14 +26,18 @@ test("dashboard header supports Swift-style editable account display name", asyn
 
 test("floating toggle follows saved preference instead of transient visibility", async () => {
   const hook = await readFile(new URL("./useFloatingWindowSurface.ts", import.meta.url), "utf8");
+  const model = await readFile(new URL("./floatingWindowSurfaceModel.ts", import.meta.url), "utf8");
   const toggleBody = hook.slice(hook.indexOf("const toggleFloatingWindow"));
 
   assert.equal(toggleBody.includes("const nextEnabled = !enabled"), true);
   assert.equal(toggleBody.includes("const nextVisible = !floatingVisible"), false);
   assert.equal(toggleBody.includes("onPreferenceConfirmed(nextEnabled)"), false);
   assert.equal(toggleBody.includes("setFloatingVisible(nextEnabled)"), false);
-  assert.equal(toggleBody.includes("onPreferenceConfirmed(nextVisible)"), true);
-  assert.equal(toggleBody.includes("setFloatingVisible(nextVisible)"), true);
+  assert.equal(toggleBody.includes("floatingCommandPreferenceConfirmation(result)"), true);
+  assert.equal(toggleBody.includes("confirmedPreference !== null"), true);
+  assert.equal(toggleBody.includes("floatingCommandVisibleState(result"), true);
+  assert.equal(model.includes("return result.ok ? result.value : null"), true);
+  assert.equal(model.includes("return result.ok ? result.value : currentVisible"), true);
 });
 
 test("floating hidden event also turns off saved preference", async () => {
@@ -43,7 +47,7 @@ test("floating hidden event also turns off saved preference", async () => {
     hook.indexOf("}).then((listener)"),
   );
 
-  assert.equal(hiddenHandler.includes("setFloatingVisible(false)"), true);
+  assert.equal(hiddenHandler.includes("updateFloatingVisible(false)"), true);
   assert.equal(hiddenHandler.includes("onPreferenceConfirmed(false)"), true);
 });
 
@@ -57,7 +61,7 @@ test("floating hidden event cannot overwrite first-launch default before setting
   assert.equal(hiddenHandler.includes("settingsReadyRef.current"), true);
   assert.equal(hiddenHandler.includes("enabledPreferenceRef.current"), true);
   assert.equal(
-    hiddenHandler.includes("if (!settingsReadyRef.current || !enabledPreferenceRef.current)"),
+    hiddenHandler.includes("shouldConfirmFloatingHiddenEvent(settingsReadyRef.current, enabledPreferenceRef.current)"),
     true,
   );
 });
@@ -69,7 +73,7 @@ test("startup floating apply does not rewrite saved preference when show returns
     hook.indexOf("const toggleFloatingWindow"),
   );
 
-  assert.equal(applyEffect.includes("setFloatingVisible(nextVisible)"), true);
+  assert.equal(applyEffect.includes("updateFloatingVisible(floatingCommandVisibleState(result"), true);
   assert.equal(applyEffect.includes("onPreferenceConfirmed(nextVisible)"), false);
   assert.equal(applyEffect.includes("onPreferenceConfirmed(false)"), false);
 });

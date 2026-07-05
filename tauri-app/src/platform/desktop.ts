@@ -17,12 +17,15 @@ import {
 } from "./floatingWindowControls";
 import {
   hideFloatingWindow,
+  hideFloatingWindowCommand,
   hideStatusPanelWindow,
   setStatusTrayReadout,
   showDashboardWindow,
   showFloatingWindow,
+  showFloatingWindowCommand,
   showStatusPanelWindow,
   startLiveRateStream,
+  startLiveRateStreamCommand,
   stopLiveRateStream,
 } from "./surfaceCommands";
 
@@ -33,7 +36,9 @@ export const desktopPlatform = {
   isAvailable: isDesktopRuntimeAvailable,
   getSurfaceMode,
   showFloatingWindow,
+  showFloatingWindowCommand,
   hideFloatingWindow,
+  hideFloatingWindowCommand,
   showStatusPanelWindow,
   hideStatusPanelWindow,
   showDashboardWindow,
@@ -49,6 +54,7 @@ export const desktopPlatform = {
   onFloatingWindowMoved,
   setStatusTrayReadout,
   startLiveRateStream,
+  startLiveRateStreamCommand,
   stopLiveRateStream,
   onLiveRateSnapshot,
 };

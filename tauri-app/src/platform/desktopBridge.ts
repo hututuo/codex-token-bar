@@ -7,6 +7,10 @@ export type Unlisten = () => void;
 
 const PLATFORM_COMMAND_TIMEOUT_MS = 2_000;
 
+export type PlatformCommandResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; fallback: T; error: string };
+
 export function isDesktopRuntimeAvailable(): boolean {
   return isTauriRuntimeAvailable();
 }
@@ -16,17 +20,34 @@ export async function invokePlatformCommand<T>(
   fallback: T,
   args?: Record<string, unknown>,
 ): Promise<T> {
+  const result = await invokePlatformCommandResult(command, fallback, args);
+  return result.ok ? result.value : result.fallback;
+}
+
+export async function invokePlatformCommandResult<T>(
+  command: string,
+  fallback: T,
+  args?: Record<string, unknown>,
+): Promise<PlatformCommandResult<T>> {
   if (!isTauriRuntimeAvailable()) {
-    return fallback;
+    return {
+      ok: false,
+      fallback,
+      error: "Tauri runtime is not available",
+    };
   }
 
   try {
     const result = await withTimeout(invoke<T>(command, args), PLATFORM_COMMAND_TIMEOUT_MS);
     clearPlatformFailure(`command:${command}`);
-    return result;
+    return { ok: true, value: result };
   } catch (error) {
     warnPlatformFailure(`command:${command}`, error);
-    return fallback;
+    return {
+      ok: false,
+      fallback,
+      error: platformErrorMessage(error),
+    };
   }
 }
 
@@ -77,4 +98,14 @@ export function clearPlatformFailure(key: string) {
 
 function platformDiagnosticKey(key: string) {
   return `platform:${key}`;
+}
+
+function platformErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+  if (typeof error === "string" && error.trim()) {
+    return error;
+  }
+  return "Unknown platform command failure";
 }

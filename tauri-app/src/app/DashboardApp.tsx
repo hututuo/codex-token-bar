@@ -34,6 +34,7 @@ export function DashboardApp() {
     usageCacheInitializing,
     radarRefreshGeneration,
     reloadAll,
+    retryLiveRateStream,
     updateCodexHome,
     restoreAutoCodexHome,
     reloadQuota,
@@ -73,6 +74,7 @@ export function DashboardApp() {
         onFloatingTextToneChange={shellSettings.updateFloatingTextTone}
         onFloatingContentVisibilityChange={shellSettings.updateFloatingContentVisibility}
         onLiveRateReset={resetLiveRate}
+        onLiveRateRetry={retryLiveRateStream}
         onLiveThreadSelect={setSelectedLiveThreadId}
         onQuotaRefresh={reloadQuota}
         onToggleLiveRate={shellSettings.toggleLiveRate}

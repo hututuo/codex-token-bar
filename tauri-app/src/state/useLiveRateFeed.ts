@@ -5,14 +5,17 @@ import {
   smoothLiveRateSnapshot,
 } from "../components/liveRate/rateDisplay";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
+import type { PlatformCommandResult } from "../platform/desktopBridge";
 import { desktopPlatform } from "../platform/desktop";
 import type { LiveRateSnapshot } from "../types/dashboard";
+import { liveRateStreamFailureSnapshot } from "./liveRateStreamFailure";
 
 interface LiveRateFeedOptions {
   active: boolean;
   selectedThreadId: string;
   source: Pick<DashboardDataSource, "readLiveRateSnapshot">;
   onSnapshot: (snapshot: LiveRateSnapshot) => void;
+  retryGeneration?: number;
 }
 
 export function useLiveRateFeed({
@@ -20,6 +23,7 @@ export function useLiveRateFeed({
   selectedThreadId,
   source,
   onSnapshot,
+  retryGeneration = 0,
 }: LiveRateFeedOptions) {
   const onSnapshotRef = useRef(onSnapshot);
   const lastSmoothedSnapshotRef = useRef<LiveRateSnapshot | null>(null);
@@ -63,13 +67,25 @@ export function useLiveRateFeed({
       }
     });
 
-    void resetLiveRateMonitor().finally(() => {
-      if (!cancelled) {
-        void desktopPlatform.startLiveRateStream(selected, true);
+    void resetLiveRateMonitor().then(async () => {
+      if (cancelled) {
+        return null;
       }
-    }).then(() => source.readLiveRateSnapshot(selected)).then((liveRate) => {
+      const startResult = await desktopPlatform.startLiveRateStreamCommand(selected, true);
+      if (!startResult.ok) {
+        publishSnapshot(liveRateStreamFailureSnapshot(selected, startResult));
+        return null;
+      }
+      return source.readLiveRateSnapshot(selected);
+    }).then((liveRate) => {
       if (!cancelled) {
-        publishSnapshot(liveRate);
+        if (liveRate !== null) {
+          publishSnapshot(liveRate);
+        }
+      }
+    }).catch((error) => {
+      if (!cancelled) {
+        publishSnapshot(liveRateStreamFailureSnapshot(selected, failedLiveRateStartResult(error)));
       }
     });
 
@@ -78,5 +94,23 @@ export function useLiveRateFeed({
       unlisten?.();
       void desktopPlatform.stopLiveRateStream();
     };
-  }, [active, selectedThreadId, source]);
+  }, [active, retryGeneration, selectedThreadId, source]);
+}
+
+function failedLiveRateStartResult(error: unknown): PlatformCommandResult<boolean> {
+  return {
+    ok: false,
+    fallback: false,
+    error: errorMessage(error),
+  };
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+  if (typeof error === "string" && error.trim()) {
+    return error;
+  }
+  return "Unknown live-rate stream failure";
 }

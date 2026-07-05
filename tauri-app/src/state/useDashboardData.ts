@@ -62,6 +62,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const [loadGeneration, setLoadGeneration] = useState(0);
   const [quotaLoadGeneration, setQuotaLoadGeneration] = useState(0);
   const [radarRefreshGeneration, setRadarRefreshGeneration] = useState(0);
+  const [liveRateRetryGeneration, setLiveRateRetryGeneration] = useState(0);
   const [forceNextQuotaLoad, setForceNextQuotaLoad] = useState(false);
   const [dashboardVisible, setDashboardVisible] = useState(dashboardIsVisible);
   const [refreshTaskCount, setRefreshTaskCount] = useState(0);
@@ -133,6 +134,10 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
 
   const markUsageCacheInitialized = useCallback(() => {
     setUsageCacheInitializing(false);
+  }, []);
+
+  const retryLiveRateStream = useCallback(() => {
+    setLiveRateRetryGeneration((current) => current + 1);
   }, []);
 
   const consumeForcedQuotaRefresh = useCallback(() => {
@@ -299,6 +304,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     selectedThreadId: selectedLiveThreadId,
     source,
     onSnapshot: mergeLiveRateSnapshot,
+    retryGeneration: liveRateRetryGeneration,
   });
 
   useEffect(() => {
@@ -320,6 +326,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     radarRefreshGeneration,
     reloadAll,
     reloadQuota,
+    retryLiveRateStream,
     updateCodexHome,
     restoreAutoCodexHome,
     updateProviderRepair,

@@ -90,6 +90,7 @@ test("DashboardSummarySection passes dashboard warnings through to QuotaStrip re
       onFloatingTextToneChange: () => {},
       onFloatingContentVisibilityChange: () => {},
       onLiveRateReset: async () => {},
+      onLiveRateRetry: () => {},
       onLiveThreadSelect: () => {},
       onQuotaRefresh: () => {},
       onToggleLiveRate: () => {},

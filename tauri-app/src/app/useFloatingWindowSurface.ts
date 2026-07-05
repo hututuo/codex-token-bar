@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { desktopPlatform } from "../platform/desktop";
+import {
+  floatingCommandPreferenceConfirmation,
+  floatingCommandVisibleState,
+  shouldConfirmFloatingHiddenEvent,
+} from "./floatingWindowSurfaceModel";
 
 interface FloatingWindowSurfaceOptions {
   available: boolean;
@@ -22,19 +27,25 @@ export function useFloatingWindowSurface({
   const [floatingVisible, setFloatingVisible] = useState(false);
   const settingsReadyRef = useRef(false);
   const enabledPreferenceRef = useRef(false);
+  const floatingVisibleRef = useRef(false);
 
   settingsReadyRef.current = ready;
   enabledPreferenceRef.current = enabled;
+
+  function updateFloatingVisible(nextVisible: boolean) {
+    floatingVisibleRef.current = nextVisible;
+    setFloatingVisible(nextVisible);
+  }
 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
 
     void desktopPlatform.onFloatingWindowHidden(() => {
-      if (!settingsReadyRef.current || !enabledPreferenceRef.current) {
+      if (!shouldConfirmFloatingHiddenEvent(settingsReadyRef.current, enabledPreferenceRef.current)) {
         return;
       }
-      setFloatingVisible(false);
+      updateFloatingVisible(false);
       onPreferenceConfirmed(false);
     }).then((listener) => {
       if (disposed) {
@@ -59,11 +70,11 @@ export function useFloatingWindowSurface({
     const shouldShowFloating = enabled && available;
 
     async function applyFloatingPreference() {
-      const nextVisible = shouldShowFloating
-        ? await desktopPlatform.showFloatingWindow()
-        : await desktopPlatform.hideFloatingWindow();
+      const result = shouldShowFloating
+        ? await desktopPlatform.showFloatingWindowCommand()
+        : await desktopPlatform.hideFloatingWindowCommand();
       if (!cancelled) {
-        setFloatingVisible(nextVisible);
+        updateFloatingVisible(floatingCommandVisibleState(result, floatingVisibleRef.current));
       }
     }
 
@@ -77,16 +88,19 @@ export function useFloatingWindowSurface({
   const toggleFloatingWindow = useCallback(async () => {
     const nextEnabled = !enabled;
     if (!available) {
-      setFloatingVisible(false);
+      updateFloatingVisible(false);
       onPreferenceConfirmed(false);
       return;
     }
 
-    const nextVisible = nextEnabled
-      ? await desktopPlatform.showFloatingWindow()
-      : await desktopPlatform.hideFloatingWindow();
-    onPreferenceConfirmed(nextVisible);
-    setFloatingVisible(nextVisible);
+    const result = nextEnabled
+      ? await desktopPlatform.showFloatingWindowCommand()
+      : await desktopPlatform.hideFloatingWindowCommand();
+    const confirmedPreference = floatingCommandPreferenceConfirmation(result);
+    if (confirmedPreference !== null) {
+      onPreferenceConfirmed(confirmedPreference);
+    }
+    updateFloatingVisible(floatingCommandVisibleState(result, floatingVisibleRef.current));
   }, [available, enabled, onPreferenceConfirmed]);
 
   return {

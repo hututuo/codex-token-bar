@@ -43,6 +43,7 @@ interface DashboardPageProps {
   onFloatingTextToneChange: (textTone: number) => void;
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onLiveRateReset: () => Promise<void>;
+  onLiveRateRetry: () => void;
   onLiveThreadSelect: (threadId: string) => void;
   onQuotaRefresh: () => void;
   onToggleLiveRate: () => void;
@@ -80,6 +81,7 @@ export function DashboardPage({
   onFloatingTextToneChange,
   onFloatingContentVisibilityChange,
   onLiveRateReset,
+  onLiveRateRetry,
   onLiveThreadSelect,
   onQuotaRefresh,
   onToggleLiveRate,
@@ -137,6 +139,7 @@ export function DashboardPage({
               onFloatingTextToneChange={onFloatingTextToneChange}
               onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
               onLiveRateReset={onLiveRateReset}
+              onLiveRateRetry={onLiveRateRetry}
               onLiveThreadSelect={onLiveThreadSelect}
               onQuotaRefresh={onQuotaRefresh}
               onToggleLiveRate={onToggleLiveRate}

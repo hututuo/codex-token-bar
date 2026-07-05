@@ -19,6 +19,7 @@ interface LiveRateCardProps {
   onFloatingTextToneChange: (textTone: number) => void;
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onLiveRateReset: () => Promise<void>;
+  onLiveRateRetry: () => void;
   onToggleLiveRate: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
@@ -39,6 +40,7 @@ export function LiveRateCard({
   onFloatingTextToneChange,
   onFloatingContentVisibilityChange,
   onLiveRateReset,
+  onLiveRateRetry,
   onToggleLiveRate,
   onToggleFloating,
   onToggleStatusTray,
@@ -47,6 +49,8 @@ export function LiveRateCard({
   snapshot,
   statusTrayLiveTextEnabled,
 }: LiveRateCardProps) {
+  const liveWarnings = liveRateEnabled ? snapshot.warnings : [];
+
   return (
     <section className={liveRateEnabled ? "live-card" : "live-card is-live-disabled"} aria-label="实时速率">
       <div className="section-title-row">
@@ -80,6 +84,16 @@ export function LiveRateCard({
           </button>
         </div>
       </div>
+
+      {liveWarnings.length > 0 ? (
+        <div className="live-rate-warning" role="status">
+          <div>
+            <strong>实时速率降级</strong>
+            <span>{liveWarnings.map((warning) => warning.message).join("；")}</span>
+          </div>
+          <button type="button" onClick={onLiveRateRetry}>重试</button>
+        </div>
+      ) : null}
 
       <div className="live-grid">
         <div className={liveRateEnabled ? "live-left" : "live-left is-live-disabled"}>

@@ -1,11 +1,25 @@
-import { invokePlatformCommand } from "./desktopBridge";
+import {
+  invokePlatformCommand,
+  invokePlatformCommandResult,
+  type PlatformCommandResult,
+} from "./desktopBridge";
+
+export type SurfaceCommandResult = PlatformCommandResult<boolean>;
 
 export function showFloatingWindow(): Promise<boolean> {
   return invokePlatformCommand("show_floating_window", false);
 }
 
+export function showFloatingWindowCommand(): Promise<SurfaceCommandResult> {
+  return invokePlatformCommandResult("show_floating_window", false);
+}
+
 export function hideFloatingWindow(): Promise<boolean> {
   return invokePlatformCommand("hide_floating_window", true);
+}
+
+export function hideFloatingWindowCommand(): Promise<SurfaceCommandResult> {
+  return invokePlatformCommandResult("hide_floating_window", true);
 }
 
 export function showStatusPanelWindow(): Promise<boolean> {
@@ -29,6 +43,16 @@ export function startLiveRateStream(
   controlsSelectedThread = false,
 ): Promise<boolean> {
   return invokePlatformCommand("start_live_rate_stream", false, {
+    selectedThreadId: selectedThreadId || null,
+    controlsSelectedThread,
+  });
+}
+
+export function startLiveRateStreamCommand(
+  selectedThreadId?: string | null,
+  controlsSelectedThread = false,
+): Promise<SurfaceCommandResult> {
+  return invokePlatformCommandResult("start_live_rate_stream", false, {
     selectedThreadId: selectedThreadId || null,
     controlsSelectedThread,
   });

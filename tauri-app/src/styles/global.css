@@ -2020,6 +2020,52 @@ button.quota-side-card:hover {
   gap: 8px;
 }
 
+.live-rate-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  border: 1px solid color-mix(in srgb, var(--orange) 38%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--orange) 8%, var(--panel-soft));
+  padding: 8px 10px;
+  color: var(--text);
+}
+
+.live-rate-warning div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.live-rate-warning strong {
+  color: color-mix(in srgb, var(--orange) 68%, var(--text));
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.live-rate-warning span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 560;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.live-rate-warning button {
+  flex: 0 0 auto;
+  min-height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--orange) 80%, #ffb84d);
+  color: white;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 730;
+  padding: 0 12px;
+}
+
 .live-heading-line {
   display: flex;
   align-items: center;

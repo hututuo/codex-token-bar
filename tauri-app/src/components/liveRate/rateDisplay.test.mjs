@@ -81,6 +81,17 @@ test("live rate display buckets match visible precision", () => {
   assert.notEqual(second, third);
 });
 
+test("live rate display buckets include warning identity and message", () => {
+  const first = liveRateDisplayBucket(snapshot({
+    warnings: [{ source: "live_rate_stream", message: "启动失败 A" }],
+  }));
+  const second = liveRateDisplayBucket(snapshot({
+    warnings: [{ source: "live_rate_stream", message: "启动失败 B" }],
+  }));
+
+  assert.notEqual(first, second);
+});
+
 test("rate bars use shared transform fill styles instead of width animation", async () => {
   const meter = await readFile(new URL("./LiveRateMeter.tsx", import.meta.url), "utf8");
   const floating = await readFile(new URL("../../floating/FloatingPanelPreview.tsx", import.meta.url), "utf8");

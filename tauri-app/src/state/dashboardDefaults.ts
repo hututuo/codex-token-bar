@@ -2,13 +2,13 @@ import type {
   LiveRateSnapshot,
   ProviderRepairSnapshot,
 } from "../types/dashboard";
+import { emptyDashboardSnapshot } from "../api/fallback/dashboardFallback";
+import { emptyLiveRateSnapshot } from "../api/fallback/liveFallback";
 import {
-  emptyDashboardSnapshot,
-  emptyLiveRateSnapshot,
   fallbackCodexHome,
   fallbackPlatformCapabilities,
-  fallbackProviderRepairSnapshot,
-} from "../api/fallback";
+} from "../api/fallback/platformFallback";
+import { fallbackProviderRepairSnapshot } from "../api/fallback/providerRepairFallback";
 import type { DashboardAppState } from "./dashboardState";
 
 export const initialDashboardState: DashboardAppState = {

@@ -81,6 +81,6 @@ export function liveRateDisplayBucket(snapshot: LiveRateSnapshot): string {
     snapshot.requestsToday,
     snapshot.preciseEnabled ? "precise" : "estimated",
     snapshot.unreadSummary.active ? snapshot.unreadSummary.count : 0,
-    snapshot.warnings.length,
+    snapshot.warnings.map((warning) => `${warning.source}:${warning.message}`).join("~"),
   ].join("|");
 }
