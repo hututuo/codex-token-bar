@@ -107,8 +107,22 @@ private struct AccountQuotaResetCreditButton: View {
         snapshot.compactResetCreditSummary ?? "重置卡"
     }
 
-    private var nearestText: String {
-        snapshot.compactNearestResetCreditRemainingText ?? "到期未知"
+    private var nearestText: String? {
+        snapshot.resetCreditNearestLineText
+    }
+
+    private var helpText: String {
+        if let nearestText {
+            return "\(summaryText)，\(nearestText)。点击查看每张重置机会。"
+        }
+        return "\(summaryText)。点击查看每张重置机会。"
+    }
+
+    private var accessibilityValue: String {
+        if let nearestText {
+            return "\(summaryText)，\(nearestText)"
+        }
+        return summaryText
     }
 
     var body: some View {
@@ -128,12 +142,14 @@ private struct AccountQuotaResetCreditButton: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
 
-                    Text("最近 \(nearestText)")
-                        .font(.system(size: 8.5, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.76)
+                    if let nearestText {
+                        Text(nearestText)
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.76)
+                    }
                 }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -154,9 +170,9 @@ private struct AccountQuotaResetCreditButton: View {
             )
         }
         .buttonStyle(.plain)
-        .help("\(summaryText)，最近 \(nearestText)。点击查看每张重置机会。")
+        .help(helpText)
         .accessibilityLabel("重置卡")
-        .accessibilityValue("\(summaryText)，最近 \(nearestText)")
+        .accessibilityValue(accessibilityValue)
         .accessibilityHint("查看每张重置机会的剩余时间和到期信息")
         .anchorPreference(key: AccountQuotaResetCreditButtonBoundsKey.self, value: .bounds) { anchor in
             anchor
@@ -176,7 +192,7 @@ struct AccountQuotaResetCreditDetailView: View {
     var body: some View {
         SettingsCalloutContainer(
             title: "重置卡详情",
-            subtitle: "\(snapshot.resetCreditReadSummary) · 按最近到期排序",
+            subtitle: snapshot.resetCreditDetailSubtitle,
             systemImage: "bolt.clock.fill",
             imageResourceName: "ResetCreditIcon",
             closeAction: onClose

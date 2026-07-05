@@ -148,6 +148,82 @@ final class AccountQuotaResetCreditTests: XCTestCase {
         XCTAssertEqual(availablePastExpirySnapshot.compactResetCreditStandaloneSuffix, " · 1卡")
     }
 
+    func testResetCreditNearestSummaryOnlyUsesFutureExpiringCards() {
+        let now = Date()
+        let unknownExpirySnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: now.addingTimeInterval(60 * 60)),
+            resetCreditsAvailableCount: 0,
+            resetCredits: [
+                makeCredit(id: "unknown-expiry", expiresAt: nil)
+            ]
+        )
+        let pastExpirySnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: now.addingTimeInterval(60 * 60)),
+            resetCreditsAvailableCount: 0,
+            resetCredits: [
+                makeCredit(id: "past-but-available", expiresAt: now.addingTimeInterval(-60 * 60))
+            ]
+        )
+        let reportedCountOnlySnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: now.addingTimeInterval(60 * 60)),
+            resetCreditsAvailableCount: 2,
+            resetCredits: []
+        )
+        let futureExpirySnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: now.addingTimeInterval(60 * 60)),
+            resetCreditsAvailableCount: 1,
+            resetCredits: [
+                makeCredit(id: "future", expiresAt: now.addingTimeInterval(5.2 * 60 * 60))
+            ]
+        )
+
+        XCTAssertEqual(unknownExpirySnapshot.availableResetCreditCount, 1)
+        XCTAssertNil(unknownExpirySnapshot.resetCreditNearestLineText)
+        XCTAssertEqual(unknownExpirySnapshot.resetCreditDetailSummary, "1 张重置卡")
+
+        XCTAssertEqual(pastExpirySnapshot.availableResetCreditCount, 1)
+        XCTAssertNil(pastExpirySnapshot.resetCreditNearestLineText)
+        XCTAssertEqual(pastExpirySnapshot.resetCreditDetailSummary, "1 张重置卡")
+
+        XCTAssertEqual(reportedCountOnlySnapshot.availableResetCreditCount, 2)
+        XCTAssertNil(reportedCountOnlySnapshot.resetCreditNearestLineText)
+        XCTAssertEqual(reportedCountOnlySnapshot.resetCreditDetailSummary, "2 张重置卡")
+
+        XCTAssertTrue(try XCTUnwrap(futureExpirySnapshot.resetCreditNearestLineText).hasPrefix("最近 剩 "))
+        XCTAssertEqual(futureExpirySnapshot.resetCreditDetailSummary, "1 张重置卡 · 最近 \(try XCTUnwrap(futureExpirySnapshot.nearestFutureExpiringResetCredit).compactExpiryText)")
+    }
+
+    func testResetCreditDetailSubtitleOnlyMentionsNearestSortingWithFutureExpiryEvidence() {
+        let now = Date()
+        let unknownExpirySnapshot = AccountQuotaSnapshot(
+            resetCreditsAvailableCount: 0,
+            resetCredits: [
+                makeCredit(id: "unknown-expiry", expiresAt: nil)
+            ]
+        )
+        let pastExpirySnapshot = AccountQuotaSnapshot(
+            resetCreditsAvailableCount: 0,
+            resetCredits: [
+                makeCredit(id: "past-but-available", expiresAt: now.addingTimeInterval(-60 * 60))
+            ]
+        )
+        let reportedCountOnlySnapshot = AccountQuotaSnapshot(
+            resetCreditsAvailableCount: 2,
+            resetCredits: []
+        )
+        let futureExpirySnapshot = AccountQuotaSnapshot(
+            resetCreditsAvailableCount: 1,
+            resetCredits: [
+                makeCredit(id: "future", expiresAt: now.addingTimeInterval(5.2 * 60 * 60))
+            ]
+        )
+
+        XCTAssertEqual(unknownExpirySnapshot.resetCreditDetailSubtitle, "共 1 张；可用 1 张 · 按状态排序")
+        XCTAssertEqual(pastExpirySnapshot.resetCreditDetailSubtitle, "共 1 张；可用 1 张 · 按状态排序")
+        XCTAssertEqual(reportedCountOnlySnapshot.resetCreditDetailSubtitle, "2 张可用；未拿到单卡明细")
+        XCTAssertEqual(futureExpirySnapshot.resetCreditDetailSubtitle, "共 1 张；可用 1 张 · 按最近到期排序")
+    }
+
     private func makeCredit(
         id: String,
         status: String = "available",

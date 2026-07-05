@@ -228,14 +228,15 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
 
     var resetCreditDetailSummary: String {
         let countText = compactResetCreditSummary ?? "暂无可用重置卡"
-        if let nearestExpiringResetCredit {
-            return "\(countText) · 最近 \(nearestExpiringResetCredit.compactExpiryText)"
+        if let nearestFutureExpiringResetCredit {
+            return "\(countText) · 最近 \(nearestFutureExpiringResetCredit.compactExpiryText)"
         }
         return countText
     }
 
-    var compactNearestResetCreditRemainingText: String? {
-        nearestExpiringResetCredit?.compactRemainingTimeText
+    var resetCreditNearestLineText: String? {
+        guard let nearestFutureExpiringResetCredit else { return nil }
+        return "最近 \(nearestFutureExpiringResetCredit.compactRemainingTimeText)"
     }
 
     var resetCreditReadSummary: String {
@@ -253,6 +254,14 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
         if used > 0 { parts.append("\(used) 张已使用") }
         if expired > 0 { parts.append("\(expired) 张已过期") }
         return parts.joined(separator: "；")
+    }
+
+    var resetCreditDetailSubtitle: String {
+        guard !resetCredits.isEmpty else {
+            return resetCreditReadSummary
+        }
+        let sortText = nearestFutureExpiringResetCredit == nil ? "按状态排序" : "按最近到期排序"
+        return "\(resetCreditReadSummary) · \(sortText)"
     }
 
     var sevenDayPaceStatus: AccountQuotaPaceStatus? {
