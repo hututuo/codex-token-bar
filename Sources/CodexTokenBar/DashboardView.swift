@@ -488,10 +488,21 @@ struct DashboardView: View {
     }
 
     private func refreshAllData(trigger: DashboardRefreshTrigger = .manual) {
-        let plan = DashboardRefreshPlan.make(trigger: trigger, providerSyncVisible: showingProviderSync)
+        let context = DashboardRefreshContext(
+            providerSyncVisible: showingProviderSync,
+            dashboardVisible: NSApp.isActive || floatingPanelEnabled || statusBarPanelEnabled,
+            usageStale: Date().timeIntervalSince(store.snapshot.generatedAt) >= 5 * 60,
+            radarVisible: showingCodexRadarDetails || floatingPanelShowRadar,
+            radarStale: radarStore.snapshot == nil
+        )
+        let plan = DashboardRefreshPlan.make(trigger: trigger, context: context)
         let trace = RefreshPerformanceProbe.begin(trigger.traceName, metadata: [
             "trigger": trigger.traceValue,
-            "providerSyncVisible": showingProviderSync ? "1" : "0"
+            "providerSyncVisible": context.providerSyncVisible ? "1" : "0",
+            "dashboardVisible": context.dashboardVisible ? "1" : "0",
+            "usageStale": context.usageStale ? "1" : "0",
+            "radarVisible": context.radarVisible ? "1" : "0",
+            "radarStale": context.radarStale ? "1" : "0"
         ])
         for action in plan.actions {
             switch action {
