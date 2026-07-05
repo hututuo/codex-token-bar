@@ -336,7 +336,7 @@ fn explain_quota_error(error: &str) -> String {
 
 fn classify_quota_error(source: &str, error: &str) -> QuotaDiagnostic {
     let compact = compact_error_message(error);
-    let category = diagnostic_category(&compact);
+    let category = diagnostic_category(error);
     QuotaDiagnostic {
         source: source.into(),
         category: category.clone(),
@@ -408,7 +408,16 @@ fn diagnostic_category(compact: &str) -> String {
     if lower.contains("http ") {
         return "http_other".into();
     }
-    if lower.contains("json") || compact.contains("解析") || compact.contains("响应为空") || lower.contains("expected") {
+    if lower.contains("invalid json")
+        || lower.contains("json response")
+        || lower.contains("json parse")
+        || lower.contains("json decode")
+        || lower.contains("failed to parse")
+        || lower.contains("parse error")
+        || compact.contains("解析")
+        || compact.contains("响应为空")
+        || lower.contains("expected")
+    {
         return "parse_failure".into();
     }
     if compact.contains("额度暂无数据") {
@@ -867,6 +876,32 @@ mod tests {
             assert_eq!(diagnostic.source, "account_quota");
             assert!(!diagnostic.message.contains(raw) || raw.starts_with("HTTP "));
         }
+    }
+
+    #[test]
+    fn quota_error_classifier_uses_full_raw_error_before_compaction() {
+        let warn = r#"{"timestamp":"2026-07-02T09:14:44.104640Z","level":"WARN","fields":{"message":"ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters","path":"/Users/example/.codex/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json"},"target":"codex_core_plugins::manifest"}"#;
+        let error = r#"{"timestamp":"2026-07-02T09:14:48.241751Z","level":"ERROR","fields":{"message":"failed to refresh available models: timeout while fetching models"},"target":"codex_core::model_provider"}"#;
+        let raw = format!("{warn} {} {error}", "noise ".repeat(140));
+
+        let diagnostic = classify_quota_error("account_quota", &raw);
+
+        assert_eq!(diagnostic.category, "timeout");
+        assert!(diagnostic.message.contains("读取超时"));
+        assert!(diagnostic
+            .raw_cause
+            .as_deref()
+            .is_some_and(|raw| raw.chars().count() <= 721));
+    }
+
+    #[test]
+    fn quota_error_classifier_does_not_treat_json_file_paths_as_parse_failures() {
+        let diagnostic = classify_quota_error(
+            "account_quota",
+            r#"{"fields":{"message":"ignoring plugin manifest","path":"/tmp/plugin.json"}}"#,
+        );
+
+        assert_eq!(diagnostic.category, "unknown");
     }
 
     #[test]
