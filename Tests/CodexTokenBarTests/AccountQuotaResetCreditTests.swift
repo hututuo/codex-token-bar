@@ -34,9 +34,11 @@ final class AccountQuotaResetCreditTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 10_000)
         let laterCredit = makeCredit(id: "later", expiresAt: now.addingTimeInterval(2.2 * 24 * 60 * 60))
         let finalDayCredit = makeCredit(id: "final-day", expiresAt: now.addingTimeInterval(5.2 * 60 * 60))
+        let finalHourCredit = makeCredit(id: "final-hour", expiresAt: now.addingTimeInterval(34.2 * 60))
 
         XCTAssertEqual(laterCredit.compactExpiryCountdownText(relativeTo: now), "3天")
         XCTAssertEqual(finalDayCredit.compactExpiryCountdownText(relativeTo: now), "6h")
+        XCTAssertEqual(finalHourCredit.compactExpiryCountdownText(relativeTo: now), "35m")
     }
 
     func testStandaloneResetCreditSuffixOnlyMentionsExpiryWhenACardExists() {
@@ -57,6 +59,41 @@ final class AccountQuotaResetCreditTests: XCTestCase {
         XCTAssertEqual(noCardSnapshot.compactResetCreditStandaloneSuffix, "")
         XCTAssertEqual(cardSnapshot.compactResetCreditCountSuffix, " · 1卡")
         XCTAssertEqual(cardSnapshot.compactResetCreditStandaloneSuffix, " · 1卡 · 近6h到期")
+    }
+
+    func testRateBarResetCreditSuffixIncludesNearestExpiryWhenCardExists() {
+        let now = Date()
+        let noCardSnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: now.addingTimeInterval(60 * 60)),
+            resetCreditsAvailableCount: 0,
+            resetCredits: []
+        )
+        let finalDaySnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: now.addingTimeInterval(60 * 60)),
+            resetCreditsAvailableCount: 1,
+            resetCredits: [
+                makeCredit(id: "soon", expiresAt: now.addingTimeInterval(5.2 * 60 * 60))
+            ]
+        )
+        let laterSnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: now.addingTimeInterval(60 * 60)),
+            resetCreditsAvailableCount: 1,
+            resetCredits: [
+                makeCredit(id: "later", expiresAt: now.addingTimeInterval(2.2 * 24 * 60 * 60))
+            ]
+        )
+        let finalHourSnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: now.addingTimeInterval(60 * 60)),
+            resetCreditsAvailableCount: 1,
+            resetCredits: [
+                makeCredit(id: "minutes", expiresAt: now.addingTimeInterval(34.2 * 60))
+            ]
+        )
+
+        XCTAssertEqual(noCardSnapshot.compactResetCreditRateBarSuffix, "")
+        XCTAssertEqual(finalDaySnapshot.compactResetCreditRateBarSuffix, " · 1卡 · 6h")
+        XCTAssertEqual(laterSnapshot.compactResetCreditRateBarSuffix, " · 1卡 · 3天")
+        XCTAssertEqual(finalHourSnapshot.compactResetCreditRateBarSuffix, " · 1卡 · 35m")
     }
 
     private func makeCredit(

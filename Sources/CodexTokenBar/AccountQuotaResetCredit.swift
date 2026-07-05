@@ -201,6 +201,10 @@ struct AccountQuotaResetCredit: Equatable, Identifiable, Sendable {
             let days = Int(ceil(interval / (24 * 60 * 60)))
             return "\(days)天"
         }
+        if interval < 60 * 60 {
+            let minutes = max(1, Int(ceil(interval / 60)))
+            return "\(minutes)m"
+        }
         let hours = max(1, Int(ceil(interval / (60 * 60))))
         return "\(hours)h"
     }

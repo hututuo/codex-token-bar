@@ -777,7 +777,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
 
         XCTAssertTrue(surfaceSource.contains("usageStatus: visibility.embedsUsageStatusInRateRow ? snapshot.compactUsageStatus : nil"))
         XCTAssertTrue(surfaceSource.contains("TokenDisplayUsageStatusLine(text: snapshot.standaloneUsageStatus)"))
-        XCTAssertTrue(surfaceSource.contains("usageStatus(resetCreditSuffix: quota.compactResetCreditCountSuffix)"))
+        XCTAssertTrue(surfaceSource.contains("usageStatus(resetCreditSuffix: quota.compactResetCreditRateBarSuffix)"))
         XCTAssertTrue(surfaceSource.contains("usageStatus(resetCreditSuffix: quota.compactResetCreditStandaloneSuffix)"))
         XCTAssertTrue(surfaceSource.contains("ForEach(visibility.layoutGroups)"))
         XCTAssertTrue(surfaceSource.contains("case .usageStatus:"))

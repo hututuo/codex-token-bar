@@ -183,7 +183,7 @@ struct TokenDisplaySnapshot {
     }
 
     var compactUsageStatus: String {
-        usageStatus(resetCreditSuffix: quota.compactResetCreditCountSuffix)
+        usageStatus(resetCreditSuffix: quota.compactResetCreditRateBarSuffix)
     }
 
     var standaloneUsageStatus: String {

@@ -197,6 +197,15 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
         return " · \(count)卡"
     }
 
+    var compactResetCreditRateBarSuffix: String {
+        let count = availableResetCreditCount
+        guard count > 0 else { return "" }
+        guard let countdown = nearestExpiringResetCredit?.compactExpiryCountdownText else {
+            return " · \(count)卡"
+        }
+        return " · \(count)卡 · \(countdown)"
+    }
+
     var compactResetCreditStandaloneSuffix: String {
         let count = availableResetCreditCount
         guard count > 0 else { return "" }
