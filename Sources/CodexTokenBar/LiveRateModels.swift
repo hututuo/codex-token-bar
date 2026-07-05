@@ -25,10 +25,7 @@ struct LiveRateSnapshot: Equatable {
 
     static func rateDisplayText(_ value: Double) -> String {
         guard value.isFinite, value > 0 else { return "0.0" }
-        if value < 10 {
-            return String(format: "%.1f", value)
-        }
-        return String(format: "%.0f", value)
+        return String(format: "%.1f", value)
     }
 }
 

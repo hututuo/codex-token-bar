@@ -406,11 +406,14 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertFalse(source.contains("Timer.publish"))
     }
 
-    func testLiveRateSnapshotFormatsLowSpeedPreciselyAndHighSpeedCoarsely() {
+    func testLiveRateSnapshotFormatsAllFinitePositiveRatesWithOneDecimal() {
         XCTAssertEqual(LiveRateSnapshot.rateDisplayText(0), "0.0")
+        XCTAssertEqual(LiveRateSnapshot.rateDisplayText(-1), "0.0")
+        XCTAssertEqual(LiveRateSnapshot.rateDisplayText(.infinity), "0.0")
         XCTAssertEqual(LiveRateSnapshot.rateDisplayText(9.64), "9.6")
-        XCTAssertEqual(LiveRateSnapshot.rateDisplayText(40.4), "40")
-        XCTAssertEqual(LiveRateSnapshot.rateDisplayText(40.6), "41")
+        XCTAssertEqual(LiveRateSnapshot.rateDisplayText(40.4), "40.4")
+        XCTAssertEqual(LiveRateSnapshot.rateDisplayText(40.6), "40.6")
+        XCTAssertEqual(LiveRateSnapshot.rateDisplayText(80), "80.0")
     }
 
     func testSmoothedDisplayRateDampsNearbyRawRateBounce() {
