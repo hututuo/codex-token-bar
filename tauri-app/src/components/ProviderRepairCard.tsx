@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   createProviderBackup,
   listProviderBackups,
@@ -14,6 +14,10 @@ import type {
 } from "../types/dashboard";
 import { ProviderRepairActions } from "./providerRepair/ProviderRepairActions";
 import { ProviderRepairBackups } from "./providerRepair/ProviderRepairBackups";
+import {
+  createProviderRepairOperationController,
+  type ProviderRepairOperationKind,
+} from "./providerRepair/operationController";
 import { ProviderRepairSteps } from "./providerRepair/ProviderRepairSteps";
 
 interface ProviderRepairCardProps {
@@ -27,6 +31,7 @@ export function ProviderRepairCard({ id, onSnapshotChange, snapshot }: ProviderR
   const [activeBackupId, setActiveBackupId] = useState<string | null>(null);
   const [message, setMessage] = useState(snapshot.status);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const operationControllerRef = useRef(createProviderRepairOperationController());
 
   useEffect(() => {
     setMessage(snapshot.status);
@@ -46,16 +51,14 @@ export function ProviderRepairCard({ id, onSnapshotChange, snapshot }: ProviderR
   }, []);
 
   async function runScan() {
-    await run("scan", async () => {
-      const next = await scanProviderRepair();
+    await run("scan", scanProviderRepair, (next) => {
       onSnapshotChange(next);
       setMessage(next.status);
-      return null;
     });
   }
 
   async function runBackup() {
-    await run("backup", async () => applyResult(await createProviderBackup()));
+    await run("backup", createProviderBackup, applyResult);
   }
 
   async function runSync() {
@@ -64,25 +67,45 @@ export function ProviderRepairCard({ id, onSnapshotChange, snapshot }: ProviderR
       setMessage("请先创建备份，再进行修复。");
       return;
     }
-    await run("sync", async () => applyResult(await syncProviderHistory(backupId)));
+    await run("sync", () => syncProviderHistory(backupId), applyResult);
   }
 
   async function runVerify() {
-    await run("verify", async () => applyResult(await verifyProviderRepair()));
+    await run("verify", verifyProviderRepair, applyResult);
   }
 
   async function runRollback(backupId: string) {
-    await run(`rollback-${backupId}`, async () => applyResult(await rollbackProviderBackup(backupId)));
+    await run("rollback", () => rollbackProviderBackup(backupId), applyResult);
   }
 
-  async function run(action: string, operation: () => Promise<null | void>) {
+  async function run<T>(
+    action: ProviderRepairOperationKind,
+    operation: () => Promise<T>,
+    publishResult: (result: T) => void,
+  ) {
+    const started = operationControllerRef.current.start(action);
+    if (!started.started) {
+      setMessage(started.message);
+      return;
+    }
+
     setBusyAction(action);
+    let accepted = false;
     try {
-      await operation();
+      const result = await operation();
+      accepted = operationControllerRef.current.finish(started.operation);
+      if (accepted) {
+        publishResult(result);
+      }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      accepted = operationControllerRef.current.finish(started.operation);
+      if (accepted) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
     } finally {
-      setBusyAction(null);
+      if (accepted) {
+        setBusyAction(null);
+      }
     }
   }
 
