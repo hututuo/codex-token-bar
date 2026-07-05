@@ -229,23 +229,28 @@ struct TokenDisplayCard: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let presentation = FloatingPanelPresentationModel(
+                snapshot: snapshot,
+                visibility: visibility,
+                radarSnapshot: radarSnapshot
+            )
             let rowSpacing = FloatingTokenPanelMetrics.rowSpacing.scaled(by: displayScale)
             let rateRowHeight = FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale)
             let usageStatusRowHeight = FloatingTokenPanelMetrics.usageStatusRowHeight.scaled(by: displayScale)
             let metricRowHeight = FloatingTokenPanelMetrics.metricRowHeight.scaled(by: displayScale)
             let quotaRowHeight = FloatingTokenPanelMetrics.quotaRowHeight.scaled(by: displayScale)
             let radarRowHeight = FloatingTokenPanelMetrics.radarRowHeight.scaled(by: displayScale)
-            let topSafetyInset = visibility.needsTopControlInset ? FloatingTokenPanelMetrics.singleElementTopInset.scaled(by: displayScale) : 0
+            let topSafetyInset = presentation.needsTopSafetyInset ? FloatingTokenPanelMetrics.singleElementTopInset.scaled(by: displayScale) : 0
 
             VStack(alignment: .center, spacing: rowSpacing) {
-                ForEach(visibility.layoutGroups) { group in
-                    switch group {
+                ForEach(presentation.rows) { row in
+                    switch row.group {
                     case .rateAndBar:
-                        rateRow
+                        rateRow(usageStatus: presentation.rateBarUsageStatus)
                             .environment(\.tokenDisplayTextPalette, palette(for: .rateAndBar))
                             .frame(height: rateRowHeight, alignment: .center)
                     case .usageStatus:
-                        TokenDisplayUsageStatusLine(text: snapshot.standaloneUsageStatus)
+                        TokenDisplayUsageStatusLine(text: presentation.standaloneUsageStatus ?? snapshot.standaloneUsageStatus)
                             .environment(\.tokenDisplayTextPalette, standaloneUsageStatusTextPalette ?? palette(for: .usageStatus))
                             .frame(height: usageStatusRowHeight, alignment: .center)
                     case .metrics:
@@ -276,7 +281,11 @@ struct TokenDisplayCard: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Codex Token Bar 悬浮窗")
-        .accessibilityValue(accessibilitySummary)
+        .accessibilityValue(FloatingPanelPresentationModel(
+            snapshot: snapshot,
+            visibility: visibility,
+            radarSnapshot: radarSnapshot
+        ).accessibilityValue)
     }
 
     private func palette(for group: FloatingPanelContentGroup) -> FloatingPanelReadableTextPalette {
@@ -287,37 +296,7 @@ struct TokenDisplayCard: View {
         metricTextPalettes[region] ?? palette(for: .metrics)
     }
 
-    private var accessibilitySummary: String {
-        var parts: [String] = []
-        if visibility.showRateAndBar {
-            parts.append(String(format: "实时速率 %.1f token 每秒", snapshot.rate))
-        }
-        if visibility.showMetrics {
-            parts.append("累计 \(snapshot.consumedTokens.abbreviatedTokens) token")
-            parts.append("今天 \(snapshot.todayTokens.abbreviatedTokens) token")
-            parts.append("今天 \(snapshot.todayRequests) 次请求")
-        }
-        if visibility.showUsageStatus {
-            parts.append(snapshot.compactUsageStatus)
-        }
-        if visibility.showQuota, let fiveHour = snapshot.quota.fiveHour {
-            parts.append("5 小时额度剩余 \(fiveHour.remainingPercent)%，\(fiveHour.accessibleResetText) 重置")
-        }
-        if visibility.showQuota, let sevenDay = snapshot.quota.sevenDay {
-            parts.append("7 天额度剩余 \(sevenDay.remainingPercent)%，\(sevenDay.accessibleResetText) 重置")
-        }
-        if visibility.showRadar {
-            if let radarSnapshot {
-                parts.append("雷达建议 \(radarSnapshot.recommendedAction)")
-                parts.append(radarSnapshot.modelIQ.primaryModelRow.point.scoreDisplayText)
-            } else {
-                parts.append("雷达等待读取")
-            }
-        }
-        return parts.isEmpty ? "未显示内容" : parts.joined(separator: "；")
-    }
-
-    private var rateRow: some View {
+    private func rateRow(usageStatus: String?) -> some View {
         HStack(alignment: .center, spacing: 8.scaled(by: displayScale)) {
             HStack(alignment: .lastTextBaseline, spacing: 4.scaled(by: displayScale)) {
                 Text(String(format: "%.1f", snapshot.rate))
@@ -336,7 +315,7 @@ struct TokenDisplayCard: View {
 
             TokenDisplayRateBar(
                 rate: snapshot.rate,
-                usageStatus: visibility.embedsUsageStatusInRateRow ? snapshot.compactUsageStatus : nil
+                usageStatus: usageStatus
             )
             .environment(\.tokenDisplayEmbeddedUsageStatusTextPalette, embeddedUsageStatusTextPalette)
             .frame(maxWidth: .infinity, alignment: .trailing)

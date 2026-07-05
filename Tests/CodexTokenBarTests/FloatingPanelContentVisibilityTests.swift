@@ -148,24 +148,59 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(visibility.layoutGroups, [.metrics, .usageStatus])
     }
 
-    func testTokenDisplayCardRendersRowsFromVisibilityLayoutOrder() throws {
-        let projectRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let surface = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurface.swift")
-        let surfaceSource = try String(contentsOf: surface, encoding: .utf8)
-        let card = try XCTUnwrap(sourceBlock(
-            named: "TokenDisplayCard",
-            in: surfaceSource,
-            endingBefore: "private func palette"
-        ))
+    func testFloatingPanelPresentationRowsFollowVisibilityLayoutOrder() {
+        let snapshot = makeTokenDisplaySnapshot()
+        let visibility = FloatingPanelContentVisibility(
+            showRateAndBar: true,
+            showUsageStatus: true,
+            showMetrics: true,
+            showQuota: true,
+            showRadar: true,
+            groupOrder: [.radar, .metrics, .rateAndBar, .usageStatus, .quota]
+        )
 
-        XCTAssertTrue(card.contains("ForEach(visibility.layoutGroups)"))
-        XCTAssertFalse(card.contains("if visibility.showRateAndBar {"))
-        XCTAssertFalse(card.contains("if visibility.showMetrics {"))
-        XCTAssertFalse(card.contains("if visibility.showQuota {"))
-        XCTAssertFalse(card.contains("if visibility.showRadar {"))
+        let model = FloatingPanelPresentationModel(snapshot: snapshot, visibility: visibility)
+
+        XCTAssertEqual(model.rows.map(\.group), [.radar, .metrics, .rateAndBar, .quota])
+        XCTAssertEqual(model.rateBarUsageStatus, snapshot.compactUsageStatus)
+        XCTAssertNil(model.standaloneUsageStatus)
+        XCTAssertTrue(model.needsTopSafetyInset)
+    }
+
+    func testFloatingPanelPresentationUsesStandaloneUsageStatusWhenSeparatedFromRateRow() {
+        let snapshot = makeTokenDisplaySnapshot()
+        let visibility = FloatingPanelContentVisibility(
+            showRateAndBar: true,
+            showUsageStatus: true,
+            showMetrics: true,
+            showQuota: false,
+            showRadar: false,
+            groupOrder: [.rateAndBar, .metrics, .usageStatus, .quota, .radar]
+        )
+
+        let model = FloatingPanelPresentationModel(snapshot: snapshot, visibility: visibility)
+
+        XCTAssertEqual(model.rows.map(\.group), [.rateAndBar, .metrics, .usageStatus])
+        XCTAssertNil(model.rateBarUsageStatus)
+        XCTAssertEqual(model.standaloneUsageStatus, snapshot.standaloneUsageStatus)
+    }
+
+    func testFloatingPanelPresentationOmitsUsageStatusWhenHidden() {
+        let snapshot = makeTokenDisplaySnapshot(quota: .empty)
+        let visibility = FloatingPanelContentVisibility(
+            showRateAndBar: true,
+            showUsageStatus: false,
+            showMetrics: false,
+            showQuota: false,
+            showRadar: false
+        )
+
+        let model = FloatingPanelPresentationModel(snapshot: snapshot, visibility: visibility)
+
+        XCTAssertEqual(model.rows.map(\.group), [.rateAndBar])
+        XCTAssertNil(model.rateBarUsageStatus)
+        XCTAssertNil(model.standaloneUsageStatus)
+        XCTAssertFalse(model.accessibilityParts.contains("读取中"))
     }
 
     func testFloatingPanelContentOrderReordersAroundDropTargetWithoutDuplicates() {
@@ -716,7 +751,27 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(dashboardSource.contains("radar: radarStore"))
         XCTAssertTrue(floatingPanelSource.contains("@ObservedObject var radar: CodexRadarStore"))
         XCTAssertTrue(floatingPanelSource.contains("radarSnapshot: radar.snapshot"))
-        XCTAssertTrue(surfaceSource.contains("if visibility.showRadar"))
+        XCTAssertTrue(
+            FloatingPanelPresentationModel(snapshot: makeTokenDisplaySnapshot(), visibility: .default)
+                .rows
+                .map(\.group)
+                .contains(.radar)
+        )
+        XCTAssertFalse(
+            FloatingPanelPresentationModel(
+                snapshot: makeTokenDisplaySnapshot(),
+                visibility: FloatingPanelContentVisibility(
+                    showRateAndBar: true,
+                    showUsageStatus: true,
+                    showMetrics: true,
+                    showQuota: true,
+                    showRadar: false
+                )
+            )
+            .rows
+            .map(\.group)
+            .contains(.radar)
+        )
         XCTAssertTrue(surfaceSource.contains("TokenDisplayRadarStrip(snapshot: radarSnapshot)"))
         XCTAssertTrue(componentsSource.contains("struct TokenDisplayRadarStrip"))
         XCTAssertTrue(componentsSource.contains("动作 \\(snapshot?.recommendedAction"))
@@ -765,29 +820,41 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(syncMethod.contains("updateTokenDisplaySurface()"))
     }
 
-    func testUsageStatusRendersOnRateBarAndStandaloneTextHasNoBackground() throws {
+    func testFloatingPanelPresentationKeepsNoQuotaStatesCountSafe() {
+        let pendingSnapshot = makeTokenDisplaySnapshot(quota: .empty)
+        var failedQuota = AccountQuotaSnapshot.empty
+        failedQuota.status = "额度读取失败"
+        let failedSnapshot = makeTokenDisplaySnapshot(quota: failedQuota)
+        let visibility = FloatingPanelContentVisibility(
+            showRateAndBar: false,
+            showUsageStatus: true,
+            showMetrics: false,
+            showQuota: false,
+            showRadar: false
+        )
+
+        let pendingModel = FloatingPanelPresentationModel(snapshot: pendingSnapshot, visibility: visibility)
+        let failedModel = FloatingPanelPresentationModel(snapshot: failedSnapshot, visibility: visibility)
+
+        XCTAssertEqual(pendingModel.standaloneUsageStatus, "读取中")
+        XCTAssertEqual(failedModel.standaloneUsageStatus, "读取失败")
+        XCTAssertFalse(pendingModel.standaloneUsageStatus?.contains("卡") ?? true)
+        XCTAssertFalse(failedModel.standaloneUsageStatus?.contains("到期") ?? true)
+    }
+
+    func testStandaloneUsageStatusLineKeepsPlainTextStyleWithoutBackground() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let surface = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurface.swift")
         let components = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurfaceComponents.swift")
-        let surfaceSource = try String(contentsOf: surface, encoding: .utf8)
         let componentsSource = try String(contentsOf: components, encoding: .utf8)
-
-        XCTAssertTrue(surfaceSource.contains("usageStatus: visibility.embedsUsageStatusInRateRow ? snapshot.compactUsageStatus : nil"))
-        XCTAssertTrue(surfaceSource.contains("TokenDisplayUsageStatusLine(text: snapshot.standaloneUsageStatus)"))
-        XCTAssertTrue(surfaceSource.contains("usageStatus(resetCreditSuffix: quota.compactResetCreditRateBarSuffix)"))
-        XCTAssertTrue(surfaceSource.contains("usageStatus(resetCreditSuffix: quota.compactResetCreditStandaloneSuffix)"))
-        XCTAssertTrue(surfaceSource.contains("ForEach(visibility.layoutGroups)"))
-        XCTAssertTrue(surfaceSource.contains("case .usageStatus:"))
-        XCTAssertTrue(componentsSource.contains("let usageStatus: String?"))
-
         let standaloneLine = try XCTUnwrap(sourceBlock(
             named: "TokenDisplayUsageStatusLine",
             in: componentsSource,
             endingBefore: "struct TokenDisplayRateBar"
         ))
+
         XCTAssertFalse(standaloneLine.contains(".background("))
         XCTAssertFalse(standaloneLine.contains("Capsule()"))
     }
@@ -934,5 +1001,25 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             return nil
         }
         return String(source[start..<end])
+    }
+
+    private func makeTokenDisplaySnapshot(
+        quota: AccountQuotaSnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: Date(timeIntervalSince1970: 2_000)),
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 40, resetsAt: Date(timeIntervalSince1970: 20_000)),
+            status: "额度已读取",
+            updatedAt: Date(timeIntervalSince1970: 1_000)
+        )
+    ) -> TokenDisplaySnapshot {
+        TokenDisplaySnapshot(
+            title: "全会话实时",
+            status: "输出中",
+            rate: 12.3,
+            consumedTokens: 123_456,
+            todayTokens: 7_890,
+            todayRequests: 42,
+            quota: quota,
+            updatedAt: Date(timeIntervalSince1970: 1_000)
+        )
     }
 }
