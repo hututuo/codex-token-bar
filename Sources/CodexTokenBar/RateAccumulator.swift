@@ -4,7 +4,6 @@ struct RateAccumulator {
     // Completion-only payloads arrive after a tool/edit finishes. Spread them with
     // a conservative virtual rate so the live gauge does not show a completion spike.
     private static let completionPayloadTokensPerSecond: Double = 55
-    private static let liveDisplayTokensPerSecondCap: Double = 80
     private static let minimumCompletionPayloadSeconds: TimeInterval = 1
     private static let maximumCompletionPayloadSeconds: TimeInterval = 30
     private static let distributionStepSeconds: TimeInterval = 0.5
@@ -249,8 +248,7 @@ struct RateAccumulator {
         let visibleDeltas = rollingDeltas.filter { $0.time <= now }
         guard let first = visibleDeltas.first else { return 0 }
         let span = max(minimumSpan, min(windowSeconds, now - first.time))
-        let rawRate = Double(visibleDeltas.reduce(0) { $0 + $1.tokens }) / span
-        return min(rawRate, Self.liveDisplayTokensPerSecondCap)
+        return Double(visibleDeltas.reduce(0) { $0 + $1.tokens }) / span
     }
 
     func hasRecentActivity(now: TimeInterval, windowSeconds: TimeInterval) -> Bool {

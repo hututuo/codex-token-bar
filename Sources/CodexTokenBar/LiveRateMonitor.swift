@@ -5,6 +5,11 @@ import TiktokenSwift
 
 @MainActor
 final class LiveRateMonitor: ObservableObject {
+    enum DisplayRateScope {
+        case selectedSession
+        case allSessions
+    }
+
     @Published var snapshot = LiveRateSnapshot()
     @Published var totalSnapshot = LiveRateSnapshot(
         threadTitle: "全会话输出汇总",
@@ -28,6 +33,7 @@ final class LiveRateMonitor: ObservableObject {
     private let snapshotPublishInterval: TimeInterval = 0.25
     private let startupBackfillSeconds: TimeInterval = 4.0
     private let minimumRateSpanSeconds: TimeInterval = 0.4
+    nonisolated private static let selectedSessionDisplayRateCap: Double = 80
     private var timer: Timer?
     var logsDirectorySource: DispatchSourceFileSystemObject?
     var watchedLogsDirectory = ""
@@ -47,6 +53,7 @@ final class LiveRateMonitor: ObservableObject {
     var logReader: LiveRateLogReading?
     var selectedRate = RateAccumulator(resetsOnNewItem: false)
     var totalRate = RateAccumulator(resetsOnNewItem: false)
+    var totalSessionRates: [String: RateAccumulator] = [:]
     private var selectedSmoothedTokensPerSecond: Double = 0
     private var totalSmoothedTokensPerSecond: Double = 0
     private var rolloutOffsets: [String: UInt64] = [:]
@@ -145,6 +152,7 @@ final class LiveRateMonitor: ObservableObject {
         preciseTokenCountingEnabled = enabled
         selectedRate.clear()
         totalRate.clear()
+        totalSessionRates.removeAll()
         selectedSmoothedTokensPerSecond = 0
         totalSmoothedTokensPerSecond = 0
         if enabled {
@@ -174,6 +182,7 @@ final class LiveRateMonitor: ObservableObject {
             fastPollUntil = 0
             selectedRate.clear()
             totalRate.clear()
+            totalSessionRates.removeAll()
             selectedSmoothedTokensPerSecond = 0
             totalSmoothedTokensPerSecond = 0
             clearStreamState()
@@ -210,6 +219,7 @@ final class LiveRateMonitor: ObservableObject {
             }.value
             lastLogsSignature = Self.logStoreSignature(logsDB: logsDB)
             totalRate.clear()
+            totalSessionRates.removeAll()
             selectedSmoothedTokensPerSecond = 0
             totalSmoothedTokensPerSecond = 0
             clearStreamState()
@@ -365,6 +375,7 @@ final class LiveRateMonitor: ObservableObject {
                 guard !events.isEmpty else { continue }
                 processedEvents = true
                 add(events: events, threadID: read.threadID, keyThreadID: "all", to: &totalRate)
+                add(events: events, threadID: read.threadID, keyThreadID: read.threadID, toTotalSessionRateFor: read.threadID)
                 if read.threadID == threadID {
                     add(events: events, threadID: read.threadID, keyThreadID: read.threadID, to: &selectedRate)
                 }
@@ -393,6 +404,8 @@ final class LiveRateMonitor: ObservableObject {
             if add(event: event, keyThreadID: "all", to: &totalRate) {
                 processedEvent = true
             }
+            let displayThreadID = resolvedThreadID ?? Self.unattributedDisplaySessionKey(for: event)
+            add(event: event, keyThreadID: displayThreadID, toTotalSessionRateFor: displayThreadID)
             if resolvedThreadID == threadID {
                 _ = add(event: event, keyThreadID: resolvedThreadID ?? threadID, to: &selectedRate)
             }
@@ -416,6 +429,30 @@ final class LiveRateMonitor: ObservableObject {
             )
             add(event: normalized, keyThreadID: keyThreadID, to: &rate)
         }
+    }
+
+    private func add(events: [RolloutMetricEvent], threadID: String, keyThreadID: String, toTotalSessionRateFor displayThreadID: String) {
+        for event in events {
+            let normalized = LiveMetricEvent(
+                source: .rollout,
+                timestamp: event.timestamp,
+                startTimestamp: event.startTimestamp,
+                threadID: threadID,
+                itemID: event.key,
+                category: event.category,
+                text: event.text,
+                exactTokens: event.exactTokens,
+                exactOutputTokens: event.exactOutputTokens,
+                rollingOnly: event.rollingOnly
+            )
+            add(event: normalized, keyThreadID: keyThreadID, toTotalSessionRateFor: displayThreadID)
+        }
+    }
+
+    private func add(event: LiveMetricEvent, keyThreadID: String, toTotalSessionRateFor displayThreadID: String) {
+        var sessionRate = totalSessionRates[displayThreadID] ?? RateAccumulator(resetsOnNewItem: false)
+        _ = add(event: event, keyThreadID: keyThreadID, to: &sessionRate)
+        totalSessionRates[displayThreadID] = sessionRate
     }
 
     @discardableResult
@@ -509,6 +546,9 @@ final class LiveRateMonitor: ObservableObject {
     private func updateSnapshots(now: TimeInterval) {
         selectedRate.prune(now: now, windowSeconds: windowSeconds)
         totalRate.prune(now: now, windowSeconds: windowSeconds)
+        for key in totalSessionRates.keys {
+            totalSessionRates[key]?.prune(now: now, windowSeconds: windowSeconds)
+        }
 
         guard now - lastSnapshotPublishAt >= snapshotPublishInterval || !hasActiveRollingWindow(now: now) else {
             return
@@ -517,9 +557,10 @@ final class LiveRateMonitor: ObservableObject {
 
         let selectedHasRecentActivity = selectedRate.hasRecentActivity(now: now, windowSeconds: windowSeconds)
         let selectedRawRate = selectedRate.rollingRate(now: now, windowSeconds: windowSeconds, minimumSpan: minimumRateSpanSeconds)
+        let selectedDisplayRate = Self.displayRawRate(selectedRawRate, scope: .selectedSession)
         selectedSmoothedTokensPerSecond = Self.smoothedDisplayRate(
             previous: selectedSmoothedTokensPerSecond,
-            raw: selectedRawRate,
+            raw: selectedDisplayRate,
             hasRecentActivity: selectedHasRecentActivity
         )
         if let updated = updatedSnapshot(
@@ -534,10 +575,13 @@ final class LiveRateMonitor: ObservableObject {
             snapshot = updated
         }
         let totalHasRecentActivity = totalRate.hasRecentActivity(now: now, windowSeconds: windowSeconds)
-        let totalRawRate = totalRate.rollingRate(now: now, windowSeconds: windowSeconds, minimumSpan: minimumRateSpanSeconds)
+        let totalSessionRawRates = totalSessionRates.values.map {
+            $0.rollingRate(now: now, windowSeconds: windowSeconds, minimumSpan: minimumRateSpanSeconds)
+        }
+        let totalDisplayRate = Self.combinedAllSessionsDisplayRate(totalSessionRawRates)
         totalSmoothedTokensPerSecond = Self.smoothedDisplayRate(
             previous: totalSmoothedTokensPerSecond,
-            raw: totalRawRate,
+            raw: totalDisplayRate,
             hasRecentActivity: totalHasRecentActivity
         )
         if let updated = updatedSnapshot(
@@ -595,6 +639,30 @@ final class LiveRateMonitor: ObservableObject {
         guard hasRecentActivity, clampedRaw >= 0.05 else { return 0 }
         let alpha = clampedRaw >= previous ? 0.28 : 0.18
         return max(0, previous + (clampedRaw - previous) * alpha)
+    }
+
+    nonisolated static func displayRawRate(_ raw: Double, scope: DisplayRateScope) -> Double {
+        guard raw.isFinite else { return 0 }
+        let clampedRaw = max(0, raw)
+        switch scope {
+        case .selectedSession:
+            return min(clampedRaw, selectedSessionDisplayRateCap)
+        case .allSessions:
+            return clampedRaw
+        }
+    }
+
+    nonisolated static func combinedAllSessionsDisplayRate(_ rawRates: [Double]) -> Double {
+        rawRates.reduce(0) { total, raw in
+            total + displayRawRate(raw, scope: .selectedSession)
+        }
+    }
+
+    nonisolated static func unattributedDisplaySessionKey(for event: LiveMetricEvent) -> String {
+        if let threadID = event.threadID, !threadID.isEmpty { return threadID }
+        if let turnID = event.turnID, !turnID.isEmpty { return "turn:\(turnID)" }
+        if let callID = event.callID, !callID.isEmpty { return "call:\(callID)" }
+        return "item:\(event.itemID)"
     }
 
     nonisolated static func displayBucket(_ value: Double) -> Int {

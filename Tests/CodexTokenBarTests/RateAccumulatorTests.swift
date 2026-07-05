@@ -127,7 +127,7 @@ final class RateAccumulatorTests: XCTestCase {
         XCTAssertLessThan(accumulator.rollingRate(now: 20, windowSeconds: 2.5, minimumSpan: 0.4), 90)
     }
 
-    func testParallelToolInputDisplayRateIsCappedForOneSession() {
+    func testParallelToolInputRollingRateIsNotGloballyCapped() {
         var accumulator = RateAccumulator(resetsOnNewItem: false)
 
         for index in 0..<8 {
@@ -143,10 +143,10 @@ final class RateAccumulatorTests: XCTestCase {
 
         XCTAssertEqual(accumulator.breakdown.toolArguments, 1_440)
         XCTAssertEqual(accumulator.outputTokens, 1_440)
-        XCTAssertLessThanOrEqual(accumulator.rollingRate(now: 20, windowSeconds: 2.5, minimumSpan: 0.4), 80)
+        XCTAssertGreaterThan(accumulator.rollingRate(now: 20, windowSeconds: 2.5, minimumSpan: 0.4), 80)
     }
 
-    func testDenseVisibleTextDisplayRateIsCappedForOneSession() {
+    func testDenseVisibleTextRollingRateIsNotGloballyCapped() {
         var accumulator = RateAccumulator(resetsOnNewItem: false)
 
         for index in 0..<120 {
@@ -162,7 +162,7 @@ final class RateAccumulatorTests: XCTestCase {
 
         XCTAssertEqual(accumulator.breakdown.visibleText, 120)
         XCTAssertEqual(accumulator.outputTokens, 120)
-        XCTAssertLessThanOrEqual(accumulator.rollingRate(now: 20.2, windowSeconds: 2.5, minimumSpan: 0.4), 80)
+        XCTAssertGreaterThan(accumulator.rollingRate(now: 20.2, windowSeconds: 2.5, minimumSpan: 0.4), 80)
     }
 
     func testReasoningPayloadDoesNotDriveLiveRollingRate() {

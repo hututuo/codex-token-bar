@@ -44,6 +44,8 @@ struct DashboardView: View {
     @State private var showingUnreadEffectMenu = false
     @State private var showingContentSettingsMenu = false
 
+    private let activeUsageRefreshInterval: TimeInterval = 30
+
     init(
         loginItemStore: LoginItemStore,
         updateSettingsStore: AppUpdateSettingsStore,
@@ -277,6 +279,9 @@ struct DashboardView: View {
         }
         .onReceive(radarStore.$snapshot) { _ in
             syncFloatingPanelRadarSnapshot()
+        }
+        .onReceive(liveMonitor.$totalSnapshot) { snapshot in
+            updateUsageRefreshCadence(liveSnapshot: snapshot)
         }
         .onChange(of: store.dataSourceLabel) {
             taskCompletionMonitor.start(dataSource: store.currentDataSource)
@@ -605,9 +610,17 @@ struct DashboardView: View {
         updateTokenDisplaySurface()
     }
 
-    private func updateUsageRefreshCadence() {
+    private func updateUsageRefreshCadence(liveSnapshot: LiveRateSnapshot? = nil) {
         let onlyCompactSurfaceVisible = (floatingPanelEnabled || statusBarPanelEnabled) && !hasVisibleDashboardWindow()
-        store.setRefreshInterval(onlyCompactSurfaceVisible ? 300 : 180)
+        let baselineInterval: TimeInterval = onlyCompactSurfaceVisible ? 300 : 180
+        let snapshot = liveSnapshot ?? liveMonitor.totalSnapshot
+        let isActive = isUsageRefreshActivityActive(snapshot: snapshot)
+        store.setRefreshInterval(isActive ? activeUsageRefreshInterval : baselineInterval)
+    }
+
+    private func isUsageRefreshActivityActive(snapshot: LiveRateSnapshot) -> Bool {
+        snapshot.rollingTokensPerSecond > 0.05
+            || Date().timeIntervalSince(snapshot.updatedAt) < activeUsageRefreshInterval
     }
     private func hasVisibleDashboardWindow() -> Bool {
         guard !NSApp.isHidden else { return false }

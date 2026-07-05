@@ -425,6 +425,13 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(inactive, 0, accuracy: 0.001)
     }
 
+    func testDisplayRateCapsSelectedSessionBeforeCombiningTotalSessions() {
+        XCTAssertEqual(LiveRateMonitor.displayRawRate(220, scope: .selectedSession), 80, accuracy: 0.001)
+        XCTAssertEqual(LiveRateMonitor.displayRawRate(220, scope: .allSessions), 220, accuracy: 0.001)
+        XCTAssertEqual(LiveRateMonitor.combinedAllSessionsDisplayRate([220]), 80, accuracy: 0.001)
+        XCTAssertEqual(LiveRateMonitor.combinedAllSessionsDisplayRate([220, 90, 60]), 220, accuracy: 0.001)
+    }
+
     func testDisplayBucketIgnoresHighSpeedDecimalNoise() {
         XCTAssertEqual(LiveRateMonitor.displayBucket(40.1), LiveRateMonitor.displayBucket(40.4))
         XCTAssertNotEqual(LiveRateMonitor.displayBucket(40.4), LiveRateMonitor.displayBucket(40.6))

@@ -28,6 +28,22 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertTrue(source.contains("onlyCompactSurfaceVisible ? 300 : 180"))
     }
 
+    func testLiveActivityTemporarilyAcceleratesUsageRefresh() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let projectRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
+        let source = try String(contentsOf: dashboardView, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("activeUsageRefreshInterval: TimeInterval = 30"))
+        XCTAssertTrue(source.contains(".onReceive(liveMonitor.$totalSnapshot)"))
+        XCTAssertTrue(source.contains("isUsageRefreshActivityActive(snapshot: snapshot)"))
+        XCTAssertTrue(source.contains("private func isUsageRefreshActivityActive(snapshot: LiveRateSnapshot)"))
+        XCTAssertTrue(source.contains("store.setRefreshInterval(isActive ? activeUsageRefreshInterval : baselineInterval)"))
+    }
+
     func testDashboardRefreshDoesNotEagerlyReloadQuotaHistoryTimeline() throws {
         let testFile = URL(fileURLWithPath: #filePath)
         let projectRoot = testFile
