@@ -3,6 +3,7 @@ import Foundation
 enum DashboardRefreshTrigger: Equatable {
     case manual
     case systemWake
+    case quotaRetry
 
     var traceName: String {
         switch self {
@@ -10,6 +11,8 @@ enum DashboardRefreshTrigger: Equatable {
             "dashboard.manualRefresh"
         case .systemWake:
             "dashboard.systemWakeRefresh"
+        case .quotaRetry:
+            "dashboard.quotaRetry"
         }
     }
 
@@ -19,6 +22,8 @@ enum DashboardRefreshTrigger: Equatable {
             "manual"
         case .systemWake:
             "systemWake"
+        case .quotaRetry:
+            "quotaRetry"
         }
     }
 }
@@ -39,6 +44,12 @@ struct DashboardRefreshPlan: Equatable {
         trigger: DashboardRefreshTrigger,
         providerSyncVisible: Bool
     ) -> DashboardRefreshPlan {
+        if trigger == .quotaRetry {
+            return DashboardRefreshPlan(trigger: trigger, actions: [
+                .refreshQuota(force: true),
+                .reloadQuotaHistoryTimeline
+            ])
+        }
         var actions: [DashboardRefreshAction] = [
             .refreshUsage,
             .refreshQuota(force: true),

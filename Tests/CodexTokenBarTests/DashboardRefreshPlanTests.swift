@@ -38,4 +38,17 @@ final class DashboardRefreshPlanTests: XCTestCase {
         ])
         XCTAssertFalse(plan.actions.contains(.reloadQuotaHistoryTimeline))
     }
+
+    func testQuotaRetryRefreshesOnlyQuotaAndQuotaHistory() {
+        let plan = DashboardRefreshPlan.make(trigger: .quotaRetry, providerSyncVisible: true)
+
+        XCTAssertEqual(plan.trigger, .quotaRetry)
+        XCTAssertEqual(plan.actions, [
+            .refreshQuota(force: true),
+            .reloadQuotaHistoryTimeline
+        ])
+        XCTAssertFalse(plan.actions.contains(.refreshUsage))
+        XCTAssertFalse(plan.actions.contains(.refreshRadar))
+        XCTAssertFalse(plan.actions.contains(.scanProviders))
+    }
 }

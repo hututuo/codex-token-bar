@@ -133,6 +133,7 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
     var limitCards: [AccountQuotaLimitCard] = []
     var resetCreditsAvailableCount: Int?
     var resetCredits: [AccountQuotaResetCredit] = []
+    var diagnostics: [AccountQuotaDiagnostic] = []
     var status: String = "额度未读取"
     var updatedAt: Date?
 
@@ -140,6 +141,12 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
 
     var isAvailable: Bool {
         fiveHour != nil || sevenDay != nil
+    }
+
+    var staleDataDisplayed: Bool {
+        diagnostics.contains { diagnostic in
+            diagnostic.staleDataDisplayed || diagnostic.category == .staleCachedData
+        }
     }
 
     var displayName: String {

@@ -36,6 +36,46 @@ final class AccountQuotaStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.fiveHour, successfulSnapshot.fiveHour)
         XCTAssertEqual(store.snapshot.sevenDay, successfulSnapshot.sevenDay)
         XCTAssertEqual(store.snapshot.accountName, "测试用户")
+        XCTAssertTrue(store.snapshot.staleDataDisplayed)
+        XCTAssertTrue(store.snapshot.diagnostics.contains { $0.category == .staleCachedData })
+        XCTAssertTrue(store.snapshot.diagnostics.contains { $0.category == .unknown })
+    }
+
+    func testSuccessfulQuotaWithResetCreditFailurePublishesDiagnosticWithoutClearingQuota() async {
+        var snapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 18, resetsAt: Date(timeIntervalSince1970: 1_800)),
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 28, resetsAt: Date(timeIntervalSince1970: 10_800)),
+            planType: "pro",
+            limitName: "codex",
+            accountName: "测试用户",
+            status: "额度已读取",
+            updatedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        snapshot.diagnostics = [
+            AccountQuotaDiagnostic.resetCreditFailure(
+                underlying: AccountQuotaDiagnostic(
+                    source: .resetCredit,
+                    category: .authMissing,
+                    severity: .warning,
+                    message: "未找到登录 token",
+                    rawCause: "auth.json missing",
+                    retryable: true,
+                    occurredAt: Date(timeIntervalSince1970: 1_000)
+                ),
+                occurredAt: Date(timeIntervalSince1970: 1_001)
+            )
+        ]
+        let reader = SequentialQuotaReader(results: [.success(snapshot)])
+        let store = AccountQuotaStore(quotaReader: reader)
+
+        store.refresh()
+        await waitUntil("quota refresh with reset-credit diagnostic") {
+            store.snapshot.diagnostics.contains { $0.category == .resetCreditFailure }
+        }
+
+        XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 18)
+        XCTAssertEqual(store.snapshot.sevenDay?.usedPercent, 28)
+        XCTAssertEqual(store.snapshot.diagnostics.first?.underlyingCategory, .authMissing)
     }
 
     func testRefreshClampsQuotaRegressionWithinSameResetWindow() async {

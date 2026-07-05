@@ -141,7 +141,24 @@ final class AccountQuotaStore: ObservableObject {
                     self.isRefreshing = false
                     self.activeRefreshSourceID = nil
                     var failed = self.snapshot
-                    failed.status = "额度读取失败：\(error.localizedDescription)"
+                    let occurredAt = Date()
+                    let diagnostic = AccountQuotaDiagnostic.classify(
+                        source: .accountQuota,
+                        error: error,
+                        occurredAt: occurredAt
+                    )
+                    var diagnostics = [diagnostic]
+                    if failed.isAvailable {
+                        diagnostics.append(
+                            .staleCachedData(
+                                source: .accountQuota,
+                                rawCause: diagnostic.rawCause,
+                                occurredAt: occurredAt
+                            )
+                        )
+                    }
+                    failed.diagnostics = diagnostics
+                    failed.status = "额度读取失败：\(diagnostic.message)"
                     self.snapshot = failed
                 }
                 trace?.end("failed", metadata: ["error": error.localizedDescription])
