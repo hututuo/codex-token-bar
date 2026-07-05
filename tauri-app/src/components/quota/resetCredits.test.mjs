@@ -7,6 +7,8 @@ import {
   prepareResetCreditsForDisplay,
   remainingProgress,
   resetCreditCountText,
+  resetCreditDetailKey,
+  resetCreditPanelModel,
   resetCreditPanelSubtitle,
 } from "./resetCredits.ts";
 
@@ -102,11 +104,92 @@ test("reset credit summary falls back to available details when reported count i
     credits: [
       credit({ cardId: "available", expiresAtUnix: nowUnix + 4 * 60 * 60 }),
       credit({ cardId: "used", redeemedAt: "2026-06-25 20:00", expiresAtUnix: nowUnix + 6 * 60 * 60 }),
-      credit({ cardId: "expired", expiresAtUnix: nowUnix - 60 }),
+      credit({ cardId: "expired", status: "已过期", expiresAtUnix: nowUnix - 60 }),
     ],
   };
   const displayItems = prepareResetCreditsForDisplay(summary.credits, now);
 
   assert.equal(resetCreditCountText(summary, now), "1 张重置卡");
   assert.equal(resetCreditPanelSubtitle(summary, displayItems), "共 3 张；可用 1 张 · 按最近到期排序");
+});
+
+test("reset credit panel model keeps summary count nearest detail and subtitle consistent", () => {
+  const summary = {
+    availableCount: 0,
+    status: "重置卡详情可用",
+    credits: [
+      credit({ cardId: "available", expiresAtUnix: nowUnix + 4 * 60 * 60 }),
+      credit({ cardId: "used", redeemedAt: "2026-06-25 20:00", expiresAtUnix: nowUnix + 6 * 60 * 60 }),
+      credit({ cardId: "expired", status: "已过期", expiresAtUnix: nowUnix - 60 }),
+    ],
+  };
+
+  const model = resetCreditPanelModel(summary, now);
+
+  assert.equal(model.countText, "1 张重置卡");
+  assert.equal(model.availableText, "1 张可用");
+  assert.equal(model.nearestText, "最近 剩 4h0m");
+  assert.equal(model.subtitle, "共 3 张；可用 1 张 · 按最近到期排序");
+  assert.equal(model.emptyText.includes("卡--"), false);
+  assert.deepEqual(model.displayItems.map((item) => item.credit.cardId), ["available", "expired", "used"]);
+});
+
+test("reset credit panel model does not leak entity details for empty failed or used-only states", () => {
+  const expired = credit({ status: "已过期", expiresAtUnix: nowUnix - 60 });
+  const used = credit({ redeemedAt: "2026-06-25 20:00", expiresAtUnix: nowUnix + 6 * 60 * 60 });
+
+  for (const summary of [
+    { availableCount: 0, status: "重置卡待读取", credits: [] },
+    { availableCount: 0, status: "获取失败", credits: [] },
+    { availableCount: 0, status: "0 张重置卡", credits: [expired, used] },
+  ]) {
+    const model = resetCreditPanelModel(summary, now);
+
+    assert.equal(model.availableText, "0 张可用");
+    assert.equal(model.nearestText, null);
+    assert.equal(model.countText.includes("卡--"), false);
+    assert.equal(model.emptyText.includes("卡--"), false);
+  }
+});
+
+test("reset credit panel model counts status-available expired details without nearest expiry", () => {
+  const summary = {
+    availableCount: 0,
+    status: "重置卡详情可用",
+    credits: [
+      credit({ cardId: "available-expired", expiresAtUnix: nowUnix - 60 }),
+    ],
+  };
+
+  const model = resetCreditPanelModel(summary, now);
+
+  assert.equal(model.countText, "1 张重置卡");
+  assert.equal(model.availableText, "1 张可用");
+  assert.equal(model.nearestText, null);
+  assert.equal(model.subtitle, "共 1 张；可用 1 张 · 按最近到期排序");
+  assert.equal(model.displayItems[0].compactRemainingText, "已到期");
+});
+
+test("reset credit panel model counts available unknown-expiry details without fake nearest expiry", () => {
+  const summary = {
+    availableCount: 0,
+    status: "重置卡详情可用",
+    credits: [
+      credit({ cardId: "available-unknown", expiresAtUnix: null }),
+    ],
+  };
+
+  const model = resetCreditPanelModel(summary, now);
+
+  assert.equal(model.countText, "1 张重置卡");
+  assert.equal(model.availableText, "1 张可用");
+  assert.equal(model.nearestText, null);
+  assert.equal(model.subtitle, "共 1 张；可用 1 张 · 按最近到期排序");
+  assert.equal(model.displayItems[0].compactRemainingText, "到期未知");
+});
+
+test("reset credit detail keys use card identifiers with index fallback", () => {
+  assert.equal(resetCreditDetailKey(credit({ cardId: "card-main", shortId: "short" }), 2), "card-main-2");
+  assert.equal(resetCreditDetailKey(credit({ cardId: "", shortId: "short-only" }), 0), "short-only-0");
+  assert.equal(resetCreditDetailKey(credit({ cardId: "", shortId: "" }), 1), "未提供-1");
 });

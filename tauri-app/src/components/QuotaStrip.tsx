@@ -3,10 +3,8 @@ import type { LocalDataWarning, QuotaLimit, QuotaSnapshot, ResetCreditDetail } f
 import { formatPercent } from "../utils/format";
 import {
   cardIdentifier,
-  nearestResetCreditCompactText,
-  prepareResetCreditsForDisplay,
-  resetCreditCountText,
-  resetCreditPanelSubtitle,
+  resetCreditDetailKey,
+  resetCreditPanelModel,
   type ResetCreditDisplayItem,
 } from "./quota/resetCredits";
 
@@ -102,16 +100,11 @@ function ResetCreditItem({
 function QuotaStripView({ onRetryQuotaRefresh, snapshot, warnings = [] }: QuotaStripProps) {
   const [showResetDetails, setShowResetDetails] = useState(false);
   const [expandedCredits, setExpandedCredits] = useState<Set<string>>(() => new Set());
-  const displayCredits = useMemo(
-    () => prepareResetCreditsForDisplay(snapshot.resetCredit.credits ?? []),
-    [snapshot.resetCredit.credits],
-  );
-  const nearestResetCredit = nearestResetCreditCompactText(snapshot.resetCredit);
-  const resetCreditSummary = resetCreditCountText(snapshot.resetCredit);
+  const resetCreditPanel = useMemo(() => resetCreditPanelModel(snapshot.resetCredit), [snapshot.resetCredit]);
   const quotaWarnings = useMemo(() => quotaReadWarnings(warnings), [warnings]);
 
   function toggleCredit(credit: ResetCreditDetail, index: number) {
-    const key = `${cardIdentifier(credit)}-${index}`;
+    const key = resetCreditDetailKey(credit, index);
     setExpandedCredits((previous) => {
       const next = new Set(previous);
       if (next.has(key)) {
@@ -138,10 +131,10 @@ function QuotaStripView({ onRetryQuotaRefresh, snapshot, warnings = [] }: QuotaS
         onClick={() => setShowResetDetails((value) => !value)}
       >
         <span>重置卡</span>
-        <strong>{resetCreditSummary}</strong>
+        <strong>{resetCreditPanel.countText}</strong>
         <em>
-          {snapshot.resetCredit.availableCount} 张可用
-          {nearestResetCredit ? <small>{nearestResetCredit}</small> : null}
+          {resetCreditPanel.availableText}
+          {resetCreditPanel.nearestText ? <small>{resetCreditPanel.nearestText}</small> : null}
           <b aria-hidden="true">{showResetDetails ? "⌃" : "⌄"}</b>
         </em>
       </button>
@@ -181,25 +174,25 @@ function QuotaStripView({ onRetryQuotaRefresh, snapshot, warnings = [] }: QuotaS
             <div className="reset-credit-panel-head">
               <div>
                 <strong>重置卡详情</strong>
-                <span>{resetCreditPanelSubtitle(snapshot.resetCredit, displayCredits)}</span>
+                <span>{resetCreditPanel.subtitle}</span>
               </div>
               <button aria-label="关闭重置卡详情" onClick={() => setShowResetDetails(false)} type="button">×</button>
             </div>
-            {displayCredits.length > 0 ? (
+            {resetCreditPanel.displayItems.length > 0 ? (
               <div className="reset-credit-list">
-                {displayCredits.map((item, index) => (
+                {resetCreditPanel.displayItems.map((item, index) => (
                   <ResetCreditItem
-                    expanded={expandedCredits.has(`${cardIdentifier(item.credit)}-${index}`)}
+                    expanded={expandedCredits.has(resetCreditDetailKey(item.credit, index))}
                     index={index}
                     item={item}
-                    key={`${cardIdentifier(item.credit)}-${index}`}
+                    key={resetCreditDetailKey(item.credit, index)}
                     onToggle={() => toggleCredit(item.credit, index)}
                   />
                 ))}
               </div>
             ) : (
               <p className="reset-credit-empty">
-                没有读到单张重置卡明细；当前接口状态：{snapshot.resetCredit.status}
+                {resetCreditPanel.emptyText}
               </p>
             )}
           </div>

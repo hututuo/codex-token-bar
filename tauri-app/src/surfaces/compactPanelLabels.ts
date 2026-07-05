@@ -132,19 +132,26 @@ function nearestResetCreditExpiryCountdown(summary: ResetCreditSummary, now = ne
 
 function availableResetCreditCount(summary: ResetCreditSummary, now: Date): number {
   const reportedCount = Math.max(0, Math.trunc(summary.availableCount ?? 0));
-  const detailCount = (summary.credits ?? []).filter((credit) => isAvailableCredit(credit, now)).length;
+  const detailCount = (summary.credits ?? []).filter(isCountedAvailableCredit).length;
   return Math.max(reportedCount, detailCount);
 }
 
 function isAvailableCredit(credit: ResetCreditDetail, now: Date): boolean {
+  if (!isCountedAvailableCredit(credit)) {
+    return false;
+  }
+  const expiresAt = expiresAtMillis(credit);
+  return expiresAt === null || expiresAt > now.getTime();
+}
+
+function isCountedAvailableCredit(credit: ResetCreditDetail): boolean {
   if (credit.status !== "可用") {
     return false;
   }
   if (credit.redeemedAt && credit.redeemedAt !== "未使用" && credit.redeemedAt !== "未提供") {
     return false;
   }
-  const expiresAt = expiresAtMillis(credit);
-  return expiresAt === null || expiresAt > now.getTime();
+  return true;
 }
 
 function isExpiringAvailableCredit(credit: ResetCreditDetail, now: Date): boolean {
