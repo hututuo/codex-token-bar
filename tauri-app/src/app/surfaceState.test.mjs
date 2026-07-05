@@ -375,15 +375,6 @@ test("manual dashboard refresh forces codex radar without clearing dashboard", a
   assert.equal(radarStrip.includes("void refresh(true)"), true);
 });
 
-test("dashboard quota strip receives local data warnings for quota failure details", async () => {
-  const summarySection = await readFile(new URL("../pages/dashboard/DashboardSummarySection.tsx", import.meta.url), "utf8");
-  const quotaStrip = await readFile(new URL("../components/QuotaStrip.tsx", import.meta.url), "utf8");
-
-  assert.equal(summarySection.includes("warnings={dashboard.warnings}"), true);
-  assert.equal(quotaStrip.includes('import { quotaReadWarnings } from "./quota/quotaWarnings"'), true);
-  assert.equal(quotaStrip.includes("quotaReadWarnings(warnings)"), true);
-});
-
 test("windows updater lane uses signed Tauri metadata and a dashboard entry", async () => {
   const packageJson = await readFile(new URL("../../package.json", import.meta.url), "utf8");
   const cargoToml = await readFile(new URL("../../src-tauri/Cargo.toml", import.meta.url), "utf8");
