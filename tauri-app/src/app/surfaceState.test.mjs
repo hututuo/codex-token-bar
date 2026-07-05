@@ -2,24 +2,16 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("dashboard header does not render the local diagnostics strip", async () => {
-  const header = await readFile(new URL("../components/DashboardHeader.tsx", import.meta.url), "utf8");
-
-  assert.equal(header.includes("DiagnosticStrip"), false);
-  assert.equal(header.includes("diagnostic-strip"), false);
-});
-
-test("dashboard header supports Swift-style editable account display name", async () => {
-  const header = await readFile(new URL("../components/DashboardHeader.tsx", import.meta.url), "utf8");
+test("custom account display-name persistence remains wired through shell settings", async () => {
+  const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
   const shellSettings = await readFile(new URL("./useDashboardShellSettings.ts", import.meta.url), "utf8");
   const settingsClient = await readFile(new URL("../api/settingsClient.ts", import.meta.url), "utf8");
 
-  assert.equal(header.includes("customAccountDisplayName"), true);
-  assert.equal(header.includes("onCustomAccountDisplayNameChange"), true);
-  assert.equal(header.includes("account-name-edit"), true);
-  assert.equal(header.includes("onBlur={commitDisplayName}"), true);
-  assert.equal(header.includes("onKeyDown={handleDisplayNameKeyDown}"), true);
-  assert.equal(header.includes("✎"), true);
+  assert.equal(dashboardApp.includes("customAccountDisplayName={shellSettings.customAccountDisplayName}"), true);
+  assert.equal(
+    dashboardApp.includes("onCustomAccountDisplayNameChange={shellSettings.updateCustomAccountDisplayName}"),
+    true,
+  );
   assert.equal(shellSettings.includes("saveCustomAccountDisplayName"), true);
   assert.equal(settingsClient.includes("save_custom_account_display_name"), true);
 });

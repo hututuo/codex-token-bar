@@ -1,5 +1,9 @@
 import type { AccountInfo, AutostartStatus, CodexHomeStatus } from "../types/dashboard";
 import { CodexHomeEditor } from "./dashboardHeader/CodexHomeEditor";
+import {
+  committedCustomAccountDisplayName,
+  resolveAccountDisplayName,
+} from "./dashboardHeader/model";
 import { useEffect, useState, type KeyboardEvent } from "react";
 
 interface DashboardHeaderProps {
@@ -42,7 +46,10 @@ export function DashboardHeader({
 }: DashboardHeaderProps) {
   const [editingPath, setEditingPath] = useState(false);
   const [editingDisplayName, setEditingDisplayName] = useState(false);
-  const resolvedDisplayName = customAccountDisplayName.trim() || account.displayName;
+  const resolvedDisplayName = resolveAccountDisplayName(
+    account.displayName,
+    customAccountDisplayName,
+  );
   const [displayNameDraft, setDisplayNameDraft] = useState(resolvedDisplayName);
 
   useEffect(() => {
@@ -66,9 +73,12 @@ export function DashboardHeader({
   }
 
   function commitDisplayName() {
-    const nextName = displayNameDraft.trim();
+    const nextName = committedCustomAccountDisplayName(
+      displayNameDraft,
+      customAccountDisplayName,
+    );
     setEditingDisplayName(false);
-    if (nextName !== customAccountDisplayName.trim()) {
+    if (nextName !== null) {
       void onCustomAccountDisplayNameChange(nextName);
     }
   }
