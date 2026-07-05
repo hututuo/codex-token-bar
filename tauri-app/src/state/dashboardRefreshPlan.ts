@@ -21,6 +21,33 @@ export interface DashboardRefreshDispatchers {
   scanProviders: () => void;
 }
 
+export interface DashboardWakeRefreshContextInput {
+  dashboardGeneratedAt: string | null;
+  dashboardVisible: boolean;
+  nowMs: number;
+  visibleRefreshIntervalMs: number;
+}
+
+export function makeDashboardWakeRefreshContext({
+  dashboardGeneratedAt,
+  dashboardVisible,
+  nowMs,
+  visibleRefreshIntervalMs,
+}: DashboardWakeRefreshContextInput): DashboardRefreshContext {
+  const generatedAtMs = dashboardGeneratedAt ? Date.parse(dashboardGeneratedAt) : 0;
+  const usageStale =
+    generatedAtMs === 0
+    || nowMs - generatedAtMs >= visibleRefreshIntervalMs;
+
+  return {
+    providerVisible: false,
+    dashboardVisible,
+    usageStale,
+    radarVisible: dashboardVisible,
+    radarStale: false,
+  };
+}
+
 export function makeDashboardRefreshPlan(
   trigger: DashboardRefreshTrigger,
   context: DashboardRefreshContext,

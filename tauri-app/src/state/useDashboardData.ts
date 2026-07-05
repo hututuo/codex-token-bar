@@ -29,6 +29,7 @@ import {
 import {
   applyDashboardRefreshPlan,
   makeDashboardRefreshPlan,
+  makeDashboardWakeRefreshContext,
 } from "./dashboardRefreshPlan";
 import { loadInitialDashboardState } from "./loadInitialDashboardState";
 import { useDashboardActions } from "./useDashboardActions";
@@ -276,17 +277,13 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   ]);
 
   const refreshAfterWake = useCallback(() => {
-    const generatedAtMs = state.dashboard ? Date.parse(state.dashboard.generatedAt) : 0;
-    const usageStale =
-      generatedAtMs === 0
-      || Date.now() - generatedAtMs >= DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS;
-    const plan = makeDashboardRefreshPlan("systemWake", {
-      providerVisible: false,
+    const context = makeDashboardWakeRefreshContext({
+      dashboardGeneratedAt: state.dashboard?.generatedAt ?? null,
       dashboardVisible,
-      usageStale,
-      radarVisible: dashboardVisible,
-      radarStale: false,
+      nowMs: Date.now(),
+      visibleRefreshIntervalMs: DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS,
     });
+    const plan = makeDashboardRefreshPlan("systemWake", context);
     applyDashboardRefreshPlan(plan, {
       refreshPreciseUsage: () => setLoadGeneration((current) => current + 1),
       refreshQuota: () => {
@@ -296,7 +293,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       refreshRadar: () => setRadarRefreshGeneration((current) => current + 1),
       scanProviders: () => {},
     });
-  }, [dashboardVisible, state.dashboard]);
+  }, [dashboardVisible, state.dashboard?.generatedAt]);
 
   useWakeRefresh({
     active: fastSnapshotLoaded && dashboardReady && !state.loading,

@@ -75,8 +75,16 @@ export function useDashboardActions({
   ]);
 
   const reloadQuota = useCallback(() => {
-    setForceNextQuotaLoad(true);
-    setQuotaLoadGeneration((current) => current + 1);
+    const plan = makeDashboardRefreshPlan("quotaRetry", { providerVisible: false });
+    applyDashboardRefreshPlan(plan, {
+      refreshPreciseUsage: () => {},
+      refreshQuota: () => {
+        setForceNextQuotaLoad(true);
+        setQuotaLoadGeneration((current) => current + 1);
+      },
+      refreshRadar: () => {},
+      scanProviders: () => {},
+    });
   }, [
     setForceNextQuotaLoad,
     setQuotaLoadGeneration,

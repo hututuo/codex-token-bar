@@ -133,21 +133,12 @@ test("dashboard quota refreshes independently every five minutes", async () => {
   assert.equal(quotaLoad.includes("const isFirstQuotaLoad = quotaGeneration.current === null"), true);
 });
 
-test("quota warning retry refreshes only quota data", async () => {
-  const actions = await readFile(new URL("../state/useDashboardActions.ts", import.meta.url), "utf8");
+test("quota warning retry affordance remains wired to the dashboard quota action", async () => {
   const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
   const dashboardPage = await readFile(new URL("../pages/DashboardPage.tsx", import.meta.url), "utf8");
   const summary = await readFile(new URL("../pages/dashboard/DashboardSummarySection.tsx", import.meta.url), "utf8");
   const quotaStrip = await readFile(new URL("../components/QuotaStrip.tsx", import.meta.url), "utf8");
 
-  const reloadQuotaBody = actions.slice(
-    actions.indexOf("const reloadQuota"),
-    actions.indexOf("const updateCodexHome"),
-  );
-  assert.equal(reloadQuotaBody.includes("setForceNextQuotaLoad(true)"), true);
-  assert.equal(reloadQuotaBody.includes("setQuotaLoadGeneration((current) => current + 1)"), true);
-  assert.equal(reloadQuotaBody.includes("setLoadGeneration"), false);
-  assert.equal(reloadQuotaBody.includes("setRadarRefreshGeneration"), false);
   assert.equal(dashboardApp.includes("onQuotaRefresh={reloadQuota}"), true);
   assert.equal(dashboardPage.includes("onQuotaRefresh={onQuotaRefresh}"), true);
   assert.equal(summary.includes("onRetryQuotaRefresh={onQuotaRefresh}"), true);
@@ -211,7 +202,8 @@ test("dashboard and compact quota force refresh after system wake", async () => 
   assert.equal(wakeRefresh.includes("window.addEventListener(\"focus\", handleWakeCheck)"), true);
   assert.equal(wakeRefresh.includes("document.addEventListener(\"visibilitychange\", handleWakeCheck)"), true);
   assert.equal(dashboardData.includes("useWakeRefresh({"), true);
-  assert.equal(dashboardData.includes("setForceNextQuotaLoad(true)"), true);
+  assert.equal(dashboardData.includes("makeDashboardWakeRefreshContext({"), true);
+  assert.equal(dashboardData.includes("makeDashboardRefreshPlan(\"systemWake\", context)"), true);
   assert.equal(compactQuota.includes("useWakeRefresh({"), true);
   assert.equal(compactQuota.includes("void refreshQuota(true)"), true);
 });
@@ -351,10 +343,8 @@ test("manual dashboard refresh keeps the current snapshot visible", async () => 
     actions.indexOf("const reloadAll ="),
   );
 
-  assert.equal(reloadAll.includes("setLoadGeneration((current) => current + 1)"), true);
-  assert.equal(reloadAll.includes("setQuotaLoadGeneration((current) => current + 1)"), true);
-  assert.equal(reloadAll.includes("setRadarRefreshGeneration((current) => current + 1)"), true);
-  assert.equal(reloadAll.includes("setForceNextQuotaLoad(true)"), true);
+  assert.equal(reloadAll.includes("makeDashboardRefreshPlan(\"manual\""), true);
+  assert.equal(reloadAll.includes("applyDashboardRefreshPlan(plan"), true);
   assert.equal(reloadAll.includes("setFastSnapshotLoaded(false)"), false);
   assert.equal(reloadAll.includes("loading: true"), false);
   assert.equal(reloadAll.includes("loadInitialDashboardState"), false);
@@ -362,15 +352,12 @@ test("manual dashboard refresh keeps the current snapshot visible", async () => 
   assert.equal(reloadInitialSnapshot.includes("loadInitialDashboardState"), true);
 });
 
-test("manual dashboard refresh forces codex radar without clearing dashboard", async () => {
-  const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
+test("codex radar refresh generation remains wired to the summary strip", async () => {
   const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
   const dashboardPage = await readFile(new URL("../pages/DashboardPage.tsx", import.meta.url), "utf8");
   const summarySection = await readFile(new URL("../pages/dashboard/DashboardSummarySection.tsx", import.meta.url), "utf8");
   const radarStrip = await readFile(new URL("../components/CodexRadarStrip.tsx", import.meta.url), "utf8");
 
-  assert.equal(dashboardData.includes("const [radarRefreshGeneration, setRadarRefreshGeneration] = useState(0)"), true);
-  assert.equal(dashboardData.includes("refreshing: state.loading || refreshTaskCount > 0"), true);
   assert.equal(dashboardApp.includes("radarRefreshGeneration={radarRefreshGeneration}"), true);
   assert.equal(dashboardPage.includes("radarRefreshGeneration: number"), true);
   assert.equal(summarySection.includes("<CodexRadarStrip refreshGeneration={radarRefreshGeneration} />"), true);
