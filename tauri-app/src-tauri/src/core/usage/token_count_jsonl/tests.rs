@@ -478,6 +478,8 @@ fn token_event_cache_serializes_only_usage_summary() {
             parsed_size: 128,
             ended_with_newline: true,
             previous_total_tokens: Some(42),
+            fork_replay_active: false,
+            last_skipped_fork_replay_token_at: None,
             events: vec![CachedTokenEvent {
                 timestamp_unix: 1_781_715_600,
                 tokens: 42,
@@ -784,6 +786,60 @@ fn token_event_cache_reads_only_appended_session_bytes() {
 }
 
 #[test]
+fn token_event_cache_counts_incremental_append_after_fork_replay_ended() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019efork-append-0000-0000-cache.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"父会话复制问题"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:10:00Z","type":"event_msg","payload":{"type":"user_message","message":"新分支问题"}}"#,
+            r#"{"timestamp":"2026-06-18T01:11:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":180,"cached_input_tokens":10,"output_tokens":30,"total_tokens":200},"last_token_usage":{"input_tokens":80,"cached_input_tokens":10,"output_tokens":10,"total_tokens":80}}}}"#,
+        ],
+    );
+
+    let mut warnings = Vec::new();
+    let mut files = HashMap::new();
+    let mut cache_changed = false;
+
+    let first = parse_session_file_cached(
+        &file,
+        "019efork-append-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(
+            handle,
+            r#"{{"timestamp":"2026-06-18T01:12:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":250,"cached_input_tokens":20,"output_tokens":50,"total_tokens":300}},"last_token_usage":{{"input_tokens":70,"cached_input_tokens":10,"output_tokens":20,"total_tokens":100}}}}}}}}"#
+        )
+        .unwrap();
+    }
+
+    let second = parse_session_file_cached(
+        &file,
+        "019efork-append-0000-0000-cache",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        &mut warnings,
+    );
+
+    assert_eq!(first.iter().map(|event| event.tokens).sum::<u64>(), 80);
+    assert_eq!(second.iter().map(|event| event.tokens).sum::<u64>(), 180);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn token_event_cache_reparses_legacy_entries_without_parsed_size() {
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -812,6 +868,8 @@ fn token_event_cache_reparses_legacy_entries_without_parsed_size() {
             parsed_size: 0,
             ended_with_newline: true,
             previous_total_tokens: None,
+            fork_replay_active: false,
+            last_skipped_fork_replay_token_at: None,
             events: vec![CachedTokenEvent {
                 timestamp_unix: 1_781_715_600,
                 tokens: 120,
@@ -864,6 +922,8 @@ fn token_event_cache_reads_tail_when_signature_matches_but_parsed_size_lags() {
             parsed_size,
             ended_with_newline: true,
             previous_total_tokens: Some(120),
+            fork_replay_active: false,
+            last_skipped_fork_replay_token_at: None,
             events: vec![CachedTokenEvent {
                 timestamp_unix: first_timestamp,
                 tokens: 120,
@@ -969,6 +1029,8 @@ fn token_event_cache_reparses_implausible_cached_event_even_when_signature_match
             parsed_size: fs::metadata(&file).unwrap().len(),
             ended_with_newline: true,
             previous_total_tokens: Some(170),
+            fork_replay_active: false,
+            last_skipped_fork_replay_token_at: None,
             events: vec![CachedTokenEvent {
                 timestamp_unix: first_timestamp,
                 tokens: 605_109_263,
@@ -1026,6 +1088,8 @@ fn token_event_cache_reparses_when_incremental_range_overlaps_cached_events() {
             parsed_size: first_size,
             ended_with_newline: true,
             previous_total_tokens: Some(120),
+            fork_replay_active: false,
+            last_skipped_fork_replay_token_at: None,
             events: vec![
                 CachedTokenEvent {
                     timestamp_unix: first_timestamp,
@@ -1324,6 +1388,8 @@ fn cached_file_with_one_event(tokens: u64) -> CachedSessionFile {
         parsed_size: tokens,
         ended_with_newline: true,
         previous_total_tokens: Some(tokens),
+        fork_replay_active: false,
+        last_skipped_fork_replay_token_at: None,
         events: vec![CachedTokenEvent {
             timestamp_unix: 1_781_715_600,
             tokens,

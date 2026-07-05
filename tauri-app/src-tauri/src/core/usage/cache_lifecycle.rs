@@ -120,7 +120,7 @@ mod tests {
         let _env = PathEnvGuard::new(&root);
 
         let missing = usage_cache_status();
-        assert_eq!(missing.namespace, "tauri-usage-cache-2026-07-v4");
+        assert_eq!(missing.namespace, "tauri-usage-cache-2026-07-v5");
         assert!(!missing.initialized);
         assert_eq!(missing.initialized_at, None);
 

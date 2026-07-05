@@ -40,6 +40,14 @@ pub(super) struct SessionParseResult {
     pub(super) previous_total_tokens: Option<u64>,
     pub(super) consumed_size: u64,
     pub(super) ended_with_newline: bool,
+    pub(super) fork_replay_active: bool,
+    pub(super) last_skipped_fork_replay_token_at: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ForkReplayState {
+    pub(super) active: bool,
+    pub(super) last_skipped_token_at: Option<OffsetDateTime>,
 }
 
 pub(super) fn parse_session_file(
@@ -56,7 +64,7 @@ pub(super) fn parse_session_file_full_result(
     warnings: &mut Vec<LocalDataWarning>,
 ) -> SessionParseResult {
     record_full_parse_for_testing();
-    parse_session_file_range(file, session_id, 0, None, warnings)
+    parse_session_file_range(file, session_id, 0, None, None, warnings)
 }
 
 pub(super) fn parse_session_file_range(
@@ -64,6 +72,7 @@ pub(super) fn parse_session_file_range(
     session_id: &str,
     start_offset: u64,
     initial_previous_total: Option<u64>,
+    initial_fork_replay_state: Option<ForkReplayState>,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> SessionParseResult {
     let handle = match fs::File::open(file) {
@@ -79,6 +88,8 @@ pub(super) fn parse_session_file_range(
                 previous_total_tokens: initial_previous_total,
                 consumed_size: start_offset,
                 ended_with_newline: true,
+                fork_replay_active: false,
+                last_skipped_fork_replay_token_at: None,
             };
         }
     };
@@ -95,13 +106,18 @@ pub(super) fn parse_session_file_range(
                 previous_total_tokens: initial_previous_total,
                 consumed_size: start_offset,
                 ended_with_newline: true,
+                fork_replay_active: false,
+                last_skipped_fork_replay_token_at: None,
             };
         }
     }
     let reader = BufReader::new(handle);
     let fork_replay_started_at = forked_session_replay_started_at(file);
-    let mut fork_replay_active = fork_replay_started_at.is_some();
-    let mut last_skipped_fork_replay_token_at: Option<OffsetDateTime> = None;
+    let mut fork_replay_active = initial_fork_replay_state
+        .map(|state: ForkReplayState| state.active)
+        .unwrap_or_else(|| fork_replay_started_at.is_some());
+    let mut last_skipped_fork_replay_token_at = initial_fork_replay_state
+        .and_then(|state: ForkReplayState| state.last_skipped_token_at);
     let mut previous_total = initial_previous_total;
     let mut current_user_prompt = String::new();
     let mut assistant_fragments = Vec::<String>::new();
@@ -210,6 +226,8 @@ pub(super) fn parse_session_file_range(
         previous_total_tokens: previous_total,
         consumed_size,
         ended_with_newline,
+        fork_replay_active,
+        last_skipped_fork_replay_token_at,
     }
 }
 

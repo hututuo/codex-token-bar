@@ -1,5 +1,8 @@
 use super::{
-    session_parser::{parse_session_file, parse_session_file_full_result, parse_session_file_range},
+    session_parser::{
+        parse_session_file, parse_session_file_full_result, parse_session_file_range,
+        ForkReplayState,
+    },
     TokenEvent,
 };
 use crate::core::app_paths;
@@ -11,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use time::OffsetDateTime;
 
-const TOKEN_EVENT_CACHE_VERSION: u32 = 5;
+const TOKEN_EVENT_CACHE_VERSION: u32 = 6;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,6 +56,10 @@ pub(super) struct CachedSessionFile {
     pub(super) ended_with_newline: bool,
     #[serde(default)]
     pub(super) previous_total_tokens: Option<u64>,
+    #[serde(default)]
+    pub(super) fork_replay_active: bool,
+    #[serde(default)]
+    pub(super) last_skipped_fork_replay_token_at: Option<i64>,
     pub(super) events: Vec<CachedTokenEvent>,
 }
 
@@ -275,6 +282,7 @@ pub(super) fn parse_session_file_cached(
                 session_id,
                 parsed_size,
                 previous_total_tokens,
+                entry.fork_replay_state(),
                 warnings,
             );
             if parsed.consumed_size > parsed_size || signature.size == parsed_size {
@@ -292,6 +300,10 @@ pub(super) fn parse_session_file_cached(
                     entry.parsed_size = parsed.consumed_size;
                     entry.ended_with_newline = parsed.ended_with_newline;
                     entry.previous_total_tokens = parsed.previous_total_tokens;
+                    entry.fork_replay_active = parsed.fork_replay_active;
+                    entry.last_skipped_fork_replay_token_at = parsed
+                        .last_skipped_fork_replay_token_at
+                        .map(|timestamp| timestamp.unix_timestamp());
                     *cache_changed = true;
                     return entry.to_events(session_id);
                 }
@@ -330,6 +342,10 @@ fn reparse_session_file(
             parsed_size: parsed.consumed_size,
             ended_with_newline: parsed.ended_with_newline,
             previous_total_tokens: parsed.previous_total_tokens,
+            fork_replay_active: parsed.fork_replay_active,
+            last_skipped_fork_replay_token_at: parsed
+                .last_skipped_fork_replay_token_at
+                .map(|timestamp| timestamp.unix_timestamp()),
             events: events.iter().map(CachedTokenEvent::from_event).collect(),
         },
     );
@@ -360,6 +376,15 @@ impl CachedSessionFile {
                     .iter()
                     .fold(0u64, |total, event| total.saturating_add(event.tokens)),
             )
+        })
+    }
+
+    fn fork_replay_state(&self) -> Option<ForkReplayState> {
+        Some(ForkReplayState {
+            active: self.fork_replay_active,
+            last_skipped_token_at: self
+                .last_skipped_fork_replay_token_at
+                .and_then(|timestamp| OffsetDateTime::from_unix_timestamp(timestamp).ok()),
         })
     }
 
