@@ -9,6 +9,7 @@ import {
 import { formatLiveRateValue, rateFillStyle, sanitizeRateFullScale } from "../components/liveRate/rateDisplay";
 import type { FloatingContentGroup, FloatingPanelSnapshot, FloatingUnreadEffect, FloatingWindowSettings } from "../types/dashboard";
 import { embedsUsageStatusInRateRow, layoutFloatingContentGroups } from "./floatingContent";
+import { floatingRateBarStatusText, floatingStandaloneStatusText } from "./floatingPanelLabels";
 import { floatingTextPaletteForGroup } from "./floatingTextPalette";
 
 interface FloatingPanelSurfaceProps {
@@ -187,7 +188,7 @@ function FloatingContentRow({
           <FloatingRateMeter
             fullScale={settings.tokenRateFullScale}
             snapshot={snapshot}
-            statusText={attachedUsageStatus ? `${snapshot.trendLabel}${snapshot.resetCreditRateBarLabel ?? snapshot.resetCreditLabel ?? ""}` : undefined}
+            statusText={attachedUsageStatus ? floatingRateBarStatusText(snapshot) : undefined}
           />
         </div>
       );
@@ -196,7 +197,7 @@ function FloatingContentRow({
         <div className="floating-row floating-usage-status" style={style}>
           <span className="floating-usage-status-card">
             <FloatingStatusText
-              text={`${snapshot.trendLabel || "节奏待读取"}${snapshot.resetCreditStandaloneLabel ?? snapshot.resetCreditLabel ?? ""}`}
+              text={floatingStandaloneStatusText(snapshot)}
             />
           </span>
         </div>

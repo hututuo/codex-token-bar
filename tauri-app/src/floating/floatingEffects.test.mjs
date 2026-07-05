@@ -129,9 +129,8 @@ test("floating panel keeps muted pace text black metrics rounded corners and cor
 test("floating pace text keeps the Swift-style status and card count in one line", () => {
   assert.match(previewSource, /FloatingStatusText/);
   assert.doesNotMatch(previewSource, /floatingResetCreditLabel/);
-  assert.doesNotMatch(previewSource, /resetCreditLabel=\{/);
-  assert.match(previewSource, /snapshot\.resetCreditRateBarLabel \?\? snapshot\.resetCreditLabel \?\? ""/);
-  assert.match(previewSource, /snapshot\.resetCreditStandaloneLabel \?\? snapshot\.resetCreditLabel \?\? ""/);
+  assert.match(previewSource, /floatingRateBarStatusText\(snapshot\)/);
+  assert.match(previewSource, /floatingStandaloneStatusText\(snapshot\)/);
   assert.doesNotMatch(previewSource, /卡--/);
   assert.doesNotMatch(stylesSource, /\.floating-status-badge\s*{/);
   assert.match(stylesSource, /\.floating-status-text\s*{[\s\S]*?display: block;/);
