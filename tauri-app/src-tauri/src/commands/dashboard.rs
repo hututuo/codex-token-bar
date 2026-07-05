@@ -131,7 +131,7 @@ fn account_quota_result_status(result: &Result<AccountQuotaBundle, String>) -> S
             } else {
                 "quota_placeholder"
             };
-            if bundle.warnings.is_empty() {
+            if bundle.warnings.is_empty() && bundle.diagnostics.is_empty() {
                 status.to_string()
             } else {
                 let warnings = bundle
@@ -146,7 +146,30 @@ fn account_quota_result_status(result: &Result<AccountQuotaBundle, String>) -> S
                     })
                     .collect::<Vec<_>>()
                     .join("|");
-                format!("{status} warnings=[{warnings}]")
+                let diagnostics = bundle
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| {
+                        format!(
+                            "{}:{}:{}",
+                            diagnostic.source,
+                            diagnostic.category,
+                            compact_trace_text(
+                                diagnostic
+                                    .raw_cause
+                                    .as_deref()
+                                    .unwrap_or(&diagnostic.message)
+                            )
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|");
+                match (warnings.is_empty(), diagnostics.is_empty()) {
+                    (false, false) => format!("{status} warnings=[{warnings}] diagnostics=[{diagnostics}]"),
+                    (false, true) => format!("{status} warnings=[{warnings}]"),
+                    (true, false) => format!("{status} diagnostics=[{diagnostics}]"),
+                    (true, true) => status.to_string(),
+                }
             }
         }
     }
@@ -185,6 +208,7 @@ mod tests {
             quota_history_7d: Vec::new(),
             quota_history_30d: Vec::new(),
             warnings: vec![],
+            diagnostics: Vec::new(),
         });
 
         assert_eq!(account_quota_result_status(&placeholder), "quota_placeholder");
@@ -210,10 +234,24 @@ mod tests {
                 source: "account_quota".into(),
                 message: long_warning,
             }],
+            diagnostics: vec![crate::models::QuotaDiagnostic {
+                source: "account_quota".into(),
+                category: "network_send_fetch".into(),
+                severity: "warning".into(),
+                message: "网络连接失败".into(),
+                raw_cause: Some("failed to fetch codex rate limits: error sending request for url (https://chatgpt.com/backend-api/wham/usage)；".repeat(8)),
+                underlying_category: None,
+                attempts: Some(3),
+                http_status: None,
+                retryable: true,
+                occurred_at: "2026-07-06T00:00:00Z".into(),
+                stale_data_displayed: false,
+            }],
         });
 
         let status = account_quota_result_status(&placeholder);
         assert!(status.contains("quota_placeholder warnings=[account_quota:"));
+        assert!(status.contains("diagnostics=[account_quota:network_send_fetch:"));
         assert!(status.contains("backend-api/wham/usage"));
         assert!(!status.contains('…'));
     }

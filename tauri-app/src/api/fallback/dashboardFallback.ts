@@ -30,5 +30,6 @@ export function emptyDashboardSnapshot(): DashboardSnapshot {
       turns: [],
     },
     warnings: [],
+    diagnostics: [],
   };
 }

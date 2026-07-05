@@ -63,5 +63,6 @@ export function emptyAccountQuotaBundle(): AccountQuotaBundle {
     quotaHistory7d: emptyQuotaHistory7d,
     quotaHistory30d: emptyQuotaHistory30d,
     warnings: [],
+    diagnostics: [],
   };
 }

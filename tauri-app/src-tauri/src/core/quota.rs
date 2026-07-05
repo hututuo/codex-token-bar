@@ -1,6 +1,7 @@
 use crate::core::quota_history;
 use crate::models::{
-    AccountInfo, AccountQuotaBundle, LocalDataWarning, QuotaSnapshot, ResetCreditSummary,
+    AccountInfo, AccountQuotaBundle, LocalDataWarning, QuotaDiagnostic, QuotaSnapshot,
+    ResetCreditSummary,
 };
 use auth::read_local_account_name;
 use codex_binary::find_codex_binary_with_report;
@@ -10,9 +11,11 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::{mpsc, Mutex, OnceLock, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 const SUCCESS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
@@ -83,7 +86,17 @@ pub fn read_account_quota(codex_home: &Path, force_refresh: bool) -> Result<Acco
     }
 
     let gate = QUOTA_READ_GATE.get_or_init(|| Mutex::new(()));
-    let _read_guard = gate.lock().map_err(|error| error.to_string())?;
+    let _read_guard = match gate.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::WouldBlock) => {
+            let guard = gate.lock().map_err(|error| error.to_string())?;
+            if let Some(cached) = cached_quota_result_after_inflight(codex_home, force_refresh)? {
+                return resolve_cached_quota(cached);
+            }
+            guard
+        }
+        Err(TryLockError::Poisoned(error)) => return Err(error.to_string()),
+    };
     if let Some(cached) = cached_quota_result(codex_home, force_refresh)? {
         return resolve_cached_quota(cached);
     }
@@ -103,20 +116,50 @@ fn cached_quota_result(
     codex_home: &Path,
     force_refresh: bool,
 ) -> Result<Option<Result<AccountQuotaBundle, String>>, String> {
+    cached_quota_result_with_policy(codex_home, force_refresh, false)
+}
+
+fn cached_quota_result_after_inflight(
+    codex_home: &Path,
+    force_refresh: bool,
+) -> Result<Option<Result<AccountQuotaBundle, String>>, String> {
+    cached_quota_result_with_policy(codex_home, force_refresh, true)
+}
+
+fn cached_quota_result_with_policy(
+    codex_home: &Path,
+    force_refresh: bool,
+    after_inflight: bool,
+) -> Result<Option<Result<AccountQuotaBundle, String>>, String> {
     let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
     let guard = cache.lock().map_err(|error| error.to_string())?;
     Ok(guard
         .as_ref()
         .filter(|entry| {
             entry.codex_home == codex_home
-                && entry.cached_at.elapsed()
-                    <= if force_refresh {
-                        FORCED_REFRESH_COALESCE_TTL
-                    } else {
-                        cache_ttl(&entry.result)
-                    }
+                && reusable_cached_quota(entry, force_refresh, after_inflight)
         })
         .map(|entry| entry.result.clone()))
+}
+
+fn reusable_cached_quota(
+    entry: &QuotaCacheEntry,
+    force_refresh: bool,
+    after_inflight: bool,
+) -> bool {
+    if !force_refresh {
+        return entry.cached_at.elapsed() <= cache_ttl(&entry.result);
+    }
+    if entry.cached_at.elapsed() > FORCED_REFRESH_COALESCE_TTL {
+        return false;
+    }
+    after_inflight || cache_result_has_real_quota(&entry.result)
+}
+
+fn cache_result_has_real_quota(result: &Result<AccountQuotaBundle, String>) -> bool {
+    result
+        .as_ref()
+        .is_ok_and(|bundle| quota_available(&bundle.quota))
 }
 
 fn resolve_cached_quota(cached: Result<AccountQuotaBundle, String>) -> Result<AccountQuotaBundle, String> {
@@ -130,10 +173,7 @@ fn resolve_cached_quota(cached: Result<AccountQuotaBundle, String>) -> Result<Ac
 }
 
 fn cache_ttl(result: &Result<AccountQuotaBundle, String>) -> Duration {
-    if result
-        .as_ref()
-        .is_ok_and(|bundle| quota_available(&bundle.quota))
-    {
+    if cache_result_has_real_quota(result) {
         SUCCESS_CACHE_TTL
     } else {
         FAILURE_CACHE_TTL
@@ -148,11 +188,11 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
     let mut bundle = match read_rate_limits() {
         Ok(mut quota) => {
             let mut warnings = Vec::new();
+            let mut diagnostics = Vec::new();
             quota.reset_credit = read_reset_credits(codex_home).unwrap_or_else(|error| {
-                warnings.push(quota_warning(
-                    "reset_credit",
-                    format!("重置卡读取失败：{}", explain_quota_error(&error)),
-                ));
+                let diagnostic = reset_credit_diagnostic(&error);
+                warnings.push(warning_from_diagnostic(&diagnostic));
+                diagnostics.push(diagnostic);
                 ResetCreditSummary {
                     available_count: 0,
                     status: reset_credit_failure_status(&error),
@@ -167,6 +207,7 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
                 quota_history_7d: Vec::new(),
                 quota_history_30d: Vec::new(),
                 warnings,
+                diagnostics,
             };
             if let Err(error) = quota_history::record_bundle(&bundle) {
                 bundle.warnings.push(quota_history::warning(error));
@@ -179,10 +220,9 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
 
     if bundle.quota.reset_credit.status == "重置卡待读取" {
         bundle.quota.reset_credit = read_reset_credits(codex_home).unwrap_or_else(|error| {
-            bundle.warnings.push(quota_warning(
-                "reset_credit",
-                format!("重置卡读取失败：{}", explain_quota_error(&error)),
-            ));
+            let diagnostic = reset_credit_diagnostic(&error);
+            bundle.warnings.push(warning_from_diagnostic(&diagnostic));
+            bundle.diagnostics.push(diagnostic);
             ResetCreditSummary {
                 available_count: 0,
                 status: reset_credit_failure_status(&error),
@@ -197,7 +237,9 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
 fn quota_failure_bundle(codex_home: &Path, error: String) -> AccountQuotaBundle {
     let mut quota = placeholder_quota();
     quota.pace_label = "额度读取失败".into();
+    let mut diagnostics = vec![classify_quota_error("account_quota", &error)];
     quota.reset_credit = read_reset_credits(codex_home).unwrap_or_else(|reset_error| {
+        diagnostics.push(reset_credit_diagnostic(&reset_error));
         ResetCreditSummary {
             available_count: 0,
             status: reset_credit_failure_status(&reset_error),
@@ -212,17 +254,9 @@ fn quota_failure_bundle(codex_home: &Path, error: String) -> AccountQuotaBundle 
         quota_history_24h: Vec::new(),
         quota_history_7d: Vec::new(),
         quota_history_30d: Vec::new(),
-        warnings: vec![quota_warning(
-            "account_quota",
-            format!("额度读取失败：{}", explain_quota_error(&error)),
-        )],
+        warnings: diagnostics_to_warnings(&diagnostics),
+        diagnostics,
     };
-    if bundle.quota.reset_credit.status.starts_with("重置卡读取失败") {
-        bundle.warnings.push(quota_warning(
-            "reset_credit",
-            bundle.quota.reset_credit.status.clone(),
-        ));
-    }
     refresh_quota_histories(&mut bundle, true);
     bundle
 }
@@ -271,8 +305,16 @@ fn quota_warning(source: &str, message: String) -> LocalDataWarning {
     }
 }
 
+fn warning_from_diagnostic(diagnostic: &QuotaDiagnostic) -> LocalDataWarning {
+    quota_warning(&diagnostic.source, diagnostic.message.clone())
+}
+
+fn diagnostics_to_warnings(diagnostics: &[QuotaDiagnostic]) -> Vec<LocalDataWarning> {
+    diagnostics.iter().map(warning_from_diagnostic).collect()
+}
+
 fn reset_credit_failure_status(error: &str) -> String {
-    format!("重置卡读取失败：{}", explain_quota_error(error))
+    reset_credit_diagnostic(error).message
 }
 
 fn compact_error_message(error: &str) -> String {
@@ -286,29 +328,61 @@ fn compact_error_message(error: &str) -> String {
     truncated
 }
 
+#[cfg(test)]
 fn explain_quota_error(error: &str) -> String {
     let compact = compact_error_message(error);
+    diagnostic_message(&compact, &diagnostic_category(&compact))
+}
+
+fn classify_quota_error(source: &str, error: &str) -> QuotaDiagnostic {
+    let compact = compact_error_message(error);
+    let category = diagnostic_category(&compact);
+    QuotaDiagnostic {
+        source: source.into(),
+        category: category.clone(),
+        severity: diagnostic_severity(&category).into(),
+        message: diagnostic_message(&compact, &category),
+        raw_cause: Some(compact.clone()),
+        underlying_category: None,
+        attempts: retry_attempts(&compact),
+        http_status: http_status(&compact),
+        retryable: diagnostic_retryable(&category),
+        occurred_at: diagnostic_timestamp(),
+        stale_data_displayed: false,
+    }
+}
+
+fn reset_credit_diagnostic(error: &str) -> QuotaDiagnostic {
+    let underlying = classify_quota_error("reset_credit", error);
+    QuotaDiagnostic {
+        source: "reset_credit".into(),
+        category: "reset_credit_failure".into(),
+        severity: "warning".into(),
+        message: format!("重置卡读取失败：{}", underlying.message),
+        raw_cause: underlying.raw_cause,
+        underlying_category: Some(underlying.category),
+        attempts: underlying.attempts,
+        http_status: underlying.http_status,
+        retryable: underlying.retryable,
+        occurred_at: diagnostic_timestamp(),
+        stale_data_displayed: false,
+    }
+}
+
+fn diagnostic_category(compact: &str) -> String {
     let lower = compact.to_lowercase();
 
     if lower.contains("未找到 access token") || lower.contains("access token") {
-        return format!(
-            "登录凭证缺失：没有从 Codex 目录的 auth.json 读到 access token。请确认 Codex 已登录，且 Codex 目录选对。原始信息：{compact}"
-        );
+        return "auth_missing".into();
     }
     if compact.contains("未找到 Codex") || lower.contains("codex_cli_path") {
-        return format!(
-            "Codex 命令不可用：没有找到可用的 Codex app-server。请确认 Codex Desktop 已安装，或设置 CODEX_CLI_PATH。原始信息：{compact}"
-        );
+        return "app_server_unavailable".into();
     }
     if compact.contains("启动 Codex 失败") || compact.contains("Codex stdout 不可用") || compact.contains("Codex stdin 不可用") {
-        return format!(
-            "Codex 本地服务启动失败：无法通过本机 Codex app-server 读取额度。请重启 Codex 后再点立即刷新。原始信息：{compact}"
-        );
+        return "app_server_unavailable".into();
     }
     if compact.contains("额度读取超时") || lower.contains("timed out") || lower.contains("timeout") || compact.contains("超时") {
-        return format!(
-            "读取超时：本地 Codex 或网络接口在限定时间内没有返回。请稍后点立即刷新重试。原始信息：{compact}"
-        );
+        return "timeout".into();
     }
     if lower.contains("error sending request")
         || lower.contains("failed to fetch")
@@ -320,37 +394,83 @@ fn explain_quota_error(error: &str) -> String {
         || compact.contains("网络")
         || compact.contains("连接")
     {
-        return format!(
-            "网络连接失败：请求 ChatGPT 额度接口时网络不可用、DNS 失败或连接被中断。原始信息：{compact}"
-        );
+        return "network_send_fetch".into();
     }
     if lower.contains("http 401") || lower.contains("http 403") {
-        return format!(
-            "登录或权限失败：额度接口返回 {compact}，可能是登录过期、账号无权限或 access token 已失效。请重新登录 Codex/ChatGPT 后刷新。"
-        );
+        return "http_auth".into();
     }
     if lower.contains("http 429") {
-        return format!(
-            "请求过于频繁：额度接口返回 {compact}。请稍等一会儿再刷新。"
-        );
+        return "http_rate_limited".into();
     }
-    if lower.contains("http 5") {
-        return format!(
-            "服务端错误：额度接口返回 {compact}。这通常是 ChatGPT 服务临时异常，稍后刷新即可。"
-        );
+    if http_status(compact).is_some_and(|status| (500..=599).contains(&status)) {
+        return "http_server".into();
     }
     if lower.contains("http ") {
-        return format!(
-            "接口返回异常：额度接口返回 {compact}。如果持续出现，请截图这个原因。"
-        );
+        return "http_other".into();
     }
     if lower.contains("json") || compact.contains("解析") || compact.contains("响应为空") || lower.contains("expected") {
-        return format!(
-            "接口响应解析失败：本地收到了额度响应，但格式不是当前版本能识别的结构。原始信息：{compact}"
-        );
+        return "parse_failure".into();
+    }
+    if compact.contains("额度暂无数据") {
+        return "empty_quota".into();
     }
 
-    format!("未知原因：{compact}")
+    "unknown".into()
+}
+
+fn diagnostic_message(compact: &str, category: &str) -> String {
+    match category {
+        "auth_missing" => "登录凭证缺失：没有从 Codex 目录的 auth.json 读到 access token。请确认 Codex 已登录，且 Codex 目录选对。".into(),
+        "app_server_unavailable" => "Codex 本地服务启动失败：无法通过本机 Codex app-server 读取额度。请重启 Codex 后再点立即刷新。".into(),
+        "timeout" => "读取超时：本地 Codex 或网络接口在限定时间内没有返回。请稍后点立即刷新重试。".into(),
+        "network_send_fetch" => "网络连接失败：请求 ChatGPT 额度接口时网络不可用、DNS 失败或连接被中断。".into(),
+        "http_auth" => format!("登录或权限失败：额度接口返回 {compact}，可能是登录过期、账号无权限或 access token 已失效。请重新登录 Codex/ChatGPT 后刷新。"),
+        "http_rate_limited" => format!("请求过于频繁：额度接口返回 {compact}。请稍等一会儿再刷新。"),
+        "http_server" => format!("服务端错误：额度接口返回 {compact}。这通常是 ChatGPT 服务临时异常，稍后刷新即可。"),
+        "http_other" => format!("接口返回异常：额度接口返回 {compact}。如果持续出现，请截图这个原因。"),
+        "parse_failure" => "接口响应解析失败：本地收到了额度响应，但格式不是当前版本能识别的结构。".into(),
+        "empty_quota" => "本地读取成功但响应里没有可展示的额度。请稍后刷新。".into(),
+        _ => format!("未知原因：{compact}"),
+    }
+}
+
+fn diagnostic_retryable(category: &str) -> bool {
+    !matches!(category, "auth_missing" | "http_auth")
+}
+
+fn diagnostic_severity(category: &str) -> &'static str {
+    match category {
+        "auth_missing" | "http_auth" => "error",
+        _ => "warning",
+    }
+}
+
+fn diagnostic_timestamp() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
+}
+
+fn http_status(text: &str) -> Option<u16> {
+    let lower = text.to_lowercase();
+    let start = lower.find("http ")? + "http ".len();
+    let digits = lower[start..]
+        .chars()
+        .skip_while(|ch| !ch.is_ascii_digit())
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    digits.parse().ok()
+}
+
+fn retry_attempts(text: &str) -> Option<u32> {
+    let marker = "已重试 ";
+    let start = text.find(marker)? + marker.len();
+    text[start..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()
 }
 
 fn read_rate_limits() -> Result<QuotaSnapshot, String> {
@@ -604,6 +724,7 @@ mod tests {
             quota_history_7d: Vec::new(),
             quota_history_30d: Vec::new(),
             warnings: Vec::new(),
+            diagnostics: Vec::new(),
         });
         assert_eq!(cache_ttl(&success), SUCCESS_CACHE_TTL);
     }
@@ -681,7 +802,14 @@ mod tests {
         assert!(bundle.warnings.iter().any(|warning| {
             warning.source == "account_quota"
                 && warning.message.contains("Codex 本地服务启动失败")
-                && warning.message.contains("Codex stdout 不可用 请确认 Codex Desktop 已启动")
+        }));
+        assert!(bundle.diagnostics.iter().any(|diagnostic| {
+            diagnostic.source == "account_quota"
+                && diagnostic.category == "app_server_unavailable"
+                && diagnostic
+                    .raw_cause
+                    .as_deref()
+                    .is_some_and(|raw| raw.contains("Codex stdout 不可用 请确认 Codex Desktop 已启动"))
         }));
         assert!(bundle
             .warnings
@@ -716,6 +844,87 @@ mod tests {
     }
 
     #[test]
+    fn quota_error_classifier_returns_structured_categories() {
+        let cases = [
+            ("未找到 access token", "auth_missing", None, false),
+            ("未找到 Codex，可在 CODEX_CLI_PATH 指定 codex.exe", "app_server_unavailable", None, true),
+            ("额度读取超时（12 秒）", "timeout", None, true),
+            ("error sending request for url: dns error", "network_send_fetch", None, true),
+            ("HTTP 401 Unauthorized", "http_auth", Some(401), false),
+            ("HTTP 429 Too Many Requests", "http_rate_limited", Some(429), true),
+            ("HTTP 503 Service Unavailable", "http_server", Some(503), true),
+            ("HTTP 418 I'm a teapot", "http_other", Some(418), true),
+            ("invalid json response", "parse_failure", None, true),
+            ("额度暂无数据", "empty_quota", None, true),
+        ];
+
+        for (raw, category, status, retryable) in cases {
+            let diagnostic = classify_quota_error("account_quota", raw);
+            assert_eq!(diagnostic.category, category);
+            assert_eq!(diagnostic.raw_cause.as_deref(), Some(raw));
+            assert_eq!(diagnostic.http_status, status);
+            assert_eq!(diagnostic.retryable, retryable);
+            assert_eq!(diagnostic.source, "account_quota");
+            assert!(!diagnostic.message.contains(raw) || raw.starts_with("HTTP "));
+        }
+    }
+
+    #[test]
+    fn reset_credit_diagnostic_wraps_underlying_category() {
+        let diagnostic = reset_credit_diagnostic("error sending request for url: dns error");
+
+        assert_eq!(diagnostic.source, "reset_credit");
+        assert_eq!(diagnostic.category, "reset_credit_failure");
+        assert_eq!(diagnostic.underlying_category.as_deref(), Some("network_send_fetch"));
+        assert_eq!(
+            diagnostic.raw_cause.as_deref(),
+            Some("error sending request for url: dns error")
+        );
+        assert!(diagnostic.message.contains("重置卡读取失败"));
+        assert!(diagnostic.message.contains("网络连接失败"));
+        assert!(diagnostic.retryable);
+    }
+
+    #[test]
+    fn quota_failure_bundle_projects_structured_diagnostics_to_warnings() {
+        let codex_home = std::env::temp_dir().join(format!(
+            "codex-token-bar-quota-diagnostic-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let bundle = quota_failure_bundle(
+            &codex_home,
+            "HTTP 429 Too Many Requests".to_string(),
+        );
+
+        assert!(bundle
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.source == "account_quota"
+                && diagnostic.category == "http_rate_limited"
+                && diagnostic.raw_cause.as_deref() == Some("HTTP 429 Too Many Requests")
+                && diagnostic.http_status == Some(429)
+                && diagnostic.retryable));
+        assert!(bundle
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.source == "reset_credit"
+                && diagnostic.category == "reset_credit_failure"
+                && diagnostic.underlying_category.is_some()));
+        assert!(bundle.warnings.iter().any(|warning| {
+            warning.source == "account_quota"
+                && warning.message.contains("请求过于频繁")
+        }));
+        assert!(bundle.warnings.iter().any(|warning| {
+            warning.source == "reset_credit"
+                && warning.message.contains("重置卡读取失败")
+        }));
+    }
+
+    #[test]
     fn forced_quota_refresh_coalesces_only_recent_cache_entries() {
         let codex_home = std::env::temp_dir().join(format!(
             "codex-token-bar-quota-cache-{}",
@@ -745,6 +954,7 @@ mod tests {
             quota_history_7d: Vec::new(),
             quota_history_30d: Vec::new(),
             warnings: Vec::new(),
+            diagnostics: Vec::new(),
         };
         let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
 
@@ -769,6 +979,40 @@ mod tests {
             });
         }
         assert!(cached_quota_result(&codex_home, true).unwrap().is_none());
+
+        let mut guard = cache.lock().unwrap();
+        *guard = None;
+    }
+
+    #[test]
+    fn explicit_quota_retry_bypasses_cached_failure_placeholders() {
+        let codex_home = std::env::temp_dir().join(format!(
+            "codex-token-bar-quota-cache-failure-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
+        {
+            let mut guard = cache.lock().unwrap();
+            *guard = Some(QuotaCacheEntry {
+                codex_home: codex_home.clone(),
+                result: Ok(quota_failure_bundle(
+                    &codex_home,
+                    "error sending request for url: dns error".to_string(),
+                )),
+                cached_at: Instant::now(),
+            });
+        }
+
+        assert!(cached_quota_result(&codex_home, false).unwrap().is_some());
+        assert!(cached_quota_result(&codex_home, true).unwrap().is_none());
+        assert!(
+            cached_quota_result_after_inflight(&codex_home, true)
+                .unwrap()
+                .is_some()
+        );
 
         let mut guard = cache.lock().unwrap();
         *guard = None;

@@ -9,7 +9,7 @@ import type {
   RecentUsagePoint,
 } from "../types/dashboard";
 import type { DashboardAppState } from "./dashboardState";
-import { mergeWarnings } from "./dashboardWarnings";
+import { mergeQuotaDiagnostics, mergeWarnings } from "./dashboardWarnings";
 
 export function mergePreciseDashboard(
   state: DashboardAppState,
@@ -29,6 +29,7 @@ export function mergePreciseDashboard(
             recentUsage7d: mergeQuotaHistory(precise.recentUsage7d, state.dashboard.recentUsage7d),
             recentUsage30d: mergeQuotaHistory(precise.recentUsage30d, state.dashboard.recentUsage30d),
             warnings: mergeWarnings(state.dashboard.warnings, precise.warnings),
+            diagnostics: mergeQuotaDiagnostics(state.dashboard.diagnostics ?? [], precise.diagnostics ?? []),
           },
   };
 }
@@ -46,6 +47,7 @@ export function mergeQuota(state: DashboardAppState, quota: AccountQuotaBundle):
           recentUsage7d: mergeQuotaHistory(state.dashboard.recentUsage7d, quota.quotaHistory7d),
           recentUsage30d: mergeQuotaHistory(state.dashboard.recentUsage30d, quota.quotaHistory30d),
           warnings: mergeWarnings(state.dashboard.warnings, quota.warnings),
+          diagnostics: mergeQuotaDiagnostics(state.dashboard.diagnostics ?? [], quota.diagnostics ?? []),
         };
   return {
     ...state,

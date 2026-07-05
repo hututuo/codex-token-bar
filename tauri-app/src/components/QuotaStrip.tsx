@@ -1,5 +1,11 @@
 import { memo, useMemo, useState } from "react";
-import type { LocalDataWarning, QuotaLimit, QuotaSnapshot, ResetCreditDetail } from "../types/dashboard";
+import type {
+  LocalDataWarning,
+  QuotaDiagnostic,
+  QuotaLimit,
+  QuotaSnapshot,
+  ResetCreditDetail,
+} from "../types/dashboard";
 import { formatPercent } from "../utils/format";
 import {
   cardIdentifier,
@@ -12,6 +18,7 @@ import { quotaReadWarnings } from "./quota/quotaWarnings";
 interface QuotaStripProps {
   onRetryQuotaRefresh?: () => void;
   snapshot: QuotaSnapshot;
+  diagnostics?: QuotaDiagnostic[];
   warnings?: LocalDataWarning[];
 }
 
@@ -98,11 +105,11 @@ function ResetCreditItem({
   );
 }
 
-function QuotaStripView({ onRetryQuotaRefresh, snapshot, warnings = [] }: QuotaStripProps) {
+function QuotaStripView({ onRetryQuotaRefresh, snapshot, diagnostics = [], warnings = [] }: QuotaStripProps) {
   const [showResetDetails, setShowResetDetails] = useState(false);
   const [expandedCredits, setExpandedCredits] = useState<Set<string>>(() => new Set());
   const resetCreditPanel = useMemo(() => resetCreditPanelModel(snapshot.resetCredit), [snapshot.resetCredit]);
-  const quotaWarnings = useMemo(() => quotaReadWarnings(warnings), [warnings]);
+  const quotaWarnings = useMemo(() => quotaReadWarnings(warnings, diagnostics), [diagnostics, warnings]);
 
   function toggleCredit(credit: ResetCreditDetail, index: number) {
     const key = resetCreditDetailKey(credit, index);

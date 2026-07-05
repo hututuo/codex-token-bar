@@ -42,6 +42,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
         cache_hit_ranking: Vec::<CacheHitRankingItem>::new(),
         cache_usage: Default::default(),
         warnings,
+        diagnostics: Vec::new(),
     })
 }
 

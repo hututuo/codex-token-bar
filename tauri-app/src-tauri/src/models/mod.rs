@@ -6,7 +6,7 @@ mod provider_repair;
 mod quota;
 mod settings;
 
-pub use common::{AccountInfo, LocalDataWarning};
+pub use common::{AccountInfo, LocalDataWarning, QuotaDiagnostic};
 pub use dashboard::{
     ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats, RecentUsagePoint,
     SessionCacheUsage, TokenCacheBreakdown, TokenCacheUsage, TurnCacheUsage,

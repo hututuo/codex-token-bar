@@ -161,6 +161,74 @@ test("DashboardSummarySection passes dashboard warnings through to QuotaStrip re
   });
 });
 
+test("DashboardSummarySection passes structured quota diagnostics through to QuotaStrip rendering", async () => {
+  await withSsrModules(async (load) => {
+    const { DashboardSummarySection } = await load("/src/pages/dashboard/DashboardSummarySection.tsx");
+    const dashboard = dashboardFixture();
+    dashboard.warnings = [
+      { source: "account_quota", message: "旧账户额度读取失败" },
+      { source: "reset_credit", message: "旧重置卡读取失败" },
+    ];
+    dashboard.diagnostics = [
+      quotaDiagnostic({
+        source: "account_quota",
+        category: "auth_missing",
+        message: "登录凭证缺失",
+        rawCause: "未找到 access token",
+        retryable: false,
+      }),
+      quotaDiagnostic({
+        source: "source_integrity",
+        category: "source_mismatch",
+        message: "Codex Home 与额度登录来源不一致",
+        rawCause: "source mismatch",
+        retryable: false,
+      }),
+      quotaDiagnostic({
+        source: "reset_credit",
+        category: "reset_credit_failure",
+        message: "重置卡读取失败：网络连接失败",
+        rawCause: "error sending request for url",
+        underlyingCategory: "network_send_fetch",
+        retryable: true,
+      }),
+    ];
+
+    const html = renderComponent(DashboardSummarySection, {
+      dashboard,
+      displaySurfaces: {
+        floatingWindowEnabled: true,
+        liveRateEnabled: true,
+        statusTrayLiveTextEnabled: false,
+      },
+      floatingSettings: floatingSettingsFixture(),
+      liveRate: liveRateFixture(),
+      liveThreadOptions: [],
+      onFloatingOpacityChange: () => {},
+      onFloatingScaleChange: () => {},
+      onTokenRateFullScaleChange: () => {},
+      onFloatingUnreadEffectChange: () => {},
+      onFloatingGradientChange: () => {},
+      onFloatingTextToneChange: () => {},
+      onFloatingContentVisibilityChange: () => {},
+      onLiveRateReset: async () => {},
+      onLiveRateRetry: () => {},
+      onLiveThreadSelect: () => {},
+      onQuotaRefresh: () => {},
+      onToggleLiveRate: () => {},
+      onToggleFloating: () => {},
+      onToggleStatusTray: () => {},
+      platform: platformFixture(),
+      radarRefreshGeneration: 0,
+      liveRateEnabled: true,
+      selectedLiveThreadId: "",
+    });
+
+    assert.match(html, /登录凭证缺失；Codex Home 与额度登录来源不一致；重置卡读取失败：网络连接失败/);
+    assert.doesNotMatch(html, /旧账户额度读取失败/);
+  });
+});
+
 function dashboardFixture() {
   return {
     generatedAt: "2026-07-05T00:00:00Z",
@@ -209,6 +277,23 @@ function resetCredit(overrides = {}) {
     associatedUser: "user_1",
     profileImageUrl: "",
     shortId: "card",
+    ...overrides,
+  };
+}
+
+function quotaDiagnostic(overrides = {}) {
+  return {
+    source: "account_quota",
+    category: "unknown",
+    severity: "warning",
+    message: "未知诊断",
+    rawCause: "raw",
+    underlyingCategory: null,
+    attempts: null,
+    httpStatus: null,
+    retryable: true,
+    occurredAt: "2026-07-06T00:00:00Z",
+    staleDataDisplayed: false,
     ...overrides,
   };
 }

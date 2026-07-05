@@ -66,7 +66,12 @@ export function DashboardSummarySection({
 }: DashboardSummarySectionProps) {
   return (
     <>
-      <QuotaStrip onRetryQuotaRefresh={onQuotaRefresh} snapshot={dashboard.quota} warnings={dashboard.warnings} />
+      <QuotaStrip
+        diagnostics={dashboard.diagnostics}
+        onRetryQuotaRefresh={onQuotaRefresh}
+        snapshot={dashboard.quota}
+        warnings={dashboard.warnings}
+      />
       <StatsStrip stats={dashboard.stats} />
       <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />
       <LiveRateCard

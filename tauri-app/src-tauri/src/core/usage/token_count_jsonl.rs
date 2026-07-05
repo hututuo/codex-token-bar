@@ -104,6 +104,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         cache_hit_ranking,
         cache_usage,
         warnings,
+        diagnostics: Vec::new(),
     };
     store_dashboard_aggregate(signature, Some(snapshot.clone()), summary);
     cache_lifecycle::mark_usage_cache_ready_after_success();

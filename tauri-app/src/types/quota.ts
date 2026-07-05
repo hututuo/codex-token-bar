@@ -1,4 +1,4 @@
-import type { LocalDataWarning } from "./diagnostics";
+import type { LocalDataWarning, QuotaDiagnostic } from "./diagnostics";
 
 export interface AccountInfo {
   displayName: string;
@@ -66,4 +66,5 @@ export interface AccountQuotaBundle {
   quotaHistory7d: QuotaHistoryPoint[];
   quotaHistory30d: QuotaHistoryPoint[];
   warnings: LocalDataWarning[];
+  diagnostics: QuotaDiagnostic[];
 }

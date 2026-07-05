@@ -1,4 +1,4 @@
-import type { LocalDataWarning } from "./diagnostics";
+import type { LocalDataWarning, QuotaDiagnostic } from "./diagnostics";
 import type { AccountInfo, QuotaSnapshot } from "./quota";
 
 export interface DashboardStats {
@@ -85,6 +85,7 @@ export interface DashboardSnapshot {
   cacheHitRanking: CacheHitRankingItem[];
   cacheUsage: TokenCacheUsage;
   warnings: LocalDataWarning[];
+  diagnostics: QuotaDiagnostic[];
 }
 
 export interface UsageCacheStatus {

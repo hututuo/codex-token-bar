@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{AccountInfo, LocalDataWarning, QuotaSnapshot};
+use super::{AccountInfo, LocalDataWarning, QuotaDiagnostic, QuotaSnapshot};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,6 +16,8 @@ pub struct DashboardSnapshot {
     pub cache_hit_ranking: Vec<CacheHitRankingItem>,
     pub cache_usage: TokenCacheUsage,
     pub warnings: Vec<LocalDataWarning>,
+    #[serde(default)]
+    pub diagnostics: Vec<QuotaDiagnostic>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

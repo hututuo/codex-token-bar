@@ -573,6 +573,7 @@ fn bundle(
         quota_history_7d: Vec::new(),
         quota_history_30d: Vec::new(),
         warnings: Vec::new(),
+        diagnostics: Vec::new(),
     }
 }
 

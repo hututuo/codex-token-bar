@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{AccountInfo, LocalDataWarning};
+use super::{AccountInfo, LocalDataWarning, QuotaDiagnostic};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -12,6 +12,8 @@ pub struct AccountQuotaBundle {
     pub quota_history_7d: Vec<QuotaHistoryPoint>,
     pub quota_history_30d: Vec<QuotaHistoryPoint>,
     pub warnings: Vec<LocalDataWarning>,
+    #[serde(default)]
+    pub diagnostics: Vec<QuotaDiagnostic>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
