@@ -284,7 +284,8 @@ struct DashboardView: View {
         }
         .onChange(of: store.dataSourceLabel) {
             taskCompletionMonitor.start(dataSource: store.currentDataSource)
-            quotaStore.refresh(force: true, dataSource: store.currentDataSource)
+            quotaStore.setDataSource(store.currentDataSource)
+            quotaStore.refresh(force: true)
         }
         .onChange(of: preciseTokenCountingEnabled) {
             liveMonitor.setPreciseTokenCountingEnabled(preciseTokenCountingEnabled)
@@ -498,7 +499,8 @@ struct DashboardView: View {
                 store.refresh()
                 trace?.mark("usageStore.refresh.called")
             case let .refreshQuota(force):
-                quotaStore.refresh(force: force, dataSource: store.currentDataSource)
+                quotaStore.setDataSource(store.currentDataSource)
+                quotaStore.refresh(force: force)
                 trace?.mark("quotaStore.refresh.called")
             case .refreshRadar:
                 radarStore.refresh()

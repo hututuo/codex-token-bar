@@ -20,13 +20,29 @@ final class AccountQuotaStore: ObservableObject {
         self.quotaReader = quotaReader
     }
 
+    func setDataSource(_ dataSource: CodexDataSource?) {
+        let oldSourceID = quotaSourceID(for: currentDataSource)
+        let newSourceID = quotaSourceID(for: dataSource)
+        currentDataSource = dataSource
+        guard oldSourceID != newSourceID else { return }
+
+        lastSuccessfulRefreshCompletedAt = nil
+        if isRefreshing {
+            refreshTask?.cancel()
+            refreshGeneration += 1
+            activeRefreshSourceID = nil
+            isRefreshing = false
+        }
+    }
+
     func setHistoryStore(_ historyStore: QuotaHistoryStore) {
         self.historyStore = historyStore
     }
 
     func start(dataSource: CodexDataSource? = nil) {
         guard timer == nil else { return }
-        refresh(force: true, dataSource: dataSource)
+        setDataSource(dataSource)
+        refresh(force: true)
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refresh(force: false)
@@ -39,11 +55,8 @@ final class AccountQuotaStore: ObservableObject {
         timer = nil
     }
 
-    func refresh(force: Bool = true, dataSource: CodexDataSource? = nil) {
-        if let dataSource {
-            currentDataSource = dataSource
-        }
-        let effectiveDataSource = dataSource ?? currentDataSource
+    func refresh(force: Bool = true) {
+        let effectiveDataSource = currentDataSource
         let sourceID = quotaSourceID(for: effectiveDataSource)
         let recentSuccessAge = lastSuccessfulRefreshCompletedAt.map { Date().timeIntervalSince($0) }
         let trace = RefreshPerformanceProbe.begin("quotaStore.refresh", metadata: [

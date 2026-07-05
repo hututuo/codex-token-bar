@@ -124,7 +124,8 @@ final class AccountQuotaStoreTests: XCTestCase {
         let reader = SequentialQuotaReader(results: [.success(snapshot)])
         let store = AccountQuotaStore(quotaReader: reader)
 
-        store.refresh(dataSource: dataSource)
+        store.setDataSource(dataSource)
+        store.refresh()
         await waitUntil("quota refresh with source") {
             store.snapshot.status == "额度已读取"
         }
@@ -133,18 +134,46 @@ final class AccountQuotaStoreTests: XCTestCase {
         XCTAssertEqual(sources, [dataSource])
     }
 
+    func testExplicitNilSourceDoesNotReusePreviousCodexHome() async throws {
+        let sourceA = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaPreviousSource"), origin: .userSelected)
+        let reader = SequentialQuotaReader(results: [
+            .success(quotaSnapshot(usedPercent: 11, accountName: "old")),
+            .success(quotaSnapshot(usedPercent: 33, accountName: "default"))
+        ])
+        let store = AccountQuotaStore(quotaReader: reader)
+
+        store.setDataSource(sourceA)
+        store.refresh()
+        await waitUntil("old source quota refresh") {
+            store.snapshot.fiveHour?.usedPercent == 11
+        }
+
+        store.setDataSource(nil)
+        store.refresh()
+        await waitUntil("default source quota refresh") {
+            store.snapshot.fiveHour?.usedPercent == 33
+        }
+
+        let sources = await reader.requestedSources()
+        XCTAssertEqual(sources.count, 2)
+        XCTAssertEqual(sources[0], sourceA)
+        XCTAssertNil(sources[1])
+    }
+
     func testInFlightQuotaRefreshFromOldSourceDoesNotOverwriteNewSourceSnapshot() async throws {
         let sourceA = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaOldSource"), origin: .userSelected)
         let sourceB = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaNewSource"), origin: .userSelected)
         let reader = SuspendedQuotaReader()
         let store = AccountQuotaStore(quotaReader: reader)
 
-        store.refresh(dataSource: sourceA)
+        store.setDataSource(sourceA)
+        store.refresh()
         await waitUntil("old quota request") {
             await reader.hasPendingRequest(for: sourceA)
         }
 
-        store.refresh(dataSource: sourceB)
+        store.setDataSource(sourceB)
+        store.refresh()
         await waitUntil("new quota request") {
             await reader.hasPendingRequest(for: sourceB)
         }
@@ -165,6 +194,61 @@ final class AccountQuotaStoreTests: XCTestCase {
 
         XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 22)
         XCTAssertEqual(store.snapshot.accountName, "new")
+    }
+
+    func testInFlightQuotaRefreshFromOldSourceDoesNotOverwriteExplicitNilSourceSnapshot() async throws {
+        let sourceA = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaOldToNilSource"), origin: .userSelected)
+        let reader = SuspendedQuotaReader()
+        let store = AccountQuotaStore(quotaReader: reader)
+
+        store.setDataSource(sourceA)
+        store.refresh()
+        await waitUntil("old quota request") {
+            await reader.hasPendingRequest(for: sourceA)
+        }
+
+        store.setDataSource(nil)
+        store.refresh()
+        await waitUntil("nil quota request") {
+            await reader.hasPendingNilRequest()
+        }
+
+        await reader.completeNilRequest(with: quotaSnapshot(usedPercent: 44, accountName: "default"))
+        await waitUntil("nil source quota snapshot published") {
+            store.snapshot.fiveHour?.usedPercent == 44
+        }
+
+        await reader.completeRequest(
+            for: sourceA,
+            with: quotaSnapshot(usedPercent: 88, accountName: "old")
+        )
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 44)
+        XCTAssertEqual(store.snapshot.accountName, "default")
+    }
+
+    func testAutomaticRefreshReusesTrackedSourceWhenNoExplicitSourceChange() async throws {
+        let source = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaTrackedSource"), origin: .userSelected)
+        let reader = SequentialQuotaReader(results: [
+            .success(AccountQuotaSnapshot(status: "额度暂无数据", updatedAt: Date(timeIntervalSince1970: 1))),
+            .success(quotaSnapshot(usedPercent: 55, accountName: "tracked"))
+        ])
+        let store = AccountQuotaStore(quotaReader: reader)
+
+        store.setDataSource(source)
+        store.refresh(force: true)
+        await waitUntil("first unavailable quota refresh") {
+            await reader.currentReadCount() == 1
+        }
+
+        store.refresh(force: false)
+        await waitUntil("automatic quota refresh") {
+            store.snapshot.fiveHour?.usedPercent == 55
+        }
+
+        let sources = await reader.requestedSources()
+        XCTAssertEqual(sources, [source, source])
     }
 
     private func waitUntil(
@@ -247,7 +331,15 @@ private actor SuspendedQuotaReader: QuotaReading {
         continuations[dataSource.codexHome.path] != nil
     }
 
+    func hasPendingNilRequest() -> Bool {
+        continuations["nil"] != nil
+    }
+
     func completeRequest(for dataSource: CodexDataSource, with snapshot: AccountQuotaSnapshot) {
         continuations.removeValue(forKey: dataSource.codexHome.path)?.resume(returning: .success(snapshot))
+    }
+
+    func completeNilRequest(with snapshot: AccountQuotaSnapshot) {
+        continuations.removeValue(forKey: "nil")?.resume(returning: .success(snapshot))
     }
 }
