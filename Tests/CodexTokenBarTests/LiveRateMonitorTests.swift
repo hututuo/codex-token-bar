@@ -56,15 +56,91 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertTrue(fingerprints.contains("d"))
     }
 
-    func testPollReadsRolloutJsonlWhenSqliteStreamHasNoNewRows() throws {
-        let projectRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let monitorSourceURL = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateMonitor.swift")
-        let monitorSource = try String(contentsOf: monitorSourceURL, encoding: .utf8)
+    func testPollReadPlanReadsStreamAndRolloutOnLogChange() {
+        let plan = LiveRatePollReadPlan(
+            now: 100,
+            hasLogChangeSignal: true,
+            fastDisplayWindowActive: false,
+            activeRollingWindowPresent: false,
+            lastFallbackPollAt: 99.9,
+            lastRolloutReadAt: 99.9,
+            idleFallbackPollInterval: 2,
+            rolloutFallbackPollInterval: 1
+        )
 
-        XCTAssertTrue(monitorSource.contains("await readRolloutUpdates(now:"))
+        XCTAssertTrue(plan.readStreamRows)
+        XCTAssertTrue(plan.readRolloutUpdates)
+        XCTAssertTrue(plan.readsAnyDataSource)
+        XCTAssertFalse(plan.recordIdleFallbackPollAt)
+    }
+
+    func testPollReadPlanReadsRolloutWhenSqliteStreamIsNotDue() {
+        let plan = LiveRatePollReadPlan(
+            now: 100,
+            hasLogChangeSignal: false,
+            fastDisplayWindowActive: false,
+            activeRollingWindowPresent: false,
+            lastFallbackPollAt: 99,
+            lastRolloutReadAt: 98.9,
+            idleFallbackPollInterval: 2,
+            rolloutFallbackPollInterval: 1
+        )
+
+        XCTAssertFalse(plan.readStreamRows)
+        XCTAssertTrue(plan.readRolloutUpdates)
+        XCTAssertTrue(plan.readsAnyDataSource)
+        XCTAssertFalse(plan.recordIdleFallbackPollAt)
+    }
+
+    func testPollReadPlanKeepsFastDisplayWindowDisplayOnly() {
+        let plan = LiveRatePollReadPlan(
+            now: 100,
+            hasLogChangeSignal: false,
+            fastDisplayWindowActive: true,
+            activeRollingWindowPresent: true,
+            lastFallbackPollAt: 99.5,
+            lastRolloutReadAt: 99.5,
+            idleFallbackPollInterval: 2,
+            rolloutFallbackPollInterval: 1
+        )
+
+        XCTAssertFalse(plan.readStreamRows)
+        XCTAssertFalse(plan.readRolloutUpdates)
+        XCTAssertFalse(plan.readsAnyDataSource)
+        XCTAssertTrue(plan.displayOnlyFastPollActive)
+    }
+
+    func testPollReadPlanThrottlesInactiveReadsUntilFallbackIntervals() {
+        let throttled = LiveRatePollReadPlan(
+            now: 100,
+            hasLogChangeSignal: false,
+            fastDisplayWindowActive: false,
+            activeRollingWindowPresent: false,
+            lastFallbackPollAt: 99,
+            lastRolloutReadAt: 99.5,
+            idleFallbackPollInterval: 2,
+            rolloutFallbackPollInterval: 1
+        )
+
+        XCTAssertFalse(throttled.readStreamRows)
+        XCTAssertFalse(throttled.readRolloutUpdates)
+        XCTAssertFalse(throttled.readsAnyDataSource)
+        XCTAssertFalse(throttled.recordIdleFallbackPollAt)
+
+        let fallbackDue = LiveRatePollReadPlan(
+            now: 101,
+            hasLogChangeSignal: false,
+            fastDisplayWindowActive: false,
+            activeRollingWindowPresent: false,
+            lastFallbackPollAt: 99,
+            lastRolloutReadAt: 99.5,
+            idleFallbackPollInterval: 2,
+            rolloutFallbackPollInterval: 1
+        )
+
+        XCTAssertTrue(fallbackDue.readStreamRows)
+        XCTAssertTrue(fallbackDue.readRolloutUpdates)
+        XCTAssertTrue(fallbackDue.recordIdleFallbackPollAt)
     }
 
     func testLiveRateLogReaderReturnsOnlyUsableStreamDeltaRowsAndAttribution() throws {
@@ -126,30 +202,6 @@ final class LiveRateMonitorTests: XCTestCase {
         let rows = try LiveRateLogDatabaseReader(path: databaseURL.path).globalLogRows(afterID: 0)
 
         XCTAssertEqual(rows.map(\.id), [2, 3, 4, 6, 7])
-    }
-
-    func testFastDisplayWindowDoesNotForceEveryTickDataSourceReads() throws {
-        let projectRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let monitorSourceURL = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateMonitor.swift")
-        let monitorSource = try String(contentsOf: monitorSourceURL, encoding: .utf8)
-        let shouldPollLogsRange = try XCTUnwrap(monitorSource.range(of: "let shouldPollLogs ="))
-        let shouldReadRolloutRange = try XCTUnwrap(monitorSource.range(of: "let shouldReadRollout ="))
-        let guardRange = try XCTUnwrap(
-            monitorSource.range(
-                of: "guard shouldPollLogs || shouldReadRollout else",
-                range: shouldReadRolloutRange.upperBound..<monitorSource.endIndex
-            )
-        )
-        let dataReadGate = monitorSource[shouldPollLogsRange.lowerBound..<guardRange.lowerBound]
-
-        XCTAssertFalse(dataReadGate.contains("now < fastPollUntil"))
-        XCTAssertFalse(dataReadGate.contains("hasActiveRollingWindow"))
-        XCTAssertTrue(dataReadGate.contains("hasLogChangeSignal"))
-        XCTAssertTrue(dataReadGate.contains("idleFallbackPollInterval"))
-        XCTAssertTrue(dataReadGate.contains("rolloutFallbackPollInterval"))
     }
 
     func testStreamParserKeepsToolArgumentDeltasOutOfVisibleTextButInLiveRate() throws {

@@ -306,20 +306,28 @@ final class LiveRateMonitor: ObservableObject {
             let logsDB = cachedLogsDatabasePath
             let now = Date().timeIntervalSince1970
             let hasLogChangeSignal = logChangePending
-            let shouldPollLogs = hasLogChangeSignal || now - lastFallbackPollAt >= idleFallbackPollInterval
-            let shouldReadRollout = hasLogChangeSignal || now - lastRolloutReadAt >= rolloutFallbackPollInterval
+            let readPlan = LiveRatePollReadPlan(
+                now: now,
+                hasLogChangeSignal: hasLogChangeSignal,
+                fastDisplayWindowActive: now < fastPollUntil,
+                activeRollingWindowPresent: hasActiveRollingWindow(now: now),
+                lastFallbackPollAt: lastFallbackPollAt,
+                lastRolloutReadAt: lastRolloutReadAt,
+                idleFallbackPollInterval: idleFallbackPollInterval,
+                rolloutFallbackPollInterval: rolloutFallbackPollInterval
+            )
             logChangePending = false
 
-            guard shouldPollLogs || shouldReadRollout else {
+            guard readPlan.readsAnyDataSource else {
                 updateSnapshots(now: now)
                 return
             }
-            if shouldPollLogs && !hasLogChangeSignal {
+            if readPlan.recordIdleFallbackPollAt {
                 lastFallbackPollAt = now
             }
 
             let globalRows: [LogRow]
-            if shouldPollLogs {
+            if readPlan.readStreamRows {
                 let currentGlobalLogID = lastGlobalLogID
                 let reader = logReader(for: logsDB)
                 globalRows = try await Task.detached(priority: .utility) {
@@ -330,7 +338,7 @@ final class LiveRateMonitor: ObservableObject {
             }
 
             let processedStreamEvents = processStreamRows(globalRows)
-            let processedRolloutEvents = shouldReadRollout
+            let processedRolloutEvents = readPlan.readRolloutUpdates
                 ? await readRolloutUpdates(now: Date().timeIntervalSince1970)
                 : false
             let processedEvents = processedStreamEvents || processedRolloutEvents
