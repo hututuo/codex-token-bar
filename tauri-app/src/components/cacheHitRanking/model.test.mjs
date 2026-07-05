@@ -122,6 +122,64 @@ test("buildCacheRankingItems can sort sessions and turns by latest activity firs
   assert.deepEqual(turnItems.map((item) => item.title), ["问：最新问题", "问：第二轮问题", "问：未知时间问题"]);
 });
 
+test("latest ranking keeps dated items first and falls back to low-hit order for ties", () => {
+  const tiedUsage = {
+    sessions: [
+      { id: "dated-high", title: "同日高命中", lastUpdated: "2026-06-24T10:00:00Z", breakdown: breakdown(2_000, 1_800, 2) },
+      { id: "undated-low", title: "无日期低命中", lastUpdated: null, breakdown: breakdown(2_000, 0, 2) },
+      { id: "dated-low", title: "同日低命中", lastUpdated: "2026-06-24T10:00:00Z", breakdown: breakdown(2_000, 0, 2) },
+    ],
+    turns: [
+      {
+        id: "turn-dated-high",
+        sessionId: "s",
+        sessionTitle: "会话",
+        timestamp: "2026-06-24T10:00:00Z",
+        turnIndexInSession: 2,
+        userPrompt: "同日高命中",
+        assistantResponse: "",
+        breakdown: breakdown(2_000, 1_800),
+      },
+      {
+        id: "turn-undated-low",
+        sessionId: "s",
+        sessionTitle: "会话",
+        timestamp: null,
+        turnIndexInSession: 2,
+        userPrompt: "无日期低命中",
+        assistantResponse: "",
+        breakdown: breakdown(2_000, 0),
+      },
+      {
+        id: "turn-dated-low",
+        sessionId: "s",
+        sessionTitle: "会话",
+        timestamp: "2026-06-24T10:00:00Z",
+        turnIndexInSession: 2,
+        userPrompt: "同日低命中",
+        assistantResponse: "",
+        breakdown: breakdown(2_000, 0),
+      },
+    ],
+  };
+
+  const sessionItems = buildCacheRankingItems(tiedUsage, {
+    scope: "sessions",
+    sortOrder: "latest",
+    excludesSingleTurnSessions: true,
+    excludesFirstTurns: true,
+  });
+  assert.deepEqual(sessionItems.map((item) => item.title), ["同日低命中", "同日高命中", "无日期低命中"]);
+
+  const turnItems = buildCacheRankingItems(tiedUsage, {
+    scope: "turns",
+    sortOrder: "latest",
+    excludesSingleTurnSessions: true,
+    excludesFirstTurns: true,
+  });
+  assert.deepEqual(turnItems.map((item) => item.title), ["问：同日低命中", "问：同日高命中", "问：无日期低命中"]);
+});
+
 test("ranking helpers expose Swift-compatible subtitles and token math", () => {
   assert.equal(rankingSubtitle("sessions", "lowHit", true, true), "低命中优先 · 已排除只有一轮的会话");
   assert.equal(rankingSubtitle("turns", "latest", true, false), "最新优先 · 包含首轮");
