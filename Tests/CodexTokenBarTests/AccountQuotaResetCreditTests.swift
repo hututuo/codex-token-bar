@@ -96,6 +96,58 @@ final class AccountQuotaResetCreditTests: XCTestCase {
         XCTAssertEqual(finalHourSnapshot.compactResetCreditRateBarSuffix, " · 1卡 · 35m")
     }
 
+    func testCompactResetCreditSuffixKeepsCountButSkipsUnknownExpiry() {
+        let now = Date()
+        let availableWithoutExpiry = makeCredit(id: "unknown-expiry", expiresAt: nil)
+        let unknownExpirySnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: now.addingTimeInterval(60 * 60)),
+            resetCreditsAvailableCount: 0,
+            resetCredits: [availableWithoutExpiry]
+        )
+        let knownExpirySnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: now.addingTimeInterval(60 * 60)),
+            resetCreditsAvailableCount: 0,
+            resetCredits: [
+                availableWithoutExpiry,
+                makeCredit(id: "known-expiry", expiresAt: now.addingTimeInterval(5.2 * 60 * 60))
+            ]
+        )
+        let usedOnlySnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: now.addingTimeInterval(60 * 60)),
+            resetCreditsAvailableCount: 0,
+            resetCredits: [
+                makeCredit(id: "used", status: "redeemed", expiresAt: nil, redeemedAt: now)
+            ]
+        )
+        let expiredOnlySnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: now.addingTimeInterval(60 * 60)),
+            resetCreditsAvailableCount: 0,
+            resetCredits: [
+                makeCredit(id: "expired", status: "expired", expiresAt: now.addingTimeInterval(-60 * 60))
+            ]
+        )
+        let availablePastExpirySnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: now.addingTimeInterval(60 * 60)),
+            resetCreditsAvailableCount: 0,
+            resetCredits: [
+                makeCredit(id: "past-but-available", expiresAt: now.addingTimeInterval(-60 * 60))
+            ]
+        )
+
+        XCTAssertEqual(unknownExpirySnapshot.availableResetCreditCount, 1)
+        XCTAssertEqual(unknownExpirySnapshot.compactResetCreditCountSuffix, " · 1卡")
+        XCTAssertEqual(unknownExpirySnapshot.compactResetCreditRateBarSuffix, " · 1卡")
+        XCTAssertEqual(unknownExpirySnapshot.compactResetCreditStandaloneSuffix, " · 1卡")
+        XCTAssertEqual(knownExpirySnapshot.compactResetCreditRateBarSuffix, " · 2卡 · 6h")
+        XCTAssertEqual(knownExpirySnapshot.compactResetCreditStandaloneSuffix, " · 2卡 · 近6h到期")
+        XCTAssertEqual(usedOnlySnapshot.compactResetCreditRateBarSuffix, "")
+        XCTAssertEqual(usedOnlySnapshot.compactResetCreditStandaloneSuffix, "")
+        XCTAssertEqual(expiredOnlySnapshot.compactResetCreditRateBarSuffix, "")
+        XCTAssertEqual(expiredOnlySnapshot.compactResetCreditStandaloneSuffix, "")
+        XCTAssertEqual(availablePastExpirySnapshot.compactResetCreditRateBarSuffix, " · 1卡")
+        XCTAssertEqual(availablePastExpirySnapshot.compactResetCreditStandaloneSuffix, " · 1卡")
+    }
+
     private func makeCredit(
         id: String,
         status: String = "available",

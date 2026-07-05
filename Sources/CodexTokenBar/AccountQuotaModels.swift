@@ -182,6 +182,17 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
             .first
     }
 
+    var nearestFutureExpiringResetCredit: AccountQuotaResetCredit? {
+        let now = Date()
+        return availableResetCredits
+            .filter { credit in
+                guard let expiresAt = credit.expiresAt else { return false }
+                return expiresAt > now
+            }
+            .sorted(by: AccountQuotaResetCredit.displaySortPrecedes)
+            .first
+    }
+
     var compactResetCreditSummary: String? {
         guard resetCreditsAvailableCount != nil || !resetCredits.isEmpty else {
             return "获取失败"
@@ -200,7 +211,7 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
     var compactResetCreditRateBarSuffix: String {
         let count = availableResetCreditCount
         guard count > 0 else { return "" }
-        guard let countdown = nearestExpiringResetCredit?.compactExpiryCountdownText else {
+        guard let countdown = nearestFutureExpiringResetCredit?.compactExpiryCountdownText else {
             return " · \(count)卡"
         }
         return " · \(count)卡 · \(countdown)"
@@ -209,7 +220,7 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
     var compactResetCreditStandaloneSuffix: String {
         let count = availableResetCreditCount
         guard count > 0 else { return "" }
-        guard let countdown = nearestExpiringResetCredit?.compactExpiryCountdownText else {
+        guard let countdown = nearestFutureExpiringResetCredit?.compactExpiryCountdownText else {
             return " · \(count)卡"
         }
         return " · \(count)卡 · 近\(countdown)到期"
