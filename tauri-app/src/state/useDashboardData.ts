@@ -26,6 +26,10 @@ import {
   visibleDashboardState,
   type DashboardAppState,
 } from "./dashboardState";
+import {
+  applyDashboardRefreshPlan,
+  makeDashboardRefreshPlan,
+} from "./dashboardRefreshPlan";
 import { loadInitialDashboardState } from "./loadInitialDashboardState";
 import { useDashboardActions } from "./useDashboardActions";
 import { useDeferredDashboardLoads } from "./useDeferredDashboardLoads";
@@ -271,14 +275,32 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     state.loading,
   ]);
 
-  const refreshQuotaAfterWake = useCallback(() => {
-    setForceNextQuotaLoad(true);
-    setQuotaLoadGeneration((current) => current + 1);
-  }, []);
+  const refreshAfterWake = useCallback(() => {
+    const generatedAtMs = state.dashboard ? Date.parse(state.dashboard.generatedAt) : 0;
+    const usageStale =
+      generatedAtMs === 0
+      || Date.now() - generatedAtMs >= DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS;
+    const plan = makeDashboardRefreshPlan("systemWake", {
+      providerVisible: false,
+      dashboardVisible,
+      usageStale,
+      radarVisible: dashboardVisible,
+      radarStale: false,
+    });
+    applyDashboardRefreshPlan(plan, {
+      refreshPreciseUsage: () => setLoadGeneration((current) => current + 1),
+      refreshQuota: () => {
+        setForceNextQuotaLoad(true);
+        setQuotaLoadGeneration((current) => current + 1);
+      },
+      refreshRadar: () => setRadarRefreshGeneration((current) => current + 1),
+      scanProviders: () => {},
+    });
+  }, [dashboardVisible, state.dashboard]);
 
   useWakeRefresh({
     active: fastSnapshotLoaded && dashboardReady && !state.loading,
-    onWake: refreshQuotaAfterWake,
+    onWake: refreshAfterWake,
   });
 
   useDeferredDashboardLoads({

@@ -6,6 +6,10 @@ import {
 } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type { ProviderRepairSnapshot } from "../types/dashboard";
+import {
+  applyDashboardRefreshPlan,
+  makeDashboardRefreshPlan,
+} from "./dashboardRefreshPlan";
 import type { DashboardAppState } from "./dashboardState";
 import { loadInitialDashboardState } from "./loadInitialDashboardState";
 
@@ -53,10 +57,16 @@ export function useDashboardActions({
   ]);
 
   const reloadAll = useCallback(async () => {
-    setLoadGeneration((current) => current + 1);
-    setQuotaLoadGeneration((current) => current + 1);
-    setRadarRefreshGeneration((current) => current + 1);
-    setForceNextQuotaLoad(true);
+    const plan = makeDashboardRefreshPlan("manual", { providerVisible: false });
+    applyDashboardRefreshPlan(plan, {
+      refreshPreciseUsage: () => setLoadGeneration((current) => current + 1),
+      refreshQuota: () => {
+        setForceNextQuotaLoad(true);
+        setQuotaLoadGeneration((current) => current + 1);
+      },
+      refreshRadar: () => setRadarRefreshGeneration((current) => current + 1),
+      scanProviders: () => {},
+    });
   }, [
     setForceNextQuotaLoad,
     setLoadGeneration,
