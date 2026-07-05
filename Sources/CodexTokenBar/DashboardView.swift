@@ -43,8 +43,7 @@ struct DashboardView: View {
     @State private var showingPaletteMenu = false
     @State private var showingUnreadEffectMenu = false
     @State private var showingContentSettingsMenu = false
-
-    private let activeUsageRefreshInterval: TimeInterval = 30
+    @State private var usageRefreshCadenceRecoveryTask: Task<Void, Never>?
 
     init(
         loginItemStore: LoginItemStore,
@@ -326,6 +325,10 @@ struct DashboardView: View {
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
             refreshAllData()
+        }
+        .onDisappear {
+            usageRefreshCadenceRecoveryTask?.cancel()
+            usageRefreshCadenceRecoveryTask = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in
             showingResetCreditDetails = false
@@ -612,16 +615,29 @@ struct DashboardView: View {
 
     private func updateUsageRefreshCadence(liveSnapshot: LiveRateSnapshot? = nil) {
         let onlyCompactSurfaceVisible = (floatingPanelEnabled || statusBarPanelEnabled) && !hasVisibleDashboardWindow()
-        let baselineInterval: TimeInterval = onlyCompactSurfaceVisible ? 300 : 180
         let snapshot = liveSnapshot ?? liveMonitor.totalSnapshot
-        let isActive = isUsageRefreshActivityActive(snapshot: snapshot)
-        store.setRefreshInterval(isActive ? activeUsageRefreshInterval : baselineInterval)
+        let decision = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: onlyCompactSurfaceVisible
+        )
+        store.setRefreshInterval(decision.interval)
+        scheduleUsageRefreshCadenceRecovery(after: decision.recoveryDelay)
     }
 
-    private func isUsageRefreshActivityActive(snapshot: LiveRateSnapshot) -> Bool {
-        snapshot.rollingTokensPerSecond > 0.05
-            || Date().timeIntervalSince(snapshot.updatedAt) < activeUsageRefreshInterval
+    private func scheduleUsageRefreshCadenceRecovery(after delay: TimeInterval?) {
+        usageRefreshCadenceRecoveryTask?.cancel()
+        guard let delay else {
+            usageRefreshCadenceRecoveryTask = nil
+            return
+        }
+        usageRefreshCadenceRecoveryTask = Task { @MainActor in
+            let nanoseconds = UInt64(max(0.1, delay) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            updateUsageRefreshCadence()
+        }
     }
+
     private func hasVisibleDashboardWindow() -> Bool {
         guard !NSApp.isHidden else { return false }
         return NSApp.windows.contains { window in

@@ -17,18 +17,94 @@ final class CodexUsageStoreTests: XCTestCase {
     }
 
     func testVisibleDashboardRefreshesFasterThanCompactOnlySurfaces() throws {
-        let testFile = URL(fileURLWithPath: #filePath)
-        let projectRoot = testFile
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
-        let source = try String(contentsOf: dashboardView, encoding: .utf8)
+        var snapshot = LiveRateSnapshot()
+        snapshot.rollingTokensPerSecond = 0
+        snapshot.updatedAt = Date(timeIntervalSince1970: 2_000)
 
-        XCTAssertTrue(source.contains("onlyCompactSurfaceVisible ? 300 : 180"))
+        let visibleDashboard = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: false,
+            now: snapshot.updatedAt
+        )
+        let compactOnly = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: true,
+            now: snapshot.updatedAt
+        )
+
+        XCTAssertEqual(visibleDashboard.interval, 180, accuracy: 0.001)
+        XCTAssertEqual(compactOnly.interval, 300, accuracy: 0.001)
     }
 
     func testLiveActivityTemporarilyAcceleratesUsageRefresh() throws {
+        let now = Date(timeIntervalSince1970: 2_000)
+        var snapshot = LiveRateSnapshot()
+        snapshot.rollingTokensPerSecond = 12
+        snapshot.updatedAt = now.addingTimeInterval(-5)
+
+        let decision = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: false,
+            now: now
+        )
+
+        XCTAssertTrue(decision.isActive)
+        XCTAssertEqual(decision.interval, 30, accuracy: 0.001)
+        XCTAssertEqual(decision.recoveryDelay ?? 0, 25.25, accuracy: 0.001)
+    }
+
+    func testLiveActivityCadenceRestoresVisibleDashboardBaselineAfterWindowExpires() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        var snapshot = LiveRateSnapshot()
+        snapshot.rollingTokensPerSecond = 12
+        snapshot.updatedAt = now.addingTimeInterval(-31)
+
+        let decision = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: false,
+            now: now
+        )
+
+        XCTAssertFalse(decision.isActive)
+        XCTAssertEqual(decision.interval, 180, accuracy: 0.001)
+        XCTAssertNil(decision.recoveryDelay)
+    }
+
+    func testLiveActivityCadenceRestoresCompactOnlyBaselineAfterWindowExpires() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        var snapshot = LiveRateSnapshot()
+        snapshot.rollingTokensPerSecond = 12
+        snapshot.updatedAt = now.addingTimeInterval(-31)
+
+        let decision = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: true,
+            now: now
+        )
+
+        XCTAssertFalse(decision.isActive)
+        XCTAssertEqual(decision.interval, 300, accuracy: 0.001)
+        XCTAssertNil(decision.recoveryDelay)
+    }
+
+    func testZeroLiveRateDoesNotKeepUsageRefreshAccelerated() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        var snapshot = LiveRateSnapshot()
+        snapshot.rollingTokensPerSecond = 0
+        snapshot.updatedAt = now
+
+        let decision = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: false,
+            now: now
+        )
+
+        XCTAssertFalse(decision.isActive)
+        XCTAssertEqual(decision.interval, 180, accuracy: 0.001)
+        XCTAssertNil(decision.recoveryDelay)
+    }
+
+    func testDashboardSchedulesOneShotUsageCadenceRecovery() throws {
         let testFile = URL(fileURLWithPath: #filePath)
         let projectRoot = testFile
             .deletingLastPathComponent()
@@ -37,11 +113,10 @@ final class CodexUsageStoreTests: XCTestCase {
         let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
         let source = try String(contentsOf: dashboardView, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("activeUsageRefreshInterval: TimeInterval = 30"))
-        XCTAssertTrue(source.contains(".onReceive(liveMonitor.$totalSnapshot)"))
-        XCTAssertTrue(source.contains("isUsageRefreshActivityActive(snapshot: snapshot)"))
-        XCTAssertTrue(source.contains("private func isUsageRefreshActivityActive(snapshot: LiveRateSnapshot)"))
-        XCTAssertTrue(source.contains("store.setRefreshInterval(isActive ? activeUsageRefreshInterval : baselineInterval)"))
+        XCTAssertTrue(source.contains("UsageRefreshCadencePolicy.decision"))
+        XCTAssertTrue(source.contains("scheduleUsageRefreshCadenceRecovery(after: decision.recoveryDelay)"))
+        XCTAssertTrue(source.contains("usageRefreshCadenceRecoveryTask?.cancel()"))
+        XCTAssertTrue(source.contains("Task.sleep"))
     }
 
     func testDashboardRefreshDoesNotEagerlyReloadQuotaHistoryTimeline() throws {
