@@ -55,14 +55,10 @@ extension CodexUsageAnalyzer {
         let archivedFilter = columns.contains("archived")
             ? "COALESCE(archived, 0) = 0"
             : "1 = 1"
-        let sourceFilter = columns.contains("thread_source")
-            ? "COALESCE(thread_source, 'user') != 'subagent'"
-            : "1 = 1"
         let sql = """
         SELECT rollout_path
         FROM threads
         WHERE \(archivedFilter)
-          AND \(sourceFilter)
           AND rollout_path IS NOT NULL
           AND rollout_path <> '';
         """
@@ -251,12 +247,8 @@ extension CodexUsageAnalyzer {
         var lastSkippedForkReplayTokenAt = initialLastSkippedForkReplayTokenAt
         let stream = streamSessionLines(from: file, startingAt: offset) { lineString in
             if let messageLine = parsePayloadMessageLine(lineString, expectedType: "user_message") {
-                if isSkippingForkReplay {
-                    let replayReference = lastSkippedForkReplayTokenAt ?? forkReplayStartedAt
-                    if let replayReference,
-                       messageLine.timestamp.timeIntervalSince(replayReference) > 2 {
-                        isSkippingForkReplay = false
-                    }
+                if isSkippingForkReplay, lastSkippedForkReplayTokenAt != nil {
+                    isSkippingForkReplay = false
                 }
                 currentUserPrompt = messageLine.message
                 assistantFragments.removeAll(keepingCapacity: true)

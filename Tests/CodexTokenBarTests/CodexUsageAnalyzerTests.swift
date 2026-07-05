@@ -189,7 +189,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.cacheUsage.sessions.count, 1)
     }
 
-    func testPreciseJSONLScanOnlyIncludesActiveUserStateRolloutPaths() throws {
+    func testPreciseJSONLScanIncludesActiveUserAndSubagentStateRolloutPaths() throws {
         let codexHome = try makeCodexHome()
         let externalRoot = try makeTemporaryDirectory(named: "CodexFilteredRollouts")
         let now = Date()
@@ -220,9 +220,15 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
 
-        XCTAssertEqual(snapshot.stats.totalTokens, 100)
-        XCTAssertEqual(snapshot.stats.totalCalls, 1)
-        XCTAssertEqual(snapshot.cacheUsage.sessions.map(\.id), ["019eaaaa-bbbb-cccc-dddd-activeok"])
+        XCTAssertEqual(snapshot.stats.totalTokens, 400)
+        XCTAssertEqual(snapshot.stats.totalCalls, 2)
+        XCTAssertEqual(
+            snapshot.cacheUsage.sessions.map(\.id).sorted(),
+            [
+                "019eaaaa-bbbb-cccc-dddd-activeok",
+                "019eaaaa-bbbb-cccc-dddd-subonly"
+            ]
+        )
     }
 
     func testPreciseSnapshotSignatureChangesWhenLocalDateChanges() throws {
@@ -325,6 +331,39 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.stats.totalTokens, 80)
         XCTAssertEqual(snapshot.stats.totalCalls, 1)
         XCTAssertEqual(snapshot.cacheUsage.total.inputTokens, 80)
+        XCTAssertEqual(snapshot.cacheUsage.total.cachedInputTokens, 10)
+    }
+
+    func testForkedSessionCountsQuickTokenUsageAfterNewUserMessage() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-forkquick"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let forkedAt = Date()
+
+        let lines = [
+            spacedSessionMetaLine(timestamp: forkedAt, sessionID: sessionID),
+            spacedMessageLine(timestamp: forkedAt, type: "user_message", message: "Copied parent prompt"),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(10),
+                total: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120)
+            ),
+            spacedMessageLine(timestamp: forkedAt.addingTimeInterval(10.5), type: "user_message", message: "Immediate branch prompt"),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(11),
+                total: Usage(input: 160, cachedInput: 10, output: 30, reasoning: 0, total: 200),
+                last: Usage(input: 60, cachedInput: 10, output: 10, reasoning: 0, total: 80)
+            )
+        ]
+        try lines.joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertEqual(snapshot.stats.totalTokens, 80)
+        XCTAssertEqual(snapshot.stats.totalCalls, 1)
+        XCTAssertEqual(snapshot.cacheUsage.total.inputTokens, 60)
         XCTAssertEqual(snapshot.cacheUsage.total.cachedInputTokens, 10)
     }
 
