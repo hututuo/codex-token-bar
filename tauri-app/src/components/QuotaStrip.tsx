@@ -7,6 +7,7 @@ import {
   resetCreditPanelModel,
   type ResetCreditDisplayItem,
 } from "./quota/resetCredits";
+import { quotaReadWarnings } from "./quota/quotaWarnings";
 
 interface QuotaStripProps {
   onRetryQuotaRefresh?: () => void;
@@ -200,15 +201,6 @@ function QuotaStripView({ onRetryQuotaRefresh, snapshot, warnings = [] }: QuotaS
       ) : null}
     </section>
   );
-}
-
-function quotaReadWarnings(warnings: LocalDataWarning[]): string[] {
-  const sources = new Set(["account_quota", "reset_credit"]);
-  return warnings
-    .filter((warning) => sources.has(warning.source))
-    .map((warning) => warning.message)
-    .filter((message, index, messages) => message.length > 0 && messages.indexOf(message) === index)
-    .slice(0, 2);
 }
 
 export const QuotaStrip = memo(QuotaStripView);

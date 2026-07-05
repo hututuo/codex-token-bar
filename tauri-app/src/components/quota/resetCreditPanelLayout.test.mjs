@@ -18,8 +18,8 @@ test("reset credit details use a fixed viewport layer instead of being clipped b
 test("quota strip surfaces account and reset credit failure reasons", () => {
   assert.match(quotaStripSource, /warnings\?: LocalDataWarning\[\]/);
   assert.match(quotaStripSource, /onRetryQuotaRefresh\?: \(\) => void/);
+  assert.match(quotaStripSource, /import \{ quotaReadWarnings \} from "\.\/quota\/quotaWarnings"/);
   assert.match(quotaStripSource, /quotaReadWarnings\(warnings\)/);
-  assert.match(quotaStripSource, /new Set\(\["account_quota", "reset_credit"\]\)/);
   assert.match(quotaStripSource, /读取失败原因/);
   assert.match(quotaStripSource, /aria-label="只刷新额度"/);
   assert.match(quotaStripSource, /onClick=\{onRetryQuotaRefresh\}/);

@@ -380,9 +380,8 @@ test("dashboard quota strip receives local data warnings for quota failure detai
   const quotaStrip = await readFile(new URL("../components/QuotaStrip.tsx", import.meta.url), "utf8");
 
   assert.equal(summarySection.includes("warnings={dashboard.warnings}"), true);
-  assert.equal(quotaStrip.includes("function quotaReadWarnings(warnings: LocalDataWarning[]): string[]"), true);
-  assert.equal(quotaStrip.includes('"account_quota"'), true);
-  assert.equal(quotaStrip.includes('"reset_credit"'), true);
+  assert.equal(quotaStrip.includes('import { quotaReadWarnings } from "./quota/quotaWarnings"'), true);
+  assert.equal(quotaStrip.includes("quotaReadWarnings(warnings)"), true);
 });
 
 test("windows updater lane uses signed Tauri metadata and a dashboard entry", async () => {
