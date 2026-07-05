@@ -215,6 +215,7 @@ struct TokenDisplaySnapshot {
 struct TokenDisplayCard: View {
     let snapshot: TokenDisplaySnapshot
     let radarSnapshot: CodexRadarSnapshot?
+    var radarPresentation: CodexRadarPresentationState? = nil
     let visibility: FloatingPanelContentVisibility
     let onClose: (() -> Void)?
     var lockState: TokenDisplayLockState? = nil
@@ -229,10 +230,11 @@ struct TokenDisplayCard: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let radarPresentation = resolvedRadarPresentation
             let presentation = FloatingPanelPresentationModel(
                 snapshot: snapshot,
                 visibility: visibility,
-                radarSnapshot: radarSnapshot
+                radarPresentation: radarPresentation
             )
             let rowSpacing = FloatingTokenPanelMetrics.rowSpacing.scaled(by: displayScale)
             let rateRowHeight = FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale)
@@ -262,7 +264,7 @@ struct TokenDisplayCard: View {
                             .environment(\.tokenDisplayTextPalette, palette(for: .quota))
                             .frame(height: quotaRowHeight, alignment: .center)
                     case .radar:
-                        TokenDisplayRadarStrip(snapshot: radarSnapshot)
+                        TokenDisplayRadarStrip(presentation: radarPresentation)
                             .environment(\.tokenDisplayTextPalette, palette(for: .radar))
                             .frame(height: radarRowHeight, alignment: .center)
                     }
@@ -284,8 +286,12 @@ struct TokenDisplayCard: View {
         .accessibilityValue(FloatingPanelPresentationModel(
             snapshot: snapshot,
             visibility: visibility,
-            radarSnapshot: radarSnapshot
+            radarPresentation: resolvedRadarPresentation
         ).accessibilityValue)
+    }
+
+    private var resolvedRadarPresentation: CodexRadarPresentationState {
+        radarPresentation ?? CodexRadarPresentationState(snapshot: radarSnapshot)
     }
 
     private func palette(for group: FloatingPanelContentGroup) -> FloatingPanelReadableTextPalette {

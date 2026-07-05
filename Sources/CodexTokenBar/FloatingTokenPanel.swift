@@ -355,6 +355,13 @@ struct FloatingTokenPanelView: View {
             TokenDisplayCard(
                 snapshot: TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota),
                 radarSnapshot: radar.snapshot,
+                radarPresentation: CodexRadarPresentationState(
+                    snapshot: radar.snapshot,
+                    status: radar.status,
+                    diagnostics: radar.diagnostics,
+                    staleDataDisplayed: radar.staleDataDisplayed,
+                    feedStaleDataDisplayed: radar.feedStaleDataDisplayed
+                ),
                 visibility: visibility,
                 onClose: nil,
                 lockState: nil,

@@ -751,6 +751,9 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(dashboardSource.contains("radar: radarStore"))
         XCTAssertTrue(floatingPanelSource.contains("@ObservedObject var radar: CodexRadarStore"))
         XCTAssertTrue(floatingPanelSource.contains("radarSnapshot: radar.snapshot"))
+        XCTAssertTrue(floatingPanelSource.contains("radarPresentation: CodexRadarPresentationState("))
+        XCTAssertTrue(floatingPanelSource.contains("staleDataDisplayed: radar.staleDataDisplayed"))
+        XCTAssertTrue(floatingPanelSource.contains("feedStaleDataDisplayed: radar.feedStaleDataDisplayed"))
         XCTAssertTrue(
             FloatingPanelPresentationModel(snapshot: makeTokenDisplaySnapshot(), visibility: .default)
                 .rows
@@ -772,7 +775,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             .map(\.group)
             .contains(.radar)
         )
-        XCTAssertTrue(surfaceSource.contains("TokenDisplayRadarStrip(snapshot: radarSnapshot)"))
+        XCTAssertTrue(surfaceSource.contains("TokenDisplayRadarStrip(presentation: radarPresentation)"))
         XCTAssertTrue(componentsSource.contains("struct TokenDisplayRadarStrip"))
         XCTAssertTrue(componentsSource.contains("动作 \\(snapshot?.recommendedAction"))
         XCTAssertTrue(componentsSource.contains("24h \\(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))  48h \\(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))"))
@@ -788,6 +791,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             endingBefore: "private func tokenDisplayRadarProbabilityText"
         ))
         XCTAssertTrue(radarStrip.contains("Text(\"动作 \\(snapshot?.recommendedAction ?? \"--\")\")"))
+        XCTAssertTrue(radarStrip.contains("presentation.compactMarkerText"))
+        XCTAssertTrue(radarStrip.contains("presentation.compactAccessibilityText"))
         XCTAssertTrue(radarStrip.contains(".foregroundStyle(actionPalette.primaryColor)"))
         XCTAssertTrue(radarStrip.contains("let primary = snapshot?.modelIQ.primaryModelRow.point"))
         XCTAssertTrue(radarStrip.contains("Text(primary?.scoreDisplayText ?? \"IQ --\")"))
@@ -807,6 +812,9 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let dashboardSource = try String(contentsOf: dashboard, encoding: .utf8)
 
         XCTAssertTrue(dashboardSource.contains(".onReceive(radarStore.$snapshot)"))
+        XCTAssertTrue(dashboardSource.contains(".onReceive(radarStore.$diagnostics)"))
+        XCTAssertTrue(dashboardSource.contains(".onReceive(radarStore.$staleDataDisplayed)"))
+        XCTAssertTrue(dashboardSource.contains(".onReceive(radarStore.$feedStaleDataDisplayed)"))
         XCTAssertTrue(dashboardSource.contains("syncFloatingPanelRadarSnapshot()"))
         guard let syncStart = dashboardSource.range(of: "private func syncFloatingPanelRadarSnapshot()")?.lowerBound,
               let syncEnd = dashboardSource[syncStart...].range(of: "private func updateUsageRefreshCadence")?.lowerBound
@@ -852,7 +860,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let standaloneLine = try XCTUnwrap(sourceBlock(
             named: "TokenDisplayUsageStatusLine",
             in: componentsSource,
-            endingBefore: "struct TokenDisplayRateBar"
+            endingBefore: "struct TokenDisplayRadarStrip"
         ))
 
         XCTAssertFalse(standaloneLine.contains(".background("))

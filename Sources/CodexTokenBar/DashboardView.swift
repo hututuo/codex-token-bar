@@ -118,6 +118,9 @@ struct DashboardView: View {
                             feedItems: radarStore.feedItems,
                             status: radarStore.status,
                             isRefreshing: radarStore.isRefreshing,
+                            diagnostics: radarStore.diagnostics,
+                            staleDataDisplayed: radarStore.staleDataDisplayed,
+                            feedStaleDataDisplayed: radarStore.feedStaleDataDisplayed,
                             onRefresh: radarStore.refresh,
                             onClose: { showingCodexRadarDetails = false }
                         )
@@ -279,6 +282,15 @@ struct DashboardView: View {
         .onReceive(radarStore.$snapshot) { _ in
             syncFloatingPanelRadarSnapshot()
         }
+        .onReceive(radarStore.$diagnostics) { _ in
+            syncFloatingPanelRadarSnapshot()
+        }
+        .onReceive(radarStore.$staleDataDisplayed) { _ in
+            syncFloatingPanelRadarSnapshot()
+        }
+        .onReceive(radarStore.$feedStaleDataDisplayed) { _ in
+            syncFloatingPanelRadarSnapshot()
+        }
         .onReceive(liveMonitor.$totalSnapshot) { snapshot in
             updateUsageRefreshCadence(liveSnapshot: snapshot)
         }
@@ -433,6 +445,9 @@ struct DashboardView: View {
                 snapshot: radarStore.snapshot,
                 status: radarStore.status,
                 isRefreshing: radarStore.isRefreshing,
+                diagnostics: radarStore.diagnostics,
+                staleDataDisplayed: radarStore.staleDataDisplayed,
+                feedStaleDataDisplayed: radarStore.feedStaleDataDisplayed,
                 onRefresh: radarStore.refresh,
                 onShowDetails: { showingCodexRadarDetails = true }
             )

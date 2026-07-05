@@ -130,21 +130,35 @@ struct TokenDisplayUsageStatusLine: View {
 }
 
 struct TokenDisplayRadarStrip: View {
-    let snapshot: CodexRadarSnapshot?
+    let presentation: CodexRadarPresentationState
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
     @Environment(\.tokenDisplayRadarActionTextPalette) private var actionTextPalette
     @Environment(\.tokenDisplayRadarModelTextPalette) private var modelTextPalette
 
     var body: some View {
+        let snapshot = presentation.snapshot
         let primary = snapshot?.modelIQ.primaryModelRow.point
         let actionPalette = actionTextPalette ?? textPalette
         let modelPalette = modelTextPalette ?? textPalette
         HStack(spacing: 7.scaled(by: displayScale)) {
             VStack(alignment: .leading, spacing: 2.scaled(by: displayScale)) {
-                Text("动作 \(snapshot?.recommendedAction ?? "--")")
-                    .font(.system(size: 9.3.scaled(by: displayScale), weight: .bold))
-                    .foregroundStyle(actionPalette.primaryColor)
+                HStack(alignment: .firstTextBaseline, spacing: 3.scaled(by: displayScale)) {
+                    Text("动作 \(snapshot?.recommendedAction ?? "--")")
+                        .font(.system(size: 9.3.scaled(by: displayScale), weight: .bold))
+                        .foregroundStyle(actionPalette.primaryColor)
+                    if let marker = presentation.compactMarkerText {
+                        Text(marker)
+                            .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold, design: .rounded))
+                            .foregroundStyle(actionPalette.secondaryColor)
+                            .padding(.horizontal, 2.4.scaled(by: displayScale))
+                            .padding(.vertical, 0.8.scaled(by: displayScale))
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(actionPalette.secondaryColor.opacity(0.16))
+                            )
+                    }
+                }
                 Text("24h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))  48h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))")
                     .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
                     .foregroundStyle(actionPalette.secondaryColor)
@@ -187,8 +201,14 @@ struct TokenDisplayRadarStrip: View {
     }
 
     private var accessibilityText: String {
-        guard let snapshot else { return "等待读取" }
-        return "建议 \(snapshot.recommendedAction)，24 小时概率 \(snapshot.prediction.probability24hPercent)%，48 小时概率 \(snapshot.prediction.probability48hPercent)%，\(snapshot.modelIQ.primaryModelRow.point.scoreDisplayText)"
+        guard let snapshot = presentation.snapshot else {
+            return presentation.compactAccessibilityText ?? "等待读取"
+        }
+        let base = "建议 \(snapshot.recommendedAction)，24 小时概率 \(snapshot.prediction.probability24hPercent)%，48 小时概率 \(snapshot.prediction.probability48hPercent)%，\(snapshot.modelIQ.primaryModelRow.point.scoreDisplayText)"
+        guard let compactAccessibility = presentation.compactAccessibilityText else {
+            return base
+        }
+        return "\(base)，\(compactAccessibility)"
     }
 }
 

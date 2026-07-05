@@ -20,8 +20,10 @@ struct FloatingPanelPresentationModel: Equatable {
     init(
         snapshot: TokenDisplaySnapshot,
         visibility: FloatingPanelContentVisibility,
-        radarSnapshot: CodexRadarSnapshot? = nil
+        radarSnapshot: CodexRadarSnapshot? = nil,
+        radarPresentation: CodexRadarPresentationState? = nil
     ) {
+        let radarPresentation = radarPresentation ?? CodexRadarPresentationState(snapshot: radarSnapshot)
         rows = visibility.layoutGroups.map(FloatingPanelPresentationRow.init(group:))
         rateBarUsageStatus = visibility.embedsUsageStatusInRateRow ? snapshot.compactUsageStatus : nil
         standaloneUsageStatus = visibility.showsStandaloneUsageStatus ? snapshot.standaloneUsageStatus : nil
@@ -46,9 +48,14 @@ struct FloatingPanelPresentationModel: Equatable {
             parts.append("7 天额度剩余 \(sevenDay.remainingPercent)%，\(sevenDay.accessibleResetText) 重置")
         }
         if visibility.showRadar {
-            if let radarSnapshot {
+            if let radarSnapshot = radarPresentation.snapshot {
                 parts.append("雷达建议 \(radarSnapshot.recommendedAction)")
                 parts.append(radarSnapshot.modelIQ.primaryModelRow.point.scoreDisplayText)
+                if let compactAccessibility = radarPresentation.compactAccessibilityText {
+                    parts.append(compactAccessibility)
+                }
+            } else if let compactAccessibility = radarPresentation.compactAccessibilityText {
+                parts.append(compactAccessibility)
             } else {
                 parts.append("雷达等待读取")
             }

@@ -4,6 +4,9 @@ struct CodexRadarStrip: View {
     let snapshot: CodexRadarSnapshot?
     let status: String
     let isRefreshing: Bool
+    let diagnostics: [CodexRadarDiagnostic]
+    let staleDataDisplayed: Bool
+    let feedStaleDataDisplayed: Bool
     let onRefresh: () -> Void
     let onShowDetails: () -> Void
 
@@ -38,6 +41,10 @@ struct CodexRadarStrip: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+
+                if let badge = presentation.statusBadge {
+                    CodexRadarStatusBadgeView(badge: badge)
+                }
 
                 Spacer(minLength: 8)
 
@@ -90,8 +97,38 @@ struct CodexRadarStrip: View {
     }
 
     private var statusText: String {
-        guard let snapshot else { return status }
-        return "10分钟刷新 · \(snapshot.monitoredAt)"
+        presentation.stripStatusText
+    }
+
+    private var presentation: CodexRadarPresentationState {
+        CodexRadarPresentationState(
+            snapshot: snapshot,
+            status: status,
+            diagnostics: diagnostics,
+            staleDataDisplayed: staleDataDisplayed,
+            feedStaleDataDisplayed: feedStaleDataDisplayed
+        )
+    }
+}
+
+private struct CodexRadarStatusBadgeView: View {
+    let badge: CodexRadarStatusBadge
+
+    var body: some View {
+        Text(badge.title)
+            .font(.system(size: 9, weight: .bold, design: .rounded))
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.orange.opacity(0.12))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(Color.orange.opacity(0.28), lineWidth: 1)
+            )
+            .accessibilityLabel(badge.accessibilityText)
     }
 }
 
@@ -231,6 +268,9 @@ struct CodexRadarDetailCard: View {
     let feedItems: [CodexRadarFeedItem]
     let status: String
     let isRefreshing: Bool
+    let diagnostics: [CodexRadarDiagnostic]
+    let staleDataDisplayed: Bool
+    let feedStaleDataDisplayed: Bool
     let onRefresh: () -> Void
     let onClose: () -> Void
 
@@ -269,6 +309,9 @@ struct CodexRadarDetailCard: View {
             ScrollView {
                 if let snapshot {
                     VStack(alignment: .leading, spacing: 14) {
+                        if let warning = presentation.detailWarning {
+                            CodexRadarDiagnosticBanner(warning: warning)
+                        }
                         CodexRadarDetailOverview(snapshot: snapshot)
                         CodexRadarIQDetail(snapshot: snapshot)
                         CodexRadarQuotaDetail(snapshot: snapshot)
@@ -276,12 +319,11 @@ struct CodexRadarDetailCard: View {
                     }
                     .padding(18)
                 } else {
-                    VStack(spacing: 12) {
-                        ProgressView()
-                        Text(status)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
+                    CodexRadarEmptyStateView(
+                        emptyState: presentation.emptyState,
+                        status: status,
+                        isRefreshing: isRefreshing
+                    )
                     .frame(maxWidth: .infinity, minHeight: 360)
                 }
             }
@@ -295,6 +337,80 @@ struct CodexRadarDetailCard: View {
                 .stroke(AppTheme.borderStrong, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var presentation: CodexRadarPresentationState {
+        CodexRadarPresentationState(
+            snapshot: snapshot,
+            status: status,
+            diagnostics: diagnostics,
+            staleDataDisplayed: staleDataDisplayed,
+            feedStaleDataDisplayed: feedStaleDataDisplayed
+        )
+    }
+}
+
+private struct CodexRadarDiagnosticBanner: View {
+    let warning: CodexRadarDetailWarning
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(warning.title)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(warning.message)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.orange.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.orange.opacity(0.2), lineWidth: 1)
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(warning.accessibilityText)
+    }
+}
+
+private struct CodexRadarEmptyStateView: View {
+    let emptyState: CodexRadarEmptyState?
+    let status: String
+    let isRefreshing: Bool
+
+    var body: some View {
+        VStack(spacing: 12) {
+            if let emptyState {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(.orange)
+                Text(emptyState.title)
+                    .font(.system(size: 15, weight: .semibold))
+                Text(emptyState.message)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 360)
+            } else {
+                ProgressView()
+                Text(status)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(emptyState?.title ?? (isRefreshing ? "Codex 雷达读取中" : status))
+        .accessibilityValue(emptyState?.message ?? status)
     }
 }
 
