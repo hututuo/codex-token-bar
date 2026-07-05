@@ -12,6 +12,72 @@ final class QuotaHistoryStoreTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    @MainActor
+    func testOlderReloadCannotOverwriteNewerRecordedSnapshot() async throws {
+        let client = SuspendedQuotaHistoryClient()
+        let store = QuotaHistoryStore(historyClient: client)
+        let now = Date()
+
+        store.reload()
+        await waitUntil("reload request pending") {
+            await client.hasPending(.reload)
+        }
+
+        store.record(snapshot(
+            usedPercent: 20,
+            reset: now.addingTimeInterval(3 * 60 * 60),
+            planType: "Pro",
+            limitName: "codex",
+            at: now
+        ))
+        await waitUntil("record request pending") {
+            await client.hasPending(.record)
+        }
+
+        await client.complete(.record, with: quotaHistorySnapshot(latest: now))
+        await waitUntil("record snapshot published") {
+            store.snapshot.latest == now
+        }
+
+        await client.complete(.reload, with: quotaHistorySnapshot(latest: now.addingTimeInterval(-60)))
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(store.snapshot.latest, now)
+    }
+
+    @MainActor
+    func testStaleReloadFailureCannotClearNewerRecordedSnapshot() async throws {
+        let client = SuspendedQuotaHistoryClient()
+        let store = QuotaHistoryStore(historyClient: client)
+        let now = Date()
+
+        store.reload()
+        await waitUntil("reload request pending") {
+            await client.hasPending(.reload)
+        }
+
+        store.record(snapshot(
+            usedPercent: 20,
+            reset: now.addingTimeInterval(3 * 60 * 60),
+            planType: "Pro",
+            limitName: "codex",
+            at: now
+        ))
+        await waitUntil("record request pending") {
+            await client.hasPending(.record)
+        }
+
+        await client.complete(.record, with: quotaHistorySnapshot(latest: now))
+        await waitUntil("record snapshot published before stale failure") {
+            store.snapshot.latest == now
+        }
+
+        await client.fail(.reload, error: QuotaHistoryTestError())
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(store.snapshot.latest, now)
+    }
+
     func testRecentHistoryIncludesLegacyCodexAccountKeyRows() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
@@ -335,6 +401,24 @@ final class QuotaHistoryStoreTests: XCTestCase {
         }
     }
 
+    @MainActor
+    private func waitUntil(
+        _ label: String,
+        timeout: TimeInterval = 2,
+        predicate: @escaping @MainActor () async -> Bool
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await predicate() { return }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("Timed out waiting for \(label)")
+    }
+
+    private func quotaHistorySnapshot(latest: Date) -> QuotaHistorySnapshot {
+        QuotaHistorySnapshot(daily: [], recentBins: [], hourlyBins: [], latest: latest)
+    }
+
     private func makeDatabaseURL() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CodexTokenBarTests-\(UUID().uuidString)", isDirectory: true)
@@ -379,5 +463,50 @@ final class QuotaHistoryStoreTests: XCTestCase {
                 .text("legacy")
             ]
         )
+    }
+}
+
+private enum QuotaHistoryTestOperation: Hashable {
+    case reload
+    case record
+}
+
+private actor SuspendedQuotaHistoryClient: QuotaHistoryLoading {
+    private var continuations: [QuotaHistoryTestOperation: CheckedContinuation<QuotaHistorySnapshot, Error>] = [:]
+
+    func loadSnapshot() async throws -> QuotaHistorySnapshot {
+        try await suspend(.reload)
+    }
+
+    func recordAndLoadSnapshot(_ quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot {
+        try await suspend(.record)
+    }
+
+    func normalizedSnapshot(_ quota: AccountQuotaSnapshot) async throws -> AccountQuotaSnapshot {
+        quota
+    }
+
+    func hasPending(_ operation: QuotaHistoryTestOperation) -> Bool {
+        continuations[operation] != nil
+    }
+
+    func complete(_ operation: QuotaHistoryTestOperation, with snapshot: QuotaHistorySnapshot) {
+        continuations.removeValue(forKey: operation)?.resume(returning: snapshot)
+    }
+
+    func fail(_ operation: QuotaHistoryTestOperation, error: Error) {
+        continuations.removeValue(forKey: operation)?.resume(throwing: error)
+    }
+
+    private func suspend(_ operation: QuotaHistoryTestOperation) async throws -> QuotaHistorySnapshot {
+        try await withCheckedThrowingContinuation { continuation in
+            continuations[operation] = continuation
+        }
+    }
+}
+
+private struct QuotaHistoryTestError: LocalizedError {
+    var errorDescription: String? {
+        "旧额度历史读取失败"
     }
 }

@@ -1,55 +1,122 @@
 import Foundation
 
+protocol QuotaHistoryLoading: Sendable {
+    func loadSnapshot() async throws -> QuotaHistorySnapshot
+    func recordAndLoadSnapshot(_ quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot
+    func normalizedSnapshot(_ quota: AccountQuotaSnapshot) async throws -> AccountQuotaSnapshot
+}
+
+struct LiveQuotaHistoryClient: QuotaHistoryLoading {
+    private let database: QuotaHistoryDatabase
+
+    init(database: QuotaHistoryDatabase = QuotaHistoryDatabase()) {
+        self.database = database
+    }
+
+    func loadSnapshot() async throws -> QuotaHistorySnapshot {
+        let database = database
+        return try await Task.detached(priority: .utility) {
+            try database.loadSnapshot()
+        }.value
+    }
+
+    func recordAndLoadSnapshot(_ quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot {
+        let database = database
+        return try await Task.detached(priority: .utility) {
+            try database.record(quota)
+            return try database.loadSnapshot()
+        }.value
+    }
+
+    func normalizedSnapshot(_ quota: AccountQuotaSnapshot) async throws -> AccountQuotaSnapshot {
+        let database = database
+        return try await Task.detached(priority: .utility) {
+            try database.normalizedSnapshot(quota)
+        }.value
+    }
+}
+
 @MainActor
 final class QuotaHistoryStore: ObservableObject {
     @Published private(set) var snapshot: QuotaHistorySnapshot = .empty
 
-    private let database = QuotaHistoryDatabase()
+    private let historyClient: any QuotaHistoryLoading
+    private var operationTask: Task<Void, Never>?
+    private var operationGeneration = 0
+
+    init(historyClient: any QuotaHistoryLoading = LiveQuotaHistoryClient()) {
+        self.historyClient = historyClient
+    }
+
+    deinit {
+        operationTask?.cancel()
+    }
 
     func start() {
         reload()
     }
 
     func reload() {
+        operationTask?.cancel()
+        operationGeneration += 1
+        let generation = operationGeneration
         let trace = RefreshPerformanceProbe.begin("quotaHistory.reload")
-        Task.detached(priority: .utility) {
+        let historyClient = historyClient
+        operationTask = Task {
             trace?.mark("database.loadSnapshot.begin")
-            let loaded = (try? self.database.loadSnapshot()) ?? .empty
-            trace?.mark("database.loadSnapshot.end", metadata: [
-                "daily": String(loaded.daily.count),
-                "recent": String(loaded.recentBins.count),
-                "hourly": String(loaded.hourlyBins.count)
-            ])
-            await MainActor.run {
-                self.snapshot = loaded
-            }
-            trace?.end("ok")
-        }
-    }
-
-    func record(_ quota: AccountQuotaSnapshot) {
-        guard quota.isAvailable else { return }
-        let trace = RefreshPerformanceProbe.begin("quotaHistory.record", metadata: [
-            "fiveHour": quota.fiveHour.map { String(format: "%.2f", $0.remainingPercent) } ?? "nil",
-            "sevenDay": quota.sevenDay.map { String(format: "%.2f", $0.remainingPercent) } ?? "nil"
-        ])
-        Task.detached(priority: .utility) {
             do {
-                trace?.mark("database.record.begin")
-                try self.database.record(quota)
-                trace?.mark("database.record.end")
-                trace?.mark("database.loadSnapshot.begin")
-                let loaded = try self.database.loadSnapshot()
+                let loaded = try await historyClient.loadSnapshot()
                 trace?.mark("database.loadSnapshot.end", metadata: [
                     "daily": String(loaded.daily.count),
                     "recent": String(loaded.recentBins.count),
                     "hourly": String(loaded.hourlyBins.count)
                 ])
-                await MainActor.run {
-                    self.snapshot = loaded
+                guard !Task.isCancelled, isCurrentOperation(generation: generation) else {
+                    trace?.end("stale-after-load")
+                    return
                 }
+                snapshot = loaded
                 trace?.end("ok")
             } catch {
+                guard !Task.isCancelled, isCurrentOperation(generation: generation) else {
+                    trace?.end("stale-failed", metadata: ["error": error.localizedDescription])
+                    return
+                }
+                trace?.end("failed", metadata: ["error": error.localizedDescription])
+            }
+        }
+    }
+
+    func record(_ quota: AccountQuotaSnapshot) {
+        guard quota.isAvailable else { return }
+        operationTask?.cancel()
+        operationGeneration += 1
+        let generation = operationGeneration
+        let trace = RefreshPerformanceProbe.begin("quotaHistory.record", metadata: [
+            "fiveHour": quota.fiveHour.map { String(format: "%.2f", $0.remainingPercent) } ?? "nil",
+            "sevenDay": quota.sevenDay.map { String(format: "%.2f", $0.remainingPercent) } ?? "nil"
+        ])
+        let historyClient = historyClient
+        operationTask = Task {
+            do {
+                trace?.mark("database.recordAndLoadSnapshot.begin")
+                let loaded = try await historyClient.recordAndLoadSnapshot(quota)
+                trace?.mark("database.recordAndLoadSnapshot.end", metadata: [
+                    "daily": String(loaded.daily.count),
+                    "recent": String(loaded.recentBins.count),
+                    "hourly": String(loaded.hourlyBins.count)
+                ])
+                guard !Task.isCancelled, isCurrentOperation(generation: generation) else {
+                    trace?.end("stale-after-record")
+                    return
+                }
+                snapshot = loaded
+                trace?.end("ok")
+            } catch {
+                guard !Task.isCancelled, isCurrentOperation(generation: generation) else {
+                    trace?.end("stale-record-failed", metadata: ["error": error.localizedDescription])
+                    return
+                }
                 trace?.end("failed", metadata: ["error": error.localizedDescription])
                 // Quota history is helpful context, not the source of truth for quota display.
             }
@@ -59,14 +126,15 @@ final class QuotaHistoryStore: ObservableObject {
     func normalizedForDisplay(_ quota: AccountQuotaSnapshot) async -> AccountQuotaSnapshot {
         guard quota.isAvailable else { return quota }
         let trace = RefreshPerformanceProbe.begin("quotaHistory.normalizedForDisplay")
-        let database = database
-        let normalized = (try? await Task.detached(priority: .utility) {
-            trace?.mark("database.normalizedSnapshot.begin")
-            return try database.normalizedSnapshot(quota)
-        }.value) ?? quota
+        trace?.mark("database.normalizedSnapshot.begin")
+        let normalized = (try? await historyClient.normalizedSnapshot(quota)) ?? quota
         trace?.mark("database.normalizedSnapshot.end")
         trace?.end("ok")
         return normalized
+    }
+
+    private func isCurrentOperation(generation: Int) -> Bool {
+        operationGeneration == generation
     }
 }
 
