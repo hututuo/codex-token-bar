@@ -169,7 +169,7 @@ final class CodexRadarModelsTests: XCTestCase {
         )
     }
 
-    private static let sampleJSON = """
+    static let sampleJSON = """
     {
       "schema_version": "2.0",
       "service": "codex-reset-radar",

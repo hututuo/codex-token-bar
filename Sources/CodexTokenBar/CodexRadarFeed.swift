@@ -22,7 +22,7 @@ enum CodexRadarFeedParser {
     }
 }
 
-enum CodexRadarFeedParserError: LocalizedError {
+enum CodexRadarFeedParserError: LocalizedError, Sendable {
     case invalidXML
 
     var errorDescription: String? {
