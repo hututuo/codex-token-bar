@@ -161,6 +161,64 @@ test("DashboardSummarySection passes dashboard warnings through to QuotaStrip re
   });
 });
 
+test("DashboardSummarySection renders usage precision warning as a wait note outside quota and live-rate retry UI", async () => {
+  await withSsrModules(async (load) => {
+    const { DashboardSummarySection } = await load("/src/pages/dashboard/DashboardSummarySection.tsx");
+    const dashboard = dashboardFixture();
+    dashboard.stats = {
+      ...dashboard.stats,
+      totalTokens: 0,
+      peakDayTokens: 0,
+      peakThreadTokens: 0,
+      totalCalls: 0,
+      totalThreads: 2,
+    };
+    dashboard.warnings = [
+      {
+        source: "usage_precision",
+        message: "精确 token 仍在读取，当前仅显示会话元数据，请稍后刷新。",
+      },
+    ];
+    const html = renderComponent(DashboardSummarySection, {
+      dashboard,
+      displaySurfaces: {
+        floatingWindowEnabled: true,
+        liveRateEnabled: true,
+        statusTrayLiveTextEnabled: false,
+      },
+      floatingSettings: floatingSettingsFixture(),
+      liveRate: liveRateFixture(),
+      liveThreadOptions: [],
+      onFloatingOpacityChange: () => {},
+      onFloatingScaleChange: () => {},
+      onTokenRateFullScaleChange: () => {},
+      onFloatingUnreadEffectChange: () => {},
+      onFloatingGradientChange: () => {},
+      onFloatingTextToneChange: () => {},
+      onFloatingContentVisibilityChange: () => {},
+      onLiveRateReset: async () => {},
+      onLiveRateRetry: () => {},
+      onLiveThreadSelect: () => {},
+      onQuotaRefresh: () => {},
+      onToggleLiveRate: () => {},
+      onToggleFloating: () => {},
+      onToggleStatusTray: () => {},
+      platform: platformFixture(),
+      radarRefreshGeneration: 0,
+      liveRateEnabled: true,
+      selectedLiveThreadId: "",
+    });
+
+    assert.match(html, /Token 统计准备中/);
+    assert.match(html, /当前仅显示会话元数据/);
+    assert.match(html, /请稍后刷新/);
+    assert.doesNotMatch(html, /读取失败原因/);
+    assert.doesNotMatch(html, /aria-label="只刷新额度"/);
+    assert.doesNotMatch(html, /实时速率准备中/);
+    assert.doesNotMatch(html, />重试</);
+  });
+});
+
 test("DashboardSummarySection passes structured quota diagnostics through to QuotaStrip rendering", async () => {
   await withSsrModules(async (load) => {
     const { DashboardSummarySection } = await load("/src/pages/dashboard/DashboardSummarySection.tsx");

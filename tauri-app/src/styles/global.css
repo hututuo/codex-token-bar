@@ -1125,6 +1125,33 @@ button.quota-side-card:hover {
   font-weight: 600;
 }
 
+.usage-precision-note {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel-solid));
+  padding: 7px 10px;
+  color: color-mix(in srgb, var(--accent) 72%, var(--text));
+}
+
+.usage-precision-note strong {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.usage-precision-note span {
+  min-width: 0;
+  color: color-mix(in srgb, var(--muted) 82%, var(--text));
+  font-size: 11px;
+  font-weight: 560;
+  line-height: 1.35;
+}
+
 .section-title-row {
   display: flex;
   align-items: center;

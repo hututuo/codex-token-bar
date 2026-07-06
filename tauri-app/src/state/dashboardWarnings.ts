@@ -8,6 +8,7 @@ const QUOTA_DIAGNOSTIC_SOURCES = new Set([
   "source_integrity",
   "frontend_command",
 ]);
+export const USAGE_PRECISION_WARNING_SOURCE = "usage_precision";
 
 export function mergeWarnings(left: LocalDataWarning[], right: LocalDataWarning[]): LocalDataWarning[] {
   const byKey = new Map<string, LocalDataWarning>();
@@ -23,6 +24,14 @@ export function replaceQuotaWarnings(
   latest: LocalDataWarning[],
 ): LocalDataWarning[] {
   return mergeWarnings(previous.filter((warning) => !isQuotaWarning(warning)), latest);
+}
+
+export function removeUsagePrecisionWarnings(warnings: LocalDataWarning[]): LocalDataWarning[] {
+  return warnings.filter((warning) => !isUsagePrecisionWarning(warning));
+}
+
+export function usagePrecisionWarnings(warnings: LocalDataWarning[]): LocalDataWarning[] {
+  return warnings.filter(isUsagePrecisionWarning);
 }
 
 export function mergeQuotaDiagnostics(
@@ -69,6 +78,10 @@ export function mergeWarningDiagnostics(
 
 function isQuotaWarning(warning: LocalDataWarning): boolean {
   return QUOTA_WARNING_SOURCES.has(warning.source);
+}
+
+function isUsagePrecisionWarning(warning: LocalDataWarning): boolean {
+  return warning.source === USAGE_PRECISION_WARNING_SOURCE;
 }
 
 function isQuotaDiagnostic(diagnostic: QuotaDiagnostic): boolean {

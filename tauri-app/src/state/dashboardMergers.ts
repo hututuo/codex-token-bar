@@ -12,6 +12,7 @@ import type { DashboardAppState } from "./dashboardState";
 import {
   mergeQuotaDiagnostics,
   mergeWarnings,
+  removeUsagePrecisionWarnings,
   replaceQuotaDiagnostics,
   replaceQuotaWarnings,
 } from "./dashboardWarnings";
@@ -33,7 +34,7 @@ export function mergePreciseDashboard(
             recentUsage24h: mergeQuotaHistory(precise.recentUsage24h, state.dashboard.recentUsage24h),
             recentUsage7d: mergeQuotaHistory(precise.recentUsage7d, state.dashboard.recentUsage7d),
             recentUsage30d: mergeQuotaHistory(precise.recentUsage30d, state.dashboard.recentUsage30d),
-            warnings: mergeWarnings(state.dashboard.warnings, precise.warnings),
+            warnings: mergeWarnings(removeUsagePrecisionWarnings(state.dashboard.warnings), precise.warnings),
             diagnostics: mergeQuotaDiagnostics(state.dashboard.diagnostics ?? [], precise.diagnostics ?? []),
           },
   };

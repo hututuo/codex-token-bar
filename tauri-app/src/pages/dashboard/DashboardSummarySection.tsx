@@ -76,7 +76,7 @@ export function DashboardSummarySection({
         snapshot={dashboard.quota}
         warnings={dashboard.warnings}
       />
-      <StatsStrip stats={dashboard.stats} />
+      <StatsStrip stats={dashboard.stats} warnings={dashboard.warnings} />
       <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />
       <LiveRateCard
         floatingEnabled={displaySurfaces.floatingWindowEnabled}

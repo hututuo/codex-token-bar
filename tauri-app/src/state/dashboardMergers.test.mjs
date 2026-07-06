@@ -133,6 +133,37 @@ test("precise dashboard merge preserves already loaded quota overlays", async ()
   });
 });
 
+test("precise dashboard merge clears metadata-only usage precision warning", async () => {
+  return withSsrModules(async (load) => {
+    const { mergePreciseDashboard } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      warnings: [
+        {
+          source: "usage_precision",
+          message: "精确 token 仍在读取，当前仅显示会话元数据，请稍后刷新。",
+        },
+      ],
+    });
+    const precise = dashboardFixture({
+      stats: {
+        totalTokens: 500,
+        peakDayTokens: 300,
+        peakThreadTokens: 200,
+        currentStreakDays: 1,
+        longestStreakDays: 2,
+        totalCalls: 5,
+        totalThreads: 3,
+      },
+      warnings: [],
+    });
+
+    const next = mergePreciseDashboard(state, precise);
+
+    assert.equal(next.dashboard.stats.totalTokens, 500);
+    assert.deepEqual(next.dashboard.warnings, []);
+  });
+});
+
 test("dashboard snapshots do not synchronously apply quota history", async () => {
   // This is an architecture guard: quota-history overlays should stay in the frontend merge layer,
   // not in the Rust fast/precise snapshot builders.

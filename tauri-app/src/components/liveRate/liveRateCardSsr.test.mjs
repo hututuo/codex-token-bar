@@ -56,6 +56,26 @@ test("LiveRateCard treats precise summary cache warnings as a wait state during 
   });
 });
 
+test("LiveRateCard ignores dashboard usage precision warnings when they leak into live snapshot", async () => {
+  await withSsrModules(async (load) => {
+    const { LiveRateCard } = await load("/src/components/LiveRateCard.tsx");
+    const html = renderComponent(LiveRateCard, cardProps({
+      snapshot: liveRateSnapshot({
+        warnings: [
+          {
+            source: "usage_precision",
+            message: "精确 token 缓存尚未就绪，当前仅显示会话元数据，请稍后刷新。",
+          },
+        ],
+      }),
+    }));
+
+    assert.doesNotMatch(html, /实时速率准备中/);
+    assert.doesNotMatch(html, /实时速率降级/);
+    assert.doesNotMatch(html, />重试</);
+  });
+});
+
 test("LiveRateCard does not show stream failure warning when live rate is disabled", async () => {
   await withSsrModules(async (load) => {
     const { LiveRateCard } = await load("/src/components/LiveRateCard.tsx");

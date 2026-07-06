@@ -53,8 +53,5 @@ export function liveRateNotice(
 }
 
 function isPreciseSummaryCacheWarning(warning: { source: string; message: string }): boolean {
-  return (
-    warning.source === LIVE_RATE_SUMMARY_WARNING_SOURCE ||
-    warning.message.includes("精确 token 缓存")
-  );
+  return warning.source === LIVE_RATE_SUMMARY_WARNING_SOURCE;
 }

@@ -1,7 +1,7 @@
 use crate::core::sqlite;
 use crate::models::{
     AccountInfo, ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats,
-    QuotaLimit, QuotaSnapshot, RecentUsagePoint, ResetCreditSummary,
+    LocalDataWarning, QuotaLimit, QuotaSnapshot, RecentUsagePoint, ResetCreditSummary,
 };
 use rusqlite::{Connection, Result};
 use std::path::Path;
@@ -22,7 +22,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
     let local_now = OffsetDateTime::now_utc().to_offset(local_offset);
     let activity_days = empty_activity_days(local_now.date());
-    let warnings = Vec::new();
+    let warnings = vec![usage_precision_warning()];
     let recent_usage_24h = empty_recent_usage(local_now, 5 * 60, 289);
     let recent_usage_7d = empty_recent_usage(local_now, 60 * 60, 7 * 24);
     let recent_usage_30d = empty_recent_usage(local_now, 6 * 60 * 60, 30 * 4);
@@ -44,6 +44,13 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
         warnings,
         diagnostics: Vec::new(),
     })
+}
+
+fn usage_precision_warning() -> LocalDataWarning {
+    LocalDataWarning {
+        source: "usage_precision".into(),
+        message: "精确 token 仍在读取，当前仅显示会话元数据，请稍后刷新。".into(),
+    }
 }
 
 fn empty_activity_days(today: Date) -> Vec<ActivityDay> {
@@ -203,6 +210,9 @@ mod tests {
         assert!(snapshot.recent_usage_24h.iter().all(|point| point.tokens == 0));
         assert!(snapshot.recent_usage_7d.iter().all(|point| point.tokens == 0));
         assert!(snapshot.recent_usage_30d.iter().all(|point| point.tokens == 0));
+        assert_eq!(snapshot.warnings.len(), 1);
+        assert_eq!(snapshot.warnings[0].source, "usage_precision");
+        assert!(snapshot.warnings[0].message.contains("当前仅显示会话元数据"));
 
         fs::remove_dir_all(root).unwrap();
     }

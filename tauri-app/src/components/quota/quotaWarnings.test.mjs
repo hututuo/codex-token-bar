@@ -24,6 +24,17 @@ test("quotaReadWarnings ignores empty messages and keeps order", () => {
   assert.deepEqual(quotaReadWarnings(warnings), ["重置卡失败", "账户额度失败"]);
 });
 
+test("quotaReadWarnings ignores usage precision metadata-only warnings", () => {
+  const warnings = [
+    {
+      source: "usage_precision",
+      message: "精确 token 仍在读取，当前仅显示会话元数据，请稍后刷新。",
+    },
+  ];
+
+  assert.deepEqual(quotaReadWarnings(warnings), []);
+});
+
 test("quotaReadWarnings prefers structured diagnostics and keeps all quota categories visible", () => {
   const warnings = [
     { source: "account_quota", message: "旧账户额度读取失败" },
