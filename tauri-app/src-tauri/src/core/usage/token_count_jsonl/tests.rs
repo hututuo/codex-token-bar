@@ -109,7 +109,7 @@ fn skips_pure_fork_replay_even_after_thirty_seconds() {
 }
 
 #[test]
-fn exits_fork_replay_on_first_user_message_after_replayed_tokens() {
+fn keeps_fork_replay_active_for_replayed_user_message_near_token_counts() {
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -131,9 +131,10 @@ fn exits_fork_replay_on_first_user_message_after_replayed_tokens() {
         "019efork-copy-0000-0000-eeeeffffffff",
         &mut warnings,
     );
-    assert_eq!(parsed.events.iter().map(|event| event.tokens).sum::<u64>(), 120);
+    assert_eq!(parsed.events.iter().map(|event| event.tokens).sum::<u64>(), 0);
     assert_eq!(parsed.previous_total_tokens, Some(620));
-    assert_eq!(parsed.events[0].user_prompt, "父会话复制问题");
+    assert!(parsed.events.is_empty());
+    assert!(parsed.fork_replay_active);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -599,13 +600,13 @@ fn token_event_cache_ignores_previous_shard_versions() {
 }
 
 #[test]
-fn token_event_cache_reparses_pre_fork_replay_version_six_shard() {
+fn token_event_cache_reparses_pre_grace_window_version_seven_shard() {
     let root = temp_root();
     let cache_dir = root.join("token-event-cache-shards");
     let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019efork-stale-v6-cache.jsonl");
+    let file = session_dir.join("rollout-019efork-stale-v7-cache.jsonl");
     write_lines(
         &file,
         &[
@@ -621,9 +622,9 @@ fn token_event_cache_reparses_pre_fork_replay_version_six_shard() {
     let cache_key = super::token_event_cache::file_cache_key(&root, &file);
     fs::create_dir_all(cache_dir.join(&home_key)).unwrap();
     fs::write(
-        cache_dir.join(&home_key).join("stale-v6.json"),
+        cache_dir.join(&home_key).join("stale-v7.json"),
         serde_json::json!({
-            "version": 6,
+            "version": 7,
             "homeKey": home_key,
             "codexHome": root.to_string_lossy(),
             "cacheKey": cache_key,
@@ -656,7 +657,7 @@ fn token_event_cache_reparses_pre_fork_replay_version_six_shard() {
     assert!(json_files_under(&cache_dir)
         .iter()
         .filter_map(|path| fs::read_to_string(path).ok())
-        .any(|text| text.contains(r#""version":7"#) && text.contains(r#""tokens":120"#)));
+        .any(|text| text.contains(r#""version":8"#) && text.contains(r#""tokens":120"#)));
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -765,7 +766,7 @@ fn usage_summary_ignores_previous_dashboard_aggregate_version() {
     let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019eaggregate-stale-v7-cache.jsonl");
+    let file = session_dir.join("rollout-019eaggregate-stale-v8-cache.jsonl");
     write_lines(
         &file,
         &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
@@ -774,7 +775,7 @@ fn usage_summary_ignores_previous_dashboard_aggregate_version() {
     fs::write(
         &cache_path,
         serde_json::json!({
-            "version": 7,
+            "version": 8,
             "signature": signature,
             "snapshot": null,
             "summary": {
@@ -792,7 +793,7 @@ fn usage_summary_ignores_previous_dashboard_aggregate_version() {
     assert_eq!(summary.total_tokens, 120);
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""version":8"#));
+    assert!(aggregate_cache_text().contains(r#""version":9"#));
     assert!(aggregate_cache_text().contains(r#""totalTokens":120"#));
 
     fs::remove_dir_all(root).unwrap();
@@ -1018,8 +1019,8 @@ fn token_event_cache_round_trips_fork_replay_state_before_incremental_append() {
         &[
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
             r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120}}}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:11Z","type":"event_msg","payload":{"type":"user_message","message":"新分支问题"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:12Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":10,"output_tokens":30,"total_tokens":190},"last_token_usage":{"input_tokens":60,"cached_input_tokens":10,"output_tokens":10,"total_tokens":70}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:13Z","type":"event_msg","payload":{"type":"user_message","message":"新分支问题"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:14Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":10,"output_tokens":30,"total_tokens":190},"last_token_usage":{"input_tokens":60,"cached_input_tokens":10,"output_tokens":10,"total_tokens":70}}}}"#,
         ],
     );
 
