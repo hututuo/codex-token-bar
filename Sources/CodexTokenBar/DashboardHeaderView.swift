@@ -284,19 +284,40 @@ struct DataSourceBadge: View {
 }
 
 struct StatStrip: View {
-    let stats: DashboardStats
+    let snapshot: DashboardSnapshot
+
+    private var stats: DashboardStats {
+        snapshot.stats
+    }
+
+    private var isMetadataOnly: Bool {
+        !snapshot.hasPreciseTokenUsage
+    }
+
+    private func tokenValue(_ value: String) -> String {
+        isMetadataOnly ? "待读取" : value
+    }
 
     var body: some View {
-        HStack(spacing: 0) {
-            StatCell(value: stats.totalTokens.abbreviatedTokens, label: "累计 Token 数")
-            Divider().frame(height: 40)
-            StatCell(value: stats.peakDayTokens.abbreviatedTokens, label: "峰值 Token 数")
-            Divider().frame(height: 40)
-            StatCell(value: stats.peakThreadTokens.abbreviatedTokens, label: "单会话最大 Token")
-            Divider().frame(height: 40)
-            StatCell(value: "\(stats.currentStreakDays) 天", label: "当前连续天数")
-            Divider().frame(height: 40)
-            StatCell(value: "\(stats.longestStreakDays) 天", label: "最长连续天数")
+        VStack(spacing: 2) {
+            HStack(spacing: 0) {
+                StatCell(value: tokenValue(stats.totalTokens.abbreviatedTokens), label: "累计 Token 数")
+                Divider().frame(height: 40)
+                StatCell(value: tokenValue(stats.peakDayTokens.abbreviatedTokens), label: "峰值 Token 数")
+                Divider().frame(height: 40)
+                StatCell(value: tokenValue(stats.peakThreadTokens.abbreviatedTokens), label: "单会话最大 Token")
+                Divider().frame(height: 40)
+                StatCell(value: tokenValue("\(stats.currentStreakDays) 天"), label: "当前连续天数")
+                Divider().frame(height: 40)
+                StatCell(value: tokenValue("\(stats.longestStreakDays) 天"), label: "最长连续天数")
+            }
+
+            if isMetadataOnly {
+                Text("仅显示会话元数据，精确 token 仍在读取，请稍后。")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
         .frame(height: 70)
         .background(

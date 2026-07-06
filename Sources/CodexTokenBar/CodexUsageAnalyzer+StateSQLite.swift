@@ -25,42 +25,9 @@ extension CodexUsageAnalyzer {
             """
         )
 
-        let today = calendar.startOfDay(for: Date())
-        guard let startDay = calendar.date(byAdding: .day, value: -364, to: today) else {
-            throw NSError(domain: "CodexTokenBar", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unable to calculate date range"])
-        }
-
-        let dailyMap: [Date: (tokens: Int, calls: Int)] = [:]
-
-        let daily = (0..<365).compactMap { offset -> DayUsage? in
-            guard let date = calendar.date(byAdding: .day, value: offset, to: startDay) else { return nil }
-            let usage = dailyMap[calendar.startOfDay(for: date)] ?? (0, 0)
-            return DayUsage(date: date, tokens: usage.tokens, calls: usage.calls)
-        }
-
-        let now = Date()
-        guard let recentStart = calendar.date(byAdding: .hour, value: -24, to: now) else {
-            throw NSError(domain: "CodexTokenBar", code: 3, userInfo: [NSLocalizedDescriptionKey: "Unable to calculate recent range"])
-        }
-        let interval: TimeInterval = 5 * 60
-        let binMap: [Int: (tokens: Int, calls: Int)] = [:]
-
-        let recentBins = (0..<288).map { index -> BinUsage in
-            let date = recentStart.addingTimeInterval(Double(index) * interval)
-            let epoch = Int(floor(date.timeIntervalSince1970 / interval) * interval)
-            let usage = binMap[epoch] ?? (0, 0)
-            return BinUsage(start: date, tokens: usage.tokens, calls: usage.calls)
-        }
-
-        let currentHour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
-        let hourlyStart = calendar.date(byAdding: .hour, value: -719, to: currentHour) ?? currentHour
-        let hourlyMap: [Int: (tokens: Int, calls: Int)] = [:]
-        let hourlyUsage = (0..<720).map { index -> BinUsage in
-            let date = hourlyStart.addingTimeInterval(Double(index) * 3600)
-            let epoch = Int(floor(date.timeIntervalSince1970 / 3600) * 3600)
-            let usage = hourlyMap[epoch] ?? (0, 0)
-            return BinUsage(start: date, tokens: usage.tokens, calls: usage.calls)
-        }
+        let daily: [DayUsage] = []
+        let recentBins: [BinUsage] = []
+        let hourlyUsage: [BinUsage] = []
 
         var pluginCounts: [String: Int] = [:]
         var reasoningCounts: [String: Int] = [:]
@@ -103,6 +70,7 @@ extension CodexUsageAnalyzer {
             hourlyUsage: hourlyUsage,
             pluginUsage: Array(plugins),
             cacheUsage: .empty,
+            usagePrecision: .metadataOnly,
             generatedAt: Date()
         )
     }

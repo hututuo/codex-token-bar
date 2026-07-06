@@ -100,13 +100,17 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
     }
 
     private func statusBarAccessibilityValue(_ snapshot: TokenDisplaySnapshot) -> String {
-        [
+        var parts = [
             String(format: "实时速率 %.1f token 每秒", snapshot.rate),
-            "累计 \(snapshot.consumedTokens.abbreviatedTokens) token",
-            "今天 \(snapshot.todayTokens.abbreviatedTokens) token",
-            "今天 \(snapshot.todayRequests) 次请求",
+            "累计 \(snapshot.consumedTokensText)",
+            "今天 \(snapshot.todayTokensText)",
+            "今天 \(snapshot.todayRequestsText) 次请求",
             snapshot.compactUsageStatus
-        ].joined(separator: "；")
+        ]
+        if !snapshot.hasPreciseTokenUsage {
+            parts.append("当前仅显示会话元数据，精确 token 仍在读取")
+        }
+        return parts.joined(separator: "；")
     }
 }
 

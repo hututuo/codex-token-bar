@@ -217,6 +217,15 @@ struct DashboardStats: Codable {
     let totalSkillsUsed: Int
 }
 
+enum DashboardUsagePrecision: String, Codable, Equatable {
+    case precise
+    case metadataOnly
+
+    var hasPreciseTokenUsage: Bool {
+        self == .precise
+    }
+}
+
 extension Double {
     var percentString: String {
         guard isFinite else { return "0%" }
@@ -231,7 +240,67 @@ struct DashboardSnapshot: Codable {
     let hourlyUsage: [BinUsage]
     let pluginUsage: [PluginUsage]
     let cacheUsage: TokenCacheUsage
+    let usagePrecision: DashboardUsagePrecision
     let generatedAt: Date
+
+    var hasPreciseTokenUsage: Bool {
+        usagePrecision.hasPreciseTokenUsage
+    }
+
+    init(
+        stats: DashboardStats,
+        dailyUsage: [DayUsage],
+        recentBins: [BinUsage],
+        hourlyUsage: [BinUsage],
+        pluginUsage: [PluginUsage],
+        cacheUsage: TokenCacheUsage,
+        usagePrecision: DashboardUsagePrecision = .precise,
+        generatedAt: Date
+    ) {
+        self.stats = stats
+        self.dailyUsage = dailyUsage
+        self.recentBins = recentBins
+        self.hourlyUsage = hourlyUsage
+        self.pluginUsage = pluginUsage
+        self.cacheUsage = cacheUsage
+        self.usagePrecision = usagePrecision
+        self.generatedAt = generatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case stats
+        case dailyUsage
+        case recentBins
+        case hourlyUsage
+        case pluginUsage
+        case cacheUsage
+        case usagePrecision
+        case generatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        stats = try container.decode(DashboardStats.self, forKey: .stats)
+        dailyUsage = try container.decode([DayUsage].self, forKey: .dailyUsage)
+        recentBins = try container.decode([BinUsage].self, forKey: .recentBins)
+        hourlyUsage = try container.decode([BinUsage].self, forKey: .hourlyUsage)
+        pluginUsage = try container.decode([PluginUsage].self, forKey: .pluginUsage)
+        cacheUsage = try container.decode(TokenCacheUsage.self, forKey: .cacheUsage)
+        usagePrecision = try container.decodeIfPresent(DashboardUsagePrecision.self, forKey: .usagePrecision) ?? .precise
+        generatedAt = try container.decode(Date.self, forKey: .generatedAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(stats, forKey: .stats)
+        try container.encode(dailyUsage, forKey: .dailyUsage)
+        try container.encode(recentBins, forKey: .recentBins)
+        try container.encode(hourlyUsage, forKey: .hourlyUsage)
+        try container.encode(pluginUsage, forKey: .pluginUsage)
+        try container.encode(cacheUsage, forKey: .cacheUsage)
+        try container.encode(usagePrecision, forKey: .usagePrecision)
+        try container.encode(generatedAt, forKey: .generatedAt)
+    }
 }
 
 extension Int {

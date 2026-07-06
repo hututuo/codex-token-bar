@@ -188,6 +188,72 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertFalse(store.isInitialLoading)
     }
 
+    func testMetadataOnlyPreciseResultRemainsDegradedAndDoesNotPrepareCache() async throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let stateRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexUsageStoreMetadataOnly-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stateRoot, withIntermediateDirectories: true)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", stateRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", stateRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            try? FileManager.default.removeItem(at: stateRoot)
+        }
+        UsageCacheLifecycle.clearStateForTesting()
+
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/.codex"),
+            origin: .defaultHome
+        )
+        let metadataOnlySnapshot = makeSnapshot(
+            totalTokens: 0,
+            dayTokens: 0,
+            usagePrecision: .metadataOnly
+        )
+        let loader = SequentialDashboardSnapshotLoader(
+            fastResults: [.success(metadataOnlySnapshot)],
+            preciseResults: [.success(metadataOnlySnapshot)]
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("metadata-only usage refresh") {
+            store.snapshot.usagePrecision == .metadataOnly && !store.isRefreshing
+        }
+
+        XCTAssertFalse(store.snapshot.hasPreciseTokenUsage)
+        XCTAssertTrue(store.status.contains("仅显示会话元数据"))
+        XCTAssertTrue(store.status.contains("精确 token 仍在读取"))
+        XCTAssertFalse(store.status.contains("token_count · 更新于"))
+        XCTAssertFalse(UsageCacheLifecycle.isCurrentCachePrepared)
+    }
+
+    func testMetadataOnlyTokenDisplayUsesPendingMetricLabels() {
+        let snapshot = TokenDisplaySnapshot(
+            title: "全会话实时",
+            status: "idle",
+            rate: 0,
+            consumedTokens: 0,
+            todayTokens: 0,
+            todayRequests: 0,
+            usagePrecision: .metadataOnly,
+            quota: .empty,
+            updatedAt: Date(timeIntervalSince1970: 1_800)
+        )
+
+        XCTAssertFalse(snapshot.hasPreciseTokenUsage)
+        XCTAssertEqual(snapshot.consumedTokensText, "待读取")
+        XCTAssertEqual(snapshot.todayTokensText, "待读取")
+        XCTAssertEqual(snapshot.todayRequestsText, "待读取")
+        XCTAssertEqual(snapshot.metadataOnlyStatusText, "仅会话元数据")
+    }
+
     func testRefreshFailurePreservesLastSuccessfulUsageSnapshot() async {
         let source = CodexDataSource(
             codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/.codex"),
@@ -266,7 +332,11 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertFalse(store.status.contains(sourceA.displayPath))
     }
 
-    private func makeSnapshot(totalTokens: Int, dayTokens: Int) -> DashboardSnapshot {
+    private func makeSnapshot(
+        totalTokens: Int,
+        dayTokens: Int,
+        usagePrecision: DashboardUsagePrecision = .precise
+    ) -> DashboardSnapshot {
         let now = Date(timeIntervalSince1970: 1_800)
         return DashboardSnapshot(
             stats: DashboardStats(
@@ -286,6 +356,7 @@ final class CodexUsageStoreTests: XCTestCase {
             hourlyUsage: [BinUsage(start: now, tokens: dayTokens, calls: 3)],
             pluginUsage: [],
             cacheUsage: .empty,
+            usagePrecision: usagePrecision,
             generatedAt: now
         )
     }

@@ -124,9 +124,11 @@ final class CodexUsageStore: ObservableObject {
                                 return
                             }
                             self.snapshot = quickSnapshot
-                            self.status = needsCacheInitialization
-                                ? "\(source.originLabel) · state_5.sqlite · 正在初始化本地统计缓存..."
-                                : "\(source.originLabel) · state_5.sqlite · 正在增量更新 token..."
+                            self.status = quickSnapshot.hasPreciseTokenUsage
+                                ? (needsCacheInitialization
+                                    ? "\(source.originLabel) · state_5.sqlite · 正在初始化本地统计缓存..."
+                                    : "\(source.originLabel) · state_5.sqlite · 正在增量更新 token...")
+                                : self.metadataOnlyStatus(origin: source.originLabel)
                             trace?.mark("fastSnapshot.end", metadata: [
                                 "tokens": String(quickSnapshot.stats.totalTokens),
                                 "threads": String(quickSnapshot.stats.totalThreads)
@@ -140,7 +142,9 @@ final class CodexUsageStore: ObservableObject {
                             return
                         }
                         self.snapshot = quickSnapshot
-                        self.status = "\(source.originLabel) · state_5.sqlite · 准备扫描精确 token..."
+                        self.status = quickSnapshot.hasPreciseTokenUsage
+                            ? "\(source.originLabel) · state_5.sqlite · 准备扫描精确 token..."
+                            : self.metadataOnlyStatus(origin: source.originLabel)
                         trace?.mark("fastSnapshot.end", metadata: [
                             "tokens": String(quickSnapshot.stats.totalTokens),
                             "threads": String(quickSnapshot.stats.totalThreads)
@@ -155,15 +159,25 @@ final class CodexUsageStore: ObservableObject {
                         trace?.end("stale-after-preciseSnapshot")
                         return
                     }
-                    self.snapshot = loaded
-                    self.didRunPreciseScan = true
-                    UsageCacheLifecycle.markCurrentCachePrepared()
-                    self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
-                    trace?.mark("preciseSnapshot.end", metadata: [
-                        "tokens": String(loaded.stats.totalTokens),
-                        "calls": String(loaded.stats.totalCalls),
-                        "threads": String(loaded.stats.totalThreads)
-                    ])
+                    if loaded.hasPreciseTokenUsage {
+                        self.snapshot = loaded
+                        self.didRunPreciseScan = true
+                        UsageCacheLifecycle.markCurrentCachePrepared()
+                        self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
+                        trace?.mark("preciseSnapshot.end", metadata: [
+                            "tokens": String(loaded.stats.totalTokens),
+                            "calls": String(loaded.stats.totalCalls),
+                            "threads": String(loaded.stats.totalThreads)
+                        ])
+                    } else {
+                        if !self.snapshot.hasPreciseTokenUsage {
+                            self.snapshot = loaded
+                        }
+                        self.status = self.metadataOnlyStatus(origin: source.originLabel)
+                        trace?.mark("preciseSnapshot.metadataOnly", metadata: [
+                            "threads": String(loaded.stats.totalThreads)
+                        ])
+                    }
                 }
                 trace?.end("ok")
             } catch {
@@ -203,6 +217,10 @@ final class CodexUsageStore: ObservableObject {
             || !snapshot.dailyUsage.isEmpty
             || !snapshot.recentBins.isEmpty
             || !snapshot.hourlyUsage.isEmpty
+    }
+
+    private func metadataOnlyStatus(origin: String) -> String {
+        "\(origin) · state_5.sqlite · 仅显示会话元数据，精确 token 仍在读取..."
     }
 
     private func scheduleInitialPreciseRefresh() {

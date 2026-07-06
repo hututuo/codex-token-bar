@@ -50,6 +50,8 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
 
+        XCTAssertEqual(snapshot.usagePrecision, .precise)
+        XCTAssertTrue(snapshot.hasPreciseTokenUsage)
         XCTAssertEqual(snapshot.stats.totalTokens, 180)
         XCTAssertEqual(snapshot.stats.totalCalls, 2)
         XCTAssertEqual(snapshot.dailyUsage.reduce(0) { $0 + $1.tokens }, 180)
@@ -126,12 +128,14 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).loadFastSnapshot()
 
+        XCTAssertEqual(snapshot.usagePrecision, .metadataOnly)
+        XCTAssertFalse(snapshot.hasPreciseTokenUsage)
         XCTAssertEqual(snapshot.stats.totalTokens, 0)
         XCTAssertEqual(snapshot.stats.peakThreadTokens, 0)
         XCTAssertEqual(snapshot.stats.totalThreads, 2)
-        XCTAssertEqual(snapshot.dailyUsage.reduce(0) { $0 + $1.tokens }, 0)
-        XCTAssertEqual(snapshot.recentBins.reduce(0) { $0 + $1.tokens }, 0)
-        XCTAssertEqual(snapshot.hourlyUsage.reduce(0) { $0 + $1.tokens }, 0)
+        XCTAssertTrue(snapshot.dailyUsage.isEmpty)
+        XCTAssertTrue(snapshot.recentBins.isEmpty)
+        XCTAssertTrue(snapshot.hourlyUsage.isEmpty)
     }
 
     func testPreciseJSONLScanIncludesActiveStateRolloutPaths() throws {
@@ -267,6 +271,8 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
 
+        XCTAssertEqual(snapshot.usagePrecision, .metadataOnly)
+        XCTAssertFalse(snapshot.hasPreciseTokenUsage)
         XCTAssertEqual(snapshot.stats.totalTokens, 0)
         XCTAssertEqual(snapshot.stats.peakThreadTokens, 0)
         XCTAssertEqual(snapshot.stats.totalThreads, 2)

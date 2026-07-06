@@ -151,8 +151,31 @@ struct TokenDisplaySnapshot {
     let consumedTokens: Int
     let todayTokens: Int
     let todayRequests: Int
+    let usagePrecision: DashboardUsagePrecision
     let quota: AccountQuotaSnapshot
     let updatedAt: Date
+
+    init(
+        title: String,
+        status: String,
+        rate: Double,
+        consumedTokens: Int,
+        todayTokens: Int,
+        todayRequests: Int,
+        usagePrecision: DashboardUsagePrecision = .precise,
+        quota: AccountQuotaSnapshot,
+        updatedAt: Date
+    ) {
+        self.title = title
+        self.status = status
+        self.rate = rate
+        self.consumedTokens = consumedTokens
+        self.todayTokens = todayTokens
+        self.todayRequests = todayRequests
+        self.usagePrecision = usagePrecision
+        self.quota = quota
+        self.updatedAt = updatedAt
+    }
 
     @MainActor
     static func make(store: CodexUsageStore, monitor: LiveRateMonitor, quota: AccountQuotaStore) -> TokenDisplaySnapshot {
@@ -167,9 +190,30 @@ struct TokenDisplaySnapshot {
             consumedTokens: store.snapshot.stats.totalTokens,
             todayTokens: todayUsage?.tokens ?? 0,
             todayRequests: todayUsage?.calls ?? 0,
+            usagePrecision: store.snapshot.usagePrecision,
             quota: quota.snapshot,
             updatedAt: max(store.snapshot.generatedAt, max(monitor.totalSnapshot.updatedAt, quota.snapshot.updatedAt ?? .distantPast))
         )
+    }
+
+    var hasPreciseTokenUsage: Bool {
+        usagePrecision.hasPreciseTokenUsage
+    }
+
+    var consumedTokensText: String {
+        hasPreciseTokenUsage ? consumedTokens.abbreviatedTokens : "待读取"
+    }
+
+    var todayTokensText: String {
+        hasPreciseTokenUsage ? todayTokens.abbreviatedTokens : "待读取"
+    }
+
+    var todayRequestsText: String {
+        hasPreciseTokenUsage ? "\(todayRequests)" : "待读取"
+    }
+
+    var metadataOnlyStatusText: String? {
+        hasPreciseTokenUsage ? nil : "仅会话元数据"
     }
 
     var statusBarTitle: String {
@@ -376,13 +420,13 @@ struct TokenDisplayCard: View {
 
     private var metricRow: some View {
         HStack(spacing: 6.scaled(by: displayScale)) {
-            TokenDisplayMetric(label: "总", value: snapshot.consumedTokens.abbreviatedTokens)
+            TokenDisplayMetric(label: "总", value: snapshot.consumedTokensText)
                 .environment(\.tokenDisplayTextPalette, metricPalette(for: .total))
                 .offset(x: -FloatingTokenPanelMetrics.metricOutset.scaled(by: displayScale))
-            TokenDisplayMetric(label: "今", value: snapshot.todayTokens.abbreviatedTokens)
+            TokenDisplayMetric(label: "今", value: snapshot.todayTokensText)
                 .environment(\.tokenDisplayTextPalette, metricPalette(for: .today))
                 .offset(x: FloatingTokenPanelMetrics.metricTodayNudge.scaled(by: displayScale))
-            TokenDisplayMetric(label: "次", value: "\(snapshot.todayRequests)")
+            TokenDisplayMetric(label: "次", value: snapshot.todayRequestsText)
                 .environment(\.tokenDisplayTextPalette, metricPalette(for: .requests))
                 .offset(
                     x: FloatingTokenPanelMetrics.metricOutset.scaled(by: displayScale)

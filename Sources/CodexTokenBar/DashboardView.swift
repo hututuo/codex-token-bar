@@ -435,7 +435,7 @@ struct DashboardView: View {
                 showingResetCreditDetails: $showingResetCreditDetails
             )
 
-            StatStrip(stats: store.snapshot.stats)
+            StatStrip(snapshot: store.snapshot)
 
             if store.isPreparingUsageCache {
                 UsageCacheInitializationNotice(status: store.status)

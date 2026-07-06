@@ -77,9 +77,18 @@ final class InterfaceScaleSettingsTests: XCTestCase {
             skillsExplored: 0,
             totalSkillsUsed: 0
         )
+        let snapshot = DashboardSnapshot(
+            stats: stats,
+            dailyUsage: [],
+            recentBins: [],
+            hourlyUsage: [],
+            pluginUsage: [],
+            cacheUsage: .empty,
+            generatedAt: Date(timeIntervalSince1970: 1_800)
+        )
 
         let content = InterfaceScaledContainer(scale: 1.30, visualWidth: 980 * 1.30) {
-            StatStrip(stats: stats)
+            StatStrip(snapshot: snapshot)
         }
         let hostingView = NSHostingView(rootView: content)
         hostingView.frame = NSRect(x: 0, y: 0, width: 980 * 1.30, height: 400)
