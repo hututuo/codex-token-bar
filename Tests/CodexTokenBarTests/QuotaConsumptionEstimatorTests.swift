@@ -411,6 +411,25 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(RecentChartScrollMetrics.shiftedWindowIndex(current: 2, direction: .forward, windowCount: 3), 2)
     }
 
+    func testChartEdgeFadeStateOnlyShowsAvailableHistoryDirections() {
+        XCTAssertEqual(
+            RecentChartEdgeFadeState(currentWindowIndex: 0, windowCount: 1),
+            RecentChartEdgeFadeState(showsLeft: false, showsRight: false)
+        )
+        XCTAssertEqual(
+            RecentChartEdgeFadeState(currentWindowIndex: 1, windowCount: 3),
+            RecentChartEdgeFadeState(showsLeft: true, showsRight: true)
+        )
+        XCTAssertEqual(
+            RecentChartEdgeFadeState(currentWindowIndex: 2, windowCount: 3),
+            RecentChartEdgeFadeState(showsLeft: true, showsRight: false)
+        )
+        XCTAssertEqual(
+            RecentChartEdgeFadeState(currentWindowIndex: 0, windowCount: 3),
+            RecentChartEdgeFadeState(showsLeft: false, showsRight: true)
+        )
+    }
+
     func testRecentUsageChartExposesHorizontalScrollingForLongHistory() throws {
         let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
 
@@ -421,6 +440,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(source.contains("chevron.left"))
         XCTAssertTrue(source.contains("chevron.right"))
         XCTAssertTrue(source.contains("scrollChart(by:"))
+        XCTAssertTrue(source.contains("RecentChartEdgeFadeOverlay"))
+        XCTAssertTrue(source.contains("chartViewportMask"))
+        XCTAssertTrue(source.contains("let viewportWidth = max(proxy.size.width, 1)"))
     }
 
     func testSelectionStatePreviewsOnHoverThenPinsEndOnSecondClick() {

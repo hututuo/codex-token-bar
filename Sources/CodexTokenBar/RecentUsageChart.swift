@@ -132,6 +132,23 @@ enum RecentChartScrollDirection {
     }
 }
 
+struct RecentChartEdgeFadeState: Equatable {
+    let showsLeft: Bool
+    let showsRight: Bool
+
+    init(showsLeft: Bool, showsRight: Bool) {
+        self.showsLeft = showsLeft
+        self.showsRight = showsRight
+    }
+
+    init(currentWindowIndex: Int, windowCount: Int) {
+        let upperBound = max(windowCount - 1, 0)
+        let clampedIndex = min(max(currentWindowIndex, 0), upperBound)
+        showsLeft = windowCount > 1 && clampedIndex > 0
+        showsRight = windowCount > 1 && clampedIndex < upperBound
+    }
+}
+
 struct RecentChartPreparedData {
     let range: RecentChartRange
     let bins: [BinUsage]
@@ -325,8 +342,7 @@ struct RecentUsageChart: View {
     private var chartPlot: some View {
         GeometryReader { proxy in
             let buttonWidth: CGFloat = 28
-            let buttonSpacing: CGFloat = 6
-            let viewportWidth = max(proxy.size.width - buttonWidth * 2 - buttonSpacing * 2, 1)
+            let viewportWidth = max(proxy.size.width, 1)
             let contentWidth = RecentChartScrollMetrics.contentWidth(
                 range: selectedRange,
                 bins: preparedData.bins,
@@ -341,48 +357,64 @@ struct RecentUsageChart: View {
             let currentWindowIndex = min(scrollWindowIndex ?? max(windowCount - 1, 0), max(windowCount - 1, 0))
 
             ScrollViewReader { scrollProxy in
-                HStack(spacing: buttonSpacing) {
-                    RecentChartScrollButton(
-                        direction: .backward,
-                        isDisabled: windowCount <= 1 || currentWindowIndex <= 0,
-                        action: {
-                            scrollChart(by: .backward, windowCount: windowCount, proxy: scrollProxy)
-                        }
-                    )
-                    .frame(width: buttonWidth, height: proxy.size.height)
+                ZStack {
+                    ZStack {
+                        ScrollView(.horizontal, showsIndicators: contentWidth > viewportWidth + 1) {
+                            HStack(spacing: 0) {
+                                ZStack(alignment: .topLeading) {
+                                    chartPlotCanvas(width: contentWidth, height: proxy.size.height)
+                                        .frame(width: contentWidth, height: proxy.size.height)
 
-                    ScrollView(.horizontal, showsIndicators: contentWidth > viewportWidth + 1) {
-                        HStack(spacing: 0) {
-                            ZStack(alignment: .topLeading) {
-                                chartPlotCanvas(width: contentWidth, height: proxy.size.height)
-                                    .frame(width: contentWidth, height: proxy.size.height)
+                                    chartScrollAnchors(
+                                        windowCount: windowCount,
+                                        viewportWidth: viewportWidth,
+                                        contentWidth: contentWidth
+                                    )
+                                }
+                                .frame(width: contentWidth, height: proxy.size.height)
 
-                                chartScrollAnchors(
-                                    windowCount: windowCount,
-                                    viewportWidth: viewportWidth,
-                                    contentWidth: contentWidth
-                                )
+                                Color.clear
+                                    .frame(width: 1, height: 1)
+                                    .id(RecentChartScrollMetrics.trailingAnchorID)
                             }
-                            .frame(width: contentWidth, height: proxy.size.height)
-
-                            Color.clear
-                                .frame(width: 1, height: 1)
-                                .id(RecentChartScrollMetrics.trailingAnchorID)
                         }
+                        .scrollClipDisabled()
+                        .mask(chartViewportMask)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(selectedRange.title) 曲线图")
+                        .accessibilityValue(accessibilitySummary)
+
+                        RecentChartEdgeFadeOverlay(
+                            state: RecentChartEdgeFadeState(
+                                currentWindowIndex: currentWindowIndex,
+                                windowCount: windowCount
+                            )
+                        )
                     }
-                    .scrollClipDisabled()
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("\(selectedRange.title) 曲线图")
-                    .accessibilityValue(accessibilitySummary)
 
-                    RecentChartScrollButton(
-                        direction: .forward,
-                        isDisabled: windowCount <= 1 || currentWindowIndex >= windowCount - 1,
-                        action: {
-                            scrollChart(by: .forward, windowCount: windowCount, proxy: scrollProxy)
-                        }
-                    )
-                    .frame(width: buttonWidth, height: proxy.size.height)
+                    HStack {
+                        RecentChartScrollButton(
+                            direction: .backward,
+                            isDisabled: windowCount <= 1 || currentWindowIndex <= 0,
+                            action: {
+                                scrollChart(by: .backward, windowCount: windowCount, proxy: scrollProxy)
+                            }
+                        )
+                        .frame(width: buttonWidth, height: proxy.size.height)
+                        .offset(x: -buttonWidth - 6)
+
+                        Spacer(minLength: 0)
+
+                        RecentChartScrollButton(
+                            direction: .forward,
+                            isDisabled: windowCount <= 1 || currentWindowIndex >= windowCount - 1,
+                            action: {
+                                scrollChart(by: .forward, windowCount: windowCount, proxy: scrollProxy)
+                            }
+                        )
+                        .frame(width: buttonWidth, height: proxy.size.height)
+                        .offset(x: buttonWidth + 6)
+                    }
                 }
                 .onAppear {
                     scrollChartToLatestIfNeeded(scrollProxy, windowCount: windowCount)
@@ -396,6 +428,11 @@ struct RecentUsageChart: View {
             }
         }
         .frame(height: 185)
+    }
+
+    private var chartViewportMask: some View {
+        Rectangle()
+            .padding(.vertical, -90)
     }
 
     @ViewBuilder
@@ -778,5 +815,34 @@ private struct RecentChartScrollButton: View {
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
         .accessibilityLabel(direction.accessibilityLabel)
+    }
+}
+
+private struct RecentChartEdgeFadeOverlay: View {
+    let state: RecentChartEdgeFadeState
+
+    var body: some View {
+        ZStack {
+            if state.showsLeft {
+                edgeFade(start: AppTheme.pageBackground.opacity(0.96), end: .clear)
+                    .frame(width: 26)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if state.showsRight {
+                edgeFade(start: .clear, end: AppTheme.pageBackground.opacity(0.96))
+                    .frame(width: 26)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func edgeFade(start: Color, end: Color) -> some View {
+        LinearGradient(
+            colors: [start, end],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
     }
 }
