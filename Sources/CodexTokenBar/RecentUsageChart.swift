@@ -391,6 +391,7 @@ struct RecentUsageChart: View {
                             )
                         )
                     }
+                    .frame(width: viewportWidth, height: proxy.size.height)
 
                     HStack {
                         RecentChartScrollButton(

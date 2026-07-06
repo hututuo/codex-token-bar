@@ -430,6 +430,15 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
     }
 
+    func testTimeMarkerLabelsUseDatesForScrollableRanges() {
+        let calendar = Calendar.current
+        let date = calendar.date(from: DateComponents(year: 2026, month: 7, day: 6, hour: 13, minute: 45))!
+
+        XCTAssertEqual(ChartTimeMarkerLabel.text(for: date, range: .twentyFourHours), "7月6日")
+        XCTAssertEqual(ChartTimeMarkerLabel.text(for: date, range: .sevenDays), "7月6日")
+        XCTAssertEqual(ChartTimeMarkerLabel.text(for: date, range: .thirtyDays), "7月6日")
+    }
+
     func testRecentUsageChartExposesHorizontalScrollingForLongHistory() throws {
         let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
 

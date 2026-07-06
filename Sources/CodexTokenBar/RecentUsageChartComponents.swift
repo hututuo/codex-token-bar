@@ -370,9 +370,10 @@ struct ChartTimeMarkers: View {
     var body: some View {
         ForEach(markerIndices, id: \.self) { index in
             if let bin = bins[safe: index] {
-                Text(label(for: bin.start))
-                    .font(.system(size: 11))
+                Text(ChartTimeMarkerLabel.text(for: bin.start, range: range))
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: true, vertical: false)
                     .position(x: xPosition(for: index), y: plot.maxY + 20)
             }
         }
@@ -382,12 +383,10 @@ struct ChartTimeMarkers: View {
         plot.minX + CGFloat(index) * plot.width / CGFloat(max(bins.count - 1, 1))
     }
 
-    private func label(for date: Date) -> String {
-        switch range {
-        case .twentyFourHours:
-            return DateFormatter.hourMinute.string(from: date)
-        case .sevenDays, .thirtyDays:
-            return DateFormatter.monthDay.string(from: date)
-        }
+}
+
+enum ChartTimeMarkerLabel {
+    static func text(for date: Date, range _: RecentChartRange) -> String {
+        DateFormatter.monthDay.string(from: date)
     }
 }
