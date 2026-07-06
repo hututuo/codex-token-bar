@@ -44,3 +44,36 @@ test("surface platform failures stay out of visible local-read diagnostics", asy
     false,
   );
 });
+
+test("local diagnostics evict old command failures instead of growing forever", async () => {
+  const diagnostics = await import("./localDiagnostics.ts");
+
+  for (let index = 0; index < 80; index += 1) {
+    diagnostics.recordCommandFailure(`stress_command_${index}`, new Error(`failure ${index}`));
+  }
+
+  const snapshot = diagnostics.getCommandDiagnosticsSnapshot();
+  assert.ok(snapshot.length <= 50, `expected at most 50 diagnostics, got ${snapshot.length}`);
+  assert.equal(snapshot.some((diagnostic) => diagnostic.command === "stress_command_79"), true);
+  assert.equal(snapshot.some((diagnostic) => diagnostic.command === "stress_command_0"), false);
+
+  for (let index = 0; index < 80; index += 1) {
+    diagnostics.clearCommandFailure(`stress_command_${index}`);
+  }
+});
+
+test("clearing a command failure removes it from bounded diagnostics", async () => {
+  const diagnostics = await import("./localDiagnostics.ts");
+
+  diagnostics.recordCommandFailure("bounded_clear_test", new Error("temporary failure"));
+  assert.equal(
+    diagnostics.getCommandDiagnosticsSnapshot().some((diagnostic) => diagnostic.command === "bounded_clear_test"),
+    true,
+  );
+
+  diagnostics.clearCommandFailure("bounded_clear_test");
+  assert.equal(
+    diagnostics.getCommandDiagnosticsSnapshot().some((diagnostic) => diagnostic.command === "bounded_clear_test"),
+    false,
+  );
+});

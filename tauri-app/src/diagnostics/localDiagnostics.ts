@@ -1,4 +1,5 @@
 const WARNING_THROTTLE_MS = 5_000;
+const MAX_LOCAL_DIAGNOSTICS = 50;
 const SILENT_FAILURE_COMMANDS = new Set([
   "record_startup_event",
   "platform:command:show_floating_window",
@@ -46,21 +47,37 @@ export function recordCommandFailure(command: string, error: unknown) {
     return;
   }
 
-  lastWarningAtByKey.set(command, now);
   const previous = diagnosticsByKey.get(command);
+  lastWarningAtByKey.set(command, now);
+  if (previous) {
+    diagnosticsByKey.delete(command);
+  }
   diagnosticsByKey.set(command, {
     command,
     message: commandFailureMessage(error),
     occurredAt: new Date(now).toISOString(),
     count: (previous?.count ?? 0) + 1,
   });
+  trimCommandDiagnostics();
   emitCommandDiagnostics();
   console.warn(`Local operation failed: ${command}`, error);
 }
 
 export function clearCommandFailure(command: string) {
   if (diagnosticsByKey.delete(command)) {
+    lastWarningAtByKey.delete(command);
     emitCommandDiagnostics();
+  }
+}
+
+function trimCommandDiagnostics() {
+  while (diagnosticsByKey.size > MAX_LOCAL_DIAGNOSTICS) {
+    const oldestCommand = diagnosticsByKey.keys().next().value;
+    if (!oldestCommand) {
+      return;
+    }
+    diagnosticsByKey.delete(oldestCommand);
+    lastWarningAtByKey.delete(oldestCommand);
   }
 }
 

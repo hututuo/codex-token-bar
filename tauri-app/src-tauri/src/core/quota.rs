@@ -5,7 +5,9 @@ use crate::models::{
 };
 use auth::read_local_account_name;
 use codex_binary::find_codex_binary_with_report;
-use rate_limits::{parse_rate_limits, placeholder_quota};
+#[cfg(test)]
+use rate_limits::parse_rate_limits;
+use rate_limits::{parse_rate_limits_with_plan, placeholder_quota, ParsedRateLimits};
 use reset_credit::read_reset_credits;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -26,6 +28,12 @@ const RATE_LIMIT_READ_TIMEOUT: Duration = Duration::from_secs(12);
 const RATE_LIMIT_RETRY_DELAY: Duration = Duration::from_millis(350);
 pub(super) const RESET_CREDIT_READ_ATTEMPTS: usize = 3;
 pub(super) const RESET_CREDIT_TIMEOUT: Duration = Duration::from_secs(14);
+const QUOTA_CHILD_ENV_REMOVE: &[&str] = &[
+    "ELECTRON_RUN_AS_NODE",
+    "NODE_OPTIONS",
+    "TAURI_SIGNING_PRIVATE_KEY",
+    "TAURI_SIGNING_PRIVATE_KEY_PATH",
+];
 
 mod auth;
 mod codex_binary;
@@ -223,7 +231,10 @@ fn bundle_has_stale_data(bundle: &AccountQuotaBundle) -> bool {
 
 fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, String> {
     let mut bundle = match read_rate_limits() {
-        Ok(mut quota) => {
+        Ok(ParsedRateLimits {
+            mut quota,
+            plan_label,
+        }) => {
             let mut warnings = Vec::new();
             let mut diagnostics = Vec::new();
             quota.reset_credit = read_reset_credits(codex_home).unwrap_or_else(|error| {
@@ -237,7 +248,7 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
                 }
             });
             let mut bundle = AccountQuotaBundle {
-                account: account_info(codex_home, Some(&quota)),
+                account: account_info(codex_home, plan_label.as_deref()),
                 quota,
                 quota_history_daily: Vec::new(),
                 quota_history_24h: Vec::new(),
@@ -285,7 +296,7 @@ fn quota_failure_bundle(codex_home: &Path, error: String) -> AccountQuotaBundle 
     });
 
     let mut bundle = AccountQuotaBundle {
-        account: account_info(codex_home, Some(&quota)),
+        account: account_info(codex_home, None),
         quota,
         quota_history_daily: Vec::new(),
         quota_history_24h: Vec::new(),
@@ -346,20 +357,14 @@ fn refresh_quota_histories(bundle: &mut AccountQuotaBundle, force_refresh: bool)
     }
 }
 
-pub fn account_info(codex_home: &Path, quota: Option<&QuotaSnapshot>) -> AccountInfo {
+pub fn account_info(codex_home: &Path, plan_label: Option<&str>) -> AccountInfo {
     AccountInfo {
         display_name: read_local_account_name(codex_home).unwrap_or_else(|| "Codex Token Bar".into()),
-        plan_label: quota
-            .and_then(plan_label_from_quota)
-            .unwrap_or_else(|| "Pro".into()),
-    }
-}
-
-fn plan_label_from_quota(quota: &QuotaSnapshot) -> Option<String> {
-    if quota.five_hour.resets_at != "待读取" || quota.seven_day.resets_at != "待读取" {
-        Some("Pro".into())
-    } else {
-        None
+        plan_label: plan_label
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| "计划待读取".into()),
     }
 }
 
@@ -575,7 +580,7 @@ fn quota_deadline_error(timeout: Duration, stderr: Option<&str>) -> String {
     }
 }
 
-fn read_rate_limits() -> Result<QuotaSnapshot, String> {
+fn read_rate_limits() -> Result<ParsedRateLimits, String> {
     let mut errors = Vec::new();
     for attempt in 1..=RATE_LIMIT_READ_ATTEMPTS {
         match read_rate_limits_once(RATE_LIMIT_READ_TIMEOUT) {
@@ -592,7 +597,7 @@ fn read_rate_limits() -> Result<QuotaSnapshot, String> {
     ))
 }
 
-fn read_rate_limits_once(timeout: Duration) -> Result<QuotaSnapshot, String> {
+fn read_rate_limits_once(timeout: Duration) -> Result<ParsedRateLimits, String> {
     let codex = find_codex_binary_with_report()?.path;
     let mut command = Command::new(codex);
     configure_quota_child_process(&mut command);
@@ -679,7 +684,7 @@ fn read_rate_limits_once(timeout: Duration) -> Result<QuotaSnapshot, String> {
             let result = message
                 .get("result")
                 .ok_or_else(|| "额度响应为空".to_string())?;
-            return parse_rate_limits(result);
+            return parse_rate_limits_with_plan(result);
         }
     }
 
@@ -744,6 +749,8 @@ impl<C: QuotaChildProcess> Drop for QuotaChildGuard<C> {
 }
 
 fn configure_quota_child_process(command: &mut Command) {
+    strip_quota_child_environment(command);
+
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -757,6 +764,12 @@ fn configure_quota_child_process(command: &mut Command) {
     }
 }
 
+fn strip_quota_child_environment(command: &mut Command) {
+    for key in QUOTA_CHILD_ENV_REMOVE {
+        command.env_remove(key);
+    }
+}
+
 fn write_json_line(stdin: &mut std::process::ChildStdin, value: &Value) -> Result<(), String> {
     serde_json::to_writer(&mut *stdin, value).map_err(|error| error.to_string())?;
     stdin.write_all(b"\n").map_err(|error| error.to_string())
@@ -765,6 +778,7 @@ fn write_json_line(stdin: &mut std::process::ChildStdin, value: &Value) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
 
     #[test]
     fn quota_history_cache_reuses_recent_bundle_until_forced() {
@@ -795,6 +809,34 @@ mod tests {
         let forced = cache.load_or_refresh(true, &mut loader).unwrap();
         assert_eq!(load_count.get(), 2);
         assert_eq!(forced.recent_24h[0].label, "load-2");
+    }
+
+    #[test]
+    fn quota_child_process_removes_inherited_node_and_signing_env_overrides() {
+        let mut command = Command::new("codex");
+
+        configure_quota_child_process(&mut command);
+
+        let envs = command.get_envs().collect::<Vec<_>>();
+        for key in QUOTA_CHILD_ENV_REMOVE {
+            assert!(envs
+                .iter()
+                .any(|(name, value)| *name == OsStr::new(key) && value.is_none()));
+        }
+    }
+
+    #[test]
+    fn account_info_uses_read_plan_label_and_does_not_invent_pro() {
+        let codex_home = std::env::temp_dir().join(format!(
+            "codex-token-bar-account-info-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        assert_eq!(account_info(&codex_home, Some("Plus")).plan_label, "Plus");
+        assert_eq!(account_info(&codex_home, None).plan_label, "计划待读取");
     }
 
     #[test]

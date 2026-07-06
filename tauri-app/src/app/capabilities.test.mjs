@@ -36,6 +36,19 @@ test("Tauri capabilities give floating and status only surface-safe frontend API
   assert.equal(permissions.status.has("core:window:allow-start-dragging"), false);
 });
 
+test("Tauri config uses a conservative packaged-app CSP instead of disabling CSP", async () => {
+  const raw = await readFile(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8");
+  const config = JSON.parse(raw);
+  const csp = config.app?.security?.csp;
+
+  assert.equal(typeof csp, "string");
+  assert.match(csp, /default-src 'self'/);
+  assert.match(csp, /script-src 'self'/);
+  assert.match(csp, /connect-src .*ipc:/);
+  assert.match(csp, /style-src .*'unsafe-inline'/);
+  assert.notEqual(csp, null);
+});
+
 async function permissionsByWindow() {
   const files = (await readdir(CAPABILITIES_DIR))
     .filter((file) => file.endsWith(".json"))

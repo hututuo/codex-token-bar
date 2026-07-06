@@ -165,20 +165,22 @@ where
     F: Fn(&Path) -> bool,
 {
     candidates.iter().find_map(|candidate| match candidate {
-        CodexBinaryCandidate::Explicit(path) if file_exists(path) => Some(path.clone()),
+        CodexBinaryCandidate::Explicit(path) if file_exists(path) => Some(existing_path(path)),
         CodexBinaryCandidate::ChildCommand { parent, command } => {
-            child_command(parent, command, &file_exists)
+            child_command(parent, command, &file_exists).map(|path| existing_path(&path))
         }
         CodexBinaryCandidate::DescendantCommand { root, command } => {
-            descendant_command(root, command, 8, &file_exists)
+            descendant_command(root, command, 8, &file_exists).map(|path| existing_path(&path))
         }
-        CodexBinaryCandidate::PathCommand(command)
-            if command_exists_in_path(command, path_env, &file_exists) =>
-        {
-            Some(PathBuf::from(command))
+        CodexBinaryCandidate::PathCommand(command) => {
+            command_path_in_path(command, path_env, &file_exists)
         }
         _ => None,
     })
+}
+
+fn existing_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn describe_candidates(candidates: &[CodexBinaryCandidate]) -> Vec<String> {
@@ -197,14 +199,19 @@ fn describe_candidates(candidates: &[CodexBinaryCandidate]) -> Vec<String> {
         .collect()
 }
 
-fn command_exists_in_path<F>(command: &str, path_env: Option<&OsStr>, file_exists: &F) -> bool
+fn command_path_in_path<F>(
+    command: &str,
+    path_env: Option<&OsStr>,
+    file_exists: &F,
+) -> Option<PathBuf>
 where
     F: Fn(&Path) -> bool,
 {
-    let Some(paths) = path_env else {
-        return false;
-    };
-    std::env::split_paths(paths).any(|path| file_exists(&path.join(command)))
+    let paths = path_env?;
+    std::env::split_paths(paths)
+        .map(|path| path.join(command))
+        .find(|path| file_exists(path))
+        .map(|path| existing_path(&path))
 }
 
 fn child_command<F>(parent: &Path, command: &str, file_exists: &F) -> Option<PathBuf>
@@ -398,7 +405,31 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(found, PathBuf::from("codex"));
+        assert_eq!(found, command_path);
+    }
+
+    #[test]
+    fn codex_binary_resolution_canonicalizes_existing_files_when_possible() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-codex-canonical-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let nested = root.join("nested");
+        let binary = nested.join("codex");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(&binary, []).unwrap();
+        let candidate = root.join("nested").join("..").join("nested").join("codex");
+        let candidates = vec![CodexBinaryCandidate::Explicit(candidate)];
+
+        let found = find_codex_binary_from(&candidates, None, |path| path.is_file()).unwrap();
+        let expected = binary.canonicalize().unwrap();
+        let _ = std::fs::remove_dir_all(root);
+
+        assert_eq!(found, expected);
     }
 
     #[test]
@@ -425,9 +456,10 @@ mod tests {
         }];
 
         let found = find_codex_binary_from(&candidates, None, |path| path.is_file()).unwrap();
+        let expected = nested.canonicalize().unwrap();
         let _ = std::fs::remove_dir_all(root);
 
-        assert_eq!(found, nested);
+        assert_eq!(found, expected);
     }
 
     #[test]

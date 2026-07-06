@@ -28,7 +28,17 @@ pub(super) fn placeholder_quota() -> QuotaSnapshot {
     }
 }
 
+pub(super) struct ParsedRateLimits {
+    pub quota: QuotaSnapshot,
+    pub plan_label: Option<String>,
+}
+
+#[cfg(test)]
 pub(super) fn parse_rate_limits(result: &Value) -> Result<QuotaSnapshot, String> {
+    Ok(parse_rate_limits_with_plan(result)?.quota)
+}
+
+pub(super) fn parse_rate_limits_with_plan(result: &Value) -> Result<ParsedRateLimits, String> {
     let by_limit = result
         .get("rateLimitsByLimitId")
         .and_then(Value::as_object)
@@ -62,16 +72,73 @@ pub(super) fn parse_rate_limits(result: &Value) -> Result<QuotaSnapshot, String>
         .clone()
         .unwrap_or_else(|| placeholder_quota().seven_day);
 
-    Ok(QuotaSnapshot {
-        pace_label: pace_label(&seven_day),
-        five_hour,
-        seven_day,
-        reset_credit: ResetCreditSummary {
-            available_count: 0,
-            status: "重置卡待读取".into(),
-            credits: Vec::new(),
+    Ok(ParsedRateLimits {
+        plan_label: parse_plan_label(result),
+        quota: QuotaSnapshot {
+            pace_label: pace_label(&seven_day),
+            five_hour,
+            seven_day,
+            reset_credit: ResetCreditSummary {
+                available_count: 0,
+                status: "重置卡待读取".into(),
+                credits: Vec::new(),
+            },
         },
     })
+}
+
+pub(super) fn parse_plan_label(result: &Value) -> Option<String> {
+    plan_label_from_object(result).or_else(|| {
+        result
+            .get("rateLimitsByLimitId")
+            .and_then(Value::as_object)
+            .and_then(|object| {
+                object
+                    .get("codex")
+                    .or_else(|| object.values().next())
+                    .and_then(plan_label_from_object)
+            })
+            .or_else(|| result.get("rateLimits").and_then(plan_label_from_object))
+    })
+}
+
+fn plan_label_from_object(value: &Value) -> Option<String> {
+    [
+        "planLabel",
+        "plan_label",
+        "planName",
+        "plan_name",
+        "tier",
+        "planType",
+        "plan_type",
+        "accountPlan",
+        "account_plan",
+        "subscriptionPlan",
+        "subscription_plan",
+    ]
+    .into_iter()
+    .filter_map(|key| value.get(key).and_then(Value::as_str))
+    .filter_map(format_plan_label)
+    .next()
+}
+
+fn format_plan_label(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = trimmed
+        .to_ascii_lowercase()
+        .replace([' ', '-', '_'], "");
+    match normalized.as_str() {
+        "plus" | "chatgptplus" => Some("Plus".into()),
+        "pro" | "chatgptpro" => Some("Pro".into()),
+        "team" | "teams" | "business" => Some("Team".into()),
+        "enterprise" => Some("Enterprise".into()),
+        "free" => Some("Free".into()),
+        "unknown" | "none" | "null" => None,
+        _ => Some(trimmed.to_string()),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -237,6 +304,28 @@ mod tests {
         assert_eq!(quota.five_hour.label, "5h");
         assert!((quota.five_hour.used_percent - 0.25).abs() < 0.001);
         assert!((quota.seven_day.remaining_percent - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn parses_plan_label_from_account_rate_limit_payload() {
+        let plus = json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "limitId": "codex",
+                    "planType": "plus",
+                    "primary": { "usedPercent": 25, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 20, "resetsAt": 1782144492 }
+                }
+            }
+        });
+        let pro = json!({ "rateLimits": { "tier": "pro" } });
+        let team = json!({ "plan_label": "Team" });
+        let unknown = json!({ "rateLimitsByLimitId": { "codex": { "planType": "unknown" } } });
+
+        assert_eq!(parse_plan_label(&plus), Some("Plus".into()));
+        assert_eq!(parse_plan_label(&pro), Some("Pro".into()));
+        assert_eq!(parse_plan_label(&team), Some("Team".into()));
+        assert_eq!(parse_plan_label(&unknown), None);
     }
 
     #[test]
