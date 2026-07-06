@@ -3,6 +3,7 @@ use crate::core::dashboard::DashboardDataSource;
 use crate::core::startup_trace;
 use crate::core::usage::cache_lifecycle::{self, UsageCacheStatus};
 use crate::core::usage::token_count_jsonl::{self, TokenUsageSummary};
+use super::window_auth::require_window_label;
 use crate::models::{
     AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, PlatformCapabilities,
 };
@@ -21,7 +22,8 @@ where
 }
 
 #[tauri::command]
-pub fn get_codex_home() -> Result<CodexHomeStatus, String> {
+pub fn get_codex_home(window: tauri::WebviewWindow) -> Result<CodexHomeStatus, String> {
+    require_window_label(&window, "get_codex_home")?;
     startup_trace::mark("command get_codex_home start");
     let result = platform::default_codex_home_status();
     startup_trace::mark("command get_codex_home end");
@@ -29,12 +31,17 @@ pub fn get_codex_home() -> Result<CodexHomeStatus, String> {
 }
 
 #[tauri::command]
-pub fn set_codex_home(path: String) -> Result<CodexHomeStatus, String> {
+pub fn set_codex_home(
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<CodexHomeStatus, String> {
+    require_window_label(&window, "set_codex_home")?;
     platform::save_codex_home(&path)
 }
 
 #[tauri::command]
-pub fn reset_codex_home() -> Result<CodexHomeStatus, String> {
+pub fn reset_codex_home(window: tauri::WebviewWindow) -> Result<CodexHomeStatus, String> {
+    require_window_label(&window, "reset_codex_home")?;
     platform::reset_codex_home()
 }
 
@@ -47,7 +54,10 @@ pub fn read_platform_capabilities() -> Result<PlatformCapabilities, String> {
 }
 
 #[tauri::command]
-pub async fn read_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
+pub async fn read_dashboard_snapshot(
+    window: tauri::WebviewWindow,
+) -> Result<DashboardSnapshot, String> {
+    require_window_label(&window, "read_dashboard_snapshot")?;
     startup_trace::mark("command read_dashboard_snapshot start");
     let started = Instant::now();
     let result = run_blocking_command(|| local_source().read_dashboard_snapshot()).await;
@@ -61,7 +71,10 @@ pub async fn read_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
 }
 
 #[tauri::command]
-pub async fn read_precise_dashboard_snapshot() -> Result<DashboardSnapshot, String> {
+pub async fn read_precise_dashboard_snapshot(
+    window: tauri::WebviewWindow,
+) -> Result<DashboardSnapshot, String> {
+    require_window_label(&window, "read_precise_dashboard_snapshot")?;
     let started = Instant::now();
     let result = run_blocking_command(|| local_source().read_precise_dashboard_snapshot()).await;
     startup_trace::mark_performance(format!(
@@ -89,8 +102,9 @@ pub async fn read_usage_summary_snapshot() -> Result<TokenUsageSummary, String> 
 }
 
 #[tauri::command]
-pub fn read_usage_cache_status() -> UsageCacheStatus {
-    cache_lifecycle::usage_cache_status()
+pub fn read_usage_cache_status(window: tauri::WebviewWindow) -> Result<UsageCacheStatus, String> {
+    require_window_label(&window, "read_usage_cache_status")?;
+    Ok(cache_lifecycle::usage_cache_status())
 }
 
 #[tauri::command]

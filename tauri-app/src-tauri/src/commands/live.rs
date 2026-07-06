@@ -7,6 +7,7 @@ use crate::core::{
 use crate::models::{
     FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, UnreadSummary,
 };
+use super::window_auth::require_window_label;
 use crate::platform;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -225,7 +226,10 @@ pub async fn read_live_rate_snapshot(
 }
 
 #[tauri::command]
-pub async fn read_live_thread_options() -> Result<Vec<LiveThreadOption>, String> {
+pub async fn read_live_thread_options(
+    window: tauri::WebviewWindow,
+) -> Result<Vec<LiveThreadOption>, String> {
+    require_window_label(&window, "read_live_thread_options")?;
     let started = Instant::now();
     let result = run_blocking_command(|| local_source().try_read_live_thread_options()).await;
     startup_trace::mark_performance(format!(
@@ -309,8 +313,10 @@ pub async fn read_unread_summary() -> Result<UnreadSummary, String> {
 
 #[tauri::command]
 pub async fn reset_live_rate_monitor(
+    window: tauri::WebviewWindow,
     state: State<'_, LiveRateMonitorRegistry>,
 ) -> Result<bool, String> {
+    require_window_label(&window, "reset_live_rate_monitor")?;
     let started = Instant::now();
     let registry = state.inner().clone();
     let result = run_blocking_command(move || {
