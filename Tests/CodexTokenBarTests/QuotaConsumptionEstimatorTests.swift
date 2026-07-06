@@ -230,6 +230,83 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testThirtyDayRangeUsesThreeHourBucketsAcrossFullScrollableHistory() {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let hourlyBins = (0..<(45 * 24)).map { index in
+            BinUsage(
+                start: start.addingTimeInterval(Double(index) * 60 * 60),
+                tokens: index + 1,
+                calls: 1
+            )
+        }
+
+        let prepared = RecentUsageChart.prepare(
+            range: .thirtyDays,
+            recentBins: [],
+            hourlyBins: hourlyBins,
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: []
+        )
+
+        XCTAssertEqual(prepared.bucketInterval, 3 * 60 * 60)
+        XCTAssertEqual(prepared.bins.count, 45 * 8)
+        XCTAssertEqual(prepared.bins.first?.start, start)
+        XCTAssertEqual(prepared.bins.last?.start, start.addingTimeInterval(Double(45 * 8 - 1) * 3 * 60 * 60))
+        XCTAssertEqual(prepared.tokenTotal, hourlyBins.reduce(0) { $0 + $1.tokens })
+    }
+
+    func testThirtyDayScrollMetricsKeepThirtyDaysAtNormalWidthAndExpandHistory() {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let thirtyDays = (0..<(30 * 8)).map { index in
+            BinUsage(start: start.addingTimeInterval(Double(index) * 3 * 60 * 60), tokens: 1, calls: 1)
+        }
+        let sixtyDays = (0..<(60 * 8)).map { index in
+            BinUsage(start: start.addingTimeInterval(Double(index) * 3 * 60 * 60), tokens: 1, calls: 1)
+        }
+
+        XCTAssertEqual(
+            RecentChartScrollMetrics.contentWidth(
+                range: .thirtyDays,
+                bins: thirtyDays,
+                bucketInterval: RecentChartRange.thirtyDays.bucketInterval,
+                viewportWidth: 900
+            ),
+            900,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            RecentChartScrollMetrics.contentWidth(
+                range: .thirtyDays,
+                bins: sixtyDays,
+                bucketInterval: RecentChartRange.thirtyDays.bucketInterval,
+                viewportWidth: 900
+            ),
+            1_800,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            RecentChartScrollMetrics.contentWidth(
+                range: .sevenDays,
+                bins: sixtyDays,
+                bucketInterval: RecentChartRange.sevenDays.bucketInterval,
+                viewportWidth: 900
+            ),
+            900,
+            accuracy: 0.001
+        )
+    }
+
+    func testRecentUsageChartExposesHorizontalScrollingForLongHistory() throws {
+        let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
+
+        XCTAssertTrue(source.contains("ScrollView(.horizontal"))
+        XCTAssertTrue(source.contains("RecentChartScrollMetrics.contentWidth"))
+        XCTAssertTrue(source.contains("recent-chart-trailing-edge"))
+    }
+
     func testSelectionStatePreviewsOnHoverThenPinsEndOnSecondClick() {
         var state = RecentChartConsumptionSelectionState()
 

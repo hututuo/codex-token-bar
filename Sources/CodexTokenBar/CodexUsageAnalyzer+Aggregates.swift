@@ -42,7 +42,8 @@ extension CodexUsageAnalyzer {
     func hourlyUsage(from events: [TokenEvent]) -> [BinUsage] {
         let now = Date()
         let currentHour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
-        guard let start = calendar.date(byAdding: .hour, value: -719, to: currentHour) else { return [] }
+        let hourCount = 365 * 24
+        guard let start = calendar.date(byAdding: .hour, value: -(hourCount - 1), to: currentHour) else { return [] }
         var grouped: [Date: (tokens: Int, calls: Int)] = [:]
 
         for event in events where event.timestamp >= start && event.timestamp <= now {
@@ -51,7 +52,7 @@ extension CodexUsageAnalyzer {
             grouped[hour] = (current.tokens + event.tokens, current.calls + 1)
         }
 
-        return (0..<720).compactMap { index -> BinUsage? in
+        return (0..<hourCount).compactMap { index -> BinUsage? in
             guard let hour = calendar.date(byAdding: .hour, value: index, to: start) else { return nil }
             let usage = grouped[hour] ?? (0, 0)
             return BinUsage(start: hour, tokens: usage.tokens, calls: usage.calls)

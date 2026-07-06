@@ -26,14 +26,7 @@ extension RecentUsageChart {
         )
         let fiveHourRemaining = quotaBuckets.map { $0?.fiveHourRemainingPercent }
         let sevenDayRemaining = quotaBuckets.map { $0?.sevenDayRemainingPercent }
-        let last = bins.count - 1
-        let markerIndices: [Int] = bins.count > 1
-            ? [0, last / 4, last / 2, (last * 3) / 4, last].reduce(into: [Int]()) { result, index in
-                if !result.contains(index) {
-                    result.append(index)
-                }
-            }
-            : []
+        let markerIndices = markerIndices(for: range, bins: bins, bucketInterval: range.bucketInterval)
 
         return RecentChartPreparedData(
             range: range,
@@ -64,7 +57,7 @@ extension RecentUsageChart {
         case .sevenDays:
             return Array(hourlyBins.suffix(7 * 24))
         case .thirtyDays:
-            return aggregateUsage(Array(hourlyBins.suffix(30 * 24)), groupSize: 6)
+            return aggregateUsage(hourlyBins, groupSize: 3)
         }
     }
 
@@ -105,7 +98,7 @@ extension RecentUsageChart {
         case .thirtyDays:
             let cacheByHour = cacheMap(cacheHourlyBins, interval: 60 * 60)
             return bins.map { bin in
-                (0..<6).map { offset in
+                (0..<3).map { offset in
                     let date = bin.start.addingTimeInterval(Double(offset) * 60 * 60)
                     return cacheByHour[timeBinKey(date, interval: 60 * 60)] ?? .empty
                 }.combined
@@ -140,7 +133,7 @@ extension RecentUsageChart {
         case .thirtyDays:
             let quotaByHour = quotaMap(quotaHourlyBins, interval: 60 * 60)
             return bins.map { bin in
-                let buckets = (0..<6).compactMap { offset in
+                let buckets = (0..<3).compactMap { offset in
                     let date = bin.start.addingTimeInterval(Double(offset) * 60 * 60)
                     return quotaByHour[timeBinKey(date, interval: 60 * 60)]
                 }
@@ -175,6 +168,26 @@ extension RecentUsageChart {
 
     private static func timeBinKey(_ date: Date, interval: TimeInterval) -> Int {
         Int(floor(date.timeIntervalSince1970 / interval))
+    }
+
+    private static func markerIndices(for range: RecentChartRange, bins: [BinUsage], bucketInterval: TimeInterval) -> [Int] {
+        guard bins.count > 1 else { return [] }
+
+        let last = bins.count - 1
+        if range == .thirtyDays {
+            let weekStep = max(1, Int((TimeInterval(7 * 24 * 60 * 60) / bucketInterval).rounded()))
+            var indices = Array(stride(from: 0, through: last, by: weekStep))
+            if indices.last != last {
+                indices.append(last)
+            }
+            return indices
+        }
+
+        return [0, last / 4, last / 2, (last * 3) / 4, last].reduce(into: [Int]()) { result, index in
+            if !result.contains(index) {
+                result.append(index)
+            }
+        }
     }
 
     static func percentText(_ value: Double?) -> String {

@@ -305,11 +305,12 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         )
 
         let currentHour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
-        let hourlyStart = calendar.date(byAdding: .hour, value: -719, to: currentHour) ?? currentHour
+        let hourlyCount = 365 * 24
+        let hourlyStart = calendar.date(byAdding: .hour, value: -(hourlyCount - 1), to: currentHour) ?? currentHour
         let hourlyBins = makeCarriedBins(
             rows: sorted,
             start: hourlyStart,
-            count: 720,
+            count: hourlyCount,
             interval: 60 * 60,
             maxCarryGap: maxCarryGap,
             now: now
