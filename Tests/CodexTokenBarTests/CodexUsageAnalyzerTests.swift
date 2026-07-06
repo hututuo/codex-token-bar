@@ -66,6 +66,40 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(Set(snapshot.cacheUsage.turns.map(\.userPrompt)), ["First question", "Second question"])
     }
 
+    func testRecentBinsKeepFiveMinuteHistoryForThirtyDays() throws {
+        let codexHome = try makeCodexHome()
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let now = Date()
+        let included = TokenEvent(
+            timestamp: now.addingTimeInterval(-29 * 24 * 60 * 60),
+            sessionID: "included",
+            tokens: 100,
+            inputTokens: 80,
+            cachedInputTokens: 0,
+            outputTokens: 20,
+            reasoningOutputTokens: 0,
+            userPrompt: "",
+            assistantResponse: ""
+        )
+        let excluded = TokenEvent(
+            timestamp: now.addingTimeInterval(-31 * 24 * 60 * 60),
+            sessionID: "excluded",
+            tokens: 1_000,
+            inputTokens: 800,
+            cachedInputTokens: 0,
+            outputTokens: 200,
+            reasoningOutputTokens: 0,
+            userPrompt: "",
+            assistantResponse: ""
+        )
+
+        let bins = analyzer.recentBins(from: [included, excluded])
+
+        XCTAssertEqual(bins.count, 30 * 24 * 12)
+        XCTAssertEqual(bins.reduce(0) { $0 + $1.tokens }, 100)
+        XCTAssertEqual(bins.reduce(0) { $0 + $1.calls }, 1)
+    }
+
     func testPersistentSessionCacheDoesNotStoreConversationText() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerCache")

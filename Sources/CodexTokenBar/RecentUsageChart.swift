@@ -9,8 +9,8 @@ enum RecentChartRange: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .twentyFourHours: "最近 24 小时"
-        case .sevenDays: "最近 7 天"
+        case .twentyFourHours: "24 小时窗口"
+        case .sevenDays: "7 天窗口"
         case .thirtyDays: "30 天窗口"
         }
     }
@@ -25,8 +25,8 @@ enum RecentChartRange: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
-        case .twentyFourHours: "5 分钟粒度 · 5 分钟自动刷新"
-        case .sevenDays: "1 小时粒度 · 5 分钟自动刷新"
+        case .twentyFourHours: "5 分钟粒度 · 横向滚动查看 30 天内历史"
+        case .sevenDays: "1 小时粒度 · 横向滚动查看历史"
         case .thirtyDays: "3 小时粒度 · 横向滚动查看历史"
         }
     }
@@ -42,7 +42,6 @@ enum RecentChartRange: String, CaseIterable, Identifiable {
 
 enum RecentChartScrollMetrics {
     static let trailingAnchorID = "recent-chart-trailing-edge"
-    private static let thirtyDayViewportDuration: TimeInterval = 30 * 24 * 60 * 60
 
     static func contentWidth(
         range: RecentChartRange,
@@ -50,18 +49,29 @@ enum RecentChartScrollMetrics {
         bucketInterval: TimeInterval,
         viewportWidth: CGFloat
     ) -> CGFloat {
-        guard range == .thirtyDays,
-              let first = bins.first,
+        guard let first = bins.first,
               let last = bins.last,
               viewportWidth > 0 else {
             return viewportWidth
         }
 
+        let viewportDuration = windowDuration(for: range)
         let contentDuration = max(
             last.start.addingTimeInterval(bucketInterval).timeIntervalSince(first.start),
-            thirtyDayViewportDuration
+            viewportDuration
         )
-        return max(viewportWidth, viewportWidth * CGFloat(contentDuration / thirtyDayViewportDuration))
+        return max(viewportWidth, viewportWidth * CGFloat(contentDuration / viewportDuration))
+    }
+
+    static func windowDuration(for range: RecentChartRange) -> TimeInterval {
+        switch range {
+        case .twentyFourHours:
+            return 24 * 60 * 60
+        case .sevenDays:
+            return 7 * 24 * 60 * 60
+        case .thirtyDays:
+            return 30 * 24 * 60 * 60
+        }
     }
 }
 
@@ -481,7 +491,7 @@ struct RecentUsageChart: View {
     }
 
     private func scrollChartToLatestIfNeeded(_ proxy: ScrollViewProxy) {
-        guard selectedRange == .thirtyDays else { return }
+        guard preparedData.bins.count > 1 else { return }
         DispatchQueue.main.async {
             withAnimation(.easeOut(duration: 0.18)) {
                 proxy.scrollTo(RecentChartScrollMetrics.trailingAnchorID, anchor: .trailing)

@@ -21,8 +21,9 @@ extension CodexUsageAnalyzer {
 
     func recentBins(from events: [TokenEvent]) -> [BinUsage] {
         let end = Date()
-        guard let start = calendar.date(byAdding: .hour, value: -24, to: end) else { return [] }
         let interval: TimeInterval = 5 * 60
+        let binCount = 30 * 24 * 12
+        guard let start = calendar.date(byAdding: .minute, value: -((binCount - 1) * 5), to: end) else { return [] }
         var grouped: [Date: (tokens: Int, calls: Int)] = [:]
 
         for event in events where event.timestamp >= start && event.timestamp <= end {
@@ -32,7 +33,7 @@ extension CodexUsageAnalyzer {
             grouped[bin] = (current.tokens + event.tokens, current.calls + 1)
         }
 
-        return (0..<288).map { index in
+        return (0..<binCount).map { index in
             let bin = start.addingTimeInterval(Double(index) * interval)
             let usage = grouped[bin] ?? (0, 0)
             return BinUsage(start: bin, tokens: usage.tokens, calls: usage.calls)

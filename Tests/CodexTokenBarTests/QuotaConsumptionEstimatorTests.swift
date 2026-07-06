@@ -231,6 +231,34 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     @MainActor
+    func testSevenDayRangeUsesHourlyBucketsAcrossFullScrollableHistory() {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let hourlyBins = (0..<(21 * 24)).map { index in
+            BinUsage(
+                start: start.addingTimeInterval(Double(index) * 60 * 60),
+                tokens: index + 1,
+                calls: 1
+            )
+        }
+
+        let prepared = RecentUsageChart.prepare(
+            range: .sevenDays,
+            recentBins: [],
+            hourlyBins: hourlyBins,
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: []
+        )
+
+        XCTAssertEqual(prepared.bucketInterval, 60 * 60)
+        XCTAssertEqual(prepared.bins.count, 21 * 24)
+        XCTAssertEqual(prepared.bins.first?.start, start)
+        XCTAssertEqual(prepared.bins.last?.start, start.addingTimeInterval(Double(21 * 24 - 1) * 60 * 60))
+        XCTAssertEqual(prepared.tokenTotal, hourlyBins.reduce(0) { $0 + $1.tokens })
+    }
+
+    @MainActor
     func testThirtyDayRangeUsesThreeHourBucketsAcrossFullScrollableHistory() {
         let start = Date(timeIntervalSince1970: 1_800)
         let hourlyBins = (0..<(45 * 24)).map { index in
@@ -258,8 +286,20 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(prepared.tokenTotal, hourlyBins.reduce(0) { $0 + $1.tokens })
     }
 
-    func testThirtyDayScrollMetricsKeepThirtyDaysAtNormalWidthAndExpandHistory() {
+    func testScrollMetricsKeepSelectedWindowAtNormalWidthAndExpandHistory() {
         let start = Date(timeIntervalSince1970: 1_800)
+        let twentyFourHours = (0..<288).map { index in
+            BinUsage(start: start.addingTimeInterval(Double(index) * 5 * 60), tokens: 1, calls: 1)
+        }
+        let fortyEightHours = (0..<(2 * 288)).map { index in
+            BinUsage(start: start.addingTimeInterval(Double(index) * 5 * 60), tokens: 1, calls: 1)
+        }
+        let sevenDays = (0..<(7 * 24)).map { index in
+            BinUsage(start: start.addingTimeInterval(Double(index) * 60 * 60), tokens: 1, calls: 1)
+        }
+        let fourteenDays = (0..<(14 * 24)).map { index in
+            BinUsage(start: start.addingTimeInterval(Double(index) * 60 * 60), tokens: 1, calls: 1)
+        }
         let thirtyDays = (0..<(30 * 8)).map { index in
             BinUsage(start: start.addingTimeInterval(Double(index) * 3 * 60 * 60), tokens: 1, calls: 1)
         }
@@ -267,6 +307,46 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             BinUsage(start: start.addingTimeInterval(Double(index) * 3 * 60 * 60), tokens: 1, calls: 1)
         }
 
+        XCTAssertEqual(
+            RecentChartScrollMetrics.contentWidth(
+                range: .twentyFourHours,
+                bins: twentyFourHours,
+                bucketInterval: RecentChartRange.twentyFourHours.bucketInterval,
+                viewportWidth: 900
+            ),
+            900,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            RecentChartScrollMetrics.contentWidth(
+                range: .twentyFourHours,
+                bins: fortyEightHours,
+                bucketInterval: RecentChartRange.twentyFourHours.bucketInterval,
+                viewportWidth: 900
+            ),
+            1_800,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            RecentChartScrollMetrics.contentWidth(
+                range: .sevenDays,
+                bins: sevenDays,
+                bucketInterval: RecentChartRange.sevenDays.bucketInterval,
+                viewportWidth: 900
+            ),
+            900,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            RecentChartScrollMetrics.contentWidth(
+                range: .sevenDays,
+                bins: fourteenDays,
+                bucketInterval: RecentChartRange.sevenDays.bucketInterval,
+                viewportWidth: 900
+            ),
+            1_800,
+            accuracy: 0.001
+        )
         XCTAssertEqual(
             RecentChartScrollMetrics.contentWidth(
                 range: .thirtyDays,
@@ -285,16 +365,6 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
                 viewportWidth: 900
             ),
             1_800,
-            accuracy: 0.001
-        )
-        XCTAssertEqual(
-            RecentChartScrollMetrics.contentWidth(
-                range: .sevenDays,
-                bins: sixtyDays,
-                bucketInterval: RecentChartRange.sevenDays.bucketInterval,
-                viewportWidth: 900
-            ),
-            900,
             accuracy: 0.001
         )
     }

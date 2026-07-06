@@ -289,11 +289,11 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
 
     private static func makeSnapshot(rows: [QuotaHistoryRow], recentInterval: TimeInterval, maxCarryGap: TimeInterval, now: Date = Date()) -> QuotaHistorySnapshot {
         let calendar = Calendar.current
-        guard let recentStart = calendar.date(byAdding: .hour, value: -24, to: now) else {
+        guard let recentStart = calendar.date(byAdding: .day, value: -30, to: now) else {
             return .empty
         }
 
-        let intervalCount = 288
+        let intervalCount = 30 * 24 * 12
         let sorted = sanitizedRows(rows.sorted { $0.createdAt < $1.createdAt })
         let recentBins = makeCarriedBins(
             rows: sorted,

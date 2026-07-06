@@ -55,7 +55,7 @@ extension RecentUsageChart {
         case .twentyFourHours:
             return recentBins
         case .sevenDays:
-            return Array(hourlyBins.suffix(7 * 24))
+            return hourlyBins
         case .thirtyDays:
             return aggregateUsage(hourlyBins, groupSize: 3)
         }
@@ -174,19 +174,21 @@ extension RecentUsageChart {
         guard bins.count > 1 else { return [] }
 
         let last = bins.count - 1
-        if range == .thirtyDays {
+        switch range {
+        case .twentyFourHours:
+            let dayStep = max(1, Int((TimeInterval(24 * 60 * 60) / bucketInterval).rounded()))
+            var indices = Array(stride(from: 0, through: last, by: dayStep))
+            if indices.last != last {
+                indices.append(last)
+            }
+            return indices
+        case .sevenDays, .thirtyDays:
             let weekStep = max(1, Int((TimeInterval(7 * 24 * 60 * 60) / bucketInterval).rounded()))
             var indices = Array(stride(from: 0, through: last, by: weekStep))
             if indices.last != last {
                 indices.append(last)
             }
             return indices
-        }
-
-        return [0, last / 4, last / 2, (last * 3) / 4, last].reduce(into: [Int]()) { result, index in
-            if !result.contains(index) {
-                result.append(index)
-            }
         }
     }
 

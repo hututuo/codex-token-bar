@@ -339,7 +339,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let loaded = try database.loadSnapshot(now: now)
         let elapsed = Date().timeIntervalSince(start)
 
-        XCTAssertEqual(loaded.recentBins.count, 288)
+        XCTAssertEqual(loaded.recentBins.count, 30 * 24 * 12)
         XCTAssertLessThan(elapsed, 1.0, "stable quota histories should not spend seconds scanning future rows")
     }
 
