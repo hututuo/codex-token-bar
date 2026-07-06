@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Allow the dashboard and floating panel to use the small set of Tauri APIs they need.",
-  "windows": ["main", "floating", "status"],
+  "description": "Allow the main dashboard to use settings, updater, and desktop surface APIs.",
+  "windows": ["main"],
   "permissions": [
     "core:default",
     "core:event:allow-emit",

@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "status",
+  "description": "Allow the status panel to read lightweight snapshots and check its own visibility.",
+  "windows": ["status"],
+  "permissions": [
+    "core:event:allow-emit",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-is-visible"
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "floating",
+  "description": "Allow the floating surface to read lightweight snapshots and control only its own window.",
+  "windows": ["floating"],
+  "permissions": [
+    "core:event:allow-emit",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-is-decorated",
+    "core:window:allow-inner-size",
+    "core:window:allow-outer-size",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-start-dragging",
+    "core:window:allow-title"
+  ]
+}
