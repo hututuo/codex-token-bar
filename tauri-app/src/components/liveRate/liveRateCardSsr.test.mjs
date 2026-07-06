@@ -102,7 +102,8 @@ test("LiveRateCard does not show stream failure warning when live rate is disabl
     assert.match(html, /aria-label="重置整体速率"/);
     assert.doesNotMatch(html, /实时速率降级/);
     assert.doesNotMatch(html, />重试</);
-    assert.doesNotMatch(html, /LiveRateSessionRow/);
+    assert.doesNotMatch(html, /class="session-picker"/);
+    assert.doesNotMatch(html, /<select/);
   });
 });
 

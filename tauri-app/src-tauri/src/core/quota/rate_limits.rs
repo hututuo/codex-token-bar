@@ -156,9 +156,8 @@ fn parse_limit_card(value: &Value, fallback_id: &str) -> Option<ParsedLimitCard>
         .filter(|value| !value.is_empty())
         .unwrap_or(fallback_id)
         .to_string();
-    let percent_scale = uses_percent_scale(value.get("primary"), value.get("secondary"));
-    let five_hour = parse_window(value.get("primary"), "5h", percent_scale);
-    let seven_day = parse_window(value.get("secondary"), "7d", percent_scale);
+    let five_hour = parse_window(value.get("primary"), "5h");
+    let seven_day = parse_window(value.get("secondary"), "7d");
     if five_hour.is_none() && seven_day.is_none() {
         return None;
     }
@@ -169,13 +168,13 @@ fn parse_limit_card(value: &Value, fallback_id: &str) -> Option<ParsedLimitCard>
     })
 }
 
-fn parse_window(value: Option<&Value>, label: &str, percent_scale: bool) -> Option<QuotaLimit> {
+fn parse_window(value: Option<&Value>, label: &str) -> Option<QuotaLimit> {
     let value = value?;
-    let used = normalized_percent(value.get("usedPercent")?, percent_scale)?;
+    let used_percent = value.get("usedPercent")?;
+    let used = normalized_percent(used_percent, uses_percent_scale(value, used_percent))?;
     let reset_at_unix = value
         .get("resetsAt")
-        .and_then(number)
-        .map(|seconds| seconds.round() as i64);
+        .and_then(normalized_unix_timestamp_seconds);
     let reset_at =
         reset_at_unix.and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok());
     Some(QuotaLimit {
@@ -189,14 +188,9 @@ fn parse_window(value: Option<&Value>, label: &str, percent_scale: bool) -> Opti
     })
 }
 
-fn uses_percent_scale(primary: Option<&Value>, secondary: Option<&Value>) -> bool {
-    [primary, secondary].into_iter().flatten().any(|window| {
-        window.get("windowDurationMins").is_some()
-            || window
-                .get("usedPercent")
-                .and_then(number)
-                .is_some_and(|raw| raw > 1.0)
-    })
+fn uses_percent_scale(window: &Value, used_percent: &Value) -> bool {
+    window.get("windowDurationMins").is_some()
+        || number(used_percent).is_some_and(|raw| raw > 1.0)
 }
 
 fn normalized_percent(value: &Value, percent_scale: bool) -> Option<f64> {
@@ -213,6 +207,16 @@ fn number(value: &Value) -> Option<f64> {
         .as_f64()
         .or_else(|| value.as_i64().map(|value| value as f64))
         .or_else(|| value.as_str().and_then(|value| value.parse::<f64>().ok()))
+}
+
+fn normalized_unix_timestamp_seconds(value: &Value) -> Option<i64> {
+    let raw = number(value)?;
+    let seconds = if raw.abs() > 10_000_000_000.0 {
+        raw / 1000.0
+    } else {
+        raw
+    };
+    Some(seconds.round() as i64)
 }
 
 fn compact_reset_text(date: OffsetDateTime, label: &str) -> String {
@@ -326,6 +330,74 @@ mod tests {
         assert_eq!(parse_plan_label(&pro), Some("Pro".into()));
         assert_eq!(parse_plan_label(&team), Some("Team".into()));
         assert_eq!(parse_plan_label(&unknown), None);
+    }
+
+    #[test]
+    fn keeps_second_reset_timestamp_as_unix_seconds() {
+        let result = json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "limitId": "codex",
+                    "primary": { "usedPercent": 25, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 20, "resetsAt": 1782144492 }
+                }
+            }
+        });
+
+        let quota = parse_rate_limits(&result).unwrap();
+        assert_eq!(quota.five_hour.resets_at_unix, Some(1781715600));
+        assert_eq!(quota.seven_day.resets_at_unix, Some(1782144492));
+    }
+
+    #[test]
+    fn normalizes_millisecond_reset_timestamp_to_unix_seconds() {
+        let result = json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "limitId": "codex",
+                    "primary": { "usedPercent": 25, "resetsAt": 1781715600000_i64 },
+                    "secondary": { "usedPercent": 20, "resetsAt": 1782144492000_i64 }
+                }
+            }
+        });
+
+        let quota = parse_rate_limits(&result).unwrap();
+        assert_eq!(quota.five_hour.resets_at_unix, Some(1781715600));
+        assert_eq!(quota.seven_day.resets_at_unix, Some(1782144492));
+    }
+
+    #[test]
+    fn mixed_fractional_primary_and_percent_secondary_use_independent_scales() {
+        let result = json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "limitId": "codex",
+                    "primary": { "usedPercent": 0.25, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 20, "windowDurationMins": 10080, "resetsAt": 1782144492 }
+                }
+            }
+        });
+
+        let quota = parse_rate_limits(&result).unwrap();
+        assert!((quota.five_hour.used_percent - 0.25).abs() < 0.001);
+        assert!((quota.seven_day.used_percent - 0.20).abs() < 0.001);
+    }
+
+    #[test]
+    fn mixed_percent_primary_and_fractional_secondary_use_independent_scales() {
+        let result = json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "limitId": "codex",
+                    "primary": { "usedPercent": 25, "windowDurationMins": 300, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 0.2, "resetsAt": 1782144492 }
+                }
+            }
+        });
+
+        let quota = parse_rate_limits(&result).unwrap();
+        assert!((quota.five_hour.used_percent - 0.25).abs() < 0.001);
+        assert!((quota.seven_day.used_percent - 0.20).abs() < 0.001);
     }
 
     #[test]
