@@ -2,14 +2,20 @@ import Foundation
 import Darwin
 
 extension LiveRateMonitor {
-    func setDataSource(_ source: CodexDataSource) {
-        guard dataSource != source || cachedLogsDatabasePath.isEmpty || cachedLogsDirectoryPath.isEmpty else {
-            return
+    @discardableResult
+    func setDataSource(_ source: CodexDataSource) -> Bool {
+        let sourceChanged = dataSource != source
+            || cachedLogsDatabasePath.isEmpty
+            || cachedLogsDirectoryPath.isEmpty
+        guard sourceChanged else {
+            return false
         }
         dataSource = source
         let homePath = source.codexHome.path as NSString
         cachedLogsDatabasePath = homePath.appendingPathComponent("logs_2.sqlite")
         cachedLogsDirectoryPath = (cachedLogsDatabasePath as NSString).deletingLastPathComponent
+        resetSourceLocalState(for: source)
+        return true
     }
 
     func configureLogWatcher(logsDirectory directory: String) {

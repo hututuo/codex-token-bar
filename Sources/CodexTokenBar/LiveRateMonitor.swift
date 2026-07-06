@@ -193,6 +193,41 @@ final class LiveRateMonitor: ObservableObject {
         }
     }
 
+    func resetSourceLocalState(for source: CodexDataSource) {
+        logsDirectorySource?.cancel()
+        logsDirectorySource = nil
+        watchedLogsDirectory = ""
+        logReader = nil
+        logChangePending = false
+        fastPollUntil = 0
+        threadID = ""
+        selectedThreadID = ""
+        threadOptions = []
+        lastLogID = 0
+        lastGlobalLogID = 0
+        lastLogsSignature = nil
+        lastPollProcessedRows = false
+        lastSnapshotPublishAt = 0
+        lastFallbackPollAt = 0
+        lastRolloutReadAt = 0
+        rolloutOffsets.removeAll()
+        selectedRate.clear()
+        totalRate.clear()
+        totalSessionRates.removeAll()
+        selectedSmoothedTokensPerSecond = 0
+        totalSmoothedTokensPerSecond = 0
+        clearStreamState()
+
+        let sourceLabel = "\(source.displayPath)/logs_2.sqlite"
+        let interfaceLabel = snapshot.interfaceLabel
+        snapshot = LiveRateSnapshot(
+            sourceLabel: sourceLabel,
+            status: "等待新数据源会话",
+            interfaceLabel: interfaceLabel
+        )
+        configureTotalSnapshot(source: source)
+    }
+
     private func resetToLatestThread() async {
         guard monitoringEnabled else { return }
         let resetStartedAt = Date().timeIntervalSince1970
@@ -713,13 +748,16 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     private func configureTotalSnapshot(source: CodexDataSource) {
-        totalSnapshot.threadID = "all"
-        totalSnapshot.threadTitle = "全会话输出汇总"
-        totalSnapshot.sourceLabel = "\(source.displayPath)/logs_2.sqlite"
-        totalSnapshot.scopeLabel = "全会话"
+        let interfaceLabel = totalSnapshot.interfaceLabel
+        totalSnapshot = LiveRateSnapshot(
+            threadID: "all",
+            threadTitle: "全会话输出汇总",
+            sourceLabel: "\(source.displayPath)/logs_2.sqlite",
+            status: "等待任意会话输出",
+            scopeLabel: "全会话",
+            interfaceLabel: interfaceLabel
+        )
         updateTokenCountingLabel()
-        totalSnapshot.status = "等待任意会话输出"
-        totalSnapshot.updatedAt = Date()
     }
 
     private func disableMonitoringSnapshots() {

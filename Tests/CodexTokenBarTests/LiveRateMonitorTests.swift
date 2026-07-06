@@ -512,6 +512,118 @@ final class LiveRateMonitorTests: XCTestCase {
     }
 
     @MainActor
+    func testDataSourceSwitchClearsSourceLocalLiveRateState() throws {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        let sourceA = try makeCodexDataSource(named: "source-a")
+        let sourceB = try makeCodexDataSource(named: "source-b")
+        monitor.setDataSource(sourceA)
+        monitor.testPrepareForLiveRateProcessing(
+            selectedThreadID: "thread-a",
+            threadOptions: [
+                LiveThreadOption(id: "thread-a", title: "A", updatedAtMS: 1, rolloutPath: "/tmp/a.jsonl")
+            ]
+        )
+        monitor.testProcessPollInputs(
+            streamRows: [
+                LiveRateMonitor.LogRow(
+                    id: 1,
+                    threadID: "thread-a",
+                    ts: 1_000,
+                    tsNanos: 0,
+                    target: "codex_api::sse::responses",
+                    feedbackLogBody: #"SSE event: {"type":"response.output_text.delta","delta":"old source output","item_id":"msg-a","sequence_number":1}"#
+                )
+            ],
+            rolloutReads: [
+                LiveRateMonitor.RolloutRead(
+                    threadID: "thread-a",
+                    path: "/tmp/a.jsonl",
+                    newOffset: 10,
+                    events: [RolloutMetricEvent(timestamp: 1_000.1, key: "rollout-a", category: .visibleText, text: "old rollout")]
+                )
+            ],
+            now: 1_000.2
+        )
+        XCTAssertGreaterThan(monitor.snapshot.breakdown.visibleText, 0)
+        XCTAssertGreaterThan(monitor.totalSnapshot.breakdown.visibleText, 0)
+        XCTAssertEqual(monitor.selectedThreadID, "thread-a")
+        XCTAssertEqual(monitor.threadOptions.map(\.id), ["thread-a"])
+
+        monitor.setDataSource(sourceB)
+
+        XCTAssertEqual(monitor.snapshot.threadID, "")
+        XCTAssertEqual(monitor.selectedThreadID, "")
+        XCTAssertTrue(monitor.threadOptions.isEmpty)
+        XCTAssertEqual(monitor.snapshot.breakdown, LiveTokenBreakdown())
+        XCTAssertEqual(monitor.totalSnapshot.breakdown, LiveTokenBreakdown())
+        XCTAssertTrue(monitor.testTotalSessionRateKeys.isEmpty)
+        XCTAssertTrue(monitor.snapshot.sourceLabel.contains(sourceB.codexHome.lastPathComponent))
+        XCTAssertTrue(monitor.totalSnapshot.sourceLabel.contains(sourceB.codexHome.lastPathComponent))
+    }
+
+    @MainActor
+    func testUnchangedDataSourceDoesNotResetLiveRateState() throws {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        let source = try makeCodexDataSource(named: "same-source")
+        monitor.setDataSource(source)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        monitor.testProcessPollInputs(
+            streamRows: [
+                LiveRateMonitor.LogRow(
+                    id: 1,
+                    threadID: "thread-1",
+                    ts: 1_000,
+                    tsNanos: 0,
+                    target: "codex_api::sse::responses",
+                    feedbackLogBody: #"SSE event: {"type":"response.output_text.delta","delta":"kept output","item_id":"msg-keep","sequence_number":1}"#
+                )
+            ],
+            rolloutReads: [],
+            now: 1_000.2
+        )
+        let visibleText = monitor.snapshot.breakdown.visibleText
+        XCTAssertGreaterThan(visibleText, 0)
+
+        monitor.setDataSource(source)
+
+        XCTAssertEqual(monitor.selectedThreadID, "thread-1")
+        XCTAssertEqual(monitor.snapshot.breakdown.visibleText, visibleText)
+        XCTAssertGreaterThan(monitor.snapshot.rollingTokensPerSecond, 0)
+    }
+
+    @MainActor
+    func testDataSourceSwitchAllowsSameFingerprintFromNewSourceToCount() throws {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        let sourceA = try makeCodexDataSource(named: "fingerprint-source-a")
+        let sourceB = try makeCodexDataSource(named: "fingerprint-source-b")
+        let row = LiveRateMonitor.LogRow(
+            id: 1,
+            threadID: "thread-1",
+            ts: 1_000,
+            tsNanos: 0,
+            target: "codex_api::sse::responses",
+            feedbackLogBody: #"SSE event: {"type":"response.output_text.delta","delta":"same visible","item_id":"msg-1","sequence_number":1}"#
+        )
+
+        monitor.setDataSource(sourceA)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        monitor.testProcessPollInputs(streamRows: [row], rolloutReads: [], now: 1_000.2)
+        XCTAssertEqual(
+            monitor.totalSnapshot.breakdown.visibleText,
+            monitor.estimateTokenCount("same visible", category: .visibleText)
+        )
+
+        monitor.setDataSource(sourceB)
+        XCTAssertEqual(monitor.totalSnapshot.breakdown, LiveTokenBreakdown())
+        monitor.testProcessPollInputs(streamRows: [row], rolloutReads: [], now: 1_001.2)
+
+        XCTAssertEqual(
+            monitor.totalSnapshot.breakdown.visibleText,
+            monitor.estimateTokenCount("same visible", category: .visibleText)
+        )
+    }
+
+    @MainActor
     func testUnattributedStreamEventsUseOneStableDisplayBucket() {
         let monitor = LiveRateMonitor(monitoringEnabled: false)
         monitor.testPrepareForLiveRateProcessing(selectedThreadID: "selected-thread")
@@ -721,6 +833,14 @@ final class LiveRateMonitorTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         temporaryDirectories.append(directory)
         return directory.appendingPathComponent("logs.sqlite")
+    }
+
+    private func makeCodexDataSource(named name: String) throws -> CodexDataSource {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LiveRateMonitorSource-\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        temporaryDirectories.append(directory)
+        return CodexDataSource(codexHome: directory, origin: .userSelected)
     }
 
     private func insertLog(
