@@ -63,7 +63,18 @@ struct ProviderSyncSQLiteThreadColumns {
 }
 
 final class ProviderSyncEngine {
-    let fileManager = FileManager.default
+    let fileManager: FileManager
+    private let backupRootOverride: URL?
+
+    init(fileManager: FileManager = .default, backupRoot: URL? = nil) {
+        self.fileManager = fileManager
+        self.backupRootOverride = backupRoot
+    }
+
+    func backupRootDirectory() -> URL {
+        backupRootOverride ?? fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/CodexHistoryRepair/backups", isDirectory: true)
+    }
 
     func scan(codexHome: URL, includeArchivedSessions: Bool) throws -> ProviderSyncSnapshot {
         let report = try makeReport(codexHome: codexHome, includeArchivedSessions: includeArchivedSessions, targetProviderOverride: nil)

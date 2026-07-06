@@ -2,8 +2,7 @@ import Foundation
 
 extension ProviderSyncEngine {
     func createBackup(codexHome: URL, sessionFiles: [URL], targetProvider: String) throws -> URL {
-        let root = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/CodexHistoryRepair/backups", isDirectory: true)
+        let root = backupRootDirectory()
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
 
         let formatter = DateFormatter()
@@ -99,8 +98,7 @@ extension ProviderSyncEngine {
     }
 
     func backupDirectories(for codexHome: URL) -> [URL] {
-        let root = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/CodexHistoryRepair/backups", isDirectory: true)
+        let root = backupRootDirectory()
         let backups = (try? fileManager.contentsOfDirectory(
             at: root,
             includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
