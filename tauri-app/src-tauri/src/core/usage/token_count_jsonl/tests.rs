@@ -800,6 +800,109 @@ fn usage_summary_ignores_previous_dashboard_aggregate_version() {
 }
 
 #[test]
+fn cached_usage_summary_is_scoped_to_codex_home() {
+    let root = temp_root();
+    let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
+    let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
+    let home_a = root.join("codex-a");
+    let home_b = root.join("codex-b");
+    let session_dir_a = home_a.join("sessions");
+    let session_dir_b = home_b.join("sessions");
+    fs::create_dir_all(&session_dir_a).unwrap();
+    fs::create_dir_all(&session_dir_b).unwrap();
+    write_lines(
+        &session_dir_a.join("rollout-019ehome-a-0000-0000-0000-summary.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    write_lines(
+        &session_dir_b.join("rollout-019ehome-b-0000-0000-0000-summary.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":10,"total_tokens":30}}}}"#],
+    );
+
+    let snapshot_a = dashboard_snapshot(&home_a).unwrap();
+    assert_eq!(snapshot_a.stats.total_tokens, 120);
+    assert_eq!(
+        cached_dashboard_usage_summary(&home_a)
+            .expect("home A should have a trusted cached summary")
+            .total_tokens,
+        120
+    );
+    assert!(
+        cached_dashboard_usage_summary(&home_b).is_none(),
+        "home A aggregate must not become a trusted compact summary for home B"
+    );
+
+    let snapshot_b = dashboard_snapshot(&home_b).unwrap();
+
+    assert_eq!(snapshot_b.stats.total_tokens, 30);
+    assert_eq!(
+        usage_summary_snapshot(&home_b).unwrap().total_tokens,
+        30,
+        "home B should use its own rebuilt precise aggregate"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
+    let root = temp_root();
+    let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
+    let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
+    let active_dir = root.join("active-rollouts");
+    fs::create_dir_all(&active_dir).unwrap();
+    let rollout_path = active_dir.join("rollout-019efork-active-0000-0000-cache.jsonl");
+    write_lines(
+        &rollout_path,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
+            r#"{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":400,"cached_input_tokens":0,"output_tokens":100,"total_tokens":500},"last_token_usage":{"input_tokens":400,"cached_input_tokens":0,"output_tokens":100,"total_tokens":500}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:10:00Z","type":"event_msg","payload":{"type":"user_message","message":"新分支问题"}}"#,
+            r#"{"timestamp":"2026-06-18T01:11:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":120,"total_tokens":620},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    create_state_database_with_rollout(
+        &root,
+        "019efork-active-0000-0000-cache",
+        &rollout_path,
+    );
+
+    let first = dashboard_snapshot(&root).unwrap();
+    assert_eq!(first.stats.total_tokens, 120);
+    assert_eq!(usage_summary_snapshot(&root).unwrap().total_tokens, 120);
+
+    reset_dashboard_aggregate_build_count_for_testing();
+    assert_eq!(usage_summary_snapshot(&root).unwrap().total_tokens, 120);
+    assert_eq!(
+        dashboard_aggregate_build_count_for_testing(&root),
+        0,
+        "unchanged active rollout should reuse the trusted aggregate summary"
+    );
+
+    {
+        let mut handle = fs::OpenOptions::new()
+            .append(true)
+            .open(&rollout_path)
+            .unwrap();
+        writeln!(
+            handle,
+            r#"{{"timestamp":"2026-06-18T01:12:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":620,"cached_input_tokens":10,"output_tokens":140,"total_tokens":760}},"last_token_usage":{{"input_tokens":120,"cached_input_tokens":10,"output_tokens":20,"total_tokens":140}}}}}}}}"#
+        )
+        .unwrap();
+    }
+
+    assert!(
+        cached_dashboard_usage_summary(&root).is_none(),
+        "changed active rollout signature must invalidate the previous aggregate summary"
+    );
+    let rebuilt = dashboard_snapshot(&root).unwrap();
+    assert_eq!(rebuilt.stats.total_tokens, 260);
+    assert_eq!(usage_summary_snapshot(&root).unwrap().total_tokens, 260);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn dashboard_aggregate_cache_save_does_not_clobber_existing_temp_file() {
     let root = temp_root();
     let cache_path = root.join("token-aggregate-cache.json");

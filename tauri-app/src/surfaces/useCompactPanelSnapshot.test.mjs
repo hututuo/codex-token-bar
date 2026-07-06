@@ -74,6 +74,24 @@ test("compact panel waits for trusted summary instead of using live-rate totals"
   assert.equal(snapshot.requestsLabel, "次 待读取");
 });
 
+test("compact panel keeps failure marker separate from untrusted live-rate totals", () => {
+  const snapshot = floatingSnapshotForLiveRate(
+    liveRateSnapshot({
+      totalTokens: 11_308_620_519,
+      totalTokensToday: 333_123_813,
+      requestsToday: 2_222,
+      warnings: [{ source: "live_rate_stream", message: "stream failed" }],
+    }),
+    null,
+  );
+
+  assert.equal(snapshot.liveRateStatusKind, "failure");
+  assert.equal(snapshot.liveRateStatusLabel, "实时速率降级");
+  assert.equal(snapshot.totalTokensLabel, "总 待读取");
+  assert.equal(snapshot.todayTokensLabel, "今 待读取");
+  assert.equal(snapshot.requestsLabel, "次 待读取");
+});
+
 test("compact panel fallback snapshot does not leak reset card placeholder", () => {
   const snapshot = floatingSnapshotForLiveRate(liveRateSnapshot(), null);
 
