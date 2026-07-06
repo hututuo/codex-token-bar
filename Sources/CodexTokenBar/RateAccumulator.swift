@@ -17,6 +17,7 @@ struct RateAccumulator {
     private var currentKey = ""
     private var itemText: [String: String] = [:]
     private var itemTokens: [String: Int] = [:]
+    private var itemFractionalTokenCarry: [String: Double] = [:]
     private var firstDeltaAt: TimeInterval?
     private var lastDeltaAt: TimeInterval?
     private var rollingDeltas: [(time: TimeInterval, tokens: Int)] = []
@@ -37,6 +38,7 @@ struct RateAccumulator {
         currentKey = ""
         itemText.removeAll()
         itemTokens.removeAll()
+        itemFractionalTokenCarry.removeAll()
         firstDeltaAt = nil
         lastDeltaAt = nil
         rollingDeltas.removeAll()
@@ -59,6 +61,7 @@ struct RateAccumulator {
         let previousTail = itemText[key] ?? ""
         let previousTokens = itemTokens[key] ?? 0
         let deltaTokens = estimatedDeltaTokens(
+            key: key,
             previousTail: previousTail,
             delta: delta,
             estimator: estimator
@@ -144,18 +147,32 @@ struct RateAccumulator {
         prune(now: timestamp, windowSeconds: windowSeconds)
     }
 
-    private func estimatedDeltaTokens(
+    private mutating func estimatedDeltaTokens(
+        key: String,
         previousTail: String,
         delta: String,
         estimator: (String) -> Int
     ) -> Int {
         guard !delta.isEmpty else { return 0 }
-        guard !previousTail.isEmpty else { return max(0, estimator(delta)) }
-
         let context = Self.suffix(previousTail, maxCharacters: Self.deltaEstimatorOverlapCharacters)
         let previousContextTokens = estimator(context)
         let nextContextTokens = estimator(context + delta)
-        return max(0, nextContextTokens - previousContextTokens)
+        let deltaTokens = max(0, nextContextTokens - previousContextTokens)
+
+        if deltaTokens > 0 {
+            itemFractionalTokenCarry.removeValue(forKey: key)
+            return deltaTokens
+        }
+
+        guard context.count >= Self.deltaEstimatorOverlapCharacters else { return 0 }
+
+        let density = Double(previousContextTokens) / Double(context.count)
+        guard density.isFinite, density > 0 else { return 0 }
+
+        let carry = (itemFractionalTokenCarry[key] ?? 0) + density * Double(delta.count)
+        let carriedTokens = Int(carry.rounded(.down))
+        itemFractionalTokenCarry[key] = carry - Double(carriedTokens)
+        return max(0, carriedTokens)
     }
 
     private static func suffix(_ text: String, maxCharacters: Int) -> String {

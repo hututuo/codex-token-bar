@@ -185,8 +185,8 @@ private enum AccountQuotaReader {
                let text = String(data: stderr, encoding: .utf8),
                !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                trace?.end("server-error", metadata: ["error": message])
-                return .failure(AccountQuotaReaderError.serverError(message))
+                trace?.end("timeout", metadata: ["stderr": message])
+                return .failure(AccountQuotaReaderError.timeout(stderrText: message))
             }
             trace?.end("invalid-response-timeout")
             return .failure(AccountQuotaReaderError.timeout)

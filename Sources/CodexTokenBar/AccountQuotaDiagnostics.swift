@@ -148,7 +148,7 @@ struct AccountQuotaDiagnostic: LocalizedError, Equatable, Sendable {
             switch readerError {
             case .codexBinaryNotFound:
                 return .appServerUnavailable
-            case .timeout, .emptyResponse:
+            case .timeout, .timeoutWithOutput, .emptyResponse:
                 return .timeout
             case .invalidResponse, .parseFailure:
                 return .parseFailure
@@ -243,8 +243,17 @@ enum AccountQuotaReaderError: LocalizedError, Equatable, Sendable {
     case emptyRateLimits
     case serverError(String)
     case timeout
+    case timeoutWithOutput(String)
     case parseFailure(String)
     case emptyResponse
+
+    static func timeout(stderrText: String?) -> AccountQuotaReaderError {
+        guard let message = stderrText?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !message.isEmpty else {
+            return .timeout
+        }
+        return .timeoutWithOutput(message)
+    }
 
     var errorDescription: String? {
         switch self {
@@ -256,7 +265,7 @@ enum AccountQuotaReaderError: LocalizedError, Equatable, Sendable {
             return "额度暂无数据"
         case .serverError(let message):
             return message
-        case .timeout:
+        case .timeout, .timeoutWithOutput:
             return "额度读取超时"
         case .parseFailure(let message):
             return message.isEmpty ? "响应格式异常" : message
@@ -274,6 +283,8 @@ enum AccountQuotaReaderError: LocalizedError, Equatable, Sendable {
         case .emptyRateLimits:
             return "Quota response did not include usable rate limit windows."
         case .serverError(let message):
+            return message
+        case .timeoutWithOutput(let message):
             return message
         case .timeout:
             return "Timed out waiting for account/rateLimits/read."

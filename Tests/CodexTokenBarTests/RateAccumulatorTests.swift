@@ -188,6 +188,31 @@ final class RateAccumulatorTests: XCTestCase {
         XCTAssertLessThanOrEqual(estimatorInputLengths.max() ?? 0, 128)
     }
 
+    func testCalibratedFallbackEstimatorDoesNotStarveAfterTailSaturates() {
+        var accumulator = RateAccumulator(resetsOnNewItem: false)
+        var estimatorInputLengths: [Int] = []
+
+        for index in 0..<400 {
+            accumulator.add(
+                delta: "x",
+                category: .visibleText,
+                key: "message",
+                at: 20 + Double(index) * 0.001,
+                windowSeconds: 2.5,
+                estimator: { text in
+                    estimatorInputLengths.append(text.count)
+                    let asciiCount = text.unicodeScalars.filter { $0.value < 128 }.count
+                    return Int((Double(asciiCount) / 4.2).rounded(.toNearestOrAwayFromZero))
+                }
+            )
+        }
+
+        XCTAssertEqual(accumulator.outputCharacters, 400)
+        XCTAssertEqual(accumulator.breakdown.visibleText, 95, accuracy: 3)
+        XCTAssertEqual(accumulator.outputTokens, accumulator.breakdown.visibleText)
+        XCTAssertLessThanOrEqual(estimatorInputLengths.max() ?? 0, 112)
+    }
+
     func testReasoningPayloadDoesNotDriveLiveRollingRate() {
         var accumulator = RateAccumulator(resetsOnNewItem: false)
 

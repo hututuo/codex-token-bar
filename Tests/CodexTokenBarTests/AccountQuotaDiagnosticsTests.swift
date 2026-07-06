@@ -10,6 +10,7 @@ final class AccountQuotaDiagnosticsTests: XCTestCase {
             (AccountQuotaReaderError.emptyResponse, .timeout),
             (AccountQuotaReaderError.invalidResponse, .parseFailure),
             (AccountQuotaReaderError.emptyRateLimits, .emptyQuota),
+            (AccountQuotaReaderError.timeoutWithOutput("WARN plugin manifest noise"), .timeout),
             (AccountQuotaReaderError.serverError("stderr: failed to launch app-server"), .appServerUnavailable),
             (QuotaDiagnosticTestError(), .unknown)
         ]
@@ -25,6 +26,19 @@ final class AccountQuotaDiagnosticsTests: XCTestCase {
             XCTAssertFalse(diagnostic.message.isEmpty)
             XCTAssertNotNil(diagnostic.rawCause)
         }
+    }
+
+    func testQuotaTimeoutWithNoisyStderrPreservesRawCauseWithoutChangingCategory() {
+        let error = AccountQuotaReaderError.timeout(stderrText: "  WARN failed to refresh available models\n")
+        let diagnostic = AccountQuotaDiagnostic.classify(
+            source: .accountQuota,
+            error: error,
+            occurredAt: Date(timeIntervalSince1970: 1_000)
+        )
+
+        XCTAssertEqual(diagnostic.category, .timeout)
+        XCTAssertEqual(diagnostic.rawCause, "WARN failed to refresh available models")
+        XCTAssertTrue(diagnostic.retryable)
     }
 
     func testHTTPStatusClassifierUsesSharedQuotaCategories() {
