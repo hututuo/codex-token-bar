@@ -21,6 +21,7 @@ import {
 import { ProviderRepairSteps } from "./providerRepair/ProviderRepairSteps";
 
 interface ProviderRepairCardProps {
+  autoScanOnMount?: boolean;
   id?: string;
   onBusyChange?: (busy: boolean) => void;
   onSnapshotChange: (snapshot: ProviderRepairSnapshot) => void;
@@ -28,6 +29,7 @@ interface ProviderRepairCardProps {
 }
 
 export function ProviderRepairCard({
+  autoScanOnMount = false,
   id,
   onBusyChange,
   onSnapshotChange,
@@ -37,6 +39,7 @@ export function ProviderRepairCard({
   const [activeBackupId, setActiveBackupId] = useState<string | null>(null);
   const [message, setMessage] = useState(snapshot.status);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const autoScanStartedRef = useRef(false);
   const operationControllerRef = useRef(createProviderRepairOperationController());
 
   useEffect(() => {
@@ -62,6 +65,18 @@ export function ProviderRepairCard({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!autoScanOnMount) {
+      autoScanStartedRef.current = false;
+      return;
+    }
+    if (autoScanStartedRef.current) {
+      return;
+    }
+    autoScanStartedRef.current = true;
+    void runScan();
+  }, [autoScanOnMount]);
 
   async function runScan() {
     await run("scan", scanProviderRepair, (next) => {

@@ -12,6 +12,7 @@ import {
 import {
   disabledFloatingLiveSnapshot,
   floatingSnapshotForLiveRate,
+  liveRateStreamStartFailureSnapshot,
   mergeFloatingUsageSummary,
 } from "./compactPanelSnapshotModel";
 
@@ -125,7 +126,16 @@ export function useCompactPanelSnapshot({
       }
     });
 
-    void desktopPlatform.startLiveRateStream(null, false);
+    void desktopPlatform.startLiveRateStreamCommand(null, false).then((result) => {
+      if (cancelled || (result.ok && result.value)) {
+        return;
+      }
+      const message = result.ok ? "实时速率流暂不可用" : result.error;
+      setRawSnapshot(floatingSnapshotForLiveRate(
+        liveRateStreamStartFailureSnapshot(message),
+        usageSummaryRef.current,
+      ));
+    });
     void readLiveRateSnapshot(null).then((liveRate) => {
       if (!cancelled) {
         markLiveUsageActivity(liveRate);

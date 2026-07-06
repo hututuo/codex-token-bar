@@ -40,14 +40,48 @@ test("ProviderRepairPanel model disables close while a repair operation is busy"
       "/src/pages/dashboard/providerRepairPanelModel.ts",
     );
 
-    assert.deepEqual(buildProviderRepairPanelModel({ busy: false }), {
+    assert.deepEqual(buildProviderRepairPanelModel({ busy: false, open: true, snapshot: snapshotFixture() }), {
       closeDisabled: false,
       closeTitle: "关闭会话消失修复",
+      autoScanOnMount: true,
     });
-    assert.deepEqual(buildProviderRepairPanelModel({ busy: true }), {
+    assert.deepEqual(buildProviderRepairPanelModel({ busy: true, open: true, snapshot: snapshotFixture() }), {
       closeDisabled: true,
       closeTitle: "正在执行修复操作，请等待当前步骤完成。",
+      autoScanOnMount: false,
     });
+  });
+});
+
+test("ProviderRepairPanel model scans only when opened on an unscanned repair snapshot", async () => {
+  await withSsrModules(async (load) => {
+    const { buildProviderRepairPanelModel } = await load(
+      "/src/pages/dashboard/providerRepairPanelModel.ts",
+    );
+
+    assert.equal(
+      buildProviderRepairPanelModel({ busy: false, open: true, snapshot: snapshotFixture() }).autoScanOnMount,
+      true,
+    );
+    assert.equal(
+      buildProviderRepairPanelModel({ busy: false, open: false, snapshot: snapshotFixture() }).autoScanOnMount,
+      false,
+    );
+    assert.equal(
+      buildProviderRepairPanelModel({
+        busy: false,
+        open: true,
+        snapshot: snapshotFixture({
+          detectedProvider: "codex",
+          sessionFilesFound: 42,
+          status: "扫描完成",
+          steps: [
+            { label: "扫描", status: "已扫描", done: true, healthy: true },
+          ],
+        }),
+      }).autoScanOnMount,
+      false,
+    );
   });
 });
 

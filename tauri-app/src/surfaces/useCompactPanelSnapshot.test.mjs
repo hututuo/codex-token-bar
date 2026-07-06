@@ -3,7 +3,9 @@ import test from "node:test";
 import {
   compactTokens,
   disabledFloatingLiveSnapshot,
+  floatingLiveRateStatusText,
   floatingSnapshotForLiveRate,
+  liveRateStreamStartFailureSnapshot,
 } from "./compactPanelSnapshotModel.ts";
 
 test("compact panel keeps usage summary raw state when live rate is disabled", () => {
@@ -78,6 +80,61 @@ test("compact panel fallback snapshot does not leak reset card placeholder", () 
   assert.equal(snapshot.resetCreditLabel, "");
   assert.equal(snapshot.resetCreditRateBarLabel, "");
   assert.equal(snapshot.resetCreditStandaloneLabel, "");
+});
+
+test("compact panel treats live-rate summary warnings as preparation not failure", () => {
+  const snapshot = floatingSnapshotForLiveRate(
+    liveRateSnapshot({
+      warnings: [
+        {
+          source: "live_rate_summary",
+          message: "精确 token 缓存尚未就绪",
+        },
+      ],
+    }),
+    null,
+  );
+
+  assert.equal(snapshot.liveRateStatusKind, "pending");
+  assert.equal(snapshot.liveRateStatusLabel, "准备中，请稍后");
+  assert.equal(floatingLiveRateStatusText(snapshot), "准备中，请稍后");
+});
+
+test("compact panel marks only live-rate stream warnings as degraded", () => {
+  const snapshot = floatingSnapshotForLiveRate(
+    liveRateSnapshot({
+      warnings: [
+        {
+          source: "live_rate_stream",
+          message: "stream failed",
+        },
+      ],
+    }),
+    null,
+  );
+
+  assert.equal(snapshot.liveRateStatusKind, "failure");
+  assert.equal(snapshot.liveRateStatusLabel, "实时速率降级");
+});
+
+test("disabled compact live rate remains a clean non-error state", () => {
+  const disabled = disabledFloatingLiveSnapshot(floatingSnapshotForLiveRate(liveRateSnapshot(), null));
+
+  assert.equal(disabled.tokensPerSecond, 0);
+  assert.equal(disabled.liveRateStatusKind, undefined);
+  assert.equal(disabled.liveRateStatusLabel, undefined);
+});
+
+test("compact panel can represent live-rate stream start failure without usage fallback", () => {
+  const snapshot = floatingSnapshotForLiveRate(
+    liveRateStreamStartFailureSnapshot("stream transport failed"),
+    null,
+  );
+
+  assert.equal(snapshot.tokensPerSecond, 0);
+  assert.equal(snapshot.liveRateStatusKind, "failure");
+  assert.equal(snapshot.liveRateStatusLabel, "实时速率降级");
+  assert.equal(snapshot.totalTokensLabel, "总 待读取");
 });
 
 function liveRateSnapshot(overrides) {

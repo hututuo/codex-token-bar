@@ -17,7 +17,7 @@ export function ProviderRepairPanel({
   snapshot,
 }: ProviderRepairPanelProps) {
   const [repairBusy, setRepairBusy] = useState(false);
-  const panelModel = buildProviderRepairPanelModel({ busy: repairBusy });
+  const panelModel = buildProviderRepairPanelModel({ busy: repairBusy, open, snapshot });
 
   if (!open) {
     return null;
@@ -45,6 +45,7 @@ export function ProviderRepairPanel({
         </header>
 
         <ProviderRepairCard
+          autoScanOnMount={panelModel.autoScanOnMount}
           id="provider-repair"
           onBusyChange={setRepairBusy}
           onSnapshotChange={onSnapshotChange}

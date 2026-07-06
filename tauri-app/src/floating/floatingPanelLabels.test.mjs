@@ -22,6 +22,16 @@ test("floating status helpers keep rate-bar and standalone reset-card suffixes s
   assert.equal(floatingStandaloneStatusText(sample), "慢一点(余量低8%) · 1卡 · 近6h到期");
 });
 
+test("floating status helpers prioritize compact live-rate degraded or preparation state", () => {
+  const sample = snapshot({
+    liveRateStatusKind: "pending",
+    liveRateStatusLabel: "准备中，请稍后",
+  });
+
+  assert.equal(floatingRateBarStatusText(sample), "准备中，请稍后 · 1卡 · 6h");
+  assert.equal(floatingStandaloneStatusText(sample), "准备中，请稍后 · 1卡 · 近6h到期");
+});
+
 test("floating status helpers fall back safely without leaking placeholders", () => {
   const legacy = snapshot({
     trendLabel: "",

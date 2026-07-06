@@ -28,6 +28,8 @@ export interface FloatingPanelSnapshot {
   tokensPerSecond: number;
   maxTokensPerSecond: number;
   trendLabel: string;
+  liveRateStatusKind?: "failure" | "pending";
+  liveRateStatusLabel?: string;
   resetCreditLabel: string;
   resetCreditRateBarLabel?: string;
   resetCreditStandaloneLabel?: string;

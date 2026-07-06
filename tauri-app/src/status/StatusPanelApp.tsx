@@ -6,6 +6,7 @@ import {
   DEFAULT_FLOATING_SETTINGS,
   sanitizeFloatingSettings,
 } from "../floating/floatingSettings";
+import { floatingStandaloneStatusText } from "../floating/floatingPanelLabels";
 import { desktopPlatform } from "../platform/desktop";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
 import type { FloatingWindowSettings } from "../types/dashboard";
@@ -129,7 +130,7 @@ export function StatusPanelApp() {
         </div>
 
         <div className="status-panel-status">
-          <strong>{snapshot.trendLabel}</strong>
+          <strong>{floatingStandaloneStatusText(snapshot)}</strong>
           <span title={snapshot.unreadSummary.detail}>{snapshot.unreadSummary.label}</span>
         </div>
 
