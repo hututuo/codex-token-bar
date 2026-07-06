@@ -541,6 +541,40 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, incrementalParsesAfterFirstLoad + 1)
     }
 
+    func testSessionCacheRejectsAppendOffsetBeyondCurrentFileSize() {
+        let cache = CodexUsageAnalyzer.SessionEventCache()
+        let path = "/tmp/session-offset-beyond-eof.jsonl"
+        let staleKey = CodexUsageAnalyzer.SessionCacheKey(path: path, size: 80, modifiedAt: 1_000)
+        let currentKey = CodexUsageAnalyzer.SessionCacheKey(path: path, size: 120, modifiedAt: 1_100)
+        let cached = CodexUsageAnalyzer.SessionEventCache.CachedSession(
+            key: staleKey,
+            events: [
+                TokenEvent(
+                    timestamp: Date(timeIntervalSince1970: 1_000),
+                    sessionID: "session-offset-beyond-eof",
+                    tokens: 120,
+                    inputTokens: 100,
+                    cachedInputTokens: 0,
+                    outputTokens: 20,
+                    reasoningOutputTokens: 0,
+                    userPrompt: "",
+                    assistantResponse: ""
+                )
+            ],
+            lastOffset: 240,
+            endedWithNewline: true,
+            previousTotalTokens: 120,
+            canIncrementFromOffset: true,
+            forkReplayActive: false,
+            lastSkippedForkReplayTokenAt: nil,
+            migratedFromLegacyCache: false
+        )
+
+        cache.store(cached, for: path)
+
+        XCTAssertNil(cache.appendableSession(for: path, currentKey: currentKey))
+    }
+
     func testPreciseJSONLScanFallsBackToFullParseWhenSessionShrinks() throws {
         let codexHome = try makeCodexHome()
         let sessionID = "019eaaaa-bbbb-cccc-dddd-shrink"

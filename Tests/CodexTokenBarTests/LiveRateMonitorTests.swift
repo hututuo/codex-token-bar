@@ -592,6 +592,28 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(events.first?.rollingOnly, false)
     }
 
+    func testRolloutParserSkipsMalformedAndMissingTimestamps() throws {
+        let malformedTimestampLine = rolloutAgentMessageLine(timestamp: "not-a-date", message: "bad timestamp")
+        let missingTimestampLine = jsonLine([
+            "type": "event_msg",
+            "payload": [
+                "type": "agent_message",
+                "message": "missing timestamp"
+            ]
+        ])
+        let validLine = rolloutAgentMessageLine(timestamp: "2026-06-24T13:00:00.000Z", message: "valid timestamp")
+
+        let events = LiveRateMonitor.rolloutEvents(fromLines: [
+            malformedTimestampLine,
+            missingTimestampLine,
+            validLine
+        ])
+
+        XCTAssertEqual(events.map(\.text), ["valid timestamp"])
+        let event = try XCTUnwrap(events.first)
+        XCTAssertEqual(event.timestamp, 1_782_306_000, accuracy: 0.001)
+    }
+
     func testRolloutParserCountsToolInputPayloadsButIgnoresToolResultsForLiveRateFallback() throws {
         let events = LiveRateMonitor.rolloutEvents(fromLines: [
             rolloutCustomToolCallLine(timestamp: "2026-06-24T13:00:00.000Z", id: "tool-1", name: "exec_command", input: #"{"cmd":"date"}"#),

@@ -8,6 +8,7 @@ struct RateAccumulator {
     private static let maximumCompletionPayloadSeconds: TimeInterval = 30
     private static let distributionStepSeconds: TimeInterval = 0.5
     private static let duplicateVisibleCompletionSeconds: TimeInterval = 10
+    private static let deltaEstimatorOverlapCharacters = 96
 
     let resetsOnNewItem: Bool
     private(set) var breakdown = LiveTokenBreakdown()
@@ -55,14 +56,16 @@ struct RateAccumulator {
         }
         currentKey = key
 
-        let previousText = itemText[key] ?? ""
-        let nextText = previousText + delta
+        let previousTail = itemText[key] ?? ""
         let previousTokens = itemTokens[key] ?? 0
-        let nextTokens = estimator(nextText)
-        let deltaTokens = max(0, nextTokens - previousTokens)
+        let deltaTokens = estimatedDeltaTokens(
+            previousTail: previousTail,
+            delta: delta,
+            estimator: estimator
+        )
 
-        itemText[key] = nextText
-        itemTokens[key] = nextTokens
+        itemText[key] = Self.suffix(previousTail + delta, maxCharacters: Self.deltaEstimatorOverlapCharacters)
+        itemTokens[key] = previousTokens + deltaTokens
         outputCharacters += delta.count
 
         guard deltaTokens > 0 else { return }
@@ -139,6 +142,26 @@ struct RateAccumulator {
         }
 
         prune(now: timestamp, windowSeconds: windowSeconds)
+    }
+
+    private func estimatedDeltaTokens(
+        previousTail: String,
+        delta: String,
+        estimator: (String) -> Int
+    ) -> Int {
+        guard !delta.isEmpty else { return 0 }
+        guard !previousTail.isEmpty else { return max(0, estimator(delta)) }
+
+        let context = Self.suffix(previousTail, maxCharacters: Self.deltaEstimatorOverlapCharacters)
+        let previousContextTokens = estimator(context)
+        let nextContextTokens = estimator(context + delta)
+        return max(0, nextContextTokens - previousContextTokens)
+    }
+
+    private static func suffix(_ text: String, maxCharacters: Int) -> String {
+        guard text.count > maxCharacters else { return text }
+        let start = text.index(text.endIndex, offsetBy: -maxCharacters)
+        return String(text[start...])
     }
 
     mutating func addDistributed(

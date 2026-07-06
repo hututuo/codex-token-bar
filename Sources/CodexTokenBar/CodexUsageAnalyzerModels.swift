@@ -169,6 +169,8 @@ extension CodexUsageAnalyzer {
                   cached.canIncrementFromOffset,
                   cached.endedWithNewline,
                   cached.key.size < currentKey.size,
+                  cached.lastOffset <= cached.key.size,
+                  cached.lastOffset <= currentKey.size,
                   cached.previousTotalTokens != nil else {
                 return nil
             }
@@ -365,13 +367,13 @@ extension CodexUsageAnalyzer {
                 lock.unlock()
                 return
             }
-            defer {
-                didLoadPersistentCache = true
-                lock.unlock()
-            }
+            lock.unlock()
 
             Self.removeLegacyCaches()
             guard !CodexUsageAnalyzer.isPersistentSessionEventCacheDisabled else {
+                lock.lock()
+                didLoadPersistentCache = true
+                lock.unlock()
                 return
             }
 
@@ -380,11 +382,18 @@ extension CodexUsageAnalyzer {
             let loaded = Self.loadV6SessionCache()
             trace?.mark("loadV6.end", metadata: ["sessions": String(loaded.count)])
 
-            for (path, value) in loaded where storage[path] == nil {
-                storage[path] = value
+            var mergedCount = 0
+            lock.lock()
+            if !didLoadPersistentCache {
+                for (path, value) in loaded where storage[path] == nil {
+                    storage[path] = value
+                    mergedCount += 1
+                }
+                didLoadPersistentCache = true
             }
+            lock.unlock()
             trace?.end("ok", metadata: [
-                "sessions": String(loaded.count),
+                "sessions": String(mergedCount),
                 "namespace": Self.cacheNamespace
             ])
         }

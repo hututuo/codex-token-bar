@@ -256,13 +256,14 @@ struct CodexRadarChartPoint: Equatable, Sendable, Identifiable {
     static func shortDateLabel(_ raw: String) -> String {
         let parts = raw.split(separator: "-", omittingEmptySubsequences: false)
         guard parts.count == 3 || parts.count == 4,
-              parts[0] == "2026",
+              parts[0].count == 4,
+              parts[0].allSatisfy(\.isNumber),
               parts[1].count == 2,
               parts[2].count == 2,
+              let year = Int(parts[0]),
               let month = Int(parts[1]),
               let day = Int(parts[2]),
-              (1...12).contains(month),
-              (1...31).contains(day)
+              Self.isValidGregorianDate(year: year, month: month, day: day)
         else {
             return raw
         }
@@ -273,6 +274,20 @@ struct CodexRadarChartPoint: Equatable, Sendable, Identifiable {
             label += " \(parts[3])"
         }
         return label
+    }
+
+    private static func isValidGregorianDate(year: Int, month: Int, day: Int) -> Bool {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        var components = DateComponents()
+        components.calendar = calendar
+        components.timeZone = calendar.timeZone
+        components.year = year
+        components.month = month
+        components.day = day
+        guard let date = calendar.date(from: components) else { return false }
+        let resolved = calendar.dateComponents([.year, .month, .day], from: date)
+        return resolved.year == year && resolved.month == month && resolved.day == day
     }
 }
 

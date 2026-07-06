@@ -165,6 +165,29 @@ final class RateAccumulatorTests: XCTestCase {
         XCTAssertGreaterThan(accumulator.rollingRate(now: 20.2, windowSeconds: 2.5, minimumSpan: 0.4), 80)
     }
 
+    func testDeltaAccumulatorDoesNotRetokenizeEverGrowingFullText() {
+        var accumulator = RateAccumulator(resetsOnNewItem: false)
+        var estimatorInputLengths: [Int] = []
+
+        for index in 0..<400 {
+            accumulator.add(
+                delta: "x",
+                category: .visibleText,
+                key: "message",
+                at: 20 + Double(index) * 0.001,
+                windowSeconds: 2.5,
+                estimator: { text in
+                    estimatorInputLengths.append(text.count)
+                    return text.count
+                }
+            )
+        }
+
+        XCTAssertEqual(accumulator.breakdown.visibleText, 400)
+        XCTAssertEqual(accumulator.outputTokens, 400)
+        XCTAssertLessThanOrEqual(estimatorInputLengths.max() ?? 0, 128)
+    }
+
     func testReasoningPayloadDoesNotDriveLiveRollingRate() {
         var accumulator = RateAccumulator(resetsOnNewItem: false)
 

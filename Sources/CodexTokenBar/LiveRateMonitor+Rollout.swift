@@ -61,7 +61,9 @@ extension LiveRateMonitor {
             return []
         }
 
-        let timestamp = parseTimestamp(object["timestamp"] as? String)
+        guard let timestamp = parseTimestamp(object["timestamp"] as? String) else {
+            return []
+        }
         let recordType = object["type"] as? String
         let payloadType = payload["type"] as? String
         let keyPrefix = (payload["call_id"] as? String) ?? (payload["id"] as? String) ?? UUID().uuidString
@@ -138,9 +140,13 @@ extension LiveRateMonitor {
         }
     }
 
-    nonisolated static func parseTimestamp(_ text: String?) -> TimeInterval {
-        guard let text, let date = ISO8601DateFormatter().date(from: text) else {
-            return Date().timeIntervalSince1970
+    nonisolated static func parseTimestamp(_ text: String?) -> TimeInterval? {
+        guard let text else { return nil }
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallbackFormatter = ISO8601DateFormatter()
+        guard let date = fractionalFormatter.date(from: text) ?? fallbackFormatter.date(from: text) else {
+            return nil
         }
         return date.timeIntervalSince1970
     }
