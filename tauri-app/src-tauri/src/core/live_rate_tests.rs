@@ -292,6 +292,11 @@ fn floating_snapshot_rejects_stale_precise_summary_after_session_changes() {
         "stale precise cache should keep the last safe precise summary instead of falling back to duplicated state summary"
     );
 
+    let floating = read_floating_snapshot_from_live(&root, &changed);
+    assert_eq!(floating.total_tokens_label, "总 待读取");
+    assert_eq!(floating.today_tokens_label, "今 待读取");
+    assert_eq!(floating.requests_label, "次 待读取");
+
     fs::remove_dir_all(root).unwrap();
 }
 

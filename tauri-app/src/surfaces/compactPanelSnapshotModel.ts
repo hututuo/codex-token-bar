@@ -11,9 +11,9 @@ const baseFloatingPanelSnapshot: FloatingPanelSnapshot = {
   resetCreditLabel: "",
   resetCreditRateBarLabel: "",
   resetCreditStandaloneLabel: "",
-  totalTokensLabel: "总 0",
-  todayTokensLabel: "今 0",
-  requestsLabel: "次 0",
+  totalTokensLabel: "总 待读取",
+  todayTokensLabel: "今 待读取",
+  requestsLabel: "次 待读取",
   fiveHourLabel: "5h 待读取",
   fiveHourRemainingPercent: 0,
   sevenDayLabel: "7d 待读取",
@@ -39,10 +39,7 @@ export function floatingSnapshotForLiveRate(
     unread: liveRate.unreadSummary.active,
     unreadSummary: liveRate.unreadSummary,
   };
-  return mergeFloatingUsageSummary(
-    snapshot,
-    usageSummary ?? usageSummaryFromLiveRate(liveRate),
-  );
+  return usageSummary ? mergeFloatingUsageSummary(snapshot, usageSummary) : snapshot;
 }
 
 export function disabledFloatingLiveSnapshot(
@@ -75,12 +72,4 @@ export function compactTokens(value: number): string {
     return `${(value / 10_000).toFixed(1)}万`;
   }
   return String(Math.max(0, Math.round(value)));
-}
-
-function usageSummaryFromLiveRate(liveRate: LiveRateSnapshot): UsageSummarySnapshot {
-  return {
-    totalTokens: liveRate.totalTokens,
-    todayTokens: liveRate.totalTokensToday,
-    todayRequests: liveRate.requestsToday,
-  };
 }

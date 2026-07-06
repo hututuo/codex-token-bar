@@ -172,16 +172,26 @@ fn read_snapshot_result(
 }
 
 pub fn read_floating_snapshot_from_live(
-    _codex_home: &Path,
+    codex_home: &Path,
     live: &LiveRateSnapshot,
 ) -> FloatingPanelSnapshot {
+    let summary = token_count_jsonl::cached_dashboard_usage_summary(codex_home);
     FloatingPanelSnapshot {
         tokens_per_second: live.tokens_per_second,
         max_tokens_per_second: live.max_tokens_per_second,
         trend_label: String::new(),
-        total_tokens_label: format!("总 {}", compact_tokens(live.total_tokens)),
-        today_tokens_label: format!("今 {}", compact_tokens(live.total_tokens_today)),
-        requests_label: format!("次 {}", live.requests_today),
+        total_tokens_label: summary
+            .as_ref()
+            .map(|summary| format!("总 {}", compact_tokens(summary.total_tokens)))
+            .unwrap_or_else(|| "总 待读取".into()),
+        today_tokens_label: summary
+            .as_ref()
+            .map(|summary| format!("今 {}", compact_tokens(summary.today_tokens)))
+            .unwrap_or_else(|| "今 待读取".into()),
+        requests_label: summary
+            .as_ref()
+            .map(|summary| format!("次 {}", summary.today_requests))
+            .unwrap_or_else(|| "次 待读取".into()),
         five_hour_label: "5h 待读取".into(),
         seven_day_label: "7d 待读取".into(),
         unread: live.unread_summary.active,

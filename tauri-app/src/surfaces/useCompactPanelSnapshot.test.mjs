@@ -57,19 +57,19 @@ test("compact panel summary labels are generated from raw summary instead of com
   assert.equal(snapshot.requestsLabel, "次 534");
 });
 
-test("compact panel uses live summary only as fallback before trusted summary exists", () => {
+test("compact panel waits for trusted summary instead of using live-rate totals", () => {
   const snapshot = floatingSnapshotForLiveRate(
     liveRateSnapshot({
-      totalTokens: 12_345,
-      totalTokensToday: 678,
-      requestsToday: 9,
+      totalTokens: 11_308_620_519,
+      totalTokensToday: 333_123_813,
+      requestsToday: 2_222,
     }),
     null,
   );
 
-  assert.equal(snapshot.totalTokensLabel, "总 1.2万");
-  assert.equal(snapshot.todayTokensLabel, "今 678");
-  assert.equal(snapshot.requestsLabel, "次 9");
+  assert.equal(snapshot.totalTokensLabel, "总 待读取");
+  assert.equal(snapshot.todayTokensLabel, "今 待读取");
+  assert.equal(snapshot.requestsLabel, "次 待读取");
 });
 
 test("compact panel fallback snapshot does not leak reset card placeholder", () => {
