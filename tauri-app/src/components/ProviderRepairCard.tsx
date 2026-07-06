@@ -14,6 +14,7 @@ import type {
 } from "../types/dashboard";
 import { ProviderRepairActions } from "./providerRepair/ProviderRepairActions";
 import { ProviderRepairBackups } from "./providerRepair/ProviderRepairBackups";
+import { createProviderRepairAutoScanController } from "./providerRepair/autoScanController";
 import {
   createProviderRepairOperationController,
   type ProviderRepairOperationKind,
@@ -39,7 +40,7 @@ export function ProviderRepairCard({
   const [activeBackupId, setActiveBackupId] = useState<string | null>(null);
   const [message, setMessage] = useState(snapshot.status);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const autoScanStartedRef = useRef(false);
+  const autoScanControllerRef = useRef(createProviderRepairAutoScanController());
   const operationControllerRef = useRef(createProviderRepairOperationController());
 
   useEffect(() => {
@@ -67,14 +68,9 @@ export function ProviderRepairCard({
   }, []);
 
   useEffect(() => {
-    if (!autoScanOnMount) {
-      autoScanStartedRef.current = false;
+    if (!autoScanControllerRef.current.shouldStart(autoScanOnMount)) {
       return;
     }
-    if (autoScanStartedRef.current) {
-      return;
-    }
-    autoScanStartedRef.current = true;
     void runScan();
   }, [autoScanOnMount]);
 
