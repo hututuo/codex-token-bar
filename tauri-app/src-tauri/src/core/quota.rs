@@ -101,7 +101,15 @@ pub fn read_account_quota(codex_home: &Path, force_refresh: bool) -> Result<Acco
         return resolve_cached_quota(cached);
     }
 
-    let result = read_account_quota_uncached(codex_home);
+    let previous_success = cached_successful_quota(codex_home)?;
+    let result = read_account_quota_uncached(codex_home).map(|bundle| {
+        if account_quota_failed(&bundle) {
+            if let Some(previous) = previous_success {
+                return stale_quota_bundle(previous, bundle);
+            }
+        }
+        bundle
+    });
     let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
     let mut guard = cache.lock().map_err(|error| error.to_string())?;
     *guard = Some(QuotaCacheEntry {
@@ -124,6 +132,17 @@ fn cached_quota_result_after_inflight(
     force_refresh: bool,
 ) -> Result<Option<Result<AccountQuotaBundle, String>>, String> {
     cached_quota_result_with_policy(codex_home, force_refresh, true)
+}
+
+fn cached_successful_quota(codex_home: &Path) -> Result<Option<AccountQuotaBundle>, String> {
+    let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
+    let guard = cache.lock().map_err(|error| error.to_string())?;
+    Ok(guard
+        .as_ref()
+        .filter(|entry| entry.codex_home == codex_home)
+        .and_then(|entry| entry.result.as_ref().ok())
+        .filter(|bundle| quota_available(&bundle.quota))
+        .cloned())
 }
 
 fn cached_quota_result_with_policy(
@@ -173,6 +192,9 @@ fn resolve_cached_quota(cached: Result<AccountQuotaBundle, String>) -> Result<Ac
 }
 
 fn cache_ttl(result: &Result<AccountQuotaBundle, String>) -> Duration {
+    if result.as_ref().is_ok_and(bundle_has_stale_data) {
+        return FAILURE_CACHE_TTL;
+    }
     if cache_result_has_real_quota(result) {
         SUCCESS_CACHE_TTL
     } else {
@@ -182,6 +204,21 @@ fn cache_ttl(result: &Result<AccountQuotaBundle, String>) -> Duration {
 
 fn quota_available(quota: &QuotaSnapshot) -> bool {
     quota.five_hour.resets_at_unix.is_some() || quota.seven_day.resets_at_unix.is_some()
+}
+
+fn account_quota_failed(bundle: &AccountQuotaBundle) -> bool {
+    !quota_available(&bundle.quota)
+        && bundle
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.source == "account_quota")
+}
+
+fn bundle_has_stale_data(bundle: &AccountQuotaBundle) -> bool {
+    bundle
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.stale_data_displayed)
 }
 
 fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, String> {
@@ -259,6 +296,34 @@ fn quota_failure_bundle(codex_home: &Path, error: String) -> AccountQuotaBundle 
     };
     refresh_quota_histories(&mut bundle, true);
     bundle
+}
+
+fn stale_quota_bundle(
+    mut previous: AccountQuotaBundle,
+    failure: AccountQuotaBundle,
+) -> AccountQuotaBundle {
+    previous.quota.reset_credit = failure.quota.reset_credit;
+    previous.quota_history_daily = failure.quota_history_daily;
+    previous.quota_history_24h = failure.quota_history_24h;
+    previous.quota_history_7d = failure.quota_history_7d;
+    previous.quota_history_30d = failure.quota_history_30d;
+
+    let raw_cause = failure
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source == "account_quota")
+        .and_then(|diagnostic| diagnostic.raw_cause.clone());
+    let mut diagnostics = failure.diagnostics;
+    for diagnostic in diagnostics
+        .iter_mut()
+        .filter(|diagnostic| diagnostic.source == "account_quota")
+    {
+        diagnostic.stale_data_displayed = true;
+    }
+    diagnostics.push(stale_cached_quota_diagnostic(raw_cause));
+    previous.diagnostics = diagnostics;
+    previous.warnings = diagnostics_to_warnings(&previous.diagnostics);
+    previous
 }
 
 fn refresh_quota_histories(bundle: &mut AccountQuotaBundle, force_refresh: bool) {
@@ -366,6 +431,22 @@ fn reset_credit_diagnostic(error: &str) -> QuotaDiagnostic {
         retryable: underlying.retryable,
         occurred_at: diagnostic_timestamp(),
         stale_data_displayed: false,
+    }
+}
+
+fn stale_cached_quota_diagnostic(raw_cause: Option<String>) -> QuotaDiagnostic {
+    QuotaDiagnostic {
+        source: "account_quota".into(),
+        category: "stale_cached_data".into(),
+        severity: "warning".into(),
+        message: "额度刷新失败，暂时显示上次成功额度。请稍后点立即刷新重试。".into(),
+        raw_cause,
+        underlying_category: None,
+        attempts: None,
+        http_status: None,
+        retryable: true,
+        occurred_at: diagnostic_timestamp(),
+        stale_data_displayed: true,
     }
 }
 
@@ -482,6 +563,18 @@ fn retry_attempts(text: &str) -> Option<u32> {
         .ok()
 }
 
+fn quota_deadline_error(timeout: Duration, stderr: Option<&str>) -> String {
+    let timeout_message = format!("额度读取超时（{} 秒）", timeout.as_secs());
+    let stderr = stderr
+        .map(str::trim)
+        .filter(|stderr| !stderr.is_empty())
+        .map(compact_error_message);
+    match stderr {
+        Some(stderr) => format!("{timeout_message}；Codex app-server stderr：{stderr}"),
+        None => timeout_message,
+    }
+}
+
 fn read_rate_limits() -> Result<QuotaSnapshot, String> {
     let mut errors = Vec::new();
     for attempt in 1..=RATE_LIMIT_READ_ATTEMPTS {
@@ -591,15 +684,13 @@ fn read_rate_limits_once(timeout: Duration) -> Result<QuotaSnapshot, String> {
     }
 
     child.cleanup();
+    let mut stderr_text = None;
     if let Some(mut stderr) = stderr {
         let mut text = String::new();
         let _ = std::io::Read::read_to_string(&mut stderr, &mut text);
-        let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            return Err(trimmed.to_string());
-        }
+        stderr_text = Some(text);
     }
-    Err(format!("额度读取超时（{} 秒）", timeout.as_secs()))
+    Err(quota_deadline_error(timeout, stderr_text.as_deref()))
 }
 
 trait QuotaChildProcess {
@@ -895,6 +986,41 @@ mod tests {
     }
 
     #[test]
+    fn quota_deadline_error_keeps_timeout_primary_with_noisy_stderr() {
+        let stderr = r#"{"timestamp":"2026-07-06T01:00:00Z","level":"WARN","fields":{"message":"ignoring plugin manifest","path":"/tmp/plugin.json"},"target":"codex_core_plugins::manifest"}
+{"timestamp":"2026-07-06T01:00:01Z","level":"ERROR","fields":{"message":"failed to refresh available models: timeout while fetching models"},"target":"codex_core::model_provider"}"#;
+
+        let raw = quota_deadline_error(Duration::from_secs(12), Some(stderr));
+        let diagnostic = classify_quota_error("account_quota", &raw);
+
+        assert_eq!(diagnostic.category, "timeout");
+        assert!(diagnostic.message.contains("读取超时"));
+        assert!(diagnostic
+            .raw_cause
+            .as_deref()
+            .is_some_and(|raw| raw.contains("额度读取超时（12 秒）")));
+        assert!(diagnostic
+            .raw_cause
+            .as_deref()
+            .is_some_and(|raw| raw.contains("failed to refresh available models")));
+    }
+
+    #[test]
+    fn quota_deadline_error_is_timeout_even_when_stderr_has_only_plugin_noise() {
+        let stderr = r#"{"timestamp":"2026-07-06T01:00:00Z","level":"WARN","fields":{"message":"ignoring plugin manifest","path":"/tmp/plugin.json"},"target":"codex_core_plugins::manifest"}"#;
+
+        let raw = quota_deadline_error(Duration::from_secs(12), Some(stderr));
+        let diagnostic = classify_quota_error("account_quota", &raw);
+
+        assert_eq!(diagnostic.category, "timeout");
+        assert!(diagnostic.message.contains("读取超时"));
+        assert!(diagnostic
+            .raw_cause
+            .as_deref()
+            .is_some_and(|raw| raw.contains("ignoring plugin manifest")));
+    }
+
+    #[test]
     fn quota_error_classifier_does_not_treat_json_file_paths_as_parse_failures() {
         let diagnostic = classify_quota_error(
             "account_quota",
@@ -957,6 +1083,58 @@ mod tests {
             warning.source == "reset_credit"
                 && warning.message.contains("重置卡读取失败")
         }));
+    }
+
+    #[test]
+    fn stale_quota_bundle_preserves_previous_success_after_timeout_failure() {
+        let previous = quota_bundle_fixture(
+            "current",
+            parse_rate_limits(&json!({
+                "rateLimitsByLimitId": {
+                    "codex": {
+                        "limitId": "codex",
+                        "limitName": "Codex",
+                        "primary": { "usedPercent": 20, "resetsAt": 1781715600 },
+                        "secondary": { "usedPercent": 40, "resetsAt": 1782144492 }
+                    }
+                }
+            }))
+            .unwrap(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut failed_quota = placeholder_quota();
+        failed_quota.pace_label = "额度读取失败".into();
+        let timeout = classify_quota_error(
+            "account_quota",
+            &quota_deadline_error(Duration::from_secs(12), Some("plugin manifest WARN")),
+        );
+        let failed = quota_bundle_fixture(
+            "failed",
+            failed_quota,
+            diagnostics_to_warnings(&[timeout.clone()]),
+            vec![timeout],
+        );
+
+        let stale = stale_quota_bundle(previous.clone(), failed);
+
+        assert_eq!(stale.quota.five_hour.resets_at_unix, previous.quota.five_hour.resets_at_unix);
+        assert_eq!(stale.quota.seven_day.resets_at_unix, previous.quota.seven_day.resets_at_unix);
+        assert_eq!(stale.quota.pace_label, previous.quota.pace_label);
+        assert!(stale.diagnostics.iter().any(|diagnostic| {
+            diagnostic.source == "account_quota"
+                && diagnostic.category == "timeout"
+                && diagnostic.stale_data_displayed
+        }));
+        assert!(stale.diagnostics.iter().any(|diagnostic| {
+            diagnostic.source == "account_quota"
+                && diagnostic.category == "stale_cached_data"
+                && diagnostic.stale_data_displayed
+        }));
+        assert!(stale
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("显示上次成功额度")));
     }
 
     #[test]
@@ -1051,5 +1229,26 @@ mod tests {
 
         let mut guard = cache.lock().unwrap();
         *guard = None;
+    }
+
+    fn quota_bundle_fixture(
+        name: &str,
+        quota: QuotaSnapshot,
+        warnings: Vec<LocalDataWarning>,
+        diagnostics: Vec<QuotaDiagnostic>,
+    ) -> AccountQuotaBundle {
+        AccountQuotaBundle {
+            account: AccountInfo {
+                display_name: name.into(),
+                plan_label: "Pro".into(),
+            },
+            quota,
+            quota_history_daily: Vec::new(),
+            quota_history_24h: Vec::new(),
+            quota_history_7d: Vec::new(),
+            quota_history_30d: Vec::new(),
+            warnings,
+            diagnostics,
+        }
     }
 }
