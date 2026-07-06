@@ -187,8 +187,9 @@ impl QuotaHistoryRow {
     fn from_bundle(bundle: &AccountQuotaBundle, created_at: f64) -> Self {
         let account_name =
             Some(bundle.account.display_name.clone()).filter(|value| !value.trim().is_empty());
-        let plan_type = Some("Pro".to_string());
         let limit_name = Some("codex".to_string());
+        let plan_type =
+            canonical_plan_type(Some(&bundle.account.plan_label), limit_name.as_deref());
         let account_key = canonical_account_key(
             account_name.as_deref(),
             plan_type.as_deref(),
@@ -353,14 +354,22 @@ fn canonical_account_name(account_name: Option<&str>, fallback_key: Option<&str>
         })
 }
 
-fn canonical_plan_type(plan_type: Option<&str>, limit_name: Option<&str>) -> Option<String> {
-    if is_codex_main_limit(limit_name) {
-        return Some("Pro".into());
+fn canonical_plan_type(plan_type: Option<&str>, _limit_name: Option<&str>) -> Option<String> {
+    let value = plan_type?.trim();
+    if value.is_empty() {
+        return None;
     }
-    plan_type
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+    let normalized = value.to_ascii_lowercase().replace([' ', '-', '_'], "");
+    match normalized.as_str() {
+        "plus" | "chatgptplus" => Some("Plus".into()),
+        "pro" | "chatgptpro" => Some("Pro".into()),
+        "team" | "teams" | "business" => Some("Team".into()),
+        "enterprise" => Some("Enterprise".into()),
+        "free" => Some("Free".into()),
+        "unknown" | "null" | "none" | "unread" => None,
+        _ if value.contains("待读取") || value.contains("未知") => None,
+        _ => Some(value.to_string()),
+    }
 }
 
 fn canonical_limit_name(limit_name: Option<&str>) -> Option<String> {

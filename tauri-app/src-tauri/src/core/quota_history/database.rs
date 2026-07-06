@@ -98,7 +98,16 @@ fn matching_rows(
               account_key = ?1
               OR (
                 account_name = ?2
-                AND (?3 IS NULL OR lower(coalesce(plan_type, '')) = lower(?3))
+                AND (
+                  ?3 IS NULL
+                  OR lower(coalesce(plan_type, '')) = lower(?3)
+                  OR (
+                    lower(?3) <> 'pro'
+                    AND lower(coalesce(plan_type, '')) = 'pro'
+                    AND lower(coalesce(limit_name, '')) = 'codex'
+                    AND lower(coalesce(source, 'tauri')) = 'tauri'
+                  )
+                )
                 AND (
                   ?4 IS NULL
                   OR lower(coalesce(limit_name, '')) = lower(?4)
@@ -131,7 +140,16 @@ fn matching_rows(
               account_key = ?1
               OR (
                 account_name = ?2
-                AND (?3 IS NULL OR lower(coalesce(plan_type, '')) = lower(?3))
+                AND (
+                  ?3 IS NULL
+                  OR lower(coalesce(plan_type, '')) = lower(?3)
+                  OR (
+                    lower(?3) <> 'pro'
+                    AND lower(coalesce(plan_type, '')) = 'pro'
+                    AND lower(coalesce(limit_name, '')) = 'codex'
+                    AND lower(coalesce(source, 'tauri')) = 'tauri'
+                  )
+                )
                 AND (
                   ?4 IS NULL
                   OR lower(coalesce(limit_name, '')) = lower(?4)

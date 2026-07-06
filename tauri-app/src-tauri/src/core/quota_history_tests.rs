@@ -114,6 +114,84 @@ fn record_writes_canonical_codex_key_and_source() {
 }
 
 #[test]
+fn record_uses_read_plan_label_instead_of_inventing_pro() {
+    let path = temp_db_path("plan-label");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let reset = now_unix() + 3_600.0;
+
+    database
+        .record(&bundle_with_plan(
+            "来先生",
+            "Plus",
+            0.01,
+            reset as i64,
+            0.50,
+            (reset + 500_000.0) as i64,
+        ))
+        .unwrap();
+
+    let connection = database.open().unwrap();
+    let stored = connection
+        .query_row(
+            "SELECT account_key, plan_type, limit_name FROM quota_snapshots ORDER BY id DESC LIMIT 1;",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .unwrap();
+
+    assert_eq!(stored.0, "来先生|Plus|codex");
+    assert_eq!(stored.1.as_deref(), Some("Plus"));
+    assert_eq!(stored.2.as_deref(), Some("codex"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn record_unknown_plan_does_not_write_fake_pro() {
+    let path = temp_db_path("unknown-plan");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let reset = now_unix() + 3_600.0;
+
+    database
+        .record(&bundle_with_plan(
+            "来先生",
+            "计划待读取",
+            0.01,
+            reset as i64,
+            0.50,
+            (reset + 500_000.0) as i64,
+        ))
+        .unwrap();
+
+    let connection = database.open().unwrap();
+    let stored = connection
+        .query_row(
+            "SELECT account_key, plan_type, limit_name FROM quota_snapshots ORDER BY id DESC LIMIT 1;",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .unwrap();
+
+    assert_eq!(stored.0, "来先生|codex");
+    assert_eq!(stored.1, None);
+    assert_eq!(stored.2.as_deref(), Some("codex"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn schema_adds_nullable_source_column_to_existing_database() {
     let path = temp_db_path("source-migration");
     let connection = rusqlite::Connection::open(&path).unwrap();
@@ -146,6 +224,49 @@ fn schema_adds_nullable_source_column_to_existing_database() {
         .any(|name| name.unwrap() == "source");
 
     assert!(has_source);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn recent_history_includes_legacy_fake_pro_rows_for_same_codex_account() {
+    let path = temp_db_path("legacy-fake-pro");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let connection = database.open().unwrap();
+    ensure_schema(&connection).unwrap();
+    let now = now_unix();
+    let reset = now + 3_600.0;
+
+    insert_history_row_with_source(
+        &connection,
+        &history_row(
+            now - 600.0,
+            "tester|Pro|codex",
+            "Pro",
+            Some("codex"),
+            10,
+            reset,
+            20,
+            reset + 500_000.0,
+        ),
+        Some("tauri"),
+    );
+    database
+        .record(&bundle_with_plan(
+            "tester",
+            "Plus",
+            0.15,
+            reset as i64,
+            0.21,
+            (reset + 500_000.0) as i64,
+        ))
+        .unwrap();
+
+    let history = database.recent_history_24h(12).unwrap();
+    assert!(history
+        .iter()
+        .any(|point| point.five_hour_remaining_percent == Some(0.90)));
+    assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(0.85));
 
     let _ = std::fs::remove_file(path);
 }
@@ -541,10 +662,21 @@ fn bundle(
     seven_used: f64,
     seven_reset: i64,
 ) -> AccountQuotaBundle {
+    bundle_with_plan(name, "Pro", five_used, five_reset, seven_used, seven_reset)
+}
+
+fn bundle_with_plan(
+    name: &str,
+    plan_label: &str,
+    five_used: f64,
+    five_reset: i64,
+    seven_used: f64,
+    seven_reset: i64,
+) -> AccountQuotaBundle {
     AccountQuotaBundle {
         account: AccountInfo {
             display_name: name.into(),
-            plan_label: "Pro".into(),
+            plan_label: plan_label.into(),
         },
         quota: QuotaSnapshot {
             five_hour: QuotaLimit {
