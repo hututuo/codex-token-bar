@@ -1,5 +1,19 @@
 import Foundation
 
+private enum LiveRateStreamDecoderCache {
+    private static let key = "CodexTokenBar.LiveRateMonitor.streamEventDecoder"
+
+    static var decoder: JSONDecoder {
+        if let decoder = Thread.current.threadDictionary[key] as? JSONDecoder {
+            return decoder
+        }
+
+        let decoder = JSONDecoder()
+        Thread.current.threadDictionary[key] = decoder
+        return decoder
+    }
+}
+
 extension LiveRateMonitor {
     nonisolated static func streamEvent(from row: LogRow) -> ResponseStreamEvent? {
         let marker: String
@@ -16,7 +30,7 @@ extension LiveRateMonitor {
         guard let range = row.feedbackLogBody.range(of: marker) else { return nil }
         let jsonText = String(row.feedbackLogBody[range.upperBound...])
         guard let data = jsonText.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(ResponseStreamEvent.self, from: data)
+        return try? LiveRateStreamDecoderCache.decoder.decode(ResponseStreamEvent.self, from: data)
     }
 
     nonisolated static func metricEvents(from streamEvent: ResponseStreamEvent, row: LogRow, toolNames: [String: String]) -> [LiveMetricEvent] {

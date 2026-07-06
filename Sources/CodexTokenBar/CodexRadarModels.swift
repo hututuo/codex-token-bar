@@ -254,13 +254,25 @@ struct CodexRadarChartPoint: Equatable, Sendable, Identifiable {
     }
 
     static func shortDateLabel(_ raw: String) -> String {
-        let trimmed = raw.replacingOccurrences(of: "2026-06-", with: "6.")
-            .replacingOccurrences(of: "-am", with: " am")
-            .replacingOccurrences(of: "-pm", with: " pm")
-        if trimmed.hasPrefix("2026-") {
-            return String(trimmed.dropFirst(5))
+        let parts = raw.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3 || parts.count == 4,
+              parts[0] == "2026",
+              parts[1].count == 2,
+              parts[2].count == 2,
+              let month = Int(parts[1]),
+              let day = Int(parts[2]),
+              (1...12).contains(month),
+              (1...31).contains(day)
+        else {
+            return raw
         }
-        return trimmed
+
+        var label = "\(month).\(day)"
+        if parts.count == 4 {
+            guard parts[3] == "am" || parts[3] == "pm" else { return raw }
+            label += " \(parts[3])"
+        }
+        return label
     }
 }
 

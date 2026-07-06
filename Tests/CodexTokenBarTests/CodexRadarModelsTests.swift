@@ -128,6 +128,14 @@ final class CodexRadarModelsTests: XCTestCase {
         XCTAssertEqual(series.dropFirst().first?.points.map(\.value), [62.5, 87.5])
     }
 
+    func testShortDateLabelFormatsAll2026MonthsAndFallsBackSafely() {
+        XCTAssertEqual(CodexRadarChartPoint.shortDateLabel("2026-06-22-pm"), "6.22 pm")
+        XCTAssertEqual(CodexRadarChartPoint.shortDateLabel("2026-06-23"), "6.23")
+        XCTAssertEqual(CodexRadarChartPoint.shortDateLabel("2026-07-01-am"), "7.1 am")
+        XCTAssertEqual(CodexRadarChartPoint.shortDateLabel("2026-12-03-pm"), "12.3 pm")
+        XCTAssertEqual(CodexRadarChartPoint.shortDateLabel("not-a-radar-date"), "not-a-radar-date")
+    }
+
     func testQuotaRadarBuildsWindowAndTierChartSeries() throws {
         let snapshot = try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: Data(Self.sampleJSON.utf8))
         let quotaRadar = try XCTUnwrap(snapshot.modelIQ.quotaRadar)
