@@ -599,6 +599,69 @@ fn token_event_cache_ignores_previous_shard_versions() {
 }
 
 #[test]
+fn token_event_cache_reparses_pre_fork_replay_version_six_shard() {
+    let root = temp_root();
+    let cache_dir = root.join("token-event-cache-shards");
+    let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019efork-stale-v6-cache.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
+            r#"{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":400,"cached_input_tokens":0,"output_tokens":100,"total_tokens":500},"last_token_usage":{"input_tokens":400,"cached_input_tokens":0,"output_tokens":100,"total_tokens":500}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:10:00Z","type":"event_msg","payload":{"type":"user_message","message":"新分支问题"}}"#,
+            r#"{"timestamp":"2026-06-18T01:11:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":120,"total_tokens":620},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+
+    let signature = super::token_event_cache::file_signature(&file).unwrap();
+    let home_key = codex_home_cache_key(&root);
+    let cache_key = super::token_event_cache::file_cache_key(&root, &file);
+    fs::create_dir_all(cache_dir.join(&home_key)).unwrap();
+    fs::write(
+        cache_dir.join(&home_key).join("stale-v6.json"),
+        serde_json::json!({
+            "version": 6,
+            "homeKey": home_key,
+            "codexHome": root.to_string_lossy(),
+            "cacheKey": cache_key,
+            "session": {
+                "signature": signature,
+                "parsedSize": signature.size,
+                "endedWithNewline": true,
+                "previousTotalTokens": 620,
+                "forkReplayActive": false,
+                "lastSkippedForkReplayTokenAt": null,
+                "events": [{
+                    "timestampUnix": 1_781_716_260,
+                    "tokens": 620,
+                    "inputTokens": 500,
+                    "cachedInputTokens": 0,
+                    "outputTokens": 120
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    reset_session_full_parse_count_for_testing();
+    let mut warnings = Vec::new();
+    let events = load_token_events_from_files(&root, vec![file.clone()], &mut warnings);
+
+    assert_eq!(events.iter().map(|event| event.tokens).sum::<u64>(), 120);
+    assert_eq!(session_full_parse_count_for_testing(), 1);
+    assert!(json_files_under(&cache_dir)
+        .iter()
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .any(|text| text.contains(r#""version":7"#) && text.contains(r#""tokens":120"#)));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn token_event_cache_removes_deleted_session_shards() {
     let root = temp_root();
     let cache_dir = root.join("token-event-cache-shards");
@@ -690,6 +753,47 @@ fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
     assert_eq!(summary_after_restart.total_tokens, 120);
     assert!(aggregate_cache_text().contains(r#""snapshot":{"#));
     assert!(!aggregate_cache_text().contains(r#""snapshot":null"#));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn usage_summary_ignores_previous_dashboard_aggregate_version() {
+    let root = temp_root();
+    let cache_path = root.join("token-aggregate-cache.json");
+    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
+    let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eaggregate-stale-v7-cache.jsonl");
+    write_lines(
+        &file,
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    let signature = dashboard_scan_signature(&root, &[file]);
+    fs::write(
+        &cache_path,
+        serde_json::json!({
+            "version": 7,
+            "signature": signature,
+            "snapshot": null,
+            "summary": {
+                "totalTokens": 999,
+                "todayTokens": 999,
+                "todayRequests": 9
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let summary = usage_summary(&root).unwrap();
+
+    assert_eq!(summary.total_tokens, 120);
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    assert_eq!(snapshot.stats.total_tokens, 120);
+    assert!(aggregate_cache_text().contains(r#""version":8"#));
+    assert!(aggregate_cache_text().contains(r#""totalTokens":120"#));
 
     fs::remove_dir_all(root).unwrap();
 }

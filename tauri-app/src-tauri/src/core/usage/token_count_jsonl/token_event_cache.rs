@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use time::OffsetDateTime;
 
-const TOKEN_EVENT_CACHE_VERSION: u32 = 6;
+const TOKEN_EVENT_CACHE_VERSION: u32 = 7;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -37,7 +37,7 @@ static USAGE_SUMMARY_REFRESH_IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = Once
 static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 7;
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 8;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
