@@ -369,12 +369,58 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
     }
 
+    func testScrollMetricsComputeButtonStepWindows() {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let twentyFourHours = (0..<288).map { index in
+            BinUsage(start: start.addingTimeInterval(Double(index) * 5 * 60), tokens: 1, calls: 1)
+        }
+        let fortyEightHours = (0..<(2 * 288)).map { index in
+            BinUsage(start: start.addingTimeInterval(Double(index) * 5 * 60), tokens: 1, calls: 1)
+        }
+        let fortyFiveDays = (0..<(45 * 8)).map { index in
+            BinUsage(start: start.addingTimeInterval(Double(index) * 3 * 60 * 60), tokens: 1, calls: 1)
+        }
+
+        XCTAssertEqual(
+            RecentChartScrollMetrics.windowCount(
+                range: .twentyFourHours,
+                bins: twentyFourHours,
+                bucketInterval: RecentChartRange.twentyFourHours.bucketInterval
+            ),
+            1
+        )
+        XCTAssertEqual(
+            RecentChartScrollMetrics.windowCount(
+                range: .twentyFourHours,
+                bins: fortyEightHours,
+                bucketInterval: RecentChartRange.twentyFourHours.bucketInterval
+            ),
+            2
+        )
+        XCTAssertEqual(
+            RecentChartScrollMetrics.windowCount(
+                range: .thirtyDays,
+                bins: fortyFiveDays,
+                bucketInterval: RecentChartRange.thirtyDays.bucketInterval
+            ),
+            2
+        )
+        XCTAssertEqual(RecentChartScrollMetrics.shiftedWindowIndex(current: 1, direction: .backward, windowCount: 3), 0)
+        XCTAssertEqual(RecentChartScrollMetrics.shiftedWindowIndex(current: 1, direction: .forward, windowCount: 3), 2)
+        XCTAssertEqual(RecentChartScrollMetrics.shiftedWindowIndex(current: 0, direction: .backward, windowCount: 3), 0)
+        XCTAssertEqual(RecentChartScrollMetrics.shiftedWindowIndex(current: 2, direction: .forward, windowCount: 3), 2)
+    }
+
     func testRecentUsageChartExposesHorizontalScrollingForLongHistory() throws {
         let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
 
         XCTAssertTrue(source.contains("ScrollView(.horizontal"))
         XCTAssertTrue(source.contains("RecentChartScrollMetrics.contentWidth"))
         XCTAssertTrue(source.contains("recent-chart-trailing-edge"))
+        XCTAssertTrue(source.contains("RecentChartScrollButton"))
+        XCTAssertTrue(source.contains("chevron.left"))
+        XCTAssertTrue(source.contains("chevron.right"))
+        XCTAssertTrue(source.contains("scrollChart(by:"))
     }
 
     func testSelectionStatePreviewsOnHoverThenPinsEndOnSecondClick() {

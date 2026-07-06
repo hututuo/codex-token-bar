@@ -63,6 +63,37 @@ enum RecentChartScrollMetrics {
         return max(viewportWidth, viewportWidth * CGFloat(contentDuration / viewportDuration))
     }
 
+    static func windowCount(
+        range: RecentChartRange,
+        bins: [BinUsage],
+        bucketInterval: TimeInterval
+    ) -> Int {
+        guard let first = bins.first,
+              let last = bins.last else {
+            return 1
+        }
+
+        let viewportDuration = windowDuration(for: range)
+        let contentDuration = max(
+            last.start.addingTimeInterval(bucketInterval).timeIntervalSince(first.start),
+            viewportDuration
+        )
+        return max(1, Int(ceil(contentDuration / viewportDuration)))
+    }
+
+    static func anchorID(for index: Int) -> String {
+        "recent-chart-window-\(index)"
+    }
+
+    static func shiftedWindowIndex(
+        current: Int,
+        direction: RecentChartScrollDirection,
+        windowCount: Int
+    ) -> Int {
+        let upperBound = max(windowCount - 1, 0)
+        return min(max(current + direction.delta, 0), upperBound)
+    }
+
     static func windowDuration(for range: RecentChartRange) -> TimeInterval {
         switch range {
         case .twentyFourHours:
@@ -71,6 +102,32 @@ enum RecentChartScrollMetrics {
             return 7 * 24 * 60 * 60
         case .thirtyDays:
             return 30 * 24 * 60 * 60
+        }
+    }
+}
+
+enum RecentChartScrollDirection {
+    case backward
+    case forward
+
+    var delta: Int {
+        switch self {
+        case .backward: -1
+        case .forward: 1
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .backward: "chevron.left"
+        case .forward: "chevron.right"
+        }
+    }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .backward: "向左滚动曲线图"
+        case .forward: "向右滚动曲线图"
         }
     }
 }
@@ -178,6 +235,7 @@ struct RecentUsageChart: View {
     @AppStorage("recentChartQuotaEstimateModel") private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt55.rawValue
     @State private var hoveredIndex: Int?
     @State private var consumptionSelectionState = RecentChartConsumptionSelectionState()
+    @State private var scrollWindowIndex: Int?
     @State var preparedData: RecentChartPreparedData
 
     init(
@@ -266,40 +324,112 @@ struct RecentUsageChart: View {
 
     private var chartPlot: some View {
         GeometryReader { proxy in
+            let buttonWidth: CGFloat = 28
+            let buttonSpacing: CGFloat = 6
+            let viewportWidth = max(proxy.size.width - buttonWidth * 2 - buttonSpacing * 2, 1)
             let contentWidth = RecentChartScrollMetrics.contentWidth(
                 range: selectedRange,
                 bins: preparedData.bins,
                 bucketInterval: preparedData.bucketInterval,
-                viewportWidth: proxy.size.width
+                viewportWidth: viewportWidth
             )
+            let windowCount = RecentChartScrollMetrics.windowCount(
+                range: selectedRange,
+                bins: preparedData.bins,
+                bucketInterval: preparedData.bucketInterval
+            )
+            let currentWindowIndex = min(scrollWindowIndex ?? max(windowCount - 1, 0), max(windowCount - 1, 0))
 
             ScrollViewReader { scrollProxy in
-                ScrollView(.horizontal, showsIndicators: contentWidth > proxy.size.width + 1) {
-                    HStack(spacing: 0) {
-                        chartPlotCanvas(width: contentWidth, height: proxy.size.height)
+                HStack(spacing: buttonSpacing) {
+                    RecentChartScrollButton(
+                        direction: .backward,
+                        isDisabled: windowCount <= 1 || currentWindowIndex <= 0,
+                        action: {
+                            scrollChart(by: .backward, windowCount: windowCount, proxy: scrollProxy)
+                        }
+                    )
+                    .frame(width: buttonWidth, height: proxy.size.height)
+
+                    ScrollView(.horizontal, showsIndicators: contentWidth > viewportWidth + 1) {
+                        HStack(spacing: 0) {
+                            ZStack(alignment: .topLeading) {
+                                chartPlotCanvas(width: contentWidth, height: proxy.size.height)
+                                    .frame(width: contentWidth, height: proxy.size.height)
+
+                                chartScrollAnchors(
+                                    windowCount: windowCount,
+                                    viewportWidth: viewportWidth,
+                                    contentWidth: contentWidth
+                                )
+                            }
                             .frame(width: contentWidth, height: proxy.size.height)
 
-                        Color.clear
-                            .frame(width: 1, height: 1)
-                            .id(RecentChartScrollMetrics.trailingAnchorID)
+                            Color.clear
+                                .frame(width: 1, height: 1)
+                                .id(RecentChartScrollMetrics.trailingAnchorID)
+                        }
                     }
+                    .scrollClipDisabled()
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(selectedRange.title) 曲线图")
+                    .accessibilityValue(accessibilitySummary)
+
+                    RecentChartScrollButton(
+                        direction: .forward,
+                        isDisabled: windowCount <= 1 || currentWindowIndex >= windowCount - 1,
+                        action: {
+                            scrollChart(by: .forward, windowCount: windowCount, proxy: scrollProxy)
+                        }
+                    )
+                    .frame(width: buttonWidth, height: proxy.size.height)
                 }
-                .scrollClipDisabled()
                 .onAppear {
-                    scrollChartToLatestIfNeeded(scrollProxy)
+                    scrollChartToLatestIfNeeded(scrollProxy, windowCount: windowCount)
                 }
                 .onChange(of: selectedRangeRaw) { _, _ in
-                    scrollChartToLatestIfNeeded(scrollProxy)
+                    scrollChartToLatestIfNeeded(scrollProxy, windowCount: windowCount)
                 }
                 .onChange(of: preparedData.bins.count) { _, _ in
-                    scrollChartToLatestIfNeeded(scrollProxy)
+                    scrollChartToLatestIfNeeded(scrollProxy, windowCount: windowCount)
                 }
             }
         }
         .frame(height: 185)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(selectedRange.title) 曲线图")
-        .accessibilityValue(accessibilitySummary)
+    }
+
+    @ViewBuilder
+    private func chartScrollAnchors(windowCount: Int, viewportWidth: CGFloat, contentWidth: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            ForEach(0..<max(windowCount, 1), id: \.self) { index in
+                Color.clear
+                    .frame(
+                        width: scrollAnchorWidth(
+                            index: index,
+                            windowCount: windowCount,
+                            viewportWidth: viewportWidth,
+                            contentWidth: contentWidth
+                        ),
+                        height: 1
+                    )
+                    .id(RecentChartScrollMetrics.anchorID(for: index))
+            }
+        }
+        .frame(width: contentWidth, height: 1, alignment: .leading)
+        .allowsHitTesting(false)
+    }
+
+    private func scrollAnchorWidth(
+        index: Int,
+        windowCount: Int,
+        viewportWidth: CGFloat,
+        contentWidth: CGFloat
+    ) -> CGFloat {
+        guard windowCount > 1 else { return max(contentWidth, 1) }
+        if index >= windowCount - 1 {
+            return max(contentWidth - viewportWidth * CGFloat(index), 1)
+        }
+        return max(viewportWidth, 1)
     }
 
     @ViewBuilder
@@ -490,8 +620,30 @@ struct RecentUsageChart: View {
         .frame(width: width, height: height)
     }
 
-    private func scrollChartToLatestIfNeeded(_ proxy: ScrollViewProxy) {
+    private func scrollChart(by direction: RecentChartScrollDirection, windowCount: Int, proxy: ScrollViewProxy) {
+        guard windowCount > 1 else { return }
+        let current = min(scrollWindowIndex ?? windowCount - 1, windowCount - 1)
+        let target = RecentChartScrollMetrics.shiftedWindowIndex(
+            current: current,
+            direction: direction,
+            windowCount: windowCount
+        )
+        guard target != current else { return }
+        scrollWindowIndex = target
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.18)) {
+                if target >= windowCount - 1 {
+                    proxy.scrollTo(RecentChartScrollMetrics.trailingAnchorID, anchor: .trailing)
+                } else {
+                    proxy.scrollTo(RecentChartScrollMetrics.anchorID(for: target), anchor: .leading)
+                }
+            }
+        }
+    }
+
+    private func scrollChartToLatestIfNeeded(_ proxy: ScrollViewProxy, windowCount: Int) {
         guard preparedData.bins.count > 1 else { return }
+        scrollWindowIndex = max(windowCount - 1, 0)
         DispatchQueue.main.async {
             withAnimation(.easeOut(duration: 0.18)) {
                 proxy.scrollTo(RecentChartScrollMetrics.trailingAnchorID, anchor: .trailing)
@@ -598,5 +750,33 @@ struct RecentUsageChart: View {
 
     private func clampConsumptionSelection() {
         consumptionSelectionState.clamp(validCount: preparedData.bins.count)
+    }
+}
+
+private struct RecentChartScrollButton: View {
+    let direction: RecentChartScrollDirection
+    let isDisabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: direction.systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isDisabled ? .secondary.opacity(0.45) : AppTheme.accentBlue)
+                .frame(width: 24, height: 54)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(isDisabled ? AppTheme.solidControlBackground.opacity(0.55) : AppTheme.accentBlue.opacity(0.10))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(isDisabled ? AppTheme.border.opacity(0.45) : AppTheme.accentBlue.opacity(0.28), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .accessibilityLabel(direction.accessibilityLabel)
     }
 }
