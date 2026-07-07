@@ -94,6 +94,61 @@ test("floating Radar row preserves stale snapshot and shows a restrained marker"
   });
 });
 
+test("Codex Radar detail overlay prefers full detail snapshot and falls back to public summary", async () => {
+  await withSsrModules(async (load) => {
+    const { CodexRadarDetailOverlay } = await load("/src/components/CodexRadarStrip.tsx");
+    const { normalizeCodexRadarSnapshot, primaryModelRow, secondaryModelRows } = await load("/src/components/codexRadar/model.ts");
+    const publicSnapshot = normalizeCodexRadarSnapshot(snapshotFixture({
+      recommended_action: "wait",
+      model_iq: { ...snapshotFixture().model_iq, latest: { ...snapshotFixture().model_iq.latest, score: 100 } },
+    }));
+    const detailSnapshot = normalizeCodexRadarSnapshot(snapshotFixture({
+      recommended_action: "run",
+      model_iq: { ...snapshotFixture().model_iq, latest: { ...snapshotFixture().model_iq.latest, score: 125 } },
+    }));
+    const publicModels = [primaryModelRow(publicSnapshot.modelIq), ...secondaryModelRows(publicSnapshot.modelIq)];
+
+    const fallbackHtml = renderComponent(CodexRadarDetailOverlay, {
+      allModels: publicModels,
+      detailSnapshot: null,
+      detailStatus: "详细信息待读取",
+      diagnostics: [],
+      isDetailRefreshing: false,
+      isRefreshing: false,
+      onClose: () => {},
+      onRefresh: () => {},
+      primary: primaryModelRow(publicSnapshot.modelIq),
+      probability24h: publicSnapshot.prediction.probability24H,
+      probability48h: publicSnapshot.prediction.probability48H,
+      quotaRows: publicSnapshot.modelIq.quotaRadar?.rows ?? [],
+      snapshot: publicSnapshot,
+      status: "公开摘要已更新",
+    });
+    const detailHtml = renderComponent(CodexRadarDetailOverlay, {
+      allModels: publicModels,
+      detailSnapshot,
+      detailStatus: "详细信息已更新",
+      diagnostics: [],
+      isDetailRefreshing: false,
+      isRefreshing: false,
+      onClose: () => {},
+      onRefresh: () => {},
+      primary: primaryModelRow(publicSnapshot.modelIq),
+      probability24h: publicSnapshot.prediction.probability24H,
+      probability48h: publicSnapshot.prediction.probability48H,
+      quotaRows: publicSnapshot.modelIq.quotaRadar?.rows ?? [],
+      snapshot: publicSnapshot,
+      status: "公开摘要已更新",
+    });
+
+    assert.match(fallbackHtml, /<td>100<\/td>/);
+    assert.match(detailHtml, /详细信息已更新/);
+    assert.match(detailHtml, /<td>125<\/td>/);
+    assert.doesNotMatch(detailHtml, /详细信息待读取/);
+  });
+});
+
+
 function snapshotFixture(overrides = {}) {
   return {
     schema_version: "1",

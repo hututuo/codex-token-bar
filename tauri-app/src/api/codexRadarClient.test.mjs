@@ -76,6 +76,24 @@ test("Codex Radar root failures keep machine-readable categories", async () => {
   });
 });
 
+test("public Codex Radar summary fetch uses current.json without authorization", async () => {
+  await withSsrModules(async (load) => {
+    const { __resetCodexRadarCacheForTests, readCodexRadarState } = await load("/src/api/codexRadarClient.ts");
+    __resetCodexRadarCacheForTests();
+    const calls = withFetchQueue([
+      jsonResponse(snapshotFixture()),
+      textResponse(feedFixture("radar-public")),
+    ]);
+
+    await readCodexRadarState(null, { force: true });
+
+    assert.equal(String(calls[0].input), "https://codexradar.com/current.json");
+    assert.equal(calls[0].init?.headers?.Authorization, undefined);
+    assert.equal(calls[0].init?.headers?.authorization, undefined);
+  });
+});
+
+
 test("Codex Radar root failure after success preserves prior snapshot and marks stale data", async () => {
   await withSsrModules(async (load) => {
     const { __resetCodexRadarCacheForTests, readCodexRadarState } = await load("/src/api/codexRadarClient.ts");
@@ -149,11 +167,14 @@ test("Codex Radar full success clears previous stale diagnostics", async () => {
 
 function withFetchQueue(queue) {
   const calls = [...queue];
-  globalThis.fetch = async () => {
+  const observed = [];
+  globalThis.fetch = async (input, init) => {
+    observed.push({ input, init });
     const next = calls.shift();
     assert.ok(next, "unexpected extra fetch call");
     return next;
   };
+  return observed;
 }
 
 function response(body, { status = 200 } = {}) {

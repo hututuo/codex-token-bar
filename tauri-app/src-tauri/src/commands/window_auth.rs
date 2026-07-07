@@ -19,6 +19,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "sync_provider_history",
     "verify_provider_repair",
     "rollback_provider_backup",
+    "read_codex_radar_full_snapshot",
 ];
 
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
@@ -111,5 +112,12 @@ mod tests {
         assert!(!allows_window_label("set_codex_home", "unknown"));
         assert!(!allows_window_label("read_account_quota", "unknown"));
         assert!(!allows_window_label("not_a_registered_command", "main"));
+    }
+
+    #[test]
+    fn codex_radar_full_detail_command_is_main_window_only() {
+        assert!(allows_window_label("read_codex_radar_full_snapshot", "main"));
+        assert!(!allows_window_label("read_codex_radar_full_snapshot", "floating"));
+        assert!(!allows_window_label("read_codex_radar_full_snapshot", "status"));
     }
 }

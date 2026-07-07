@@ -1,4 +1,10 @@
 import { memo, startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { readCodexRadarFullSnapshot } from "../api/codexRadarDetailClient";
+import {
+  CODEX_RADAR_DETAIL_REFRESH_STORAGE_KEY,
+  millisecondsUntilNextCodexRadarDetailSlot,
+  shouldRefreshCodexRadarDetail,
+} from "../api/codexRadarDetailRefreshPlan";
 import { readCodexRadarState } from "../api/codexRadarClient";
 import {
   codexRadarDiagnosticLabel,
@@ -15,6 +21,7 @@ import {
   percentText,
   primaryModelRow,
   quotaChartSeries,
+  selectCodexRadarDetailSnapshot,
   secondaryModelRows,
   shortDateLabel,
   type CodexRadarSnapshot,
@@ -33,9 +40,14 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const [status, setStatus] = useState("Codex 雷达待读取");
   const [refreshing, setRefreshing] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const [detailSnapshot, setDetailSnapshot] = useState<CodexRadarSnapshot | null>(null);
+  const [detailStatus, setDetailStatus] = useState("详细信息待读取");
+  const [detailRefreshing, setDetailRefreshing] = useState(false);
   const lastExternalRefreshGeneration = useRef(0);
   const refreshingRef = useRef(false);
+  const detailRefreshingRef = useRef(false);
   const snapshotRef = useRef<CodexRadarSnapshot | null>(null);
+  const detailSnapshotRef = useRef<CodexRadarSnapshot | null>(null);
 
   async function refresh(force = false) {
     if (refreshingRef.current) {
@@ -66,10 +78,77 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
     }
   }
 
+  async function refreshDetail() {
+    if (detailRefreshingRef.current) {
+      return;
+    }
+    detailRefreshingRef.current = true;
+    startTransition(() => {
+      setDetailRefreshing(true);
+      setDetailStatus(detailSnapshotRef.current ? "正在更新详细信息..." : "正在读取详细信息...");
+    });
+    try {
+      const next = await readCodexRadarFullSnapshot();
+      detailSnapshotRef.current = next;
+      writeLastDetailRefreshAt(new Date().toISOString());
+      startTransition(() => {
+        setDetailSnapshot(next);
+        setDetailStatus("详细信息已更新");
+      });
+    } catch {
+      startTransition(() => {
+        setDetailStatus(detailSnapshotRef.current
+          ? "详细信息刷新失败，继续显示上次详细信息。"
+          : "详细信息暂不可用，继续显示公开摘要。");
+      });
+    } finally {
+      detailRefreshingRef.current = false;
+      startTransition(() => {
+        setDetailRefreshing(false);
+      });
+    }
+  }
+
+  function refreshDetailIfDue() {
+    if (shouldRefreshCodexRadarDetail({
+      lastSuccessfulRefreshAt: readLastDetailRefreshAt(),
+      now: new Date(),
+    })) {
+      void refreshDetail();
+    }
+  }
+
   useEffect(() => {
     void refresh();
     const timer = window.setInterval(() => void refresh(false), RADAR_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    refreshDetailIfDue();
+    let timer: number | undefined;
+    const scheduleNext = () => {
+      timer = window.setTimeout(() => {
+        refreshDetailIfDue();
+        scheduleNext();
+      }, millisecondsUntilNextCodexRadarDetailSlot(new Date()) + 1_000);
+    };
+    const onForeground = () => {
+      if (!document.hidden) {
+        refreshDetailIfDue();
+      }
+    };
+    scheduleNext();
+    window.addEventListener("focus", refreshDetailIfDue);
+    document.addEventListener("visibilitychange", onForeground);
+    return () => {
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+      window.removeEventListener("focus", refreshDetailIfDue);
+      document.removeEventListener("visibilitychange", onForeground);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -170,9 +249,12 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
         <CodexRadarDetailOverlay
           allModels={allModels}
           diagnostics={diagnostics}
+          detailSnapshot={detailSnapshot}
+          detailStatus={detailStatus}
+          isDetailRefreshing={detailRefreshing}
           isRefreshing={refreshing}
           onClose={() => setShowDetails(false)}
-          onRefresh={() => void refresh(true)}
+          onRefresh={() => void refreshDetail()}
           primary={primary}
           probability24h={probability24h}
           probability48h={probability48h}
@@ -187,9 +269,12 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
 
 export const CodexRadarStrip = memo(CodexRadarStripView);
 
-function CodexRadarDetailOverlay({
+export function CodexRadarDetailOverlay({
   allModels,
   diagnostics,
+  detailSnapshot,
+  detailStatus,
+  isDetailRefreshing,
   isRefreshing,
   onClose,
   onRefresh,
@@ -202,6 +287,9 @@ function CodexRadarDetailOverlay({
 }: {
   allModels: CodexRadarModelIQComparisonRow[];
   diagnostics: CodexRadarDiagnostic[];
+  detailSnapshot: CodexRadarSnapshot | null;
+  detailStatus: string;
+  isDetailRefreshing: boolean;
   isRefreshing: boolean;
   onClose: () => void;
   onRefresh: () => void;
@@ -212,6 +300,14 @@ function CodexRadarDetailOverlay({
   snapshot: CodexRadarSnapshot | null;
   status: string;
 }) {
+  const displaySnapshot = selectCodexRadarDetailSnapshot(snapshot, detailSnapshot);
+  const displayPrimary = displaySnapshot ? primaryModelRow(displaySnapshot.modelIq) : primary;
+  const displaySecondary = displaySnapshot ? secondaryModelRows(displaySnapshot.modelIq) : [];
+  const displayAllModels = displaySnapshot ? [primaryModelRow(displaySnapshot.modelIq), ...displaySecondary] : allModels;
+  const displayQuotaRows = displaySnapshot?.modelIq.quotaRadar?.rows ?? quotaRows;
+  const displayProbability24h = displaySnapshot?.prediction.probability24H ?? displaySnapshot?.prediction.probability24h ?? probability24h;
+  const displayProbability48h = displaySnapshot?.prediction.probability48H ?? displaySnapshot?.prediction.probability48h ?? probability48h;
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -232,23 +328,23 @@ function CodexRadarDetailOverlay({
         <div className="codex-radar-detail-head">
           <div>
             <strong>Codex 雷达详细信息</strong>
-            <span>{snapshot ? `10分钟刷新 · ${snapshot.monitoredAt}` : status}</span>
+            <span>{displaySnapshot ? `${detailStatus} · ${displaySnapshot.monitoredAt}` : status}</span>
           </div>
-          <button className="codex-radar-detail-refresh" disabled={isRefreshing} onClick={onRefresh} type="button">
-            {isRefreshing ? "刷新中" : "刷新"}
+          <button className="codex-radar-detail-refresh" disabled={isDetailRefreshing || isRefreshing} onClick={onRefresh} type="button">
+            {isDetailRefreshing ? "刷新中" : "刷新详细"}
           </button>
           <button aria-label="关闭 Codex 雷达详情" className="codex-radar-detail-close" onClick={onClose} type="button">×</button>
         </div>
 
         <div className="codex-radar-detail-scroll">
-          {snapshot ? (
+          {displaySnapshot ? (
             <CodexRadarDetailBody
-              allModels={allModels}
-              primary={primary}
-              probability24h={probability24h}
-              probability48h={probability48h}
-              quotaRows={quotaRows}
-              snapshot={snapshot}
+              allModels={displayAllModels}
+              primary={displayPrimary}
+              probability24h={displayProbability24h}
+              probability48h={displayProbability48h}
+              quotaRows={displayQuotaRows}
+              snapshot={displaySnapshot}
             />
           ) : (
             <div className="codex-radar-detail-loading">
@@ -259,12 +355,28 @@ function CodexRadarDetailOverlay({
           )}
         </div>
 
-        <a className="codex-radar-thanks" href={snapshot?.links.html ?? "https://codexradar.com"} rel="noreferrer" target="_blank">
+        <a className="codex-radar-thanks" href={displaySnapshot?.links.html ?? "https://codexradar.com"} rel="noreferrer" target="_blank">
           感谢 Codex Radar 提供公开雷达数据
         </a>
       </div>
     </div>
   );
+}
+
+function readLastDetailRefreshAt(): string | null {
+  try {
+    return window.localStorage.getItem(CODEX_RADAR_DETAIL_REFRESH_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeLastDetailRefreshAt(value: string): void {
+  try {
+    window.localStorage.setItem(CODEX_RADAR_DETAIL_REFRESH_STORAGE_KEY, value);
+  } catch {
+    // Non-secret cache metadata only; ignore storage denial and retry on next scheduled slot.
+  }
 }
 
 const CodexRadarDetailBody = memo(function CodexRadarDetailBody({

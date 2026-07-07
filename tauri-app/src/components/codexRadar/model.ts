@@ -427,6 +427,13 @@ export function parseCodexRadarFeedXml(xml: string): CodexRadarFeedItem[] {
     .filter(isCompleteFeedItem);
 }
 
+export function selectCodexRadarDetailSnapshot(
+  publicSnapshot: CodexRadarSnapshot | null,
+  detailSnapshot: CodexRadarSnapshot | null,
+): CodexRadarSnapshot | null {
+  return detailSnapshot ?? publicSnapshot;
+}
+
 export function primaryModelRow(modelIq: CodexRadarModelIQ): CodexRadarModelIQComparisonRow {
   return [...allCurrentRows(modelIq)].sort(preferredModelOrder)[0] ?? {
     label: modelDisplayName(modelIq.latest),

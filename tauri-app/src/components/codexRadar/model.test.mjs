@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, primaryModelRow, quotaChartSeries, secondaryModelRows, shortDateLabel } from "./model.ts";
+import { modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, primaryModelRow, quotaChartSeries, secondaryModelRows, selectCodexRadarDetailSnapshot, shortDateLabel } from "./model.ts";
 
 const snapshot = {
   modelIq: {
@@ -220,6 +220,21 @@ test("normalizeCodexRadarSnapshot accepts the public snake_case feed", () => {
   assert.deepEqual(normalized.feedItems, []);
 });
 
+test("selectCodexRadarDetailSnapshot prefers optional full detail and falls back to public summary", () => {
+  const publicSnapshot = normalizeCodexRadarSnapshot(radarSnapshotFixture({
+    recommended_action: "wait",
+    model_iq: { ...radarSnapshotFixture().model_iq, latest: { ...radarSnapshotFixture().model_iq.latest, score: 100 } },
+  }));
+  const detailSnapshot = normalizeCodexRadarSnapshot(radarSnapshotFixture({
+    recommended_action: "run",
+    model_iq: { ...radarSnapshotFixture().model_iq, latest: { ...radarSnapshotFixture().model_iq.latest, score: 125 } },
+  }));
+
+  assert.equal(selectCodexRadarDetailSnapshot(publicSnapshot, null)?.recommendedAction, "wait");
+  assert.equal(selectCodexRadarDetailSnapshot(publicSnapshot, detailSnapshot)?.recommendedAction, "run");
+  assert.equal(primaryModelRow(selectCodexRadarDetailSnapshot(publicSnapshot, detailSnapshot).modelIq).point.score, 125);
+});
+
 test("parseCodexRadarFeedXml mirrors the Swift RSS reminder parser", () => {
   const items = parseCodexRadarFeedXml(`
     <rss>
@@ -248,3 +263,34 @@ test("parseCodexRadarFeedXml mirrors the Swift RSS reminder parser", () => {
   assert.equal(items[1].title, "Codex & Radar 更新");
   assert.equal(items[1].description, "公开订阅 & 提醒历史");
 });
+
+function radarSnapshotFixture(overrides = {}) {
+  return {
+    monitored_at: "2026-06-24T14:55:20+08:00",
+    recommended_action: "wait",
+    model_iq: {
+      latest: {
+        date: "2026-06-24-pm",
+        score: 100,
+        status: "green",
+        passed: 10,
+        tasks: 12,
+        invalid: 2,
+        valid_tasks: 10,
+        total_tokens: 39090118,
+        input_tokens: 28000118,
+        cached_input_tokens: 21000118,
+        output_tokens: 11090000,
+        wall_seconds: 1510,
+        wall_time_human: "25分钟",
+        model: "gpt-5.5",
+        reasoning_effort: "xhigh",
+        cost_usd: 40.38,
+      },
+      recent_days: [],
+      comparisons: {},
+    },
+    codex_environment: {},
+    ...overrides,
+  };
+}
