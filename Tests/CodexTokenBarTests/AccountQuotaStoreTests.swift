@@ -291,6 +291,121 @@ final class AccountQuotaStoreTests: XCTestCase {
         XCTAssertEqual(sources, [source, source])
     }
 
+    func testStartUsesDefaultAutomaticRefreshInterval() async {
+        let reader = SequentialQuotaReader(results: [.success(quotaSnapshot(usedPercent: 10, accountName: "default"))])
+        let timerScheduler = ManualQuotaTimerScheduler()
+        let store = AccountQuotaStore(
+            quotaReader: reader,
+            timerScheduler: timerScheduler,
+            observesUserDefaults: false
+        )
+
+        store.start()
+
+        XCTAssertEqual(store.automaticRefreshInterval, 60)
+        XCTAssertEqual(timerScheduler.scheduledIntervals, [60])
+    }
+
+    func testUpdatingAutomaticRefreshIntervalReschedulesTimerWithoutImmediateQuotaRequest() async {
+        let reader = SequentialQuotaReader(results: [.success(quotaSnapshot(usedPercent: 10, accountName: "default"))])
+        let timerScheduler = ManualQuotaTimerScheduler()
+        let store = AccountQuotaStore(
+            quotaReader: reader,
+            timerScheduler: timerScheduler,
+            observesUserDefaults: false
+        )
+        store.start()
+        await waitUntil("initial quota request") {
+            await reader.currentReadCount() == 1
+        }
+
+        store.setAutomaticRefreshInterval(300)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(store.automaticRefreshInterval, 300)
+        XCTAssertEqual(timerScheduler.scheduledIntervals, [60, 300])
+        XCTAssertTrue(timerScheduler.tokens.first?.isInvalidated == true)
+        let readCount = await reader.currentReadCount()
+        XCTAssertEqual(readCount, 1)
+    }
+
+    func testSettingSameAutomaticRefreshIntervalDoesNotRescheduleTimer() {
+        let reader = SequentialQuotaReader(results: [])
+        let timerScheduler = ManualQuotaTimerScheduler()
+        let store = AccountQuotaStore(
+            quotaReader: reader,
+            timerScheduler: timerScheduler,
+            observesUserDefaults: false
+        )
+
+        store.start()
+        store.setAutomaticRefreshInterval(60)
+
+        XCTAssertEqual(timerScheduler.scheduledIntervals, [60])
+    }
+
+    func testAutomaticTimerDoesNotStartConcurrentQuotaRefreshForSameSource() async {
+        let reader = SuspendedQuotaReader()
+        let timerScheduler = ManualQuotaTimerScheduler()
+        let store = AccountQuotaStore(
+            quotaReader: reader,
+            timerScheduler: timerScheduler,
+            observesUserDefaults: false
+        )
+
+        store.start()
+        await waitUntil("initial quota request") {
+            await reader.pendingRequestCount() == 1
+        }
+
+        timerScheduler.fireLatest()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        let readCount = await reader.currentReadCount()
+        XCTAssertEqual(readCount, 1)
+    }
+
+    func testInitialAutomaticRefreshIntervalUsesPersistedCadence() {
+        let suiteName = "AccountQuotaStoreTests-\(UUID().uuidString)"
+        let userDefaults = UserDefaults(suiteName: suiteName)!
+        defer { userDefaults.removePersistentDomain(forName: suiteName) }
+        userDefaults.set(AccountQuotaRefreshCadence.fiveMinutes.rawValue, forKey: AccountQuotaRefreshCadence.storageKey)
+
+        let store = AccountQuotaStore(
+            quotaReader: SequentialQuotaReader(results: []),
+            userDefaults: userDefaults,
+            observesUserDefaults: false
+        )
+
+        XCTAssertEqual(store.automaticRefreshInterval, 300)
+    }
+
+    func testPersistedCadenceChangeReschedulesRunningTimerWithoutImmediateQuotaRequest() async {
+        let suiteName = "AccountQuotaStoreTests-\(UUID().uuidString)"
+        let userDefaults = UserDefaults(suiteName: suiteName)!
+        defer { userDefaults.removePersistentDomain(forName: suiteName) }
+        let reader = SequentialQuotaReader(results: [.success(quotaSnapshot(usedPercent: 10, accountName: "default"))])
+        let timerScheduler = ManualQuotaTimerScheduler()
+        let store = AccountQuotaStore(
+            quotaReader: reader,
+            timerScheduler: timerScheduler,
+            userDefaults: userDefaults
+        )
+        store.start()
+        await waitUntil("initial quota request") {
+            await reader.currentReadCount() == 1
+        }
+
+        userDefaults.set(AccountQuotaRefreshCadence.fiveMinutes.rawValue, forKey: AccountQuotaRefreshCadence.storageKey)
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: userDefaults)
+        await waitUntil("persisted cadence reschedule") {
+            timerScheduler.scheduledIntervals == [60, 300]
+        }
+
+        let readCount = await reader.currentReadCount()
+        XCTAssertEqual(readCount, 1)
+    }
+
     private func waitUntil(
         _ label: String,
         timeout: TimeInterval = 2,
@@ -359,8 +474,10 @@ private struct QuotaTestError: LocalizedError {
 
 private actor SuspendedQuotaReader: QuotaReading {
     private var continuations: [String: CheckedContinuation<Result<AccountQuotaSnapshot, Error>, Never>] = [:]
+    private var readCount = 0
 
     func readQuota(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
+        readCount += 1
         let key = dataSource?.codexHome.path ?? "nil"
         return await withCheckedContinuation { continuation in
             continuations[key] = continuation
@@ -375,11 +492,58 @@ private actor SuspendedQuotaReader: QuotaReading {
         continuations["nil"] != nil
     }
 
+    func pendingRequestCount() -> Int {
+        continuations.count
+    }
+
+    func currentReadCount() -> Int {
+        readCount
+    }
+
     func completeRequest(for dataSource: CodexDataSource, with snapshot: AccountQuotaSnapshot) {
         continuations.removeValue(forKey: dataSource.codexHome.path)?.resume(returning: .success(snapshot))
     }
 
     func completeNilRequest(with snapshot: AccountQuotaSnapshot) {
         continuations.removeValue(forKey: "nil")?.resume(returning: .success(snapshot))
+    }
+}
+
+@MainActor
+private final class ManualQuotaTimerScheduler: AccountQuotaTimerScheduling {
+    private(set) var scheduledIntervals: [TimeInterval] = []
+    private(set) var tokens: [ManualQuotaTimerToken] = []
+
+    func scheduleRepeatingTimer(
+        interval: TimeInterval,
+        handler: @escaping @MainActor @Sendable () -> Void
+    ) -> any AccountQuotaTimerToken {
+        let token = ManualQuotaTimerToken(handler: handler)
+        scheduledIntervals.append(interval)
+        tokens.append(token)
+        return token
+    }
+
+    func fireLatest() {
+        tokens.last?.fire()
+    }
+}
+
+@MainActor
+private final class ManualQuotaTimerToken: AccountQuotaTimerToken {
+    private let handler: @MainActor @Sendable () -> Void
+    private(set) var isInvalidated = false
+
+    init(handler: @escaping @MainActor @Sendable () -> Void) {
+        self.handler = handler
+    }
+
+    func invalidate() {
+        isInvalidated = true
+    }
+
+    func fire() {
+        guard !isInvalidated else { return }
+        handler()
     }
 }

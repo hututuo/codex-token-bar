@@ -373,6 +373,9 @@ struct LiveRateControls: View {
                     }
                 )
                 .frame(maxWidth: .infinity, minHeight: 24)
+
+                AccountQuotaRefreshCadencePicker()
+                    .frame(maxWidth: .infinity, minHeight: 24)
             }
 
             FloatingPanelAppearanceSettings(
@@ -399,6 +402,54 @@ struct LiveRateControls: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(AppTheme.border.opacity(0.48), lineWidth: 1)
         )
+    }
+}
+
+private struct AccountQuotaRefreshCadencePicker: View {
+    @AppStorage(AccountQuotaRefreshCadence.storageKey) private var selectionRaw: String = AccountQuotaRefreshCadence.defaultRawValue
+
+    private var selection: Binding<String> {
+        Binding(
+            get: {
+                AccountQuotaRefreshCadence.value(for: selectionRaw).rawValue
+            },
+            set: { newValue in
+                selectionRaw = AccountQuotaRefreshCadence.value(for: newValue).rawValue
+            }
+        )
+    }
+
+    var body: some View {
+        Picker(selection: selection) {
+            ForEach(AccountQuotaRefreshCadence.allCases) { cadence in
+                Text(cadence.label).tag(cadence.rawValue)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("额度刷新")
+                    .font(.system(size: 9, weight: .bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
+        }
+        .pickerStyle(.menu)
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 6)
+        .frame(height: 24)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(AppTheme.raisedBackground.opacity(0.72))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(AppTheme.border.opacity(0.55), lineWidth: 1)
+        )
+        .help("设置额度自动刷新频率")
+        .accessibilityLabel("额度刷新")
+        .accessibilityValue(AccountQuotaRefreshCadence.value(for: selectionRaw).label)
     }
 }
 

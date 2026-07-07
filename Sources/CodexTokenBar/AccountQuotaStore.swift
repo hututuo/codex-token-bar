@@ -1,23 +1,96 @@
 import Foundation
 
 @MainActor
+protocol AccountQuotaTimerToken: AnyObject {
+    func invalidate()
+}
+
+@MainActor
+protocol AccountQuotaTimerScheduling {
+    func scheduleRepeatingTimer(
+        interval: TimeInterval,
+        handler: @escaping @MainActor @Sendable () -> Void
+    ) -> any AccountQuotaTimerToken
+}
+
+@MainActor
+private struct DefaultAccountQuotaTimerScheduler: AccountQuotaTimerScheduling {
+    func scheduleRepeatingTimer(
+        interval: TimeInterval,
+        handler: @escaping @MainActor @Sendable () -> Void
+    ) -> any AccountQuotaTimerToken {
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+            Task { @MainActor in
+                handler()
+            }
+        }
+        return FoundationAccountQuotaTimerToken(timer: timer)
+    }
+}
+
+@MainActor
+private final class FoundationAccountQuotaTimerToken: AccountQuotaTimerToken {
+    private let timer: Timer
+
+    init(timer: Timer) {
+        self.timer = timer
+    }
+
+    func invalidate() {
+        timer.invalidate()
+    }
+}
+
+@MainActor
 final class AccountQuotaStore: ObservableObject {
     @Published private(set) var snapshot = AccountQuotaSnapshot.empty
 
-    private var timer: Timer?
+    private var timer: (any AccountQuotaTimerToken)?
     private weak var historyStore: QuotaHistoryStore?
     private var isRefreshing = false
     private var lastSuccessfulRefreshCompletedAt: Date?
-    private let refreshInterval: TimeInterval = 60
+    private(set) var automaticRefreshInterval: TimeInterval
     private let automaticRefreshCooldown: TimeInterval = 30
     private let quotaReader: any QuotaReading
+    private let timerScheduler: any AccountQuotaTimerScheduling
+    private let userDefaults: UserDefaults
+    nonisolated(unsafe) private var cadenceObserver: NSObjectProtocol?
     private var currentDataSource: CodexDataSource?
     private var refreshTask: Task<Void, Never>?
     private var refreshGeneration = 0
     private var activeRefreshSourceID: String?
 
-    init(quotaReader: any QuotaReading = LiveAccountQuotaReader()) {
+    init(
+        quotaReader: any QuotaReading = LiveAccountQuotaReader(),
+        automaticRefreshInterval: TimeInterval? = nil,
+        timerScheduler: any AccountQuotaTimerScheduling = DefaultAccountQuotaTimerScheduler(),
+        userDefaults: UserDefaults = .standard,
+        observesUserDefaults: Bool = true
+    ) {
         self.quotaReader = quotaReader
+        self.timerScheduler = timerScheduler
+        self.userDefaults = userDefaults
+        self.automaticRefreshInterval = automaticRefreshInterval
+            ?? AccountQuotaRefreshCadence.storedValue(in: userDefaults).seconds
+        if observesUserDefaults {
+            cadenceObserver = NotificationCenter.default.addObserver(
+                forName: UserDefaults.didChangeNotification,
+                object: userDefaults,
+                queue: nil
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    let cadence = AccountQuotaRefreshCadence.storedValue(in: self.userDefaults)
+                    self.setAutomaticRefreshInterval(cadence.seconds)
+                }
+            }
+        }
+    }
+
+    deinit {
+        if let cadenceObserver {
+            NotificationCenter.default.removeObserver(cadenceObserver)
+        }
     }
 
     func setDataSource(_ dataSource: CodexDataSource?) {
@@ -43,16 +116,19 @@ final class AccountQuotaStore: ObservableObject {
         guard timer == nil else { return }
         setDataSource(dataSource)
         refresh(force: true)
-        timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.refresh(force: false)
-            }
-        }
+        installAutomaticRefreshTimer()
     }
 
     func stop() {
         timer?.invalidate()
         timer = nil
+    }
+
+    func setAutomaticRefreshInterval(_ interval: TimeInterval) {
+        guard automaticRefreshInterval != interval else { return }
+        automaticRefreshInterval = interval
+        guard timer != nil else { return }
+        installAutomaticRefreshTimer()
     }
 
     func refresh(force: Bool = true) {
@@ -168,6 +244,13 @@ final class AccountQuotaStore: ObservableObject {
 
     private func isCurrentRefresh(generation: Int, sourceID: String) -> Bool {
         refreshGeneration == generation && activeRefreshSourceID == sourceID
+    }
+
+    private func installAutomaticRefreshTimer() {
+        timer?.invalidate()
+        timer = timerScheduler.scheduleRepeatingTimer(interval: automaticRefreshInterval) { [weak self] in
+            self?.refresh(force: false)
+        }
     }
 
     private func quotaSourceID(for dataSource: CodexDataSource?) -> String {

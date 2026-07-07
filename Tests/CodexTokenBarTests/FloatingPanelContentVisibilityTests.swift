@@ -645,6 +645,30 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertFalse(floatingPanelSource.contains(".environment(\\.tokenDisplayTextPalette, FloatingPanelReadableTextPalette(fixedWhite: floatingPanelTextWhiteOverride))"))
     }
 
+    func testQuotaRefreshCadenceUsesOneSharedAppStorageKeyForDashboardAndFloatingSurfaces() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
+        let liveRateView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateView.swift")
+        let quotaStore = projectRoot.appendingPathComponent("Sources/CodexTokenBar/AccountQuotaStore.swift")
+        let tokenDisplaySurface = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurface.swift")
+        let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
+        let liveRateSource = try String(contentsOf: liveRateView, encoding: .utf8)
+        let quotaStoreSource = try String(contentsOf: quotaStore, encoding: .utf8)
+        let tokenDisplaySource = try String(contentsOf: tokenDisplaySurface, encoding: .utf8)
+
+        XCTAssertTrue(dashboardSource.contains("@StateObject private var quotaStore = AccountQuotaStore()"))
+        XCTAssertTrue(quotaStoreSource.contains("AccountQuotaRefreshCadence.storedValue"))
+        XCTAssertTrue(quotaStoreSource.contains("setAutomaticRefreshInterval"))
+        XCTAssertTrue(liveRateSource.contains("@AppStorage(AccountQuotaRefreshCadence.storageKey)"))
+        XCTAssertTrue(liveRateSource.contains("AccountQuotaRefreshCadencePicker"))
+        XCTAssertTrue(liveRateSource.contains("Text(\"额度刷新\")"))
+        XCTAssertTrue(tokenDisplaySource.contains("static func make(store: CodexUsageStore, monitor: LiveRateMonitor, quota: AccountQuotaStore)"))
+        XCTAssertFalse(tokenDisplaySource.contains("@AppStorage(AccountQuotaRefreshCadence.storageKey)"))
+    }
+
     func testFloatingPanelTextTonePreferenceSplitsAutoAndManualOnOneSlider() throws {
         let strongAuto = FloatingPanelTextTonePreference.mode(for: -1)
         let weakAuto = FloatingPanelTextTonePreference.mode(for: -0.25)
