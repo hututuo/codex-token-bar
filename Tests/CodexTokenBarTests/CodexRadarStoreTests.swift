@@ -154,6 +154,84 @@ final class CodexRadarStoreTests: XCTestCase {
         XCTAssertTrue(store.diagnostics.isEmpty)
     }
 
+    func testPublicRefreshDoesNotCallFullDetailReader() async throws {
+        let snapshot = try Self.makeSnapshot()
+        let detailReader = DetailRadarReaderStub(actions: [.success(snapshot)])
+        let store = CodexRadarStore(
+            reader: RadarReaderStub(actions: [.success(snapshot)]),
+            feedReader: FeedReaderStub(actions: []),
+            detailReader: detailReader
+        )
+
+        store.refresh()
+        await waitUntil("public radar refresh") {
+            store.snapshot != nil && !store.isRefreshing
+        }
+
+        let detailCallCount = await detailReader.callCountValue()
+        XCTAssertEqual(detailCallCount, 0)
+        XCTAssertNil(store.detailSnapshot)
+    }
+
+    func testScheduledDetailRefreshRunsOnceWhenLatestSlotWasMissed() async throws {
+        let snapshot = try Self.makeSnapshot()
+        let defaults = try Self.makeDefaults()
+        let calendar = Self.detailCalendar
+        let now = try Self.detailDate("2026-07-07 09:00")
+        let previousSlot = try Self.detailDate("2026-07-06 18:00")
+        defaults.set(previousSlot.timeIntervalSince1970, forKey: CodexRadarStore.detailRefreshDefaultsKey)
+
+        let detailReader = DetailRadarReaderStub(actions: [.success(snapshot)])
+        let store = CodexRadarStore(
+            reader: RadarReaderStub(actions: []),
+            feedReader: FeedReaderStub(actions: []),
+            detailReader: detailReader,
+            detailRefreshDefaults: defaults,
+            detailRefreshCalendar: calendar
+        )
+
+        store.refreshScheduledDetailIfNeeded(now: now)
+        await waitUntil("scheduled detail refresh") {
+            store.detailSnapshot != nil && !store.isDetailRefreshing
+        }
+
+        let detailCallCount = await detailReader.callCountValue()
+        XCTAssertEqual(detailCallCount, 1)
+        XCTAssertEqual(store.detailSnapshot, snapshot)
+        XCTAssertEqual(defaults.double(forKey: CodexRadarStore.detailRefreshDefaultsKey), now.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertFalse(CodexRadarDetailRefreshSchedule.shouldRefresh(
+            now: now,
+            lastSuccessfulRefreshAt: store.lastSuccessfulDetailRefreshAt,
+            calendar: calendar
+        ))
+    }
+
+    func testScheduledDetailRefreshSkipsWhenLatestSlotAlreadySucceeded() async throws {
+        let snapshot = try Self.makeSnapshot()
+        let defaults = try Self.makeDefaults()
+        let calendar = Self.detailCalendar
+        let now = try Self.detailDate("2026-07-07 09:00")
+        let latestSlot = try Self.detailDate("2026-07-07 08:00")
+        defaults.set(latestSlot.timeIntervalSince1970, forKey: CodexRadarStore.detailRefreshDefaultsKey)
+
+        let detailReader = DetailRadarReaderStub(actions: [.success(snapshot)])
+        let store = CodexRadarStore(
+            reader: RadarReaderStub(actions: []),
+            feedReader: FeedReaderStub(actions: []),
+            detailReader: detailReader,
+            detailRefreshDefaults: defaults,
+            detailRefreshCalendar: calendar
+        )
+
+        store.refreshScheduledDetailIfNeeded(now: now)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        let detailCallCount = await detailReader.callCountValue()
+        XCTAssertEqual(detailCallCount, 0)
+        XCTAssertNil(store.detailSnapshot)
+        XCTAssertFalse(store.isDetailRefreshing)
+    }
+
     private func waitUntil(
         _ description: String,
         timeout: TimeInterval = 1,
@@ -171,6 +249,28 @@ final class CodexRadarStoreTests: XCTestCase {
 
     private static func makeSnapshot() throws -> CodexRadarSnapshot {
         try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: Data(CodexRadarModelsTests.sampleJSON.utf8))
+    }
+
+    private static func makeDefaults() throws -> UserDefaults {
+        let suiteName = "CodexRadarStoreTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        return defaults
+    }
+
+    private static var detailCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        return calendar
+    }
+
+    private static func detailDate(_ text: String) throws -> Date {
+        let formatter = DateFormatter()
+        formatter.calendar = detailCalendar
+        formatter.timeZone = detailCalendar.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return try XCTUnwrap(formatter.date(from: text))
     }
 
     private static func makeFeedItem(guid: String) -> CodexRadarFeedItem {
@@ -207,6 +307,33 @@ private actor RadarReaderStub: CodexRadarReading {
         case .failure(let error):
             throw error
         }
+    }
+}
+
+private actor DetailRadarReaderStub: CodexRadarDetailReading {
+    private var actions: [RadarReaderAction]
+    private(set) var callCount = 0
+
+    init(actions: [RadarReaderAction]) {
+        self.actions = actions
+    }
+
+    func readRadarDetail() async throws -> CodexRadarSnapshot {
+        callCount += 1
+        guard !actions.isEmpty else {
+            throw CodexRadarReaderError.invalidResponse
+        }
+        let action = actions.removeFirst()
+        switch action {
+        case .success(let snapshot):
+            return snapshot
+        case .failure(let error):
+            throw error
+        }
+    }
+
+    func callCountValue() -> Int {
+        callCount
     }
 }
 

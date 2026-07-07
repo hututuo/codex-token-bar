@@ -119,6 +119,81 @@ final class CodexRadarModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.modelIQ.quotaRadar?.basisWindowLabel, "7d")
     }
 
+    func testPublicReaderUsesCurrentJSONWithoutAuthorization() async throws {
+        let capture = RadarRequestCapture()
+        let reader = LiveCodexRadarReader(
+            transport: { request in
+                await capture.record(request)
+                return (Data(Self.publicSummaryJSON.utf8), HTTPURLResponse(
+                    url: request.url ?? URL(string: "https://codexradar.com/current.json")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!)
+            }
+        )
+
+        _ = try await reader.readRadar()
+        let capturedRequest = await capture.captured()
+        let request = try XCTUnwrap(capturedRequest)
+
+        XCTAssertEqual(request.url?.absoluteString, "https://codexradar.com/current.json")
+        XCTAssertFalse(
+            request.allHTTPHeaderFields?.keys.contains("Authorization") == true,
+            "Non-full endpoint should not send Authorization"
+        )
+    }
+
+    func testDetailReaderUsesFullAPIWithObfuscatedBearerAuthorization() async throws {
+        let capture = RadarRequestCapture()
+        let reader = LiveCodexRadarDetailReader(
+            transport: { request in
+                await capture.record(request)
+                return (Data(Self.sampleJSON.utf8), HTTPURLResponse(
+                    url: request.url ?? URL(string: "https://codexradar.com/api/v1/current")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!)
+            }
+        )
+
+        _ = try await reader.readRadarDetail()
+        let capturedRequest = await capture.captured()
+        let request = try XCTUnwrap(capturedRequest)
+        let authorization = request.value(forHTTPHeaderField: "Authorization")
+
+        XCTAssertEqual(request.url?.absoluteString, "https://codexradar.com/api/v1/current")
+        XCTAssertTrue(authorization?.hasPrefix("Bearer ") == true, "Full detail reader should send a bearer header")
+        XCTAssertGreaterThan(authorization?.count ?? 0, "Bearer ".count)
+    }
+
+    func testDetailReaderDoesNotAttachAuthorizationToNonFullAPIEndpoint() async throws {
+        let capture = RadarRequestCapture()
+        let reader = LiveCodexRadarDetailReader(
+            endpoint: URL(string: "https://codexradar.com/current.json")!,
+            transport: { request in
+                await capture.record(request)
+                return (Data(Self.publicSummaryJSON.utf8), HTTPURLResponse(
+                    url: request.url ?? URL(string: "https://codexradar.com/current.json")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!)
+            }
+        )
+
+        _ = try await reader.readRadarDetail()
+        let capturedRequest = await capture.captured()
+        let request = try XCTUnwrap(capturedRequest)
+
+        XCTAssertEqual(request.url?.absoluteString, "https://codexradar.com/current.json")
+        XCTAssertFalse(
+            request.allHTTPHeaderFields?.keys.contains("Authorization") == true,
+            "Public reader should not send Authorization"
+        )
+    }
+
     func testParsesRSSFeedItemsForDetailHistory() throws {
         let items = try CodexRadarFeedParser.parse(Data(Self.sampleRSS.utf8))
 
@@ -637,4 +712,16 @@ final class CodexRadarModelsTests: XCTestCase {
       </channel>
     </rss>
     """
+}
+
+private actor RadarRequestCapture {
+    private var capturedRequest: URLRequest?
+
+    func captured() -> URLRequest? {
+        capturedRequest
+    }
+
+    func record(_ request: URLRequest) {
+        capturedRequest = request
+    }
 }

@@ -114,14 +114,14 @@ struct DashboardView: View {
                             }
 
                         CodexRadarDetailCard(
-                            snapshot: radarStore.snapshot,
+                            snapshot: radarStore.detailDisplaySnapshot,
                             feedItems: radarStore.feedItems,
-                            status: radarStore.status,
-                            isRefreshing: radarStore.isRefreshing,
-                            diagnostics: radarStore.diagnostics,
-                            staleDataDisplayed: radarStore.staleDataDisplayed,
+                            status: radarStore.detailDisplayStatus,
+                            isRefreshing: radarStore.isDetailRefreshing,
+                            diagnostics: radarStore.detailDisplayDiagnostics,
+                            staleDataDisplayed: radarStore.detailDisplayStaleDataDisplayed,
                             feedStaleDataDisplayed: radarStore.feedStaleDataDisplayed,
-                            onRefresh: radarStore.refresh,
+                            onRefresh: radarStore.refreshDetail,
                             onClose: { showingCodexRadarDetails = false }
                         )
                         .frame(width: min(900, max(680, proxy.size.width - 108)))
