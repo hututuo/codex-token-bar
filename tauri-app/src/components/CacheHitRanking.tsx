@@ -4,6 +4,7 @@ import { formatPercent, formatTokens } from "../utils/format";
 import {
   buildCacheRankingItems,
   cacheHitRate,
+  cacheHitTone,
   rankingSubtitle,
   uncachedInputTokens,
   type CacheRankingScope,
@@ -104,37 +105,44 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [] }: CacheHitRankin
             </div>
           </article>
         ) : (
-          fallbackItems.length > 0 ? fallbackItems.map((item) => (
-            <article className="ranking-row" key={`${item.rank}-${item.title}`}>
-              <strong>{item.rank}</strong>
-              <div>
-                <h3>{item.title}</h3>
-                <span>{item.subtitle}</span>
-              </div>
-              <div className="hit-meter">
-                <span style={{ width: `${Math.round(item.hitRate * 100)}%` }} />
-              </div>
-              <em>{formatPercent(item.hitRate)}</em>
-              <span>{formatTokens(item.cachedTokens)} / {formatTokens(item.inputTokens)}</span>
-            </article>
-          )) : rankingItems.map((item, index) => (
-            <article className="ranking-row" key={item.id}>
-              <strong>{index + 1}</strong>
-              <div>
-                <h3>{item.title}</h3>
-                <span>{item.subtitle}</span>
-                {item.context ? <small>{item.context}</small> : null}
-              </div>
-              <div className="hit-meter">
-                <span style={{ width: `${Math.round(cacheHitRate(item.breakdown) * 100)}%` }} />
-              </div>
-              <em>{formatPercent(cacheHitRate(item.breakdown))}</em>
-              <span>
-                未命中 {formatTokens(uncachedInputTokens(item.breakdown))}
-              </span>
-              <span>{formatTokens(item.breakdown.cachedInputTokens)} / {formatTokens(item.breakdown.inputTokens)}</span>
-            </article>
-          ))
+          fallbackItems.length > 0 ? fallbackItems.map((item) => {
+            const tone = cacheHitTone(item.hitRate);
+            return (
+              <article className="ranking-row" key={`${item.rank}-${item.title}`}>
+                <strong>{item.rank}</strong>
+                <div>
+                  <h3>{item.title}</h3>
+                  <span>{item.subtitle}</span>
+                </div>
+                <div className={`hit-meter ${tone}`}>
+                  <span style={{ width: `${Math.round(item.hitRate * 100)}%` }} />
+                </div>
+                <em className={tone}>{formatPercent(item.hitRate)}</em>
+                <span>{formatTokens(item.cachedTokens)} / {formatTokens(item.inputTokens)}</span>
+              </article>
+            );
+          }) : rankingItems.map((item, index) => {
+            const hitRate = cacheHitRate(item.breakdown);
+            const tone = cacheHitTone(hitRate);
+            return (
+              <article className="ranking-row" key={item.id}>
+                <strong>{index + 1}</strong>
+                <div>
+                  <h3>{item.title}</h3>
+                  <span>{item.subtitle}</span>
+                  {item.context ? <small>{item.context}</small> : null}
+                </div>
+                <div className={`hit-meter ${tone}`}>
+                  <span style={{ width: `${Math.round(hitRate * 100)}%` }} />
+                </div>
+                <em className={tone}>{formatPercent(hitRate)}</em>
+                <span>
+                  未命中 {formatTokens(uncachedInputTokens(item.breakdown))}
+                </span>
+                <span>{formatTokens(item.breakdown.cachedInputTokens)} / {formatTokens(item.breakdown.inputTokens)}</span>
+              </article>
+            );
+          })
         )}
       </div>
     </section>

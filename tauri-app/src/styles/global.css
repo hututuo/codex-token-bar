@@ -905,7 +905,11 @@ button.quota-side-card:hover {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--green) 38%, var(--accent)));
+  background: linear-gradient(
+    90deg,
+    var(--cache-hit-tone, var(--accent)),
+    color-mix(in srgb, white 18%, var(--cache-hit-tone, var(--accent)))
+  );
 }
 
 .reset-credit-panel-layer {
@@ -3576,9 +3580,35 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .ranking-row em {
+  color: var(--cache-hit-tone, var(--text));
   font-style: normal;
   font-size: 13px;
   font-weight: 760;
+}
+
+.ranking-row em.cache-hit-tone--orange,
+.hit-meter.cache-hit-tone--orange {
+  --cache-hit-tone: rgb(245 117 26);
+}
+
+.ranking-row em.cache-hit-tone--amber,
+.hit-meter.cache-hit-tone--amber {
+  --cache-hit-tone: rgb(230 158 13);
+}
+
+.ranking-row em.cache-hit-tone--teal,
+.hit-meter.cache-hit-tone--teal {
+  --cache-hit-tone: rgb(41 168 173);
+}
+
+.ranking-row em.cache-hit-tone--blue,
+.hit-meter.cache-hit-tone--blue {
+  --cache-hit-tone: rgb(20 128 237);
+}
+
+.ranking-row em.cache-hit-tone--strong-blue,
+.hit-meter.cache-hit-tone--strong-blue {
+  --cache-hit-tone: rgb(5 64 194);
 }
 
 .ranking-row--empty {
@@ -4522,5 +4552,32 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
   .heatmap-grid {
     grid-template-columns: repeat(21, 1fr);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .ranking-row em.cache-hit-tone--orange,
+  .hit-meter.cache-hit-tone--orange {
+    --cache-hit-tone: rgb(255 138 46);
+  }
+
+  .ranking-row em.cache-hit-tone--amber,
+  .hit-meter.cache-hit-tone--amber {
+    --cache-hit-tone: rgb(255 184 46);
+  }
+
+  .ranking-row em.cache-hit-tone--teal,
+  .hit-meter.cache-hit-tone--teal {
+    --cache-hit-tone: rgb(36 209 224);
+  }
+
+  .ranking-row em.cache-hit-tone--blue,
+  .hit-meter.cache-hit-tone--blue {
+    --cache-hit-tone: rgb(59 173 255);
+  }
+
+  .ranking-row em.cache-hit-tone--strong-blue,
+  .hit-meter.cache-hit-tone--strong-blue {
+    --cache-hit-tone: rgb(87 194 255);
   }
 }

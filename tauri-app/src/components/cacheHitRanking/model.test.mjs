@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildCacheRankingItems,
   cacheHitRate,
+  cacheHitTone,
   rankingSubtitle,
   uncachedInputTokens,
 } from "./model.ts";
@@ -185,4 +186,18 @@ test("ranking helpers expose Swift-compatible subtitles and token math", () => {
   assert.equal(rankingSubtitle("turns", "latest", true, false), "最新优先 · 包含首轮");
   assert.equal(cacheHitRate(breakdown(1_000, 250)), 0.25);
   assert.equal(uncachedInputTokens(breakdown(1_000, 250)), 750);
+});
+
+test("cacheHitTone maps Swift threshold bands and clamps odd values safely", () => {
+  assert.equal(cacheHitTone(-0.2), "cache-hit-tone--orange");
+  assert.equal(cacheHitTone(0.8399), "cache-hit-tone--orange");
+  assert.equal(cacheHitTone(0.84), "cache-hit-tone--amber");
+  assert.equal(cacheHitTone(0.8799), "cache-hit-tone--amber");
+  assert.equal(cacheHitTone(0.88), "cache-hit-tone--teal");
+  assert.equal(cacheHitTone(0.9199), "cache-hit-tone--teal");
+  assert.equal(cacheHitTone(0.92), "cache-hit-tone--blue");
+  assert.equal(cacheHitTone(0.9599), "cache-hit-tone--blue");
+  assert.equal(cacheHitTone(0.96), "cache-hit-tone--strong-blue");
+  assert.equal(cacheHitTone(2), "cache-hit-tone--strong-blue");
+  assert.equal(cacheHitTone(Number.NaN), "cache-hit-tone--orange");
 });

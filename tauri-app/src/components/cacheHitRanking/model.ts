@@ -72,6 +72,15 @@ export function cacheHitRate(breakdown: TokenCacheBreakdown) {
   return breakdown.inputTokens <= 0 ? 0 : breakdown.cachedInputTokens / breakdown.inputTokens;
 }
 
+export function cacheHitTone(rate: number) {
+  const normalized = clampRate(rate);
+  if (normalized < 0.84) return "cache-hit-tone--orange";
+  if (normalized < 0.88) return "cache-hit-tone--amber";
+  if (normalized < 0.92) return "cache-hit-tone--teal";
+  if (normalized < 0.96) return "cache-hit-tone--blue";
+  return "cache-hit-tone--strong-blue";
+}
+
 export function uncachedInputTokens(breakdown: TokenCacheBreakdown) {
   return Math.max(0, breakdown.inputTokens - breakdown.cachedInputTokens);
 }
@@ -135,4 +144,11 @@ function parsedTime(value: string | null) {
   if (!value) return null;
   const time = new Date(value).getTime();
   return Number.isNaN(time) ? null : time;
+}
+
+function clampRate(rate: number) {
+  if (!Number.isFinite(rate)) {
+    return 0;
+  }
+  return Math.min(1, Math.max(0, rate));
 }
