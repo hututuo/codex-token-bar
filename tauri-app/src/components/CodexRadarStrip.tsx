@@ -1,7 +1,9 @@
 import { memo, startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { readCodexRadarFullSnapshot } from "../api/codexRadarDetailClient";
 import {
+  CODEX_RADAR_DETAIL_ATTEMPT_STORAGE_KEY,
   CODEX_RADAR_DETAIL_REFRESH_STORAGE_KEY,
+  latestCodexRadarDetailSlot,
   millisecondsUntilNextCodexRadarDetailSlot,
   shouldRefreshCodexRadarDetail,
 } from "../api/codexRadarDetailRefreshPlan";
@@ -48,6 +50,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const detailRefreshingRef = useRef(false);
   const snapshotRef = useRef<CodexRadarSnapshot | null>(null);
   const detailSnapshotRef = useRef<CodexRadarSnapshot | null>(null);
+  const detailAttemptedSlotRef = useRef<string | null>(null);
 
   async function refresh(force = false) {
     if (refreshingRef.current) {
@@ -78,11 +81,15 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
     }
   }
 
-  async function refreshDetail() {
+  async function refreshDetail(mode: "automatic" | "manual" = "manual", attemptedSlotAt?: string) {
     if (detailRefreshingRef.current) {
       return;
     }
     detailRefreshingRef.current = true;
+    if (mode === "automatic" && attemptedSlotAt) {
+      detailAttemptedSlotRef.current = attemptedSlotAt;
+      writeLastDetailAttemptedSlotAt(attemptedSlotAt);
+    }
     startTransition(() => {
       setDetailRefreshing(true);
       setDetailStatus(detailSnapshotRef.current ? "正在更新详细信息..." : "正在读取详细信息...");
@@ -110,11 +117,14 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   }
 
   function refreshDetailIfDue() {
+    const now = new Date();
+    const latestSlot = latestCodexRadarDetailSlot(now).toISOString();
     if (shouldRefreshCodexRadarDetail({
+      lastAttemptedSlotAt: detailAttemptedSlotRef.current ?? readLastDetailAttemptedSlotAt(),
       lastSuccessfulRefreshAt: readLastDetailRefreshAt(),
-      now: new Date(),
+      now,
     })) {
-      void refreshDetail();
+      void refreshDetail("automatic", latestSlot);
     }
   }
 
@@ -254,7 +264,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
           isDetailRefreshing={detailRefreshing}
           isRefreshing={refreshing}
           onClose={() => setShowDetails(false)}
-          onRefresh={() => void refreshDetail()}
+          onRefresh={() => void refreshDetail("manual")}
           primary={primary}
           probability24h={probability24h}
           probability48h={probability48h}
@@ -371,11 +381,27 @@ function readLastDetailRefreshAt(): string | null {
   }
 }
 
+function readLastDetailAttemptedSlotAt(): string | null {
+  try {
+    return window.localStorage.getItem(CODEX_RADAR_DETAIL_ATTEMPT_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 function writeLastDetailRefreshAt(value: string): void {
   try {
     window.localStorage.setItem(CODEX_RADAR_DETAIL_REFRESH_STORAGE_KEY, value);
   } catch {
-    // Non-secret cache metadata only; ignore storage denial and retry on next scheduled slot.
+    // Non-secret cache metadata only; ignore storage denial.
+  }
+}
+
+function writeLastDetailAttemptedSlotAt(value: string): void {
+  try {
+    window.localStorage.setItem(CODEX_RADAR_DETAIL_ATTEMPT_STORAGE_KEY, value);
+  } catch {
+    // Non-secret cache metadata only; the in-memory marker still prevents loops for this mount.
   }
 }
 

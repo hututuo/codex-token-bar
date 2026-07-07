@@ -1,4 +1,5 @@
 export const CODEX_RADAR_DETAIL_REFRESH_STORAGE_KEY = "codexRadarDetailLastSuccessfulRefreshAt";
+export const CODEX_RADAR_DETAIL_ATTEMPT_STORAGE_KEY = "codexRadarDetailLastAttemptedSlotAt";
 
 const MORNING_SLOT_HOUR = 8;
 const EVENING_SLOT_HOUR = 18;
@@ -38,18 +39,34 @@ export function millisecondsUntilNextCodexRadarDetailSlot(now: Date): number {
 }
 
 export function shouldRefreshCodexRadarDetail({
+  lastAttemptedSlotAt,
   lastSuccessfulRefreshAt,
+  mode = "automatic",
   now,
 }: {
+  lastAttemptedSlotAt?: string | null | undefined;
   lastSuccessfulRefreshAt: string | null | undefined;
+  mode?: "automatic" | "manual";
   now: Date;
 }): boolean {
-  if (!lastSuccessfulRefreshAt) {
+  if (mode === "manual") {
     return true;
+  }
+  const latestSlot = latestCodexRadarDetailSlot(now);
+  if (!lastSuccessfulRefreshAt) {
+    return !isAtOrAfterSlot(lastAttemptedSlotAt, latestSlot);
   }
   const last = new Date(lastSuccessfulRefreshAt);
   if (!Number.isFinite(last.getTime())) {
-    return true;
+    return !isAtOrAfterSlot(lastAttemptedSlotAt, latestSlot);
   }
-  return last.getTime() < latestCodexRadarDetailSlot(now).getTime();
+  return last.getTime() < latestSlot.getTime() && !isAtOrAfterSlot(lastAttemptedSlotAt, latestSlot);
+}
+
+function isAtOrAfterSlot(value: string | null | undefined, slot: Date): boolean {
+  if (!value) {
+    return false;
+  }
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) && timestamp >= slot.getTime();
 }
