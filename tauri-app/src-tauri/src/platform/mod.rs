@@ -32,7 +32,7 @@ mod surfaces;
 pub use capabilities::platform_capabilities;
 pub use settings::{
     read_app_settings, save_display_surfaces, save_floating_position, save_floating_settings,
-    save_custom_account_display_name, save_setup_guide_completed,
+    save_custom_account_display_name, save_quota_refresh_interval_ms, save_setup_guide_completed,
 };
 pub use surfaces::{
     hide_floating_window, hide_status_panel_window, set_status_tray_readout, setup_desktop_surfaces,

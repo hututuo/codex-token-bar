@@ -12,6 +12,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "save_floating_settings",
     "save_display_surfaces",
     "save_custom_account_display_name",
+    "save_quota_refresh_interval_ms",
     "save_setup_guide_completed",
     "scan_provider_repair",
     "list_provider_backups",

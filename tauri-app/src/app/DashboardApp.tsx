@@ -65,6 +65,7 @@ export function DashboardApp() {
         displaySurfaces={shellSettings.displaySurfaces}
         floatingSettings={shellSettings.floatingSettings}
         customAccountDisplayName={shellSettings.customAccountDisplayName}
+        quotaRefreshIntervalMs={shellSettings.quotaRefreshIntervalMs}
         liveRate={readyState.liveRate}
         liveThreadOptions={readyState.liveThreadOptions}
         platform={readyState.platform}
@@ -85,6 +86,7 @@ export function DashboardApp() {
         onProviderRepairOpen={() => setProviderRepairOpen(true)}
         onProviderRepairSnapshotChange={updateProviderRepair}
         onQuotaRefresh={reloadQuota}
+        onQuotaRefreshIntervalChange={shellSettings.updateQuotaRefreshIntervalMs}
         onToggleLiveRate={shellSettings.toggleLiveRate}
         onToggleFloating={shellSettings.toggleFloatingWindow}
         onToggleStatusTray={shellSettings.toggleStatusTrayLiveText}

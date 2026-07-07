@@ -1,9 +1,11 @@
 import type { AppSettingsSnapshot } from "../../types/settings";
 import { DEFAULT_FLOATING_CONTENT_VISIBILITY } from "../../floating/floatingContent";
+import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS } from "../../settings/quotaRefreshCadence";
 
 export const fallbackAppSettings: AppSettingsSnapshot = {
   codexHome: null,
   customAccountDisplayName: "",
+  quotaRefreshIntervalMs: DEFAULT_QUOTA_REFRESH_INTERVAL_MS,
   floatingWindow: {
     opacity: 0.92,
     scale: 1,

@@ -1,9 +1,11 @@
 import {
   notifyFloatingWindowHidden,
+  onAppSettingsChanged,
   onFloatingSettingsChanged,
   onFloatingWindowHidden,
   onDisplaySurfacesChanged,
   onLiveRateSnapshot,
+  publishAppSettings,
   publishDisplaySurfaces,
   publishFloatingSettings,
 } from "./desktopEvents";
@@ -44,6 +46,8 @@ export const desktopPlatform = {
   showDashboardWindow,
   notifyFloatingWindowHidden,
   onFloatingWindowHidden,
+  publishAppSettings,
+  onAppSettingsChanged,
   publishFloatingSettings,
   onFloatingSettingsChanged,
   publishDisplaySurfaces,

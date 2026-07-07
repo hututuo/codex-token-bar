@@ -7,8 +7,14 @@ import {
   useRef,
   useState,
 } from "react";
+import { readAppSettings } from "../api/client";
 import { recordPerformanceEvent } from "../api/startupClient";
 import { dashboardDataSource, type DashboardDataSource } from "../data/dashboardDataSource";
+import { desktopPlatform } from "../platform/desktop";
+import {
+  DEFAULT_QUOTA_REFRESH_INTERVAL_MS,
+  sanitizeQuotaRefreshIntervalMs,
+} from "../settings/quotaRefreshCadence";
 import type {
   AccountQuotaBundle,
   DashboardSnapshot,
@@ -31,6 +37,7 @@ import {
   makeDashboardRefreshPlan,
   makeDashboardWakeRefreshContext,
 } from "./dashboardRefreshPlan";
+import { makeQuotaAutoRefreshPlan } from "./quotaAutoRefreshModel";
 import { loadInitialDashboardState } from "./loadInitialDashboardState";
 import { useDashboardActions } from "./useDashboardActions";
 import { useDeferredDashboardLoads } from "./useDeferredDashboardLoads";
@@ -45,7 +52,6 @@ import { useWakeRefresh } from "../utils/useWakeRefresh";
 
 const DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
 const DASHBOARD_BACKGROUND_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
-const QUOTA_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 function dashboardIsVisible() {
   if (typeof document === "undefined") {
@@ -75,6 +81,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const [refreshTaskCount, setRefreshTaskCount] = useState(0);
   const [usageCacheInitializing, setUsageCacheInitializing] = useState(false);
   const [lastLiveActivityAtMs, setLastLiveActivityAtMs] = useState(0);
+  const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const lastLiveActivityAtMsRef = useRef(0);
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
   const {
@@ -180,6 +187,32 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const dashboardReady = state.dashboard !== null;
 
   useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+
+    void readAppSettings().then((settings) => {
+      if (!cancelled && settings !== null) {
+        setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
+      }
+    });
+
+    void desktopPlatform.onAppSettingsChanged((settings) => {
+      setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
+    }).then((listener) => {
+      if (cancelled) {
+        listener();
+      } else {
+        unlisten = listener;
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
     if (typeof document === "undefined") {
       return;
     }
@@ -239,19 +272,29 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     };
   }, [lastLiveActivityAtMs]);
 
+  const quotaAutoRefreshPlan = useMemo(
+    () => makeQuotaAutoRefreshPlan({
+      dashboardReady,
+      fastSnapshotLoaded,
+      intervalMs: quotaRefreshIntervalMs,
+      loading: state.loading,
+    }),
+    [dashboardReady, fastSnapshotLoaded, quotaRefreshIntervalMs, state.loading],
+  );
+
   useEffect(() => {
-    if (!fastSnapshotLoaded || !dashboardReady || state.loading) {
+    if (!quotaAutoRefreshPlan.active || quotaAutoRefreshPlan.intervalMs === null) {
       return;
     }
 
     const interval = window.setInterval(() => {
       setQuotaLoadGeneration((current) => current + 1);
-    }, QUOTA_AUTO_REFRESH_INTERVAL_MS);
+    }, quotaAutoRefreshPlan.intervalMs);
 
     return () => {
       window.clearInterval(interval);
     };
-  }, [dashboardReady, fastSnapshotLoaded, state.loading]);
+  }, [quotaAutoRefreshPlan]);
 
   useEffect(() => {
     if (!fastSnapshotLoaded || !dashboardReady || state.loading || state.dashboard === null) {

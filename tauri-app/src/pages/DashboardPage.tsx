@@ -30,6 +30,7 @@ interface DashboardPageProps {
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
   customAccountDisplayName: string;
+  quotaRefreshIntervalMs: number;
   liveRate: LiveRateSnapshot;
   liveThreadOptions: LiveThreadOption[];
   platform: PlatformCapabilities;
@@ -51,6 +52,7 @@ interface DashboardPageProps {
   onProviderRepairOpen: () => void;
   onProviderRepairSnapshotChange: (snapshot: ProviderRepairSnapshot) => void;
   onQuotaRefresh: () => void;
+  onQuotaRefreshIntervalChange: (intervalMs: number) => Promise<void>;
   onToggleLiveRate: () => void;
   onRefresh: () => Promise<void>;
   onToggleAutostart: () => void;
@@ -73,6 +75,7 @@ export function DashboardPage({
   displaySurfaces,
   floatingSettings,
   customAccountDisplayName,
+  quotaRefreshIntervalMs,
   liveRate,
   liveThreadOptions,
   platform,
@@ -94,6 +97,7 @@ export function DashboardPage({
   onProviderRepairOpen,
   onProviderRepairSnapshotChange,
   onQuotaRefresh,
+  onQuotaRefreshIntervalChange,
   onToggleLiveRate,
   onRefresh,
   onToggleAutostart,
@@ -142,6 +146,7 @@ export function DashboardPage({
               dashboard={dashboard}
               displaySurfaces={displaySurfaces}
               floatingSettings={floatingSettings}
+              quotaRefreshIntervalMs={quotaRefreshIntervalMs}
               liveRate={liveRate}
               liveThreadOptions={liveThreadOptions}
               onFloatingOpacityChange={onFloatingOpacityChange}
@@ -155,6 +160,7 @@ export function DashboardPage({
               onLiveRateRetry={onLiveRateRetry}
               onLiveThreadSelect={onLiveThreadSelect}
               onQuotaRefresh={onQuotaRefresh}
+              onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
               onToggleLiveRate={onToggleLiveRate}
               onToggleFloating={onToggleFloating}
               onToggleStatusTray={onToggleStatusTray}

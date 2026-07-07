@@ -4,6 +4,7 @@ import { readAppSettings, recordStartupEvent } from "../api/client";
 import { readCodexRadarState } from "../api/codexRadarClient";
 import type { CodexRadarSnapshot } from "../components/codexRadar/model";
 import { desktopPlatform } from "../platform/desktop";
+import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS, sanitizeQuotaRefreshIntervalMs } from "../settings/quotaRefreshCadence";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
 import { floatingContentHeight } from "./floatingContent";
 import {
@@ -17,10 +18,11 @@ import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
 
 export function FloatingWindowApp() {
   const [liveRateEnabled, setLiveRateEnabled] = useState(true);
+  const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const { snapshot } = useCompactPanelData({
     liveRateEnabled,
     quotaInitialDelayMs: 8_000,
-    quotaIntervalMs: 180_000,
+    quotaIntervalMs: quotaRefreshIntervalMs,
   });
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   const [radarSnapshot, setRadarSnapshot] = useState<CodexRadarSnapshot | null>(null);
@@ -81,6 +83,7 @@ export function FloatingWindowApp() {
     let disposed = false;
     let unlisten: (() => void) | null = null;
     let unlistenDisplay: (() => void) | null = null;
+    let unlistenAppSettings: (() => void) | null = null;
 
     void desktopPlatform.onFloatingSettingsChanged((payload) => {
       setSettings(sanitizeFloatingSettings(payload));
@@ -102,10 +105,21 @@ export function FloatingWindowApp() {
       }
     });
 
+    void desktopPlatform.onAppSettingsChanged((payload) => {
+      setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(payload.quotaRefreshIntervalMs));
+    }).then((listener) => {
+      if (disposed) {
+        listener();
+      } else {
+        unlistenAppSettings = listener;
+      }
+    });
+
     return () => {
       disposed = true;
       unlisten?.();
       unlistenDisplay?.();
+      unlistenAppSettings?.();
     };
   }, []);
 
@@ -116,6 +130,7 @@ export function FloatingWindowApp() {
       if (!cancelled && settings !== null) {
         setSettings(sanitizeFloatingSettings(settings.floatingWindow));
         setLiveRateEnabled(settings.displaySurfaces.liveRateEnabled);
+        setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
       }
     });
 

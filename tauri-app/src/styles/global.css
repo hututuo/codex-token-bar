@@ -681,7 +681,7 @@ button {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: 62px minmax(132px, 0.9fr) minmax(132px, 0.9fr) minmax(116px, 0.76fr) minmax(166px, 1.12fr);
+  grid-template-columns: 90px minmax(132px, 0.9fr) minmax(132px, 0.9fr) minmax(116px, 0.76fr) minmax(166px, 1.12fr);
   gap: 6px;
   align-items: center;
   min-height: 45px;
@@ -700,6 +700,24 @@ button {
   flex-direction: column;
   gap: 1px;
   min-width: 0;
+}
+
+.quota-refresh-cadence {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.quota-refresh-cadence select {
+  min-width: 0;
+  max-width: 50px;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel-solid) 88%, var(--panel-soft));
+  color: var(--text);
+  padding: 1px 3px;
+  font-size: 8.5px;
 }
 
 .quota-plan strong,

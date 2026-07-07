@@ -3,6 +3,7 @@ import {
   readAppSettings,
   saveCustomAccountDisplayName,
   saveFloatingSettings,
+  saveQuotaRefreshIntervalMs,
   saveSetupGuideCompleted,
 } from "../api/client";
 import {
@@ -19,6 +20,10 @@ import type {
   LiveRateSnapshot,
   PlatformCapabilities,
 } from "../types/dashboard";
+import {
+  DEFAULT_QUOTA_REFRESH_INTERVAL_MS,
+  sanitizeQuotaRefreshIntervalMs,
+} from "../settings/quotaRefreshCadence";
 import { useAutostartSettings } from "./useAutostartSettings";
 import { useDisplaySurfaceSettings } from "./useDisplaySurfaceSettings";
 
@@ -34,6 +39,7 @@ export interface DashboardShellSettingsState {
   floatingSettings: FloatingWindowSettings;
   floatingVisible: boolean;
   customAccountDisplayName: string;
+  quotaRefreshIntervalMs: number;
   showSetupGuide: boolean;
   completeSetupGuide: () => Promise<void>;
   toggleAutostart: () => void;
@@ -48,6 +54,7 @@ export interface DashboardShellSettingsState {
   updateFloatingTextTone: (textTone: number) => void;
   updateFloatingContentVisibility: (contentVisibility: FloatingContentVisibility) => void;
   updateCustomAccountDisplayName: (displayName: string) => Promise<void>;
+  updateQuotaRefreshIntervalMs: (intervalMs: number) => Promise<void>;
 }
 
 export function useDashboardShellSettings({
@@ -57,6 +64,7 @@ export function useDashboardShellSettings({
 }: DashboardShellSettingsOptions): DashboardShellSettingsState {
   const [floatingSettings, setFloatingSettings] = useState(DEFAULT_FLOATING_SETTINGS);
   const [customAccountDisplayName, setCustomAccountDisplayName] = useState("");
+  const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const [showSetupGuide, setShowSetupGuide] = useState(false);
   const floatingSettingsLoaded = useRef(false);
   const { autostartStatus, toggleAutostart } = useAutostartSettings({ dashboardHydrated });
@@ -78,6 +86,7 @@ export function useDashboardShellSettings({
       }
       floatingSettingsLoaded.current = true;
       setCustomAccountDisplayName(settings.customAccountDisplayName.trim());
+      setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
       setFloatingSettings(sanitizeFloatingSettings(settings.floatingWindow));
       applyDisplaySurfaces(settings.displaySurfaces);
       setShowSetupGuide(!settings.setupGuideCompleted);
@@ -145,6 +154,14 @@ export function useDashboardShellSettings({
     setCustomAccountDisplayName(settings.customAccountDisplayName.trim());
   }
 
+  async function updateQuotaRefreshIntervalMs(intervalMs: number) {
+    const nextIntervalMs = sanitizeQuotaRefreshIntervalMs(intervalMs);
+    setQuotaRefreshIntervalMs(nextIntervalMs);
+    const settings = await saveQuotaRefreshIntervalMs(nextIntervalMs);
+    setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
+    void desktopPlatform.publishAppSettings(settings);
+  }
+
   async function completeSetupGuide() {
     const settings = await saveSetupGuideCompleted(true);
     if (!settings.setupGuideCompleted) {
@@ -159,6 +176,7 @@ export function useDashboardShellSettings({
     floatingSettings,
     floatingVisible,
     customAccountDisplayName,
+    quotaRefreshIntervalMs,
     showSetupGuide,
     completeSetupGuide,
     toggleAutostart,
@@ -173,5 +191,6 @@ export function useDashboardShellSettings({
     updateFloatingTextTone,
     updateFloatingContentVisibility,
     updateCustomAccountDisplayName,
+    updateQuotaRefreshIntervalMs,
   };
 }

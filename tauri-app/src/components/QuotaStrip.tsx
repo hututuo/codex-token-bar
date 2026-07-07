@@ -6,6 +6,10 @@ import type {
   QuotaSnapshot,
   ResetCreditDetail,
 } from "../types/dashboard";
+import {
+  QUOTA_REFRESH_CADENCE_OPTIONS,
+  sanitizeQuotaRefreshIntervalMs,
+} from "../settings/quotaRefreshCadence";
 import { formatPercent } from "../utils/format";
 import {
   cardIdentifier,
@@ -16,7 +20,9 @@ import {
 import { quotaReadWarnings } from "./quota/quotaWarnings";
 
 interface QuotaStripProps {
+  onQuotaRefreshIntervalChange?: (intervalMs: number) => void | Promise<void>;
   onRetryQuotaRefresh?: () => void;
+  quotaRefreshIntervalMs?: number;
   snapshot: QuotaSnapshot;
   diagnostics?: QuotaDiagnostic[];
   warnings?: LocalDataWarning[];
@@ -105,11 +111,19 @@ function ResetCreditItem({
   );
 }
 
-function QuotaStripView({ onRetryQuotaRefresh, snapshot, diagnostics = [], warnings = [] }: QuotaStripProps) {
+function QuotaStripView({
+  onQuotaRefreshIntervalChange,
+  onRetryQuotaRefresh,
+  quotaRefreshIntervalMs,
+  snapshot,
+  diagnostics = [],
+  warnings = [],
+}: QuotaStripProps) {
   const [showResetDetails, setShowResetDetails] = useState(false);
   const [expandedCredits, setExpandedCredits] = useState<Set<string>>(() => new Set());
   const resetCreditPanel = useMemo(() => resetCreditPanelModel(snapshot.resetCredit), [snapshot.resetCredit]);
   const quotaWarnings = useMemo(() => quotaReadWarnings(warnings, diagnostics), [diagnostics, warnings]);
+  const selectedQuotaRefreshIntervalMs = sanitizeQuotaRefreshIntervalMs(quotaRefreshIntervalMs);
 
   function toggleCredit(credit: ResetCreditDetail, index: number) {
     const key = resetCreditDetailKey(credit, index);
@@ -129,6 +143,22 @@ function QuotaStripView({ onRetryQuotaRefresh, snapshot, diagnostics = [], warni
       <div className="quota-plan">
         <span>本地账户额度</span>
         <strong>本地读取</strong>
+        {onQuotaRefreshIntervalChange ? (
+          <label className="quota-refresh-cadence">
+            <span>额度刷新</span>
+            <select
+              aria-label="额度刷新频率"
+              onChange={(event) => {
+                void onQuotaRefreshIntervalChange(Number(event.currentTarget.value));
+              }}
+              value={selectedQuotaRefreshIntervalMs}
+            >
+              {QUOTA_REFRESH_CADENCE_OPTIONS.map((option) => (
+                <option key={option.valueMs} value={option.valueMs}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+        ) : null}
       </div>
       <QuotaBar quota={snapshot.fiveHour} />
       <QuotaBar quota={snapshot.sevenDay} />

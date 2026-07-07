@@ -73,6 +73,15 @@ pub fn save_custom_account_display_name(
 }
 
 #[tauri::command]
+pub fn save_quota_refresh_interval_ms(
+    window: tauri::WebviewWindow,
+    interval_ms: u64,
+) -> Result<AppSettingsSnapshot, String> {
+    require_window_label(&window, "save_quota_refresh_interval_ms")?;
+    platform::save_quota_refresh_interval_ms(interval_ms)
+}
+
+#[tauri::command]
 pub fn save_setup_guide_completed(
     window: tauri::WebviewWindow,
     completed: bool,

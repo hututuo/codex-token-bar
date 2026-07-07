@@ -17,6 +17,7 @@ interface DashboardSummarySectionProps {
   dashboard: DashboardSnapshot;
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
+  quotaRefreshIntervalMs: number;
   liveRate: LiveRateSnapshot;
   liveThreadOptions: LiveThreadOption[];
   onFloatingOpacityChange: (opacity: number) => void;
@@ -30,6 +31,7 @@ interface DashboardSummarySectionProps {
   onLiveRateRetry: () => void;
   onLiveThreadSelect: (threadId: string) => void;
   onQuotaRefresh: () => void;
+  onQuotaRefreshIntervalChange: (intervalMs: number) => Promise<void>;
   onToggleLiveRate: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
@@ -45,6 +47,7 @@ export function DashboardSummarySection({
   dashboard,
   displaySurfaces,
   floatingSettings,
+  quotaRefreshIntervalMs,
   liveRate,
   liveThreadOptions,
   onFloatingOpacityChange,
@@ -58,6 +61,7 @@ export function DashboardSummarySection({
   onLiveRateRetry,
   onLiveThreadSelect,
   onQuotaRefresh,
+  onQuotaRefreshIntervalChange,
   onToggleLiveRate,
   onToggleFloating,
   onToggleStatusTray,
@@ -72,7 +76,9 @@ export function DashboardSummarySection({
     <>
       <QuotaStrip
         diagnostics={dashboard.diagnostics}
+        onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
         onRetryQuotaRefresh={onQuotaRefresh}
+        quotaRefreshIntervalMs={quotaRefreshIntervalMs}
         snapshot={dashboard.quota}
         warnings={dashboard.warnings}
       />

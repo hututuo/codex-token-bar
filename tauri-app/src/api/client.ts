@@ -31,6 +31,7 @@ export {
   saveDisplaySurfaces,
   saveFloatingPosition,
   saveFloatingSettings,
+  saveQuotaRefreshIntervalMs,
   saveSetupGuideCompleted,
   setAutostartEnabled,
 } from "./settingsClient";

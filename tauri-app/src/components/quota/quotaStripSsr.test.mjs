@@ -55,6 +55,26 @@ test("QuotaStrip renders quota read warnings and retry affordance from filtered 
   });
 });
 
+test("QuotaStrip renders the shared quota refresh cadence control", async () => {
+  await withSsrModules(async (load) => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    const html = renderComponent(QuotaStrip, {
+      onQuotaRefreshIntervalChange: () => {},
+      quotaRefreshIntervalMs: 180_000,
+      snapshot: quotaSnapshot,
+      warnings: [],
+    });
+
+    assert.match(html, /额度刷新/);
+    assert.match(html, /aria-label="额度刷新频率"/);
+    assert.match(html, /<option value="30000">30 秒<\/option>/);
+    assert.match(html, /<option value="60000">1 分钟<\/option>/);
+    assert.match(html, /<option value="180000" selected="">3 分钟<\/option>/);
+    assert.match(html, /<option value="300000">5 分钟<\/option>/);
+    assert.match(html, /<option value="600000">10 分钟<\/option>/);
+  });
+});
+
 test("QuotaStrip omits the retry button when no retry handler is provided", async () => {
   await withSsrModules(async (load) => {
     const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");

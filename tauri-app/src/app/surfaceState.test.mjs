@@ -16,6 +16,26 @@ test("custom account display-name persistence remains wired through shell settin
   assert.equal(settingsClient.includes("save_custom_account_display_name"), true);
 });
 
+test("quota refresh cadence is shared through app settings and surface events", async () => {
+  const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
+  const shellSettings = await readFile(new URL("./useDashboardShellSettings.ts", import.meta.url), "utf8");
+  const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
+  const settingsClient = await readFile(new URL("../api/settingsClient.ts", import.meta.url), "utf8");
+  const desktopEvents = await readFile(new URL("../platform/desktopEvents.ts", import.meta.url), "utf8");
+  const floatingWindow = await readFile(new URL("../floating/FloatingWindowApp.tsx", import.meta.url), "utf8");
+  const statusPanel = await readFile(new URL("../status/StatusPanelApp.tsx", import.meta.url), "utf8");
+
+  assert.equal(dashboardApp.includes("quotaRefreshIntervalMs={shellSettings.quotaRefreshIntervalMs}"), true);
+  assert.equal(dashboardApp.includes("onQuotaRefreshIntervalChange={shellSettings.updateQuotaRefreshIntervalMs}"), true);
+  assert.equal(shellSettings.includes("saveQuotaRefreshIntervalMs"), true);
+  assert.equal(shellSettings.includes("publishAppSettings(settings)"), true);
+  assert.equal(settingsClient.includes("save_quota_refresh_interval_ms"), true);
+  assert.equal(desktopEvents.includes("app-settings-changed"), true);
+  assert.equal(dashboardData.includes("onAppSettingsChanged"), true);
+  assert.equal(floatingWindow.includes("onAppSettingsChanged"), true);
+  assert.equal(statusPanel.includes("onAppSettingsChanged"), true);
+});
+
 test("floating toggle follows saved preference instead of transient visibility", async () => {
   const hook = await readFile(new URL("./useFloatingWindowSurface.ts", import.meta.url), "utf8");
   const model = await readFile(new URL("./floatingWindowSurfaceModel.ts", import.meta.url), "utf8");
@@ -103,13 +123,14 @@ test("live activity temporarily accelerates usage refresh cadence", async () => 
   assert.equal(compactSnapshot.includes("usageRefreshIntervalMs({"), true);
 });
 
-test("dashboard quota refreshes independently every five minutes", async () => {
+test("dashboard quota refreshes independently through the shared cadence model", async () => {
   const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
   const dashboardClient = await readFile(new URL("../api/dashboardClient.ts", import.meta.url), "utf8");
   const deferredLoads = await readFile(new URL("../state/useDeferredDashboardLoads.ts", import.meta.url), "utf8");
   const quotaLoad = await readFile(new URL("../state/useDeferredQuotaLoad.ts", import.meta.url), "utf8");
 
-  assert.equal(dashboardData.includes("QUOTA_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000"), true);
+  assert.equal(dashboardData.includes("makeQuotaAutoRefreshPlan"), true);
+  assert.equal(dashboardData.includes("quotaAutoRefreshPlan.intervalMs"), true);
   assert.equal(dashboardData.includes("setQuotaLoadGeneration((current) => current + 1)"), true);
   assert.equal(dashboardData.includes("nextQuotaResetRefreshDelayMs(state.dashboard.quota)"), true);
   assert.equal(dashboardData.includes("setForceNextQuotaLoad(true)"), true);

@@ -28,6 +28,10 @@ export function saveCustomAccountDisplayName(customAccountDisplayName: string): 
   return callCommandStrict<AppSettingsSnapshot>("save_custom_account_display_name", { customAccountDisplayName });
 }
 
+export function saveQuotaRefreshIntervalMs(intervalMs: number): Promise<AppSettingsSnapshot> {
+  return callCommandStrict<AppSettingsSnapshot>("save_quota_refresh_interval_ms", { intervalMs });
+}
+
 export function saveSetupGuideCompleted(completed: boolean): Promise<AppSettingsSnapshot> {
   return callCommandStrict<AppSettingsSnapshot>("save_setup_guide_completed", { completed });
 }

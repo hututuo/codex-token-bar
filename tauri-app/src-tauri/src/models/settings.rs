@@ -7,6 +7,8 @@ pub struct AppSettingsSnapshot {
     pub codex_home: Option<String>,
     #[serde(default)]
     pub custom_account_display_name: String,
+    #[serde(default = "default_quota_refresh_interval_ms")]
+    pub quota_refresh_interval_ms: u64,
     #[serde(default)]
     pub floating_window: FloatingWindowSettingsSnapshot,
     #[serde(default)]
@@ -22,12 +24,17 @@ impl Default for AppSettingsSnapshot {
         Self {
             codex_home: None,
             custom_account_display_name: String::new(),
+            quota_refresh_interval_ms: default_quota_refresh_interval_ms(),
             floating_window: FloatingWindowSettingsSnapshot::default(),
             floating_position: None,
             display_surfaces: DisplaySurfaceSettingsSnapshot::default(),
             setup_guide_completed: false,
         }
     }
+}
+
+pub fn default_quota_refresh_interval_ms() -> u64 {
+    60_000
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

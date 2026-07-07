@@ -40,6 +40,13 @@ pub fn save_display_surfaces(
     Ok(settings)
 }
 
+pub fn save_quota_refresh_interval_ms(interval_ms: u64) -> Result<AppSettingsSnapshot, String> {
+    let mut settings = read_app_settings()?;
+    settings.quota_refresh_interval_ms = sanitize_quota_refresh_interval_ms(interval_ms);
+    write_app_settings(&settings)?;
+    Ok(settings)
+}
+
 pub fn save_custom_account_display_name(
     custom_account_display_name: String,
 ) -> Result<AppSettingsSnapshot, String> {
@@ -108,9 +115,18 @@ fn sanitize_app_settings(mut settings: AppSettingsSnapshot) -> AppSettingsSnapsh
         }
     });
     settings.custom_account_display_name = settings.custom_account_display_name.trim().into();
+    settings.quota_refresh_interval_ms =
+        sanitize_quota_refresh_interval_ms(settings.quota_refresh_interval_ms);
     settings.floating_window = sanitize_floating_settings(settings.floating_window);
     settings.floating_position = sanitize_floating_position(settings.floating_position);
     settings
+}
+
+fn sanitize_quota_refresh_interval_ms(value: u64) -> u64 {
+    match value {
+        30_000 | 60_000 | 180_000 | 300_000 | 600_000 => value,
+        _ => 60_000,
+    }
 }
 
 fn sanitize_floating_settings(
@@ -236,6 +252,7 @@ mod tests {
         let raw = r##"{
             "codex_home": "~/custom-codex",
             "customAccountDisplayName": "  来先生  ",
+            "quotaRefreshIntervalMs": 31000,
             "floatingWindow": {
                 "opacity": 1.4,
                 "scale": 0.2,
@@ -257,6 +274,7 @@ mod tests {
 
         assert_eq!(sanitized.codex_home.as_deref(), Some("~/custom-codex"));
         assert_eq!(sanitized.custom_account_display_name, "来先生");
+        assert_eq!(sanitized.quota_refresh_interval_ms, 60_000);
         assert_eq!(sanitized.floating_window.opacity, 1.0);
         assert_eq!(sanitized.floating_window.scale, 0.9);
         assert_eq!(sanitized.floating_window.token_rate_full_scale, 200.0);
@@ -304,6 +322,7 @@ mod tests {
     #[test]
     fn settings_accept_partial_nested_objects() {
         let raw = r##"{
+            "quotaRefreshIntervalMs": 180000,
             "floatingWindow": {
                 "opacity": 0.7,
                 "unreadEffect": "shimmer",
@@ -325,6 +344,7 @@ mod tests {
 
         let settings: AppSettingsSnapshot = serde_json::from_str(raw).unwrap();
 
+        assert_eq!(settings.quota_refresh_interval_ms, 180_000);
         assert_eq!(settings.floating_window.opacity, 0.7);
         assert_eq!(settings.floating_window.scale, 1.0);
         assert_eq!(settings.floating_window.unread_effect, "shimmer");
@@ -350,6 +370,7 @@ mod tests {
         let settings = read_app_settings_at(&path).unwrap();
 
         assert!(settings.codex_home.is_none());
+        assert_eq!(settings.quota_refresh_interval_ms, 60_000);
         assert!(settings.display_surfaces.floating_window_enabled);
         assert!(settings.display_surfaces.live_rate_enabled);
         assert!(settings.display_surfaces.status_tray_live_text_enabled);
@@ -365,6 +386,27 @@ mod tests {
 
         assert!(error.contains("设置文件不是有效 JSON"));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn settings_accept_only_supported_quota_refresh_cadences() {
+        for accepted in [30_000, 60_000, 180_000, 300_000, 600_000] {
+            let settings = AppSettingsSnapshot {
+                quota_refresh_interval_ms: accepted,
+                ..AppSettingsSnapshot::default()
+            };
+
+            assert_eq!(sanitize_app_settings(settings).quota_refresh_interval_ms, accepted);
+        }
+
+        for rejected in [0, 1, 31_000, 120_000, 900_000] {
+            let settings = AppSettingsSnapshot {
+                quota_refresh_interval_ms: rejected,
+                ..AppSettingsSnapshot::default()
+            };
+
+            assert_eq!(sanitize_app_settings(settings).quota_refresh_interval_ms, 60_000);
+        }
     }
 
     fn unique_test_settings_path(label: &str) -> PathBuf {
