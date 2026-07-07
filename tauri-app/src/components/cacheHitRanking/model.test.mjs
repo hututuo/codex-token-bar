@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildCacheRankingItems,
   cacheHitRate,
+  cacheHitMeterWidthPercent,
   cacheHitTone,
   rankingSubtitle,
   uncachedInputTokens,
@@ -200,4 +201,11 @@ test("cacheHitTone maps Swift threshold bands and clamps odd values safely", () 
   assert.equal(cacheHitTone(0.96), "cache-hit-tone--strong-blue");
   assert.equal(cacheHitTone(2), "cache-hit-tone--strong-blue");
   assert.equal(cacheHitTone(Number.NaN), "cache-hit-tone--orange");
+});
+
+test("cacheHitMeterWidthPercent clamps negative, overflow, and NaN rates", () => {
+  assert.equal(cacheHitMeterWidthPercent(-0.2), 0);
+  assert.equal(cacheHitMeterWidthPercent(0.401), 40);
+  assert.equal(cacheHitMeterWidthPercent(1.2), 100);
+  assert.equal(cacheHitMeterWidthPercent(Number.NaN), 0);
 });

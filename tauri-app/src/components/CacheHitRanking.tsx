@@ -3,6 +3,7 @@ import type { CacheHitRankingItem, TokenCacheUsage } from "../types/dashboard";
 import { formatPercent, formatTokens } from "../utils/format";
 import {
   buildCacheRankingItems,
+  cacheHitMeterWidthPercent,
   cacheHitRate,
   cacheHitTone,
   rankingSubtitle,
@@ -115,7 +116,7 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [] }: CacheHitRankin
                   <span>{item.subtitle}</span>
                 </div>
                 <div className={`hit-meter ${tone}`}>
-                  <span style={{ width: `${Math.round(item.hitRate * 100)}%` }} />
+                  <span style={{ width: `${cacheHitMeterWidthPercent(item.hitRate)}%` }} />
                 </div>
                 <em className={tone}>{formatPercent(item.hitRate)}</em>
                 <span>{formatTokens(item.cachedTokens)} / {formatTokens(item.inputTokens)}</span>
@@ -133,7 +134,7 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [] }: CacheHitRankin
                   {item.context ? <small>{item.context}</small> : null}
                 </div>
                 <div className={`hit-meter ${tone}`}>
-                  <span style={{ width: `${Math.round(hitRate * 100)}%` }} />
+                  <span style={{ width: `${cacheHitMeterWidthPercent(hitRate)}%` }} />
                 </div>
                 <em className={tone}>{formatPercent(hitRate)}</em>
                 <span>

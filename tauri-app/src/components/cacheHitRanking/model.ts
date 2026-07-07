@@ -81,6 +81,10 @@ export function cacheHitTone(rate: number) {
   return "cache-hit-tone--strong-blue";
 }
 
+export function cacheHitMeterWidthPercent(rate: number) {
+  return Math.round(clampRate(rate) * 100);
+}
+
 export function uncachedInputTokens(breakdown: TokenCacheBreakdown) {
   return Math.max(0, breakdown.inputTokens - breakdown.cachedInputTokens);
 }

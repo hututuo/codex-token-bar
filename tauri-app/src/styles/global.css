@@ -900,7 +900,13 @@ button.quota-side-card:hover {
   background: color-mix(in srgb, var(--panel-soft) 78%, transparent);
 }
 
-.quota-track span,
+.quota-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--green) 38%, var(--accent)));
+}
+
 .hit-meter span {
   display: block;
   height: 100%;
