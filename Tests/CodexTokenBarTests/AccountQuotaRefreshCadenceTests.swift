@@ -24,4 +24,31 @@ final class AccountQuotaRefreshCadenceTests: XCTestCase {
         XCTAssertEqual(AccountQuotaRefreshCadence.fiveMinutes.label, "5 分钟")
         XCTAssertEqual(AccountQuotaRefreshCadence.tenMinutes.label, "10 分钟")
     }
+
+    func testThirtySecondCadenceIsNotSwallowedByFixedThirtySecondCooldown() {
+        XCTAssertFalse(
+            AccountQuotaAutomaticRefreshPolicy.shouldSkipAutomaticRefresh(
+                snapshotIsAvailable: true,
+                recentSuccessAge: 29.8,
+                automaticRefreshInterval: 30
+            )
+        )
+    }
+
+    func testDefaultOneMinuteCadenceKeepsThirtySecondCooldown() {
+        XCTAssertTrue(
+            AccountQuotaAutomaticRefreshPolicy.shouldSkipAutomaticRefresh(
+                snapshotIsAvailable: true,
+                recentSuccessAge: 29.8,
+                automaticRefreshInterval: 60
+            )
+        )
+        XCTAssertFalse(
+            AccountQuotaAutomaticRefreshPolicy.shouldSkipAutomaticRefresh(
+                snapshotIsAvailable: true,
+                recentSuccessAge: 30.1,
+                automaticRefreshInterval: 60
+            )
+        )
+    }
 }

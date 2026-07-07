@@ -34,3 +34,20 @@ struct AccountQuotaRefreshCadence: Identifiable, Hashable {
         value(for: userDefaults.string(forKey: storageKey) ?? defaultRawValue)
     }
 }
+
+enum AccountQuotaAutomaticRefreshPolicy {
+    private static let maximumSuccessCooldown: TimeInterval = 30
+
+    static func successCooldown(for automaticRefreshInterval: TimeInterval) -> TimeInterval {
+        min(maximumSuccessCooldown, max(0, automaticRefreshInterval / 2))
+    }
+
+    static func shouldSkipAutomaticRefresh(
+        snapshotIsAvailable: Bool,
+        recentSuccessAge: TimeInterval?,
+        automaticRefreshInterval: TimeInterval
+    ) -> Bool {
+        guard snapshotIsAvailable, let recentSuccessAge else { return false }
+        return recentSuccessAge < successCooldown(for: automaticRefreshInterval)
+    }
+}

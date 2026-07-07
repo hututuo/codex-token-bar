@@ -50,7 +50,6 @@ final class AccountQuotaStore: ObservableObject {
     private var isRefreshing = false
     private var lastSuccessfulRefreshCompletedAt: Date?
     private(set) var automaticRefreshInterval: TimeInterval
-    private let automaticRefreshCooldown: TimeInterval = 30
     private let quotaReader: any QuotaReading
     private let timerScheduler: any AccountQuotaTimerScheduling
     private let userDefaults: UserDefaults
@@ -153,11 +152,13 @@ final class AccountQuotaStore: ObservableObject {
             trace?.mark("cancelled-stale-refresh")
         }
         if !force,
-           snapshot.isAvailable,
-           let recentSuccessAge,
-           recentSuccessAge < automaticRefreshCooldown {
+           AccountQuotaAutomaticRefreshPolicy.shouldSkipAutomaticRefresh(
+                snapshotIsAvailable: snapshot.isAvailable,
+                recentSuccessAge: recentSuccessAge,
+                automaticRefreshInterval: automaticRefreshInterval
+           ) {
             trace?.end("skipped-recent-success", metadata: [
-                "cooldown": String(format: "%.2f", automaticRefreshCooldown)
+                "cooldown": String(format: "%.2f", AccountQuotaAutomaticRefreshPolicy.successCooldown(for: automaticRefreshInterval))
             ])
             return
         }
