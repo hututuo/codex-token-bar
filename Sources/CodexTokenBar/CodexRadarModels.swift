@@ -22,7 +22,7 @@ struct CodexRadarSnapshot: Decodable, Equatable, Sendable {
     let recentWindows: [CodexRadarRecentWindow]
     let links: CodexRadarLinks
     let modelIQ: CodexRadarModelIQ
-    let codexEnvironment: CodexRadarEnvironment
+    let codexEnvironment: CodexRadarEnvironment?
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
@@ -39,6 +39,24 @@ struct CodexRadarSnapshot: Decodable, Equatable, Sendable {
         case links
         case modelIQ = "modelIq"
         case codexEnvironment
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(String.self, forKey: .schemaVersion)
+        service = try container.decode(String.self, forKey: .service)
+        monitoredAt = try container.decode(String.self, forKey: .monitoredAt)
+        timezone = try container.decode(String.self, forKey: .timezone)
+        windowOpen = try container.decode(Bool.self, forKey: .windowOpen)
+        status = try container.decode(String.self, forKey: .status)
+        recommendedAction = try container.decode(String.self, forKey: .recommendedAction)
+        window = try container.decode(CodexRadarWindow.self, forKey: .window)
+        prediction = try container.decode(CodexRadarPrediction.self, forKey: .prediction)
+        tiboPresence = try container.decodeIfPresent(CodexRadarTiboPresence.self, forKey: .tiboPresence)
+        recentWindows = try container.decodeIfPresent([CodexRadarRecentWindow].self, forKey: .recentWindows) ?? []
+        links = try container.decode(CodexRadarLinks.self, forKey: .links)
+        modelIQ = try container.decode(CodexRadarModelIQ.self, forKey: .modelIQ)
+        codexEnvironment = try container.decodeIfPresent(CodexRadarEnvironment.self, forKey: .codexEnvironment)
     }
 }
 
@@ -58,7 +76,7 @@ struct CodexRadarPrediction: Decodable, Equatable, Sendable {
     let level: String
     let probability24h: Double
     let probability48h: Double
-    let expectedWindow: String
+    let expectedWindow: String?
     let summary: String
     let summaryEn: String?
     let positiveSignals: [String]
@@ -75,6 +93,19 @@ struct CodexRadarPrediction: Decodable, Equatable, Sendable {
         case positiveSignals
         case negativeSignals
         case updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        level = try container.decode(String.self, forKey: .level)
+        probability24h = try container.decode(Double.self, forKey: .probability24h)
+        probability48h = try container.decode(Double.self, forKey: .probability48h)
+        expectedWindow = try container.decodeIfPresent(String.self, forKey: .expectedWindow)
+        summary = try container.decode(String.self, forKey: .summary)
+        summaryEn = try container.decodeIfPresent(String.self, forKey: .summaryEn)
+        positiveSignals = try container.decodeIfPresent([String].self, forKey: .positiveSignals) ?? []
+        negativeSignals = try container.decodeIfPresent([String].self, forKey: .negativeSignals) ?? []
+        updatedAt = try container.decode(String.self, forKey: .updatedAt)
     }
 
     var probability24hPercent: Int {
@@ -126,6 +157,41 @@ struct CodexRadarModelIQ: Decodable, Equatable, Sendable {
     let quotaCalibration: CodexRadarQuotaCalibration?
     let quotaRadar: CodexRadarQuotaRadar?
     let quotaCheck: CodexRadarQuotaCheck?
+
+    private enum CodingKeys: String, CodingKey {
+        case latest
+        case recentDays
+        case comparisons
+        case quotaCalibration
+        case quotaRadar
+        case quotaCheck
+    }
+
+    init(
+        latest: CodexRadarModelIQPoint,
+        recentDays: [CodexRadarModelIQPoint],
+        comparisons: [String: CodexRadarModelIQComparison],
+        quotaCalibration: CodexRadarQuotaCalibration?,
+        quotaRadar: CodexRadarQuotaRadar?,
+        quotaCheck: CodexRadarQuotaCheck?
+    ) {
+        self.latest = latest
+        self.recentDays = recentDays
+        self.comparisons = comparisons
+        self.quotaCalibration = quotaCalibration
+        self.quotaRadar = quotaRadar
+        self.quotaCheck = quotaCheck
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        latest = try container.decode(CodexRadarModelIQPoint.self, forKey: .latest)
+        recentDays = try container.decodeIfPresent([CodexRadarModelIQPoint].self, forKey: .recentDays) ?? []
+        comparisons = try container.decodeIfPresent([String: CodexRadarModelIQComparison].self, forKey: .comparisons) ?? [:]
+        quotaCalibration = try container.decodeIfPresent(CodexRadarQuotaCalibration.self, forKey: .quotaCalibration)
+        quotaRadar = try container.decodeIfPresent(CodexRadarQuotaRadar.self, forKey: .quotaRadar)
+        quotaCheck = try container.decodeIfPresent(CodexRadarQuotaCheck.self, forKey: .quotaCheck)
+    }
 
     var primaryModelRow: CodexRadarModelIQComparisonRow {
         allCurrentRows.sorted(by: isPreferredPrimaryModel).first
@@ -318,6 +384,37 @@ struct CodexRadarModelIQComparison: Decodable, Equatable, Sendable {
     let reasoningEffort: String
     let latest: CodexRadarModelIQPoint
     let recentDays: [CodexRadarModelIQPoint]
+
+    private enum CodingKeys: String, CodingKey {
+        case label
+        case model
+        case reasoningEffort
+        case latest
+        case recentDays
+    }
+
+    init(
+        label: String,
+        model: String,
+        reasoningEffort: String,
+        latest: CodexRadarModelIQPoint,
+        recentDays: [CodexRadarModelIQPoint]
+    ) {
+        self.label = label
+        self.model = model
+        self.reasoningEffort = reasoningEffort
+        self.latest = latest
+        self.recentDays = recentDays
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        label = try container.decode(String.self, forKey: .label)
+        model = try container.decode(String.self, forKey: .model)
+        reasoningEffort = try container.decode(String.self, forKey: .reasoningEffort)
+        latest = try container.decode(CodexRadarModelIQPoint.self, forKey: .latest)
+        recentDays = try container.decodeIfPresent([CodexRadarModelIQPoint].self, forKey: .recentDays) ?? []
+    }
 }
 
 struct CodexRadarModelIQComparisonRow: Equatable, Sendable {

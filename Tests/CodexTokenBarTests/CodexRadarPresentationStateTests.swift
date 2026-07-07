@@ -150,6 +150,39 @@ final class CodexRadarPresentationStateTests: XCTestCase {
         XCTAssertNil(state.compactMarkerText)
     }
 
+    func testFloatingPresentationUsesPublicSummaryFieldsWithoutAdvancedRadarSections() throws {
+        let snapshot = try JSONDecoder.codexRadar.decode(
+            CodexRadarSnapshot.self,
+            from: Data(CodexRadarModelsTests.publicSummaryJSON.utf8)
+        )
+        let tokenSnapshot = TokenDisplaySnapshot(
+            title: "全会话实时",
+            status: "输出中",
+            rate: 12.3,
+            consumedTokens: 123_456,
+            todayTokens: 7_890,
+            todayRequests: 42,
+            quota: .empty,
+            updatedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        let model = FloatingPanelPresentationModel(
+            snapshot: tokenSnapshot,
+            visibility: FloatingPanelContentVisibility(
+                showRateAndBar: false,
+                showUsageStatus: false,
+                showMetrics: false,
+                showQuota: false,
+                showRadar: true
+            ),
+            radarPresentation: CodexRadarPresentationState(snapshot: snapshot)
+        )
+
+        XCTAssertTrue(model.accessibilityParts.contains("雷达建议 wait"))
+        XCTAssertTrue(model.accessibilityParts.contains("IQ 100"))
+        XCTAssertFalse(model.accessibilityParts.contains { $0.contains("环境压力") })
+        XCTAssertFalse(model.accessibilityParts.contains { $0.contains("recent") })
+    }
+
     private func makeSnapshot() throws -> CodexRadarSnapshot {
         try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: Data(CodexRadarModelsTests.sampleJSON.utf8))
     }

@@ -28,7 +28,25 @@ final class CodexRadarModelsTests: XCTestCase {
         ])
         XCTAssertEqual(snapshot.modelIQ.quotaRadar?.rowsForDisplay.first?.fiveHourDisplayText, "$13.83")
         XCTAssertEqual(snapshot.modelIQ.quotaRadar?.trend.last?.fiveHour20x, 276.66)
-        XCTAssertEqual(snapshot.codexEnvironment.roleCounts["market_motive"], 38)
+        XCTAssertEqual(snapshot.codexEnvironment?.roleCounts["market_motive"], 38)
+    }
+
+    func testDecodesPublicSummaryWithoutFullOnlyRadarFields() throws {
+        let snapshot = try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: Data(Self.publicSummaryJSON.utf8))
+
+        XCTAssertEqual(snapshot.recommendedAction, "wait")
+        XCTAssertEqual(snapshot.window.message, "当前没有开启的速蹬窗口")
+        XCTAssertEqual(snapshot.prediction.probability24hPercent, 17)
+        XCTAssertEqual(snapshot.prediction.probability48hPercent, 34)
+        XCTAssertNil(snapshot.prediction.expectedWindow)
+        XCTAssertEqual(snapshot.prediction.positiveSignals, [])
+        XCTAssertEqual(snapshot.prediction.negativeSignals, [])
+        XCTAssertEqual(snapshot.recentWindows, [])
+        XCTAssertNil(snapshot.codexEnvironment)
+        XCTAssertEqual(snapshot.modelIQ.primaryModelRow.label, "GPT-5.5 high")
+        XCTAssertEqual(snapshot.modelIQ.primaryModelRow.point.scoreDisplayText, "IQ 100")
+        XCTAssertEqual(snapshot.modelIQ.secondaryModelRows.map(\.label), ["GPT-5.5 xhigh"])
+        XCTAssertEqual(snapshot.modelIQ.chartSeries.first?.points.count, 1)
     }
 
     func testPrimaryModelUsesHighestCurrentComparisonInsteadOfRawLatest() {
@@ -508,6 +526,86 @@ final class CodexRadarModelsTests: XCTestCase {
         "role_counts": {
           "market_motive": 38,
           "issue_or_limit_anomaly": 10
+        }
+      }
+    }
+    """
+
+    static let publicSummaryJSON = """
+    {
+      "schema_version": "2.0",
+      "service": "codex-reset-radar",
+      "monitored_at": "2026-06-24T04:52:00.084111+08:00",
+      "timezone": "Asia/Shanghai",
+      "window_open": false,
+      "status": "none",
+      "recommended_action": "wait",
+      "window": {
+        "open": false,
+        "status": "none",
+        "action": "wait",
+        "message": "当前没有开启的速蹬窗口",
+        "title": "Codex 用量限制重置",
+        "scope": "Codex 用户",
+        "opened_at": null,
+        "closed_at": null,
+        "source_url": null
+      },
+      "prediction": {
+        "level": "medium",
+        "probability_24h": 0.17,
+        "probability_48h": 0.34,
+        "summary": "公开摘要只保留基础预测字段。",
+        "summary_en": "Public summary keeps basic prediction fields.",
+        "updated_at": "2026-06-24T04:52:00.084111+08:00"
+      },
+      "links": {
+        "html": "https://codexradar.com/",
+        "rss": "https://codexradar.com/feed.xml"
+      },
+      "model_iq": {
+        "latest": {
+          "date": "2026-06-24",
+          "score": 87.5,
+          "status": "yellow",
+          "passed": 7,
+          "tasks": 12,
+          "invalid": 0,
+          "total_tokens": 34000000,
+          "input_tokens": 32000000,
+          "cached_input_tokens": 30000000,
+          "output_tokens": 400000,
+          "wall_seconds": 1380,
+          "wall_time_human": "23分钟",
+          "model": "gpt-5.5",
+          "reasoning_effort": "xhigh",
+          "valid_tasks": 12,
+          "cost_usd": 37.26
+        },
+        "comparisons": {
+          "gpt_55_high": {
+            "label": "GPT-5.5 high",
+            "model": "gpt-5.5",
+            "reasoning_effort": "high",
+            "latest": {
+              "date": "2026-06-24",
+              "score": 100,
+              "status": "green",
+              "passed": 8,
+              "tasks": 12,
+              "invalid": 0,
+              "total_tokens": 27820000,
+              "input_tokens": 26000000,
+              "cached_input_tokens": 24000000,
+              "output_tokens": 320000,
+              "wall_seconds": 1560,
+              "wall_time_human": "26分钟",
+              "model": "gpt-5.5",
+              "reasoning_effort": "high",
+              "valid_tasks": 12,
+              "cost_usd": 29.01
+            }
+          }
         }
       }
     }

@@ -249,14 +249,14 @@ private struct CodexRadarEnvironmentBlock: View {
             HStack(alignment: .lastTextBaseline, spacing: 8) {
                 Text(environment?.complaintPressure ?? "--")
                     .font(.system(size: 18, weight: .semibold, design: .rounded))
-                Text("异常 \(environment?.issueOrLimitAnomalies24h ?? 0)")
+                Text("异常 \(environment.map { "\($0.issueOrLimitAnomalies24h)" } ?? "--")")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
             }
             HStack(spacing: 10) {
-                CodexRadarTinyMetric(label: "官方", value: "\(environment?.officialUpdates24h ?? 0)")
-                CodexRadarTinyMetric(label: "社区", value: "\(environment?.communityMentions24h ?? 0)")
-                CodexRadarTinyMetric(label: "事故", value: "\(environment?.statusIncidents24h ?? 0)")
+                CodexRadarTinyMetric(label: "官方", value: environment.map { "\($0.officialUpdates24h)" } ?? "--")
+                CodexRadarTinyMetric(label: "社区", value: environment.map { "\($0.communityMentions24h)" } ?? "--")
+                CodexRadarTinyMetric(label: "事故", value: environment.map { "\($0.statusIncidents24h)" } ?? "--")
             }
         }
         .padding(.leading, 10)
@@ -425,7 +425,7 @@ private struct CodexRadarDetailOverview: View {
                     ("建议动作", snapshot.recommendedAction),
                     ("24h 概率", probabilityText(snapshot.prediction.probability24hPercent)),
                     ("48h 概率", probabilityText(snapshot.prediction.probability48hPercent)),
-                    ("预计窗口", snapshot.prediction.expectedWindow),
+                    ("预计窗口", snapshot.prediction.expectedWindow ?? "--"),
                     ("范围", snapshot.window.scope),
                     ("上次关闭", snapshot.window.closedAt ?? "--"),
                     ("来源", snapshot.window.sourceUrl ?? "--")
@@ -439,10 +439,12 @@ private struct CodexRadarDetailOverview: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            CodexRadarDetailSubsection(title: "信号拆分") {
-                HStack(alignment: .top, spacing: 12) {
-                    CodexRadarSignalList(title: "积极信号", items: snapshot.prediction.positiveSignals)
-                    CodexRadarSignalList(title: "降温信号", items: snapshot.prediction.negativeSignals)
+            if !snapshot.prediction.positiveSignals.isEmpty || !snapshot.prediction.negativeSignals.isEmpty {
+                CodexRadarDetailSubsection(title: "信号拆分") {
+                    HStack(alignment: .top, spacing: 12) {
+                        CodexRadarSignalList(title: "积极信号", items: snapshot.prediction.positiveSignals)
+                        CodexRadarSignalList(title: "降温信号", items: snapshot.prediction.negativeSignals)
+                    }
                 }
             }
 
@@ -675,34 +677,43 @@ private struct CodexRadarEnvironmentDetail: View {
     let feedItems: [CodexRadarFeedItem]
 
     var body: some View {
-        let environment = snapshot.codexEnvironment
         CodexRadarDetailSection(title: "环境压力与资讯", systemImage: "waveform.path.ecg") {
-            CodexRadarDetailSubsection(title: "压力指标") {
-                CodexRadarKeyValueGrid(rows: [
-                    ("官方动态 24h", "\(environment.officialUpdates24h)"),
-                    ("社区提及 24h", "\(environment.communityMentions24h)"),
-                    ("异常/限额反馈", "\(environment.issueOrLimitAnomalies24h)"),
-                    ("Status 事故", "\(environment.statusIncidents24h)"),
-                    ("抱怨压力", environment.complaintPressure),
-                    ("RSS", snapshot.links.rss)
-                ])
+            if let environment = snapshot.codexEnvironment {
+                CodexRadarDetailSubsection(title: "压力指标") {
+                    CodexRadarKeyValueGrid(rows: [
+                        ("官方动态 24h", "\(environment.officialUpdates24h)"),
+                        ("社区提及 24h", "\(environment.communityMentions24h)"),
+                        ("异常/限额反馈", "\(environment.issueOrLimitAnomalies24h)"),
+                        ("Status 事故", "\(environment.statusIncidents24h)"),
+                        ("抱怨压力", environment.complaintPressure),
+                        ("RSS", snapshot.links.rss)
+                    ])
+                }
+
+                CodexRadarDetailSubsection(title: "角色分布") {
+                    CodexRadarRoleCountsView(roleCounts: environment.roleCounts)
+                }
+
+                CodexRadarArticleList(title: "官方动态", items: environment.officialNews.map {
+                    CodexRadarArticleRow(title: $0.titleZh ?? "Codex 官方动态", subtitle: "@\($0.account ?? "--") · \($0.summaryEn ?? $0.text ?? "")", url: $0.url)
+                })
+
+                CodexRadarArticleList(title: "社区反馈样本", items: environment.complaintExamples.map {
+                    CodexRadarArticleRow(title: "@\($0.account)", subtitle: $0.summaryZh, url: $0.url)
+                })
+            } else {
+                CodexRadarDetailSubsection(title: "资讯来源") {
+                    CodexRadarKeyValueGrid(rows: [
+                        ("RSS", snapshot.links.rss)
+                    ])
+                }
             }
 
-            CodexRadarDetailSubsection(title: "角色分布") {
-                CodexRadarRoleCountsView(roleCounts: environment.roleCounts)
+            if !feedItems.isEmpty {
+                CodexRadarArticleList(title: "RSS 提醒历史", items: feedItems.map {
+                    CodexRadarArticleRow(title: $0.title, subtitle: "\($0.pubDate) · \($0.description)", url: $0.link)
+                })
             }
-
-            CodexRadarArticleList(title: "官方动态", items: environment.officialNews.map {
-                CodexRadarArticleRow(title: $0.titleZh ?? "Codex 官方动态", subtitle: "@\($0.account ?? "--") · \($0.summaryEn ?? $0.text ?? "")", url: $0.url)
-            })
-
-            CodexRadarArticleList(title: "社区反馈样本", items: environment.complaintExamples.map {
-                CodexRadarArticleRow(title: "@\($0.account)", subtitle: $0.summaryZh, url: $0.url)
-            })
-
-            CodexRadarArticleList(title: "RSS 提醒历史", items: feedItems.map {
-                CodexRadarArticleRow(title: $0.title, subtitle: "\($0.pubDate) · \($0.description)", url: $0.link)
-            })
         }
     }
 }
