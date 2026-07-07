@@ -169,6 +169,7 @@ enum CodexRadarReaderError: LocalizedError, Equatable, Sendable {
 @MainActor
 final class CodexRadarStore: ObservableObject {
     static let detailRefreshDefaultsKey = "CodexRadarStore.lastSuccessfulDetailRefreshAt"
+    static let detailAttemptDefaultsKey = "CodexRadarStore.lastAttemptedDetailSlotAt"
 
     @Published private(set) var snapshot: CodexRadarSnapshot?
     @Published private(set) var detailSnapshot: CodexRadarSnapshot?
@@ -181,6 +182,7 @@ final class CodexRadarStore: ObservableObject {
     @Published private(set) var detailDiagnostics: [CodexRadarDiagnostic] = []
     @Published private(set) var lastSuccessfulRefreshAt: Date?
     @Published private(set) var lastSuccessfulDetailRefreshAt: Date?
+    @Published private(set) var lastAttemptedDetailSlotAt: Date?
     @Published private(set) var lastFailureAt: Date?
     @Published private(set) var lastDetailFailureAt: Date?
     @Published private(set) var staleDataDisplayed = false
@@ -194,6 +196,7 @@ final class CodexRadarStore: ObservableObject {
     private let detailRefreshDefaults: UserDefaults
     private let detailRefreshCalendar: Calendar
     private var timer: Timer?
+    private var detailTimer: Timer?
     private var refreshTask: Task<Void, Never>?
     private var detailRefreshTask: Task<Void, Never>?
     private var refreshGeneration = 0
@@ -216,6 +219,11 @@ final class CodexRadarStore: ObservableObject {
         if detailRefreshDefaults.object(forKey: Self.detailRefreshDefaultsKey) != nil {
             self.lastSuccessfulDetailRefreshAt = Date(
                 timeIntervalSince1970: detailRefreshDefaults.double(forKey: Self.detailRefreshDefaultsKey)
+            )
+        }
+        if detailRefreshDefaults.object(forKey: Self.detailAttemptDefaultsKey) != nil {
+            self.lastAttemptedDetailSlotAt = Date(
+                timeIntervalSince1970: detailRefreshDefaults.double(forKey: Self.detailAttemptDefaultsKey)
             )
         }
     }
@@ -243,6 +251,7 @@ final class CodexRadarStore: ObservableObject {
         guard timer == nil else { return }
         refresh()
         refreshScheduledDetailIfNeeded()
+        scheduleNextDetailRefreshTimer()
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refresh()
@@ -254,6 +263,8 @@ final class CodexRadarStore: ObservableObject {
     func stop() {
         timer?.invalidate()
         timer = nil
+        detailTimer?.invalidate()
+        detailTimer = nil
         refreshGeneration += 1
         detailRefreshGeneration += 1
         refreshTask?.cancel()
@@ -355,13 +366,23 @@ final class CodexRadarStore: ObservableObject {
     }
 
     func refreshScheduledDetailIfNeeded(now: Date = Date()) {
-        guard CodexRadarDetailRefreshSchedule.shouldRefresh(
+        let latestSlot = CodexRadarDetailRefreshSchedule.latestScheduledSlot(
+            before: now,
+            calendar: detailRefreshCalendar
+        )
+        guard !isDetailRefreshing else {
+            return
+        }
+        guard CodexRadarDetailRefreshSchedule.shouldAttempt(
             now: now,
             lastSuccessfulRefreshAt: lastSuccessfulDetailRefreshAt,
+            lastAttemptedSlotAt: lastAttemptedDetailSlotAt,
             calendar: detailRefreshCalendar
         ) else {
             return
         }
+        lastAttemptedDetailSlotAt = latestSlot
+        detailRefreshDefaults.set(latestSlot.timeIntervalSince1970, forKey: Self.detailAttemptDefaultsKey)
         refreshDetail(recordedAt: now)
     }
 
@@ -411,6 +432,21 @@ final class CodexRadarStore: ObservableObject {
                     self.isDetailRefreshing = false
                     self.detailRefreshTask = nil
                 }
+            }
+        }
+    }
+
+    private func scheduleNextDetailRefreshTimer(from date: Date = Date()) {
+        detailTimer?.invalidate()
+        let delay = CodexRadarDetailRefreshSchedule.delayUntilNextSlot(
+            from: date,
+            calendar: detailRefreshCalendar
+        )
+        detailTimer = Timer.scheduledTimer(withTimeInterval: max(0.1, delay), repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.refreshScheduledDetailIfNeeded()
+                self.scheduleNextDetailRefreshTimer()
             }
         }
     }

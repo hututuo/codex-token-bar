@@ -206,6 +206,141 @@ final class CodexRadarStoreTests: XCTestCase {
         ))
     }
 
+    func testScheduledDetailFailureRecordsAttemptAndDoesNotRetrySameSlot() async throws {
+        let defaults = try Self.makeDefaults()
+        let calendar = Self.detailCalendar
+        let now = try Self.detailDate("2026-07-07 09:00")
+        let previousSlot = try Self.detailDate("2026-07-06 18:00")
+        let latestSlot = try Self.detailDate("2026-07-07 08:00")
+        defaults.set(previousSlot.timeIntervalSince1970, forKey: CodexRadarStore.detailRefreshDefaultsKey)
+
+        let detailReader = DetailRadarReaderStub(actions: [
+            .failure(CodexRadarReaderError.httpStatus(503)),
+            .success(try Self.makeSnapshot())
+        ])
+        let store = CodexRadarStore(
+            reader: RadarReaderStub(actions: []),
+            feedReader: FeedReaderStub(actions: []),
+            detailReader: detailReader,
+            detailRefreshDefaults: defaults,
+            detailRefreshCalendar: calendar
+        )
+
+        store.refreshScheduledDetailIfNeeded(now: now)
+        await waitUntil("scheduled detail failure") {
+            !store.isDetailRefreshing && !store.detailDiagnostics.isEmpty
+        }
+        store.refreshScheduledDetailIfNeeded(now: now)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        let detailCallCount = await detailReader.callCountValue()
+        XCTAssertEqual(detailCallCount, 1)
+        XCTAssertEqual(store.lastAttemptedDetailSlotAt, latestSlot)
+        XCTAssertEqual(defaults.double(forKey: CodexRadarStore.detailAttemptDefaultsKey), latestSlot.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertNil(store.detailSnapshot)
+    }
+
+    func testScheduledDetailCanAttemptAgainForNextSlotAfterFailure() async throws {
+        let snapshot = try Self.makeSnapshot()
+        let defaults = try Self.makeDefaults()
+        let calendar = Self.detailCalendar
+        let morningCheck = try Self.detailDate("2026-07-07 09:00")
+        let eveningCheck = try Self.detailDate("2026-07-07 19:00")
+        let previousSlot = try Self.detailDate("2026-07-06 18:00")
+        defaults.set(previousSlot.timeIntervalSince1970, forKey: CodexRadarStore.detailRefreshDefaultsKey)
+
+        let detailReader = DetailRadarReaderStub(actions: [
+            .failure(CodexRadarReaderError.httpStatus(503)),
+            .success(snapshot)
+        ])
+        let store = CodexRadarStore(
+            reader: RadarReaderStub(actions: []),
+            feedReader: FeedReaderStub(actions: []),
+            detailReader: detailReader,
+            detailRefreshDefaults: defaults,
+            detailRefreshCalendar: calendar
+        )
+
+        store.refreshScheduledDetailIfNeeded(now: morningCheck)
+        await waitUntil("first scheduled detail failure") {
+            !store.isDetailRefreshing && !store.detailDiagnostics.isEmpty
+        }
+        store.refreshScheduledDetailIfNeeded(now: eveningCheck)
+        await waitUntil("next slot scheduled detail success") {
+            store.detailSnapshot != nil && !store.isDetailRefreshing
+        }
+
+        let detailCallCount = await detailReader.callCountValue()
+        XCTAssertEqual(detailCallCount, 2)
+        XCTAssertEqual(store.detailSnapshot, snapshot)
+        XCTAssertEqual(store.lastAttemptedDetailSlotAt, try Self.detailDate("2026-07-07 18:00"))
+    }
+
+    func testManualDetailRefreshCanRetryAfterScheduledFailure() async throws {
+        let snapshot = try Self.makeSnapshot()
+        let defaults = try Self.makeDefaults()
+        let calendar = Self.detailCalendar
+        let now = try Self.detailDate("2026-07-07 09:00")
+        let previousSlot = try Self.detailDate("2026-07-06 18:00")
+        defaults.set(previousSlot.timeIntervalSince1970, forKey: CodexRadarStore.detailRefreshDefaultsKey)
+
+        let detailReader = DetailRadarReaderStub(actions: [
+            .failure(CodexRadarReaderError.httpStatus(503)),
+            .success(snapshot)
+        ])
+        let store = CodexRadarStore(
+            reader: RadarReaderStub(actions: []),
+            feedReader: FeedReaderStub(actions: []),
+            detailReader: detailReader,
+            detailRefreshDefaults: defaults,
+            detailRefreshCalendar: calendar
+        )
+
+        store.refreshScheduledDetailIfNeeded(now: now)
+        await waitUntil("scheduled detail failure") {
+            !store.isDetailRefreshing && !store.detailDiagnostics.isEmpty
+        }
+        store.refreshDetail()
+        await waitUntil("manual detail retry success") {
+            store.detailSnapshot != nil && !store.isDetailRefreshing
+        }
+
+        let detailCallCount = await detailReader.callCountValue()
+        XCTAssertEqual(detailCallCount, 2)
+        XCTAssertEqual(store.detailSnapshot, snapshot)
+        XCTAssertNotNil(store.lastSuccessfulDetailRefreshAt)
+    }
+
+    func testStopPreventsInFlightScheduledDetailRefreshFromPublishingSnapshot() async throws {
+        let snapshot = try Self.makeSnapshot()
+        let defaults = try Self.makeDefaults()
+        let calendar = Self.detailCalendar
+        let now = try Self.detailDate("2026-07-07 09:00")
+        let previousSlot = try Self.detailDate("2026-07-06 18:00")
+        defaults.set(previousSlot.timeIntervalSince1970, forKey: CodexRadarStore.detailRefreshDefaultsKey)
+
+        let detailReader = DelayedDetailRadarReader()
+        let store = CodexRadarStore(
+            reader: RadarReaderStub(actions: []),
+            feedReader: FeedReaderStub(actions: []),
+            detailReader: detailReader,
+            detailRefreshDefaults: defaults,
+            detailRefreshCalendar: calendar
+        )
+
+        store.refreshScheduledDetailIfNeeded(now: now)
+        await waitUntil("scheduled detail request pending") {
+            let hasPendingRequest = await detailReader.hasPendingRequest()
+            return store.isDetailRefreshing && hasPendingRequest
+        }
+        store.stop()
+        await detailReader.finish(with: snapshot)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertNil(store.detailSnapshot)
+        XCTAssertFalse(store.isDetailRefreshing)
+    }
+
     func testScheduledDetailRefreshSkipsWhenLatestSlotAlreadySucceeded() async throws {
         let snapshot = try Self.makeSnapshot()
         let defaults = try Self.makeDefaults()
@@ -367,6 +502,25 @@ private actor DelayedRadarReader: CodexRadarReading {
     private var continuation: CheckedContinuation<CodexRadarSnapshot, Error>?
 
     func readRadar() async throws -> CodexRadarSnapshot {
+        try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func hasPendingRequest() -> Bool {
+        continuation != nil
+    }
+
+    func finish(with snapshot: CodexRadarSnapshot) {
+        continuation?.resume(returning: snapshot)
+        continuation = nil
+    }
+}
+
+private actor DelayedDetailRadarReader: CodexRadarDetailReading {
+    private var continuation: CheckedContinuation<CodexRadarSnapshot, Error>?
+
+    func readRadarDetail() async throws -> CodexRadarSnapshot {
         try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
         }
