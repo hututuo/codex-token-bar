@@ -22,8 +22,29 @@ test("floating status helpers keep rate-bar and standalone reset-card suffixes s
   assert.equal(floatingStandaloneStatusText(sample), "慢一点(余量低8%) · 1卡 · 近6h到期");
 });
 
-test("floating status helpers prioritize compact live-rate degraded or preparation state", () => {
+test("floating status helpers prioritize compact live-rate degraded state", () => {
   const sample = snapshot({
+    liveRateStatusKind: "failure",
+    liveRateStatusLabel: "实时速率降级",
+  });
+
+  assert.equal(floatingRateBarStatusText(sample), "实时速率降级 · 1卡 · 6h");
+  assert.equal(floatingStandaloneStatusText(sample), "实时速率降级 · 1卡 · 近6h到期");
+});
+
+test("floating status helpers keep quota pace ahead of live-rate preparation state", () => {
+  const sample = snapshot({
+    liveRateStatusKind: "pending",
+    liveRateStatusLabel: "准备中，请稍后",
+  });
+
+  assert.equal(floatingRateBarStatusText(sample), "慢一点(余量低8%) · 1卡 · 6h");
+  assert.equal(floatingStandaloneStatusText(sample), "慢一点(余量低8%) · 1卡 · 近6h到期");
+});
+
+test("floating status helpers show live-rate preparation while quota pace is unavailable", () => {
+  const sample = snapshot({
+    trendLabel: "",
     liveRateStatusKind: "pending",
     liveRateStatusLabel: "准备中，请稍后",
   });
