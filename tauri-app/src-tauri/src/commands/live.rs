@@ -3,6 +3,7 @@ use crate::core::{
     dashboard::DashboardDataSource,
     live_rate::LiveRateMonitorService,
     startup_trace,
+    unread,
 };
 use crate::models::{
     FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, UnreadSummary,
@@ -305,6 +306,22 @@ pub async fn read_unread_summary() -> Result<UnreadSummary, String> {
     let result = run_blocking_command(|| Ok(local_source().read_unread_summary())).await;
     startup_trace::mark_performance(format!(
         "read_unread_summary {}ms {}",
+        started.elapsed().as_millis(),
+        result_status(&result)
+    ));
+    result
+}
+
+#[tauri::command]
+pub async fn acknowledge_current_unread() -> Result<UnreadSummary, String> {
+    let started = Instant::now();
+    let result = run_blocking_command(|| {
+        let source = local_source();
+        unread::acknowledge_current_unread(source.codex_home())
+    })
+    .await;
+    startup_trace::mark_performance(format!(
+        "acknowledge_current_unread {}ms {}",
         started.elapsed().as_millis(),
         result_status(&result)
     ));

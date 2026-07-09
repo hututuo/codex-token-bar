@@ -1,4 +1,4 @@
-use crate::core::{unread, usage::token_count_jsonl};
+use crate::core::{app_paths, unread, usage::token_count_jsonl};
 use crate::models::{
     FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, LocalDataWarning, UnreadSummary,
 };
@@ -43,6 +43,7 @@ struct CachedUnreadSummary {
 struct UnreadStoreSignature {
     unread_state: StoreFileSignature,
     state_database: StoreFileSignature,
+    acknowledgement: StoreFileSignature,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -297,6 +298,7 @@ fn read_unread_summary_cached(codex_home: &Path) -> UnreadSummary {
                 return cached.summary.clone();
             }
             if cached.codex_home == codex_home
+                && cached.signature == signature
                 && now.duration_since(cached.refreshed_at) <= UNREAD_SUMMARY_TTL
             {
                 return cached.summary.clone();
@@ -320,6 +322,13 @@ fn unread_store_signature(codex_home: &Path) -> UnreadStoreSignature {
     UnreadStoreSignature {
         unread_state: store_file_signature(&codex_home.join(".codex-global-state.json")),
         state_database: state_database_signature(codex_home),
+        acknowledgement: app_paths::unread_acknowledgement_path()
+            .map(|path| store_file_signature(&path))
+            .unwrap_or(StoreFileSignature {
+                exists: false,
+                len: 0,
+                modified_at: None,
+            }),
     }
 }
 

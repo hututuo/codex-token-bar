@@ -1,4 +1,8 @@
+use crate::core::app_paths;
 use crate::models::UnreadSummary;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::fs;
 use std::path::Path;
 
 mod recent_completion;
@@ -8,10 +12,32 @@ mod state;
 use state::read_unread_thread_ids;
 
 pub fn read_unread_summary(codex_home: &Path) -> UnreadSummary {
+    let acknowledgement = read_acknowledgement();
     match read_unread_thread_ids(codex_home) {
-        Some(thread_ids) => unread_state_summary(thread_ids.len()),
-        None => recent_completion::recent_completion_summary(codex_home),
+        Some(thread_ids) => {
+            let active_ids: HashSet<String> = thread_ids
+                .difference(&acknowledgement.unread_thread_ids)
+                .cloned()
+                .collect();
+            unread_state_summary(active_ids.len())
+        }
+        None => recent_completion::recent_completion_summary(
+            codex_home,
+            &acknowledgement.completion_markers,
+        ),
     }
+}
+
+pub fn acknowledge_current_unread(codex_home: &Path) -> Result<UnreadSummary, String> {
+    let mut acknowledgement = read_acknowledgement();
+    match read_unread_thread_ids(codex_home) {
+        Some(thread_ids) => acknowledgement.unread_thread_ids.extend(thread_ids),
+        None => acknowledgement
+            .completion_markers
+            .extend(recent_completion::recent_completion_markers(codex_home)),
+    }
+    write_acknowledgement(&acknowledgement)?;
+    Ok(read_unread_summary(codex_home))
 }
 
 fn unread_state_summary(count: usize) -> UnreadSummary {
@@ -31,6 +57,36 @@ fn unread_state_summary(count: usize) -> UnreadSummary {
         },
         source: "codex_unread_state".into(),
     }
+}
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnreadAcknowledgement {
+    #[serde(default)]
+    unread_thread_ids: HashSet<String>,
+    #[serde(default)]
+    completion_markers: HashSet<String>,
+}
+
+fn read_acknowledgement() -> UnreadAcknowledgement {
+    let Some(path) = app_paths::unread_acknowledgement_path() else {
+        return UnreadAcknowledgement::default();
+    };
+    let Ok(data) = fs::read(path) else {
+        return UnreadAcknowledgement::default();
+    };
+    serde_json::from_slice(&data).unwrap_or_default()
+}
+
+fn write_acknowledgement(acknowledgement: &UnreadAcknowledgement) -> Result<(), String> {
+    let Some(path) = app_paths::unread_acknowledgement_path() else {
+        return Err("无法定位 Tauri 应用支持目录，不能记录未读基线".into());
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let data = serde_json::to_vec_pretty(acknowledgement).map_err(|error| error.to_string())?;
+    fs::write(path, data).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -151,6 +207,69 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn acknowledging_current_unread_state_filters_only_existing_threads_without_touching_codex_state() {
+        let root = temp_root("ack-unread-state");
+        let support = root.join("tauri-support");
+        fs::create_dir_all(&root).unwrap();
+        let _support_env = TauriSupportEnvGuard::new(&support);
+        let existing = "019eaaaa-0000-0000-0000-000000000012";
+        let later = "019eaaaa-0000-0000-0000-000000000013";
+        write_unread_state(&root, &[existing]);
+
+        assert!(read_unread_summary(&root).active);
+        let acknowledged = acknowledge_current_unread(&root).unwrap();
+        assert!(!acknowledged.active);
+        assert!(!read_unread_summary(&root).active);
+        assert!(
+            fs::read_to_string(root.join(".codex-global-state.json"))
+                .unwrap()
+                .contains(existing),
+            "acknowledgement must not modify Codex unread state"
+        );
+
+        write_unread_state(&root, &[existing, later]);
+        let summary = read_unread_summary(&root);
+        assert!(summary.active);
+        assert_eq!(summary.count, 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn acknowledging_recent_completion_filters_current_completion_but_not_later_completion() {
+        let root = temp_root("ack-recent-completion");
+        let support = root.join("tauri-support");
+        let sessions = root.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let _support_env = TauriSupportEnvGuard::new(&support);
+        let thread_id = "019eaaaa-0000-0000-0000-000000000014";
+        write_session_complete_with_turn(
+            &sessions.join("visible.jsonl"),
+            thread_id,
+            false,
+            current_time_seconds() - 3.0,
+            "turn-before-ack",
+        );
+
+        assert!(read_unread_summary(&root).active);
+        let acknowledged = acknowledge_current_unread(&root).unwrap();
+        assert!(!acknowledged.active);
+        assert!(!read_unread_summary(&root).active);
+
+        append_task_complete(
+            &sessions.join("visible.jsonl"),
+            thread_id,
+            current_time_seconds(),
+            "turn-after-ack",
+        );
+        let summary = read_unread_summary(&root);
+        assert!(summary.active);
+        assert_eq!(summary.count, 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn temp_root(label: &str) -> PathBuf {
         let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
@@ -233,6 +352,16 @@ mod tests {
     }
 
     fn write_session_complete(path: &Path, id: &str, subagent: bool, completed_at: f64) {
+        write_session_complete_with_turn(path, id, subagent, completed_at, &format!("turn-{id}"));
+    }
+
+    fn write_session_complete_with_turn(
+        path: &Path,
+        id: &str,
+        subagent: bool,
+        completed_at: f64,
+        turn_id: &str,
+    ) {
         let mut file = fs::File::create(path).unwrap();
         let source = if subagent { r#""subagent""# } else { r#""desktop""# };
         writeln!(
@@ -243,8 +372,32 @@ mod tests {
         .unwrap();
         writeln!(
             file,
-            r#"{{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{{"type":"task_complete","turn_id":"turn-{id}","completed_at":{completed_at},"duration_ms":2000}}}}"#
+            r#"{{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{{"type":"task_complete","turn_id":"{turn_id}","completed_at":{completed_at},"duration_ms":2000}}}}"#
         )
         .unwrap();
+    }
+
+    fn append_task_complete(path: &Path, _id: &str, completed_at: f64, turn_id: &str) {
+        let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
+        writeln!(
+            file,
+            r#"{{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{{"type":"task_complete","turn_id":"{turn_id}","completed_at":{completed_at},"duration_ms":2000}}}}"#
+        )
+        .unwrap();
+    }
+
+    struct TauriSupportEnvGuard;
+
+    impl TauriSupportEnvGuard {
+        fn new(path: &Path) -> Self {
+            std::env::set_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", path);
+            Self
+        }
+    }
+
+    impl Drop for TauriSupportEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR");
+        }
     }
 }

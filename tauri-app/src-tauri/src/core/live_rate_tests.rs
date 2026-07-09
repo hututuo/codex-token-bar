@@ -750,6 +750,25 @@ fn read_snapshot_handles_missing_or_truncated_rollout_files() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn unread_acknowledgement_invalidates_live_rate_unread_cache() {
+    let root = temp_root("unread-ack-cache");
+    let support = root.join("tauri-support");
+    fs::create_dir_all(&root).unwrap();
+    let _support_env = TauriSupportEnvGuard::new(&support);
+    let thread_id = "019eaaaa-0000-0000-0000-000000000099";
+    write_unread_state(&root, &[thread_id]);
+
+    let before = read_snapshot(&root, None);
+    assert!(before.unread_summary.active);
+
+    unread::acknowledge_current_unread(&root).unwrap();
+    let after = read_snapshot(&root, None);
+    assert!(!after.unread_summary.active);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
 fn temp_root(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "codex-token-bar-tauri-{label}-{}-{}",
@@ -759,6 +778,36 @@ fn temp_root(label: &str) -> std::path::PathBuf {
             .unwrap()
             .as_nanos()
     ))
+}
+
+fn write_unread_state(root: &Path, ids: &[&str]) {
+    let values = ids
+        .iter()
+        .map(|id| format!(r#""{id}""#))
+        .collect::<Vec<_>>()
+        .join(",");
+    fs::write(
+        root.join(".codex-global-state.json"),
+        format!(
+            r#"{{"electron-persisted-atom-state":{{"unread-thread-ids-by-host-v1":{{"localhost":[{values}]}}}}}}"#
+        ),
+    )
+    .unwrap();
+}
+
+struct TauriSupportEnvGuard;
+
+impl TauriSupportEnvGuard {
+    fn new(path: &Path) -> Self {
+        std::env::set_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", path);
+        Self
+    }
+}
+
+impl Drop for TauriSupportEnvGuard {
+    fn drop(&mut self) {
+        std::env::remove_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR");
+    }
 }
 
 fn create_state_database(root: &Path, thread_id: &str, title: &str, tokens: i64) {

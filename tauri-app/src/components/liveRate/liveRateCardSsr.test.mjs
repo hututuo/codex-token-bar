@@ -107,6 +107,26 @@ test("LiveRateCard does not show stream failure warning when live rate is disabl
   });
 });
 
+test("LiveRateCard exposes an unread acknowledgement action when unread is active", async () => {
+  await withSsrModules(async (load) => {
+    const { LiveRateCard } = await load("/src/components/LiveRateCard.tsx");
+    const html = renderComponent(LiveRateCard, cardProps({
+      snapshot: liveRateSnapshot({
+        unreadSummary: {
+          active: true,
+          count: 2,
+          label: "有未读完成会话",
+          detail: "2 个会话等待查看",
+          source: "codex_unread_state",
+        },
+      }),
+    }));
+
+    assert.match(html, /标记已读/);
+    assert.match(html, /拉基线/);
+  });
+});
+
 function cardProps(overrides = {}) {
   return {
     floatingEnabled: true,
@@ -121,6 +141,7 @@ function cardProps(overrides = {}) {
     onFloatingContentVisibilityChange: () => {},
     onLiveRateReset: async () => {},
     onLiveRateRetry: () => {},
+    onAcknowledgeUnread: async () => {},
     onToggleLiveRate: () => {},
     onToggleFloating: () => {},
     onToggleStatusTray: () => {},

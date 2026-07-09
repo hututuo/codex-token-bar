@@ -6,7 +6,7 @@ import {
   sanitizeFloatingContentVisibility,
 } from "../../floating/floatingContent";
 import type { FloatingWindowSettings } from "../../floating/floatingSettings";
-import type { FloatingContentGroup, FloatingContentVisibility, FloatingUnreadEffect, PlatformCapabilities } from "../../types/dashboard";
+import type { FloatingContentGroup, FloatingContentVisibility, FloatingUnreadEffect, PlatformCapabilities, UnreadSummary } from "../../types/dashboard";
 import { computeBoundedSettingsCalloutFrame, type CalloutFrame } from "./calloutPlacement";
 
 const UNREAD_EFFECT_OPTIONS: Array<{ value: FloatingUnreadEffect; label: string }> = [
@@ -37,10 +37,12 @@ interface LiveRateSettingsPanelProps {
   onFloatingTextToneChange: (textTone: number) => void;
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
+  onAcknowledgeUnread: () => Promise<void>;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
   platform: PlatformCapabilities;
   statusTrayLiveTextEnabled: boolean;
+  unreadSummary: UnreadSummary;
 }
 
 export function LiveRateSettingsPanel({
@@ -52,10 +54,12 @@ export function LiveRateSettingsPanel({
   onFloatingTextToneChange,
   onFloatingContentVisibilityChange,
   onFloatingUnreadEffectChange,
+  onAcknowledgeUnread,
   onToggleFloating,
   onToggleStatusTray,
   platform,
   statusTrayLiveTextEnabled,
+  unreadSummary,
 }: LiveRateSettingsPanelProps) {
   const [openCallout, setOpenCallout] = useState<SettingsCallout | null>(null);
   const [calloutFrame, setCalloutFrame] = useState<CalloutFrame | null>(null);
@@ -195,6 +199,18 @@ export function LiveRateSettingsPanel({
           >
             {statusTrayButtonLabel}
           </button>
+          {unreadSummary.active ? (
+            <button
+              className="live-toggle-button"
+              onClick={() => {
+                void onAcknowledgeUnread();
+              }}
+              title="拉基线：把当前已知未读/完成提示标记为已读，不删除 Codex 原始数据"
+              type="button"
+            >
+              标记已读
+            </button>
+          ) : null}
         </div>
       </div>
       <div className="floating-appearance-compact">

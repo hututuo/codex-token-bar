@@ -28,6 +28,10 @@ pub fn performance_trace_log_path() -> Option<PathBuf> {
     app_support_dir().map(|path| path.join("performance-trace.log"))
 }
 
+pub fn unread_acknowledgement_path() -> Option<PathBuf> {
+    tauri_app_support_dir().map(|path| path.join("unread-acknowledgement.json"))
+}
+
 pub fn token_event_cache_path() -> Option<PathBuf> {
     #[cfg(test)]
     {

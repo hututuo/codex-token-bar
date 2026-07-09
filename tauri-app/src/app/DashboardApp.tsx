@@ -35,6 +35,7 @@ export function DashboardApp() {
     usageCacheInitializing,
     radarRefreshGeneration,
     reloadAll,
+    acknowledgeUnread,
     retryLiveRateStream,
     updateCodexHome,
     restoreAutoCodexHome,
@@ -81,6 +82,7 @@ export function DashboardApp() {
         onFloatingContentVisibilityChange={shellSettings.updateFloatingContentVisibility}
         onLiveRateReset={resetLiveRate}
         onLiveRateRetry={retryLiveRateStream}
+        onAcknowledgeUnread={acknowledgeUnread}
         onLiveThreadSelect={setSelectedLiveThreadId}
         onProviderRepairClose={() => setProviderRepairOpen(false)}
         onProviderRepairOpen={() => setProviderRepairOpen(true)}

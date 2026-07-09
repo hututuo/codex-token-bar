@@ -47,6 +47,7 @@ interface DashboardPageProps {
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onLiveRateReset: () => Promise<void>;
   onLiveRateRetry: () => void;
+  onAcknowledgeUnread: () => Promise<void>;
   onLiveThreadSelect: (threadId: string) => void;
   onProviderRepairClose: () => void;
   onProviderRepairOpen: () => void;
@@ -92,6 +93,7 @@ export function DashboardPage({
   onFloatingContentVisibilityChange,
   onLiveRateReset,
   onLiveRateRetry,
+  onAcknowledgeUnread,
   onLiveThreadSelect,
   onProviderRepairClose,
   onProviderRepairOpen,
@@ -158,6 +160,7 @@ export function DashboardPage({
               onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
               onLiveRateReset={onLiveRateReset}
               onLiveRateRetry={onLiveRateRetry}
+              onAcknowledgeUnread={onAcknowledgeUnread}
               onLiveThreadSelect={onLiveThreadSelect}
               onQuotaRefresh={onQuotaRefresh}
               onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}

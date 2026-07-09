@@ -21,6 +21,7 @@ interface LiveRateCardProps {
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onLiveRateReset: () => Promise<void>;
   onLiveRateRetry: () => void;
+  onAcknowledgeUnread: () => Promise<void>;
   onToggleLiveRate: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
@@ -44,6 +45,7 @@ export function LiveRateCard({
   onFloatingContentVisibilityChange,
   onLiveRateReset,
   onLiveRateRetry,
+  onAcknowledgeUnread,
   onToggleLiveRate,
   onToggleFloating,
   onToggleStatusTray,
@@ -133,8 +135,10 @@ export function LiveRateCard({
           onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
           onToggleFloating={onToggleFloating}
           onToggleStatusTray={onToggleStatusTray}
+          onAcknowledgeUnread={onAcknowledgeUnread}
           platform={platform}
           statusTrayLiveTextEnabled={statusTrayLiveTextEnabled}
+          unreadSummary={snapshot.unreadSummary}
         />
       </div>
     </section>

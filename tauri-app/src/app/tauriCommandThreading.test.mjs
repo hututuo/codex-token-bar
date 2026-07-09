@@ -14,6 +14,7 @@ test("live commands that read local files run off the command thread", async () 
     "start_live_rate_stream",
     "read_floating_snapshot",
     "read_unread_summary",
+    "acknowledge_current_unread",
   ]) {
     assert.match(liveCommands, new RegExp(`pub async fn ${command}\\b`));
   }

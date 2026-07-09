@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { readAppSettings } from "../api/client";
+import { acknowledgeUnreadSummary, readAppSettings } from "../api/client";
 import { formatLiveRateValue, rateFillStyle } from "../components/liveRate/rateDisplay";
 import {
   DEFAULT_FLOATING_SETTINGS,
@@ -10,12 +10,13 @@ import { floatingStandaloneStatusText } from "../floating/floatingPanelLabels";
 import { desktopPlatform } from "../platform/desktop";
 import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS, sanitizeQuotaRefreshIntervalMs } from "../settings/quotaRefreshCadence";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
-import type { FloatingWindowSettings } from "../types/dashboard";
+import type { FloatingWindowSettings, UnreadSummary } from "../types/dashboard";
 
 export function StatusPanelApp() {
   const [active, setActive] = useState(false);
   const [liveRateEnabled, setLiveRateEnabled] = useState(true);
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
+  const [acknowledgedUnreadSummary, setAcknowledgedUnreadSummary] = useState<UnreadSummary | null>(null);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const { snapshot, quotaLabels } = useCompactPanelData({
     active,
@@ -28,6 +29,12 @@ export function StatusPanelApp() {
     document.documentElement.classList.add("status-document");
     return () => document.documentElement.classList.remove("status-document");
   }, []);
+
+  useEffect(() => {
+    if (!snapshot.unreadSummary.active) {
+      setAcknowledgedUnreadSummary(null);
+    }
+  }, [snapshot.unreadSummary.active, snapshot.unreadSummary.count, snapshot.unreadSummary.source]);
 
   useEffect(() => {
     let disposed = false;
@@ -126,13 +133,24 @@ export function StatusPanelApp() {
     void desktopPlatform.hideStatusPanelWindow();
   }
 
+  function acknowledgeUnread() {
+    void acknowledgeUnreadSummary().then(setAcknowledgedUnreadSummary);
+  }
+
+  const displayUnreadSummary = acknowledgedUnreadSummary ?? snapshot.unreadSummary;
+  const displaySnapshot = {
+    ...snapshot,
+    unread: displayUnreadSummary.active,
+    unreadSummary: displayUnreadSummary,
+  };
+
   return (
     <main className="status-window-shell">
       <section className="status-panel-card" aria-label="状态栏速率详情">
         <header className="status-panel-head">
           <div>
             <span>Codex Token Bar</span>
-            <strong>{formatLiveRateValue(snapshot.tokensPerSecond)}</strong>
+            <strong>{formatLiveRateValue(displaySnapshot.tokensPerSecond)}</strong>
           </div>
           <div className="status-panel-rate-unit">
             <em>tok/s</em>
@@ -141,12 +159,12 @@ export function StatusPanelApp() {
         </header>
 
         <div className="status-panel-meter" aria-hidden="true">
-          <i className="rate-fill" style={rateFillStyle(snapshot.tokensPerSecond, settings.tokenRateFullScale)} />
+          <i className="rate-fill" style={rateFillStyle(displaySnapshot.tokensPerSecond, settings.tokenRateFullScale)} />
         </div>
 
         <div className="status-panel-status">
-          <strong>{floatingStandaloneStatusText(snapshot)}</strong>
-          <span title={snapshot.unreadSummary.detail}>{snapshot.unreadSummary.label}</span>
+          <strong>{floatingStandaloneStatusText(displaySnapshot)}</strong>
+          <span title={displaySnapshot.unreadSummary.detail}>{displaySnapshot.unreadSummary.label}</span>
         </div>
 
         <dl className="status-panel-stats">
@@ -171,6 +189,9 @@ export function StatusPanelApp() {
 
         <footer className="status-panel-actions">
           <button type="button" onClick={openDashboard}>打开主界面</button>
+          {displaySnapshot.unreadSummary.active ? (
+            <button type="button" onClick={acknowledgeUnread}>标记已读</button>
+          ) : null}
           <button type="button" onClick={closePanel}>收起</button>
         </footer>
       </section>

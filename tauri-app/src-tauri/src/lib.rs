@@ -57,6 +57,7 @@ pub fn run() {
             commands::codex_radar::read_codex_radar_full_snapshot,
             commands::live::read_floating_snapshot,
             commands::live::read_unread_summary,
+            commands::live::acknowledge_current_unread,
             commands::surface::show_floating_window,
             commands::surface::hide_floating_window,
             commands::surface::show_dashboard_window,

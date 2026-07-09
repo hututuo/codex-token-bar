@@ -21,6 +21,7 @@ export {
   readLiveRateSnapshot,
   readLiveThreadOptions,
   readUnreadSummary,
+  acknowledgeUnreadSummary,
   resetLiveRateMonitor,
 } from "./liveClient";
 

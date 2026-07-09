@@ -29,6 +29,7 @@ interface DashboardSummarySectionProps {
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onLiveRateReset: () => Promise<void>;
   onLiveRateRetry: () => void;
+  onAcknowledgeUnread: () => Promise<void>;
   onLiveThreadSelect: (threadId: string) => void;
   onQuotaRefresh: () => void;
   onQuotaRefreshIntervalChange: (intervalMs: number) => Promise<void>;
@@ -59,6 +60,7 @@ export function DashboardSummarySection({
   onFloatingContentVisibilityChange,
   onLiveRateReset,
   onLiveRateRetry,
+  onAcknowledgeUnread,
   onLiveThreadSelect,
   onQuotaRefresh,
   onQuotaRefreshIntervalChange,
@@ -98,6 +100,7 @@ export function DashboardSummarySection({
         onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
         onLiveRateReset={onLiveRateReset}
         onLiveRateRetry={onLiveRateRetry}
+        onAcknowledgeUnread={onAcknowledgeUnread}
         onToggleLiveRate={onToggleLiveRate}
         onToggleFloating={onToggleFloating}
         onToggleStatusTray={onToggleStatusTray}

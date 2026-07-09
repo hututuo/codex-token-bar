@@ -32,6 +32,10 @@ export function readUnreadSummary(): Promise<UnreadSummary> {
   return callCommand("read_unread_summary", emptyUnreadSummary, undefined, 1_500);
 }
 
+export function acknowledgeUnreadSummary(): Promise<UnreadSummary> {
+  return callCommand("acknowledge_current_unread", emptyUnreadSummary, undefined, 1_500);
+}
+
 export function resetLiveRateMonitor(): Promise<boolean> {
   return callCommand("reset_live_rate_monitor", false, undefined, 1_500);
 }

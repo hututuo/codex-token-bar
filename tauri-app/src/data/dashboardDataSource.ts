@@ -4,6 +4,7 @@ import {
   readDashboardSnapshot,
   readLiveRateSnapshot,
   readLiveThreadOptions,
+  acknowledgeUnreadSummary,
   readPlatformCapabilities,
   readPreciseDashboardSnapshot,
   readUsageCacheStatus,
@@ -33,6 +34,7 @@ export interface DashboardDataSource {
   readAccountQuota: (forceRefresh?: boolean) => Promise<AccountQuotaBundle | null>;
   readLiveRateSnapshot: (selectedThreadId?: string | null) => Promise<LiveRateSnapshot>;
   readLiveThreadOptions: () => Promise<LiveThreadOption[]>;
+  acknowledgeUnreadSummary: () => Promise<LiveRateSnapshot["unreadSummary"]>;
   scanProviderRepair: () => Promise<ProviderRepairSnapshot>;
 }
 
@@ -47,5 +49,6 @@ export const dashboardDataSource: DashboardDataSource = {
   readAccountQuota,
   readLiveRateSnapshot,
   readLiveThreadOptions,
+  acknowledgeUnreadSummary,
   scanProviderRepair,
 };

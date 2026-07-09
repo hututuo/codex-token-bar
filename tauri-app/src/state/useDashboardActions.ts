@@ -22,6 +22,7 @@ interface DashboardActionsOptions {
     | "getCodexHome"
     | "readPlatformCapabilities"
     | "readDashboardSnapshot"
+    | "acknowledgeUnreadSummary"
     | "scanProviderRepair"
   >;
   providerRepairVisible: boolean;
@@ -105,6 +106,19 @@ export function useDashboardActions({
     setQuotaLoadGeneration,
   ]);
 
+  const acknowledgeUnread = useCallback(async () => {
+    const unreadSummary = await source.acknowledgeUnreadSummary();
+    setState((current) => current.liveRate
+      ? {
+          ...current,
+          liveRate: {
+            ...current.liveRate,
+            unreadSummary,
+          },
+        }
+      : current);
+  }, [setState, source]);
+
   const updateCodexHome = useCallback(async (path: string) => {
     setSelectedLiveThreadId("");
     setState((current) => ({ ...current, loading: true }));
@@ -122,6 +136,7 @@ export function useDashboardActions({
   return {
     reloadAll,
     reloadQuota,
+    acknowledgeUnread,
     updateCodexHome,
     restoreAutoCodexHome,
     updateProviderRepair,

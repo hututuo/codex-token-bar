@@ -87,6 +87,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const {
     reloadAll,
     reloadQuota,
+    acknowledgeUnread,
     updateCodexHome,
     restoreAutoCodexHome,
     updateProviderRepair,
@@ -391,6 +392,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     radarRefreshGeneration,
     reloadAll,
     reloadQuota,
+    acknowledgeUnread,
     retryLiveRateStream,
     updateCodexHome,
     restoreAutoCodexHome,
