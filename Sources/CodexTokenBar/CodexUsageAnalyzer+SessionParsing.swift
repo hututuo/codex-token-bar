@@ -1,6 +1,8 @@
 import Foundation
 
 extension CodexUsageAnalyzer {
+    private static let forkReplayExitGrace: TimeInterval = 2
+
     func usageJSONLFiles() -> [URL] {
         var files: [URL] = []
         if fileManager.fileExists(atPath: dataSource.sessionsRoot.path) {
@@ -247,7 +249,11 @@ extension CodexUsageAnalyzer {
         var lastSkippedForkReplayTokenAt = initialLastSkippedForkReplayTokenAt
         let stream = streamSessionLines(from: file, startingAt: offset) { lineString in
             if let messageLine = parsePayloadMessageLine(lineString, expectedType: "user_message") {
-                if isSkippingForkReplay, lastSkippedForkReplayTokenAt != nil {
+                if isSkippingForkReplay {
+                    guard let lastSkippedForkReplayTokenAt,
+                          messageLine.timestamp.timeIntervalSince(lastSkippedForkReplayTokenAt) >= Self.forkReplayExitGrace else {
+                        return
+                    }
                     isSkippingForkReplay = false
                 }
                 currentUserPrompt = messageLine.message
@@ -256,6 +262,7 @@ extension CodexUsageAnalyzer {
             }
 
             if let messageLine = parsePayloadMessageLine(lineString, expectedType: "agent_message") {
+                guard !isSkippingForkReplay else { return }
                 assistantFragments.append(messageLine.message)
                 return
             }

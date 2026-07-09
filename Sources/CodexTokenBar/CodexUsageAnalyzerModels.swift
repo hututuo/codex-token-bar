@@ -15,9 +15,9 @@ extension CodexUsageAnalyzer {
     }
 
     final class SessionEventCache: @unchecked Sendable {
-        private static let persistentCacheVersion = 7
+        private static let persistentCacheVersion = 8
         private static let appCacheDirectoryName = "CodexTokenBarSwift"
-        static let cacheNamespace = "swift-usage-cache-2026-07-v2"
+        static let cacheNamespace = "swift-usage-cache-2026-07-v3"
         private static let cacheDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_DIR"
 
         private struct LegacyPersistentEntry: Codable {

@@ -374,8 +374,9 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.cacheUsage.total.cachedInputTokens, 10)
     }
 
-    func testForkedSessionCountsQuickTokenUsageAfterNewUserMessage() throws {
+    func testForkedSessionKeepsSkippingReplayMessagesWithinGraceWindow() throws {
         let codexHome = try makeCodexHome()
+        try seedStateDatabase(at: codexHome)
         let sessionID = "019eaaaa-bbbb-cccc-dddd-forkquick"
         let sessionFile = codexHome
             .appendingPathComponent("sessions", isDirectory: true)
@@ -401,10 +402,49 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
 
-        XCTAssertEqual(snapshot.stats.totalTokens, 80)
+        XCTAssertEqual(snapshot.stats.totalTokens, 0)
+        XCTAssertEqual(snapshot.stats.totalCalls, 0)
+        XCTAssertEqual(snapshot.cacheUsage.total.inputTokens, 0)
+        XCTAssertEqual(snapshot.cacheUsage.total.cachedInputTokens, 0)
+    }
+
+    func testForkedSessionSkipsDenseReplayBeforeDelayedNewPrompt() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-forkdense"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-07-09-\(sessionID).jsonl")
+        let forkedAt = Date()
+
+        let lines = [
+            spacedSessionMetaLine(timestamp: forkedAt, sessionID: sessionID),
+            spacedMessageLine(timestamp: forkedAt.addingTimeInterval(0.001), type: "user_message", message: "Replayed parent prompt"),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(0.002),
+                total: Usage(input: 20_000, cachedInput: 2_000, output: 300, reasoning: 0, total: 23_517),
+                last: Usage(input: 20_000, cachedInput: 2_000, output: 300, reasoning: 0, total: 23_517)
+            ),
+            spacedMessageLine(timestamp: forkedAt.addingTimeInterval(0.003), type: "user_message", message: "Another replayed parent prompt"),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(0.004),
+                total: Usage(input: 313_456_376, cachedInput: 293_677_696, output: 1_296_446, reasoning: 452_984, total: 314_752_822),
+                last: Usage(input: 0, cachedInput: 0, output: 0, reasoning: 0, total: 26608)
+            ),
+            spacedMessageLine(timestamp: forkedAt.addingTimeInterval(27), type: "user_message", message: "New branch prompt"),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(36),
+                total: Usage(input: 313_484_657, cachedInput: 293_682_688, output: 1_296_671, reasoning: 453_181, total: 314_781_328),
+                last: Usage(input: 28_281, cachedInput: 4_992, output: 225, reasoning: 197, total: 28_506)
+            )
+        ]
+        try lines.joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertEqual(snapshot.stats.totalTokens, 28_506)
         XCTAssertEqual(snapshot.stats.totalCalls, 1)
-        XCTAssertEqual(snapshot.cacheUsage.total.inputTokens, 60)
-        XCTAssertEqual(snapshot.cacheUsage.total.cachedInputTokens, 10)
+        XCTAssertEqual(snapshot.cacheUsage.total.inputTokens, 28_281)
+        XCTAssertEqual(snapshot.cacheUsage.total.cachedInputTokens, 4_992)
     }
 
     func testForkedSessionIncrementalAppendKeepsCountingAfterReplayEnded() throws {
