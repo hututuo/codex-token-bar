@@ -18,6 +18,7 @@ final class TaskCompletionMonitor: ObservableObject {
     private var completedEventIDOrder: [String] = []
     private var completedTaskThreadIDs: [String: String] = [:]
     private var unreadThreadState = CodexUnreadThreadState()
+    private var readBaseline = TaskCompletionReadBaseline()
     private var hasCodexUnreadState = false
     private var timer: Timer?
     private var pollTask: Task<Void, Never>?
@@ -43,6 +44,7 @@ final class TaskCompletionMonitor: ObservableObject {
             seeded = false
             monitorStartedAt = Date()
             loadPersistedCompletedEventIDs()
+            readBaseline = TaskCompletionReadBaselineStore.load(codexHomePath: newPath)
             completedTaskThreadIDs.removeAll()
             unreadThreadState = CodexUnreadThreadState()
             hasCodexUnreadState = false
@@ -66,8 +68,21 @@ final class TaskCompletionMonitor: ObservableObject {
         } else {
             completedTaskThreadIDs.removeAll()
         }
+        applyReadBaselineToFallbackEvents()
         recomputeUnreadThreadCount()
         updateStatusText(fileCount: fileStates.count)
+    }
+
+    func markAllRead() {
+        readBaseline.markAllRead(
+            unreadThreadIDs: unreadThreadState.threadIDs,
+            completedEventIDs: Set(completedTaskThreadIDs.keys)
+        )
+        persistReadBaseline()
+        unreadThreadState = CodexUnreadThreadState()
+        completedTaskThreadIDs.removeAll()
+        recomputeUnreadThreadCount()
+        updateStatusText(fileCount: fileStates.isEmpty ? nil : fileStates.count)
     }
 
     private func configureTimer() {
@@ -155,6 +170,7 @@ final class TaskCompletionMonitor: ObservableObject {
             didAddUnread = true
         }
 
+        applyReadBaselineToFallbackEvents()
         recomputeUnreadThreadCount()
         if didAddUnread, !hasCodexUnreadState, unreadThreadCount > 0 {
             statusText = "有任务完成"
@@ -174,8 +190,17 @@ final class TaskCompletionMonitor: ObservableObject {
 
     private func applyCodexUnreadRead(_ result: CodexUnreadThreadReadResult) {
         guard case let .available(threadIDs) = result else { return }
-        unreadThreadState = CodexUnreadThreadState(threadIDs: threadIDs)
+        unreadThreadState = CodexUnreadThreadState(threadIDs: readBaseline.activeUnreadThreadIDs(from: threadIDs))
         hasCodexUnreadState = true
+        persistReadBaseline()
+    }
+
+    private func applyReadBaselineToFallbackEvents() {
+        completedTaskThreadIDs = readBaseline.activeCompletedTaskThreadIDs(from: completedTaskThreadIDs)
+    }
+
+    private func persistReadBaseline() {
+        TaskCompletionReadBaselineStore.save(readBaseline, codexHomePath: dataSource?.codexHome.path)
     }
 
     private func updateStatusText(fileCount: Int? = nil) {

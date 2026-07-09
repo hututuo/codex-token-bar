@@ -93,7 +93,9 @@ struct HeaderView: View {
     let dataSourceLabel: String
     let dataSourceOrigin: String
     let isRefreshing: Bool
+    let unreadThreadCount: Int
     let onRefresh: () -> Void
+    let onMarkAllRead: () -> Void
     let onChangeDirectory: () -> Void
     let onOpenProviderSync: () -> Void
     @Binding var showingInterfaceScaleMenu: Bool
@@ -200,6 +202,15 @@ struct HeaderView: View {
                         .truncationMode(.middle)
 
                     Spacer(minLength: 8)
+
+                    if unreadThreadCount > 0 {
+                        Button(action: onMarkAllRead) {
+                            Label("全部已读", systemImage: "checkmark.circle")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("未读会话全部已读")
+                    }
 
                     Button(action: onRefresh) {
                         Label(isRefreshing ? "刷新中" : "立即刷新", systemImage: "arrow.clockwise")

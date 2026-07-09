@@ -421,8 +421,13 @@ struct DashboardView: View {
                 dataSourceLabel: store.dataSourceLabel,
                 dataSourceOrigin: store.dataSourceOrigin,
                 isRefreshing: store.isRefreshing,
+                unreadThreadCount: taskCompletionMonitor.unreadThreadCount,
                 onRefresh: {
                     refreshAllData()
+                },
+                onMarkAllRead: {
+                    taskCompletionMonitor.markAllRead()
+                    updateTokenDisplaySurface()
                 },
                 onChangeDirectory: store.chooseDataSourceDirectory,
                 onOpenProviderSync: {
@@ -646,7 +651,12 @@ struct DashboardView: View {
         }
 
         if statusBarPanelEnabled {
-            statusBarPanel.show(store: store, monitor: liveMonitor, quota: quotaStore) {
+            statusBarPanel.show(
+                store: store,
+                monitor: liveMonitor,
+                quota: quotaStore,
+                taskCompletionMonitor: taskCompletionMonitor
+            ) {
                 statusBarPanelEnabled = false
             }
         } else {
