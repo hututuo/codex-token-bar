@@ -66,6 +66,7 @@ export function DashboardHeader({
     minute: "2-digit",
     second: "2-digit",
   }).format(new Date(generatedAt));
+  const updatedLabel = refreshing ? "同步中" : timeLabel;
   const sourceLabel = codexHome.source === "manual" ? "手动目录" : codexHome.exists ? "自动发现" : "等待选择";
   const updateBusy = appUpdateState.kind === "checking" || appUpdateState.kind === "installing";
   const updateButtonLabel = appUpdateState.kind === "available" ? "安装更新" : "检查更新";
@@ -126,7 +127,7 @@ export function DashboardHeader({
         <span className={codexHome.exists ? "status-dot status-dot--ok" : "status-dot"} />
         <span>{sourceLabel}</span>
         <span className="path-pill">{codexHome.path}</span>
-        <span className="muted">Updated {timeLabel}</span>
+        <span className="muted">Updated {updatedLabel}</span>
         <button className="toolbar-button" disabled={refreshing} onClick={onRefresh} type="button">
           立即刷新
         </button>
@@ -162,7 +163,6 @@ export function DashboardHeader({
         >
           开机自启{autostartStatus.enabled ? "开" : "关"}
         </button>
-        <span className="refresh-label">{refreshing ? "同步中" : ""}</span>
       </div>
       {editingPath ? (
         <CodexHomeEditor

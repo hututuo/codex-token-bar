@@ -85,6 +85,18 @@ test("DashboardHeader falls back to the account display name when custom name is
   });
 });
 
+test("DashboardHeader keeps refresh progress in the updated timestamp slot", async () => {
+  await withSsrModules(async (load) => {
+    const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
+    const html = renderComponent(DashboardHeader, headerProps({
+      refreshing: true,
+    }));
+
+    assert.match(html, /Updated 同步中/);
+    assert.doesNotMatch(html, /refresh-label/);
+  });
+});
+
 function headerProps(overrides = {}) {
   return {
     account: {

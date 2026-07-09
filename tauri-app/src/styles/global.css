@@ -204,8 +204,7 @@ button {
 }
 
 .app-name,
-.muted,
-.refresh-label {
+.muted {
   color: var(--muted);
 }
 
@@ -3804,7 +3803,6 @@ html:not(.floating-document):not(.status-document) body {
 html:not(.floating-document):not(.status-document) :is(
   .muted,
   .app-name,
-  .refresh-label,
   .quota-plan span,
   .quota-pace span,
   .quota-side-card em,
