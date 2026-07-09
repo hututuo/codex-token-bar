@@ -12,6 +12,7 @@ final class TaskCompletionMonitor: ObservableObject {
 
     private let pollInterval: TimeInterval = 2.0
     private let liveSeedWindow: TimeInterval = 30.0
+    private let defaults: UserDefaults
     private var dataSource: CodexDataSource?
     private var fileStates: [String: TaskCompletionFileState] = [:]
     private var completedEventIDs: Set<String> = []
@@ -26,7 +27,8 @@ final class TaskCompletionMonitor: ObservableObject {
     private var seeded = false
     private var monitorStartedAt = Date()
 
-    init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         loadPersistedCompletedEventIDs()
         updateStatusText()
     }
@@ -44,7 +46,7 @@ final class TaskCompletionMonitor: ObservableObject {
             seeded = false
             monitorStartedAt = Date()
             loadPersistedCompletedEventIDs()
-            readBaseline = TaskCompletionReadBaselineStore.load(codexHomePath: newPath)
+            readBaseline = TaskCompletionReadBaselineStore.load(codexHomePath: newPath, defaults: defaults)
             completedTaskThreadIDs.removeAll()
             unreadThreadState = CodexUnreadThreadState()
             hasCodexUnreadState = false
@@ -83,6 +85,10 @@ final class TaskCompletionMonitor: ObservableObject {
         completedTaskThreadIDs.removeAll()
         recomputeUnreadThreadCount()
         updateStatusText(fileCount: fileStates.isEmpty ? nil : fileStates.count)
+    }
+
+    func applyForTesting(result: TaskCompletionScanResult?, unreadThreadRead: CodexUnreadThreadReadResult) {
+        apply(result, unreadThreadRead: unreadThreadRead)
     }
 
     private func configureTimer() {
@@ -200,7 +206,7 @@ final class TaskCompletionMonitor: ObservableObject {
     }
 
     private func persistReadBaseline() {
-        TaskCompletionReadBaselineStore.save(readBaseline, codexHomePath: dataSource?.codexHome.path)
+        TaskCompletionReadBaselineStore.save(readBaseline, codexHomePath: dataSource?.codexHome.path, defaults: defaults)
     }
 
     private func updateStatusText(fileCount: Int? = nil) {
@@ -248,7 +254,7 @@ final class TaskCompletionMonitor: ObservableObject {
     }
 
     private func loadPersistedCompletedEventIDs() {
-        let storedIDs = UserDefaults.standard.stringArray(forKey: Self.completedEventIDsKey) ?? []
+        let storedIDs = defaults.stringArray(forKey: Self.completedEventIDsKey) ?? []
         var ordered: [String] = []
         var seen = Set<String>()
         for id in storedIDs where !id.isEmpty && seen.insert(id).inserted {
@@ -256,7 +262,7 @@ final class TaskCompletionMonitor: ObservableObject {
         }
         if ordered.count > Self.maxPersistedCompletedEventIDs {
             ordered = Array(ordered.suffix(Self.maxPersistedCompletedEventIDs))
-            UserDefaults.standard.set(ordered, forKey: Self.completedEventIDsKey)
+            defaults.set(ordered, forKey: Self.completedEventIDsKey)
         }
         completedEventIDOrder = ordered
         completedEventIDs = Set(ordered)
@@ -274,7 +280,7 @@ final class TaskCompletionMonitor: ObservableObject {
             completedEventIDs.subtract(removed)
             completedEventIDOrder.removeFirst(overflow)
         }
-        UserDefaults.standard.set(completedEventIDOrder, forKey: Self.completedEventIDsKey)
+        defaults.set(completedEventIDOrder, forKey: Self.completedEventIDsKey)
         return true
     }
 }

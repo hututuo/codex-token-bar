@@ -13,7 +13,7 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
     private weak var quota: AccountQuotaStore?
     private weak var taskCompletionMonitor: TaskCompletionMonitor?
     private var onClose: (() -> Void)?
-    private var lastStatusTitle: String?
+    private var lastStatusPresentation: StatusBarTokenItemPresentation?
 
     func show(
         store: CodexUsageStore,
@@ -80,7 +80,7 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
             NSStatusBar.system.removeStatusItem(statusItem)
         }
         statusItem = nil
-        lastStatusTitle = nil
+        lastStatusPresentation = nil
         isPresented = false
     }
 
@@ -112,16 +112,21 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
         let snapshot = TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota)
         guard let button = statusItem?.button else { return }
         let title = "    \(snapshot.statusBarTitle)    "
-        guard title != lastStatusTitle else { return }
-
-        button.title = title
-        button.setAccessibilityLabel("Codex Token Bar 状态栏速率")
-        button.setAccessibilityValue(
-            statusBarAccessibilityValue(snapshot, unreadThreadCount: taskCompletionMonitor.unreadThreadCount)
+        let presentation = StatusBarTokenItemPresentation(
+            title: title,
+            accessibilityValue: statusBarAccessibilityValue(
+                snapshot,
+                unreadThreadCount: taskCompletionMonitor.unreadThreadCount
+            )
         )
+        guard presentation.needsApply(previous: lastStatusPresentation) else { return }
+
+        button.title = presentation.title
+        button.setAccessibilityLabel("Codex Token Bar 状态栏速率")
+        button.setAccessibilityValue(presentation.accessibilityValue)
         let length = max(132, button.intrinsicContentSize.width + 48)
         statusItem?.length = length
-        lastStatusTitle = title
+        lastStatusPresentation = presentation
     }
 
     private func statusBarAccessibilityValue(_ snapshot: TokenDisplaySnapshot, unreadThreadCount: Int) -> String {
@@ -139,6 +144,15 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
             parts.append("未读会话 \(unreadThreadCount) 个")
         }
         return parts.joined(separator: "；")
+    }
+}
+
+struct StatusBarTokenItemPresentation: Equatable {
+    let title: String
+    let accessibilityValue: String
+
+    func needsApply(previous: StatusBarTokenItemPresentation?) -> Bool {
+        previous != self
     }
 }
 
