@@ -1,10 +1,16 @@
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { FLOATING_SETTINGS_EVENT } from "../floating/floatingSettings";
-import type { AppSettingsSnapshot, DisplaySurfaceSettings, LiveRateSnapshot } from "../types/dashboard";
+import type {
+  AppSettingsSnapshot,
+  DisplaySurfaceSettings,
+  LiveRateSnapshot,
+  UnreadSummary,
+} from "../types/dashboard";
 import { emitPlatformEvent, listenToEvent, type Unlisten } from "./desktopBridge";
 
 const FLOATING_WINDOW_HIDDEN_EVENT = "floating-window-hidden";
 const LIVE_RATE_SNAPSHOT_EVENT = "live-rate-snapshot";
+const UNREAD_SUMMARY_CHANGED_EVENT = "unread-summary-changed";
 const DISPLAY_SURFACES_EVENT = "display-surfaces-changed";
 const APP_SETTINGS_EVENT = "app-settings-changed";
 
@@ -18,6 +24,14 @@ export function onFloatingWindowHidden(handler: () => void): Promise<Unlisten> {
 
 export function onLiveRateSnapshot(handler: (snapshot: LiveRateSnapshot) => void): Promise<Unlisten> {
   return listenToEvent<LiveRateSnapshot>(LIVE_RATE_SNAPSHOT_EVENT, handler);
+}
+
+export function publishUnreadSummaryChanged(summary: UnreadSummary): Promise<boolean> {
+  return emitPlatformEvent(UNREAD_SUMMARY_CHANGED_EVENT, "publish-unread-summary", summary);
+}
+
+export function onUnreadSummaryChanged(handler: (summary: UnreadSummary) => void): Promise<Unlisten> {
+  return listenToEvent<UnreadSummary>(UNREAD_SUMMARY_CHANGED_EVENT, handler);
 }
 
 export function publishFloatingSettings(settings: FloatingWindowSettings): Promise<boolean> {

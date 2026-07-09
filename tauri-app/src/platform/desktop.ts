@@ -5,9 +5,11 @@ import {
   onFloatingWindowHidden,
   onDisplaySurfacesChanged,
   onLiveRateSnapshot,
+  onUnreadSummaryChanged,
   publishAppSettings,
   publishDisplaySurfaces,
   publishFloatingSettings,
+  publishUnreadSummaryChanged,
 } from "./desktopEvents";
 import { isDesktopRuntimeAvailable } from "./desktopBridge";
 import {
@@ -61,6 +63,8 @@ export const desktopPlatform = {
   startLiveRateStreamCommand,
   stopLiveRateStream,
   onLiveRateSnapshot,
+  publishUnreadSummaryChanged,
+  onUnreadSummaryChanged,
 };
 
 function getSurfaceMode(): SurfaceMode {

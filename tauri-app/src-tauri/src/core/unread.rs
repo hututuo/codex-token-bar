@@ -1,9 +1,9 @@
 use crate::core::app_paths;
 use crate::models::UnreadSummary;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 mod recent_completion;
 mod session_files;
@@ -12,7 +12,7 @@ mod state;
 use state::read_unread_thread_ids;
 
 pub fn read_unread_summary(codex_home: &Path) -> UnreadSummary {
-    let acknowledgement = read_acknowledgement();
+    let acknowledgement = read_acknowledgement_for_home(codex_home);
     match read_unread_thread_ids(codex_home) {
         Some(thread_ids) => {
             let active_ids: HashSet<String> = thread_ids
@@ -30,9 +30,11 @@ pub fn read_unread_summary(codex_home: &Path) -> UnreadSummary {
 
 pub fn acknowledge_current_unread(codex_home: &Path) -> Result<UnreadSummary, String> {
     let mut acknowledgement = read_acknowledgement();
+    let home_key = codex_home_key(codex_home);
+    let home_acknowledgement = acknowledgement.by_codex_home.entry(home_key).or_default();
     match read_unread_thread_ids(codex_home) {
-        Some(thread_ids) => acknowledgement.unread_thread_ids.extend(thread_ids),
-        None => acknowledgement
+        Some(thread_ids) => home_acknowledgement.unread_thread_ids.extend(thread_ids),
+        None => home_acknowledgement
             .completion_markers
             .extend(recent_completion::recent_completion_markers(codex_home)),
     }
@@ -63,9 +65,24 @@ fn unread_state_summary(count: usize) -> UnreadSummary {
 #[serde(rename_all = "camelCase")]
 struct UnreadAcknowledgement {
     #[serde(default)]
+    by_codex_home: HashMap<String, HomeUnreadAcknowledgement>,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HomeUnreadAcknowledgement {
+    #[serde(default)]
     unread_thread_ids: HashSet<String>,
     #[serde(default)]
     completion_markers: HashSet<String>,
+}
+
+fn read_acknowledgement_for_home(codex_home: &Path) -> HomeUnreadAcknowledgement {
+    read_acknowledgement()
+        .by_codex_home
+        .get(&codex_home_key(codex_home))
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn read_acknowledgement() -> UnreadAcknowledgement {
@@ -87,6 +104,14 @@ fn write_acknowledgement(acknowledgement: &UnreadAcknowledgement) -> Result<(), 
     }
     let data = serde_json::to_vec_pretty(acknowledgement).map_err(|error| error.to_string())?;
     fs::write(path, data).map_err(|error| error.to_string())
+}
+
+fn codex_home_key(codex_home: &Path) -> String {
+    normalized_codex_home(codex_home).to_string_lossy().into_owned()
+}
+
+fn normalized_codex_home(codex_home: &Path) -> PathBuf {
+    fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf())
 }
 
 #[cfg(test)]
@@ -234,6 +259,34 @@ mod tests {
         assert_eq!(summary.count, 1);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn acknowledging_one_codex_home_does_not_filter_another_home() {
+        let support = temp_root("ack-home-scope-support");
+        let home_a = temp_root("ack-home-scope-a");
+        let home_b = temp_root("ack-home-scope-b");
+        fs::create_dir_all(&home_a).unwrap();
+        fs::create_dir_all(&home_b).unwrap();
+        let _support_env = TauriSupportEnvGuard::new(&support);
+        let shared_thread_id = "019eaaaa-0000-0000-0000-000000000020";
+        write_unread_state(&home_a, &[shared_thread_id]);
+        write_unread_state(&home_b, &[shared_thread_id]);
+
+        assert!(read_unread_summary(&home_a).active);
+        assert!(read_unread_summary(&home_b).active);
+
+        let acknowledged = acknowledge_current_unread(&home_a).unwrap();
+        assert!(!acknowledged.active);
+
+        assert!(!read_unread_summary(&home_a).active);
+        let home_b_summary = read_unread_summary(&home_b);
+        assert!(home_b_summary.active);
+        assert_eq!(home_b_summary.count, 1);
+
+        let _ = fs::remove_dir_all(support);
+        let _ = fs::remove_dir_all(home_a);
+        let _ = fs::remove_dir_all(home_b);
     }
 
     #[test]

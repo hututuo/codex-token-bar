@@ -41,6 +41,7 @@ export function StatusPanelApp() {
     let unsubscribe: (() => void) | null = null;
     let unsubscribeDisplay: (() => void) | null = null;
     let unsubscribeAppSettings: (() => void) | null = null;
+    let unsubscribeUnreadSummary: (() => void) | null = null;
 
     void desktopPlatform.onFloatingSettingsChanged((payload) => {
       setSettings(sanitizeFloatingSettings(payload));
@@ -72,6 +73,16 @@ export function StatusPanelApp() {
       unsubscribeAppSettings = handler;
     });
 
+    void desktopPlatform.onUnreadSummaryChanged((payload) => {
+      setAcknowledgedUnreadSummary(payload);
+    }).then((handler) => {
+      if (disposed) {
+        handler();
+        return;
+      }
+      unsubscribeUnreadSummary = handler;
+    });
+
     void readAppSettings().then((snapshot) => {
       if (snapshot?.floatingWindow) {
         setSettings(sanitizeFloatingSettings(snapshot.floatingWindow));
@@ -87,6 +98,7 @@ export function StatusPanelApp() {
       unsubscribe?.();
       unsubscribeDisplay?.();
       unsubscribeAppSettings?.();
+      unsubscribeUnreadSummary?.();
     };
   }, []);
 
@@ -134,7 +146,10 @@ export function StatusPanelApp() {
   }
 
   function acknowledgeUnread() {
-    void acknowledgeUnreadSummary().then(setAcknowledgedUnreadSummary);
+    void acknowledgeUnreadSummary().then((summary) => {
+      setAcknowledgedUnreadSummary(summary);
+      void desktopPlatform.publishUnreadSummaryChanged(summary);
+    });
   }
 
   const displayUnreadSummary = acknowledgedUnreadSummary ?? snapshot.unreadSummary;

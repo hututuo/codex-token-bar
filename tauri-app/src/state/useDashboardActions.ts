@@ -5,6 +5,7 @@ import {
   type SetStateAction,
 } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
+import { desktopPlatform } from "../platform/desktop";
 import type { ProviderRepairSnapshot } from "../types/dashboard";
 import {
   applyDashboardRefreshPlan,
@@ -117,6 +118,7 @@ export function useDashboardActions({
           },
         }
       : current);
+    void desktopPlatform.publishUnreadSummaryChanged(unreadSummary);
   }, [setState, source]);
 
   const updateCodexHome = useCallback(async (path: string) => {

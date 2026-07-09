@@ -3,7 +3,12 @@ import { emptyFloatingPanelSnapshot } from "../api/fallback";
 import { readUsageSummarySnapshot } from "../api/dashboardClient";
 import { readLiveRateSnapshot } from "../api/liveClient";
 import { desktopPlatform } from "../platform/desktop";
-import type { FloatingPanelSnapshot, LiveRateSnapshot, UsageSummarySnapshot } from "../types/dashboard";
+import type {
+  FloatingPanelSnapshot,
+  LiveRateSnapshot,
+  UnreadSummary,
+  UsageSummarySnapshot,
+} from "../types/dashboard";
 import {
   LIVE_USAGE_ACTIVITY_HOLD_MS,
   liveRateHasUsageRefreshActivity,
@@ -149,6 +154,39 @@ export function useCompactPanelSnapshot({
       void desktopPlatform.stopLiveRateStream();
     };
   }, [active, liveRateEnabled, markLiveUsageActivity]);
+
+  useEffect(() => {
+    if (!active || !liveRateEnabled) {
+      return;
+    }
+
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    const applyUnreadSummary = (summary: UnreadSummary) => {
+      setRawSnapshot((current) => ({
+        ...current,
+        unread: summary.active,
+        unreadSummary: summary,
+      }));
+    };
+
+    void desktopPlatform.onUnreadSummaryChanged((summary) => {
+      if (!cancelled) {
+        applyUnreadSummary(summary);
+      }
+    }).then((listener) => {
+      if (cancelled) {
+        listener();
+      } else {
+        unlisten = listener;
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [active, liveRateEnabled]);
 
   return rawSnapshot;
 }

@@ -214,6 +214,37 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+
+    void desktopPlatform.onUnreadSummaryChanged((unreadSummary) => {
+      if (cancelled) {
+        return;
+      }
+      setState((current) => current.liveRate
+        ? {
+            ...current,
+            liveRate: {
+              ...current.liveRate,
+              unreadSummary,
+            },
+          }
+        : current);
+    }).then((listener) => {
+      if (cancelled) {
+        listener();
+      } else {
+        unlisten = listener;
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
     if (typeof document === "undefined") {
       return;
     }
