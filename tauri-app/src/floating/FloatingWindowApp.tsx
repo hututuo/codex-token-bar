@@ -19,10 +19,12 @@ import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
 export function FloatingWindowApp() {
   const [liveRateEnabled, setLiveRateEnabled] = useState(true);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
+  const [codexHomeKey, setCodexHomeKey] = useState<string | null>(null);
   const { snapshot } = useCompactPanelData({
     liveRateEnabled,
     quotaInitialDelayMs: 8_000,
     quotaIntervalMs: quotaRefreshIntervalMs,
+    sourceKey: codexHomeKey,
   });
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   const [radarSnapshot, setRadarSnapshot] = useState<CodexRadarSnapshot | null>(null);
@@ -107,6 +109,7 @@ export function FloatingWindowApp() {
 
     void desktopPlatform.onAppSettingsChanged((payload) => {
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(payload.quotaRefreshIntervalMs));
+      setCodexHomeKey(payload.codexHome);
     }).then((listener) => {
       if (disposed) {
         listener();
@@ -131,6 +134,7 @@ export function FloatingWindowApp() {
         setSettings(sanitizeFloatingSettings(settings.floatingWindow));
         setLiveRateEnabled(settings.displaySurfaces.liveRateEnabled);
         setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
+        setCodexHomeKey(settings.codexHome);
       }
     });
 

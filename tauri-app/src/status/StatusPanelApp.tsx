@@ -18,11 +18,13 @@ export function StatusPanelApp() {
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   const [acknowledgedUnreadSummary, setAcknowledgedUnreadSummary] = useState<UnreadSummary | null>(null);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
+  const [codexHomeKey, setCodexHomeKey] = useState<string | null>(null);
   const { snapshot, quotaLabels } = useCompactPanelData({
     active,
     liveRateEnabled,
     quotaInitialDelayMs: 0,
     quotaIntervalMs: quotaRefreshIntervalMs,
+    sourceKey: codexHomeKey,
   });
 
   useEffect(() => {
@@ -65,6 +67,7 @@ export function StatusPanelApp() {
 
     void desktopPlatform.onAppSettingsChanged((payload) => {
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(payload.quotaRefreshIntervalMs));
+      setCodexHomeKey(payload.codexHome);
     }).then((handler) => {
       if (disposed) {
         handler();
@@ -91,6 +94,7 @@ export function StatusPanelApp() {
         setLiveRateEnabled(snapshot.displaySurfaces.liveRateEnabled);
       }
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(snapshot?.quotaRefreshIntervalMs));
+      setCodexHomeKey(snapshot?.codexHome ?? null);
     });
 
     return () => {

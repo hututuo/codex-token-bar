@@ -15,6 +15,7 @@ interface CompactPanelDataOptions {
   quotaEnabled?: boolean;
   quotaInitialDelayMs?: number;
   quotaIntervalMs?: number;
+  sourceKey?: string | null;
 }
 
 export interface CompactPanelData {
@@ -36,10 +37,12 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
   const quotaEnabled = options.quotaEnabled ?? true;
   const quotaInitialDelayMs = options.quotaInitialDelayMs ?? DEFAULT_QUOTA_INITIAL_DELAY_MS;
   const quotaIntervalMs = options.quotaIntervalMs ?? DEFAULT_QUOTA_INTERVAL_MS;
+  const sourceKey = options.sourceKey ?? null;
 
   const rawSnapshot = useCompactPanelSnapshot({
     active,
     liveRateEnabled,
+    sourceKey,
   });
   const quota = useCompactPanelQuota({
     active,

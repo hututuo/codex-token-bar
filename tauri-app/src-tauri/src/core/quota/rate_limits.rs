@@ -262,7 +262,7 @@ fn pace_label(seven_day: &QuotaLimit) -> String {
         format!("余量很足，使劲蹬（多 {delta}%）")
     } else if delta >= 8 {
         format!("节奏很好，可以冲（多 {delta}%）")
-    } else if delta > 3 {
+    } else if delta > 0 {
         format!("略有余量（多 {delta}%）")
     } else if delta < 0 {
         format!("贴近均速，稍快 {}%", delta.abs())
@@ -478,5 +478,18 @@ mod tests {
         };
 
         assert!(pace_label(&seven_day).starts_with("余量很足，使劲蹬"));
+    }
+
+    #[test]
+    fn pace_label_preserves_small_positive_room() {
+        let seven_day = QuotaLimit {
+            label: "7d".into(),
+            remaining_percent: 0.73,
+            used_percent: 0.27,
+            resets_at: "5d".into(),
+            resets_at_unix: Some(OffsetDateTime::now_utc().unix_timestamp() + 5 * 24 * 60 * 60),
+        };
+
+        assert_eq!(pace_label(&seven_day), "略有余量（多 2%）");
     }
 }

@@ -15,16 +15,19 @@ import {
   usageRefreshIntervalMs,
 } from "../utils/usageRefreshCadence";
 import {
-  clearFloatingUsageSummary,
   disabledFloatingLiveSnapshot,
   floatingSnapshotForLiveRate,
   liveRateStreamStartFailureSnapshot,
   mergeFloatingUsageSummary,
+  preserveFloatingUsageSummary,
+  resetFloatingUsageSummary,
+  shouldResetCompactUsageSummarySource,
 } from "./compactPanelSnapshotModel";
 
 interface CompactPanelSnapshotOptions {
   active: boolean;
   liveRateEnabled: boolean;
+  sourceKey?: string | null;
 }
 
 const COMPACT_USAGE_SUMMARY_REFRESH_INTERVAL_MS = 60_000;
@@ -32,11 +35,13 @@ const COMPACT_USAGE_SUMMARY_REFRESH_INTERVAL_MS = 60_000;
 export function useCompactPanelSnapshot({
   active,
   liveRateEnabled,
+  sourceKey = null,
 }: CompactPanelSnapshotOptions): FloatingPanelSnapshot {
   const [rawSnapshot, setRawSnapshot] = useState<FloatingPanelSnapshot>(emptyFloatingPanelSnapshot);
   const [lastLiveActivityAtMs, setLastLiveActivityAtMs] = useState(0);
   const lastLiveActivityAtMsRef = useRef(0);
   const usageSummaryRef = useRef<UsageSummarySnapshot | null>(null);
+  const usageSummarySourceKeyRef = useRef<string | null>(sourceKey);
 
   const markLiveUsageActivity = useCallback((liveRate: LiveRateSnapshot) => {
     if (!liveRateHasUsageRefreshActivity(liveRate)) {
@@ -54,8 +59,21 @@ export function useCompactPanelSnapshot({
   }, []);
 
   useEffect(() => {
+    if (shouldResetCompactUsageSummarySource(
+      usageSummarySourceKeyRef.current,
+      sourceKey,
+      usageSummaryRef.current !== null,
+    )) {
+      usageSummaryRef.current = null;
+      setRawSnapshot(resetFloatingUsageSummary);
+    }
+    usageSummarySourceKeyRef.current = sourceKey;
+  }, [sourceKey]);
+
+  useEffect(() => {
     if (!active) {
       usageSummaryRef.current = null;
+      usageSummarySourceKeyRef.current = sourceKey;
       lastLiveActivityAtMsRef.current = 0;
       setLastLiveActivityAtMs(0);
       setRawSnapshot(emptyFloatingPanelSnapshot);
@@ -71,12 +89,12 @@ export function useCompactPanelSnapshot({
 
       if (summary) {
         usageSummaryRef.current = summary;
+        usageSummarySourceKeyRef.current = sourceKey;
         setRawSnapshot((current) => mergeFloatingUsageSummary(current, summary));
         return;
       }
 
-      usageSummaryRef.current = null;
-      setRawSnapshot(clearFloatingUsageSummary);
+      setRawSnapshot(preserveFloatingUsageSummary);
     };
 
     void refreshUsageSummary();
@@ -90,7 +108,7 @@ export function useCompactPanelSnapshot({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [active, lastLiveActivityAtMs]);
+  }, [active, lastLiveActivityAtMs, sourceKey]);
 
   useEffect(() => {
     if (lastLiveActivityAtMs <= 0) {

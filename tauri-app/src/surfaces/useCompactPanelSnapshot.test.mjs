@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  clearFloatingUsageSummary,
   compactTokens,
   disabledFloatingLiveSnapshot,
   floatingLiveRateStatusText,
   floatingSnapshotForLiveRate,
   liveRateStreamStartFailureSnapshot,
+  preserveFloatingUsageSummary,
+  shouldResetCompactUsageSummarySource,
 } from "./compactPanelSnapshotModel.ts";
 
 test("compact panel keeps usage summary raw state when live rate is disabled", () => {
@@ -75,8 +76,8 @@ test("compact panel waits for trusted summary instead of using live-rate totals"
   assert.equal(snapshot.requestsLabel, "次 待读取");
 });
 
-test("compact panel clears stale usage summary labels when precise summary is unavailable", () => {
-  const staleSnapshot = floatingSnapshotForLiveRate(
+test("compact panel preserves the last trusted usage summary while precise summary rebuilds", () => {
+  const trustedSnapshot = floatingSnapshotForLiveRate(
     liveRateSnapshot({
       totalTokens: 11_336_821_671,
       totalTokensToday: 333_123_813,
@@ -89,13 +90,50 @@ test("compact panel clears stale usage summary labels when precise summary is un
     },
   );
 
-  const cleared = clearFloatingUsageSummary(staleSnapshot);
+  const preserved = preserveFloatingUsageSummary(trustedSnapshot);
 
-  assert.equal(cleared.totalTokensLabel, "总 待读取");
-  assert.equal(cleared.todayTokensLabel, "今 待读取");
-  assert.equal(cleared.requestsLabel, "次 待读取");
-  assert.equal(cleared.tokensPerSecond, staleSnapshot.tokensPerSecond);
-  assert.equal(cleared.unreadSummary, staleSnapshot.unreadSummary);
+  assert.equal(preserved.totalTokensLabel, "总 113.4亿");
+  assert.equal(preserved.todayTokensLabel, "今 3.3亿");
+  assert.equal(preserved.requestsLabel, "次 2222");
+  assert.equal(preserved.tokensPerSecond, trustedSnapshot.tokensPerSecond);
+  assert.equal(preserved.unreadSummary, trustedSnapshot.unreadSummary);
+});
+
+test("compact panel keeps trusted summary when a later live-rate event carries giant totals", () => {
+  const trustedSummary = {
+    totalTokens: 5_912_345_678,
+    todayTokens: 79_650_123,
+    todayRequests: 534,
+  };
+
+  const snapshot = floatingSnapshotForLiveRate(
+    liveRateSnapshot({
+      totalTokens: 113_308_620_519,
+      totalTokensToday: 33_312_381_300,
+      requestsToday: 2_222_000,
+    }),
+    trustedSummary,
+  );
+
+  assert.equal(snapshot.totalTokensLabel, "总 59.1亿");
+  assert.equal(snapshot.todayTokensLabel, "今 7965.0万");
+  assert.equal(snapshot.requestsLabel, "次 534");
+});
+
+test("initial compact panel still waits when no trusted summary exists", () => {
+  const snapshot = preserveFloatingUsageSummary(floatingSnapshotForLiveRate(liveRateSnapshot(), null));
+
+  assert.equal(snapshot.totalTokensLabel, "总 待读取");
+  assert.equal(snapshot.todayTokensLabel, "今 待读取");
+  assert.equal(snapshot.requestsLabel, "次 待读取");
+});
+
+test("compact panel resets trusted usage summary when Codex Home source changes", () => {
+  assert.equal(shouldResetCompactUsageSummarySource("/Users/a/.codex", "/Users/a/.codex", true), false);
+  assert.equal(shouldResetCompactUsageSummarySource("/Users/a/.codex", "/Users/b/.codex", true), true);
+  assert.equal(shouldResetCompactUsageSummarySource(null, "/Users/b/.codex", true), true);
+  assert.equal(shouldResetCompactUsageSummarySource(null, "/Users/b/.codex", false), false);
+  assert.equal(shouldResetCompactUsageSummarySource("/Users/a/.codex", null, true), false);
 });
 
 test("compact panel keeps failure marker separate from untrusted live-rate totals", () => {
