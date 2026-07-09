@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type CSSProperties } from "react";
 import type { RecentUsagePoint } from "../types/dashboard";
 import { formatTokens } from "../utils/format";
 import {
@@ -12,6 +12,7 @@ import {
   plotChartPoints,
   prepareRecentChartData,
   quotaConsumptionSelection,
+  recentChartScrollLayout,
   smoothPath,
   tokenAreaPath,
   type OfficialAPIPriceModel,
@@ -57,6 +58,10 @@ export function RecentUsageChart({
     () => prepareRecentChartData(range, { recentUsage24h, recentUsage7d, recentUsage30d }),
     [range, recentUsage24h, recentUsage7d, recentUsage30d],
   );
+  const scrollLayout = recentChartScrollLayout(data.range);
+  const scrollContentStyle = scrollLayout.contentMinWidth === null
+    ? undefined
+    : ({ "--recent-chart-min-width": `${scrollLayout.contentMinWidth}px` } as CSSProperties);
   const plotData = useMemo(() => plotChartPoints(data, CHART_WIDTH, PLOT_HEIGHT), [data]);
   const activeIndex = hoveredIndex !== null && data.points[hoveredIndex] ? hoveredIndex : null;
   const activePoint = activeIndex !== null ? data.points[activeIndex] : null;
@@ -174,66 +179,74 @@ export function RecentUsageChart({
       </div>
 
       <div className="recent-chart-plot">
-        <svg
-          ref={svgRef}
-          className="usage-chart"
-          onPointerDown={handlePointerDown}
-          onPointerLeave={() => setHoveredIndex(null)}
-          onPointerMove={handlePointerMove}
-          role="img"
-          viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+        <div
+          className={scrollLayout.className}
+          aria-label={scrollLayout.isHorizontal ? "最近 24 小时图表可左右滚动" : undefined}
+          tabIndex={scrollLayout.isHorizontal ? 0 : undefined}
         >
-          <title>{chartAccessibility(data, visibility)}</title>
-          <rect className="chart-plot-bg" x="0" y={PLOT_TOP} width={CHART_WIDTH} height={PLOT_HEIGHT} rx="8" />
-          {consumptionSelection ? <SelectionRange pointCount={data.points.length} selection={consumptionSelection} /> : null}
-          {[0, 1, 2, 3].map((line) => {
-            const y = PLOT_TOP + (line * PLOT_HEIGHT) / 3;
-            return <line className="chart-grid-line" key={line} x1="0" x2={CHART_WIDTH} y1={y} y2={y} />;
-          })}
-          {visibility.tokens ? (
-            <>
-              <path className="chart-area" d={offsetPath(tokenAreaPath(plotData.tokenPoints, CHART_WIDTH, PLOT_HEIGHT))} />
-              <path className="chart-line chart-line--token" d={offsetPath(smoothPath(plotData.tokenPoints))} />
-            </>
-          ) : null}
-          {visibility.calls ? (
-            <path className="chart-line chart-line--calls" d={offsetPath(smoothPath(plotData.callPoints))} />
-          ) : null}
-          {visibility.cacheHitRate && data.hasCacheCalls ? (
-            <path className="chart-line chart-line--hit" d={offsetPath(smoothPath(plotData.cachePoints))} />
-          ) : null}
-          {visibility.fiveHourQuota && data.hasFiveHourQuota ? (
-            <path className="chart-line chart-line--five" d={offsetPath(optionalSmoothPath(plotData.fiveHourQuotaPoints))} />
-          ) : null}
-          {visibility.sevenDayQuota && data.hasSevenDayQuota ? (
-            <path className="chart-line chart-line--seven" d={offsetPath(optionalSmoothPath(plotData.sevenDayQuotaPoints))} />
-          ) : null}
-          {activeIndex !== null && activeTokenPoint ? (
-            <HoverGuides
-              data={data}
-              index={activeIndex}
-              plotData={plotData}
-              visibility={visibility}
-            />
-          ) : null}
-          <TimeMarkers data={data} />
-        </svg>
-        {activePoint && activeTokenPoint ? (
-          <HoverBubble
-            bucketSeconds={data.bucketSeconds}
-            cacheVisible={visibility.cacheHitRate}
-            fiveHourRemaining={activePoint.fiveHourRemainingPercent}
-            point={activePoint}
-            sevenDayRemaining={activePoint.sevenDayRemainingPercent}
-            x={activeTokenPoint.x}
-          />
-        ) : null}
-        {consumptionSelection ? (
-          <RecentChartQuotaEstimateOverlay
-            selection={consumptionSelection}
-            onClose={() => setQuotaSelectionState({ startIndex: null, fixedEndIndex: null })}
-          />
-        ) : null}
+          <div className="recent-chart-scroll-content" style={scrollContentStyle}>
+            <svg
+              ref={svgRef}
+              className="usage-chart"
+              onPointerDown={handlePointerDown}
+              onPointerLeave={() => setHoveredIndex(null)}
+              onPointerMove={handlePointerMove}
+              role="img"
+              viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+            >
+              <title>{chartAccessibility(data, visibility)}</title>
+              <rect className="chart-plot-bg" x="0" y={PLOT_TOP} width={CHART_WIDTH} height={PLOT_HEIGHT} rx="8" />
+              {consumptionSelection ? <SelectionRange pointCount={data.points.length} selection={consumptionSelection} /> : null}
+              {[0, 1, 2, 3].map((line) => {
+                const y = PLOT_TOP + (line * PLOT_HEIGHT) / 3;
+                return <line className="chart-grid-line" key={line} x1="0" x2={CHART_WIDTH} y1={y} y2={y} />;
+              })}
+              {visibility.tokens ? (
+                <>
+                  <path className="chart-area" d={offsetPath(tokenAreaPath(plotData.tokenPoints, CHART_WIDTH, PLOT_HEIGHT))} />
+                  <path className="chart-line chart-line--token" d={offsetPath(smoothPath(plotData.tokenPoints))} />
+                </>
+              ) : null}
+              {visibility.calls ? (
+                <path className="chart-line chart-line--calls" d={offsetPath(smoothPath(plotData.callPoints))} />
+              ) : null}
+              {visibility.cacheHitRate && data.hasCacheCalls ? (
+                <path className="chart-line chart-line--hit" d={offsetPath(smoothPath(plotData.cachePoints))} />
+              ) : null}
+              {visibility.fiveHourQuota && data.hasFiveHourQuota ? (
+                <path className="chart-line chart-line--five" d={offsetPath(optionalSmoothPath(plotData.fiveHourQuotaPoints))} />
+              ) : null}
+              {visibility.sevenDayQuota && data.hasSevenDayQuota ? (
+                <path className="chart-line chart-line--seven" d={offsetPath(optionalSmoothPath(plotData.sevenDayQuotaPoints))} />
+              ) : null}
+              {activeIndex !== null && activeTokenPoint ? (
+                <HoverGuides
+                  data={data}
+                  index={activeIndex}
+                  plotData={plotData}
+                  visibility={visibility}
+                />
+              ) : null}
+              <TimeMarkers data={data} />
+            </svg>
+            {activePoint && activeTokenPoint ? (
+              <HoverBubble
+                bucketSeconds={data.bucketSeconds}
+                cacheVisible={visibility.cacheHitRate}
+                fiveHourRemaining={activePoint.fiveHourRemainingPercent}
+                point={activePoint}
+                sevenDayRemaining={activePoint.sevenDayRemainingPercent}
+                x={activeTokenPoint.x}
+              />
+            ) : null}
+            {consumptionSelection ? (
+              <RecentChartQuotaEstimateOverlay
+                selection={consumptionSelection}
+                onClose={() => setQuotaSelectionState({ startIndex: null, fixedEndIndex: null })}
+              />
+            ) : null}
+          </div>
+        </div>
       </div>
     </section>
   );

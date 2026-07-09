@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -66,6 +67,7 @@ test("QuotaStrip renders the shared quota refresh cadence control", async () => 
     });
 
     assert.match(html, /额度刷新/);
+    assert.match(html, /class="quota-refresh-row"/);
     assert.match(html, /aria-label="额度刷新频率"/);
     assert.match(html, /<option value="30000">30 秒<\/option>/);
     assert.match(html, /<option value="60000">1 分钟<\/option>/);
@@ -73,6 +75,15 @@ test("QuotaStrip renders the shared quota refresh cadence control", async () => 
     assert.match(html, /<option value="300000">5 分钟<\/option>/);
     assert.match(html, /<option value="600000">10 分钟<\/option>/);
   });
+});
+
+test("QuotaStrip keeps quota refresh cadence in a stable full-width tool row", async () => {
+  const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
+
+  assert.match(css, /\.quota-refresh-row\s*{[^}]*grid-column:\s*1 \/ -1/s);
+  assert.match(css, /\.quota-refresh-row\s*{[^}]*min-height:\s*24px/s);
+  assert.match(css, /\.quota-refresh-cadence select\s*{[^}]*min-width:\s*92px/s);
+  assert.match(css, /\.quota-refresh-cadence select\s*{[^}]*font-size:\s*10px/s);
 });
 
 test("QuotaStrip omits the retry button when no retry handler is provided", async () => {
@@ -349,8 +360,8 @@ test("DashboardSummarySection links refresh state to live-rate cache wait copy",
       usageCacheInitializing: true,
     });
 
-    assert.match(html, /实时速率准备中/);
-    assert.match(html, /刷新仍在扫描精确 token 缓存，请稍后。/);
+    assert.match(html, /用量统计重建中/);
+    assert.match(html, /刷新仍在扫描本地会话文件，完成后会恢复总\/今\/次。/);
     assert.doesNotMatch(html, /实时速率降级/);
     assert.doesNotMatch(html, />重试</);
   });

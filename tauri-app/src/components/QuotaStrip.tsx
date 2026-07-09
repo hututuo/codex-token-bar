@@ -143,22 +143,6 @@ function QuotaStripView({
       <div className="quota-plan">
         <span>本地账户额度</span>
         <strong>本地读取</strong>
-        {onQuotaRefreshIntervalChange ? (
-          <label className="quota-refresh-cadence">
-            <span>额度刷新</span>
-            <select
-              aria-label="额度刷新频率"
-              onChange={(event) => {
-                void onQuotaRefreshIntervalChange(Number(event.currentTarget.value));
-              }}
-              value={selectedQuotaRefreshIntervalMs}
-            >
-              {QUOTA_REFRESH_CADENCE_OPTIONS.map((option) => (
-                <option key={option.valueMs} value={option.valueMs}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-        ) : null}
       </div>
       <QuotaBar quota={snapshot.fiveHour} />
       <QuotaBar quota={snapshot.sevenDay} />
@@ -182,6 +166,24 @@ function QuotaStripView({
         </div>
         <span>7d 均速比较</span>
       </div>
+      {onQuotaRefreshIntervalChange ? (
+        <div className="quota-refresh-row">
+          <label className="quota-refresh-cadence">
+            <span>额度刷新</span>
+            <select
+              aria-label="额度刷新频率"
+              onChange={(event) => {
+                void onQuotaRefreshIntervalChange(Number(event.currentTarget.value));
+              }}
+              value={selectedQuotaRefreshIntervalMs}
+            >
+              {QUOTA_REFRESH_CADENCE_OPTIONS.map((option) => (
+                <option key={option.valueMs} value={option.valueMs}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+      ) : null}
       {quotaWarnings.length > 0 ? (
         <div className="quota-read-warning" role="status">
           <div className="quota-read-warning-main">

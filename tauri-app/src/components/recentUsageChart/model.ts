@@ -2,11 +2,19 @@ import type { RecentUsagePoint } from "../../types/dashboard";
 
 export type RecentChartRange = "24h" | "7d" | "30d";
 
+export interface RecentChartScrollLayout {
+  isHorizontal: boolean;
+  contentMinWidth: number | null;
+  className: string;
+}
+
 export interface RecentUsageChartSeries {
   recentUsage24h: RecentUsagePoint[];
   recentUsage7d: RecentUsagePoint[];
   recentUsage30d: RecentUsagePoint[];
 }
+
+export const RECENT_CHART_24H_SCROLL_MIN_WIDTH = 980;
 
 export interface SeriesVisibility {
   tokens: boolean;
@@ -106,6 +114,22 @@ export const DEFAULT_SERIES_VISIBILITY: SeriesVisibility = {
   fiveHourQuota: true,
   sevenDayQuota: true,
 };
+
+export function recentChartScrollLayout(range: RecentChartRange): RecentChartScrollLayout {
+  if (range !== "24h") {
+    return {
+      isHorizontal: false,
+      contentMinWidth: null,
+      className: "recent-chart-scroll",
+    };
+  }
+
+  return {
+    isHorizontal: true,
+    contentMinWidth: RECENT_CHART_24H_SCROLL_MIN_WIDTH,
+    className: "recent-chart-scroll recent-chart-scroll--horizontal",
+  };
+}
 
 export function prepareRecentChartData(
   range: RecentChartRange,

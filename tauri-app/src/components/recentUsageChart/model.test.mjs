@@ -8,6 +8,7 @@ import {
   percentText,
   prepareRecentChartData,
   quotaConsumptionSelection,
+  recentChartScrollLayout,
   smoothPath,
 } from "./model.ts";
 
@@ -159,6 +160,32 @@ test("quotaConsumptionSelection ignores isolated full remaining spikes before re
   assert.equal(selection?.sevenDay.quotaDropPercent, 1);
 });
 
+test("recent chart keeps the 24h range in a horizontal scroll viewport", () => {
+  assert.deepEqual(recentChartScrollLayout("24h"), {
+    isHorizontal: true,
+    contentMinWidth: 980,
+    className: "recent-chart-scroll recent-chart-scroll--horizontal",
+  });
+  assert.deepEqual(recentChartScrollLayout("7d"), {
+    isHorizontal: false,
+    contentMinWidth: null,
+    className: "recent-chart-scroll",
+  });
+  assert.deepEqual(recentChartScrollLayout("30d"), {
+    isHorizontal: false,
+    contentMinWidth: null,
+    className: "recent-chart-scroll",
+  });
+});
+
+test("recent chart horizontal viewport clips scroll to the chart instead of the page", async () => {
+  const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
+
+  assert.match(css, /\.recent-chart-scroll--horizontal\s*{[^}]*overflow-x:\s*auto/s);
+  assert.match(css, /\.recent-chart-scroll--horizontal\s*{[^}]*overscroll-behavior-x:\s*contain/s);
+  assert.match(css, /\.recent-chart-scroll--horizontal \.recent-chart-scroll-content\s*{[^}]*min-width:\s*var\(--recent-chart-min-width, 980px\)/s);
+});
+
 test("clickQuotaSelection previews on hover, pins on second click, resets on third click", () => {
   let state = clickQuotaSelection({ startIndex: null, fixedEndIndex: null }, 4, 10);
 
@@ -177,6 +204,8 @@ test("RecentUsageChart exposes click-to-estimate quota UI", async () => {
 
   for (const expected of [
     "点击起点/终点可估算额度",
+    "recentChartScrollLayout(data.range)",
+    "recent-chart-scroll-content",
     "quotaConsumptionSelection",
     "clickQuotaSelection",
     "RecentChartQuotaEstimateOverlay",

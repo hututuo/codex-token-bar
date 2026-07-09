@@ -701,22 +701,33 @@ button {
   min-width: 0;
 }
 
+.quota-refresh-row {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 24px;
+  padding-top: 2px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+}
+
 .quota-refresh-cadence {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
+  white-space: nowrap;
 }
 
 .quota-refresh-cadence select {
-  min-width: 0;
-  max-width: 50px;
+  min-width: 92px;
+  max-width: 116px;
   border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line));
   border-radius: 6px;
   background: color-mix(in srgb, var(--panel-solid) 88%, var(--panel-soft));
   color: var(--text);
-  padding: 1px 3px;
-  font-size: 8.5px;
+  padding: 2px 6px;
+  font-size: 10px;
 }
 
 .quota-plan strong,
@@ -3331,6 +3342,32 @@ input[type="range"]::-moz-range-thumb {
   position: relative;
   overflow: visible;
   margin-top: 8px;
+}
+
+.recent-chart-scroll {
+  width: 100%;
+  overflow: visible;
+}
+
+.recent-chart-scroll--horizontal {
+  overflow-x: auto;
+  overflow-y: visible;
+  padding-bottom: 4px;
+  overscroll-behavior-x: contain;
+}
+
+.recent-chart-scroll--horizontal:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 52%, transparent);
+  outline-offset: 3px;
+}
+
+.recent-chart-scroll-content {
+  position: relative;
+  width: 100%;
+}
+
+.recent-chart-scroll--horizontal .recent-chart-scroll-content {
+  min-width: var(--recent-chart-min-width, 980px);
 }
 
 .usage-chart {
