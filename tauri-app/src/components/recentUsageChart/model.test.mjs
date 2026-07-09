@@ -10,6 +10,7 @@ import {
   quotaConsumptionSelection,
   recentChartScrollLayout,
   recentChartTimeMarkers,
+  recentChartVisibleWindowLabel,
   smoothPath,
 } from "./model.ts";
 
@@ -234,6 +235,55 @@ test("7d and 30d time markers keep the existing sparse month-day behavior", () =
   assert.equal(recentChartTimeMarkers(thirtyDay, 980).every((marker) => marker.label.includes("月")), true);
 });
 
+test("24h visible window label describes the latest local date range", () => {
+  const startUnix = localUnix(2026, 6, 1, 0, 35);
+  const points = Array.from({ length: 30 * 24 * 12 }, (_, index) => point(startUnix + index * 5 * 60));
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: points,
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+  const layout = recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, 980);
+
+  assert.equal(
+    recentChartVisibleWindowLabel(data, layout.contentWidth, layout.latestScrollLeft, layout.viewportWidth),
+    "7月30日 00:30 - 7月31日 00:30",
+  );
+});
+
+test("24h visible window label follows a middle scroll position", () => {
+  const startUnix = localUnix(2026, 6, 1, 0, 35);
+  const points = Array.from({ length: 30 * 24 * 12 }, (_, index) => point(startUnix + index * 5 * 60));
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: points,
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+  const layout = recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, 980);
+
+  assert.equal(
+    recentChartVisibleWindowLabel(data, layout.contentWidth, 10 * layout.viewportWidth, layout.viewportWidth),
+    "7月11日 00:35 - 7月12日 00:35",
+  );
+});
+
+test("visible window label is only used for the 24h horizontal chart", () => {
+  const startUnix = localUnix(2026, 6, 1);
+  const sevenDay = prepareRecentChartData("7d", {
+    recentUsage24h: [],
+    recentUsage7d: Array.from({ length: 8 }, (_, index) => point(startUnix + index * 24 * 60 * 60)),
+    recentUsage30d: [],
+  });
+  const thirtyDay = prepareRecentChartData("30d", {
+    recentUsage24h: [],
+    recentUsage7d: [],
+    recentUsage30d: Array.from({ length: 10 }, (_, index) => point(startUnix + index * 3 * 24 * 60 * 60)),
+  });
+
+  assert.equal(recentChartVisibleWindowLabel(sevenDay, 980, 0, 980), null);
+  assert.equal(recentChartVisibleWindowLabel(thirtyDay, 980, 0, 980), null);
+});
+
 test("recent chart horizontal viewport keeps overlay outside the clipped scroll content", async () => {
   const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
   const source = await readFile(new URL("../RecentUsageChart.tsx", import.meta.url), "utf8");
@@ -244,10 +294,14 @@ test("recent chart horizontal viewport keeps overlay outside the clipped scroll 
   assert.match(css, /\.recent-chart-overlay-layer\s*{[^}]*overflow:\s*visible/s);
   assert.match(css, /\.usage-chart\s*{[^}]*aspect-ratio:\s*var\(--recent-chart-aspect-ratio,\s*980 \/ 185\)/s);
   assert.match(css, /\.chart-day-separator\s*{[^}]*stroke:/s);
+  assert.match(css, /\.recent-chart-visible-window\s*{[^}]*position:\s*absolute/s);
   assert.equal(source.includes("recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, CHART_WIDTH)"), true);
   assert.equal(source.includes("recentChartTimeMarkers(data, chartWidth)"), true);
+  assert.equal(source.includes("recentChartVisibleWindowLabel(data, chartWidth, chartScrollLeft, chartViewportWidth)"), true);
   assert.equal(source.includes("\"--recent-chart-aspect-ratio\": `${chartWidth} / ${CHART_HEIGHT}`"), true);
   assert.equal(source.includes("className=\"recent-chart-overlay-layer\""), true);
+  assert.equal(source.indexOf("className=\"recent-chart-visible-window\"") > source.indexOf("className=\"recent-chart-overlay-layer\""), true);
+  assert.equal(source.indexOf("className=\"recent-chart-visible-window\"") > source.indexOf("recent-chart-scroll-content"), true);
   assert.equal(source.includes("chart-time-marker--"), true);
   assert.equal(source.includes("chart-day-separator"), true);
   assert.equal(source.includes("x={activeTokenPoint.x - chartScrollLeft}"), true);

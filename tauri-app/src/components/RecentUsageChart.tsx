@@ -14,6 +14,7 @@ import {
   quotaConsumptionSelection,
   recentChartScrollLayout,
   recentChartTimeMarkers,
+  recentChartVisibleWindowLabel,
   smoothPath,
   tokenAreaPath,
   type OfficialAPIPriceModel,
@@ -68,6 +69,7 @@ export function RecentUsageChart({
     "--recent-chart-content-width": `${chartWidth}px`,
     "--recent-chart-aspect-ratio": `${chartWidth} / ${CHART_HEIGHT}`,
   } as CSSProperties;
+  const visibleWindowLabel = recentChartVisibleWindowLabel(data, chartWidth, chartScrollLeft, chartViewportWidth);
   const plotData = useMemo(() => plotChartPoints(data, chartWidth, PLOT_HEIGHT), [data, chartWidth]);
   const activeIndex = hoveredIndex !== null && data.points[hoveredIndex] ? hoveredIndex : null;
   const activePoint = activeIndex !== null ? data.points[activeIndex] : null;
@@ -253,6 +255,9 @@ export function RecentUsageChart({
           </div>
         </div>
         <div className="recent-chart-overlay-layer">
+          {visibleWindowLabel ? (
+            <div className="recent-chart-visible-window">当前窗口：{visibleWindowLabel}</div>
+          ) : null}
           {activePoint && activeTokenPoint ? (
             <HoverBubble
               bucketSeconds={data.bucketSeconds}

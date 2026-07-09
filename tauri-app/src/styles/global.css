@@ -3377,6 +3377,21 @@ input[type="range"]::-moz-range-thumb {
   pointer-events: none;
 }
 
+.recent-chart-visible-window {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 72%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-solid) 86%, transparent);
+  color: color-mix(in srgb, var(--text) 76%, var(--muted));
+  font-size: 11px;
+  font-weight: 680;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
 .usage-chart {
   display: block;
   width: 100%;

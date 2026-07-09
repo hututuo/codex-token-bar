@@ -260,6 +260,28 @@ export function recentChartTimeMarkers(data: PreparedRecentChartData, chartWidth
   return markers;
 }
 
+export function recentChartVisibleWindowLabel(
+  data: PreparedRecentChartData,
+  chartWidth: number,
+  scrollLeft: number,
+  viewportWidth: number,
+): string | null {
+  if (data.range !== "24h" || data.points.length === 0) {
+    return null;
+  }
+  const safeChartWidth = Number.isFinite(chartWidth) && chartWidth > 0 ? chartWidth : 980;
+  const safeViewportWidth = Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 980;
+  const maxScrollLeft = Math.max(0, safeChartWidth - safeViewportWidth);
+  const safeScrollLeft = Number.isFinite(scrollLeft) ? clamp(scrollLeft, 0, maxScrollLeft) : 0;
+  const lastIndex = data.points.length - 1;
+  const startIndex = hoverIndexForX(safeScrollLeft, safeChartWidth, data.points.length) ?? 0;
+  const viewportBucketCount = Math.max(1, Math.round(RECENT_CHART_24H_VIEWPORT_SECONDS / data.bucketSeconds));
+  const endIndex = clamp(startIndex + viewportBucketCount - 1, startIndex, lastIndex);
+  const start = data.points[startIndex].startUnix;
+  const end = data.points[endIndex].startUnix + data.bucketSeconds;
+  return `${formatLocalMonthDayHour(start)} - ${formatLocalMonthDayHour(end)}`;
+}
+
 export function smoothPath(points: Point[]): string {
   if (points.length === 0) {
     return "";
@@ -624,6 +646,11 @@ function localDayKey(unix: number): string {
 function formatLocalMonthDay(unix: number): string {
   const date = new Date(unix * 1_000);
   return `${date.getMonth() + 1}月${date.getDate()}日`;
+}
+
+function formatLocalMonthDayHour(unix: number): string {
+  const date = new Date(unix * 1_000);
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 function monotoneSlopes(points: Point[]): number[] | null {
