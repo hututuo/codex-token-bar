@@ -52,6 +52,13 @@ export interface PreparedRecentChartData {
   markerIndices: number[];
 }
 
+export interface RecentChartTimeMarker {
+  index: number;
+  x: number;
+  label: string;
+  kind: "day" | "time";
+}
+
 export type QuotaConsumptionConfidence = "measured" | "insufficientQuotaMovement" | "noTokenUsage";
 
 export type OfficialAPIPriceModel = "gpt55" | "gpt54" | "gpt54Mini";
@@ -211,6 +218,46 @@ export function plotChartPoints(data: PreparedRecentChartData, width: number, pl
     fiveHourQuotaPoints: optionalQuotaPoints(data.points, "fiveHourRemainingPercent", width, plotHeight),
     sevenDayQuotaPoints: optionalQuotaPoints(data.points, "sevenDayRemainingPercent", width, plotHeight),
   };
+}
+
+export function recentChartTimeMarkers(data: PreparedRecentChartData, chartWidth: number): RecentChartTimeMarker[] {
+  const pointCount = data.points.length;
+  if (pointCount === 0) {
+    return [];
+  }
+
+  const safeChartWidth = Number.isFinite(chartWidth) && chartWidth > 0 ? chartWidth : 980;
+  if (data.range !== "24h") {
+    return data.markerIndices.flatMap((index) => {
+      const point = data.points[index];
+      if (!point) {
+        return [];
+      }
+      return [{
+        index,
+        x: markerX(index, pointCount, safeChartWidth),
+        label: formatLocalMonthDay(point.startUnix),
+        kind: "time" as const,
+      }];
+    });
+  }
+
+  const markers: RecentChartTimeMarker[] = [];
+  let previousDayKey: string | null = null;
+  data.points.forEach((point, index) => {
+    const dayKey = localDayKey(point.startUnix);
+    if (dayKey === previousDayKey) {
+      return;
+    }
+    previousDayKey = dayKey;
+    markers.push({
+      index,
+      x: markerX(index, pointCount, safeChartWidth),
+      label: formatLocalMonthDay(point.startUnix),
+      kind: "day",
+    });
+  });
+  return markers;
 }
 
 export function smoothPath(points: Point[]): string {
@@ -563,6 +610,20 @@ function latestPresent(values: Array<number | null>): number | null {
 
 function uniqueIndices(indices: number[]): number[] {
   return indices.filter((index, position) => indices.indexOf(index) === position);
+}
+
+function markerX(index: number, pointCount: number, chartWidth: number): number {
+  return (index / Math.max(pointCount - 1, 1)) * chartWidth;
+}
+
+function localDayKey(unix: number): string {
+  const date = new Date(unix * 1_000);
+  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+}
+
+function formatLocalMonthDay(unix: number): string {
+  const date = new Date(unix * 1_000);
+  return `${date.getMonth() + 1}月${date.getDate()}日`;
 }
 
 function monotoneSlopes(points: Point[]): number[] | null {

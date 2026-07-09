@@ -3447,6 +3447,17 @@ input[type="range"]::-moz-range-thumb {
   font-weight: 620;
 }
 
+.chart-time-marker--day {
+  fill: color-mix(in srgb, var(--text) 72%, var(--muted));
+  font-size: 11.5px;
+}
+
+.chart-day-separator {
+  stroke: color-mix(in srgb, var(--line-strong) 64%, transparent);
+  stroke-dasharray: 3 7;
+  stroke-width: 1;
+}
+
 .chart-hover-layer {
   pointer-events: none;
 }

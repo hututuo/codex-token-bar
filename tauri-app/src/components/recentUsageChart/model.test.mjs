@@ -9,6 +9,7 @@ import {
   prepareRecentChartData,
   quotaConsumptionSelection,
   recentChartScrollLayout,
+  recentChartTimeMarkers,
   smoothPath,
 } from "./model.ts";
 
@@ -26,6 +27,10 @@ function point(startUnix, overrides = {}) {
     sevenDayRemainingPercent: null,
     ...overrides,
   };
+}
+
+function localUnix(year, monthIndex, day, hour = 0, minute = 0) {
+  return Math.floor(new Date(year, monthIndex, day, hour, minute).getTime() / 1_000);
 }
 
 test("prepareRecentChartData selects range-specific points and carries cache hit rate", () => {
@@ -173,6 +178,62 @@ test("recent chart gives the 24h viewport a 30-day horizontal history canvas", (
   assert.equal(recentChartScrollLayout("30d", 30 * 24 * 12, 5 * 60, 980).isHorizontal, false);
 });
 
+test("24h long chart time markers show one local date label per day", () => {
+  const startUnix = localUnix(2026, 6, 1);
+  const points = Array.from({ length: 30 * 24 * 12 }, (_, index) => point(startUnix + index * 5 * 60));
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: points,
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+  const markers = recentChartTimeMarkers(data, 29_000);
+  const dayMarkers = markers.filter((marker) => marker.kind === "day");
+
+  assert.equal(dayMarkers.length, 30);
+  assert.equal(dayMarkers.length > data.markerIndices.length, true);
+  assert.deepEqual(dayMarkers.slice(0, 3).map((marker) => marker.label), ["7月1日", "7月2日", "7月3日"]);
+  assert.equal(dayMarkers.every((marker) => marker.label.includes("月") && marker.label.includes("日")), true);
+  assert.equal(dayMarkers.every((marker, index) => index === 0 || marker.x > dayMarkers[index - 1].x), true);
+  assert.equal(dayMarkers.at(-1).x > 20_000, true);
+});
+
+test("24h day markers are positioned by full scroll content width", () => {
+  const startUnix = localUnix(2026, 6, 1);
+  const points = Array.from({ length: 30 * 24 * 12 }, (_, index) => point(startUnix + index * 5 * 60));
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: points,
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+  const markers = recentChartTimeMarkers(data, 29_000);
+  const secondDay = markers.find((marker) => marker.label === "7月2日");
+  const expectedX = (288 / (points.length - 1)) * 29_000;
+
+  assert.equal(secondDay?.index, 288);
+  assert.equal(Math.abs((secondDay?.x ?? 0) - expectedX) < 0.01, true);
+});
+
+test("7d and 30d time markers keep the existing sparse month-day behavior", () => {
+  const startUnix = localUnix(2026, 6, 1);
+  const sevenDayPoints = Array.from({ length: 8 }, (_, index) => point(startUnix + index * 24 * 60 * 60));
+  const thirtyDayPoints = Array.from({ length: 10 }, (_, index) => point(startUnix + index * 3 * 24 * 60 * 60));
+  const sevenDay = prepareRecentChartData("7d", {
+    recentUsage24h: [],
+    recentUsage7d: sevenDayPoints,
+    recentUsage30d: [],
+  });
+  const thirtyDay = prepareRecentChartData("30d", {
+    recentUsage24h: [],
+    recentUsage7d: [],
+    recentUsage30d: thirtyDayPoints,
+  });
+
+  assert.deepEqual(recentChartTimeMarkers(sevenDay, 980).map((marker) => marker.index), sevenDay.markerIndices);
+  assert.deepEqual(recentChartTimeMarkers(thirtyDay, 980).map((marker) => marker.index), thirtyDay.markerIndices);
+  assert.equal(recentChartTimeMarkers(sevenDay, 980).every((marker) => marker.kind === "time"), true);
+  assert.equal(recentChartTimeMarkers(thirtyDay, 980).every((marker) => marker.label.includes("月")), true);
+});
+
 test("recent chart horizontal viewport keeps overlay outside the clipped scroll content", async () => {
   const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
   const source = await readFile(new URL("../RecentUsageChart.tsx", import.meta.url), "utf8");
@@ -182,9 +243,13 @@ test("recent chart horizontal viewport keeps overlay outside the clipped scroll 
   assert.match(css, /\.recent-chart-scroll--horizontal \.recent-chart-scroll-content\s*{[^}]*width:\s*var\(--recent-chart-content-width, 980px\)/s);
   assert.match(css, /\.recent-chart-overlay-layer\s*{[^}]*overflow:\s*visible/s);
   assert.match(css, /\.usage-chart\s*{[^}]*aspect-ratio:\s*var\(--recent-chart-aspect-ratio,\s*980 \/ 185\)/s);
+  assert.match(css, /\.chart-day-separator\s*{[^}]*stroke:/s);
   assert.equal(source.includes("recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, CHART_WIDTH)"), true);
+  assert.equal(source.includes("recentChartTimeMarkers(data, chartWidth)"), true);
   assert.equal(source.includes("\"--recent-chart-aspect-ratio\": `${chartWidth} / ${CHART_HEIGHT}`"), true);
   assert.equal(source.includes("className=\"recent-chart-overlay-layer\""), true);
+  assert.equal(source.includes("chart-time-marker--"), true);
+  assert.equal(source.includes("chart-day-separator"), true);
   assert.equal(source.includes("x={activeTokenPoint.x - chartScrollLeft}"), true);
 });
 

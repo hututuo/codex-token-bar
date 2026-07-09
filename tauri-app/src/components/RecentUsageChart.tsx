@@ -13,6 +13,7 @@ import {
   prepareRecentChartData,
   quotaConsumptionSelection,
   recentChartScrollLayout,
+  recentChartTimeMarkers,
   smoothPath,
   tokenAreaPath,
   type OfficialAPIPriceModel,
@@ -419,18 +420,30 @@ function QuotaEstimateChip({
 }
 
 function TimeMarkers({ chartWidth, data }: { chartWidth: number; data: ReturnType<typeof prepareRecentChartData> }) {
+  const markers = recentChartTimeMarkers(data, chartWidth);
   return (
     <>
-      {data.markerIndices.map((index) => {
-        const point = data.points[index];
-        if (!point) {
-          return null;
-        }
-        const x = (index / Math.max(data.points.length - 1, 1)) * chartWidth;
+      {markers.map((marker) => {
         return (
-          <text className="chart-time-marker" key={index} textAnchor="middle" x={x} y={PLOT_TOP + PLOT_HEIGHT + 24}>
-            {data.range === "24h" ? formatHourMinute(point.startUnix) : formatMonthDay(point.startUnix)}
-          </text>
+          <g className={`chart-time-marker-group chart-time-marker-group--${marker.kind}`} key={`${marker.kind}-${marker.index}`}>
+            {marker.kind === "day" ? (
+              <line
+                className="chart-day-separator"
+                x1={marker.x}
+                x2={marker.x}
+                y1={PLOT_TOP}
+                y2={PLOT_TOP + PLOT_HEIGHT}
+              />
+            ) : null}
+            <text
+              className={`chart-time-marker chart-time-marker--${marker.kind}`}
+              textAnchor={marker.kind === "day" ? "start" : "middle"}
+              x={marker.kind === "day" ? marker.x + 6 : marker.x}
+              y={PLOT_TOP + PLOT_HEIGHT + 24}
+            >
+              {marker.label}
+            </text>
+          </g>
         );
       })}
     </>
