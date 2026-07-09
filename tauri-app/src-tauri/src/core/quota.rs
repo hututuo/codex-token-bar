@@ -230,7 +230,7 @@ fn bundle_has_stale_data(bundle: &AccountQuotaBundle) -> bool {
 }
 
 fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, String> {
-    let mut bundle = match read_rate_limits() {
+    let mut bundle = match read_rate_limits(codex_home) {
         Ok(ParsedRateLimits {
             mut quota,
             plan_label,
@@ -580,10 +580,10 @@ fn quota_deadline_error(timeout: Duration, stderr: Option<&str>) -> String {
     }
 }
 
-fn read_rate_limits() -> Result<ParsedRateLimits, String> {
+fn read_rate_limits(codex_home: &Path) -> Result<ParsedRateLimits, String> {
     let mut errors = Vec::new();
     for attempt in 1..=RATE_LIMIT_READ_ATTEMPTS {
-        match read_rate_limits_once(RATE_LIMIT_READ_TIMEOUT) {
+        match read_rate_limits_once(codex_home, RATE_LIMIT_READ_TIMEOUT) {
             Ok(snapshot) => return Ok(snapshot),
             Err(error) => errors.push(format!("第 {attempt} 次：{}", compact_error_message(&error))),
         }
@@ -597,10 +597,10 @@ fn read_rate_limits() -> Result<ParsedRateLimits, String> {
     ))
 }
 
-fn read_rate_limits_once(timeout: Duration) -> Result<ParsedRateLimits, String> {
+fn read_rate_limits_once(codex_home: &Path, timeout: Duration) -> Result<ParsedRateLimits, String> {
     let codex = find_codex_binary_with_report()?.path;
     let mut command = Command::new(codex);
-    configure_quota_child_process(&mut command);
+    configure_quota_child_process(&mut command, Some(codex_home));
     let child = command
         .args(["app-server", "--listen", "stdio://"])
         .stdin(Stdio::piped())
@@ -748,8 +748,11 @@ impl<C: QuotaChildProcess> Drop for QuotaChildGuard<C> {
     }
 }
 
-fn configure_quota_child_process(command: &mut Command) {
+fn configure_quota_child_process(command: &mut Command, codex_home: Option<&Path>) {
     strip_quota_child_environment(command);
+    if let Some(codex_home) = codex_home {
+        command.env("CODEX_HOME", codex_home);
+    }
 
     #[cfg(windows)]
     {
@@ -815,7 +818,7 @@ mod tests {
     fn quota_child_process_removes_inherited_node_and_signing_env_overrides() {
         let mut command = Command::new("codex");
 
-        configure_quota_child_process(&mut command);
+        configure_quota_child_process(&mut command, None);
 
         let envs = command.get_envs().collect::<Vec<_>>();
         for key in QUOTA_CHILD_ENV_REMOVE {
@@ -823,6 +826,20 @@ mod tests {
                 .iter()
                 .any(|(name, value)| *name == OsStr::new(key) && value.is_none()));
         }
+    }
+
+    #[test]
+    fn quota_child_process_receives_selected_codex_home() {
+        let mut command = Command::new("codex");
+        let codex_home = std::env::temp_dir().join("codex-token-bar-selected-home");
+
+        configure_quota_child_process(&mut command, Some(&codex_home));
+
+        let envs = command.get_envs().collect::<Vec<_>>();
+        assert!(envs.iter().any(|(name, value)| {
+            *name == OsStr::new("CODEX_HOME")
+                && value.is_some_and(|value| value == codex_home.as_os_str())
+        }));
     }
 
     #[test]
