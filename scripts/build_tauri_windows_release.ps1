@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.7.0",
+    [string]$Version = "0.7.2",
     [string]$GitHubRepo = "hututuo/codex-token-bar",
     [ValidateSet("x64", "arm64", "both")]
     [string]$Arch = "both",
