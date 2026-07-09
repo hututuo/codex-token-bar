@@ -23,7 +23,9 @@ final class UsageRefreshCadenceRecoverySchedulerTests: XCTestCase {
         XCTAssertEqual(recoveryCount, 0)
 
         await sleeper.completeAll()
-        await Task.yield()
+        await waitUntil("scheduled recovery action") {
+            recoveryCount == 1
+        }
 
         XCTAssertEqual(recoveryCount, 1)
         UsageRefreshCadenceRecoveryScheduler.cancel(&task)
@@ -82,10 +84,25 @@ final class UsageRefreshCadenceRecoverySchedulerTests: XCTestCase {
         await sleeper.waitForRequestCount(2)
 
         await sleeper.completeAll()
-        await Task.yield()
+        await waitUntil("replacement recovery action") {
+            fired == ["second"]
+        }
 
         XCTAssertEqual(fired, ["second"])
         UsageRefreshCadenceRecoveryScheduler.cancel(&task)
+    }
+
+    private func waitUntil(
+        _ label: String,
+        timeout: TimeInterval = 1,
+        predicate: @escaping @MainActor () async -> Bool
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await predicate() { return }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("Timed out waiting for \(label)")
     }
 }
 
