@@ -46,7 +46,7 @@ fn parses_token_count_totals_as_deltas() {
     assert_eq!(snapshot.stats.total_calls, 2);
     assert_eq!(snapshot.stats.total_threads, 1);
     assert!(snapshot.activity_days.iter().any(|day| day.tokens == 28));
-    assert_eq!(snapshot.recent_usage_24h.len(), 289);
+    assert_eq!(snapshot.recent_usage_24h.len(), 30 * 24 * 12);
     assert_eq!(snapshot.recent_usage_7d.len(), 168);
     assert_eq!(snapshot.recent_usage_30d.len(), 120);
     assert_eq!(
@@ -81,6 +81,43 @@ fn parses_token_count_totals_as_deltas() {
         .recent_usage_30d
         .windows(2)
         .all(|window| window[1].start_unix - window[0].start_unix == 6 * 60 * 60));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn recent_usage_24h_series_keeps_thirty_days_of_five_minute_history() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019erecent-history-0000-0000-000000000001.jsonl");
+    let older_timestamp = (OffsetDateTime::now_utc() - time::Duration::days(2))
+        .format(&Rfc3339)
+        .unwrap();
+    let recent_timestamp = (OffsetDateTime::now_utc() - time::Duration::minutes(5))
+        .format(&Rfc3339)
+        .unwrap();
+    write_lines(
+        &file,
+        &[
+            format!(
+                r#"{{"timestamp":"{older_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":100,"cached_input_tokens":10,"output_tokens":20,"total_tokens":120}}}}}}}}"#
+            ),
+            format!(
+                r#"{{"timestamp":"{recent_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":200,"cached_input_tokens":20,"output_tokens":30,"total_tokens":230}}}}}}}}"#
+            ),
+        ],
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+
+    assert_eq!(snapshot.recent_usage_24h.len(), 30 * 24 * 12);
+    assert!(snapshot.recent_usage_24h.iter().any(|point| point.tokens == 120));
+    assert!(snapshot.recent_usage_24h.iter().any(|point| point.tokens == 230));
+    assert!(snapshot
+        .recent_usage_24h
+        .windows(2)
+        .all(|window| window[1].start_unix - window[0].start_unix == 5 * 60));
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -460,6 +497,69 @@ fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
 }
 
 #[test]
+fn cache_usage_keeps_latest_candidates_beyond_low_hit_cutoff() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let base_time = OffsetDateTime::now_utc() - time::Duration::days(10);
+
+    for index in 0..45 {
+        let session_id = format!("019elowlatest-{index:04}-0000-0000-000000000001");
+        let first_timestamp = (base_time + time::Duration::minutes(i64::from(index * 2)))
+            .format(&Rfc3339)
+            .unwrap();
+        let second_timestamp = (base_time + time::Duration::minutes(i64::from(index * 2 + 1)))
+            .format(&Rfc3339)
+            .unwrap();
+        write_lines(
+            &session_dir.join(format!("rollout-{session_id}.jsonl")),
+            &[
+                format!(
+                    r#"{{"timestamp":"{first_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":1400,"cached_input_tokens":0,"output_tokens":50,"total_tokens":1450}}}}}}}}"#
+                ),
+                format!(
+                    r#"{{"timestamp":"{second_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":1400,"cached_input_tokens":0,"output_tokens":50,"total_tokens":1450}}}}}}}}"#
+                ),
+            ],
+        );
+    }
+
+    let latest_id = "019elatest-high-0000-0000-000000000099";
+    let first_latest = (OffsetDateTime::now_utc() - time::Duration::minutes(2))
+        .format(&Rfc3339)
+        .unwrap();
+    let second_latest = (OffsetDateTime::now_utc() - time::Duration::minutes(1))
+        .format(&Rfc3339)
+        .unwrap();
+    write_lines(
+        &session_dir.join(format!("rollout-{latest_id}.jsonl")),
+        &[
+            format!(
+                r#"{{"timestamp":"{first_latest}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":1400,"cached_input_tokens":1390,"output_tokens":50,"total_tokens":1450}}}}}}}}"#
+            ),
+            format!(
+                r#"{{"timestamp":"{second_latest}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":1400,"cached_input_tokens":1390,"output_tokens":50,"total_tokens":1450}}}}}}}}"#
+            ),
+        ],
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+
+    assert!(snapshot
+        .cache_usage
+        .sessions
+        .iter()
+        .any(|session| session.id == latest_id));
+    assert!(snapshot
+        .cache_usage
+        .turns
+        .iter()
+        .any(|turn| turn.session_id == latest_id && turn.turn_index_in_session == 2));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn dashboard_snapshot_reuses_cached_aggregate_when_session_signatures_are_unchanged() {
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -802,7 +902,7 @@ fn usage_summary_ignores_previous_dashboard_aggregate_version() {
     let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019eaggregate-stale-v8-cache.jsonl");
+    let file = session_dir.join("rollout-019eaggregate-stale-v9-cache.jsonl");
     write_lines(
         &file,
         &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
@@ -811,7 +911,7 @@ fn usage_summary_ignores_previous_dashboard_aggregate_version() {
     fs::write(
         &cache_path,
         serde_json::json!({
-            "version": 8,
+            "version": 9,
             "signature": signature,
             "snapshot": null,
             "summary": {
@@ -829,7 +929,7 @@ fn usage_summary_ignores_previous_dashboard_aggregate_version() {
     assert_eq!(summary.total_tokens, 120);
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""version":9"#));
+    assert!(aggregate_cache_text().contains(r#""version":10"#));
     assert!(aggregate_cache_text().contains(r#""totalTokens":120"#));
 
     fs::remove_dir_all(root).unwrap();

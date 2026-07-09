@@ -4,7 +4,10 @@ export type RecentChartRange = "24h" | "7d" | "30d";
 
 export interface RecentChartScrollLayout {
   isHorizontal: boolean;
-  contentMinWidth: number | null;
+  viewportWidth: number;
+  contentWidth: number;
+  latestScrollLeft: number;
+  windowCount: number;
   className: string;
 }
 
@@ -14,7 +17,7 @@ export interface RecentUsageChartSeries {
   recentUsage30d: RecentUsagePoint[];
 }
 
-export const RECENT_CHART_24H_SCROLL_MIN_WIDTH = 980;
+export const RECENT_CHART_24H_VIEWPORT_SECONDS = 24 * 60 * 60;
 
 export interface SeriesVisibility {
   tokens: boolean;
@@ -115,18 +118,39 @@ export const DEFAULT_SERIES_VISIBILITY: SeriesVisibility = {
   sevenDayQuota: true,
 };
 
-export function recentChartScrollLayout(range: RecentChartRange): RecentChartScrollLayout {
+export function recentChartScrollLayout(
+  range: RecentChartRange,
+  pointCount = 0,
+  bucketSeconds = 0,
+  viewportWidth = 980,
+): RecentChartScrollLayout {
+  const safeViewportWidth = Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 980;
   if (range !== "24h") {
     return {
       isHorizontal: false,
-      contentMinWidth: null,
+      viewportWidth: safeViewportWidth,
+      contentWidth: safeViewportWidth,
+      latestScrollLeft: 0,
+      windowCount: 1,
       className: "recent-chart-scroll",
     };
   }
 
+  const intervalCount = Math.max(0, pointCount - 1);
+  const safeBucketSeconds = Number.isFinite(bucketSeconds) && bucketSeconds > 0 ? bucketSeconds : 5 * 60;
+  const viewportIntervalCount = Math.max(1, RECENT_CHART_24H_VIEWPORT_SECONDS / safeBucketSeconds);
+  const rawContentWidth = intervalCount > 0
+    ? Math.round((intervalCount / viewportIntervalCount) * safeViewportWidth)
+    : safeViewportWidth;
+  const contentWidth = Math.max(safeViewportWidth, rawContentWidth);
+  const windowCount = Math.max(1, Math.ceil(Math.max(intervalCount, 1) / viewportIntervalCount));
+
   return {
-    isHorizontal: true,
-    contentMinWidth: RECENT_CHART_24H_SCROLL_MIN_WIDTH,
+    isHorizontal: contentWidth > safeViewportWidth,
+    viewportWidth: safeViewportWidth,
+    contentWidth,
+    latestScrollLeft: Math.max(0, contentWidth - safeViewportWidth),
+    windowCount,
     className: "recent-chart-scroll recent-chart-scroll--horizontal",
   };
 }

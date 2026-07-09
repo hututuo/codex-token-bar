@@ -3367,7 +3367,14 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .recent-chart-scroll--horizontal .recent-chart-scroll-content {
-  min-width: var(--recent-chart-min-width, 980px);
+  width: var(--recent-chart-content-width, 980px);
+}
+
+.recent-chart-overlay-layer {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
 }
 
 .usage-chart {
@@ -3523,6 +3530,7 @@ input[type="range"]::-moz-range-thumb {
   z-index: 6;
   top: -12px;
   left: 14px;
+  pointer-events: auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 22px;
   gap: 8px;

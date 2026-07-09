@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type CSSProperties } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { RecentUsagePoint } from "../types/dashboard";
 import { formatTokens } from "../utils/format";
 import {
@@ -54,15 +54,17 @@ export function RecentUsageChart({
   const [quotaModel, setQuotaModel] = useState<OfficialAPIPriceModel>(() => readStoredQuotaModel());
   const [quotaSelectionState, setQuotaSelectionState] = useState<QuotaSelectionState>({ startIndex: null, fixedEndIndex: null });
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [chartScrollLeft, setChartScrollLeft] = useState(0);
+  const [chartViewportWidth, setChartViewportWidth] = useState(CHART_WIDTH);
   const data = useMemo(
     () => prepareRecentChartData(range, { recentUsage24h, recentUsage7d, recentUsage30d }),
     [range, recentUsage24h, recentUsage7d, recentUsage30d],
   );
-  const scrollLayout = recentChartScrollLayout(data.range);
-  const scrollContentStyle = scrollLayout.contentMinWidth === null
-    ? undefined
-    : ({ "--recent-chart-min-width": `${scrollLayout.contentMinWidth}px` } as CSSProperties);
-  const plotData = useMemo(() => plotChartPoints(data, CHART_WIDTH, PLOT_HEIGHT), [data]);
+  const scrollLayout = recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, CHART_WIDTH);
+  const chartWidth = scrollLayout.contentWidth;
+  const scrollContentStyle = { "--recent-chart-content-width": `${chartWidth}px` } as CSSProperties;
+  const plotData = useMemo(() => plotChartPoints(data, chartWidth, PLOT_HEIGHT), [data, chartWidth]);
   const activeIndex = hoveredIndex !== null && data.points[hoveredIndex] ? hoveredIndex : null;
   const activePoint = activeIndex !== null ? data.points[activeIndex] : null;
   const activeTokenPoint = activeIndex !== null ? plotData.tokenPoints[activeIndex] : null;
@@ -74,6 +76,16 @@ export function RecentUsageChart({
   const consumptionSelection = quotaSelectionState.startIndex !== null && quotaEndIndex !== null
     ? quotaConsumptionSelection(data, quotaSelectionState.startIndex, quotaEndIndex, quotaModel)
     : null;
+
+  useLayoutEffect(() => {
+    const scrollElement = scrollRef.current;
+    if (!scrollElement) {
+      return;
+    }
+    scrollElement.scrollLeft = scrollLayout.latestScrollLeft;
+    setChartScrollLeft(scrollElement.scrollLeft);
+    setChartViewportWidth(scrollElement.clientWidth || CHART_WIDTH);
+  }, [scrollLayout.latestScrollLeft, data.range, data.points.length]);
 
   function updateRange(next: RecentChartRange) {
     setRange(next);
@@ -100,13 +112,13 @@ export function RecentUsageChart({
     if (!rect) {
       return;
     }
-    const x = ((event.clientX - rect.left) / rect.width) * CHART_WIDTH;
+    const x = ((event.clientX - rect.left) / rect.width) * chartWidth;
     const y = ((event.clientY - rect.top) / rect.height) * CHART_HEIGHT;
     if (y < PLOT_TOP || y > PLOT_TOP + PLOT_HEIGHT) {
       setHoveredIndex(null);
       return;
     }
-    setHoveredIndex(hoverIndexForX(x, CHART_WIDTH, data.points.length));
+    setHoveredIndex(hoverIndexForX(x, chartWidth, data.points.length));
   }
 
   function handlePointerDown(event: React.PointerEvent<SVGSVGElement>) {
@@ -114,12 +126,12 @@ export function RecentUsageChart({
     if (!rect) {
       return;
     }
-    const x = ((event.clientX - rect.left) / rect.width) * CHART_WIDTH;
+    const x = ((event.clientX - rect.left) / rect.width) * chartWidth;
     const y = ((event.clientY - rect.top) / rect.height) * CHART_HEIGHT;
     if (y < PLOT_TOP || y > PLOT_TOP + PLOT_HEIGHT) {
       return;
     }
-    const clickedIndex = hoverIndexForX(x, CHART_WIDTH, data.points.length);
+    const clickedIndex = hoverIndexForX(x, chartWidth, data.points.length);
     if (clickedIndex === null) {
       return;
     }
@@ -181,7 +193,12 @@ export function RecentUsageChart({
       <div className="recent-chart-plot">
         <div
           className={scrollLayout.className}
+          ref={scrollRef}
           aria-label={scrollLayout.isHorizontal ? "最近 24 小时图表可左右滚动" : undefined}
+          onScroll={(event) => {
+            setChartScrollLeft(event.currentTarget.scrollLeft);
+            setChartViewportWidth(event.currentTarget.clientWidth || CHART_WIDTH);
+          }}
           tabIndex={scrollLayout.isHorizontal ? 0 : undefined}
         >
           <div className="recent-chart-scroll-content" style={scrollContentStyle}>
@@ -192,18 +209,18 @@ export function RecentUsageChart({
               onPointerLeave={() => setHoveredIndex(null)}
               onPointerMove={handlePointerMove}
               role="img"
-              viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+              viewBox={`0 0 ${chartWidth} ${CHART_HEIGHT}`}
             >
               <title>{chartAccessibility(data, visibility)}</title>
-              <rect className="chart-plot-bg" x="0" y={PLOT_TOP} width={CHART_WIDTH} height={PLOT_HEIGHT} rx="8" />
-              {consumptionSelection ? <SelectionRange pointCount={data.points.length} selection={consumptionSelection} /> : null}
+              <rect className="chart-plot-bg" x="0" y={PLOT_TOP} width={chartWidth} height={PLOT_HEIGHT} rx="8" />
+              {consumptionSelection ? <SelectionRange chartWidth={chartWidth} pointCount={data.points.length} selection={consumptionSelection} /> : null}
               {[0, 1, 2, 3].map((line) => {
                 const y = PLOT_TOP + (line * PLOT_HEIGHT) / 3;
-                return <line className="chart-grid-line" key={line} x1="0" x2={CHART_WIDTH} y1={y} y2={y} />;
+                return <line className="chart-grid-line" key={line} x1="0" x2={chartWidth} y1={y} y2={y} />;
               })}
               {visibility.tokens ? (
                 <>
-                  <path className="chart-area" d={offsetPath(tokenAreaPath(plotData.tokenPoints, CHART_WIDTH, PLOT_HEIGHT))} />
+                  <path className="chart-area" d={offsetPath(tokenAreaPath(plotData.tokenPoints, chartWidth, PLOT_HEIGHT))} />
                   <path className="chart-line chart-line--token" d={offsetPath(smoothPath(plotData.tokenPoints))} />
                 </>
               ) : null}
@@ -227,33 +244,36 @@ export function RecentUsageChart({
                   visibility={visibility}
                 />
               ) : null}
-              <TimeMarkers data={data} />
+              <TimeMarkers chartWidth={chartWidth} data={data} />
             </svg>
-            {activePoint && activeTokenPoint ? (
-              <HoverBubble
-                bucketSeconds={data.bucketSeconds}
-                cacheVisible={visibility.cacheHitRate}
-                fiveHourRemaining={activePoint.fiveHourRemainingPercent}
-                point={activePoint}
-                sevenDayRemaining={activePoint.sevenDayRemainingPercent}
-                x={activeTokenPoint.x}
-              />
-            ) : null}
-            {consumptionSelection ? (
-              <RecentChartQuotaEstimateOverlay
-                selection={consumptionSelection}
-                onClose={() => setQuotaSelectionState({ startIndex: null, fixedEndIndex: null })}
-              />
-            ) : null}
           </div>
+        </div>
+        <div className="recent-chart-overlay-layer">
+          {activePoint && activeTokenPoint ? (
+            <HoverBubble
+              bucketSeconds={data.bucketSeconds}
+              cacheVisible={visibility.cacheHitRate}
+              fiveHourRemaining={activePoint.fiveHourRemainingPercent}
+              point={activePoint}
+              sevenDayRemaining={activePoint.sevenDayRemainingPercent}
+              viewportWidth={chartViewportWidth}
+              x={activeTokenPoint.x - chartScrollLeft}
+            />
+          ) : null}
+          {consumptionSelection ? (
+            <RecentChartQuotaEstimateOverlay
+              selection={consumptionSelection}
+              onClose={() => setQuotaSelectionState({ startIndex: null, fixedEndIndex: null })}
+            />
+          ) : null}
         </div>
       </div>
     </section>
   );
 }
 
-function SelectionRange({ pointCount, selection }: { pointCount: number; selection: QuotaConsumptionSelection }) {
-  const actualStep = CHART_WIDTH / Math.max(pointCount - 1, 1);
+function SelectionRange({ chartWidth, pointCount, selection }: { chartWidth: number; pointCount: number; selection: QuotaConsumptionSelection }) {
+  const actualStep = chartWidth / Math.max(pointCount - 1, 1);
   const startX = selection.startIndex * actualStep;
   const endX = selection.endIndex * actualStep;
   const x = Math.min(startX, endX);
@@ -310,6 +330,7 @@ function HoverBubble({
   fiveHourRemaining,
   point,
   sevenDayRemaining,
+  viewportWidth,
   x,
 }: {
   bucketSeconds: number;
@@ -317,13 +338,14 @@ function HoverBubble({
   fiveHourRemaining: number | null;
   point: RecentUsagePoint;
   sevenDayRemaining: number | null;
+  viewportWidth: number;
   x: number;
 }) {
-  const left = Math.min(Math.max(x, 92), CHART_WIDTH - 92);
+  const left = Math.min(Math.max(x, 92), Math.max(92, viewportWidth - 92));
   const average = point.calls > 0 ? Math.round(point.tokens / point.calls) : 0;
 
   return (
-    <div className="chart-hover-bubble" style={{ left: `${(left / CHART_WIDTH) * 100}%` }}>
+    <div className="chart-hover-bubble" style={{ left: `${left}px` }}>
       <div>
         <strong>当前点</strong>
         <span>{timeRange(point.startUnix, bucketSeconds)}</span>
@@ -393,7 +415,7 @@ function QuotaEstimateChip({
   );
 }
 
-function TimeMarkers({ data }: { data: ReturnType<typeof prepareRecentChartData> }) {
+function TimeMarkers({ chartWidth, data }: { chartWidth: number; data: ReturnType<typeof prepareRecentChartData> }) {
   return (
     <>
       {data.markerIndices.map((index) => {
@@ -401,7 +423,7 @@ function TimeMarkers({ data }: { data: ReturnType<typeof prepareRecentChartData>
         if (!point) {
           return null;
         }
-        const x = (index / Math.max(data.points.length - 1, 1)) * CHART_WIDTH;
+        const x = (index / Math.max(data.points.length - 1, 1)) * chartWidth;
         return (
           <text className="chart-time-marker" key={index} textAnchor="middle" x={x} y={PLOT_TOP + PLOT_HEIGHT + 24}>
             {data.range === "24h" ? formatHourMinute(point.startUnix) : formatMonthDay(point.startUnix)}
