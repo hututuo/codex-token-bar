@@ -45,6 +45,11 @@ test("Tauri config uses a conservative packaged-app CSP instead of disabling CSP
   assert.match(csp, /default-src 'self'/);
   assert.match(csp, /script-src 'self'/);
   assert.match(csp, /connect-src .*ipc:/);
+  assert.match(csp, /connect-src [^;]*https:\/\/codexradar\.com\/current\.json/);
+  assert.match(csp, /connect-src [^;]*https:\/\/codexradar\.com\/feed\.xml/);
+  assert.doesNotMatch(csp, /connect-src [^;]*https:\/\/codexradar\.com(?:\s|;)/);
+  assert.doesNotMatch(csp, /connect-src [^;]*https:\/\/codexradar\.com\/api\/v1\/current/);
+  assert.doesNotMatch(csp, /connect-src [^;]*\*/);
   assert.match(csp, /style-src .*'unsafe-inline'/);
   assert.match(csp, /img-src [^;]*blob:/);
   assert.notEqual(csp, null);
