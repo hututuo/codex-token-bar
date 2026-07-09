@@ -63,7 +63,10 @@ export function RecentUsageChart({
   );
   const scrollLayout = recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, CHART_WIDTH);
   const chartWidth = scrollLayout.contentWidth;
-  const scrollContentStyle = { "--recent-chart-content-width": `${chartWidth}px` } as CSSProperties;
+  const scrollContentStyle = {
+    "--recent-chart-content-width": `${chartWidth}px`,
+    "--recent-chart-aspect-ratio": `${chartWidth} / ${CHART_HEIGHT}`,
+  } as CSSProperties;
   const plotData = useMemo(() => plotChartPoints(data, chartWidth, PLOT_HEIGHT), [data, chartWidth]);
   const activeIndex = hoveredIndex !== null && data.points[hoveredIndex] ? hoveredIndex : null;
   const activePoint = activeIndex !== null ? data.points[activeIndex] : null;

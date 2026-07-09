@@ -3381,7 +3381,7 @@ input[type="range"]::-moz-range-thumb {
   display: block;
   width: 100%;
   height: auto;
-  aspect-ratio: 980 / 185;
+  aspect-ratio: var(--recent-chart-aspect-ratio, 980 / 185);
   border-radius: 8px;
   overflow: visible;
   background: transparent;
