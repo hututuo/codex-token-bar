@@ -1247,6 +1247,43 @@ button.quota-side-card:hover {
   transform: none;
 }
 
+.unread-ack-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  min-width: 74px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 680;
+  line-height: 1;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+  white-space: nowrap;
+}
+
+.unread-ack-button--active {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 78%, var(--panel));
+  color: color-mix(in srgb, var(--accent-strong) 82%, var(--text));
+}
+
+.unread-ack-button--idle {
+  border-color: color-mix(in srgb, var(--line) 84%, transparent);
+  background: color-mix(in srgb, var(--panel-soft) 72%, transparent);
+  color: color-mix(in srgb, var(--muted) 88%, var(--text));
+}
+
+.unread-ack-button:hover {
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--line));
+}
+
+.unread-ack-button:active {
+  transform: translateY(1px);
+}
+
 .ranking-controls {
   display: flex;
   align-items: center;
