@@ -440,11 +440,11 @@ struct DashboardView: View {
                 showingResetCreditDetails: $showingResetCreditDetails
             )
 
-            StatStrip(snapshot: store.snapshot)
-
-            if store.isPreparingUsageCache {
-                UsageCacheInitializationNotice(status: store.status)
-            }
+            StatStrip(
+                snapshot: store.snapshot,
+                isPreparingUsageCache: store.isPreparingUsageCache,
+                cacheStatus: store.status
+            )
 
             CodexRadarStrip(
                 snapshot: radarStore.snapshot,

@@ -203,6 +203,42 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertFalse(model.accessibilityParts.contains("读取中"))
     }
 
+    func testFloatingPanelAccessibilityUsesPendingLabelsForMetadataOnlyMetrics() {
+        let snapshot = makeTokenDisplaySnapshot(usagePrecision: .metadataOnly)
+        let visibility = FloatingPanelContentVisibility(
+            showRateAndBar: false,
+            showUsageStatus: false,
+            showMetrics: true,
+            showQuota: false,
+            showRadar: false
+        )
+
+        let model = FloatingPanelPresentationModel(snapshot: snapshot, visibility: visibility)
+
+        XCTAssertTrue(model.accessibilityParts.contains("累计 待读取 token"))
+        XCTAssertTrue(model.accessibilityParts.contains("今天 待读取 token"))
+        XCTAssertTrue(model.accessibilityParts.contains("今天 待读取 次请求"))
+        XCTAssertFalse(model.accessibilityValue.contains("123456"))
+        XCTAssertFalse(model.accessibilityValue.contains("7890"))
+    }
+
+    func testFloatingPanelAccessibilityUsesPreciseMetricLabelsWhenAvailable() {
+        let snapshot = makeTokenDisplaySnapshot()
+        let visibility = FloatingPanelContentVisibility(
+            showRateAndBar: false,
+            showUsageStatus: false,
+            showMetrics: true,
+            showQuota: false,
+            showRadar: false
+        )
+
+        let model = FloatingPanelPresentationModel(snapshot: snapshot, visibility: visibility)
+
+        XCTAssertTrue(model.accessibilityParts.contains("累计 \(snapshot.consumedTokensText) token"))
+        XCTAssertTrue(model.accessibilityParts.contains("今天 \(snapshot.todayTokensText) token"))
+        XCTAssertTrue(model.accessibilityParts.contains("今天 \(snapshot.todayRequestsText) 次请求"))
+    }
+
     func testFloatingPanelContentOrderReordersAroundDropTargetWithoutDuplicates() {
         let order: [FloatingPanelContentGroup] = [.rateAndBar, .usageStatus, .metrics, .quota, .radar]
 
@@ -1041,7 +1077,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 40, resetsAt: Date(timeIntervalSince1970: 20_000)),
             status: "额度已读取",
             updatedAt: Date(timeIntervalSince1970: 1_000)
-        )
+        ),
+        usagePrecision: DashboardUsagePrecision = .precise
     ) -> TokenDisplaySnapshot {
         TokenDisplaySnapshot(
             title: "全会话实时",
@@ -1050,6 +1087,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             consumedTokens: 123_456,
             todayTokens: 7_890,
             todayRequests: 42,
+            usagePrecision: usagePrecision,
             quota: quota,
             updatedAt: Date(timeIntervalSince1970: 1_000)
         )

@@ -44,48 +44,6 @@ struct InitialLoadingOverlay: View {
     }
 }
 
-struct UsageCacheInitializationNotice: View {
-    let status: String
-
-    var body: some View {
-        HStack(spacing: 10) {
-            ProgressView()
-                .controlSize(.small)
-                .progressViewStyle(.circular)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("正在初始化本地统计缓存")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.primary)
-                Text("首次打开或更新后可能需要一点时间，只读取本机 Codex 记录，不上传数据。")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 10)
-
-            Text(status)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: 280, alignment: .trailing)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(AppTheme.panelBackground.opacity(0.92))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(AppTheme.border, lineWidth: 1)
-        )
-        .accessibilityLabel("正在初始化本地统计缓存")
-    }
-}
-
 struct HeaderView: View {
     let snapshot: DashboardSnapshot
     let quotaSnapshot: AccountQuotaSnapshot
@@ -294,8 +252,33 @@ struct DataSourceBadge: View {
     }
 }
 
+struct StatStripStatusLinePresentation: Equatable {
+    let text: String
+    let showsProgress: Bool
+
+    init?(
+        hasPreciseTokenUsage: Bool,
+        isPreparingUsageCache: Bool,
+        cacheStatus: String
+    ) {
+        if isPreparingUsageCache {
+            let trimmedStatus = cacheStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+            let statusText = trimmedStatus.isEmpty ? "后台准备中" : trimmedStatus
+            text = "正在初始化本地统计缓存 · \(statusText)"
+            showsProgress = true
+            return
+        }
+
+        guard !hasPreciseTokenUsage else { return nil }
+        text = "仅显示会话元数据，精确 token 仍在读取，请稍后。"
+        showsProgress = false
+    }
+}
+
 struct StatStrip: View {
     let snapshot: DashboardSnapshot
+    var isPreparingUsageCache = false
+    var cacheStatus = ""
 
     private var stats: DashboardStats {
         snapshot.stats
@@ -307,6 +290,14 @@ struct StatStrip: View {
 
     private func tokenValue(_ value: String) -> String {
         isMetadataOnly ? "待读取" : value
+    }
+
+    private var statusLine: StatStripStatusLinePresentation? {
+        StatStripStatusLinePresentation(
+            hasPreciseTokenUsage: snapshot.hasPreciseTokenUsage,
+            isPreparingUsageCache: isPreparingUsageCache,
+            cacheStatus: cacheStatus
+        )
     }
 
     var body: some View {
@@ -323,11 +314,20 @@ struct StatStrip: View {
                 StatCell(value: tokenValue("\(stats.longestStreakDays) 天"), label: "最长连续天数")
             }
 
-            if isMetadataOnly {
-                Text("仅显示会话元数据，精确 token 仍在读取，请稍后。")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            if let statusLine {
+                HStack(spacing: 5) {
+                    if statusLine.showsProgress {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .progressViewStyle(.circular)
+                    }
+                    Text(statusLine.text)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .frame(height: 70)

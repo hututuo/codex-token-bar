@@ -34,9 +34,9 @@ struct FloatingPanelPresentationModel: Equatable {
             parts.append(String(format: "实时速率 %.1f token 每秒", snapshot.rate))
         }
         if visibility.showMetrics {
-            parts.append("累计 \(snapshot.consumedTokens.abbreviatedTokens) token")
-            parts.append("今天 \(snapshot.todayTokens.abbreviatedTokens) token")
-            parts.append("今天 \(snapshot.todayRequests) 次请求")
+            parts.append("累计 \(snapshot.consumedTokensText) token")
+            parts.append("今天 \(snapshot.todayTokensText) token")
+            parts.append("今天 \(snapshot.todayRequestsText) 次请求")
         }
         if visibility.showUsageStatus {
             parts.append(snapshot.compactUsageStatus)

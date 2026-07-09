@@ -156,6 +156,18 @@ struct StatusBarTokenItemPresentation: Equatable {
     }
 }
 
+struct StatusBarUsageMetricsPresentation: Equatable {
+    let totalTokens: String
+    let todayTokens: String
+    let todayRequests: String
+
+    init(snapshot: TokenDisplaySnapshot) {
+        totalTokens = snapshot.consumedTokensText
+        todayTokens = snapshot.todayTokensText
+        todayRequests = snapshot.todayRequestsText
+    }
+}
+
 struct StatusBarTokenPopoverView: View {
     @ObservedObject var store: CodexUsageStore
     @ObservedObject var monitor: LiveRateMonitor
@@ -179,6 +191,7 @@ struct StatusBarTokenPopoverView: View {
     var body: some View {
         let snapshot = TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota)
         let live = monitor.totalSnapshot
+        let usageMetrics = StatusBarUsageMetricsPresentation(snapshot: snapshot)
         let interfaceScale = CGFloat(
             InterfaceScaleSettings.effectiveScale(
                 manualMultiplier: interfaceScaleManualMultiplier,
@@ -236,9 +249,9 @@ struct StatusBarTokenPopoverView: View {
             StatusBarRateTrack(rate: snapshot.rate)
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 7), count: 2), spacing: 7) {
-                StatusBarMetricTile(title: "累计 Token", value: snapshot.consumedTokens.abbreviatedTokens)
-                StatusBarMetricTile(title: "今日 Token", value: snapshot.todayTokens.abbreviatedTokens)
-                StatusBarMetricTile(title: "今日请求", value: "\(snapshot.todayRequests)")
+                StatusBarMetricTile(title: "累计 Token", value: usageMetrics.totalTokens)
+                StatusBarMetricTile(title: "今日 Token", value: usageMetrics.todayTokens)
+                StatusBarMetricTile(title: "今日请求", value: usageMetrics.todayRequests)
                 StatusBarMetricTile(title: "模型生成", value: "\(live.breakdown.modelGenerated)")
             }
 

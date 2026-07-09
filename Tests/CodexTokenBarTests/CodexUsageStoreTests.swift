@@ -133,10 +133,38 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertTrue(storeSource.contains("UsageCacheLifecycle.isCurrentCachePrepared"))
         XCTAssertTrue(storeSource.contains("UsageCacheLifecycle.markCurrentCachePrepared()"))
         XCTAssertTrue(storeSource.contains("isPreparingUsageCache"))
-        XCTAssertTrue(dashboardSource.contains("if store.isPreparingUsageCache"))
-        XCTAssertTrue(dashboardSource.contains("UsageCacheInitializationNotice(status: store.status)"))
+        XCTAssertFalse(dashboardSource.contains("if store.isPreparingUsageCache"))
+        XCTAssertTrue(dashboardSource.contains("StatStrip("))
+        XCTAssertTrue(dashboardSource.contains("isPreparingUsageCache: store.isPreparingUsageCache"))
+        XCTAssertTrue(dashboardSource.contains("cacheStatus: store.status"))
+        XCTAssertFalse(dashboardSource.contains("UsageCacheInitializationNotice(status: store.status)"))
         XCTAssertFalse(dashboardSource.contains("if store.isInitialLoading {\n                InitialLoadingOverlay"))
-        XCTAssertTrue(headerSource.contains("首次打开或更新后可能需要一点时间，只读取本机 Codex 记录，不上传数据。"))
+        XCTAssertTrue(headerSource.contains("StatStripStatusLinePresentation("))
+        XCTAssertTrue(headerSource.contains("正在初始化本地统计缓存"))
+    }
+
+    func testStatStripStatusLineUsesStableFooterForCachePreparation() throws {
+        let preparing = try XCTUnwrap(StatStripStatusLinePresentation(
+            hasPreciseTokenUsage: true,
+            isPreparingUsageCache: true,
+            cacheStatus: "正在增量更新 token"
+        ))
+        let metadataOnly = try XCTUnwrap(StatStripStatusLinePresentation(
+            hasPreciseTokenUsage: false,
+            isPreparingUsageCache: false,
+            cacheStatus: "仅显示会话元数据"
+        ))
+        let preciseIdle = StatStripStatusLinePresentation(
+            hasPreciseTokenUsage: true,
+            isPreparingUsageCache: false,
+            cacheStatus: "token_count · 更新于 12:00"
+        )
+
+        XCTAssertEqual(preparing.text, "正在初始化本地统计缓存 · 正在增量更新 token")
+        XCTAssertTrue(preparing.showsProgress)
+        XCTAssertEqual(metadataOnly.text, "仅显示会话元数据，精确 token 仍在读取，请稍后。")
+        XCTAssertFalse(metadataOnly.showsProgress)
+        XCTAssertNil(preciseIdle)
     }
 
     func testUsageCacheLifecycleMarksCurrentNamespacePrepared() throws {
