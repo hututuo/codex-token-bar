@@ -46,9 +46,11 @@ test("LiveRateCard treats precise summary cache warnings as a wait state during 
     }));
 
     assert.match(html, /role="status"/);
+    assert.match(html, /class="live-title-status is-pending" role="status"/);
     assert.match(html, /实时速率准备中/);
     assert.match(html, /刷新仍在扫描精确 token 缓存，请稍后/);
-    assert.match(html, /class="live-rate-warning is-pending"/);
+    assert.doesNotMatch(html, /class="live-rate-warning is-pending"/);
+    assert.doesNotMatch(html, /class="live-rate-warning"/);
     assert.match(html, /class="live-reset-button" disabled=""/);
     assert.match(html, /title="刷新仍在扫描精确 token 缓存，请稍后。"/);
     assert.doesNotMatch(html, /实时速率降级/);

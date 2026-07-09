@@ -1209,6 +1209,10 @@ button.quota-side-card:hover {
   white-space: nowrap;
 }
 
+.live-title-status.is-pending {
+  color: color-mix(in srgb, var(--accent) 70%, var(--muted));
+}
+
 .live-reset-button {
   display: inline-flex;
   align-items: center;

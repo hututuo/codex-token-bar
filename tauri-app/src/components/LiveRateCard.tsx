@@ -66,6 +66,13 @@ export function LiveRateCard({
     notice?.kind === "pending"
       ? notice.message
       : "清空当前滚动窗口，重新统计整体速率";
+  const pendingNotice = notice?.kind === "pending" ? notice : null;
+  const failureNotice = notice?.kind === "failure" ? notice : null;
+  const subtitle = pendingNotice
+    ? `${pendingNotice.title} · ${pendingNotice.message}`
+    : liveRateEnabled
+      ? "含输出与工具输入流 · 部分流式可能延迟"
+      : "实时速率已关闭";
   const unreadActive = snapshot.unreadSummary.active;
   const unreadAckTitle = unreadActive
     ? `拉基线：${snapshot.unreadSummary.detail || "把当前已知未读/完成提示标记为已读，不删除 Codex 原始数据"}`
@@ -87,7 +94,13 @@ export function LiveRateCard({
               实时速率 {liveRateEnabled ? "开" : "关"}
             </button>
           </div>
-          <span>{liveRateEnabled ? "含输出与工具输入流 · 部分流式可能延迟" : "实时速率已关闭"}</span>
+          <span
+            className={pendingNotice ? "live-title-status is-pending" : "live-title-status"}
+            role={pendingNotice ? "status" : undefined}
+            aria-live={pendingNotice ? "polite" : undefined}
+          >
+            {subtitle}
+          </span>
         </div>
         <div className="live-title-actions">
           <button
@@ -116,13 +129,13 @@ export function LiveRateCard({
         </div>
       </div>
 
-      {notice !== null ? (
-        <div className={notice.kind === "pending" ? "live-rate-warning is-pending" : "live-rate-warning"} role="status">
+      {failureNotice !== null ? (
+        <div className="live-rate-warning" role="status">
           <div>
-            <strong>{notice.title}</strong>
-            <span>{notice.message}</span>
+            <strong>{failureNotice.title}</strong>
+            <span>{failureNotice.message}</span>
           </div>
-          {notice.retryable ? <button type="button" onClick={onLiveRateRetry}>重试</button> : null}
+          {failureNotice.retryable ? <button type="button" onClick={onLiveRateRetry}>重试</button> : null}
         </div>
       ) : null}
 
