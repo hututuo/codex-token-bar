@@ -43,11 +43,11 @@ export function liveRateNotice(
 
   return {
     kind: "pending",
-    title: "实时速率准备中",
+    title: "用量统计重建中",
     message:
       context.refreshing || context.usageCacheInitializing
-        ? "刷新仍在扫描精确 token 缓存，请稍后。"
-        : "精确 token 缓存正在后台准备，请稍后。",
+        ? "刷新仍在扫描本地会话文件，完成后会恢复总/今/次。"
+        : "正在重新扫描本地会话文件，完成后会恢复总/今/次。",
     retryable: false,
   };
 }

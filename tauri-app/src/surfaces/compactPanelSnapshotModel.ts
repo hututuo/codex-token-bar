@@ -101,6 +101,17 @@ export function mergeFloatingUsageSummary(
   };
 }
 
+export function clearFloatingUsageSummary(
+  snapshot: FloatingPanelSnapshot,
+): FloatingPanelSnapshot {
+  return {
+    ...snapshot,
+    totalTokensLabel: baseFloatingPanelSnapshot.totalTokensLabel,
+    todayTokensLabel: baseFloatingPanelSnapshot.todayTokensLabel,
+    requestsLabel: baseFloatingPanelSnapshot.requestsLabel,
+  };
+}
+
 export function compactTokens(value: number): string {
   if (value >= 100_000_000) {
     return `${(value / 100_000_000).toFixed(1)}亿`;
@@ -122,7 +133,7 @@ function compactLiveRateStatus(liveRate: LiveRateSnapshot): { kind: "failure" | 
   if (liveRate.warnings.some((warning) => warning.source === LIVE_RATE_SUMMARY_WARNING_SOURCE)) {
     return {
       kind: "pending",
-      label: "准备中，请稍后",
+      label: "统计重建中",
     };
   }
 

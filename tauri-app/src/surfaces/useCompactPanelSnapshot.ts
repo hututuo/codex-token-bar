@@ -15,6 +15,7 @@ import {
   usageRefreshIntervalMs,
 } from "../utils/usageRefreshCadence";
 import {
+  clearFloatingUsageSummary,
   disabledFloatingLiveSnapshot,
   floatingSnapshotForLiveRate,
   liveRateStreamStartFailureSnapshot,
@@ -64,10 +65,18 @@ export function useCompactPanelSnapshot({
     let cancelled = false;
     const refreshUsageSummary = async () => {
       const summary = await readUsageSummarySnapshot();
-      if (!cancelled && summary) {
+      if (cancelled) {
+        return;
+      }
+
+      if (summary) {
         usageSummaryRef.current = summary;
         setRawSnapshot((current) => mergeFloatingUsageSummary(current, summary));
+        return;
       }
+
+      usageSummaryRef.current = null;
+      setRawSnapshot(clearFloatingUsageSummary);
     };
 
     void refreshUsageSummary();

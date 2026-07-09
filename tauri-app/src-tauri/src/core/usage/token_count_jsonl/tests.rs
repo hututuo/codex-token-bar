@@ -140,6 +140,42 @@ fn keeps_fork_replay_active_for_replayed_user_message_near_token_counts() {
 }
 
 #[test]
+fn fork_replay_with_multiple_session_meta_skips_dense_replayed_history_until_later_prompt() {
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019efork-dense-replay-0000-eeeeffffffff.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-07-09T10:57:40.602Z","type":"session_meta","payload":{"id":"019efork-dense-replay-0000-eeeeffffffff","forked_from_id":"parent"}}"#,
+            r#"{"timestamp":"2026-07-09T10:57:40.603Z","type":"session_meta","payload":{"id":"019efork-dense-replay-0000-eeeeffffffff","forked_from_id":"parent"}}"#,
+            r#"{"timestamp":"2026-07-09T10:57:40.603Z","type":"event_msg","payload":{"type":"user_message","message":"你去看下 finderpeek 项目文件夹，你来接手开发"}}"#,
+            r#"{"timestamp":"2026-07-09T10:57:40.604Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":315509847,"cached_input_tokens":295499520,"output_tokens":1303586,"total_tokens":316813433},"last_token_usage":{"input_tokens":207117,"cached_input_tokens":191360,"output_tokens":88,"total_tokens":207205}}}}"#,
+            r#"{"timestamp":"2026-07-09T10:57:42.921Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":316572989,"cached_input_tokens":296540800,"output_tokens":1306838,"total_tokens":317879827},"last_token_usage":{"input_tokens":221820,"cached_input_tokens":210304,"output_tokens":2428,"total_tokens":224248}}}}"#,
+            r#"{"timestamp":"2026-07-09T10:58:08.319Z","type":"event_msg","payload":{"type":"user_message","message":"请对当前项目做一轮业务逻辑与核心技术债审查"}}"#,
+            r#"{"timestamp":"2026-07-09T10:58:17.090Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":316601495,"cached_input_tokens":296540800,"output_tokens":1306838,"total_tokens":317908333},"last_token_usage":{"input_tokens":28506,"cached_input_tokens":0,"output_tokens":0,"total_tokens":28506}}}}"#,
+        ],
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    assert_eq!(snapshot.stats.total_tokens, 28_506);
+    assert_eq!(snapshot.stats.total_calls, 1);
+
+    let mut warnings = Vec::new();
+    let parsed = parse_session_file_full_result(
+        &file,
+        "019efork-dense-replay-0000-eeeeffffffff",
+        &mut warnings,
+    );
+    assert_eq!(parsed.events.iter().map(|event| event.tokens).sum::<u64>(), 28_506);
+    assert_eq!(parsed.previous_total_tokens, Some(317_908_333));
+    assert_eq!(parsed.events[0].user_prompt, "请对当前项目做一轮业务逻辑与核心技术债审查");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn counts_new_call_after_fork_replay_user_message() {
     let root = temp_root();
     let session_dir = root.join("sessions");

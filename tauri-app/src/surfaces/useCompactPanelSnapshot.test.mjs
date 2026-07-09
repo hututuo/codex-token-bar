@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  clearFloatingUsageSummary,
   compactTokens,
   disabledFloatingLiveSnapshot,
   floatingLiveRateStatusText,
@@ -74,6 +75,29 @@ test("compact panel waits for trusted summary instead of using live-rate totals"
   assert.equal(snapshot.requestsLabel, "次 待读取");
 });
 
+test("compact panel clears stale usage summary labels when precise summary is unavailable", () => {
+  const staleSnapshot = floatingSnapshotForLiveRate(
+    liveRateSnapshot({
+      totalTokens: 11_336_821_671,
+      totalTokensToday: 333_123_813,
+      requestsToday: 2_222,
+    }),
+    {
+      totalTokens: 11_336_821_671,
+      todayTokens: 333_123_813,
+      todayRequests: 2_222,
+    },
+  );
+
+  const cleared = clearFloatingUsageSummary(staleSnapshot);
+
+  assert.equal(cleared.totalTokensLabel, "总 待读取");
+  assert.equal(cleared.todayTokensLabel, "今 待读取");
+  assert.equal(cleared.requestsLabel, "次 待读取");
+  assert.equal(cleared.tokensPerSecond, staleSnapshot.tokensPerSecond);
+  assert.equal(cleared.unreadSummary, staleSnapshot.unreadSummary);
+});
+
 test("compact panel keeps failure marker separate from untrusted live-rate totals", () => {
   const snapshot = floatingSnapshotForLiveRate(
     liveRateSnapshot({
@@ -114,8 +138,8 @@ test("compact panel treats live-rate summary warnings as preparation not failure
   );
 
   assert.equal(snapshot.liveRateStatusKind, "pending");
-  assert.equal(snapshot.liveRateStatusLabel, "准备中，请稍后");
-  assert.equal(floatingLiveRateStatusText(snapshot), "准备中，请稍后");
+  assert.equal(snapshot.liveRateStatusLabel, "统计重建中");
+  assert.equal(floatingLiveRateStatusText(snapshot), "统计重建中");
 });
 
 test("compact panel marks only live-rate stream warnings as degraded", () => {
