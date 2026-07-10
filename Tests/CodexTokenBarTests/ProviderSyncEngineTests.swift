@@ -13,6 +13,35 @@ final class ProviderSyncEngineTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testCodexApplicationMatcherPrefersStableBundleIdentifier() {
+        XCTAssertTrue(CodexDesktopApplicationMatcher.matches(
+            bundleIdentifier: "com.openai.codex",
+            localizedName: "Renamed Desktop"
+        ))
+    }
+
+    func testCodexApplicationMatcherKeepsLegacyAndCurrentNameFallbacks() {
+        XCTAssertTrue(CodexDesktopApplicationMatcher.matches(
+            bundleIdentifier: nil,
+            localizedName: "Codex"
+        ))
+        XCTAssertTrue(CodexDesktopApplicationMatcher.matches(
+            bundleIdentifier: nil,
+            localizedName: "ChatGPT"
+        ))
+    }
+
+    func testCodexApplicationMatcherRejectsUnrelatedApplications() {
+        XCTAssertFalse(CodexDesktopApplicationMatcher.matches(
+            bundleIdentifier: "com.example.codex-helper",
+            localizedName: "Other App"
+        ))
+        XCTAssertFalse(CodexDesktopApplicationMatcher.matches(
+            bundleIdentifier: nil,
+            localizedName: nil
+        ))
+    }
+
     func testSyncCreatesDisposableBackupAndOnlyMutatesIntendedFiles() throws {
         let fixture = try makeFixture()
         let engine = ProviderSyncEngine(backupRoot: fixture.backupRoot)

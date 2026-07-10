@@ -62,6 +62,15 @@ struct ProviderSyncSQLiteThreadColumns {
     var updatedAtMilliseconds: Bool
 }
 
+enum CodexDesktopApplicationMatcher {
+    static func matches(bundleIdentifier: String?, localizedName: String?) -> Bool {
+        if bundleIdentifier == CodexApplicationLocator.bundleIdentifier {
+            return true
+        }
+        return localizedName == "Codex" || localizedName == "ChatGPT"
+    }
+}
+
 final class ProviderSyncEngine {
     let fileManager: FileManager
     private let backupRootOverride: URL?
@@ -265,8 +274,10 @@ final class ProviderSyncEngine {
 
     func isCodexRunning() -> Bool {
         NSWorkspace.shared.runningApplications.contains { app in
-            guard let name = app.localizedName else { return false }
-            return name == "Codex"
+            CodexDesktopApplicationMatcher.matches(
+                bundleIdentifier: app.bundleIdentifier,
+                localizedName: app.localizedName
+            )
         }
     }
 
