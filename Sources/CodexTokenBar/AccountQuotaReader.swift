@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct LiveAccountQuotaReader: QuotaReading {
     func readQuota(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
@@ -43,18 +44,137 @@ protocol AccountQuotaProcessTransport: Sendable {
     func start(codexPath: String, dataSource: CodexDataSource?) throws -> any AccountQuotaProcessSession
 }
 
+enum AccountQuotaStdoutEvent: Equatable, Sendable {
+    case line(Data)
+    case idle
+    case endOfFile
+}
+
+struct AccountQuotaProcessExit: Equatable, Sendable {
+    enum Reason: Equatable, Sendable {
+        case exit
+        case uncaughtSignal
+    }
+
+    let status: Int32
+    let reason: Reason
+}
+
+enum AccountQuotaProcessShutdownError: LocalizedError, Equatable, Sendable {
+    case forceKillFailed(errno: Int32)
+
+    var errorDescription: String? {
+        switch self {
+        case .forceKillFailed(let value):
+            return "Unable to stop Codex app-server after graceful shutdown (errno \(value))."
+        }
+    }
+}
+
 protocol AccountQuotaProcessSession: AnyObject, Sendable {
     func writeStdin(_ data: Data) throws
-    func nextStdoutLine(timeout: TimeInterval) throws -> Data?
+    func nextStdoutEvent(timeout: TimeInterval) throws -> AccountQuotaStdoutEvent
     func stderrTailText() -> String?
-    func terminate()
+    func requestTermination()
+    func shutdown() throws -> AccountQuotaProcessExit
+}
+
+enum AccountQuotaProcessLifecycleError: LocalizedError, Equatable, Sendable {
+    case writeAfterTermination
+
+    var errorDescription: String? {
+        switch self {
+        case .writeAfterTermination:
+            return "Codex app-server stdin is already closed."
+        }
+    }
+}
+
+final class AccountQuotaProcessLifecycle: @unchecked Sendable {
+    private enum State {
+        case running
+        case terminating
+    }
+
+    private let condition = NSCondition()
+    private let writeAction: (Data) throws -> Void
+    private let closeInputAction: () -> Void
+    private let requestGracefulTerminationAction: () -> Void
+    private var state = State.running
+    private var writeInProgress = false
+
+    init(
+        write: @escaping (Data) throws -> Void,
+        closeInput: @escaping () -> Void,
+        requestGracefulTermination: @escaping () -> Void
+    ) {
+        writeAction = write
+        closeInputAction = closeInput
+        requestGracefulTerminationAction = requestGracefulTermination
+    }
+
+    var isTerminationRequested: Bool {
+        condition.withLock { state == .terminating }
+    }
+
+    func write(_ data: Data) throws {
+        condition.lock()
+        while writeInProgress && state == .running {
+            condition.wait()
+        }
+        guard state == .running else {
+            condition.unlock()
+            throw AccountQuotaProcessLifecycleError.writeAfterTermination
+        }
+        writeInProgress = true
+        condition.unlock()
+
+        do {
+            try writeAction(data)
+            finishWrite()
+        } catch {
+            finishWrite()
+            throw error
+        }
+    }
+
+    func requestTermination() {
+        condition.lock()
+        guard state == .running else {
+            condition.unlock()
+            return
+        }
+        state = .terminating
+        while writeInProgress {
+            condition.wait()
+        }
+        closeInputAction()
+        requestGracefulTerminationAction()
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    private func finishWrite() {
+        condition.withLock {
+            writeInProgress = false
+            condition.broadcast()
+        }
+    }
 }
 
 struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sendable {
     private let stderrTailLimit: Int
+    private let gracefulShutdownTimeout: TimeInterval
+    private let forcedShutdownTimeout: TimeInterval
 
-    init(stderrTailLimit: Int = 16_384) {
+    init(
+        stderrTailLimit: Int = 16_384,
+        gracefulShutdownTimeout: TimeInterval = 0.25,
+        forcedShutdownTimeout: TimeInterval = 1
+    ) {
         self.stderrTailLimit = max(0, stderrTailLimit)
+        self.gracefulShutdownTimeout = max(0, gracefulShutdownTimeout)
+        self.forcedShutdownTimeout = max(0, forcedShutdownTimeout)
     }
 
     func start(codexPath: String, dataSource: CodexDataSource?) throws -> any AccountQuotaProcessSession {
@@ -74,6 +194,10 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
         process.standardOutput = output
         process.standardError = errorPipe
 
+        let exitObserver = AccountQuotaProcessExitObserver()
+        process.terminationHandler = { process in
+            exitObserver.record(process: process)
+        }
         let stdoutReader = AccountQuotaLineReader(handle: output.fileHandleForReading)
         let stderrTail = AccountQuotaStderrTail(maxBytes: stderrTailLimit)
         errorPipe.fileHandleForReading.readabilityHandler = { handle in
@@ -94,7 +218,10 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
             output: output.fileHandleForReading,
             error: errorPipe.fileHandleForReading,
             stdoutReader: stdoutReader,
-            stderrTail: stderrTail
+            stderrTail: stderrTail,
+            exitObserver: exitObserver,
+            gracefulShutdownTimeout: gracefulShutdownTimeout,
+            forcedShutdownTimeout: forcedShutdownTimeout
         )
     }
 }
@@ -132,7 +259,44 @@ final class AccountQuotaStderrTail: @unchecked Sendable {
     }
 }
 
+private final class AccountQuotaProcessExitObserver: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var observedExit: AccountQuotaProcessExit?
+
+    func record(process: Process) {
+        let reason: AccountQuotaProcessExit.Reason = process.terminationReason == .exit
+            ? .exit
+            : .uncaughtSignal
+        record(AccountQuotaProcessExit(status: process.terminationStatus, reason: reason))
+    }
+
+    func record(_ exit: AccountQuotaProcessExit) {
+        condition.withLock {
+            guard observedExit == nil else { return }
+            observedExit = exit
+            condition.broadcast()
+        }
+    }
+
+    func wait(timeout: TimeInterval) -> AccountQuotaProcessExit? {
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        condition.lock()
+        defer { condition.unlock() }
+        while observedExit == nil {
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { return nil }
+            condition.wait(until: Date().addingTimeInterval(remaining))
+        }
+        return observedExit
+    }
+}
+
 struct AccountQuotaAppServerClient: Sendable {
+    private enum ReadOutcome {
+        case result(Result<AccountQuotaSnapshot, Error>)
+        case earlyExit(awaiting: String)
+    }
+
     private let transport: any AccountQuotaProcessTransport
     private let timeout: TimeInterval
 
@@ -148,11 +312,28 @@ struct AccountQuotaAppServerClient: Sendable {
         do {
             try Task.checkCancellation()
             let session = try transport.start(codexPath: codexPath, dataSource: dataSource)
-            return await withTaskCancellationHandler {
-                defer { session.terminate() }
+            let outcome = await withTaskCancellationHandler {
                 return read(session: session, dataSource: dataSource)
             } onCancel: {
-                session.terminate()
+                session.requestTermination()
+            }
+            let exit: AccountQuotaProcessExit
+            do {
+                exit = try session.shutdown()
+            } catch {
+                return .failure(error)
+            }
+            if Task.isCancelled {
+                return .failure(CancellationError())
+            }
+            switch outcome {
+            case .result(let result):
+                return result
+            case .earlyExit(let awaitedResponse):
+                let reason = exit.reason == .exit ? "exit" : "signal"
+                return .failure(AccountQuotaReaderError.serverError(
+                    "Codex app-server exited before \(awaitedResponse) (\(reason) status \(exit.status))."
+                ))
             }
         } catch {
             return .failure(error)
@@ -162,7 +343,7 @@ struct AccountQuotaAppServerClient: Sendable {
     private func read(
         session: any AccountQuotaProcessSession,
         dataSource: CodexDataSource?
-    ) -> Result<AccountQuotaSnapshot, Error> {
+    ) -> ReadOutcome {
         do {
             try session.writeStdin(try Self.jsonLine([
                 "jsonrpc": "2.0",
@@ -185,37 +366,41 @@ struct AccountQuotaAppServerClient: Sendable {
             var stateMachine = AccountQuotaJSONRPCReaderStateMachine()
             while Date() < deadline {
                 if Task.isCancelled {
-                    return .failure(CancellationError())
+                    return .result(.failure(CancellationError()))
                 }
                 let remaining = max(0, deadline.timeIntervalSinceNow)
-                guard let line = try session.nextStdoutLine(timeout: min(0.05, remaining)) else {
+                switch try session.nextStdoutEvent(timeout: min(0.05, remaining)) {
+                case .idle:
                     continue
-                }
-                switch stateMachine.consume(line) {
-                case .ignore:
-                    continue
-                case .sendRateLimitRead:
-                    try session.writeStdin(try Self.jsonLine([
-                        "jsonrpc": "2.0",
-                        "method": "initialized"
-                    ]))
-                    try session.writeStdin(try Self.jsonLine([
-                        "jsonrpc": "2.0",
-                        "id": 2,
-                        "method": "account/rateLimits/read"
-                    ]))
-                case .complete(let result):
-                    return .success(AccountQuotaReader.parse(result, dataSource: dataSource))
-                case .fail(let error):
-                    return .failure(error)
+                case .endOfFile:
+                    return .earlyExit(awaiting: stateMachine.awaitedResponseDescription)
+                case .line(let line):
+                    switch stateMachine.consume(line) {
+                    case .ignore:
+                        continue
+                    case .sendRateLimitRead:
+                        try session.writeStdin(try Self.jsonLine([
+                            "jsonrpc": "2.0",
+                            "method": "initialized"
+                        ]))
+                        try session.writeStdin(try Self.jsonLine([
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "method": "account/rateLimits/read"
+                        ]))
+                    case .complete(let result):
+                        return .result(.success(AccountQuotaReader.parse(result, dataSource: dataSource)))
+                    case .fail(let error):
+                        return .result(.failure(error))
+                    }
                 }
             }
             if Task.isCancelled {
-                return .failure(CancellationError())
+                return .result(.failure(CancellationError()))
             }
-            return .failure(AccountQuotaReaderError.timeout(stderrText: session.stderrTailText()))
+            return .result(.failure(AccountQuotaReaderError.timeout(stderrText: session.stderrTailText())))
         } catch {
-            return .failure(error)
+            return .result(.failure(error))
         }
     }
 
@@ -242,6 +427,17 @@ private struct AccountQuotaJSONRPCReaderStateMachine {
 
     private var state = State.awaitingInitialize
 
+    var awaitedResponseDescription: String {
+        switch state {
+        case .awaitingInitialize:
+            return "initialize response"
+        case .awaitingRateLimits:
+            return "rate limits response"
+        case .complete:
+            return "JSON-RPC completion"
+        }
+    }
+
     mutating func consume(_ line: Data) -> Action {
         guard state != .complete,
               let message = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
@@ -251,6 +447,11 @@ private struct AccountQuotaJSONRPCReaderStateMachine {
 
         switch (state, id) {
         case (.awaitingInitialize, 1):
+            if let error = message["error"] as? [String: Any],
+               let message = error["message"] as? String {
+                state = .complete
+                return .fail(.serverError(message))
+            }
             guard message["result"] != nil else { return .ignore }
             state = .awaitingRateLimits
             return .sendRateLimitRead
@@ -271,14 +472,15 @@ private struct AccountQuotaJSONRPCReaderStateMachine {
 }
 
 private final class FoundationAccountQuotaProcessSession: AccountQuotaProcessSession, @unchecked Sendable {
-    private let terminationLock = NSLock()
     private let process: Process
-    private let input: FileHandle
     private let output: FileHandle
     private let error: FileHandle
     private let stdoutReader: AccountQuotaLineReader
     private let stderrTail: AccountQuotaStderrTail
-    private var terminated = false
+    private let exitObserver: AccountQuotaProcessExitObserver
+    private let gracefulShutdownTimeout: TimeInterval
+    private let forcedShutdownTimeout: TimeInterval
+    private let lifecycle: AccountQuotaProcessLifecycle
 
     init(
         process: Process,
@@ -286,14 +488,28 @@ private final class FoundationAccountQuotaProcessSession: AccountQuotaProcessSes
         output: FileHandle,
         error: FileHandle,
         stdoutReader: AccountQuotaLineReader,
-        stderrTail: AccountQuotaStderrTail
+        stderrTail: AccountQuotaStderrTail,
+        exitObserver: AccountQuotaProcessExitObserver,
+        gracefulShutdownTimeout: TimeInterval,
+        forcedShutdownTimeout: TimeInterval
     ) {
         self.process = process
-        self.input = input
         self.output = output
         self.error = error
         self.stdoutReader = stdoutReader
         self.stderrTail = stderrTail
+        self.exitObserver = exitObserver
+        self.gracefulShutdownTimeout = gracefulShutdownTimeout
+        self.forcedShutdownTimeout = forcedShutdownTimeout
+        lifecycle = AccountQuotaProcessLifecycle(
+            write: { data in try input.write(contentsOf: data) },
+            closeInput: { try? input.close() },
+            requestGracefulTermination: {
+                if process.isRunning {
+                    process.terminate()
+                }
+            }
+        )
     }
 
     deinit {
@@ -302,10 +518,10 @@ private final class FoundationAccountQuotaProcessSession: AccountQuotaProcessSes
     }
 
     func writeStdin(_ data: Data) throws {
-        try input.write(contentsOf: data)
+        try lifecycle.write(data)
     }
 
-    func nextStdoutLine(timeout: TimeInterval) throws -> Data? {
+    func nextStdoutEvent(timeout: TimeInterval) throws -> AccountQuotaStdoutEvent {
         stdoutReader.next(timeout: timeout)
     }
 
@@ -313,17 +529,35 @@ private final class FoundationAccountQuotaProcessSession: AccountQuotaProcessSes
         stderrTail.text
     }
 
-    func terminate() {
-        let shouldTerminate = terminationLock.withLock {
-            guard !terminated else { return false }
-            terminated = true
-            return true
+    func requestTermination() {
+        lifecycle.requestTermination()
+    }
+
+    func shutdown() throws -> AccountQuotaProcessExit {
+        lifecycle.requestTermination()
+        if let exit = exitObserver.wait(timeout: gracefulShutdownTimeout) {
+            return exit
         }
-        guard shouldTerminate else { return }
-        try? input.close()
+
         if process.isRunning {
-            process.terminate()
+            errno = 0
+            let result = kill(process.processIdentifier, SIGKILL)
+            if result != 0 && errno != ESRCH {
+                throw AccountQuotaProcessShutdownError.forceKillFailed(errno: errno)
+            }
         }
+        if let exit = exitObserver.wait(timeout: forcedShutdownTimeout) {
+            return exit
+        }
+
+        // SIGKILL has already been issued; synchronously reap so a retry can never overlap this child.
+        process.waitUntilExit()
+        let reason: AccountQuotaProcessExit.Reason = process.terminationReason == .exit
+            ? .exit
+            : .uncaughtSignal
+        let exit = AccountQuotaProcessExit(status: process.terminationStatus, reason: reason)
+        exitObserver.record(exit)
+        return exit
     }
 }
 
@@ -335,8 +569,9 @@ enum AccountQuotaReader {
         let trace = RefreshPerformanceProbe.begin("accountQuotaReader.read", metadata: [
             "source": dataSource?.displayPath ?? "default"
         ])
+        let maxAttempts = max(1, dependencies.maxAttempts)
         var lastError: Error?
-        for attempt in 1...dependencies.maxAttempts {
+        for attempt in 1...maxAttempts {
             if Task.isCancelled {
                 trace?.end("cancelled", metadata: ["attempt": String(attempt)])
                 return .failure(CancellationError())
@@ -359,7 +594,7 @@ enum AccountQuotaReader {
                     "attempt": String(attempt),
                     "available": snapshot.isAvailable ? "1" : "0"
                 ])
-                if snapshot.isAvailable || attempt == dependencies.maxAttempts {
+                if snapshot.isAvailable || attempt == maxAttempts {
                     let enriched = dependencies.shouldReadResetCredits
                         ? await snapshotByAddingResetCredits(to: snapshot, dataSource: dataSource)
                         : snapshot
@@ -380,7 +615,11 @@ enum AccountQuotaReader {
                     trace?.end("cancelled", metadata: ["attempt": String(attempt)])
                     return .failure(CancellationError())
                 }
-                if attempt == dependencies.maxAttempts {
+                if error is AccountQuotaProcessShutdownError {
+                    trace?.end("shutdown-failed", metadata: ["attempt": String(attempt)])
+                    return .failure(error)
+                }
+                if attempt == maxAttempts {
                     trace?.end("failed", metadata: [
                         "attempt": String(attempt),
                         "error": error.localizedDescription
@@ -742,25 +981,34 @@ private final class AccountQuotaLineReader: @unchecked Sendable {
     private let condition = NSCondition()
     private var buffer = Data()
     private var lines: [Data] = []
+    private var reachedEOF = false
 
     init(handle: FileHandle) {
         handle.readabilityHandler = { [weak self] handle in
-            self?.append(handle.availableData)
+            let data = handle.availableData
+            if data.isEmpty {
+                self?.finish()
+            } else {
+                self?.append(data)
+            }
         }
     }
 
-    func next(timeout: TimeInterval) -> Data? {
+    func next(timeout: TimeInterval) -> AccountQuotaStdoutEvent {
         let deadline = Date().addingTimeInterval(timeout)
         condition.lock()
         defer { condition.unlock() }
 
-        while lines.isEmpty {
+        while lines.isEmpty && !reachedEOF {
             let remaining = deadline.timeIntervalSinceNow
-            if remaining <= 0 { return nil }
+            if remaining <= 0 { return .idle }
             condition.wait(until: Date().addingTimeInterval(remaining))
         }
 
-        return lines.removeFirst()
+        if !lines.isEmpty {
+            return .line(lines.removeFirst())
+        }
+        return .endOfFile
     }
 
     private func append(_ data: Data) {
@@ -776,6 +1024,18 @@ private final class AccountQuotaLineReader: @unchecked Sendable {
             let line = buffer[..<newline]
             lines.append(Data(line))
             buffer.removeSubrange(...newline)
+        }
+    }
+
+    private func finish() {
+        condition.withLock {
+            guard !reachedEOF else { return }
+            if !buffer.isEmpty {
+                lines.append(buffer)
+                buffer.removeAll(keepingCapacity: false)
+            }
+            reachedEOF = true
+            condition.broadcast()
         }
     }
 }
