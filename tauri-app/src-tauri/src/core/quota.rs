@@ -67,6 +67,19 @@ impl QuotaCacheScope {
             && self.account_key == current.account_key
             && self.flight_fingerprint == current.flight_fingerprint
     }
+
+    fn history_scope(&self) -> Option<QuotaHistoryScope> {
+        Some(QuotaHistoryScope {
+            codex_home: self.codex_home.clone(),
+            account_key: self.account_key.clone()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct QuotaHistoryScope {
+    codex_home: PathBuf,
+    account_key: String,
 }
 
 #[derive(Clone)]
@@ -84,12 +97,12 @@ struct QuotaHistoryCacheEntry {
 
 #[derive(Default)]
 struct QuotaHistoryMemoryCache {
-    entries: HashMap<QuotaCacheScope, QuotaHistoryCacheEntry>,
-    legacy_owners: HashMap<String, Option<QuotaCacheScope>>,
+    entries: HashMap<QuotaHistoryScope, QuotaHistoryCacheEntry>,
+    legacy_owners: HashMap<String, Option<QuotaHistoryScope>>,
 }
 
 impl QuotaHistoryMemoryCache {
-    fn claim_legacy_scope(&mut self, scope: &QuotaCacheScope, legacy_key: &str) -> bool {
+    fn claim_legacy_scope(&mut self, scope: &QuotaHistoryScope, legacy_key: &str) -> bool {
         match self.legacy_owners.get(legacy_key) {
             Some(Some(owner)) if owner == scope => true,
             Some(Some(_)) => {
@@ -107,7 +120,7 @@ impl QuotaHistoryMemoryCache {
 
     fn load_or_refresh<F>(
         &mut self,
-        scope: &QuotaCacheScope,
+        scope: &QuotaHistoryScope,
         legacy_key: &str,
         force_refresh: bool,
         mut loader: F,
@@ -472,12 +485,15 @@ fn finalize_account_quota(
     scope: &QuotaCacheScope,
     mut bundle: AccountQuotaBundle,
 ) -> Result<AccountQuotaBundle, String> {
+    let Some(history_scope) = scope.history_scope() else {
+        return Ok(bundle);
+    };
     let legacy_key = quota_history::legacy_history_key(&bundle);
     let cache = QUOTA_HISTORY_CACHE.get_or_init(|| Mutex::new(QuotaHistoryMemoryCache::default()));
     let scope_is_safe = cache
         .lock()
         .map_err(|error| error.to_string())?
-        .claim_legacy_scope(scope, &legacy_key);
+        .claim_legacy_scope(&history_scope, &legacy_key);
     if !scope_is_safe {
         return Ok(bundle);
     }
@@ -485,7 +501,7 @@ fn finalize_account_quota(
         bundle.warnings.push(quota_history::warning(error));
         return Ok(bundle);
     }
-    refresh_quota_histories(&mut bundle, scope, true);
+    refresh_quota_histories(&mut bundle, &history_scope, true);
     Ok(bundle)
 }
 
@@ -568,7 +584,7 @@ fn stale_quota_bundle(
 
 fn refresh_quota_histories(
     bundle: &mut AccountQuotaBundle,
-    scope: &QuotaCacheScope,
+    scope: &QuotaHistoryScope,
     force_refresh: bool,
 ) {
     let cache = QUOTA_HISTORY_CACHE.get_or_init(|| Mutex::new(QuotaHistoryMemoryCache::default()));
@@ -1467,7 +1483,9 @@ mod tests {
         use std::cell::Cell;
 
         let mut cache = QuotaHistoryMemoryCache::default();
-        let scope = quota_cache_scope(Path::new("history-home"), Some("sub:history".into()));
+        let scope = quota_cache_scope(Path::new("history-home"), Some("sub:history".into()))
+            .history_scope()
+            .unwrap();
         let load_count = Cell::new(0);
         let mut loader = || {
             let next_count = load_count.get() + 1;
@@ -1501,10 +1519,101 @@ mod tests {
     }
 
     #[test]
+    fn stable_account_token_rotation_keeps_history_scope_owned() {
+        let mut cache = QuotaHistoryMemoryCache::default();
+        let codex_home = PathBuf::from("rotation-home");
+        let before_rotation = QuotaCacheScope {
+            codex_home: codex_home.clone(),
+            account_key: Some("sub:stable-account".into()),
+            flight_fingerprint: [1; 32],
+        };
+        let after_rotation = QuotaCacheScope {
+            codex_home,
+            account_key: Some("sub:stable-account".into()),
+            flight_fingerprint: [2; 32],
+        };
+        let before_history_scope = before_rotation.history_scope().unwrap();
+        let after_history_scope = after_rotation.history_scope().unwrap();
+        let legacy_key = "stable-account|Pro|codex";
+
+        let first = cache
+            .load_or_refresh(&before_history_scope, legacy_key, true, || {
+                Ok(history_bundle_fixture("before-rotation"))
+            })
+            .unwrap();
+        let second = cache
+            .load_or_refresh(&after_history_scope, legacy_key, true, || {
+                Ok(history_bundle_fixture("after-rotation"))
+            })
+            .unwrap();
+
+        assert_eq!(before_history_scope, after_history_scope);
+        assert_eq!(first.recent_24h[0].label, "before-rotation");
+        assert_eq!(
+            second.recent_24h.first().map(|point| point.label.as_str()),
+            Some("after-rotation")
+        );
+        assert!(cache
+            .legacy_owners
+            .get(legacy_key)
+            .is_some_and(Option::is_some));
+    }
+
+    #[test]
+    fn different_stable_accounts_do_not_share_history_scope() {
+        let mut cache = QuotaHistoryMemoryCache::default();
+        let codex_home = PathBuf::from("shared-home");
+        let account_a = QuotaCacheScope {
+            codex_home: codex_home.clone(),
+            account_key: Some("sub:account-a".into()),
+            flight_fingerprint: [3; 32],
+        };
+        let account_b = QuotaCacheScope {
+            codex_home,
+            account_key: Some("sub:account-b".into()),
+            flight_fingerprint: [4; 32],
+        };
+        let history_scope_a = account_a.history_scope().unwrap();
+        let history_scope_b = account_b.history_scope().unwrap();
+        let legacy_key = "shared-name|Pro|codex";
+
+        let a = cache
+            .load_or_refresh(&history_scope_a, legacy_key, true, || {
+                Ok(history_bundle_fixture("account-a"))
+            })
+            .unwrap();
+        let b = cache
+            .load_or_refresh(&history_scope_b, legacy_key, true, || {
+                Ok(history_bundle_fixture("must-not-publish"))
+            })
+            .unwrap();
+
+        assert_ne!(history_scope_a, history_scope_b);
+        assert_eq!(a.recent_24h[0].label, "account-a");
+        assert!(b.recent_24h.is_empty());
+        assert!(cache.legacy_owners.get(legacy_key).is_some_and(Option::is_none));
+    }
+
+    #[test]
+    fn missing_stable_account_key_cannot_own_history_scope() {
+        let scope = QuotaCacheScope {
+            codex_home: PathBuf::from("unkeyed-home"),
+            account_key: None,
+            flight_fingerprint: [5; 32],
+        };
+
+        assert!(scope.history_scope().is_none());
+    }
+
+    #[test]
     fn quota_history_memory_cache_is_scope_aware_and_fails_closed_for_legacy_name_collision() {
         let mut cache = QuotaHistoryMemoryCache::default();
-        let scope_a = quota_cache_scope(Path::new("history-home-a"), Some("sub:a".into()));
-        let scope_b = quota_cache_scope(Path::new("history-home-b"), Some("sub:b".into()));
+        let scope_a = quota_cache_scope(Path::new("history-home-a"), Some("sub:a".into()))
+            .history_scope()
+            .unwrap();
+        let scope_b = quota_cache_scope(Path::new("history-home-b"), Some("sub:b".into()))
+            .history_scope()
+            .unwrap();
 
         let a = cache
             .load_or_refresh(&scope_a, "account-a|Pro|codex", true, || {
@@ -1560,8 +1669,12 @@ mod tests {
     #[test]
     fn legacy_history_scope_is_claimed_before_recording_and_invalidated_on_collision() {
         let mut cache = QuotaHistoryMemoryCache::default();
-        let scope_a = quota_cache_scope(Path::new("claim-home-a"), Some("sub:a".into()));
-        let scope_b = quota_cache_scope(Path::new("claim-home-b"), Some("sub:b".into()));
+        let scope_a = quota_cache_scope(Path::new("claim-home-a"), Some("sub:a".into()))
+            .history_scope()
+            .unwrap();
+        let scope_b = quota_cache_scope(Path::new("claim-home-b"), Some("sub:b".into()))
+            .history_scope()
+            .unwrap();
         let legacy_key = "shared-name|Pro|codex";
 
         assert!(cache.claim_legacy_scope(&scope_a, legacy_key));
@@ -1582,8 +1695,12 @@ mod tests {
         let barrier = Arc::new(Barrier::new(3));
         let claims_done = Arc::new(Barrier::new(3));
         let scopes = [
-            quota_cache_scope(Path::new("concurrent-history-a"), Some("sub:a".into())),
-            quota_cache_scope(Path::new("concurrent-history-b"), Some("sub:b".into())),
+            quota_cache_scope(Path::new("concurrent-history-a"), Some("sub:a".into()))
+                .history_scope()
+                .unwrap(),
+            quota_cache_scope(Path::new("concurrent-history-b"), Some("sub:b".into()))
+                .history_scope()
+                .unwrap(),
         ];
         let handles = scopes
             .into_iter()
