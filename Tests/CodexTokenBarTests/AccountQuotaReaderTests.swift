@@ -17,7 +17,7 @@ final class AccountQuotaReaderTests: XCTestCase {
             """
         )
         defer { fixture.cleanup() }
-        let client = AccountQuotaAppServerClient(
+        let client = makeTestAppServerClient(
             transport: FoundationAccountQuotaProcessTransport(stderrTailLimit: 4_096),
             timeout: 2
         )
@@ -61,7 +61,7 @@ final class AccountQuotaReaderTests: XCTestCase {
         let transport = ScriptedQuotaProcessTransport(scenarios: [
             .init(stdoutLines: [], stderr: Data((noisyPrefix + suffix).utf8))
         ], stderrTailLimit: 1_024)
-        let client = AccountQuotaAppServerClient(transport: transport, timeout: 0.03)
+        let client = makeTestAppServerClient(transport: transport, timeout: 0.03)
 
         let result = await client.read(codexPath: "/fake/codex", dataSource: nil)
 
@@ -89,7 +89,7 @@ final class AccountQuotaReaderTests: XCTestCase {
                 stderr: Data(String(repeating: "model warning\n", count: 2_000).utf8)
             )
         ])
-        let client = AccountQuotaAppServerClient(transport: transport, timeout: 0.2)
+        let client = makeTestAppServerClient(transport: transport, timeout: 0.2)
 
         let result = await client.read(codexPath: "/fake/codex", dataSource: nil)
 
@@ -111,12 +111,31 @@ final class AccountQuotaReaderTests: XCTestCase {
                 ])
             ])
         ])
-        let client = AccountQuotaAppServerClient(transport: transport, timeout: 0.03)
+        let client = makeTestAppServerClient(transport: transport, timeout: 0.03)
 
         let result = await client.read(codexPath: "/fake/codex", dataSource: nil)
 
         XCTAssertThrowsError(try result.get()) { error in
             XCTAssertEqual(error as? AccountQuotaReaderError, .serverError("initialize rejected"))
+        }
+    }
+
+    func testMalformedInitializeJSONRPCErrorIsInvalidResponseWithoutTimeout() async {
+        let transport = ScriptedQuotaProcessTransport(scenarios: [
+            .init(stdoutLines: [
+                jsonLine([
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": ["code": -32_000]
+                ])
+            ])
+        ])
+        let client = makeTestAppServerClient(transport: transport, timeout: 0.03)
+
+        let result = await client.read(codexPath: "/fake/codex", dataSource: nil)
+
+        XCTAssertThrowsError(try result.get()) { error in
+            XCTAssertEqual(error as? AccountQuotaReaderError, .invalidResponse)
         }
     }
 
@@ -132,7 +151,7 @@ final class AccountQuotaReaderTests: XCTestCase {
                 jsonLine(["jsonrpc": "2.0", "id": 2, "result": fallbackRateLimits(usedPercent: 37)])
             ])
         ])
-        let client = AccountQuotaAppServerClient(transport: transport, timeout: 0.2)
+        let client = makeTestAppServerClient(transport: transport, timeout: 0.2)
 
         let snapshot = try await client.read(codexPath: "/fake/codex", dataSource: nil).get()
 
@@ -159,7 +178,7 @@ final class AccountQuotaReaderTests: XCTestCase {
                 ]
             ])
         ])
-        let client = AccountQuotaAppServerClient(transport: transport, timeout: 0.2)
+        let client = makeTestAppServerClient(transport: transport, timeout: 0.2)
 
         let snapshot = try await client.read(codexPath: "/fake/codex", dataSource: nil).get()
 
@@ -172,12 +191,30 @@ final class AccountQuotaReaderTests: XCTestCase {
         let transport = ScriptedQuotaProcessTransport(scenarios: [
             successfulScenario(result: fallbackRateLimits(usedPercent: 48))
         ])
-        let client = AccountQuotaAppServerClient(transport: transport, timeout: 0.2)
+        let client = makeTestAppServerClient(transport: transport, timeout: 0.2)
 
         let snapshot = try await client.read(codexPath: "/fake/codex", dataSource: nil).get()
 
         XCTAssertEqual(snapshot.fiveHour?.usedPercent, 48)
         XCTAssertEqual(snapshot.limitCards.map(\.id), ["codex"])
+    }
+
+    func testSuccessfulReadUsesInjectedAccountLookupWithoutResolvingDefaultHome() async throws {
+        let transport = ScriptedQuotaProcessTransport(scenarios: [
+            successfulScenario(result: fallbackRateLimits(usedPercent: 18))
+        ])
+        let lookup = LocalAccountLookupProbe(accountName: "isolated-auth-sentinel")
+        let client = AccountQuotaAppServerClient(
+            transport: transport,
+            timeout: 0.2,
+            localAccountNameLookup: lookup.readAccountName
+        )
+
+        let snapshot = try await client.read(codexPath: "/fake/codex", dataSource: nil).get()
+
+        XCTAssertEqual(snapshot.accountName, "isolated-auth-sentinel")
+        XCTAssertEqual(lookup.lookupCount, 1)
+        XCTAssertEqual(lookup.nilSourceLookupCount, 1)
     }
 
     func testNonPositiveMaxAttemptsClampToOneAttempt() async throws {
@@ -201,6 +238,69 @@ final class AccountQuotaReaderTests: XCTestCase {
         }
     }
 
+    func testArbitraryShutdownFailureSuppressesRetry() async throws {
+        let codexHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("QuotaReaderTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: codexHome) }
+        let transport = ScriptedQuotaProcessTransport(scenarios: [
+            .init(
+                stdoutLines: successfulScenario(
+                    result: fallbackRateLimits(usedPercent: 31)
+                ).stdoutLines,
+                shutdownError: .shutdownFailed
+            ),
+            successfulScenario(result: fallbackRateLimits(usedPercent: 47))
+        ])
+        let dependencies = AccountQuotaReaderDependencies.testing(
+            transport: transport,
+            timeout: 0.2,
+            maxAttempts: 2
+        )
+
+        let result = await AccountQuotaReader.read(
+            dataSource: CodexDataSource(codexHome: codexHome, origin: .userSelected),
+            dependencies: dependencies
+        )
+
+        XCTAssertThrowsError(try result.get()) { error in
+            XCTAssertTrue(error is AccountQuotaProcessOwnershipFailure)
+        }
+        XCTAssertEqual(transport.startCount, 1)
+    }
+
+    func testCancellationRemainsPublicOutcomeWhenShutdownFails() async {
+        let transport = ScriptedQuotaProcessTransport(scenarios: [
+            .init(
+                stdoutLines: [jsonLine(["jsonrpc": "2.0", "id": 1, "result": [:]])],
+                shutdownError: .shutdownFailed
+            )
+        ])
+        let client = makeTestAppServerClient(transport: transport, timeout: 2)
+        let task = Task {
+            await client.read(codexPath: "/fake/codex", dataSource: nil)
+        }
+
+        await waitUntil("rate-limit request before cancellation") {
+            transport.rateLimitReadCount == 1
+        }
+        task.cancel()
+        let result = await task.value
+
+        XCTAssertThrowsError(try result.get()) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(transport.startCount, 1)
+        XCTAssertEqual(
+            AccountQuotaProcessCleanupDiagnostics.recentEntries.last?.cancellationWasRequested,
+            true
+        )
+        XCTAssertTrue(
+            AccountQuotaProcessCleanupDiagnostics.recentEntries.last?.message
+                .contains("Synthetic shutdown failure") == true
+        )
+    }
+
     func testFakeAppServerFixtureCleanupRemovesTemporaryDirectory() throws {
         let fixture = try makeFakeAppServerScript(body: "exit 0")
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.directory.path))
@@ -213,7 +313,7 @@ final class AccountQuotaReaderTests: XCTestCase {
     func testChildExitBeforeInitializeIsReportedWithoutWaitingForTimeout() async throws {
         let fixture = try makeFakeAppServerScript(body: "exit 7")
         defer { fixture.cleanup() }
-        let client = AccountQuotaAppServerClient(
+        let client = makeTestAppServerClient(
             transport: FoundationAccountQuotaProcessTransport(),
             timeout: 1
         )
@@ -242,7 +342,7 @@ final class AccountQuotaReaderTests: XCTestCase {
             """
         )
         defer { fixture.cleanup() }
-        let client = AccountQuotaAppServerClient(
+        let client = makeTestAppServerClient(
             transport: FoundationAccountQuotaProcessTransport(),
             timeout: 1
         )
@@ -271,7 +371,7 @@ final class AccountQuotaReaderTests: XCTestCase {
             """
         )
         defer { fixture.cleanup() }
-        let client = AccountQuotaAppServerClient(
+        let client = makeTestAppServerClient(
             transport: FoundationAccountQuotaProcessTransport(),
             timeout: 1
         )
@@ -301,7 +401,7 @@ final class AccountQuotaReaderTests: XCTestCase {
         defer { fixture.cleanup() }
         let pidFile = fixture.directory.appendingPathComponent("pids")
         defer { terminateFixtureProcesses(in: pidFile) }
-        let client = AccountQuotaAppServerClient(
+        let client = makeTestAppServerClient(
             transport: FoundationAccountQuotaProcessTransport(),
             timeout: 1
         )
@@ -343,7 +443,8 @@ final class AccountQuotaReaderTests: XCTestCase {
             timeout: 0.05,
             retryDelayNanoseconds: 0,
             maxAttempts: 2,
-            shouldReadResetCredits: false
+            shouldReadResetCredits: false,
+            localAccountNameLookup: { _ in nil }
         )
 
         _ = await AccountQuotaReader.read(dataSource: nil, dependencies: dependencies)
@@ -356,7 +457,7 @@ final class AccountQuotaReaderTests: XCTestCase {
         XCTAssertFalse(pids.contains(where: processIsAlive))
     }
 
-    func testProcessLifecycleRejectsWritesAfterTerminationDeterministically() {
+    func testProcessLifecycleRejectsWritesAfterTerminationDeterministically() async {
         var writeCount = 0
         var closeCount = 0
         var terminateCount = 0
@@ -371,16 +472,24 @@ final class AccountQuotaReaderTests: XCTestCase {
         XCTAssertThrowsError(try lifecycle.write(Data("late write".utf8))) { error in
             XCTAssertEqual(error as? AccountQuotaProcessLifecycleError, .writeAfterTermination)
         }
+        await waitUntil("stdin close after lifecycle termination") {
+            closeCount == 1
+        }
         XCTAssertEqual(writeCount, 0)
         XCTAssertEqual(closeCount, 1)
         XCTAssertEqual(terminateCount, 1)
     }
 
-    func testCancellationDuringPostInitializeWriteSerializesTerminationAndReturnsCancellation() async {
+    func testCancellationDuringPermanentlyBlockedPostInitializeWriteMakesProgress() async {
         let transport = BlockingPostInitializeTransport()
-        let client = AccountQuotaAppServerClient(transport: transport, timeout: 2)
+        let client = makeTestAppServerClient(transport: transport, timeout: 2)
         let task = Task {
             await client.read(codexPath: "/fake/codex", dataSource: nil)
+        }
+        let completion = CompletionFlag()
+        let observer = Task {
+            _ = await task.value
+            completion.markComplete()
         }
 
         XCTAssertEqual(
@@ -390,20 +499,30 @@ final class AccountQuotaReaderTests: XCTestCase {
         let cancellation = Task.detached {
             task.cancel()
         }
-        await waitUntil("termination request during stdin write") {
-            transport.session.lifecycle.isTerminationRequested
+        let completedWithoutExternalRelease = await waitForCondition(timeout: 0.3) {
+            completion.isComplete
         }
-        transport.probe.allowPostInitializeWrite.signal()
+        if !completedWithoutExternalRelease {
+            transport.probe.releaseBlockedWriteForFailureCleanup()
+        }
         _ = await cancellation.result
+        _ = await observer.value
         let result = await task.value
+        await waitUntil("serialized stdin close after blocked write") {
+            transport.probe.closeCount == 1
+        }
 
+        XCTAssertTrue(
+            completedWithoutExternalRelease,
+            "Cancellation must terminate the child and unblock stdin without test-side release"
+        )
         XCTAssertThrowsError(try result.get()) { error in
             XCTAssertTrue(error is CancellationError)
         }
         XCTAssertEqual(transport.probe.writeCount, 2)
         XCTAssertEqual(transport.probe.closeCount, 1)
         XCTAssertEqual(transport.probe.terminateCount, 1)
-        XCTAssertFalse(transport.probe.observedLifecycleOverlap)
+        XCTAssertFalse(transport.probe.observedInputCloseOverlap)
     }
 }
 
@@ -411,6 +530,7 @@ private final class ScriptedQuotaProcessTransport: AccountQuotaProcessTransport,
     struct Scenario {
         var stdoutLines: [Data]
         var stderr: Data = Data()
+        var shutdownError: QuotaReaderTestError?
     }
 
     private let lock = NSLock()
@@ -456,9 +576,11 @@ private final class ScriptedQuotaProcessSession: AccountQuotaProcessSession, @un
     private var writes: [Data] = []
     private var terminated = false
     private let stderr: AccountQuotaStderrTail
+    private let shutdownError: QuotaReaderTestError?
 
     init(scenario: ScriptedQuotaProcessTransport.Scenario, stderrTailLimit: Int) {
         stdoutLines = scenario.stdoutLines
+        shutdownError = scenario.shutdownError
         stderr = AccountQuotaStderrTail(maxBytes: stderrTailLimit)
         stderr.append(scenario.stderr)
     }
@@ -512,12 +634,25 @@ private final class ScriptedQuotaProcessSession: AccountQuotaProcessSession, @un
 
     func shutdown() throws -> AccountQuotaProcessExit {
         requestTermination()
+        if let shutdownError {
+            throw shutdownError
+        }
         return AccountQuotaProcessExit(status: 0, reason: .exit)
     }
 }
 
-private enum QuotaReaderTestError: Error {
+private enum QuotaReaderTestError: LocalizedError {
     case noScenario
+    case shutdownFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .noScenario:
+            return "No scripted quota process scenario remains."
+        case .shutdownFailed:
+            return "Synthetic shutdown failure."
+        }
+    }
 }
 
 private final class BlockingPostInitializeTransport: AccountQuotaProcessTransport, @unchecked Sendable {
@@ -574,18 +709,19 @@ private final class BlockingPostInitializeSession: AccountQuotaProcessSession, @
 
 private final class BlockingPostInitializeProbe: @unchecked Sendable {
     let postInitializeWriteStarted = DispatchSemaphore(value: 0)
-    let allowPostInitializeWrite = DispatchSemaphore(value: 0)
+    private let blockedWrite = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var writes = 0
     private var closes = 0
     private var terminations = 0
     private var writing = false
-    private var lifecycleOverlap = false
+    private var inputCloseOverlap = false
+    private var didReleaseBlockedWrite = false
 
     var writeCount: Int { lock.withLock { writes } }
     var closeCount: Int { lock.withLock { closes } }
     var terminateCount: Int { lock.withLock { terminations } }
-    var observedLifecycleOverlap: Bool { lock.withLock { lifecycleOverlap } }
+    var observedInputCloseOverlap: Bool { lock.withLock { inputCloseOverlap } }
 
     func write(_ data: Data) throws {
         let count = lock.withLock {
@@ -595,24 +731,86 @@ private final class BlockingPostInitializeProbe: @unchecked Sendable {
         if count == 2 {
             lock.withLock { writing = true }
             postInitializeWriteStarted.signal()
-            allowPostInitializeWrite.wait()
+            blockedWrite.wait()
             lock.withLock { writing = false }
         }
     }
 
     func closeInput() {
         lock.withLock {
-            lifecycleOverlap = lifecycleOverlap || writing
+            inputCloseOverlap = inputCloseOverlap || writing
             closes += 1
         }
     }
 
     func requestGracefulTermination() {
-        lock.withLock {
-            lifecycleOverlap = lifecycleOverlap || writing
+        let shouldRelease = lock.withLock {
             terminations += 1
+            guard !didReleaseBlockedWrite else { return false }
+            didReleaseBlockedWrite = true
+            return true
+        }
+        if shouldRelease {
+            blockedWrite.signal()
         }
     }
+
+    func releaseBlockedWriteForFailureCleanup() {
+        let shouldRelease = lock.withLock {
+            guard !didReleaseBlockedWrite else { return false }
+            didReleaseBlockedWrite = true
+            return true
+        }
+        if shouldRelease {
+            blockedWrite.signal()
+        }
+    }
+}
+
+private final class CompletionFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var complete = false
+
+    var isComplete: Bool { lock.withLock { complete } }
+
+    func markComplete() {
+        lock.withLock { complete = true }
+    }
+}
+
+private final class LocalAccountLookupProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let accountName: String
+    private var lookups = 0
+    private var nilSourceLookups = 0
+
+    init(accountName: String) {
+        self.accountName = accountName
+    }
+
+    var lookupCount: Int { lock.withLock { lookups } }
+    var nilSourceLookupCount: Int { lock.withLock { nilSourceLookups } }
+
+    func readAccountName(dataSource: CodexDataSource?) -> String? {
+        lock.withLock {
+            lookups += 1
+            if dataSource == nil {
+                nilSourceLookups += 1
+            }
+        }
+        return accountName
+    }
+}
+
+private func makeTestAppServerClient(
+    transport: any AccountQuotaProcessTransport,
+    timeout: TimeInterval
+) -> AccountQuotaAppServerClient {
+    AccountQuotaAppServerClient(
+        transport: transport,
+        timeout: timeout,
+        localAccountNameLookup: { _ in nil }
+    )
 }
 
 private func successfulScenario(result: [String: Any]) -> ScriptedQuotaProcessTransport.Scenario {
@@ -708,4 +906,16 @@ private func waitUntil(
         try? await Task.sleep(nanoseconds: 5_000_000)
     }
     XCTFail("Timed out waiting for \(description)")
+}
+
+private func waitForCondition(
+    timeout: TimeInterval,
+    condition: @escaping () -> Bool
+) async -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if condition() { return true }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+    return condition()
 }

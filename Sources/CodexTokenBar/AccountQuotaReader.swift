@@ -14,6 +14,7 @@ struct AccountQuotaReaderDependencies: Sendable {
     let retryDelayNanoseconds: UInt64
     let maxAttempts: Int
     let shouldReadResetCredits: Bool
+    let localAccountNameLookup: @Sendable (CodexDataSource?) -> String?
 
     static let live = AccountQuotaReaderDependencies(
         transport: FoundationAccountQuotaProcessTransport(),
@@ -21,7 +22,8 @@ struct AccountQuotaReaderDependencies: Sendable {
         timeout: 12,
         retryDelayNanoseconds: 350_000_000,
         maxAttempts: 3,
-        shouldReadResetCredits: true
+        shouldReadResetCredits: true,
+        localAccountNameLookup: { AccountQuotaReader.readLocalAccountName(dataSource: $0) }
     )
 
     static func testing(
@@ -35,7 +37,8 @@ struct AccountQuotaReaderDependencies: Sendable {
             timeout: timeout,
             retryDelayNanoseconds: 0,
             maxAttempts: maxAttempts,
-            shouldReadResetCredits: false
+            shouldReadResetCredits: false,
+            localAccountNameLookup: { _ in nil }
         )
     }
 }
@@ -60,7 +63,9 @@ struct AccountQuotaProcessExit: Equatable, Sendable {
     let reason: Reason
 }
 
-enum AccountQuotaProcessShutdownError: LocalizedError, Equatable, Sendable {
+protocol AccountQuotaProcessOwnershipFailure: Error {}
+
+enum AccountQuotaProcessShutdownError: LocalizedError, Equatable, Sendable, AccountQuotaProcessOwnershipFailure {
     case forceKillFailed(errno: Int32)
 
     var errorDescription: String? {
@@ -68,6 +73,14 @@ enum AccountQuotaProcessShutdownError: LocalizedError, Equatable, Sendable {
         case .forceKillFailed(let value):
             return "Unable to stop Codex app-server after graceful shutdown (errno \(value))."
         }
+    }
+}
+
+struct AccountQuotaProcessOwnershipError: LocalizedError, AccountQuotaProcessOwnershipFailure, @unchecked Sendable {
+    let underlyingError: Error
+
+    var errorDescription: String? {
+        "Codex app-server process ownership was not settled: \(underlyingError.localizedDescription)"
     }
 }
 
@@ -94,14 +107,18 @@ final class AccountQuotaProcessLifecycle: @unchecked Sendable {
     private enum State {
         case running
         case terminating
+        case closed
     }
 
     private let condition = NSCondition()
+    private let writerQueue = DispatchQueue(label: "CodexTokenBar.AccountQuotaProcessLifecycle.writer")
     private let writeAction: (Data) throws -> Void
     private let closeInputAction: () -> Void
     private let requestGracefulTerminationAction: () -> Void
     private var state = State.running
-    private var writeInProgress = false
+    private var pendingWrites: [Data] = []
+    private var writerScheduled = false
+    private var writeFailure: Error?
 
     init(
         write: @escaping (Data) throws -> Void,
@@ -114,50 +131,107 @@ final class AccountQuotaProcessLifecycle: @unchecked Sendable {
     }
 
     var isTerminationRequested: Bool {
-        condition.withLock { state == .terminating }
+        condition.withLock { state != .running }
     }
 
     func write(_ data: Data) throws {
         condition.lock()
-        while writeInProgress && state == .running {
-            condition.wait()
-        }
         guard state == .running else {
             condition.unlock()
             throw AccountQuotaProcessLifecycleError.writeAfterTermination
         }
-        writeInProgress = true
+        pendingWrites.append(data)
+        scheduleWriterLocked()
         condition.unlock()
-
-        do {
-            try writeAction(data)
-            finishWrite()
-        } catch {
-            finishWrite()
-            throw error
-        }
     }
 
     func requestTermination() {
-        condition.lock()
-        guard state == .running else {
-            condition.unlock()
-            return
+        let shouldRequestTermination = condition.withLock {
+            guard state == .running else { return false }
+            state = .terminating
+            pendingWrites.removeAll()
+            scheduleWriterLocked()
+            condition.broadcast()
+            return true
         }
-        state = .terminating
-        while writeInProgress {
-            condition.wait()
+        if shouldRequestTermination {
+            requestGracefulTerminationAction()
         }
-        closeInputAction()
-        requestGracefulTerminationAction()
-        condition.broadcast()
-        condition.unlock()
     }
 
-    private func finishWrite() {
-        condition.withLock {
-            writeInProgress = false
-            condition.broadcast()
+    var currentWriteFailure: Error? {
+        condition.withLock { writeFailure }
+    }
+
+    func waitUntilInputClosed(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(max(0, timeout))
+        condition.lock()
+        defer { condition.unlock() }
+        while state != .closed {
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { return false }
+            condition.wait(until: Date().addingTimeInterval(remaining))
+        }
+        return true
+    }
+
+    private func scheduleWriterLocked() {
+        guard !writerScheduled else { return }
+        writerScheduled = true
+        writerQueue.async { [self] in
+            drainWrites()
+        }
+    }
+
+    private func drainWrites() {
+        while true {
+            let nextWrite: Data?
+            condition.lock()
+            switch state {
+            case .running:
+                guard !pendingWrites.isEmpty else {
+                    writerScheduled = false
+                    condition.broadcast()
+                    condition.unlock()
+                    return
+                }
+                nextWrite = pendingWrites.removeFirst()
+                condition.unlock()
+            case .terminating:
+                pendingWrites.removeAll()
+                condition.unlock()
+                closeInputAction()
+                condition.withLock {
+                    state = .closed
+                    writerScheduled = false
+                    condition.broadcast()
+                }
+                return
+            case .closed:
+                writerScheduled = false
+                condition.broadcast()
+                condition.unlock()
+                return
+            }
+
+            guard let nextWrite else { continue }
+            do {
+                try writeAction(nextWrite)
+            } catch {
+                let shouldRequestTermination = condition.withLock {
+                    if writeFailure == nil {
+                        writeFailure = error
+                    }
+                    guard state == .running else { return false }
+                    state = .terminating
+                    pendingWrites.removeAll()
+                    condition.broadcast()
+                    return true
+                }
+                if shouldRequestTermination {
+                    requestGracefulTerminationAction()
+                }
+            }
         }
     }
 }
@@ -291,6 +365,77 @@ private final class AccountQuotaProcessExitObserver: @unchecked Sendable {
     }
 }
 
+private final class AccountQuotaDurableProcessReaper: @unchecked Sendable {
+    private struct Adoption {
+        let process: Process
+        let owner: AnyObject
+    }
+
+    static let shared = AccountQuotaDurableProcessReaper()
+
+    private let lock = NSLock()
+    private let queue = DispatchQueue(
+        label: "CodexTokenBar.AccountQuotaDurableProcessReaper",
+        attributes: .concurrent
+    )
+    private var adoptions: [UUID: Adoption] = [:]
+
+    func adopt(
+        process: Process,
+        owner: AnyObject,
+        exitObserver: AccountQuotaProcessExitObserver
+    ) {
+        let id = UUID()
+        lock.withLock {
+            adoptions[id] = Adoption(process: process, owner: owner)
+        }
+        queue.async { [self] in
+            process.waitUntilExit()
+            exitObserver.record(process: process)
+            _ = lock.withLock {
+                adoptions.removeValue(forKey: id)
+            }
+        }
+    }
+}
+
+enum AccountQuotaProcessCleanupDiagnostics {
+    struct Entry: Sendable {
+        let message: String
+        let cancellationWasRequested: Bool
+        let occurredAt: Date
+    }
+
+    private final class Storage: @unchecked Sendable {
+        let lock = NSLock()
+        var entries: [Entry] = []
+    }
+
+    private static let storage = Storage()
+
+    static var recentEntries: [Entry] {
+        storage.lock.withLock { storage.entries }
+    }
+
+    static func record(_ error: Error, cancellationWasRequested: Bool) {
+        let entry = Entry(
+            message: error.localizedDescription,
+            cancellationWasRequested: cancellationWasRequested,
+            occurredAt: Date()
+        )
+        storage.lock.withLock {
+            storage.entries.append(entry)
+            if storage.entries.count > 8 {
+                storage.entries.removeFirst(storage.entries.count - 8)
+            }
+        }
+        RefreshPerformanceProbe.event("accountQuotaReader.cleanupFailed", metadata: [
+            "cancelled": cancellationWasRequested ? "1" : "0",
+            "error": entry.message
+        ])
+    }
+}
+
 struct AccountQuotaAppServerClient: Sendable {
     private enum ReadOutcome {
         case result(Result<AccountQuotaSnapshot, Error>)
@@ -299,10 +444,16 @@ struct AccountQuotaAppServerClient: Sendable {
 
     private let transport: any AccountQuotaProcessTransport
     private let timeout: TimeInterval
+    private let localAccountNameLookup: @Sendable (CodexDataSource?) -> String?
 
-    init(transport: any AccountQuotaProcessTransport, timeout: TimeInterval) {
+    init(
+        transport: any AccountQuotaProcessTransport,
+        timeout: TimeInterval,
+        localAccountNameLookup: @escaping @Sendable (CodexDataSource?) -> String?
+    ) {
         self.transport = transport
         self.timeout = timeout
+        self.localAccountNameLookup = localAccountNameLookup
     }
 
     func read(
@@ -321,7 +472,13 @@ struct AccountQuotaAppServerClient: Sendable {
             do {
                 exit = try session.shutdown()
             } catch {
-                return .failure(error)
+                let ownershipError = AccountQuotaProcessOwnershipError(underlyingError: error)
+                let cancelled = Task.isCancelled
+                AccountQuotaProcessCleanupDiagnostics.record(
+                    ownershipError,
+                    cancellationWasRequested: cancelled
+                )
+                return cancelled ? .failure(CancellationError()) : .failure(ownershipError)
             }
             if Task.isCancelled {
                 return .failure(CancellationError())
@@ -389,7 +546,10 @@ struct AccountQuotaAppServerClient: Sendable {
                             "method": "account/rateLimits/read"
                         ]))
                     case .complete(let result):
-                        return .result(.success(AccountQuotaReader.parse(result, dataSource: dataSource)))
+                        return .result(.success(AccountQuotaReader.parse(
+                            result,
+                            accountName: localAccountNameLookup(dataSource)
+                        )))
                     case .fail(let error):
                         return .result(.failure(error))
                     }
@@ -447,9 +607,12 @@ private struct AccountQuotaJSONRPCReaderStateMachine {
 
         switch (state, id) {
         case (.awaitingInitialize, 1):
-            if let error = message["error"] as? [String: Any],
-               let message = error["message"] as? String {
+            if message["error"] != nil {
                 state = .complete
+                guard let error = message["error"] as? [String: Any],
+                      let message = error["message"] as? String else {
+                    return .fail(.invalidResponse)
+                }
                 return .fail(.serverError(message))
             }
             guard message["result"] != nil else { return .ignore }
@@ -522,7 +685,10 @@ private final class FoundationAccountQuotaProcessSession: AccountQuotaProcessSes
     }
 
     func nextStdoutEvent(timeout: TimeInterval) throws -> AccountQuotaStdoutEvent {
-        stdoutReader.next(timeout: timeout)
+        if let writeFailure = lifecycle.currentWriteFailure {
+            throw writeFailure
+        }
+        return stdoutReader.next(timeout: timeout)
     }
 
     func stderrTailText() -> String? {
@@ -536,18 +702,23 @@ private final class FoundationAccountQuotaProcessSession: AccountQuotaProcessSes
     func shutdown() throws -> AccountQuotaProcessExit {
         lifecycle.requestTermination()
         if let exit = exitObserver.wait(timeout: gracefulShutdownTimeout) {
-            return exit
+            return finishShutdown(exit)
         }
 
         if process.isRunning {
             errno = 0
             let result = kill(process.processIdentifier, SIGKILL)
             if result != 0 && errno != ESRCH {
+                AccountQuotaDurableProcessReaper.shared.adopt(
+                    process: process,
+                    owner: self,
+                    exitObserver: exitObserver
+                )
                 throw AccountQuotaProcessShutdownError.forceKillFailed(errno: errno)
             }
         }
         if let exit = exitObserver.wait(timeout: forcedShutdownTimeout) {
-            return exit
+            return finishShutdown(exit)
         }
 
         // SIGKILL has already been issued; synchronously reap so a retry can never overlap this child.
@@ -557,6 +728,11 @@ private final class FoundationAccountQuotaProcessSession: AccountQuotaProcessSes
             : .uncaughtSignal
         let exit = AccountQuotaProcessExit(status: process.terminationStatus, reason: reason)
         exitObserver.record(exit)
+        return finishShutdown(exit)
+    }
+
+    private func finishShutdown(_ exit: AccountQuotaProcessExit) -> AccountQuotaProcessExit {
+        _ = lifecycle.waitUntilInputClosed(timeout: forcedShutdownTimeout)
         return exit
     }
 }
@@ -582,7 +758,8 @@ enum AccountQuotaReader {
                 let codexPath = try dependencies.locateCodexBinary()
                 let client = AccountQuotaAppServerClient(
                     transport: dependencies.transport,
-                    timeout: dependencies.timeout
+                    timeout: dependencies.timeout,
+                    localAccountNameLookup: dependencies.localAccountNameLookup
                 )
                 result = await client.read(codexPath: codexPath, dataSource: dataSource)
             } catch {
@@ -615,8 +792,8 @@ enum AccountQuotaReader {
                     trace?.end("cancelled", metadata: ["attempt": String(attempt)])
                     return .failure(CancellationError())
                 }
-                if error is AccountQuotaProcessShutdownError {
-                    trace?.end("shutdown-failed", metadata: ["attempt": String(attempt)])
+                if error is AccountQuotaProcessOwnershipFailure {
+                    trace?.end("ownership-failed", metadata: ["attempt": String(attempt)])
                     return .failure(error)
                 }
                 if attempt == maxAttempts {
@@ -664,7 +841,7 @@ enum AccountQuotaReader {
         return enriched
     }
 
-    static func parse(_ result: [String: Any], dataSource: CodexDataSource?) -> AccountQuotaSnapshot {
+    static func parse(_ result: [String: Any], accountName: String?) -> AccountQuotaSnapshot {
         let byLimit = result["rateLimitsByLimitId"] as? [String: Any]
         let fallbackLimit = result["rateLimits"] as? [String: Any]
         let limitCards = parseLimitCards(byLimit: byLimit, fallbackLimit: fallbackLimit)
@@ -674,8 +851,6 @@ enum AccountQuotaReader {
         let secondary = parseWindow(codex["secondary"] as? [String: Any], label: "7d") ?? primaryCard?.sevenDay
         let planType = (codex["planType"] as? String) ?? primaryCard?.planType
         let limitName = (codex["limitName"] as? String) ?? primaryCard?.limitName
-        let accountName = readLocalAccountName(dataSource: dataSource)
-
         var snapshot = AccountQuotaSnapshot(
             fiveHour: primary,
             sevenDay: secondary,
@@ -912,7 +1087,7 @@ enum AccountQuotaReader {
         return plainFormatter.date(from: value)
     }
 
-    private static func readLocalAccountName(dataSource: CodexDataSource?) -> String? {
+    fileprivate static func readLocalAccountName(dataSource: CodexDataSource?) -> String? {
         let url = authFileURL(dataSource: dataSource)
         guard let data = try? Data(contentsOf: url),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

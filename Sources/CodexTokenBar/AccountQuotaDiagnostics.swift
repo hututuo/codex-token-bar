@@ -93,6 +93,7 @@ struct AccountQuotaDiagnostic: LocalizedError, Equatable, Sendable {
         occurredAt: Date? = nil
     ) -> AccountQuotaDiagnostic {
         let category = category(for: error, httpStatus: httpStatus)
+        let isOwnershipFailure = error is AccountQuotaProcessOwnershipFailure
         return AccountQuotaDiagnostic(
             source: source,
             category: category,
@@ -101,7 +102,7 @@ struct AccountQuotaDiagnostic: LocalizedError, Equatable, Sendable {
             rawCause: rawCause(for: error, httpStatus: httpStatus),
             attempts: attempts,
             httpStatus: httpStatus,
-            retryable: retryable(for: category),
+            retryable: isOwnershipFailure ? false : retryable(for: category),
             occurredAt: occurredAt
         )
     }
@@ -143,6 +144,9 @@ struct AccountQuotaDiagnostic: LocalizedError, Equatable, Sendable {
     private static func category(for error: Error, httpStatus: Int?) -> AccountQuotaDiagnosticCategory {
         if let httpStatus {
             return category(forHTTPStatus: httpStatus)
+        }
+        if error is AccountQuotaProcessOwnershipFailure {
+            return .appServerUnavailable
         }
         if let readerError = error as? AccountQuotaReaderError {
             switch readerError {

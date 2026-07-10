@@ -41,6 +41,25 @@ final class AccountQuotaDiagnosticsTests: XCTestCase {
         XCTAssertTrue(diagnostic.retryable)
     }
 
+    func testProcessShutdownFailureIsUnavailableAndNotRetryable() {
+        let errors: [Error] = [
+            AccountQuotaProcessShutdownError.forceKillFailed(errno: EPERM),
+            AccountQuotaProcessOwnershipError(underlyingError: QuotaDiagnosticTestError())
+        ]
+
+        for error in errors {
+            let diagnostic = AccountQuotaDiagnostic.classify(
+                source: .accountQuota,
+                error: error,
+                occurredAt: Date(timeIntervalSince1970: 1_000)
+            )
+
+            XCTAssertEqual(diagnostic.category, .appServerUnavailable)
+            XCTAssertFalse(diagnostic.retryable)
+            XCTAssertFalse(diagnostic.rawCause?.isEmpty ?? true)
+        }
+    }
+
     func testHTTPStatusClassifierUsesSharedQuotaCategories() {
         XCTAssertEqual(AccountQuotaDiagnostic.category(forHTTPStatus: 401), .httpAuth)
         XCTAssertEqual(AccountQuotaDiagnostic.category(forHTTPStatus: 403), .httpAuth)
