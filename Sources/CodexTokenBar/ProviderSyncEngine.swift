@@ -71,6 +71,17 @@ enum CodexDesktopApplicationMatcher {
     }
 }
 
+enum ProviderSyncMutationError: LocalizedError, Equatable, Sendable {
+    case codexRunning(operation: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .codexRunning(let operation):
+            return "\(operation) 已拒绝：Codex 正在运行。请先退出 Codex Desktop，再重新执行 Provider 修复。"
+        }
+    }
+}
+
 final class ProviderSyncEngine {
     private static let mutationLeaseRegistry = ProviderSyncMutationLeaseRegistry()
 
@@ -314,13 +325,7 @@ final class ProviderSyncEngine {
 
     private func rejectMutationIfCodexIsRunning(operation: String) throws {
         guard !isCodexRunning() else {
-            throw NSError(
-                domain: "CodexTokenBar",
-                code: 409,
-                userInfo: [
-                    NSLocalizedDescriptionKey: "\(operation) 已拒绝：Codex 正在运行。请先退出 Codex Desktop，再重新执行 Provider 修复。"
-                ]
-            )
+            throw ProviderSyncMutationError.codexRunning(operation: operation)
         }
     }
 

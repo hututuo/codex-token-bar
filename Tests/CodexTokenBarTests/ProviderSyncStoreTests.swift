@@ -138,6 +138,54 @@ final class ProviderSyncStoreTests: XCTestCase {
         XCTAssertTrue(store.canSync)
     }
 
+    func testBackendRunningRejectionOverridesStaleSnapshotAndDisablesMutations() async throws {
+        let source = CodexDataSource(
+            codexHome: try makeTemporaryDirectory(named: "ProviderSyncStaleRunningHome"),
+            origin: .userSelected
+        )
+        let runner = SuspendedProviderSyncRunner()
+        let store = ProviderSyncStore(runner: runner)
+
+        XCTAssertFalse(store.snapshot.codexRunning)
+        XCTAssertTrue(store.canSync)
+        XCTAssertTrue(store.canRollback)
+
+        store.sync(dataSource: source)
+        await waitUntil("sync request pending") {
+            await runner.hasPending(.sync, codexHome: source.codexHome)
+        }
+        let backend = ProviderSyncEngine(
+            backupRoot: try makeTemporaryDirectory(named: "ProviderSyncStaleRunningBackups"),
+            applicationRunningProbe: { true }
+        )
+        let backendRunningError: Error
+        do {
+            _ = try backend.sync(
+                codexHome: source.codexHome,
+                includeArchivedSessions: false,
+                targetProviderOverride: "openai",
+                dryRunOnly: false
+            )
+            return XCTFail("后端未拒绝 Codex 运行时的同步")
+        } catch {
+            backendRunningError = error
+        }
+        await runner.fail(
+            .sync,
+            codexHome: source.codexHome,
+            error: backendRunningError
+        )
+        await waitUntil("backend running rejection published") {
+            store.snapshot.codexRunning && !store.snapshot.isWorking
+        }
+
+        XCTAssertTrue(store.snapshot.status.contains("Codex 正在运行"))
+        XCTAssertFalse(store.canSync)
+        XCTAssertFalse(store.canRollback)
+        XCTAssertTrue(store.canScanOrVerify)
+        XCTAssertTrue(store.canCreateBackup)
+    }
+
     private func waitUntil(
         _ label: String,
         timeout: TimeInterval = 2,

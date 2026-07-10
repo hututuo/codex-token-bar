@@ -235,6 +235,10 @@ final class ProviderSyncStore: ObservableObject {
                 case .failure(let error):
                     var failed = snapshot
                     failed.isWorking = false
+                    if let mutationError = error as? ProviderSyncMutationError,
+                       case .codexRunning = mutationError {
+                        failed.codexRunning = true
+                    }
                     failed.status = error.localizedDescription
                     snapshot = failed
                     activeOperationKind = nil

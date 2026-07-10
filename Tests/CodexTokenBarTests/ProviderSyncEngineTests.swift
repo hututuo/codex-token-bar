@@ -82,6 +82,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             backupRoot: fixture.backupRoot,
             applicationRunningProbe: { true }
         )
+        let stateBeforeReadOnlyOperations = try disposableState(for: fixture)
 
         let scan = try engine.scan(codexHome: fixture.codexHome, includeArchivedSessions: false)
         XCTAssertTrue(scan.codexRunning)
@@ -94,6 +95,7 @@ final class ProviderSyncEngineTests: XCTestCase {
         )
         XCTAssertTrue(verify.codexRunning)
         XCTAssertTrue(verify.status.contains("建议退出 Codex"))
+        XCTAssertEqual(try disposableState(for: fixture), stateBeforeReadOnlyOperations)
     }
 
     func testSyncRejectsMutationWhileCodexIsRunning() throws {
@@ -109,6 +111,10 @@ final class ProviderSyncEngineTests: XCTestCase {
             targetProviderOverride: "openai",
             dryRunOnly: false
         )) { error in
+            XCTAssertEqual(
+                error as? ProviderSyncMutationError,
+                .codexRunning(operation: "同步")
+            )
             XCTAssertTrue(error.localizedDescription.contains("Codex 正在运行"))
         }
         XCTAssertEqual(try readSessionProvider(at: fixture.activeSession), "anthropic")
@@ -180,6 +186,10 @@ final class ProviderSyncEngineTests: XCTestCase {
         )
 
         XCTAssertThrowsError(try guardedEngine.rollback(codexHome: fixture.codexHome, backupPath: backupPath)) { error in
+            XCTAssertEqual(
+                error as? ProviderSyncMutationError,
+                .codexRunning(operation: "回滚")
+            )
             XCTAssertTrue(error.localizedDescription.contains("Codex 正在运行"))
         }
         XCTAssertThrowsError(try guardedEngine.rollbackLatest(codexHome: fixture.codexHome)) { error in
@@ -189,8 +199,12 @@ final class ProviderSyncEngineTests: XCTestCase {
         XCTAssertEqual(try readSQLiteProviders(at: fixture.codexHome), ["openai"])
     }
 
-    func testConcurrentMutationsForSameCanonicalHomeRejectSecondOperation() throws {
+    func testConcurrentSyncBlocksRollbackThroughSymlinkAliasAndAllowsRollbackAfterRelease() throws {
         let fixture = try makeFixture()
+        let symlinkAlias = fixture.codexHome
+            .deletingLastPathComponent()
+            .appendingPathComponent("codex-home-symlink", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: symlinkAlias, withDestinationURL: fixture.codexHome)
         let firstStarted = DispatchSemaphore(value: 0)
         let releaseFirst = DispatchSemaphore(value: 0)
         let firstCompleted = expectation(description: "first mutation completes")
@@ -218,20 +232,12 @@ final class ProviderSyncEngineTests: XCTestCase {
         }
 
         XCTAssertEqual(firstStarted.wait(timeout: .now() + 2), .success)
-        let canonicalAlias = fixture.codexHome
-            .deletingLastPathComponent()
-            .appendingPathComponent("codex-home/../codex-home", isDirectory: true)
         let secondEngine = ProviderSyncEngine(
             backupRoot: fixture.backupRoot,
             applicationRunningProbe: { false }
         )
 
-        XCTAssertThrowsError(try secondEngine.sync(
-            codexHome: canonicalAlias,
-            includeArchivedSessions: false,
-            targetProviderOverride: "openai",
-            dryRunOnly: false
-        )) { error in
+        XCTAssertThrowsError(try secondEngine.rollbackLatest(codexHome: symlinkAlias)) { error in
             XCTAssertTrue(error.localizedDescription.contains("已有 Provider 修复操作进行中"))
         }
 
@@ -240,13 +246,29 @@ final class ProviderSyncEngineTests: XCTestCase {
         let completedResult = try XCTUnwrap(firstResult.get())
         XCTAssertNoThrow(try completedResult.get())
 
-        let afterRelease = try secondEngine.sync(
-            codexHome: canonicalAlias,
+        let afterRelease = try secondEngine.rollbackLatest(codexHome: fixture.codexHome)
+        XCTAssertTrue(afterRelease.status.contains("已从最近备份回滚"))
+        XCTAssertEqual(try readSessionProvider(at: fixture.activeSession), "anthropic")
+        XCTAssertEqual(try readSQLiteProviders(at: fixture.codexHome), ["anthropic"])
+    }
+
+    func testMutationLeaseReleasesAfterThrowingRollbackAndAllowsRetry() throws {
+        let fixture = try makeFixture()
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+        let missingBackup = fixture.backupRoot.appendingPathComponent("missing", isDirectory: true)
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: missingBackup.path))
+
+        let retry = try engine.sync(
+            codexHome: fixture.codexHome,
             includeArchivedSessions: false,
-            targetProviderOverride: "anthropic",
+            targetProviderOverride: "openai",
             dryRunOnly: false
         )
-        XCTAssertEqual(afterRelease.detectedProvider, "anthropic")
+        XCTAssertEqual(retry.detectedProvider, "openai")
     }
 
     func testVerifyReportsCoherentStatusAfterSyncAndRollback() throws {
@@ -333,6 +355,16 @@ final class ProviderSyncEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         temporaryRoots.append(url)
         return url
+    }
+
+    private func disposableState(for fixture: ProviderSyncFixture) throws -> ProviderSyncDisposableState {
+        ProviderSyncDisposableState(
+            activeSession: try Data(contentsOf: fixture.activeSession),
+            archivedSession: try Data(contentsOf: fixture.archivedSession),
+            sqlite: try Data(contentsOf: fixture.codexHome.appendingPathComponent("state_5.sqlite")),
+            sessionIndex: try Data(contentsOf: fixture.sessionIndex),
+            backupEntries: try FileManager.default.contentsOfDirectory(atPath: fixture.backupRoot.path).sorted()
+        )
     }
 
     private func writeSession(id: String, provider: String, to file: URL) throws {
@@ -457,4 +489,12 @@ private struct ProviderSyncFixture {
     let unrelatedSessionText: String
     let sessionIndex: URL
     let originalSessionIndexText: String
+}
+
+private struct ProviderSyncDisposableState: Equatable {
+    let activeSession: Data
+    let archivedSession: Data
+    let sqlite: Data
+    let sessionIndex: Data
+    let backupEntries: [String]
 }
