@@ -324,10 +324,216 @@ Keyboard and screen-reader users must traverse roughly a year of cells to reach 
 
 Expose the heat map as one grouped chart with a concise summary and a deliberate keyboard point-selection mode, or implement a roving single tab stop. Preserve pointer range selection without making every cell a permanent tab stop.
 
+### [P1] Tauri Provider repair can propagate the literal `(missing)` sentinel as a real provider
+
+- `tauri-app/src-tauri/src/core/provider_repair/sqlite_state.rs:211` converts an empty SQLite provider into `(missing)`.
+- `tauri-app/src-tauri/src/core/provider_repair/target_provider.rs:16` then prioritizes the newest SQLite provider over a valid JSONL fallback.
+- The resulting ordinary `String` reaches the JSONL and SQLite write paths without a validity gate.
+
+**Impact**
+
+An advanced repair intended to normalize provider metadata can write `(missing)` across active history. Add a red fixture with empty newest SQLite provider plus valid JSONL provider, and make “missing” an absence state rather than a serializable provider value.
+
+### [P1] Swift source switching does not reset the live monitor and can relabel old snapshots as the new source
+
+- `Sources/CodexTokenBar/DashboardView.swift:297` updates task completion and quota source state, but does not call the existing `LiveRateMonitor.setDataSource` boundary.
+- `CodexUsageStore` changes its current source identity before a new-source load succeeds, yet retains the previous displayable snapshot on failure.
+- `AccountQuotaStore.setDataSource` cancels generations but does not clear the previous snapshot; failure preservation and normalization can therefore continue from old-source values.
+
+**Impact**
+
+After Codex Home A -> B, Swift can combine B's source label/path with A's usage, quota, selected thread, offsets, or fingerprints. The repair must coordinate all source-owned stores from one transition and either retain data explicitly as “old source” or clear it; it must never relabel it as B.
+
+### [P1] Swift Provider mutations and rollback remain enabled while Codex is running
+
+- `Sources/CodexTokenBar/ProviderSyncEngine.swift:231` detects a running Codex application and the UI only appends an advisory “建议退出” status.
+- Destructive sync and rollback actions do not hard-disable on `codexRunning`, and the engine itself has no final process-open guard immediately before mutation.
+- The same files and SQLite database can therefore be written concurrently by Codex and Token Bar.
+
+**Impact**
+
+This defeats the consistency assumptions of backup, rewrite, and rollback. Add engine-level rejection plus UI state tests; do not rely on advisory copy or a stale scan result.
+
+### [P2] Tauri Provider and aggregate replacement uses Unix rename semantics on Windows
+
+- `tauri-app/src-tauri/src/core/provider_repair/session_files.rs:136`, `core/usage/cache_lifecycle.rs:38`, and `core/usage/token_count_jsonl.rs:511` rename a temp path over an existing destination.
+- On Windows, `std::fs::rename` does not replace an existing file. Provider sync fails on the first mismatching JSONL, while cache-state and aggregate persistence can fail silently after their first write.
+
+**Impact**
+
+The main Windows lane either cannot perform Provider repair or repeatedly rebuilds caches. Introduce one tested cross-platform atomic-replace helper with cleanup and surfaced errors.
+
+### [P2] Tauri live-stream ownership is a global counter without task generation or subscriber tokens
+
+- `tauri-app/src-tauri/src/commands/live.rs:75` tracks only `subscriber_count` and a global `running` flag.
+- A stop followed quickly by a start can set `running=true` before the old loop observes the stop, leaving both loops alive.
+- React cleanup in `useLiveRateFeed.ts` / `useCompactPanelSnapshot.ts` calls stop even when its own delayed start never successfully acquired a subscription, so one surface can decrement another surface's ownership.
+
+**Impact**
+
+Multiple background loops can duplicate CPU/IO and event publication, or one surface can stop streaming for another. Repair with per-subscriber leases and a loop generation/handle; test delayed start/unmount and stop-start races deterministically.
+
+### [P2] Tauri recent-rollout discovery cache ignores the SQLite WAL
+
+- `tauri-app/src-tauri/src/core/live_rate/rollout.rs:127` signs only `state_5.sqlite` length and modification date.
+- `recent_rollout_threads` returns the cached thread list indefinitely while that main-file signature is unchanged.
+- A new thread committed only to `state_5.sqlite-wal` is therefore invisible until checkpoint.
+
+**Impact**
+
+Live rate can stay on an old thread or at zero during active work. Include WAL identity and a bounded TTL in invalidation, with a WAL-only insertion fixture.
+
+### [P2] Tauri can attach the previous account's quota history to a failed new-source read
+
+- `tauri-app/src-tauri/src/core/quota.rs:232` builds a failure bundle for the newly selected source.
+- `refresh_quota_histories` then calls the global `history_bundle(365)` without source/account identity.
+- `QuotaHistoryDatabase.history_bundle` selects rows from the global database rather than the attempted account.
+
+**Impact**
+
+If B fails before recording a trusted row, B's failure surface can show A's historical chart. Make history reads identity-scoped and return no history when the new identity is not established.
+
+### [P2] Tauri `currentStreakDays` reports an old streak after inactivity
+
+- `tauri-app/src-tauri/src/core/usage/token_count_jsonl/aggregates.rs:168` skips all trailing zero days while `streak == 0`, then counts the first older non-zero run.
+
+**Impact**
+
+The dashboard can call a weeks-old streak “current”. Add trailing-zero fixtures and define the accepted today/yesterday grace explicitly before changing the algorithm.
+
+### [P2] A hidden or disabled Tauri floating webview keeps background work active
+
+- `FloatingWindowApp` calls `useCompactPanelData` without an `active` value, so it defaults to `true`.
+- The mounted hidden window continues usage-summary reads, quota timers/wake refreshes, live-rate subscription, unread listeners, and a ten-minute Radar timer.
+- On Windows the floating webview is created hidden at startup, so this work can begin before the user enables the surface.
+
+**Impact**
+
+The “off” surface still consumes CPU, disk, child-process, and network resources. Propagate real native visibility/enabled state and quiesce effects without discarding the last trusted presentation.
+
+### [P2] Tauri's macOS status panel is implemented but unreachable, while tray live text is dashboard-owned
+
+- `create_status_tray` routes both the tray click and its only open item to `show_dashboard_window`.
+- CodeGraph finds no production caller for `show_status_panel_window`.
+- `useStatusTray` is mounted through the dashboard hook, so destroying/removing that webview also removes the owner that updates tray text.
+
+**Impact**
+
+The advertised independent status surface cannot be opened and tray rate text can freeze when the dashboard is gone. Native tray ownership and status-panel reachability need a runtime-backed design, not another source-string test.
+
+### [P2] Tauri represents unavailable quota as a measured 0% value
+
+- `tauri-app/src-tauri/src/core/quota/rate_limits.rs:6` creates placeholder 5h/7d limits with `remaining_percent = 0.0`.
+- `useCompactPanelData` and quota label helpers pass those values into normal bars/labels.
+
+**Impact**
+
+Startup, timeout, source-switch, and offline states can look like exhausted quota. Add an explicit availability/provenance state or nullable limits; “unknown” must never be encoded as a real zero.
+
+### [P2] Tauri Provider target parsing is not TOML-safe
+
+- `tauri-app/src-tauri/src/core/provider_repair/target_provider.rs:40` uses line prefix matching and quote splitting instead of a TOML parser.
+- Keys such as `model_provider_backup`, section-local assignments, valid single-quoted strings, and escaped/commented values can select the wrong destructive target.
+
+**Impact**
+
+Provider repair can normalize history to an unintended value. Parse the structured top-level key with the existing language ecosystem and add representative TOML fixtures before any write-path change.
+
+### [P2] Recursive session collectors can follow directory-symlink cycles
+
+- `tauri-app/src-tauri/src/core/provider_repair/session_files.rs:37` calls `fs::metadata`, which follows symlinks, then recursively descends every directory without canonical visited-set or root-boundary checks.
+- Similar recursive collectors must be audited together so usage, unread, and Provider behavior do not diverge.
+
+**Impact**
+
+A selected Codex Home containing a symlink loop can recurse indefinitely or leave the intended tree. Standardize bounded, non-following traversal with canonical-root containment tests.
+
+### [P2] Swift task-completion scanning consumes an incomplete final JSONL record
+
+- `Sources/CodexTokenBar/TaskCompletionScanner.swift:160` splits the full appended chunk even when the final record has no newline.
+- It then unconditionally advances `state.offset` to the current file size at `:224`.
+
+**Impact**
+
+When Codex finishes writing that partial line later, the scanner starts after its prefix and permanently misses the completion. Preserve the incomplete tail/offset and add two-phase append tests.
+
+### [P2] Swift quota source cancellation does not stop the synchronous app-server read
+
+- `AccountQuotaStore` cancels the surrounding Task/generation on source change, but `AccountQuotaReader.readOnce` is synchronous and has no cancellation checks while waiting up to 12 seconds.
+- Retry sleep uses `try?`, so cancellation is swallowed and another attempt can still begin.
+
+**Impact**
+
+An old-source child process can continue after a source switch, delaying resources and complicating publication guards. Extract a cancellable process/stdio seam, terminate the child on cancellation, and stop retries immediately.
+
+### [P2] Swift stream/rollout dedupe uses incompatible identities for the same visible output
+
+- Stream deltas fingerprint item IDs plus delta text, while rollout `agent_message` events fingerprint timestamp plus full text.
+- The rollout suppressor can retain an earlier `agent_message` and discard a later response-item representation, so the stream and rollout identities cannot match.
+
+**Impact**
+
+The same assistant output can count twice when both sources are active. Add a cross-source fixture for `agent_message` plus streamed response-item text and define a shared normalized identity without collapsing genuinely distinct repeated text.
+
+### [P2] Swift does not invalidate a cached log reader when `logs_2.sqlite` is replaced at the same path
+
+- `LiveRateMonitor` caches the reader by pathname and retains `lastGlobalLogID`.
+- `lastLogsSignature` is assigned but not compared to trigger a reset.
+
+**Impact**
+
+After database rotation/replacement, rate rows can be skipped or attributed through stale state. Test inode/signature change at a stable path and reset only source-local log state.
+
+### [P2] Swift keeps native unread state authoritative after it becomes unavailable
+
+- `TaskCompletionMonitor.applyCodexUnreadRead` sets `hasCodexUnreadState = true` only on available reads and never clears it on `.unavailable`.
+- Later polls run the fallback scanner, but `apply` still filters and recomputes through the stale native unread state.
+
+**Impact**
+
+A transient corrupt/missing global-state file can make new completion events invisible for the rest of the monitor lifetime. Add available -> unavailable -> fallback-event and recovery sequences.
+
+### [P2] Swift Provider verification failures occur outside automatic rollback
+
+- `ProviderSyncEngine.sync` catches and rolls back only the mutation block through line 148.
+- The post-write `makeReport` and verification at `:151` can throw after files have changed, and that error escapes without rollback.
+- Verification also treats `allSatisfy` over an empty provider map as success and does not include `invalidSessionFiles` in the success condition.
+
+**Impact**
+
+The UI can report a failed sync after leaving mutations in place, or report success while invalid session files were skipped. Include verification in the transactional recovery boundary and test malformed/empty session sets.
+
+### [P2] Swift Provider tar rollback is not member-scoped to the selected Codex Home
+
+- `createSessionTar` stores paths relative to filesystem root and `restoreBackup` extracts with `tar -C /`.
+- The only pre-extraction trust check is a mutable `manifest.json` Codex Home string; archive members themselves are not inspected or constrained.
+
+**Impact**
+
+Normal app-created archives contain session files, but a damaged or modified local backup can overwrite paths outside the selected Home. Validate every member, extract into a staging directory, and restore only known files under the canonical source root.
+
+### [P3] Tauri compact stream-start failure can be overwritten by the parallel initial snapshot
+
+- `useCompactPanelSnapshot` launches `startLiveRateStreamCommand` and `readLiveRateSnapshot` independently.
+- A start failure writes a failure snapshot, but a later fallback read unconditionally overwrites it with an ordinary snapshot.
+
+**Impact**
+
+The compact surface can hide a real stream failure. Replace the promise race with one authoritative startup state machine and controlled-order tests.
+
+### [P3] Tauri Provider backup IDs collide within one second
+
+- `timestamp_id()` has second precision and the backup directory is not created with collision rejection.
+
+**Impact**
+
+Two operations in one second can reuse one recovery point. Add random/monotonic uniqueness and `create_new` semantics; this should be fixed as part of the larger Provider transaction batch.
+
 ## Scope Reviewed So Far
 
-- Tauri Codex Home command boundary, aggregate signature, persistent aggregate, trusted-summary scope, background refresh coordinator, compact usage hook, floating surface, and status-panel lifecycle.
-- Swift data-source resolver, persistent session signature, metadata-only fallback, usage-store projection, floating/status metric provenance.
+- Tauri source/settings, usage/cache, quota/history, live-rate/rollout registry, unread, ProviderRepair, floating/status/tray, Windows replacement/single-instance source, updater/release scripts, and current macOS rendered dashboard evidence.
+- Swift source coordination, usage/cache/fork parsing, quota/history, live-rate dual-source behavior, task completion/unread, Provider sync/backup/rollback, floating/status presentation, and current rendered dashboard evidence.
+- Automatic tool reports are still pending and do not count as human coverage; their output will only seed additional manual traces.
 
 ## Rejected Shortcuts
 
@@ -339,4 +545,5 @@ Expose the heat map as one grouped chart with a concise summary and a deliberate
 
 - The full-detail Radar bearer material is reversibly obfuscated in the client. This is not being promoted as a defect: the user explicitly accepted light local obfuscation and accepted that a determined person can recover the key. The audit should verify that it is used only for full-detail requests, never public/basic requests, and can be rotated; it should not misrepresent the chosen boundary as secret storage.
 - The history report's claim that the two-second fork replay grace is itself a confirmed bug is not accepted. It proves an unavoidable ambiguity and a hypothetical fast-branch loss, but the existing real dense-replay fixture proves that removing or naively shortening the grace reintroduces catastrophic duplicate totals. Keep the current rule until real logs reveal a stable turn/event boundary that distinguishes copied user messages from new branch work; test exact 1.999/2.000/2.001 boundaries only as characterization, not as a license to change behavior.
+- Tauri currently omits archived sessions from usage aggregates. The source behavior is confirmed, but changing whether archived conversations count is a product-history policy decision, not a mechanical bugfix. Do not add `archived_sessions` until the target scope, dedupe, cache migration, and Swift parity are explicitly chosen.
 - Windows updater metadata living under the unified GitHub `latest` release is currently an accepted unified-release architecture, not a defect by itself. It becomes a bug only if the product adopts independent platform release cadence without first moving Windows metadata to a stable channel URL.
