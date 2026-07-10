@@ -14,7 +14,7 @@ import {
 } from "../api/client";
 import type {
   AccountQuotaBundle,
-  CodexHomeStatus,
+  CodexHomeSourceEnvelope,
   DashboardSnapshot,
   LiveRateSnapshot,
   LiveThreadOption,
@@ -24,9 +24,9 @@ import type {
 } from "../types/dashboard";
 
 export interface DashboardDataSource {
-  getCodexHome: () => Promise<CodexHomeStatus>;
-  setCodexHome: (path: string) => Promise<CodexHomeStatus>;
-  resetCodexHome: () => Promise<CodexHomeStatus>;
+  getCodexHome: () => Promise<CodexHomeSourceEnvelope>;
+  setCodexHome: (path: string) => Promise<CodexHomeSourceEnvelope>;
+  resetCodexHome: () => Promise<CodexHomeSourceEnvelope>;
   readPlatformCapabilities: () => Promise<PlatformCapabilities>;
   readDashboardSnapshot: () => Promise<DashboardSnapshot>;
   readPreciseDashboardSnapshot: () => Promise<DashboardSnapshot | null>;

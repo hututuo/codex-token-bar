@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { readAppSettings } from "../api/client";
+import { readAppSettings, recordStartupEvent } from "../api/client";
 import { recordPerformanceEvent } from "../api/startupClient";
 import { dashboardDataSource, type DashboardDataSource } from "../data/dashboardDataSource";
 import { desktopPlatform } from "../platform/desktop";
@@ -17,6 +17,7 @@ import {
 } from "../settings/quotaRefreshCadence";
 import type {
   AccountQuotaBundle,
+  CodexHomeSourceEnvelope,
   DashboardSnapshot,
   LiveRateSnapshot,
   LiveThreadOption,
@@ -29,6 +30,8 @@ import {
   mergeLiveThreadOptions,
   mergePreciseDashboard,
   mergeQuota,
+  pendingLiveRateSnapshot,
+  pendingRepairSnapshot,
   visibleDashboardState,
   type DashboardAppState,
 } from "./dashboardState";
@@ -37,6 +40,12 @@ import {
   makeDashboardRefreshPlan,
   makeDashboardWakeRefreshContext,
 } from "./dashboardRefreshPlan";
+import {
+  acceptDashboardSourceEnvelope,
+  createDashboardSourceTransition,
+  dashboardSourceTokenMatches,
+  type DashboardSourceToken,
+} from "./dashboardSourceTransition";
 import { makeQuotaAutoRefreshPlan } from "./quotaAutoRefreshModel";
 import { loadInitialDashboardState } from "./loadInitialDashboardState";
 import { useDashboardActions } from "./useDashboardActions";
@@ -82,8 +91,82 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const [usageCacheInitializing, setUsageCacheInitializing] = useState(false);
   const [lastLiveActivityAtMs, setLastLiveActivityAtMs] = useState(0);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
+  const [sourceToken, setSourceToken] = useState<DashboardSourceToken | null>(null);
+  const [sourceLoadGeneration, setSourceLoadGeneration] = useState(0);
+  const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
+  const sourceTransitionRef = useRef(createDashboardSourceTransition());
   const lastLiveActivityAtMsRef = useRef(0);
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
+
+  const captureSourceToken = useCallback(
+    () => sourceTransitionRef.current.sourceToken,
+    [],
+  );
+  const isSourceTokenCurrent = useCallback(
+    (token: DashboardSourceToken | null) => dashboardSourceTokenMatches(
+      sourceTransitionRef.current,
+      token,
+    ),
+    [],
+  );
+  const acceptSourceEnvelope = useCallback((envelope: CodexHomeSourceEnvelope) => {
+    const result = acceptDashboardSourceEnvelope(sourceTransitionRef.current, envelope);
+    if (!result.accepted) {
+      return false;
+    }
+
+    sourceTransitionRef.current = result.transition;
+    const acceptedSourceToken = result.transition.sourceToken;
+    const startsSourceLoad = result.initialized || result.sourceChanged;
+    setState((current) => isSourceTokenCurrent(acceptedSourceToken)
+      ? {
+          ...current,
+          codexHome: envelope.codexHome,
+          dashboard: result.sourceChanged ? null : current.dashboard,
+          liveRate: result.sourceChanged ? pendingLiveRateSnapshot() : current.liveRate,
+          liveThreadOptions: result.sourceChanged ? [] : current.liveThreadOptions,
+          repair: result.sourceChanged ? pendingRepairSnapshot() : current.repair,
+          loading: startsSourceLoad ? true : current.loading,
+        }
+      : current);
+
+    if (!startsSourceLoad || acceptedSourceToken === null) {
+      return true;
+    }
+
+    setSourceToken((current) => isSourceTokenCurrent(acceptedSourceToken)
+      ? acceptedSourceToken
+      : current);
+    setFastSnapshotLoaded(false);
+    setSelectedLiveThreadId("");
+    setForceNextQuotaLoad(false);
+    setRefreshTaskCount(0);
+    setUsageCacheInitializing(false);
+    lastLiveActivityAtMsRef.current = 0;
+    setLastLiveActivityAtMs(0);
+
+    if (result.sourceChanged) {
+      setLoadGeneration((current) => current + 1);
+      setQuotaLoadGeneration((current) => current + 1);
+      setRadarRefreshGeneration((current) => current + 1);
+      setLiveRateRetryGeneration((current) => current + 1);
+    } else {
+      void recordStartupEvent("codex home ready");
+    }
+    return true;
+  }, [isSourceTokenCurrent]);
+  const refreshCurrentSource = useCallback((token: DashboardSourceToken) => {
+    if (!isSourceTokenCurrent(token)) {
+      return;
+    }
+    setState((current) => isSourceTokenCurrent(token)
+      ? { ...current, loading: true }
+      : current);
+    setFastSnapshotLoaded((current) => isSourceTokenCurrent(token) ? false : current);
+    setSelectedLiveThreadId((current) => isSourceTokenCurrent(token) ? "" : current);
+    setSourceLoadGeneration((current) => isSourceTokenCurrent(token) ? current + 1 : current);
+  }, [isSourceTokenCurrent]);
+
   const {
     reloadAll,
     reloadQuota,
@@ -91,32 +174,44 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     updateCodexHome,
     restoreAutoCodexHome,
     updateProviderRepair,
-    selectedLiveThreadId,
-    setSelectedLiveThreadId,
   } = useDashboardActions({
     source,
     providerRepairVisible,
     setState,
-    setFastSnapshotLoaded,
     setLoadGeneration,
     setQuotaLoadGeneration,
     setRadarRefreshGeneration,
     setForceNextQuotaLoad,
+    acceptSourceEnvelope,
+    captureSourceToken,
+    isSourceTokenCurrent,
+    refreshCurrentSource,
+    sourceToken,
   });
 
   const mergePreciseSnapshot = useCallback((precise: DashboardSnapshot) => {
+    if (!isSourceTokenCurrent(sourceToken)) {
+      return;
+    }
     markRenderCommit("frontend precise dashboard");
     startTransition(() => {
-      setState((current) => mergePreciseDashboard(current, precise));
+      setState((current) => isSourceTokenCurrent(sourceToken)
+        ? mergePreciseDashboard(current, precise)
+        : current);
     });
-  }, [markRenderCommit]);
+  }, [isSourceTokenCurrent, markRenderCommit, sourceToken]);
 
   const mergeQuotaSnapshot = useCallback((quota: AccountQuotaBundle) => {
+    if (!isSourceTokenCurrent(sourceToken)) {
+      return;
+    }
     markRenderCommit("frontend quota dashboard");
     startTransition(() => {
-      setState((current) => mergeQuota(current, quota));
+      setState((current) => isSourceTokenCurrent(sourceToken)
+        ? mergeQuota(current, quota)
+        : current);
     });
-  }, [markRenderCommit]);
+  }, [isSourceTokenCurrent, markRenderCommit, sourceToken]);
 
   const markLiveUsageActivity = useCallback((liveRate: LiveRateSnapshot) => {
     if (!liveRateHasUsageRefreshActivity(liveRate)) {
@@ -134,56 +229,114 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   }, []);
 
   const mergeLiveRateSnapshot = useCallback((liveRate: LiveRateSnapshot) => {
+    if (!isSourceTokenCurrent(sourceToken)) {
+      return;
+    }
     markLiveUsageActivity(liveRate);
-    setState((current) => mergeLiveRate(current, liveRate));
-  }, [markLiveUsageActivity]);
+    setState((current) => isSourceTokenCurrent(sourceToken)
+      ? mergeLiveRate(current, liveRate)
+      : current);
+  }, [isSourceTokenCurrent, markLiveUsageActivity, sourceToken]);
 
   const mergeThreadOptions = useCallback((liveThreadOptions: LiveThreadOption[]) => {
+    if (!isSourceTokenCurrent(sourceToken)) {
+      return;
+    }
     startTransition(() => {
-      setState((current) => mergeLiveThreadOptions(current, liveThreadOptions));
+      setState((current) => isSourceTokenCurrent(sourceToken)
+        ? mergeLiveThreadOptions(current, liveThreadOptions)
+        : current);
     });
-  }, []);
+  }, [isSourceTokenCurrent, sourceToken]);
 
   const updateUsageCacheStatus = useCallback((status: UsageCacheStatus) => {
-    setUsageCacheInitializing(!status.initialized);
-  }, []);
+    if (isSourceTokenCurrent(sourceToken)) {
+      setUsageCacheInitializing((current) => isSourceTokenCurrent(sourceToken)
+        ? !status.initialized
+        : current);
+    }
+  }, [isSourceTokenCurrent, sourceToken]);
 
   const markUsageCacheInitialized = useCallback(() => {
-    setUsageCacheInitializing(false);
-  }, []);
+    if (isSourceTokenCurrent(sourceToken)) {
+      setUsageCacheInitializing((current) => isSourceTokenCurrent(sourceToken) ? false : current);
+    }
+  }, [isSourceTokenCurrent, sourceToken]);
 
   const retryLiveRateStream = useCallback(() => {
     setLiveRateRetryGeneration((current) => current + 1);
   }, []);
 
   const consumeForcedQuotaRefresh = useCallback(() => {
-    setForceNextQuotaLoad(false);
-  }, []);
+    if (isSourceTokenCurrent(sourceToken)) {
+      setForceNextQuotaLoad((current) => isSourceTokenCurrent(sourceToken) ? false : current);
+    }
+  }, [isSourceTokenCurrent, sourceToken]);
   const beginRefreshTask = useCallback(() => {
-    setRefreshTaskCount((count) => count + 1);
-  }, []);
+    if (isSourceTokenCurrent(sourceToken)) {
+      setRefreshTaskCount((count) => isSourceTokenCurrent(sourceToken) ? count + 1 : count);
+    }
+  }, [isSourceTokenCurrent, sourceToken]);
   const endRefreshTask = useCallback(() => {
-    setRefreshTaskCount((count) => Math.max(0, count - 1));
-  }, []);
+    if (isSourceTokenCurrent(sourceToken)) {
+      setRefreshTaskCount((count) => isSourceTokenCurrent(sourceToken)
+        ? Math.max(0, count - 1)
+        : count);
+    }
+  }, [isSourceTokenCurrent, sourceToken]);
 
   useEffect(() => {
     let cancelled = false;
+    let unlisten: (() => void) | null = null;
 
-    setFastSnapshotLoaded(false);
-    setLoadGeneration((current) => current + 1);
-    setQuotaLoadGeneration((current) => current + 1);
-    setForceNextQuotaLoad(false);
-    void loadInitialDashboardState({
-      source,
-      isCancelled: () => cancelled,
-      setState,
-      onFastSnapshotLoaded: () => setFastSnapshotLoaded(true),
+    void desktopPlatform.onCodexHomeSourceChanged((envelope) => {
+      if (!cancelled) {
+        acceptSourceEnvelope(envelope);
+      }
+    }).then((listener) => {
+      if (cancelled) {
+        listener();
+      } else {
+        unlisten = listener;
+      }
     });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [acceptSourceEnvelope]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void source.getCodexHome().then((envelope) => {
+      if (!cancelled) {
+        acceptSourceEnvelope(envelope);
+      }
+    });
     return () => {
       cancelled = true;
     };
-  }, [source]);
+  }, [acceptSourceEnvelope, source]);
+
+  useEffect(() => {
+    if (sourceToken === null) {
+      return;
+    }
+    let cancelled = false;
+    void loadInitialDashboardState({
+      source,
+      sourceToken,
+      isCancelled: () => cancelled,
+      isSourceCurrent: isSourceTokenCurrent,
+      setState,
+      onFastSnapshotLoaded: () => setFastSnapshotLoaded((current) => (
+        isSourceTokenCurrent(sourceToken) ? true : current
+      )),
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isSourceTokenCurrent, source, sourceLoadGeneration, sourceToken]);
 
   const dashboardReady = state.dashboard !== null;
 
@@ -214,14 +367,18 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   }, []);
 
   useEffect(() => {
+    if (sourceToken === null) {
+      return;
+    }
     let cancelled = false;
     let unlisten: (() => void) | null = null;
+    const listenerSourceToken = sourceToken;
 
     void desktopPlatform.onUnreadSummaryChanged((unreadSummary) => {
-      if (cancelled) {
+      if (cancelled || !isSourceTokenCurrent(listenerSourceToken)) {
         return;
       }
-      setState((current) => current.liveRate
+      setState((current) => isSourceTokenCurrent(listenerSourceToken) && current.liveRate
         ? {
             ...current,
             liveRate: {
@@ -242,7 +399,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [isSourceTokenCurrent, sourceToken]);
 
   useEffect(() => {
     if (typeof document === "undefined") {
@@ -400,18 +557,21 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     active: fastSnapshotLoaded && liveRateEnabled,
     selectedThreadId: selectedLiveThreadId,
     source,
+    sourceToken,
     onSnapshot: mergeLiveRateSnapshot,
     retryGeneration: liveRateRetryGeneration,
   });
 
   useEffect(() => {
-    if (liveRateEnabled) {
+    if (liveRateEnabled || !isSourceTokenCurrent(sourceToken)) {
       return;
     }
     lastLiveActivityAtMsRef.current = 0;
     setLastLiveActivityAtMs(0);
-    setState((current) => mergeLiveRate(current, disabledLiveRateSnapshot(selectedLiveThreadId)));
-  }, [liveRateEnabled, selectedLiveThreadId]);
+    setState((current) => isSourceTokenCurrent(sourceToken)
+      ? mergeLiveRate(current, disabledLiveRateSnapshot(selectedLiveThreadId))
+      : current);
+  }, [isSourceTokenCurrent, liveRateEnabled, selectedLiveThreadId, sourceToken]);
 
   const readyState = useMemo(() => visibleDashboardState(state), [state]);
 

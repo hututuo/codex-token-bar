@@ -4,6 +4,12 @@ export interface CodexHomeStatus {
   source: string;
 }
 
+export interface CodexHomeSourceEnvelope {
+  codexHome: CodexHomeStatus;
+  canonicalHomeKey: string;
+  transitionGeneration: number;
+}
+
 export interface PlatformCapabilities {
   platform: string;
   shell: string;

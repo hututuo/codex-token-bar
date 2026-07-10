@@ -1,70 +1,64 @@
 import {
   useCallback,
-  useState,
   type Dispatch,
   type SetStateAction,
 } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import { desktopPlatform } from "../platform/desktop";
-import type { ProviderRepairSnapshot } from "../types/dashboard";
+import type { CodexHomeSourceEnvelope, ProviderRepairSnapshot } from "../types/dashboard";
 import {
   applyDashboardRefreshPlan,
   applyManualDashboardRefresh,
   makeDashboardRefreshPlan,
 } from "./dashboardRefreshPlan";
 import type { DashboardAppState } from "./dashboardState";
-import { loadInitialDashboardState } from "./loadInitialDashboardState";
+import {
+  dashboardSourceTokenFromEnvelope,
+  type DashboardSourceToken,
+} from "./dashboardSourceTransition";
 
 interface DashboardActionsOptions {
   source: Pick<
     DashboardDataSource,
     | "setCodexHome"
     | "resetCodexHome"
-    | "getCodexHome"
-    | "readPlatformCapabilities"
-    | "readDashboardSnapshot"
     | "acknowledgeUnreadSummary"
     | "scanProviderRepair"
   >;
   providerRepairVisible: boolean;
   setState: Dispatch<SetStateAction<DashboardAppState>>;
-  setFastSnapshotLoaded: Dispatch<SetStateAction<boolean>>;
   setLoadGeneration: Dispatch<SetStateAction<number>>;
   setQuotaLoadGeneration: Dispatch<SetStateAction<number>>;
   setRadarRefreshGeneration: Dispatch<SetStateAction<number>>;
   setForceNextQuotaLoad: Dispatch<SetStateAction<boolean>>;
+  acceptSourceEnvelope: (envelope: CodexHomeSourceEnvelope) => boolean;
+  captureSourceToken: () => DashboardSourceToken | null;
+  isSourceTokenCurrent: (token: DashboardSourceToken | null) => boolean;
+  refreshCurrentSource: (token: DashboardSourceToken) => void;
+  sourceToken: DashboardSourceToken | null;
 }
 
 export function useDashboardActions({
   source,
   providerRepairVisible,
   setState,
-  setFastSnapshotLoaded,
   setLoadGeneration,
   setQuotaLoadGeneration,
   setRadarRefreshGeneration,
   setForceNextQuotaLoad,
+  acceptSourceEnvelope,
+  captureSourceToken,
+  isSourceTokenCurrent,
+  refreshCurrentSource,
+  sourceToken,
 }: DashboardActionsOptions) {
-  const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
-
-  const reloadInitialSnapshot = useCallback(async () => {
-    setFastSnapshotLoaded(false);
-    setState((current) => ({ ...current, loading: true }));
-    await loadInitialDashboardState({
-      source,
-      isCancelled: () => false,
-      setState,
-      onFastSnapshotLoaded: () => setFastSnapshotLoaded(true),
-    });
-  }, [
-    setFastSnapshotLoaded,
-    setState,
-    source,
-  ]);
-
   const updateProviderRepair = useCallback((repair: ProviderRepairSnapshot) => {
-    setState((current) => ({ ...current, repair }));
-  }, [setState]);
+    if (isSourceTokenCurrent(sourceToken)) {
+      setState((current) => isSourceTokenCurrent(sourceToken)
+        ? { ...current, repair }
+        : current);
+    }
+  }, [isSourceTokenCurrent, setState, sourceToken]);
 
   const reloadAll = useCallback(async () => {
     applyManualDashboardRefresh({
@@ -77,12 +71,19 @@ export function useDashboardActions({
         },
         refreshRadar: () => setRadarRefreshGeneration((current) => current + 1),
         scanProviders: () => {
-          void source.scanProviderRepair().then(updateProviderRepair);
+          const sourceToken = captureSourceToken();
+          void source.scanProviderRepair().then((repair) => {
+            if (isSourceTokenCurrent(sourceToken)) {
+              updateProviderRepair(repair);
+            }
+          });
         },
       },
     });
   }, [
     providerRepairVisible,
+    captureSourceToken,
+    isSourceTokenCurrent,
     source,
     setForceNextQuotaLoad,
     setLoadGeneration,
@@ -108,8 +109,12 @@ export function useDashboardActions({
   ]);
 
   const acknowledgeUnread = useCallback(async () => {
+    const sourceToken = captureSourceToken();
     const unreadSummary = await source.acknowledgeUnreadSummary();
-    setState((current) => current.liveRate
+    if (!isSourceTokenCurrent(sourceToken)) {
+      return;
+    }
+    setState((current) => isSourceTokenCurrent(sourceToken) && current.liveRate
       ? {
           ...current,
           liveRate: {
@@ -119,21 +124,36 @@ export function useDashboardActions({
         }
       : current);
     void desktopPlatform.publishUnreadSummaryChanged(unreadSummary);
-  }, [setState, source]);
+  }, [captureSourceToken, isSourceTokenCurrent, setState, source]);
+
+  const applyCommittedSourceEnvelope = useCallback((
+    envelope: CodexHomeSourceEnvelope,
+    sourceTokenBeforeSave: DashboardSourceToken | null,
+  ) => {
+    const committedSourceToken = dashboardSourceTokenFromEnvelope(envelope);
+    const sourceWasUnchanged = sourceTokenBeforeSave !== null
+      && sourceTokenBeforeSave.transitionGeneration === committedSourceToken.transitionGeneration
+      && sourceTokenBeforeSave.canonicalHomeKey === committedSourceToken.canonicalHomeKey;
+    if (
+      acceptSourceEnvelope(envelope)
+      && sourceWasUnchanged
+      && isSourceTokenCurrent(committedSourceToken)
+    ) {
+      refreshCurrentSource(committedSourceToken);
+    }
+  }, [acceptSourceEnvelope, isSourceTokenCurrent, refreshCurrentSource]);
 
   const updateCodexHome = useCallback(async (path: string) => {
-    setSelectedLiveThreadId("");
-    setState((current) => ({ ...current, loading: true }));
-    await source.setCodexHome(path);
-    await reloadInitialSnapshot();
-  }, [reloadInitialSnapshot, setState, source]);
+    const sourceTokenBeforeSave = captureSourceToken();
+    const envelope = await source.setCodexHome(path);
+    applyCommittedSourceEnvelope(envelope, sourceTokenBeforeSave);
+  }, [applyCommittedSourceEnvelope, captureSourceToken, source]);
 
   const restoreAutoCodexHome = useCallback(async () => {
-    setSelectedLiveThreadId("");
-    setState((current) => ({ ...current, loading: true }));
-    await source.resetCodexHome();
-    await reloadInitialSnapshot();
-  }, [reloadInitialSnapshot, setState, source]);
+    const sourceTokenBeforeSave = captureSourceToken();
+    const envelope = await source.resetCodexHome();
+    applyCommittedSourceEnvelope(envelope, sourceTokenBeforeSave);
+  }, [applyCommittedSourceEnvelope, captureSourceToken, source]);
 
   return {
     reloadAll,
@@ -142,7 +162,5 @@ export function useDashboardActions({
     updateCodexHome,
     restoreAutoCodexHome,
     updateProviderRepair,
-    selectedLiveThreadId,
-    setSelectedLiveThreadId,
   };
 }

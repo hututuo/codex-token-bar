@@ -8,12 +8,14 @@ import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type { PlatformCommandResult } from "../platform/desktopBridge";
 import { desktopPlatform } from "../platform/desktop";
 import type { LiveRateSnapshot } from "../types/dashboard";
+import type { DashboardSourceToken } from "./dashboardSourceTransition";
 import { liveRateStreamFailureSnapshot } from "./liveRateStreamFailure";
 
 interface LiveRateFeedOptions {
   active: boolean;
   selectedThreadId: string;
   source: Pick<DashboardDataSource, "readLiveRateSnapshot">;
+  sourceToken: DashboardSourceToken | null;
   onSnapshot: (snapshot: LiveRateSnapshot) => void;
   retryGeneration?: number;
 }
@@ -22,18 +24,21 @@ export function useLiveRateFeed({
   active,
   selectedThreadId,
   source,
+  sourceToken,
   onSnapshot,
   retryGeneration = 0,
 }: LiveRateFeedOptions) {
-  const onSnapshotRef = useRef(onSnapshot);
   const lastSmoothedSnapshotRef = useRef<LiveRateSnapshot | null>(null);
   const lastDisplayBucketRef = useRef("");
+  const previousSourceTokenRef = useRef<DashboardSourceToken | null>(null);
 
   useEffect(() => {
-    onSnapshotRef.current = onSnapshot;
-  }, [onSnapshot]);
-
-  useEffect(() => {
+    const sourceChanged = !sameSourceToken(previousSourceTokenRef.current, sourceToken);
+    previousSourceTokenRef.current = sourceToken;
+    if (sourceChanged) {
+      lastSmoothedSnapshotRef.current = null;
+      lastDisplayBucketRef.current = "";
+    }
     if (!active) {
       lastSmoothedSnapshotRef.current = null;
       lastDisplayBucketRef.current = "";
@@ -52,7 +57,7 @@ export function useLiveRateFeed({
         return;
       }
       lastDisplayBucketRef.current = bucket;
-      onSnapshotRef.current(smoothed);
+      onSnapshot(smoothed);
     };
 
     void desktopPlatform.onLiveRateSnapshot((liveRate) => {
@@ -94,7 +99,19 @@ export function useLiveRateFeed({
       unlisten?.();
       void desktopPlatform.stopLiveRateStream();
     };
-  }, [active, retryGeneration, selectedThreadId, source]);
+  }, [active, onSnapshot, retryGeneration, selectedThreadId, source, sourceToken]);
+}
+
+function sameSourceToken(
+  left: DashboardSourceToken | null,
+  right: DashboardSourceToken | null,
+): boolean {
+  return left === right || (
+    left !== null
+    && right !== null
+    && left.transitionGeneration === right.transitionGeneration
+    && left.canonicalHomeKey === right.canonicalHomeKey
+  );
 }
 
 function failedLiveRateStartResult(error: unknown): PlatformCommandResult<boolean> {

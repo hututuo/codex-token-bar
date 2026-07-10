@@ -2,6 +2,7 @@ import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { FLOATING_SETTINGS_EVENT } from "../floating/floatingSettings";
 import type {
   AppSettingsSnapshot,
+  CodexHomeSourceEnvelope,
   DisplaySurfaceSettings,
   LiveRateSnapshot,
   UnreadSummary,
@@ -13,6 +14,7 @@ const LIVE_RATE_SNAPSHOT_EVENT = "live-rate-snapshot";
 const UNREAD_SUMMARY_CHANGED_EVENT = "unread-summary-changed";
 const DISPLAY_SURFACES_EVENT = "display-surfaces-changed";
 const APP_SETTINGS_EVENT = "app-settings-changed";
+export const CODEX_HOME_SOURCE_CHANGED_EVENT = "codex-home-source-changed";
 
 export function notifyFloatingWindowHidden(): Promise<boolean> {
   return emitPlatformEvent(FLOATING_WINDOW_HIDDEN_EVENT, "emit-floating-window-hidden");
@@ -56,4 +58,10 @@ export function publishAppSettings(settings: AppSettingsSnapshot): Promise<boole
 
 export function onAppSettingsChanged(handler: (settings: AppSettingsSnapshot) => void): Promise<Unlisten> {
   return listenToEvent<AppSettingsSnapshot>(APP_SETTINGS_EVENT, handler);
+}
+
+export function onCodexHomeSourceChanged(
+  handler: (envelope: CodexHomeSourceEnvelope) => void,
+): Promise<Unlisten> {
+  return listenToEvent<CodexHomeSourceEnvelope>(CODEX_HOME_SOURCE_CHANGED_EVENT, handler);
 }

@@ -1,6 +1,7 @@
 import {
   notifyFloatingWindowHidden,
   onAppSettingsChanged,
+  onCodexHomeSourceChanged,
   onFloatingSettingsChanged,
   onFloatingWindowHidden,
   onDisplaySurfacesChanged,
@@ -50,6 +51,7 @@ export const desktopPlatform = {
   onFloatingWindowHidden,
   publishAppSettings,
   onAppSettingsChanged,
+  onCodexHomeSourceChanged,
   publishFloatingSettings,
   onFloatingSettingsChanged,
   publishDisplaySurfaces,
