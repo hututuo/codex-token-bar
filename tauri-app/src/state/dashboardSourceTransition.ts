@@ -1,9 +1,9 @@
-import type { CodexHomeSourceEnvelope } from "../types/dashboard";
+import type {
+  CodexHomeSourceEnvelope,
+  CodexHomeSourceToken,
+} from "../types/dashboard";
 
-export interface DashboardSourceToken {
-  canonicalHomeKey: string;
-  transitionGeneration: number;
-}
+export type DashboardSourceToken = CodexHomeSourceToken;
 
 export interface DashboardSourceTransition {
   sourceToken: DashboardSourceToken | null;
@@ -76,6 +76,15 @@ export function acceptDashboardSourceEnvelope(
       deferredGeneration: transition.deferredGeneration + 1,
     },
   };
+}
+
+export function acceptDashboardSourceResponse(
+  transition: DashboardSourceTransition,
+  envelope: CodexHomeSourceEnvelope | null,
+): DashboardSourceTransitionResult {
+  return envelope === null
+    ? rejectedTransition(transition)
+    : acceptDashboardSourceEnvelope(transition, envelope);
 }
 
 export function captureDashboardSourceToken(

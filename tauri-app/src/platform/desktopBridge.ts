@@ -28,6 +28,7 @@ export async function invokePlatformCommandResult<T>(
   command: string,
   fallback: T,
   args?: Record<string, unknown>,
+  timeoutMs: number | null = PLATFORM_COMMAND_TIMEOUT_MS,
 ): Promise<PlatformCommandResult<T>> {
   if (!isTauriRuntimeAvailable()) {
     return {
@@ -38,7 +39,10 @@ export async function invokePlatformCommandResult<T>(
   }
 
   try {
-    const result = await withTimeout(invoke<T>(command, args), PLATFORM_COMMAND_TIMEOUT_MS);
+    const invocation = invoke<T>(command, args);
+    const result = timeoutMs === null
+      ? await invocation
+      : await withTimeout(invocation, timeoutMs);
     clearPlatformFailure(`command:${command}`);
     return { ok: true, value: result };
   } catch (error) {

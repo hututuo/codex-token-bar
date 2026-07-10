@@ -152,6 +152,9 @@ export function StatusPanelApp() {
 
   function acknowledgeUnread() {
     void acknowledgeUnreadSummary().then((summary) => {
+      if (summary === null) {
+        return;
+      }
       setAcknowledgedUnreadSummary(summary);
       void desktopPlatform.publishUnreadSummaryChanged(summary);
     });

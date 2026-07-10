@@ -1,4 +1,5 @@
 import type {
+  CodexHomeSourceToken,
   FloatingPanelSnapshot,
   LiveRateSnapshot,
   LiveThreadOption,
@@ -9,7 +10,7 @@ import {
   emptyLiveRateSnapshot,
   emptyUnreadSummary,
 } from "./fallback";
-import { callCommand } from "./command";
+import { callCommand, callCommandOptional } from "./command";
 
 export function readLiveRateSnapshot(selectedThreadId?: string | null): Promise<LiveRateSnapshot> {
   return callCommand(
@@ -32,8 +33,14 @@ export function readUnreadSummary(): Promise<UnreadSummary> {
   return callCommand("read_unread_summary", emptyUnreadSummary, undefined, 1_500);
 }
 
-export function acknowledgeUnreadSummary(): Promise<UnreadSummary> {
-  return callCommand("acknowledge_current_unread", emptyUnreadSummary, undefined, 1_500);
+export function acknowledgeUnreadSummary(
+  sourceToken: CodexHomeSourceToken | null = null,
+): Promise<UnreadSummary | null> {
+  return callCommandOptional(
+    "acknowledge_current_unread",
+    { sourceToken },
+    1_500,
+  );
 }
 
 export function resetLiveRateMonitor(): Promise<boolean> {

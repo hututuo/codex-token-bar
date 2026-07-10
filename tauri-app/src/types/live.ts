@@ -24,6 +24,10 @@ export interface LiveThreadOption {
   tokensUsed: number;
 }
 
+export interface LiveRateStreamLease {
+  leaseId: string;
+}
+
 export interface FloatingPanelSnapshot {
   tokensPerSecond: number;
   maxTokensPerSecond: number;

@@ -7,6 +7,7 @@ interface ProviderRepairPanelProps {
   onClose: () => void;
   onSnapshotChange: (snapshot: ProviderRepairSnapshot) => void;
   open: boolean;
+  providerSourceKey: string;
   snapshot: ProviderRepairSnapshot;
 }
 
@@ -14,6 +15,7 @@ export function ProviderRepairPanel({
   onClose,
   onSnapshotChange,
   open,
+  providerSourceKey,
   snapshot,
 }: ProviderRepairPanelProps) {
   const [closeBlocked, setCloseBlocked] = useState(false);
@@ -45,6 +47,7 @@ export function ProviderRepairPanel({
         </header>
 
         <ProviderRepairCard
+          key={providerSourceKey}
           autoScanOnMount={panelModel.autoScanOnMount}
           id="provider-repair"
           onCloseBlockedChange={setCloseBlocked}

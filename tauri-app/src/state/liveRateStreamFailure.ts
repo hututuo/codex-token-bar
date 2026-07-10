@@ -6,7 +6,7 @@ export const LIVE_RATE_STREAM_WARNING_SOURCE = "live_rate_stream";
 
 export function liveRateStreamFailureSnapshot(
   selectedThreadId: string | null,
-  result: PlatformCommandResult<boolean>,
+  result: PlatformCommandResult<unknown>,
 ): LiveRateSnapshot {
   return {
     ...emptyLiveRateSnapshot(selectedThreadId),
@@ -22,7 +22,7 @@ export function liveRateStreamFailureSnapshot(
   };
 }
 
-export function liveRateStreamFailureMessage(result: PlatformCommandResult<boolean>): string {
+export function liveRateStreamFailureMessage(result: PlatformCommandResult<unknown>): string {
   if (result.ok) {
     return "";
   }

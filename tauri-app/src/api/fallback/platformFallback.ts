@@ -1,6 +1,5 @@
 import type {
   AutostartStatus,
-  CodexHomeSourceEnvelope,
   CodexHomeStatus,
   PlatformCapabilities,
   PlatformFeatureCapability,
@@ -10,12 +9,6 @@ export const fallbackCodexHome: CodexHomeStatus = {
   path: "~/.codex",
   exists: false,
   source: "待读取",
-};
-
-export const fallbackCodexHomeSource: CodexHomeSourceEnvelope = {
-  codexHome: fallbackCodexHome,
-  canonicalHomeKey: "~/.codex",
-  transitionGeneration: 1,
 };
 
 export const fallbackPlatformCapabilities: PlatformCapabilities = {

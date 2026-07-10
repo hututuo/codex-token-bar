@@ -15,6 +15,7 @@ import {
 import type {
   AccountQuotaBundle,
   CodexHomeSourceEnvelope,
+  CodexHomeSourceToken,
   DashboardSnapshot,
   LiveRateSnapshot,
   LiveThreadOption,
@@ -24,7 +25,7 @@ import type {
 } from "../types/dashboard";
 
 export interface DashboardDataSource {
-  getCodexHome: () => Promise<CodexHomeSourceEnvelope>;
+  getCodexHome: () => Promise<CodexHomeSourceEnvelope | null>;
   setCodexHome: (path: string) => Promise<CodexHomeSourceEnvelope>;
   resetCodexHome: () => Promise<CodexHomeSourceEnvelope>;
   readPlatformCapabilities: () => Promise<PlatformCapabilities>;
@@ -34,7 +35,9 @@ export interface DashboardDataSource {
   readAccountQuota: (forceRefresh?: boolean) => Promise<AccountQuotaBundle | null>;
   readLiveRateSnapshot: (selectedThreadId?: string | null) => Promise<LiveRateSnapshot>;
   readLiveThreadOptions: () => Promise<LiveThreadOption[]>;
-  acknowledgeUnreadSummary: () => Promise<LiveRateSnapshot["unreadSummary"]>;
+  acknowledgeUnreadSummary: (
+    sourceToken: CodexHomeSourceToken,
+  ) => Promise<LiveRateSnapshot["unreadSummary"] | null>;
   scanProviderRepair: () => Promise<ProviderRepairSnapshot>;
 }
 

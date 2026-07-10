@@ -3,7 +3,6 @@ export { emptyFloatingPanelSnapshot, emptyLiveRateSnapshot, emptyUnreadSummary }
 export {
   fallbackAutostartStatus,
   fallbackCodexHome,
-  fallbackCodexHomeSource,
   fallbackPlatformCapabilities,
 } from "./fallback/platformFallback";
 export { fallbackProviderRepairActionResult, fallbackProviderRepairSnapshot } from "./fallback/providerRepairFallback";

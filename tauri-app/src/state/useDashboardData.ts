@@ -42,6 +42,7 @@ import {
 } from "./dashboardRefreshPlan";
 import {
   acceptDashboardSourceEnvelope,
+  acceptDashboardSourceResponse,
   createDashboardSourceTransition,
   dashboardSourceTokenMatches,
   type DashboardSourceToken,
@@ -162,8 +163,6 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     setState((current) => isSourceTokenCurrent(token)
       ? { ...current, loading: true }
       : current);
-    setFastSnapshotLoaded((current) => isSourceTokenCurrent(token) ? false : current);
-    setSelectedLiveThreadId((current) => isSourceTokenCurrent(token) ? "" : current);
     setSourceLoadGeneration((current) => isSourceTokenCurrent(token) ? current + 1 : current);
   }, [isSourceTokenCurrent]);
 
@@ -309,8 +308,30 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   useEffect(() => {
     let cancelled = false;
     void source.getCodexHome().then((envelope) => {
-      if (!cancelled) {
+      if (cancelled) {
+        return;
+      }
+      if (envelope !== null) {
         acceptSourceEnvelope(envelope);
+        return;
+      }
+
+      const unavailable = acceptDashboardSourceResponse(
+        sourceTransitionRef.current,
+        envelope,
+      );
+      if (!unavailable.accepted && sourceTransitionRef.current.sourceToken === null) {
+        setState((current) => sourceTransitionRef.current.sourceToken === null
+          ? {
+              ...current,
+              codexHome: {
+                path: "无法读取 Codex Home",
+                exists: false,
+                source: "读取失败",
+              },
+              loading: false,
+            }
+          : current);
       }
     });
     return () => {
@@ -574,6 +595,9 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   }, [isSourceTokenCurrent, liveRateEnabled, selectedLiveThreadId, sourceToken]);
 
   const readyState = useMemo(() => visibleDashboardState(state), [state]);
+  const providerSourceKey = sourceToken === null
+    ? "unavailable"
+    : `${sourceToken.transitionGeneration}:${sourceToken.canonicalHomeKey}`;
 
   return {
     state,
@@ -588,6 +612,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     updateCodexHome,
     restoreAutoCodexHome,
     updateProviderRepair,
+    providerSourceKey,
     selectedLiveThreadId,
     setSelectedLiveThreadId,
   };

@@ -169,7 +169,8 @@ test("usage cache initialization shows inline notice without blocking dashboard"
   assert.equal(preciseLoad.includes("onUsageCacheStatus?.(cacheStatus)"), true);
   assert.equal(preciseLoad.includes("onUsageCacheInitialized?.()"), true);
   assert.equal(dashboardData.includes("const [usageCacheInitializing, setUsageCacheInitializing] = useState(false)"), true);
-  assert.equal(dashboardData.includes("setUsageCacheInitializing(!status.initialized)"), true);
+  assert.equal(dashboardData.includes("setUsageCacheInitializing((current) =>"), true);
+  assert.equal(dashboardData.includes("? !status.initialized"), true);
   assert.equal(dashboardData.includes("usageCacheInitializing,"), true);
   assert.equal(dashboardApp.includes("usageCacheInitializing={usageCacheInitializing}"), true);
   assert.equal(dashboardPage.includes("UsageCacheInitializationNotice"), true);
@@ -331,13 +332,14 @@ test("live rate card exposes Swift-style reset action", async () => {
 
 test("manual dashboard refresh keeps the current snapshot visible", async () => {
   const actions = await readFile(new URL("../state/useDashboardActions.ts", import.meta.url), "utf8");
+  const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
   const reloadAll = actions.slice(
     actions.indexOf("const reloadAll ="),
     actions.indexOf("const updateCodexHome ="),
   );
-  const reloadInitialSnapshot = actions.slice(
-    actions.indexOf("const reloadInitialSnapshot ="),
-    actions.indexOf("const reloadAll ="),
+  const refreshCurrentSource = dashboardData.slice(
+    dashboardData.indexOf("const refreshCurrentSource ="),
+    dashboardData.indexOf("const {", dashboardData.indexOf("const refreshCurrentSource =")),
   );
 
   assert.equal(reloadAll.includes("applyManualDashboardRefresh({"), true);
@@ -345,8 +347,10 @@ test("manual dashboard refresh keeps the current snapshot visible", async () => 
   assert.equal(reloadAll.includes("setFastSnapshotLoaded(false)"), false);
   assert.equal(reloadAll.includes("loading: true"), false);
   assert.equal(reloadAll.includes("loadInitialDashboardState"), false);
-  assert.equal(reloadInitialSnapshot.includes("setFastSnapshotLoaded(false)"), true);
-  assert.equal(reloadInitialSnapshot.includes("loadInitialDashboardState"), true);
+  assert.equal(refreshCurrentSource.includes("setSourceLoadGeneration"), true);
+  assert.equal(refreshCurrentSource.includes("setFastSnapshotLoaded"), false);
+  assert.equal(refreshCurrentSource.includes("setSelectedLiveThreadId"), false);
+  assert.equal(dashboardData.includes("loadInitialDashboardState({"), true);
 });
 
 test("codex radar refresh generation remains wired to the summary strip", async () => {

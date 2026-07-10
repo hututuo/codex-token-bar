@@ -62,6 +62,7 @@ interface DashboardPageProps {
   usageCacheInitializing: boolean;
   providerRepairOpen: boolean;
   providerRepairSnapshot: ProviderRepairSnapshot;
+  providerSourceKey: string;
   radarRefreshGeneration: number;
   refreshing: boolean;
   appUpdateState: AppUpdateViewState;
@@ -108,6 +109,7 @@ export function DashboardPage({
   usageCacheInitializing,
   providerRepairOpen,
   providerRepairSnapshot,
+  providerSourceKey,
   radarRefreshGeneration,
   refreshing,
   appUpdateState,
@@ -192,6 +194,7 @@ export function DashboardPage({
         onClose={onProviderRepairClose}
         onSnapshotChange={onProviderRepairSnapshotChange}
         open={providerRepairOpen}
+        providerSourceKey={providerSourceKey}
         snapshot={providerRepairSnapshot}
       />
     </main>

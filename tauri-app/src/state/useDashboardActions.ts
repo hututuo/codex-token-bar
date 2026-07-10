@@ -110,8 +110,11 @@ export function useDashboardActions({
 
   const acknowledgeUnread = useCallback(async () => {
     const sourceToken = captureSourceToken();
-    const unreadSummary = await source.acknowledgeUnreadSummary();
-    if (!isSourceTokenCurrent(sourceToken)) {
+    if (sourceToken === null) {
+      return;
+    }
+    const unreadSummary = await source.acknowledgeUnreadSummary(sourceToken);
+    if (unreadSummary === null || !isSourceTokenCurrent(sourceToken)) {
       return;
     }
     setState((current) => isSourceTokenCurrent(sourceToken) && current.liveRate

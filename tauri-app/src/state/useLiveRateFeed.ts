@@ -9,6 +9,10 @@ import type { PlatformCommandResult } from "../platform/desktopBridge";
 import { desktopPlatform } from "../platform/desktop";
 import type { LiveRateSnapshot } from "../types/dashboard";
 import type { DashboardSourceToken } from "./dashboardSourceTransition";
+import {
+  createLiveRateLeaseController,
+  type LiveRateLeaseController,
+} from "./liveRateLease";
 import { liveRateStreamFailureSnapshot } from "./liveRateStreamFailure";
 
 interface LiveRateFeedOptions {
@@ -31,6 +35,14 @@ export function useLiveRateFeed({
   const lastSmoothedSnapshotRef = useRef<LiveRateSnapshot | null>(null);
   const lastDisplayBucketRef = useRef("");
   const previousSourceTokenRef = useRef<DashboardSourceToken | null>(null);
+  const leaseControllerRef = useRef<LiveRateLeaseController | null>(null);
+  let leaseController = leaseControllerRef.current;
+  if (leaseController === null) {
+    leaseController = createLiveRateLeaseController((leaseId) => {
+      void desktopPlatform.stopLiveRateStream(leaseId);
+    });
+    leaseControllerRef.current = leaseController;
+  }
 
   useEffect(() => {
     const sourceChanged = !sameSourceToken(previousSourceTokenRef.current, sourceToken);
@@ -39,7 +51,7 @@ export function useLiveRateFeed({
       lastSmoothedSnapshotRef.current = null;
       lastDisplayBucketRef.current = "";
     }
-    if (!active) {
+    if (!active || sourceToken === null) {
       lastSmoothedSnapshotRef.current = null;
       lastDisplayBucketRef.current = "";
       return;
@@ -48,6 +60,7 @@ export function useLiveRateFeed({
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     const selected = selectedThreadId || null;
+    const leaseRequest = leaseController.begin();
 
     const publishSnapshot = (liveRate: LiveRateSnapshot) => {
       const smoothed = smoothLiveRateSnapshot(liveRate, lastSmoothedSnapshotRef.current);
@@ -76,9 +89,20 @@ export function useLiveRateFeed({
       if (cancelled) {
         return null;
       }
-      const startResult = await desktopPlatform.startLiveRateStreamCommand(selected, true);
-      if (!startResult.ok) {
-        publishSnapshot(liveRateStreamFailureSnapshot(selected, startResult));
+      const startResult = await desktopPlatform.startLiveRateStreamCommand({
+        selectedThreadId: selected,
+        controlsSelectedThread: true,
+        subscriberOwnerToken: leaseRequest.ownerToken,
+        ownerGeneration: leaseRequest.ownerGeneration,
+        sourceToken,
+      });
+      if (!startResult.ok || startResult.value === null) {
+        if (!cancelled) {
+          publishSnapshot(liveRateStreamFailureSnapshot(selected, startResult));
+        }
+        return null;
+      }
+      if (!leaseRequest.accept(startResult.value)) {
         return null;
       }
       return source.readLiveRateSnapshot(selected);
@@ -97,7 +121,7 @@ export function useLiveRateFeed({
     return () => {
       cancelled = true;
       unlisten?.();
-      void desktopPlatform.stopLiveRateStream();
+      leaseRequest.cancel();
     };
   }, [active, onSnapshot, retryGeneration, selectedThreadId, source, sourceToken]);
 }
@@ -114,10 +138,10 @@ function sameSourceToken(
   );
 }
 
-function failedLiveRateStartResult(error: unknown): PlatformCommandResult<boolean> {
+function failedLiveRateStartResult(error: unknown): PlatformCommandResult<unknown> {
   return {
     ok: false,
-    fallback: false,
+    fallback: null,
     error: errorMessage(error),
   };
 }

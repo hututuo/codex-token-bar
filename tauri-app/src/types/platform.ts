@@ -10,6 +10,11 @@ export interface CodexHomeSourceEnvelope {
   transitionGeneration: number;
 }
 
+export interface CodexHomeSourceToken {
+  canonicalHomeKey: string;
+  transitionGeneration: number;
+}
+
 export interface PlatformCapabilities {
   platform: string;
   shell: string;

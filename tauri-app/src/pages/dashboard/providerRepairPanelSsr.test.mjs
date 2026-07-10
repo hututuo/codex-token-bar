@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -85,6 +86,21 @@ test("ProviderRepairPanel model scans only when opened on an unscanned repair sn
   });
 });
 
+test("Provider repair card remounts on exact dashboard source token without resetting the global safety latch", async () => {
+  const [appSource, pageSource, panelSource, cardSource] = await Promise.all([
+    readFile(new URL("../../app/DashboardApp.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../DashboardPage.tsx", import.meta.url), "utf8"),
+    readFile(new URL("./ProviderRepairPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../../components/ProviderRepairCard.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(appSource, /providerSourceKey={providerSourceKey}/);
+  assert.match(pageSource, /providerSourceKey={providerSourceKey}/);
+  assert.match(panelSource, /key={providerSourceKey}/);
+  assert.match(panelSource, /providerSourceKey: string/);
+  assert.match(cardSource, /providerRepairSafetyLatch/);
+});
+
 function findButton(html, text) {
   const pattern = new RegExp(`<button(?<attrs>[^>]*)>${text}</button>`);
   const match = html.match(pattern);
@@ -99,6 +115,7 @@ function panelProps(overrides = {}) {
     onClose: () => {},
     onSnapshotChange: () => {},
     open: true,
+    providerSourceKey: "1:/source/A",
     snapshot: snapshotFixture(),
     ...overrides,
   };

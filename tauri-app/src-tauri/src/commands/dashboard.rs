@@ -1,14 +1,12 @@
+use super::window_auth::require_window_label;
 use crate::commands::local_source;
 use crate::core::dashboard::DashboardDataSource;
 use crate::core::startup_trace;
 use crate::core::usage::cache_lifecycle::{self, UsageCacheStatus};
 use crate::core::usage::token_count_jsonl::{self, TokenUsageSummary};
-use super::window_auth::require_window_label;
-use crate::models::{
-    AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, PlatformCapabilities,
-};
+use crate::models::{AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, PlatformCapabilities};
 use crate::platform;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -27,10 +25,34 @@ pub struct CodexHomeSourceEnvelope {
     pub transition_generation: u64,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexHomeSourceToken {
+    pub canonical_home_key: String,
+    pub transition_generation: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CapturedCodexHomeSource {
+    pub source_token: CodexHomeSourceToken,
+    pub codex_home: PathBuf,
+}
+
 #[derive(Default)]
 struct CodexHomeTransitionState {
     canonical_home_key: Option<String>,
+    codex_home_path: Option<PathBuf>,
     transition_generation: u64,
+}
+
+#[cfg(test)]
+impl CodexHomeSourceEnvelope {
+    pub(crate) fn source_token(&self) -> CodexHomeSourceToken {
+        CodexHomeSourceToken {
+            canonical_home_key: self.canonical_home_key.clone(),
+            transition_generation: self.transition_generation,
+        }
+    }
 }
 
 async fn run_blocking_command<T, F>(work: F) -> Result<T, String>
@@ -99,6 +121,42 @@ fn with_codex_home_transition_state<T>(
     operation(&mut state)
 }
 
+pub(crate) fn capture_codex_home_source(
+    expected: Option<&CodexHomeSourceToken>,
+) -> Result<CapturedCodexHomeSource, String> {
+    with_codex_home_transition_state(|transition| {
+        if transition.canonical_home_key.is_none() {
+            resolve_codex_home_source(transition, platform::default_codex_home_status());
+        }
+        let captured = match expected {
+            Some(expected) => capture_codex_home_source_from_state(transition, expected)?,
+            None => {
+                let current = current_codex_home_source_token(transition)?;
+                capture_codex_home_source_from_state(transition, &current)?
+            }
+        };
+        Ok(captured)
+    })
+}
+
+pub(crate) fn validate_codex_home_source(
+    source_token: &CodexHomeSourceToken,
+) -> Result<(), String> {
+    with_codex_home_transition_state(|transition| {
+        validate_codex_home_source_in_state(transition, source_token)
+    })
+}
+
+pub(crate) fn with_valid_codex_home_source<T>(
+    source_token: &CodexHomeSourceToken,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    with_codex_home_transition_state(|transition| {
+        validate_codex_home_source_in_state(transition, source_token)?;
+        operation()
+    })
+}
+
 fn commit_codex_home_transition<E>(
     transition: &mut CodexHomeTransitionState,
     save: impl FnOnce() -> Result<CodexHomeStatus, String>,
@@ -122,11 +180,13 @@ fn resolve_codex_home_source(
     transition: &mut CodexHomeTransitionState,
     codex_home: CodexHomeStatus,
 ) -> CodexHomeSourceEnvelope {
-    let canonical_home_key = canonical_home_key(Path::new(&codex_home.path));
+    let codex_home_path = canonical_home_path(Path::new(&codex_home.path));
+    let canonical_home_key = platform_path_key(&codex_home_path);
     if transition.canonical_home_key.as_deref() != Some(&canonical_home_key) {
         transition.transition_generation = transition.transition_generation.saturating_add(1);
         transition.canonical_home_key = Some(canonical_home_key.clone());
     }
+    transition.codex_home_path = Some(codex_home_path);
 
     CodexHomeSourceEnvelope {
         codex_home,
@@ -135,9 +195,57 @@ fn resolve_codex_home_source(
     }
 }
 
+#[cfg(test)]
 fn canonical_home_key(path: &Path) -> String {
-    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| lexical_absolute_path(path));
-    platform_path_key(&resolved)
+    platform_path_key(&canonical_home_path(path))
+}
+
+fn canonical_home_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| lexical_absolute_path(path))
+}
+
+fn capture_codex_home_source_from_state(
+    transition: &CodexHomeTransitionState,
+    expected: &CodexHomeSourceToken,
+) -> Result<CapturedCodexHomeSource, String> {
+    validate_codex_home_source_in_state(transition, expected)?;
+    Ok(CapturedCodexHomeSource {
+        source_token: expected.clone(),
+        codex_home: transition
+            .codex_home_path
+            .clone()
+            .ok_or_else(|| "Codex Home source path is not initialized".to_string())?,
+    })
+}
+
+fn validate_codex_home_source_in_state(
+    transition: &CodexHomeTransitionState,
+    expected: &CodexHomeSourceToken,
+) -> Result<(), String> {
+    let current = current_codex_home_source_token(transition)?;
+    if current == *expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "Codex Home source changed from generation {} ({}) to generation {} ({})",
+            expected.transition_generation,
+            expected.canonical_home_key,
+            current.transition_generation,
+            current.canonical_home_key,
+        ))
+    }
+}
+
+fn current_codex_home_source_token(
+    transition: &CodexHomeTransitionState,
+) -> Result<CodexHomeSourceToken, String> {
+    Ok(CodexHomeSourceToken {
+        canonical_home_key: transition
+            .canonical_home_key
+            .clone()
+            .ok_or_else(|| "Codex Home source is not initialized".to_string())?,
+        transition_generation: transition.transition_generation,
+    })
 }
 
 fn lexical_absolute_path(path: &Path) -> PathBuf {
@@ -221,10 +329,8 @@ pub async fn read_precise_dashboard_snapshot(
 pub async fn read_usage_summary_snapshot() -> Result<TokenUsageSummary, String> {
     let started = Instant::now();
     let codex_home = platform::default_codex_home();
-    let result = run_blocking_command(move || {
-        token_count_jsonl::usage_summary_snapshot(&codex_home)
-    })
-    .await;
+    let result =
+        run_blocking_command(move || token_count_jsonl::usage_summary_snapshot(&codex_home)).await;
     startup_trace::mark_performance(format!(
         "read_usage_summary_snapshot {}ms {}",
         started.elapsed().as_millis(),
@@ -244,10 +350,7 @@ pub async fn read_account_quota(force_refresh: Option<bool>) -> Result<AccountQu
     startup_trace::mark_once("command read_account_quota start");
     let started = Instant::now();
     let forced = force_refresh.unwrap_or(false);
-    let result = run_blocking_command(move || {
-        local_source().read_account_quota(forced)
-    })
-    .await;
+    let result = run_blocking_command(move || local_source().read_account_quota(forced)).await;
     startup_trace::mark_performance(format!(
         "read_account_quota force={} {}ms {}",
         forced,
@@ -311,7 +414,9 @@ fn account_quota_result_status(result: &Result<AccountQuotaBundle, String>) -> S
                     .collect::<Vec<_>>()
                     .join("|");
                 match (warnings.is_empty(), diagnostics.is_empty()) {
-                    (false, false) => format!("{status} warnings=[{warnings}] diagnostics=[{diagnostics}]"),
+                    (false, false) => {
+                        format!("{status} warnings=[{warnings}] diagnostics=[{diagnostics}]")
+                    }
                     (false, true) => format!("{status} warnings=[{warnings}]"),
                     (true, false) => format!("{status} diagnostics=[{diagnostics}]"),
                     (true, true) => status.to_string(),
@@ -444,6 +549,32 @@ mod tests {
     }
 
     #[test]
+    fn captured_codex_home_source_never_rebinds_to_a_later_transition() {
+        let home_a = disposable_source_test_directory("captured-source-a");
+        let home_b = disposable_source_test_directory("captured-source-b");
+        let mut transition = CodexHomeTransitionState::default();
+        let source_a = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home_a.clone(), "manual"),
+        );
+        let source_a_token = source_a.source_token();
+        let captured = capture_codex_home_source_from_state(&transition, &source_a_token)
+            .expect("A should be captured before the transition");
+
+        resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home_b.clone(), "manual"),
+        );
+
+        assert_eq!(captured.codex_home, canonical_home_path(&home_a));
+        assert_eq!(captured.source_token, source_a_token);
+        assert!(validate_codex_home_source_in_state(&transition, &source_a_token).is_err());
+
+        remove_source_test_directory(home_a);
+        remove_source_test_directory(home_b);
+    }
+
+    #[test]
     fn account_quota_trace_status_distinguishes_placeholder_bundle_from_real_quota() {
         let mut quota = placeholder_quota_for_test();
         quota.pace_label = "额度读取失败".into();
@@ -461,7 +592,10 @@ mod tests {
             diagnostics: Vec::new(),
         });
 
-        assert_eq!(account_quota_result_status(&placeholder), "quota_placeholder");
+        assert_eq!(
+            account_quota_result_status(&placeholder),
+            "quota_placeholder"
+        );
     }
 
     #[test]

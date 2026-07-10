@@ -41,6 +41,7 @@ export function DashboardApp() {
     restoreAutoCodexHome,
     reloadQuota,
     updateProviderRepair,
+    providerSourceKey,
     selectedLiveThreadId,
     setSelectedLiveThreadId,
   } = useDashboardData({
@@ -94,6 +95,7 @@ export function DashboardApp() {
         onToggleStatusTray={shellSettings.toggleStatusTrayLiveText}
         providerRepairOpen={providerRepairOpen}
         providerRepairSnapshot={readyState.repair}
+        providerSourceKey={providerSourceKey}
         onCodexHomeChange={updateCodexHome}
         onCodexHomeReset={restoreAutoCodexHome}
         onCustomAccountDisplayNameChange={shellSettings.updateCustomAccountDisplayName}

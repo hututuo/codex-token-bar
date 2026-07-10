@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { withSsrModules } from "../test/ssrHarness.mjs";
 
 import {
   acceptDashboardSourceEnvelope,
+  acceptDashboardSourceResponse,
   captureDashboardSourceToken,
   createDashboardSourceTransition,
   publishForDashboardSource,
@@ -156,6 +158,58 @@ test("Rust publisher and desktop listener share the canonical source event name"
 
   assert.match(rustCommands, /CODEX_HOME_SOURCE_CHANGED_EVENT: &str = "codex-home-source-changed"/);
   assert.match(desktopEvents, /CODEX_HOME_SOURCE_CHANGED_EVENT = "codex-home-source-changed"/);
+});
+
+test("failed getCodexHome leaves source uninitialized so real generation one remains admissible", () => {
+  let transition = createDashboardSourceTransition();
+
+  const unavailable = acceptDashboardSourceResponse(transition, null);
+  assert.equal(unavailable.accepted, false);
+  assert.equal(unavailable.transition.sourceToken, null);
+  transition = unavailable.transition;
+
+  const real = acceptDashboardSourceResponse(
+    transition,
+    envelope("/source/real", 1, "manual"),
+  );
+  assert.equal(real.accepted, true);
+  assert.equal(real.initialized, true);
+  assert.equal(real.transition.sourceToken.canonicalHomeKey, "/source/real");
+});
+
+test("failed getCodexHome remains visible while dashboard data is still unavailable", async () => {
+  await withSsrModules(async (load) => {
+    const { visibleDashboardState } = await load("/src/state/dashboardState.ts");
+    const visible = visibleDashboardState({
+      codexHome: {
+        path: "无法读取 Codex Home",
+        exists: false,
+        source: "读取失败",
+      },
+      platform: null,
+      dashboard: null,
+      liveRate: null,
+      liveThreadOptions: [],
+      repair: null,
+      diagnostics: [],
+      loading: false,
+    });
+
+    assert.equal(visible.codexHome.path, "无法读取 Codex Home");
+    assert.equal(visible.codexHome.source, "读取失败");
+  });
+});
+
+test("same-source save reloads initial data without clearing fast state thread or live feed", async () => {
+  const source = await readFile(new URL("./useDashboardData.ts", import.meta.url), "utf8");
+  const start = source.indexOf("const refreshCurrentSource");
+  const end = source.indexOf("const {", start);
+  const refreshBody = source.slice(start, end);
+
+  assert.match(refreshBody, /setSourceLoadGeneration/);
+  assert.doesNotMatch(refreshBody, /setFastSnapshotLoaded/);
+  assert.doesNotMatch(refreshBody, /setSelectedLiveThreadId/);
+  assert.doesNotMatch(refreshBody, /setLiveRateRetryGeneration/);
 });
 
 function acceptedTransition(transition, sourceEnvelope) {

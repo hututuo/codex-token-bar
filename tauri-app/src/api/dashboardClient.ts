@@ -8,13 +8,12 @@ import type {
 } from "../types/dashboard";
 import {
   emptyDashboardSnapshot,
-  fallbackCodexHomeSource,
   fallbackPlatformCapabilities,
 } from "./fallback";
 import { callCommand, callCommandOptional, callCommandStrict } from "./command";
 
-export function getCodexHome(): Promise<CodexHomeSourceEnvelope> {
-  return callCommand("get_codex_home", fallbackCodexHomeSource);
+export function getCodexHome(): Promise<CodexHomeSourceEnvelope | null> {
+  return callCommandOptional("get_codex_home");
 }
 
 export function setCodexHome(path: string): Promise<CodexHomeSourceEnvelope> {

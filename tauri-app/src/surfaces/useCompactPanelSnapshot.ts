@@ -3,6 +3,10 @@ import { emptyFloatingPanelSnapshot } from "../api/fallback";
 import { readUsageSummarySnapshot } from "../api/dashboardClient";
 import { readLiveRateSnapshot } from "../api/liveClient";
 import { desktopPlatform } from "../platform/desktop";
+import {
+  createLiveRateLeaseController,
+  type LiveRateLeaseController,
+} from "../state/liveRateLease";
 import type {
   FloatingPanelSnapshot,
   LiveRateSnapshot,
@@ -42,6 +46,14 @@ export function useCompactPanelSnapshot({
   const lastLiveActivityAtMsRef = useRef(0);
   const usageSummaryRef = useRef<UsageSummarySnapshot | null>(null);
   const usageSummarySourceKeyRef = useRef<string | null>(sourceKey);
+  const leaseControllerRef = useRef<LiveRateLeaseController | null>(null);
+  let leaseController = leaseControllerRef.current;
+  if (leaseController === null) {
+    leaseController = createLiveRateLeaseController((leaseId) => {
+      void desktopPlatform.stopLiveRateStream(leaseId);
+    });
+    leaseControllerRef.current = leaseController;
+  }
 
   const markLiveUsageActivity = useCallback((liveRate: LiveRateSnapshot) => {
     if (!liveRateHasUsageRefreshActivity(liveRate)) {
@@ -144,6 +156,7 @@ export function useCompactPanelSnapshot({
 
     let cancelled = false;
     let unlisten: (() => void) | null = null;
+    const leaseRequest = leaseController.begin();
 
     void desktopPlatform.onLiveRateSnapshot((liveRate) => {
       if (!cancelled) {
@@ -158,8 +171,18 @@ export function useCompactPanelSnapshot({
       }
     });
 
-    void desktopPlatform.startLiveRateStreamCommand(null, false).then((result) => {
-      if (cancelled || (result.ok && result.value)) {
+    void desktopPlatform.startLiveRateStreamCommand({
+      selectedThreadId: null,
+      controlsSelectedThread: false,
+      subscriberOwnerToken: leaseRequest.ownerToken,
+      ownerGeneration: leaseRequest.ownerGeneration,
+      sourceToken: null,
+    }).then((result) => {
+      if (result.ok && result.value !== null) {
+        leaseRequest.accept(result.value);
+        return;
+      }
+      if (cancelled) {
         return;
       }
       const message = result.ok ? "实时速率流暂不可用" : result.error;
@@ -178,9 +201,9 @@ export function useCompactPanelSnapshot({
     return () => {
       cancelled = true;
       unlisten?.();
-      void desktopPlatform.stopLiveRateStream();
+      leaseRequest.cancel();
     };
-  }, [active, liveRateEnabled, markLiveUsageActivity]);
+  }, [active, liveRateEnabled, markLiveUsageActivity, sourceKey]);
 
   useEffect(() => {
     if (!active || !liveRateEnabled) {

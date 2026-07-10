@@ -3,8 +3,21 @@ import {
   invokePlatformCommandResult,
   type PlatformCommandResult,
 } from "./desktopBridge";
+import type {
+  CodexHomeSourceToken,
+  LiveRateStreamLease,
+} from "../types/dashboard";
 
 export type SurfaceCommandResult = PlatformCommandResult<boolean>;
+export type LiveRateStreamCommandResult = PlatformCommandResult<LiveRateStreamLease | null>;
+
+export interface LiveRateStreamStartOptions {
+  controlsSelectedThread: boolean;
+  ownerGeneration: number;
+  selectedThreadId?: string | null;
+  sourceToken?: CodexHomeSourceToken | null;
+  subscriberOwnerToken: string;
+}
 
 export function showFloatingWindow(): Promise<boolean> {
   return invokePlatformCommand("show_floating_window", false);
@@ -39,25 +52,25 @@ export function setStatusTrayReadout(title: string, tooltip: string): Promise<bo
 }
 
 export function startLiveRateStream(
-  selectedThreadId?: string | null,
-  controlsSelectedThread = false,
-): Promise<boolean> {
-  return invokePlatformCommand("start_live_rate_stream", false, {
-    selectedThreadId: selectedThreadId || null,
-    controlsSelectedThread,
+  options: LiveRateStreamStartOptions,
+): Promise<LiveRateStreamLease | null> {
+  return invokePlatformCommand("start_live_rate_stream", null, {
+    ...options,
+    selectedThreadId: options.selectedThreadId || null,
+    sourceToken: options.sourceToken ?? null,
   });
 }
 
 export function startLiveRateStreamCommand(
-  selectedThreadId?: string | null,
-  controlsSelectedThread = false,
-): Promise<SurfaceCommandResult> {
-  return invokePlatformCommandResult("start_live_rate_stream", false, {
-    selectedThreadId: selectedThreadId || null,
-    controlsSelectedThread,
-  });
+  options: LiveRateStreamStartOptions,
+): Promise<LiveRateStreamCommandResult> {
+  return invokePlatformCommandResult("start_live_rate_stream", null, {
+    ...options,
+    selectedThreadId: options.selectedThreadId || null,
+    sourceToken: options.sourceToken ?? null,
+  }, null);
 }
 
-export function stopLiveRateStream(): Promise<boolean> {
-  return invokePlatformCommand("stop_live_rate_stream", false);
+export function stopLiveRateStream(leaseId: string): Promise<boolean> {
+  return invokePlatformCommand("stop_live_rate_stream", false, { leaseId });
 }

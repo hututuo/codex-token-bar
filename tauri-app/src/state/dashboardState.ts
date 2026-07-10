@@ -58,7 +58,15 @@ export function readyDashboardState(state: DashboardAppState): DashboardReadySta
 }
 
 export function visibleDashboardState(state: DashboardAppState): DashboardReadyState {
-  return readyDashboardState(state) ?? pendingDashboardReadyState();
+  const ready = readyDashboardState(state);
+  if (ready !== null) {
+    return ready;
+  }
+
+  const pending = pendingDashboardReadyState();
+  return state.codexHome === null
+    ? pending
+    : { ...pending, codexHome: state.codexHome };
 }
 
 export function pendingDashboardReadyState(): DashboardReadyState {
