@@ -3,6 +3,66 @@ import XCTest
 
 @MainActor
 final class TaskCompletionMonitorTests: XCTestCase {
+    func testSameIdentityPathRebindCancelsOldPollAndStartsOneNewPathPoll() async throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TaskPathRebind-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let oldHome = parent.appendingPathComponent("old-home", isDirectory: true)
+        let newHome = parent.appendingPathComponent("new-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: oldHome, withIntermediateDirectories: true)
+        let sourceAtOldPath = CodexDataSource(codexHome: oldHome, origin: .userSelected)
+        let loader = SuspendedTaskCompletionPollLoader()
+        let monitor = TaskCompletionMonitor(defaults: isolatedDefaults(), pollLoader: loader)
+
+        monitor.start(dataSource: sourceAtOldPath)
+        await waitUntil("old-path task poll") {
+            await loader.hasPendingRequest(at: oldHome)
+        }
+        monitor.applyForTesting(result: nil, unreadThreadRead: .available(["trusted-thread"]))
+        let identityGeneration = monitor.sourceIdentityGeneration
+        let oldBindingGeneration = monitor.sourceBindingGeneration
+
+        try FileManager.default.moveItem(at: oldHome, to: newHome)
+        let sourceAtNewPath = CodexDataSource(codexHome: newHome, origin: .userSelected)
+        XCTAssertEqual(sourceAtNewPath.stableIdentityKey, sourceAtOldPath.stableIdentityKey)
+        monitor.start(dataSource: sourceAtNewPath)
+
+        XCTAssertEqual(monitor.sourceIdentityGeneration, identityGeneration)
+        XCTAssertEqual(monitor.sourceBindingGeneration, oldBindingGeneration + 1)
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+        await waitUntil("new-path task poll") {
+            await loader.hasPendingRequest(at: newHome)
+        }
+
+        await loader.completeRequest(
+            at: oldHome,
+            output: TaskCompletionPollOutput(
+                result: nil,
+                unreadThreadRead: .available(["old-path-thread"])
+            )
+        )
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+
+        await loader.completeRequest(
+            at: newHome,
+            output: TaskCompletionPollOutput(
+                result: nil,
+                unreadThreadRead: .available(["trusted-thread", "new-path-thread"])
+            )
+        )
+        await waitUntil("new-path task completion") {
+            monitor.unreadThreadCount == 2
+        }
+
+        let requestCount = await loader.requestCount()
+        monitor.start(dataSource: sourceAtNewPath)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(monitor.sourceBindingGeneration, oldBindingGeneration + 1)
+        let samePathRequestCount = await loader.requestCount()
+        XCTAssertEqual(samePathRequestCount, requestCount)
+    }
+
     func testNativeUnreadMarkAllReadClearsCurrentThreadsAndKeepsNewThreadActive() {
         let monitor = TaskCompletionMonitor(defaults: isolatedDefaults())
 
@@ -56,5 +116,42 @@ final class TaskCompletionMonitorTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         return defaults
+    }
+
+    private func waitUntil(
+        _ label: String,
+        timeout: TimeInterval = 2,
+        predicate: @escaping @MainActor () async -> Bool
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await predicate() { return }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("Timed out waiting for \(label)")
+    }
+}
+
+private actor SuspendedTaskCompletionPollLoader: TaskCompletionPollLoading {
+    private var continuations: [String: CheckedContinuation<TaskCompletionPollOutput, Never>] = [:]
+    private var count = 0
+
+    func load(request: TaskCompletionPollRequest) async -> TaskCompletionPollOutput {
+        count += 1
+        return await withCheckedContinuation { continuation in
+            continuations[request.dataSource.codexHome.path] = continuation
+        }
+    }
+
+    func hasPendingRequest(at codexHome: URL) -> Bool {
+        continuations[codexHome.path] != nil
+    }
+
+    func completeRequest(at codexHome: URL, output: TaskCompletionPollOutput) {
+        continuations.removeValue(forKey: codexHome.path)?.resume(returning: output)
+    }
+
+    func requestCount() -> Int {
+        count
     }
 }

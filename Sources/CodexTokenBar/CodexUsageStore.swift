@@ -22,6 +22,8 @@ final class CodexUsageStore: ObservableObject {
     private var initialPreciseTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var refreshGeneration = 0
+    private(set) var sourceIdentityGeneration = 0
+    private(set) var sourceBindingGeneration = 0
     private var activeRefreshSourceID: String?
     private var snapshotSourceID: String?
     private var refreshInterval: TimeInterval = 300
@@ -58,20 +60,27 @@ final class CodexUsageStore: ObservableObject {
     func setDataSource(_ nextDataSource: CodexDataSource?) -> Bool {
         let previousIdentity = dataSource?.stableIdentityKey
         let nextIdentity = nextDataSource?.stableIdentityKey
+        let previousPath = dataSource?.codexHome.standardizedFileURL.path
+        let nextPath = nextDataSource?.codexHome.standardizedFileURL.path
+        let identityChanged = previousIdentity != nextIdentity
+        let bindingChanged = previousPath != nextPath
         dataSource = nextDataSource
         dataSourceIdentity = nextIdentity
         dataSourceBindingKey = Self.bindingKey(for: nextDataSource)
         updateDataSourceLabels()
 
-        guard previousIdentity != nextIdentity else {
-            return false
-        }
+        guard identityChanged || bindingChanged else { return false }
 
         refreshTask?.cancel()
+        refreshTask = nil
         refreshGeneration += 1
+        sourceBindingGeneration += 1
         activeRefreshSourceID = nil
         isRefreshing = false
         isPreparingUsageCache = false
+        guard identityChanged else { return true }
+
+        sourceIdentityGeneration += 1
         snapshot = .empty
         snapshotSourceID = nil
         didRunPreciseScan = false
@@ -98,18 +107,19 @@ final class CodexUsageStore: ObservableObject {
             "alreadyRefreshing": isRefreshing ? "1" : "0",
             "source": resolvedDataSource?.displayPath ?? "nil"
         ])
+        let requestedBindingKey = Self.bindingKey(for: resolvedDataSource)
         if isRefreshing,
            requestedSourceID == activeRefreshSourceID,
-           Self.bindingKey(for: resolvedDataSource) != dataSourceBindingKey {
-            setDataSource(resolvedDataSource)
-            trace?.mark("rebound-source-path")
-        }
-        if isRefreshing, requestedSourceID == activeRefreshSourceID {
+           requestedBindingKey == dataSourceBindingKey {
             trace?.end("skipped-refresh-in-flight")
             return
         }
-        if isRefreshing {
+        if requestedBindingKey != dataSourceBindingKey {
+            setDataSource(resolvedDataSource)
+            trace?.mark("rebound-source")
+        } else if isRefreshing {
             refreshTask?.cancel()
+            refreshTask = nil
             refreshGeneration += 1
             isRefreshing = false
             trace?.mark("cancelled-stale-refresh")
@@ -140,6 +150,7 @@ final class CodexUsageStore: ObservableObject {
         isRefreshing = true
         refreshGeneration += 1
         let generation = refreshGeneration
+        let bindingGeneration = sourceBindingGeneration
         activeRefreshSourceID = sourceID
         isPreparingUsageCache = needsCacheInitialization
         if isFirstLoad {
@@ -165,7 +176,11 @@ final class CodexUsageStore: ObservableObject {
                     if includePreciseScan {
                         trace?.mark("fastSnapshot.begin")
                         if let quickSnapshot = try? await self.snapshotLoader.loadFastSnapshot(dataSource: source) {
-                            guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else {
+                            guard self.isCurrentRefresh(
+                                generation: generation,
+                                bindingGeneration: bindingGeneration,
+                                sourceID: sourceID
+                            ) else {
                                 trace?.end("stale-after-fastSnapshot")
                                 return
                             }
@@ -183,7 +198,11 @@ final class CodexUsageStore: ObservableObject {
                     } else {
                         trace?.mark("fastSnapshot.begin")
                         let quickSnapshot = try await self.snapshotLoader.loadFastSnapshot(dataSource: source)
-                        guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else {
+                        guard self.isCurrentRefresh(
+                            generation: generation,
+                            bindingGeneration: bindingGeneration,
+                            sourceID: sourceID
+                        ) else {
                             trace?.end("stale-after-fastSnapshot")
                             return
                         }
@@ -201,7 +220,11 @@ final class CodexUsageStore: ObservableObject {
                 if includePreciseScan {
                     trace?.mark("preciseSnapshot.begin")
                     let loaded = try await self.snapshotLoader.loadSnapshot(dataSource: source)
-                    guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else {
+                    guard self.isCurrentRefresh(
+                        generation: generation,
+                        bindingGeneration: bindingGeneration,
+                        sourceID: sourceID
+                    ) else {
                         trace?.end("stale-after-preciseSnapshot")
                         return
                     }
@@ -229,7 +252,11 @@ final class CodexUsageStore: ObservableObject {
                 }
                 trace?.end("ok")
             } catch {
-                guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else {
+                guard self.isCurrentRefresh(
+                    generation: generation,
+                    bindingGeneration: bindingGeneration,
+                    sourceID: sourceID
+                ) else {
                     trace?.end("stale-failed", metadata: ["error": error.localizedDescription])
                     return
                 }
@@ -244,7 +271,11 @@ final class CodexUsageStore: ObservableObject {
                     : "读取失败：\(error.localizedDescription)"
                 trace?.end("failed", metadata: ["error": error.localizedDescription])
             }
-            if self.isCurrentRefresh(generation: generation, sourceID: sourceID) {
+            if self.isCurrentRefresh(
+                generation: generation,
+                bindingGeneration: bindingGeneration,
+                sourceID: sourceID
+            ) {
                 self.isRefreshing = false
                 self.activeRefreshSourceID = nil
                 self.didFinishInitialLoad = true
@@ -254,9 +285,14 @@ final class CodexUsageStore: ObservableObject {
         }
     }
 
-    private func isCurrentRefresh(generation: Int, sourceID: String) -> Bool {
+    private func isCurrentRefresh(
+        generation: Int,
+        bindingGeneration: Int,
+        sourceID: String
+    ) -> Bool {
         !Task.isCancelled
             && refreshGeneration == generation
+            && sourceBindingGeneration == bindingGeneration
             && activeRefreshSourceID == sourceID
     }
 

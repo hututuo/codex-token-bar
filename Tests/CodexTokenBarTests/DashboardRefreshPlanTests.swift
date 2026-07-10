@@ -264,6 +264,13 @@ final class DashboardRefreshPlanTests: XCTestCase {
         let liveBreakdownBefore = liveMonitor.snapshot.breakdown
         let liveRateBefore = liveMonitor.snapshot.rollingTokensPerSecond
         let liveGenerationBefore = liveMonitor.testSourceGeneration
+        let liveBindingGenerationBefore = liveMonitor.testSourceBindingGeneration
+        let usageIdentityGenerationBefore = usageStore.sourceIdentityGeneration
+        let usageBindingGenerationBefore = usageStore.sourceBindingGeneration
+        let quotaIdentityGenerationBefore = quotaStore.sourceIdentityGeneration
+        let quotaBindingGenerationBefore = quotaStore.sourceBindingGeneration
+        let taskIdentityGenerationBefore = taskMonitor.sourceIdentityGeneration
+        let taskBindingGenerationBefore = taskMonitor.sourceBindingGeneration
         let providerStatusBefore = providerStore.snapshot.status
 
         try FileManager.default.moveItem(at: oldHome, to: newHome)
@@ -281,19 +288,31 @@ final class DashboardRefreshPlanTests: XCTestCase {
         )
 
         XCTAssertEqual(rebind, .pathRebind)
+        await waitUntil("single new-path owner reads") {
+            let usageReadCount = await usageLoader.requestedSourcePaths().count
+            let quotaReadCount = await quotaReader.readCount()
+            return usageReadCount == 2 && quotaReadCount == 2 && !usageStore.isRefreshing
+        }
         XCTAssertEqual(usageStore.currentDataSource?.codexHome.path, newHome.path)
         XCTAssertEqual(usageStore.snapshot.stats.totalTokens, 77_777)
         XCTAssertEqual(quotaStore.snapshot, quotaBefore)
         XCTAssertEqual(quotaStore.currentDataSourcePath, newHome.path)
         let readCountAfterRebind = await quotaReader.readCount()
-        XCTAssertEqual(readCountAfterRebind, 1)
+        XCTAssertEqual(readCountAfterRebind, 2)
+        XCTAssertEqual(usageStore.sourceIdentityGeneration, usageIdentityGenerationBefore)
+        XCTAssertEqual(usageStore.sourceBindingGeneration, usageBindingGenerationBefore + 1)
+        XCTAssertEqual(quotaStore.sourceIdentityGeneration, quotaIdentityGenerationBefore)
+        XCTAssertEqual(quotaStore.sourceBindingGeneration, quotaBindingGenerationBefore + 1)
         XCTAssertEqual(liveMonitor.dataSource?.codexHome.path, newHome.path)
         XCTAssertEqual(liveMonitor.selectedThreadID, "thread-a")
         XCTAssertEqual(liveMonitor.snapshot.breakdown, liveBreakdownBefore)
         XCTAssertEqual(liveMonitor.snapshot.rollingTokensPerSecond, liveRateBefore)
         XCTAssertEqual(liveMonitor.testSourceGeneration, liveGenerationBefore)
+        XCTAssertEqual(liveMonitor.testSourceBindingGeneration, liveBindingGenerationBefore + 1)
         XCTAssertEqual(taskMonitor.unreadThreadCount, 1)
         XCTAssertEqual(taskMonitor.currentDataSourcePath, newHome.path)
+        XCTAssertEqual(taskMonitor.sourceIdentityGeneration, taskIdentityGenerationBefore)
+        XCTAssertEqual(taskMonitor.sourceBindingGeneration, taskBindingGenerationBefore + 1)
         XCTAssertEqual(providerStore.currentDataSource?.codexHome.path, newHome.path)
         XCTAssertEqual(providerStore.snapshot.status, providerStatusBefore)
         XCTAssertEqual(providerStore.snapshot.codexHome, sourceAtNewPath.displayPath)
@@ -308,19 +327,11 @@ final class DashboardRefreshPlanTests: XCTestCase {
         )
         XCTAssertEqual(noChange, .noChange)
         let readCountAfterNoOp = await quotaReader.readCount()
-        XCTAssertEqual(readCountAfterNoOp, 1)
+        XCTAssertEqual(readCountAfterNoOp, 2)
 
-        usageStore.refresh()
-        await waitUntil("new-path usage refresh") {
-            await usageLoader.requestedSourcePaths().count == 2 && !usageStore.isRefreshing
-        }
         let usageSourcePaths = await usageLoader.requestedSourcePaths()
         XCTAssertEqual(usageSourcePaths, [oldHome.path, newHome.path])
 
-        quotaStore.refresh(force: true)
-        await waitUntil("new-path quota refresh") {
-            await quotaReader.readCount() == 2
-        }
         let requestedSourcePaths = await quotaReader.requestedSourcePaths()
         XCTAssertEqual(
             requestedSourcePaths,

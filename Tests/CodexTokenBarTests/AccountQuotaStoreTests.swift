@@ -305,6 +305,66 @@ final class AccountQuotaStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.accountName, "new")
     }
 
+    func testInFlightSameIdentityPathRebindRejectsOldQuotaAndRestartsNewPathRead() async throws {
+        let parent = try makeTemporaryDirectory(named: "QuotaPathRebind")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let oldHome = parent.appendingPathComponent("old-home", isDirectory: true)
+        let newHome = parent.appendingPathComponent("new-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: oldHome, withIntermediateDirectories: true)
+        let sourceAtOldPath = CodexDataSource(codexHome: oldHome, origin: .userSelected)
+        let reader = SuspendedQuotaReader()
+        let store = AccountQuotaStore(quotaReader: reader, observesUserDefaults: false)
+
+        store.setDataSource(sourceAtOldPath)
+        store.refresh()
+        await waitUntil("trusted old-path quota request") {
+            await reader.hasPendingRequest(for: sourceAtOldPath)
+        }
+        await reader.completeRequest(
+            for: sourceAtOldPath,
+            with: quotaSnapshot(usedPercent: 42, accountName: "trusted")
+        )
+        await waitUntil("trusted old-path quota") {
+            store.snapshot.fiveHour?.usedPercent == 42
+        }
+
+        store.refresh()
+        await waitUntil("delayed old-path quota request") {
+            await reader.hasPendingRequest(for: sourceAtOldPath)
+        }
+        let identityGeneration = store.sourceIdentityGeneration
+        let oldBindingGeneration = store.sourceBindingGeneration
+        try FileManager.default.moveItem(at: oldHome, to: newHome)
+        let sourceAtNewPath = CodexDataSource(codexHome: newHome, origin: .userSelected)
+        XCTAssertEqual(sourceAtNewPath.stableIdentityKey, sourceAtOldPath.stableIdentityKey)
+
+        XCTAssertTrue(store.setDataSource(sourceAtNewPath))
+        XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 42)
+        XCTAssertEqual(store.sourceIdentityGeneration, identityGeneration)
+        XCTAssertEqual(store.sourceBindingGeneration, oldBindingGeneration + 1)
+        store.refresh()
+        await waitUntil("new-path quota request") {
+            await reader.hasPendingRequest(for: sourceAtNewPath)
+        }
+
+        await reader.completeRequest(
+            for: sourceAtOldPath,
+            with: quotaSnapshot(usedPercent: 99, accountName: "old-path")
+        )
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertNotEqual(store.snapshot.accountName, "old-path")
+
+        await reader.completeRequest(
+            for: sourceAtNewPath,
+            with: quotaSnapshot(usedPercent: 55, accountName: "new-path")
+        )
+        await waitUntil("new-path quota completion") {
+            store.snapshot.accountName == "new-path"
+        }
+        XCTAssertFalse(store.setDataSource(sourceAtNewPath))
+        XCTAssertEqual(store.sourceBindingGeneration, oldBindingGeneration + 1)
+    }
+
     func testInFlightQuotaRefreshFromOldSourceDoesNotOverwriteExplicitNilSourceSnapshot() async throws {
         let sourceA = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaOldToNilSource"), origin: .userSelected)
         let reader = SuspendedQuotaReader()

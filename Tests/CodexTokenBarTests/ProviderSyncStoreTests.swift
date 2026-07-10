@@ -103,8 +103,8 @@ final class ProviderSyncStoreTests: XCTestCase {
         XCTAssertEqual(sourceAtNewPath.stableIdentityKey, sourceAtOldPath.stableIdentityKey)
 
         XCTAssertTrue(store.setDataSource(sourceAtNewPath))
-        XCTAssertEqual(store.snapshot.status, "处理中...")
-        XCTAssertTrue(store.snapshot.isWorking)
+        XCTAssertTrue(store.snapshot.status.contains("旧操作结果已作废"))
+        XCTAssertFalse(store.snapshot.isWorking)
         XCTAssertEqual(store.snapshot.detectedProvider, "openai")
         XCTAssertEqual(store.snapshot.codexHome, sourceAtNewPath.displayPath)
 
@@ -113,9 +113,8 @@ final class ProviderSyncStoreTests: XCTestCase {
             codexHome: oldHome,
             with: providerSnapshot(status: "同源操作完成", provider: "openai")
         )
-        await waitUntil("same-source operation completion") {
-            store.snapshot.status == "同源操作完成"
-        }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertNotEqual(store.snapshot.status, "同源操作完成")
         XCTAssertEqual(store.snapshot.codexHome, sourceAtNewPath.displayPath)
 
         store.scan(dataSource: sourceAtOldPath)
@@ -360,29 +359,29 @@ private enum ProviderSyncTestOperation: Hashable {
 private actor SuspendedProviderSyncRunner: ProviderSyncRunning {
     private var continuations: [RequestKey: CheckedContinuation<ProviderSyncSnapshot, Error>] = [:]
 
-    func scan(codexHome: URL, includeArchivedSessions: Bool) async throws -> ProviderSyncSnapshot {
-        try await suspend(.scan, codexHome: codexHome)
+    func scan(dataSource: CodexDataSource, includeArchivedSessions: Bool) async throws -> ProviderSyncSnapshot {
+        try await suspend(.scan, codexHome: dataSource.codexHome)
     }
 
-    func verify(codexHome: URL, includeArchivedSessions: Bool, targetProviderOverride: String?) async throws -> ProviderSyncSnapshot {
-        try await suspend(.verify, codexHome: codexHome)
+    func verify(dataSource: CodexDataSource, includeArchivedSessions: Bool, targetProviderOverride: String?) async throws -> ProviderSyncSnapshot {
+        try await suspend(.verify, codexHome: dataSource.codexHome)
     }
 
     func sync(
-        codexHome: URL,
+        dataSource: CodexDataSource,
         includeArchivedSessions: Bool,
         targetProviderOverride: String?,
         dryRunOnly: Bool
     ) async throws -> ProviderSyncSnapshot {
-        try await suspend(dryRunOnly ? .backup : .sync, codexHome: codexHome)
+        try await suspend(dryRunOnly ? .backup : .sync, codexHome: dataSource.codexHome)
     }
 
-    func rollbackLatest(codexHome: URL) async throws -> ProviderSyncSnapshot {
-        try await suspend(.rollback, codexHome: codexHome)
+    func rollbackLatest(dataSource: CodexDataSource) async throws -> ProviderSyncSnapshot {
+        try await suspend(.rollback, codexHome: dataSource.codexHome)
     }
 
-    func rollback(codexHome: URL, backupPath: String) async throws -> ProviderSyncSnapshot {
-        try await suspend(.rollback, codexHome: codexHome)
+    func rollback(dataSource: CodexDataSource, backupPath: String) async throws -> ProviderSyncSnapshot {
+        try await suspend(.rollback, codexHome: dataSource.codexHome)
     }
 
     func hasPending(_ operation: ProviderSyncTestOperation, codexHome: URL) -> Bool {

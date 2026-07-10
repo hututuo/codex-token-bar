@@ -57,6 +57,8 @@ final class AccountQuotaStore: ObservableObject {
     private var currentDataSource: CodexDataSource?
     private var refreshTask: Task<Void, Never>?
     private var refreshGeneration = 0
+    private(set) var sourceIdentityGeneration = 0
+    private(set) var sourceBindingGeneration = 0
     private var activeRefreshSourceID: String?
     private var snapshotSourceID: String?
 
@@ -101,20 +103,31 @@ final class AccountQuotaStore: ObservableObject {
         }
     }
 
-    func setDataSource(_ dataSource: CodexDataSource?) {
+    @discardableResult
+    func setDataSource(_ dataSource: CodexDataSource?) -> Bool {
         let oldSourceID = quotaSourceID(for: currentDataSource)
         let newSourceID = quotaSourceID(for: dataSource)
+        let oldPath = currentDataSource?.codexHome.standardizedFileURL.path
+        let newPath = dataSource?.codexHome.standardizedFileURL.path
+        let identityChanged = oldSourceID != newSourceID
+        let bindingChanged = oldPath != newPath
         currentDataSource = dataSource
-        guard oldSourceID != newSourceID else { return }
+        guard identityChanged || bindingChanged else { return false }
         historyStore?.clearIdentity()
 
-        lastSuccessfulRefreshCompletedAt = nil
         refreshTask?.cancel()
+        refreshTask = nil
         refreshGeneration += 1
+        sourceBindingGeneration += 1
         activeRefreshSourceID = nil
         isRefreshing = false
+        guard identityChanged else { return true }
+
+        sourceIdentityGeneration += 1
+        lastSuccessfulRefreshCompletedAt = nil
         snapshot = .empty
         snapshotSourceID = nil
+        return true
     }
 
     func setHistoryStore(_ historyStore: QuotaHistoryStore) {
@@ -175,6 +188,7 @@ final class AccountQuotaStore: ObservableObject {
         isRefreshing = true
         refreshGeneration += 1
         let generation = refreshGeneration
+        let bindingGeneration = sourceBindingGeneration
         activeRefreshSourceID = sourceID
         var refreshing = snapshotSourceID == sourceID ? snapshot : .empty
         refreshing.status = snapshot.isAvailable ? "正在更新额度" : "正在读取额度"
@@ -189,7 +203,13 @@ final class AccountQuotaStore: ObservableObject {
                 trace?.end("cancelled")
                 return
             }
-            guard await MainActor.run(body: { self.isCurrentRefresh(generation: generation, sourceID: sourceID) }) else {
+            guard await MainActor.run(body: {
+                self.isCurrentRefresh(
+                    generation: generation,
+                    bindingGeneration: bindingGeneration,
+                    sourceID: sourceID
+                )
+            }) else {
                 trace?.end("stale-after-reader")
                 return
             }
@@ -215,7 +235,11 @@ final class AccountQuotaStore: ObservableObject {
                 ])
 
                 await MainActor.run {
-                    guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else { return }
+                    guard self.isCurrentRefresh(
+                        generation: generation,
+                        bindingGeneration: bindingGeneration,
+                        sourceID: sourceID
+                    ) else { return }
                     self.isRefreshing = false
                     self.activeRefreshSourceID = nil
                     self.lastSuccessfulRefreshCompletedAt = Date()
@@ -227,7 +251,11 @@ final class AccountQuotaStore: ObservableObject {
                 trace?.end("ok")
             case .failure(let error):
                 await MainActor.run {
-                    guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else { return }
+                    guard self.isCurrentRefresh(
+                        generation: generation,
+                        bindingGeneration: bindingGeneration,
+                        sourceID: sourceID
+                    ) else { return }
                     self.isRefreshing = false
                     self.activeRefreshSourceID = nil
                     let retainsSameSourceSnapshot = self.snapshotSourceID == sourceID
@@ -261,8 +289,14 @@ final class AccountQuotaStore: ObservableObject {
         }
     }
 
-    private func isCurrentRefresh(generation: Int, sourceID: String) -> Bool {
-        refreshGeneration == generation && activeRefreshSourceID == sourceID
+    private func isCurrentRefresh(
+        generation: Int,
+        bindingGeneration: Int,
+        sourceID: String
+    ) -> Bool {
+        refreshGeneration == generation
+            && sourceBindingGeneration == bindingGeneration
+            && activeRefreshSourceID == sourceID
     }
 
     private func installAutomaticRefreshTimer() {

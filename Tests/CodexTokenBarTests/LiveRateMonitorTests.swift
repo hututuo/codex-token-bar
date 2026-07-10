@@ -646,6 +646,7 @@ final class LiveRateMonitorTests: XCTestCase {
             now: 1_000.2
         )
         let generationBefore = monitor.testSourceGeneration
+        let bindingGenerationBefore = monitor.testSourceBindingGeneration
         let breakdownBefore = monitor.snapshot.breakdown
         let rateBefore = monitor.snapshot.rollingTokensPerSecond
 
@@ -661,12 +662,56 @@ final class LiveRateMonitorTests: XCTestCase {
             newHome.appendingPathComponent("logs_2.sqlite").path
         )
         XCTAssertEqual(monitor.cachedLogsDirectoryPath, newHome.path)
+        XCTAssertTrue(monitor.logChangePending)
         XCTAssertEqual(monitor.snapshot.sourceLabel, "\(sourceAtNewPath.displayPath)/logs_2.sqlite")
         XCTAssertEqual(monitor.selectedThreadID, "thread-rebind")
         XCTAssertEqual(monitor.threadOptions.first?.rolloutPath, newHome.appendingPathComponent("sessions/rebind.jsonl").path)
         XCTAssertEqual(monitor.snapshot.breakdown, breakdownBefore)
         XCTAssertEqual(monitor.snapshot.rollingTokensPerSecond, rateBefore)
         XCTAssertEqual(monitor.testSourceGeneration, generationBefore)
+        XCTAssertEqual(monitor.testSourceBindingGeneration, bindingGenerationBefore + 1)
+
+        let acceptedOldPathCompletion = monitor.testApplyPollCompletion(
+            streamRows: [
+                LiveRateMonitor.LogRow(
+                    id: 99,
+                    threadID: "thread-rebind",
+                    ts: 2_000,
+                    tsNanos: 0,
+                    target: "codex_api::sse::responses",
+                    feedbackLogBody: #"SSE event: {"type":"response.output_text.delta","delta":"stale old path","item_id":"msg-stale-path","sequence_number":1}"#
+                )
+            ],
+            rolloutReads: [],
+            sourceGeneration: generationBefore,
+            sourceBindingGeneration: bindingGenerationBefore,
+            now: 2_000.2
+        )
+        XCTAssertFalse(acceptedOldPathCompletion)
+        XCTAssertEqual(monitor.snapshot.breakdown, breakdownBefore)
+
+        let acceptedNewPathCompletion = monitor.testApplyPollCompletion(
+            streamRows: [
+                LiveRateMonitor.LogRow(
+                    id: 100,
+                    threadID: "thread-rebind",
+                    ts: 2_001,
+                    tsNanos: 0,
+                    target: "codex_api::sse::responses",
+                    feedbackLogBody: #"SSE event: {"type":"response.output_text.delta","delta":"fresh new path","item_id":"msg-new-path","sequence_number":1}"#
+                )
+            ],
+            rolloutReads: [],
+            sourceGeneration: generationBefore,
+            sourceBindingGeneration: bindingGenerationBefore + 1,
+            now: 2_001.2
+        )
+        XCTAssertTrue(acceptedNewPathCompletion)
+        XCTAssertGreaterThan(monitor.snapshot.breakdown.visibleText, breakdownBefore.visibleText)
+
+        XCTAssertFalse(monitor.setDataSource(sourceAtNewPath))
+        XCTAssertEqual(monitor.testSourceGeneration, generationBefore)
+        XCTAssertEqual(monitor.testSourceBindingGeneration, bindingGenerationBefore + 1)
     }
 
     @MainActor
@@ -677,6 +722,7 @@ final class LiveRateMonitorTests: XCTestCase {
         monitor.setDataSource(sourceA)
         monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-a")
         let sourceAGeneration = monitor.testSourceGeneration
+        let sourceABindingGeneration = monitor.testSourceBindingGeneration
 
         XCTAssertTrue(monitor.setDataSource(nil))
         XCTAssertNil(monitor.currentDataSourceIdentity)
@@ -696,6 +742,7 @@ final class LiveRateMonitorTests: XCTestCase {
             ],
             rolloutReads: [],
             sourceGeneration: sourceAGeneration,
+            sourceBindingGeneration: sourceABindingGeneration,
             now: 2_000.2
         )
 

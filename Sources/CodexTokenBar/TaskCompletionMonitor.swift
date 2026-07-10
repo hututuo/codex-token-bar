@@ -1,5 +1,44 @@
 import Foundation
 
+struct TaskCompletionPollRequest: Sendable {
+    let dataSource: CodexDataSource
+    let previousStates: [String: TaskCompletionFileState]
+    let seedMode: Bool
+    let seedCutoff: Date
+}
+
+struct TaskCompletionPollOutput: Sendable {
+    let result: TaskCompletionScanResult?
+    let unreadThreadRead: CodexUnreadThreadReadResult
+}
+
+protocol TaskCompletionPollLoading: Sendable {
+    func load(request: TaskCompletionPollRequest) async -> TaskCompletionPollOutput
+}
+
+struct LiveTaskCompletionPollLoader: TaskCompletionPollLoading {
+    func load(request: TaskCompletionPollRequest) async -> TaskCompletionPollOutput {
+        let dataSource = request.dataSource
+        let unreadThreadRead = await Task.detached(priority: .utility) {
+            CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: dataSource.codexHome)
+        }.value
+        let result: TaskCompletionScanResult?
+        if case .available = unreadThreadRead {
+            result = nil
+        } else {
+            result = await Task.detached(priority: .utility) {
+                TaskCompletionScanner.scan(
+                    sessionsRoot: dataSource.sessionsRoot,
+                    previousStates: request.previousStates,
+                    seedMode: request.seedMode,
+                    seedCutoff: request.seedCutoff
+                )
+            }.value
+        }
+        return TaskCompletionPollOutput(result: result, unreadThreadRead: unreadThreadRead)
+    }
+}
+
 @MainActor
 final class TaskCompletionMonitor: ObservableObject {
     private static let completedEventIDsKey = "TaskCompletionMonitor.completedEventIDs.v1"
@@ -13,6 +52,7 @@ final class TaskCompletionMonitor: ObservableObject {
     private let pollInterval: TimeInterval = 2.0
     private let liveSeedWindow: TimeInterval = 30.0
     private let defaults: UserDefaults
+    private let pollLoader: any TaskCompletionPollLoading
     private var dataSource: CodexDataSource?
     private var fileStates: [String: TaskCompletionFileState] = [:]
     private var completedEventIDs: Set<String> = []
@@ -24,11 +64,17 @@ final class TaskCompletionMonitor: ObservableObject {
     private var timer: Timer?
     private var pollTask: Task<Void, Never>?
     private var pollGeneration = 0
+    private(set) var sourceIdentityGeneration = 0
+    private(set) var sourceBindingGeneration = 0
     private var seeded = false
     private var monitorStartedAt = Date()
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        pollLoader: any TaskCompletionPollLoading = LiveTaskCompletionPollLoader()
+    ) {
         self.defaults = defaults
+        self.pollLoader = pollLoader
         loadPersistedCompletedEventIDs()
         updateStatusText()
     }
@@ -44,13 +90,20 @@ final class TaskCompletionMonitor: ObservableObject {
     func start(dataSource: CodexDataSource?) {
         let oldSourceIdentity = self.dataSource?.stableIdentityKey
         let newSourceIdentity = dataSource?.stableIdentityKey
-        let newPath = dataSource?.codexHome.path
-        self.dataSource = dataSource
+        let oldPath = self.dataSource?.codexHome.standardizedFileURL.path
+        let newPath = dataSource?.codexHome.standardizedFileURL.path
+        let identityChanged = oldSourceIdentity != newSourceIdentity
+        let bindingChanged = oldPath != newPath
+        guard identityChanged || bindingChanged else { return }
 
-        if oldSourceIdentity != newSourceIdentity {
-            pollGeneration += 1
-            pollTask?.cancel()
-            pollTask = nil
+        self.dataSource = dataSource
+        sourceBindingGeneration += 1
+        pollGeneration += 1
+        pollTask?.cancel()
+        pollTask = nil
+
+        if identityChanged {
+            sourceIdentityGeneration += 1
             fileStates.removeAll()
             seeded = false
             monitorStartedAt = Date()
@@ -60,6 +113,18 @@ final class TaskCompletionMonitor: ObservableObject {
             unreadThreadState = CodexUnreadThreadState()
             hasCodexUnreadState = false
             setUnreadThreadCount(0)
+        } else if let oldPath, let newPath {
+            var reboundStates: [String: TaskCompletionFileState] = [:]
+            for (path, state) in fileStates {
+                let reboundPath: String
+                if path == oldPath || path.hasPrefix(oldPath + "/") {
+                    reboundPath = newPath + String(path.dropFirst(oldPath.count))
+                } else {
+                    reboundPath = path
+                }
+                reboundStates[reboundPath] = state
+            }
+            fileStates = reboundStates
         }
 
         updateStatusText()
@@ -120,35 +185,27 @@ final class TaskCompletionMonitor: ObservableObject {
 
         pollGeneration += 1
         let generation = pollGeneration
-        let root = dataSource.sessionsRoot
-        let previousStates = fileStates
-        let seedMode = !seeded
-        let seedCutoff = monitorStartedAt.addingTimeInterval(-liveSeedWindow)
-        let codexHome = dataSource.codexHome
+        let identityGeneration = sourceIdentityGeneration
+        let bindingGeneration = sourceBindingGeneration
+        let request = TaskCompletionPollRequest(
+            dataSource: dataSource,
+            previousStates: fileStates,
+            seedMode: !seeded,
+            seedCutoff: monitorStartedAt.addingTimeInterval(-liveSeedWindow)
+        )
+        let pollLoader = pollLoader
 
         pollTask = Task { [weak self] in
-            let unreadThreadRead = await Task.detached(priority: .utility) {
-                CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)
-            }.value
-            let result: TaskCompletionScanResult?
-            if case .available = unreadThreadRead {
-                result = nil
-            } else {
-                result = await Task.detached(priority: .utility) {
-                    TaskCompletionScanner.scan(
-                        sessionsRoot: root,
-                        previousStates: previousStates,
-                        seedMode: seedMode,
-                        seedCutoff: seedCutoff
-                    )
-                }.value
-            }
+            let output = await pollLoader.load(request: request)
 
             await MainActor.run {
                 guard let self else { return }
-                guard self.pollGeneration == generation else { return }
+                guard !Task.isCancelled,
+                      self.pollGeneration == generation,
+                      self.sourceIdentityGeneration == identityGeneration,
+                      self.sourceBindingGeneration == bindingGeneration else { return }
                 self.pollTask = nil
-                self.apply(result, unreadThreadRead: unreadThreadRead)
+                self.apply(output.result, unreadThreadRead: output.unreadThreadRead)
             }
         }
     }

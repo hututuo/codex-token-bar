@@ -40,8 +40,14 @@ final class DashboardSourceTransitionCoordinator {
         liveMonitor.setDataSource(dataSource)
         taskCompletionMonitor.start(dataSource: dataSource)
         providerSyncStore.setDataSource(dataSource)
-        if result == .identityTransition {
+        switch result {
+        case .identityTransition:
             quotaStore.refresh(force: true)
+        case .pathRebind:
+            usageStore.refresh()
+            quotaStore.refresh(force: true)
+        case .noChange:
+            break
         }
         return result
     }

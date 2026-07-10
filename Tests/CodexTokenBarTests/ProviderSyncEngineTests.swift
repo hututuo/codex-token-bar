@@ -304,6 +304,51 @@ final class ProviderSyncEngineTests: XCTestCase {
         XCTAssertEqual(try readSQLiteProviders(at: second.codexHome), ["anthropic"])
     }
 
+    func testSyncRejectsOldPathReusedByDifferentHomeBeforeDescriptorPin() throws {
+        let first = try makeFixture()
+        let second = try makeFixture()
+        let sourceAtFirstHome = CodexDataSource(codexHome: first.codexHome, origin: .userSelected)
+        let detachedFirstHome = first.codexHome.deletingLastPathComponent()
+            .appendingPathComponent("detached-first-home", isDirectory: true)
+        let secondSentinel = second.codexHome.appendingPathComponent("second-sentinel.txt")
+        try "second-home\n".write(to: secondSentinel, atomically: true, encoding: .utf8)
+        let replacementSession = first.codexHome
+            .appendingPathComponent("sessions/2026/07/06/thread-a.jsonl")
+
+        let engine = ProviderSyncEngine(
+            backupRoot: first.backupRoot,
+            applicationRunningProbe: { false },
+            mutationLeaseDidAcquire: {
+                do {
+                    try FileManager.default.moveItem(at: first.codexHome, to: detachedFirstHome)
+                    try FileManager.default.moveItem(at: second.codexHome, to: first.codexHome)
+                } catch {
+                    XCTFail("failed to reuse old Home path: \(error)")
+                }
+            }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: sourceAtFirstHome.codexHome,
+            expectedHomeIdentity: sourceAtFirstHome.homeIdentity,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("身份"), error.localizedDescription)
+        }
+
+        XCTAssertEqual(
+            try String(contentsOf: first.codexHome.appendingPathComponent("second-sentinel.txt"), encoding: .utf8),
+            "second-home\n"
+        )
+        XCTAssertEqual(try readSessionProvider(at: replacementSession), "anthropic")
+        XCTAssertEqual(
+            try readSessionProvider(at: detachedFirstHome.appendingPathComponent("sessions/2026/07/06/thread-a.jsonl")),
+            "anthropic"
+        )
+    }
+
     func testSyncPinsCanonicalHomeWhenAliasRetargetsDuringBackupCreation() throws {
         let first = try makeFixture()
         let second = try makeFixture()

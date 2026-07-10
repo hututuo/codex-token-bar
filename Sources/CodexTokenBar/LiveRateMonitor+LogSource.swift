@@ -24,6 +24,7 @@ extension LiveRateMonitor {
             return false
         }
 
+        sourceBindingGeneration += 1
         if previousIdentity == nextIdentity {
             rebindSourcePaths(from: previousSource, to: source)
             return true

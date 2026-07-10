@@ -96,7 +96,10 @@ final class ProviderSyncHomeDirectory {
     let identity: ProviderSyncFileIdentity
     private let root: ProviderSyncOwnedFileDescriptor
 
-    init(canonicalURL: URL) throws {
+    init(
+        canonicalURL: URL,
+        expectedHomeIdentity: CodexHomeIdentity? = nil
+    ) throws {
         self.canonicalURL = canonicalURL
         let descriptor = Darwin.open(
             canonicalURL.path,
@@ -111,8 +114,16 @@ final class ProviderSyncHomeDirectory {
             guard (metadata.st_mode & S_IFMT) == S_IFDIR else {
                 throw providerSyncDescriptorError("canonical Codex Home 不是目录：\(canonicalURL.path)")
             }
+            let actualIdentity = ProviderSyncFileIdentity(metadata)
+            if let expectedHomeIdentity,
+               (actualIdentity.device != expectedHomeIdentity.deviceID
+                || actualIdentity.inode != expectedHomeIdentity.fileID) {
+                throw providerSyncDescriptorError(
+                    "Codex Home 身份不匹配：expected dev=\(expectedHomeIdentity.deviceID) inode=\(expectedHomeIdentity.fileID)，actual dev=\(actualIdentity.device) inode=\(actualIdentity.inode)"
+                )
+            }
             root = owned
-            identity = ProviderSyncFileIdentity(metadata)
+            identity = actualIdentity
         } catch {
             try? owned.close()
             throw error

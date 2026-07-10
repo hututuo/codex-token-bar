@@ -565,7 +565,7 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertFalse(store.status.contains(sourceA.displayPath))
     }
 
-    func testInFlightSameIdentityPathRebindUpdatesBindingWithoutStartingDuplicateRefresh() async throws {
+    func testInFlightSameIdentityPathRebindRejectsOldCompletionAndRestartsOnNewPath() async throws {
         let parent = FileManager.default.temporaryDirectory
             .appendingPathComponent("UsagePathRebind-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -582,6 +582,8 @@ final class CodexUsageStoreTests: XCTestCase {
             await loader.hasPendingPreciseRequest(for: sourceAtOldPath)
         }
         let oldBindingKey = store.dataSourceBindingKey
+        let identityGeneration = store.sourceIdentityGeneration
+        let oldBindingGeneration = store.sourceBindingGeneration
 
         try FileManager.default.moveItem(at: oldHome, to: newHome)
         let sourceAtNewPath = CodexDataSource(codexHome: newHome, origin: .userSelected)
@@ -592,17 +594,30 @@ final class CodexUsageStoreTests: XCTestCase {
 
         XCTAssertEqual(store.currentDataSource?.codexHome.path, newHome.path)
         XCTAssertNotEqual(store.dataSourceBindingKey, oldBindingKey)
+        XCTAssertEqual(store.sourceIdentityGeneration, identityGeneration)
+        XCTAssertEqual(store.sourceBindingGeneration, oldBindingGeneration + 1)
         XCTAssertTrue(store.isRefreshing)
-        let startedDuplicateRequest = await loader.hasPendingPreciseRequest(for: sourceAtNewPath)
-        XCTAssertFalse(startedDuplicateRequest)
+        await waitUntil("new-path usage request") {
+            await loader.hasPendingPreciseRequest(for: sourceAtNewPath)
+        }
 
         await loader.completePreciseRequest(
             for: sourceAtOldPath,
             with: makeSnapshot(totalTokens: 11_000, dayTokens: 1_100)
         )
-        await waitUntil("same-identity refresh completion") {
-            store.snapshot.stats.totalTokens == 11_000 && !store.isRefreshing
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertNotEqual(store.snapshot.stats.totalTokens, 11_000)
+        XCTAssertTrue(store.isRefreshing)
+
+        await loader.completePreciseRequest(
+            for: sourceAtNewPath,
+            with: makeSnapshot(totalTokens: 22_000, dayTokens: 2_200)
+        )
+        await waitUntil("new-path usage completion") {
+            store.snapshot.stats.totalTokens == 22_000 && !store.isRefreshing
         }
+        XCTAssertFalse(store.setDataSource(sourceAtNewPath))
+        XCTAssertEqual(store.sourceBindingGeneration, oldBindingGeneration + 1)
     }
 
     private func makeSnapshot(

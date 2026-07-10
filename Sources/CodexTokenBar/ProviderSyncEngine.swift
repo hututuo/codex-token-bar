@@ -180,7 +180,22 @@ final class ProviderSyncEngine {
     }
 
     func scan(codexHome: URL, includeArchivedSessions: Bool) throws -> ProviderSyncSnapshot {
-        try withPinnedHome(codexHome: codexHome) { canonicalHome, homeDirectory in
+        try scan(
+            codexHome: codexHome,
+            expectedHomeIdentity: try expectedHomeIdentityAtEntry(codexHome),
+            includeArchivedSessions: includeArchivedSessions
+        )
+    }
+
+    func scan(
+        codexHome: URL,
+        expectedHomeIdentity: CodexHomeIdentity?,
+        includeArchivedSessions: Bool
+    ) throws -> ProviderSyncSnapshot {
+        try withPinnedHome(
+            codexHome: codexHome,
+            expectedHomeIdentity: expectedHomeIdentity
+        ) { canonicalHome, homeDirectory in
             let report = try makeReport(
                 codexHome: canonicalHome,
                 homeDirectory: homeDirectory,
@@ -192,7 +207,24 @@ final class ProviderSyncEngine {
     }
 
     func verify(codexHome: URL, includeArchivedSessions: Bool, targetProviderOverride: String?) throws -> ProviderSyncSnapshot {
-        try withPinnedHome(codexHome: codexHome) { canonicalHome, homeDirectory in
+        try verify(
+            codexHome: codexHome,
+            expectedHomeIdentity: try expectedHomeIdentityAtEntry(codexHome),
+            includeArchivedSessions: includeArchivedSessions,
+            targetProviderOverride: targetProviderOverride
+        )
+    }
+
+    func verify(
+        codexHome: URL,
+        expectedHomeIdentity: CodexHomeIdentity?,
+        includeArchivedSessions: Bool,
+        targetProviderOverride: String?
+    ) throws -> ProviderSyncSnapshot {
+        try withPinnedHome(
+            codexHome: codexHome,
+            expectedHomeIdentity: expectedHomeIdentity
+        ) { canonicalHome, homeDirectory in
             let report = try makeReport(
                 codexHome: canonicalHome,
                 homeDirectory: homeDirectory,
@@ -212,7 +244,26 @@ final class ProviderSyncEngine {
         targetProviderOverride: String?,
         dryRunOnly: Bool
     ) throws -> ProviderSyncSnapshot {
-        return try withMutationLease(codexHome: codexHome) { canonicalHome, homeDirectory in
+        try sync(
+            codexHome: codexHome,
+            expectedHomeIdentity: try expectedHomeIdentityAtEntry(codexHome),
+            includeArchivedSessions: includeArchivedSessions,
+            targetProviderOverride: targetProviderOverride,
+            dryRunOnly: dryRunOnly
+        )
+    }
+
+    func sync(
+        codexHome: URL,
+        expectedHomeIdentity: CodexHomeIdentity?,
+        includeArchivedSessions: Bool,
+        targetProviderOverride: String?,
+        dryRunOnly: Bool
+    ) throws -> ProviderSyncSnapshot {
+        return try withMutationLease(
+            codexHome: codexHome,
+            expectedHomeIdentity: expectedHomeIdentity
+        ) { canonicalHome, homeDirectory in
             let initial = try makeReport(
                 codexHome: canonicalHome,
                 homeDirectory: homeDirectory,
@@ -366,7 +417,20 @@ final class ProviderSyncEngine {
     }
 
     func rollbackLatest(codexHome: URL) throws -> ProviderSyncSnapshot {
-        try withMutationLease(codexHome: codexHome) { canonicalHome, homeDirectory in
+        try rollbackLatest(
+            codexHome: codexHome,
+            expectedHomeIdentity: try expectedHomeIdentityAtEntry(codexHome)
+        )
+    }
+
+    func rollbackLatest(
+        codexHome: URL,
+        expectedHomeIdentity: CodexHomeIdentity?
+    ) throws -> ProviderSyncSnapshot {
+        try withMutationLease(
+            codexHome: codexHome,
+            expectedHomeIdentity: expectedHomeIdentity
+        ) { canonicalHome, homeDirectory in
             try rejectMutationIfCodexIsRunning(operation: "回滚")
             let backup = try latestBackupDirectory(for: canonicalHome)
             return try rollbackWithoutLease(
@@ -379,7 +443,22 @@ final class ProviderSyncEngine {
     }
 
     func rollback(codexHome: URL, backupPath: String) throws -> ProviderSyncSnapshot {
-        try withMutationLease(codexHome: codexHome) { canonicalHome, homeDirectory in
+        try rollback(
+            codexHome: codexHome,
+            expectedHomeIdentity: try expectedHomeIdentityAtEntry(codexHome),
+            backupPath: backupPath
+        )
+    }
+
+    func rollback(
+        codexHome: URL,
+        expectedHomeIdentity: CodexHomeIdentity?,
+        backupPath: String
+    ) throws -> ProviderSyncSnapshot {
+        try withMutationLease(
+            codexHome: codexHome,
+            expectedHomeIdentity: expectedHomeIdentity
+        ) { canonicalHome, homeDirectory in
             try rejectMutationIfCodexIsRunning(operation: "回滚")
             return try rollbackWithoutLease(
                 codexHome: canonicalHome,
@@ -580,18 +659,29 @@ final class ProviderSyncEngine {
 
     private func withPinnedHome<T>(
         codexHome: URL,
+        expectedHomeIdentity: CodexHomeIdentity?,
         body: (URL, ProviderSyncHomeDirectory) throws -> T
     ) throws -> T {
+        guard let expectedHomeIdentity else {
+            throw providerSyncDescriptorError("Codex Home 缺少 expected identity，拒绝 Provider 操作")
+        }
         let canonicalHome = canonicalProviderHome(codexHome)
-        let homeDirectory = try ProviderSyncHomeDirectory(canonicalURL: canonicalHome)
+        let homeDirectory = try ProviderSyncHomeDirectory(
+            canonicalURL: canonicalHome,
+            expectedHomeIdentity: expectedHomeIdentity
+        )
         defer { try? homeDirectory.close() }
         return try body(canonicalHome, homeDirectory)
     }
 
     private func withMutationLease<T>(
         codexHome: URL,
+        expectedHomeIdentity: CodexHomeIdentity?,
         body: (URL, ProviderSyncHomeDirectory) throws -> T
     ) throws -> T {
+        guard let expectedHomeIdentity else {
+            throw providerSyncDescriptorError("Codex Home 缺少 expected identity，拒绝 Provider 修改")
+        }
         let canonicalHome = canonicalProviderHome(codexHome)
         guard Self.mutationLeaseRegistry.acquire(canonicalHome.path) else {
             throw NSError(
@@ -606,13 +696,24 @@ final class ProviderSyncEngine {
             Self.mutationLeaseRegistry.release(canonicalHome.path)
         }
         mutationLeaseDidAcquire?()
-        let homeDirectory = try ProviderSyncHomeDirectory(canonicalURL: canonicalHome)
+        let homeDirectory = try ProviderSyncHomeDirectory(
+            canonicalURL: canonicalHome,
+            expectedHomeIdentity: expectedHomeIdentity
+        )
         defer { try? homeDirectory.close() }
         return try body(canonicalHome, homeDirectory)
     }
 
     func canonicalProviderHome(_ codexHome: URL) -> URL {
         codexHome.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    private func expectedHomeIdentityAtEntry(_ codexHome: URL) throws -> CodexHomeIdentity {
+        let canonicalHome = canonicalProviderHome(codexHome)
+        guard let identity = CodexHomeIdentity.read(at: canonicalHome, fileManager: fileManager) else {
+            throw providerSyncDescriptorError("无法读取 Codex Home expected identity：\(canonicalHome.path)")
+        }
+        return identity
     }
 
     func withBoundDatabase<T>(
