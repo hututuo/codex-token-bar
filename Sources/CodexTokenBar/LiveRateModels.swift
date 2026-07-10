@@ -18,6 +18,15 @@ struct LiveRateSnapshot: Equatable {
         guard !threadID.isEmpty else { return "未定位" }
         return String(threadID.prefix(8))
     }
+
+    var rollingTokensPerSecondText: String {
+        Self.rateDisplayText(rollingTokensPerSecond)
+    }
+
+    static func rateDisplayText(_ value: Double) -> String {
+        guard value.isFinite, value > 0 else { return "0.0" }
+        return String(format: "%.1f", value)
+    }
 }
 
 struct LiveTokenBreakdown: Equatable {
@@ -110,6 +119,7 @@ struct RecentFingerprintSet {
 enum LiveMetricSource {
     case sse
     case websocket
+    case bridgedLog
     case rollout
 }
 

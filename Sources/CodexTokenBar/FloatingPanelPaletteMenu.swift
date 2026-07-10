@@ -7,7 +7,24 @@ struct FloatingPanelPaletteMenu: View {
     @Binding var directionRaw: String
     @Binding var styleRaw: String
     let closeAction: () -> Void
-    @State private var scheduledClose: DispatchWorkItem?
+    @State private var startColorDraft: Color
+    @State private var endColorDraft: Color
+
+    init(
+        startHex: Binding<String>,
+        endHex: Binding<String>,
+        directionRaw: Binding<String>,
+        styleRaw: Binding<String>,
+        closeAction: @escaping () -> Void
+    ) {
+        _startHex = startHex
+        _endHex = endHex
+        _directionRaw = directionRaw
+        _styleRaw = styleRaw
+        self.closeAction = closeAction
+        _startColorDraft = State(initialValue: Self.color(from: startHex.wrappedValue, fallbackHex: FloatingPanelAppearance.defaultStartHex))
+        _endColorDraft = State(initialValue: Self.color(from: endHex.wrappedValue, fallbackHex: FloatingPanelAppearance.defaultEndHex))
+    }
 
     var body: some View {
         SettingsCalloutContainer(
@@ -19,7 +36,7 @@ struct FloatingPanelPaletteMenu: View {
             SettingsCalloutSection("颜色") {
                 VStack(spacing: 0) {
                     FloatingStyleControlRow(title: "起始色", systemImage: "circle.fill") {
-                        ColorPicker("", selection: colorBinding($startHex), supportsOpacity: false)
+                        ColorPicker("", selection: draftColorBinding($startColorDraft, hex: $startHex), supportsOpacity: false)
                             .labelsHidden()
                             .accessibilityLabel("起始色")
                     }
@@ -27,7 +44,7 @@ struct FloatingPanelPaletteMenu: View {
                     FloatingStyleDivider()
 
                     FloatingStyleControlRow(title: "结束色", systemImage: "circle.lefthalf.filled") {
-                        ColorPicker("", selection: colorBinding($endHex), supportsOpacity: false)
+                        ColorPicker("", selection: draftColorBinding($endColorDraft, hex: $endHex), supportsOpacity: false)
                             .labelsHidden()
                             .accessibilityLabel("结束色")
                     }
@@ -65,11 +82,14 @@ struct FloatingPanelPaletteMenu: View {
             }
 
             Button {
-                startHex = FloatingPanelAppearance.defaultStartHex
-                endHex = FloatingPanelAppearance.defaultEndHex
+                let defaultStartHex = FloatingPanelAppearance.defaultStartHex
+                let defaultEndHex = FloatingPanelAppearance.defaultEndHex
+                startHex = defaultStartHex
+                endHex = defaultEndHex
+                startColorDraft = Self.color(from: defaultStartHex, fallbackHex: defaultStartHex)
+                endColorDraft = Self.color(from: defaultEndHex, fallbackHex: defaultEndHex)
                 directionRaw = FloatingPanelAppearance.defaultDirection
                 styleRaw = FloatingPanelAppearance.defaultStyle
-                closePaletteSoon()
             } label: {
                 Label("恢复默认", systemImage: "arrow.counterclockwise")
                     .font(.system(size: 11, weight: .semibold))
@@ -84,21 +104,7 @@ struct FloatingPanelPaletteMenu: View {
             )
         }
         .frame(width: 338, alignment: .leading)
-        .onChange(of: startHex) { _, _ in
-            schedulePaletteClose(after: 0.85)
-        }
-        .onChange(of: endHex) { _, _ in
-            schedulePaletteClose(after: 0.85)
-        }
-        .onChange(of: directionRaw) { _, _ in
-            closePaletteSoon()
-        }
-        .onChange(of: styleRaw) { _, _ in
-            closePaletteSoon()
-        }
         .onDisappear {
-            scheduledClose?.cancel()
-            scheduledClose = nil
             NSColorPanel.shared.close()
         }
     }
@@ -123,14 +129,13 @@ struct FloatingPanelPaletteMenu: View {
         )
     }
 
-    private func colorBinding(_ hex: Binding<String>) -> Binding<Color> {
+    private func draftColorBinding(_ draftColor: Binding<Color>, hex: Binding<String>) -> Binding<Color> {
         Binding(
             get: {
-                Color(floatingPanelHex: hex.wrappedValue)
-                    ?? Color(floatingPanelHex: FloatingPanelAppearance.defaultStartHex)
-                    ?? AppTheme.panelBackgroundAlt
+                draftColor.wrappedValue
             },
             set: { newValue in
+                draftColor.wrappedValue = newValue
                 if let nextHex = newValue.floatingPanelHexString() {
                     hex.wrappedValue = nextHex
                 }
@@ -138,22 +143,13 @@ struct FloatingPanelPaletteMenu: View {
         )
     }
 
-    private func schedulePaletteClose(after delay: TimeInterval) {
-        scheduledClose?.cancel()
-        let work = DispatchWorkItem {
-            closePaletteNow()
-        }
-        scheduledClose = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    }
-
-    private func closePaletteSoon() {
-        schedulePaletteClose(after: 0.12)
+    private static func color(from hex: String, fallbackHex: String) -> Color {
+        Color(floatingPanelHex: hex)
+            ?? Color(floatingPanelHex: fallbackHex)
+            ?? AppTheme.panelBackgroundAlt
     }
 
     private func closePaletteNow() {
-        scheduledClose?.cancel()
-        scheduledClose = nil
         NSColorPanel.shared.close()
         closeAction()
     }

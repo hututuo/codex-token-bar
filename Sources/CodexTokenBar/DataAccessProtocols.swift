@@ -60,7 +60,7 @@ struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, Sendable {
 }
 
 protocol QuotaReading: Sendable {
-    func readQuota() async -> Result<AccountQuotaSnapshot, Error>
+    func readQuota(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error>
 }
 
 protocol LiveRateLogReading: Sendable {

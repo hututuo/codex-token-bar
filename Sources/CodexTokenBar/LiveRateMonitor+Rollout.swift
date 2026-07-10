@@ -13,33 +13,40 @@ extension LiveRateMonitor {
         guard FileManager.default.fileExists(atPath: path) else {
             return (afterOffset, [])
         }
+        let currentSize = fileSize(path: path)
+        if currentSize == afterOffset {
+            return (currentSize, [])
+        }
+        let readOffset: UInt64 = currentSize < afterOffset ? 0 : afterOffset
 
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
         defer { try? handle.close() }
-        try handle.seek(toOffset: afterOffset)
+        try handle.seek(toOffset: readOffset)
         let data = try handle.readToEnd() ?? Data()
         guard !data.isEmpty, var text = String(data: data, encoding: .utf8) else {
-            return (afterOffset, [])
+            return (readOffset, [])
         }
 
         var consumedText = text
         if !text.hasSuffix("\n") {
             guard let lastNewline = text.lastIndex(of: "\n") else {
-                return (afterOffset, [])
+                return (readOffset, [])
             }
             consumedText = String(text[...lastNewline])
             text = String(text[..<lastNewline])
         }
 
         let consumedBytes = UInt64(consumedText.data(using: .utf8)?.count ?? 0)
-        let newOffset = afterOffset + consumedBytes
+        let newOffset = readOffset + consumedBytes
         let events = rolloutEvents(fromLines: text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init))
         return (newOffset, events)
     }
 
     nonisolated static func rolloutEvents(fromLines lines: [String]) -> [RolloutMetricEvent] {
         var callStarts: [String: TimeInterval] = [:]
-        return lines.flatMap { rolloutEvents(fromLine: $0, callStarts: &callStarts) }
+        return suppressDuplicateVisibleMessages(
+            lines.flatMap { rolloutEvents(fromLine: $0, callStarts: &callStarts) }
+        )
     }
 
     nonisolated static func rolloutEvents(fromLine line: String) -> [RolloutMetricEvent] {
@@ -54,7 +61,9 @@ extension LiveRateMonitor {
             return []
         }
 
-        let timestamp = parseTimestamp(object["timestamp"] as? String)
+        guard let timestamp = parseTimestamp(object["timestamp"] as? String) else {
+            return []
+        }
         let recordType = object["type"] as? String
         let payloadType = payload["type"] as? String
         let keyPrefix = (payload["call_id"] as? String) ?? (payload["id"] as? String) ?? UUID().uuidString
@@ -79,10 +88,9 @@ extension LiveRateMonitor {
             return [
                 RolloutMetricEvent(
                     timestamp: timestamp,
-                    key: keyPrefix,
+                    key: "agent:\(timestamp):\(text.hashValue)",
                     category: .visibleText,
-                    text: text,
-                    rollingOnly: true
+                    text: text
                 )
             ]
         }
@@ -102,50 +110,43 @@ extension LiveRateMonitor {
         }
 
         if recordType == "response_item", payloadType == "function_call_output" {
-            let output = payload["output"] as? String ?? ""
-            guard !output.isEmpty else { return [] }
-            return [RolloutMetricEvent(timestamp: timestamp, startTimestamp: callStarts[keyPrefix], key: "\(keyPrefix):toolOutput", category: .toolOutput, text: output)]
+            return []
         }
 
         if recordType == "response_item", payloadType == "custom_tool_call_output" {
-            let output = payload["output"] as? String ?? ""
-            guard !output.isEmpty else { return [] }
-            return [RolloutMetricEvent(timestamp: timestamp, startTimestamp: callStarts[keyPrefix], key: "\(keyPrefix):customToolOutput", category: .toolOutput, text: output)]
+            return []
         }
 
         if recordType == "event_msg", payloadType == "patch_apply_end" {
-            guard let changes = payload["changes"] as? [String: Any] else { return [] }
-            let text = changes.values.compactMap { value -> String? in
-                guard let change = value as? [String: Any] else { return nil }
-                return (change["content"] as? String) ?? (change["unified_diff"] as? String)
-            }.joined(separator: "\n")
-            guard !text.isEmpty else { return [] }
-            return [RolloutMetricEvent(timestamp: timestamp, startTimestamp: callStarts[keyPrefix], key: "\(keyPrefix):patchApplied", category: .patchApplied, text: text)]
+            return []
         }
 
-        if recordType == "event_msg", payloadType == "token_count",
-           let info = payload["info"] as? [String: Any],
-           let usage = info["last_token_usage"] as? [String: Any] {
-            let reasoning = usage["reasoning_output_tokens"] as? Int ?? 0
-            let output = usage["output_tokens"] as? Int ?? 0
-            return [
-                RolloutMetricEvent(
-                    timestamp: timestamp,
-                    key: "\(keyPrefix):reasoning",
-                    category: reasoning > 0 ? .reasoning : nil,
-                    text: "",
-                    exactTokens: reasoning > 0 ? reasoning : nil,
-                    exactOutputTokens: output > 0 ? output : nil
-                )
-            ]
+        if recordType == "event_msg", payloadType == "token_count" {
+            return []
         }
 
         return []
     }
 
-    nonisolated static func parseTimestamp(_ text: String?) -> TimeInterval {
-        guard let text, let date = ISO8601DateFormatter().date(from: text) else {
-            return Date().timeIntervalSince1970
+    nonisolated private static func suppressDuplicateVisibleMessages(_ events: [RolloutMetricEvent]) -> [RolloutMetricEvent] {
+        var seen: [String: TimeInterval] = [:]
+        return events.filter { event in
+            guard event.category == .visibleText, !event.text.isEmpty else { return true }
+            if let previous = seen[event.text], event.timestamp - previous <= 10 {
+                return false
+            }
+            seen[event.text] = event.timestamp
+            return true
+        }
+    }
+
+    nonisolated static func parseTimestamp(_ text: String?) -> TimeInterval? {
+        guard let text else { return nil }
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallbackFormatter = ISO8601DateFormatter()
+        guard let date = fractionalFormatter.date(from: text) ?? fallbackFormatter.date(from: text) else {
+            return nil
         }
         return date.timeIntervalSince1970
     }

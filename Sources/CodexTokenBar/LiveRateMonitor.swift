@@ -5,6 +5,11 @@ import TiktokenSwift
 
 @MainActor
 final class LiveRateMonitor: ObservableObject {
+    enum DisplayRateScope {
+        case selectedSession
+        case allSessions
+    }
+
     @Published var snapshot = LiveRateSnapshot()
     @Published var totalSnapshot = LiveRateSnapshot(
         threadTitle: "全会话输出汇总",
@@ -14,6 +19,7 @@ final class LiveRateMonitor: ObservableObject {
     @Published private(set) var threadOptions: [LiveThreadOption] = []
     @Published private(set) var selectedThreadID = ""
     @Published private(set) var preciseTokenCountingEnabled: Bool
+    @Published private(set) var monitoringEnabled: Bool
 
     private let resolver = CodexDataSourceResolver()
     let logReaderFactory: LiveRateLogReaderMaking
@@ -22,10 +28,13 @@ final class LiveRateMonitor: ObservableObject {
     private let fastPollInterval: TimeInterval = 0.25
     private let idlePollInterval: TimeInterval = 1.0
     private let idleFallbackPollInterval: TimeInterval = 2.0
+    private let rolloutFallbackPollInterval: TimeInterval = 1.0
     let activeFastPollHoldSeconds: TimeInterval = 10.0
     private let snapshotPublishInterval: TimeInterval = 0.25
     private let startupBackfillSeconds: TimeInterval = 4.0
     private let minimumRateSpanSeconds: TimeInterval = 0.4
+    nonisolated private static let selectedSessionDisplayRateCap: Double = 80
+    nonisolated static let unattributedLiveRateSessionKey = "unattributed-stream"
     private var timer: Timer?
     var logsDirectorySource: DispatchSourceFileSystemObject?
     var watchedLogsDirectory = ""
@@ -40,10 +49,14 @@ final class LiveRateMonitor: ObservableObject {
     private var lastPollProcessedRows = false
     private var lastSnapshotPublishAt: TimeInterval = 0
     private var lastFallbackPollAt: TimeInterval = 0
+    private var lastRolloutReadAt: TimeInterval = 0
     private var pollInProgress = false
     var logReader: LiveRateLogReading?
     var selectedRate = RateAccumulator(resetsOnNewItem: false)
     var totalRate = RateAccumulator(resetsOnNewItem: false)
+    var totalSessionRates: [String: RateAccumulator] = [:]
+    private var selectedSmoothedTokensPerSecond: Double = 0
+    private var totalSmoothedTokensPerSecond: Double = 0
     private var rolloutOffsets: [String: UInt64] = [:]
     var turnThreadIDs: [String: String] = [:]
     var itemTurnIDs: [String: String] = [:]
@@ -51,6 +64,9 @@ final class LiveRateMonitor: ObservableObject {
     var itemToolNames: [String: String] = [:]
     var itemCallIDs: [String: String] = [:]
     var countedStreamFingerprints = RecentFingerprintSet(limit: 4_096)
+    var countedRolloutFingerprints = RecentFingerprintSet(limit: 4_096)
+    var countedStreamVisibleFingerprints = RecentFingerprintSet(limit: 4_096)
+    var countedRolloutVisibleFingerprints = RecentFingerprintSet(limit: 4_096)
     var tokenEncoder: CoreBpe?
 
     struct LogStoreSignature: Equatable {
@@ -62,13 +78,19 @@ final class LiveRateMonitor: ObservableObject {
 
     init(
         preciseTokenCountingEnabled: Bool = LiveRateMonitor.defaultPreciseTokenCountingEnabled(),
+        monitoringEnabled: Bool = LiveRateMonitor.defaultMonitoringEnabled(),
         logReaderFactory: LiveRateLogReaderMaking = DefaultLiveRateLogReaderFactory()
     ) {
         self.preciseTokenCountingEnabled = preciseTokenCountingEnabled
+        self.monitoringEnabled = monitoringEnabled
         self.logReaderFactory = logReaderFactory
         Task {
             updateTokenCountingLabel()
-            start()
+            if monitoringEnabled {
+                start()
+            } else {
+                disableMonitoringSnapshots()
+            }
             if preciseTokenCountingEnabled {
                 await warmTokenEncoder()
             }
@@ -82,16 +104,25 @@ final class LiveRateMonitor: ObservableObject {
         return UserDefaults.standard.bool(forKey: "preciseTokenCountingEnabled")
     }
 
+    private static func defaultMonitoringEnabled() -> Bool {
+        guard UserDefaults.standard.object(forKey: "liveRateMonitoringEnabled") != nil else {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: "liveRateMonitoringEnabled")
+    }
+
     func start() {
+        guard monitoringEnabled else { return }
         timer?.invalidate()
         scheduleNextPoll(after: 0.02)
     }
 
     func scheduleNextPoll(after interval: TimeInterval) {
+        guard monitoringEnabled else { return }
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.monitoringEnabled else { return }
                 await self.poll()
                 self.scheduleNextPoll(after: self.nextPollInterval())
             }
@@ -124,6 +155,9 @@ final class LiveRateMonitor: ObservableObject {
         preciseTokenCountingEnabled = enabled
         selectedRate.clear()
         totalRate.clear()
+        totalSessionRates.removeAll()
+        selectedSmoothedTokensPerSecond = 0
+        totalSmoothedTokensPerSecond = 0
         if enabled {
             Task { await warmTokenEncoder() }
         } else {
@@ -132,7 +166,70 @@ final class LiveRateMonitor: ObservableObject {
         }
     }
 
+    func setMonitoringEnabled(_ enabled: Bool) {
+        guard enabled != monitoringEnabled else { return }
+        monitoringEnabled = enabled
+        if enabled {
+            selectedRate.clear()
+            totalRate.clear()
+            selectedSmoothedTokensPerSecond = 0
+            totalSmoothedTokensPerSecond = 0
+            start()
+        } else {
+            timer?.invalidate()
+            timer = nil
+            logsDirectorySource?.cancel()
+            logsDirectorySource = nil
+            watchedLogsDirectory = ""
+            logChangePending = false
+            fastPollUntil = 0
+            selectedRate.clear()
+            totalRate.clear()
+            totalSessionRates.removeAll()
+            selectedSmoothedTokensPerSecond = 0
+            totalSmoothedTokensPerSecond = 0
+            clearStreamState()
+            disableMonitoringSnapshots()
+        }
+    }
+
+    func resetSourceLocalState(for source: CodexDataSource) {
+        logsDirectorySource?.cancel()
+        logsDirectorySource = nil
+        watchedLogsDirectory = ""
+        logReader = nil
+        logChangePending = false
+        fastPollUntil = 0
+        threadID = ""
+        selectedThreadID = ""
+        threadOptions = []
+        lastLogID = 0
+        lastGlobalLogID = 0
+        lastLogsSignature = nil
+        lastPollProcessedRows = false
+        lastSnapshotPublishAt = 0
+        lastFallbackPollAt = 0
+        lastRolloutReadAt = 0
+        rolloutOffsets.removeAll()
+        selectedRate.clear()
+        totalRate.clear()
+        totalSessionRates.removeAll()
+        selectedSmoothedTokensPerSecond = 0
+        totalSmoothedTokensPerSecond = 0
+        clearStreamState()
+
+        let sourceLabel = "\(source.displayPath)/logs_2.sqlite"
+        let interfaceLabel = snapshot.interfaceLabel
+        snapshot = LiveRateSnapshot(
+            sourceLabel: sourceLabel,
+            status: "等待新数据源会话",
+            interfaceLabel: interfaceLabel
+        )
+        configureTotalSnapshot(source: source)
+    }
+
     private func resetToLatestThread() async {
+        guard monitoringEnabled else { return }
         let resetStartedAt = Date().timeIntervalSince1970
         guard let source = resolver.resolve() else {
             snapshot.status = "未找到 Codex 数据目录"
@@ -160,6 +257,9 @@ final class LiveRateMonitor: ObservableObject {
             }.value
             lastLogsSignature = Self.logStoreSignature(logsDB: logsDB)
             totalRate.clear()
+            totalSessionRates.removeAll()
+            selectedSmoothedTokensPerSecond = 0
+            totalSmoothedTokensPerSecond = 0
             clearStreamState()
             rolloutOffsets = Dictionary(
                 uniqueKeysWithValues: threads.map { ($0.rolloutPath, Self.fileSize(path: $0.rolloutPath)) }
@@ -181,7 +281,7 @@ final class LiveRateMonitor: ObservableObject {
             guard !rows.isEmpty else { return }
             for row in rows {
                 lastGlobalLogID = max(lastGlobalLogID, row.id)
-                add(row: row)
+                _ = add(row: row)
             }
             extendFastPolling(from: Date().timeIntervalSince1970)
             updateSnapshots(now: Date().timeIntervalSince1970)
@@ -203,6 +303,7 @@ final class LiveRateMonitor: ObservableObject {
             threadID = id
             selectedThreadID = id
             selectedRate.clear()
+            selectedSmoothedTokensPerSecond = 0
             let option = threadOptions.first { $0.id == id }
             if let option {
                 rolloutOffsets[option.rolloutPath] = Self.fileSize(path: option.rolloutPath)
@@ -218,6 +319,7 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     private func poll() async {
+        guard monitoringEnabled else { return }
         guard !pollInProgress else {
             return
         }
@@ -238,60 +340,121 @@ final class LiveRateMonitor: ObservableObject {
         do {
             let logsDB = cachedLogsDatabasePath
             let now = Date().timeIntervalSince1970
-            let shouldPollLogs = logChangePending
-                || now < fastPollUntil
-                || hasActiveRollingWindow(now: now)
-                || now - lastFallbackPollAt >= idleFallbackPollInterval
+            let hasLogChangeSignal = logChangePending
+            let readPlan = LiveRatePollReadPlan(
+                now: now,
+                hasLogChangeSignal: hasLogChangeSignal,
+                fastDisplayWindowActive: now < fastPollUntil,
+                activeRollingWindowPresent: hasActiveRollingWindow(now: now),
+                lastFallbackPollAt: lastFallbackPollAt,
+                lastRolloutReadAt: lastRolloutReadAt,
+                idleFallbackPollInterval: idleFallbackPollInterval,
+                rolloutFallbackPollInterval: rolloutFallbackPollInterval
+            )
             logChangePending = false
 
-            guard shouldPollLogs else {
+            guard readPlan.readsAnyDataSource else {
                 updateSnapshots(now: now)
                 return
             }
-            if now >= fastPollUntil {
+            if readPlan.recordIdleFallbackPollAt {
                 lastFallbackPollAt = now
             }
 
-            let currentGlobalLogID = lastGlobalLogID
-            let reader = logReader(for: logsDB)
-            let globalRows = try await Task.detached(priority: .utility) {
-                try reader.globalLogRows(afterID: currentGlobalLogID)
-            }.value
-
-            guard !globalRows.isEmpty else {
-                updateSnapshots(now: now)
-                return
-            }
-            lastPollProcessedRows = true
-            extendFastPolling(from: Date().timeIntervalSince1970)
-
-            for row in globalRows {
-                lastGlobalLogID = max(lastGlobalLogID, row.id)
-                add(row: row)
+            let globalRows: [LogRow]
+            if readPlan.readStreamRows {
+                let currentGlobalLogID = lastGlobalLogID
+                let reader = logReader(for: logsDB)
+                globalRows = try await Task.detached(priority: .utility) {
+                    try reader.globalLogRows(afterID: currentGlobalLogID)
+                }.value
+            } else {
+                globalRows = []
             }
 
+            let processedStreamEvents = processStreamRows(globalRows)
+            let processedRolloutEvents = readPlan.readRolloutUpdates
+                ? await readRolloutUpdates(now: Date().timeIntervalSince1970)
+                : false
+            let processedEvents = processedStreamEvents || processedRolloutEvents
+            if processedEvents {
+                lastPollProcessedRows = true
+                extendFastPolling(from: Date().timeIntervalSince1970)
+            }
             updateSnapshots(now: Date().timeIntervalSince1970)
         } catch {
             snapshot.status = "读取日志失败：\(error.localizedDescription)"
         }
     }
 
-    private func add(row: LogRow) {
-        updateTraceAttribution(from: row)
-        guard let streamEvent = Self.streamEvent(from: row) else { return }
-        updateAttribution(from: streamEvent, row: row)
+    private func readRolloutUpdates(now: TimeInterval) async -> Bool {
+        guard !threadOptions.isEmpty else { return false }
+        lastRolloutReadAt = now
+        let options = threadOptions
+        let offsets = rolloutOffsets
 
-        for event in Self.metricEvents(from: streamEvent, row: row, toolNames: itemToolNames) {
-            guard shouldCountStreamEvent(event) else { continue }
-            let resolvedThreadID = resolveThreadID(for: event)
-            add(event: event, keyThreadID: "all", to: &totalRate)
-            if resolvedThreadID == threadID {
-                add(event: event, keyThreadID: resolvedThreadID ?? threadID, to: &selectedRate)
-            }
+        do {
+            let reads = try await Task.detached(priority: .utility) {
+                try Self.rolloutReads(options: options, offsets: offsets)
+            }.value
+            return processRolloutReads(reads, now: now)
+        } catch {
+            snapshot.status = "读取会话流失败：\(error.localizedDescription)"
+            return false
         }
     }
 
-    private func add(events: [RolloutMetricEvent], threadID: String, to rate: inout RateAccumulator) {
+    private func processStreamRows(_ rows: [LogRow]) -> Bool {
+        var processedStreamEvents = false
+        for row in rows {
+            lastGlobalLogID = max(lastGlobalLogID, row.id)
+            if add(row: row) {
+                processedStreamEvents = true
+            }
+        }
+        return processedStreamEvents
+    }
+
+    private func processRolloutReads(_ reads: [RolloutRead], now: TimeInterval) -> Bool {
+        var processedEvents = false
+
+        for read in reads {
+            rolloutOffsets[read.path] = read.newOffset
+            let events = read.events.filter { shouldCountRolloutEvent($0, threadID: read.threadID) }
+            guard !events.isEmpty else { continue }
+            processedEvents = true
+            add(events: events, threadID: read.threadID, keyThreadID: "all", to: &totalRate)
+            add(events: events, threadID: read.threadID, keyThreadID: read.threadID, toTotalSessionRateFor: read.threadID)
+            if read.threadID == threadID {
+                add(events: events, threadID: read.threadID, keyThreadID: read.threadID, to: &selectedRate)
+            }
+        }
+
+        return processedEvents
+    }
+
+    private func add(row: LogRow) -> Bool {
+        updateTraceAttribution(from: row)
+        guard let streamEvent = Self.streamEvent(from: row) else { return false }
+        updateAttribution(from: streamEvent, row: row)
+
+        var processedEvent = false
+        for event in Self.metricEvents(from: streamEvent, row: row, toolNames: itemToolNames) {
+            let resolvedThreadID = resolveThreadID(for: event)
+            guard shouldCountStreamEvent(event, resolvedThreadID: resolvedThreadID) else { continue }
+            if add(event: event, keyThreadID: "all", to: &totalRate) {
+                processedEvent = true
+            }
+            let displayThreadID = resolvedThreadID ?? Self.unattributedDisplaySessionKey(for: event)
+            add(event: event, keyThreadID: displayThreadID, toTotalSessionRateFor: displayThreadID)
+            if resolvedThreadID == threadID {
+                _ = add(event: event, keyThreadID: resolvedThreadID ?? threadID, to: &selectedRate)
+            }
+        }
+        return processedEvent
+    }
+
+    private func add(events: [RolloutMetricEvent], threadID: String, keyThreadID: String, to rate: inout RateAccumulator) {
         for event in events {
             let normalized = LiveMetricEvent(
                 source: .rollout,
@@ -305,40 +468,112 @@ final class LiveRateMonitor: ObservableObject {
                 exactOutputTokens: event.exactOutputTokens,
                 rollingOnly: event.rollingOnly
             )
-            add(event: normalized, keyThreadID: threadID, to: &rate)
+            add(event: normalized, keyThreadID: keyThreadID, to: &rate)
         }
     }
 
-    private func add(event: LiveMetricEvent, keyThreadID: String, to rate: inout RateAccumulator) {
-        if let exactOutputTokens = event.exactOutputTokens, exactOutputTokens > 0 {
-            rate.addExactModelOutput(exactOutputTokens)
+    private func add(events: [RolloutMetricEvent], threadID: String, keyThreadID: String, toTotalSessionRateFor displayThreadID: String) {
+        for event in events {
+            let normalized = LiveMetricEvent(
+                source: .rollout,
+                timestamp: event.timestamp,
+                startTimestamp: event.startTimestamp,
+                threadID: threadID,
+                itemID: event.key,
+                category: event.category,
+                text: event.text,
+                exactTokens: event.exactTokens,
+                exactOutputTokens: event.exactOutputTokens,
+                rollingOnly: event.rollingOnly
+            )
+            add(event: normalized, keyThreadID: keyThreadID, toTotalSessionRateFor: displayThreadID)
         }
-        guard let category = event.category else { return }
+    }
+
+    private func add(event: LiveMetricEvent, keyThreadID: String, toTotalSessionRateFor displayThreadID: String) {
+        var sessionRate = totalSessionRates[displayThreadID] ?? RateAccumulator(resetsOnNewItem: false)
+        _ = add(event: event, keyThreadID: keyThreadID, to: &sessionRate)
+        totalSessionRates[displayThreadID] = sessionRate
+    }
+
+    @discardableResult
+    private func add(event: LiveMetricEvent, keyThreadID: String, to rate: inout RateAccumulator) -> Bool {
+        guard let category = event.category, category.contributesToLiveRate else { return false }
         let key = Self.metricKey(threadID: keyThreadID, itemID: event.itemID, category: category)
         if event.rollingOnly {
             rate.addRollingOnly(text: event.text, key: key, at: event.timestamp, windowSeconds: windowSeconds, estimator: estimateTokenCount)
+            return !event.text.isEmpty
         } else if let exactTokens = event.exactTokens {
             rate.addDistributed(tokens: exactTokens, category: category, key: key, startTimestamp: event.startTimestamp, endingAt: event.timestamp, windowSeconds: windowSeconds)
-        } else if (event.source == .sse || event.source == .websocket) && event.isDelta {
+            return exactTokens > 0
+        } else if event.source != .rollout && event.isDelta {
             rate.add(delta: event.text, category: category, key: key, at: event.timestamp, windowSeconds: windowSeconds) { text in
                 estimateTokenCount(text, category: category)
             }
+            return !event.text.isEmpty
         } else if !event.text.isEmpty {
             rate.addDistributed(text: event.text, category: category, key: key, startTimestamp: event.startTimestamp, endingAt: event.timestamp, windowSeconds: windowSeconds) { text in
                 estimateTokenCount(text, category: category)
             }
+            return true
         }
+        return false
     }
 
-    private func shouldCountStreamEvent(_ event: LiveMetricEvent) -> Bool {
-        guard event.source == .sse || event.source == .websocket,
+    private func shouldCountStreamEvent(_ event: LiveMetricEvent, resolvedThreadID: String?) -> Bool {
+        guard event.source != .rollout,
               let category = event.category,
               !event.text.isEmpty else {
             return true
         }
-        let sequence = event.sequenceNumber.map(String.init) ?? "\(event.timestamp):\(event.text.hashValue)"
+        let sequence = event.sequenceNumber.map(String.init) ?? "text:\(event.text.hashValue)"
         let fingerprint = "\(event.itemID):\(category.rawValue):\(sequence)"
-        return countedStreamFingerprints.insertIfNew(fingerprint)
+        guard countedStreamFingerprints.insertIfNew(fingerprint) else { return false }
+        if let visibleFingerprint = Self.crossSourceVisibleFingerprint(
+            itemID: event.itemID,
+            category: category,
+            text: event.text
+        ) {
+            guard !countedRolloutVisibleFingerprints.contains(visibleFingerprint) else {
+                return false
+            }
+            _ = countedStreamVisibleFingerprints.insertIfNew(visibleFingerprint)
+        }
+        return true
+    }
+
+    private func shouldCountRolloutEvent(_ event: RolloutMetricEvent, threadID: String) -> Bool {
+        let timestampBucket = Int((event.timestamp * 1_000).rounded())
+        let fingerprint = [
+            threadID,
+            event.category?.rawValue ?? "none",
+            String(timestampBucket),
+            String(event.text.hashValue),
+            String(event.exactTokens ?? -1),
+            String(event.exactOutputTokens ?? -1)
+        ].joined(separator: ":")
+        guard countedRolloutFingerprints.insertIfNew(fingerprint) else { return false }
+        if let visibleFingerprint = Self.crossSourceVisibleFingerprint(
+            itemID: event.key,
+            category: event.category,
+            text: event.text
+        ) {
+            guard !countedStreamVisibleFingerprints.contains(visibleFingerprint) else {
+                _ = countedRolloutVisibleFingerprints.insertIfNew(visibleFingerprint)
+                return false
+            }
+            _ = countedRolloutVisibleFingerprints.insertIfNew(visibleFingerprint)
+        }
+        return true
+    }
+
+    nonisolated private static func crossSourceVisibleFingerprint(
+        itemID: String,
+        category: LiveTokenCategory?,
+        text: String
+    ) -> String? {
+        guard category == .visibleText, !text.isEmpty else { return nil }
+        return "\(itemID):visibleText:\(text.hashValue)"
     }
 
     private func updateTraceAttribution(from row: LogRow) {
@@ -384,16 +619,56 @@ final class LiveRateMonitor: ObservableObject {
     private func updateSnapshots(now: TimeInterval) {
         selectedRate.prune(now: now, windowSeconds: windowSeconds)
         totalRate.prune(now: now, windowSeconds: windowSeconds)
+        for key in Array(totalSessionRates.keys) {
+            totalSessionRates[key]?.prune(now: now, windowSeconds: windowSeconds)
+            if totalSessionRates[key]?.hasRetainedRollingActivity(now: now, windowSeconds: windowSeconds) != true {
+                totalSessionRates.removeValue(forKey: key)
+            }
+        }
 
         guard now - lastSnapshotPublishAt >= snapshotPublishInterval || !hasActiveRollingWindow(now: now) else {
             return
         }
         lastSnapshotPublishAt = now
 
-        if let updated = updatedSnapshot(from: snapshot, rate: selectedRate, now: now, emptyStatus: "等待选中会话输出", activeStatus: "正在监听选中会话") {
+        let selectedHasRecentActivity = selectedRate.hasRecentActivity(now: now, windowSeconds: windowSeconds)
+        let selectedRawRate = selectedRate.rollingRate(now: now, windowSeconds: windowSeconds, minimumSpan: minimumRateSpanSeconds)
+        let selectedDisplayRate = Self.displayRawRate(selectedRawRate, scope: .selectedSession)
+        selectedSmoothedTokensPerSecond = Self.smoothedDisplayRate(
+            previous: selectedSmoothedTokensPerSecond,
+            raw: selectedDisplayRate,
+            hasRecentActivity: selectedHasRecentActivity
+        )
+        if let updated = updatedSnapshot(
+            from: snapshot,
+            rate: selectedRate,
+            now: now,
+            rollingTokensPerSecond: selectedSmoothedTokensPerSecond,
+            hasRecentActivity: selectedHasRecentActivity,
+            emptyStatus: "等待选中会话输出",
+            activeStatus: "正在监听选中会话"
+        ) {
             snapshot = updated
         }
-        if let updated = updatedSnapshot(from: totalSnapshot, rate: totalRate, now: now, emptyStatus: "等待任意会话输出", activeStatus: "正在汇总全会话输出") {
+        let totalHasRecentActivity = totalRate.hasRecentActivity(now: now, windowSeconds: windowSeconds)
+        let totalSessionRawRates = totalSessionRates.values.map {
+            $0.rollingRate(now: now, windowSeconds: windowSeconds, minimumSpan: minimumRateSpanSeconds)
+        }
+        let totalDisplayRate = Self.combinedAllSessionsDisplayRate(totalSessionRawRates)
+        totalSmoothedTokensPerSecond = Self.smoothedDisplayRate(
+            previous: totalSmoothedTokensPerSecond,
+            raw: totalDisplayRate,
+            hasRecentActivity: totalHasRecentActivity
+        )
+        if let updated = updatedSnapshot(
+            from: totalSnapshot,
+            rate: totalRate,
+            now: now,
+            rollingTokensPerSecond: totalSmoothedTokensPerSecond,
+            hasRecentActivity: totalHasRecentActivity,
+            emptyStatus: "等待任意会话输出",
+            activeStatus: "正在汇总全会话输出"
+        ) {
             totalSnapshot = updated
         }
     }
@@ -402,15 +677,16 @@ final class LiveRateMonitor: ObservableObject {
         from snapshot: LiveRateSnapshot,
         rate: RateAccumulator,
         now: TimeInterval,
+        rollingTokensPerSecond: Double,
+        hasRecentActivity: Bool,
         emptyStatus: String,
         activeStatus: String
     ) -> LiveRateSnapshot? {
-        let rollingTokensPerSecond = rate.rollingRate(now: now, windowSeconds: windowSeconds, minimumSpan: minimumRateSpanSeconds)
         let averageTokensPerSecond = rate.averageRate
         let outputTokens = rate.outputTokens
         let outputCharacters = rate.outputCharacters
         let breakdown = rate.breakdown
-        let status = rate.outputTokens > 0 || rate.hasRecentActivity(now: now, windowSeconds: windowSeconds) ? activeStatus : emptyStatus
+        let status = rate.outputTokens > 0 || hasRecentActivity ? activeStatus : emptyStatus
 
         var updated = snapshot
         updated.rollingTokensPerSecond = rollingTokensPerSecond
@@ -420,8 +696,8 @@ final class LiveRateMonitor: ObservableObject {
         updated.breakdown = breakdown
         updated.status = status
 
-        guard Self.displayTenths(snapshot.rollingTokensPerSecond) != Self.displayTenths(updated.rollingTokensPerSecond)
-            || Self.displayTenths(snapshot.averageTokensPerSecond) != Self.displayTenths(updated.averageTokensPerSecond)
+        guard Self.displayBucket(snapshot.rollingTokensPerSecond) != Self.displayBucket(updated.rollingTokensPerSecond)
+            || Self.displayBucket(snapshot.averageTokensPerSecond) != Self.displayBucket(updated.averageTokensPerSecond)
             || snapshot.outputTokens != updated.outputTokens
             || snapshot.outputCharacters != updated.outputCharacters
             || snapshot.breakdown != updated.breakdown
@@ -433,18 +709,74 @@ final class LiveRateMonitor: ObservableObject {
         return updated
     }
 
-    nonisolated private static func displayTenths(_ value: Double) -> Int {
-        Int((value * 10).rounded(.toNearestOrAwayFromZero))
+    nonisolated static func smoothedDisplayRate(previous: Double, raw: Double, hasRecentActivity: Bool) -> Double {
+        guard raw.isFinite else { return max(0, previous) }
+        let clampedRaw = max(0, raw)
+        guard hasRecentActivity, clampedRaw >= 0.05 else { return 0 }
+        let alpha = clampedRaw >= previous ? 0.28 : 0.18
+        return max(0, previous + (clampedRaw - previous) * alpha)
+    }
+
+    nonisolated static func displayRawRate(_ raw: Double, scope: DisplayRateScope) -> Double {
+        guard raw.isFinite else { return 0 }
+        let clampedRaw = max(0, raw)
+        switch scope {
+        case .selectedSession:
+            return min(clampedRaw, selectedSessionDisplayRateCap)
+        case .allSessions:
+            return clampedRaw
+        }
+    }
+
+    nonisolated static func combinedAllSessionsDisplayRate(_ rawRates: [Double]) -> Double {
+        rawRates.reduce(0) { total, raw in
+            total + displayRawRate(raw, scope: .selectedSession)
+        }
+    }
+
+    nonisolated static func unattributedDisplaySessionKey(for event: LiveMetricEvent) -> String {
+        if let threadID = event.threadID, !threadID.isEmpty { return threadID }
+        return unattributedLiveRateSessionKey
+    }
+
+    nonisolated static func displayBucket(_ value: Double) -> Int {
+        guard value.isFinite, value > 0 else { return 0 }
+        if value < 10 {
+            return Int((value * 10).rounded(.toNearestOrAwayFromZero))
+        }
+        return 10_000 + Int(value.rounded(.toNearestOrAwayFromZero))
     }
 
     private func configureTotalSnapshot(source: CodexDataSource) {
-        totalSnapshot.threadID = "all"
-        totalSnapshot.threadTitle = "全会话输出汇总"
-        totalSnapshot.sourceLabel = "\(source.displayPath)/logs_2.sqlite"
-        totalSnapshot.scopeLabel = "全会话"
+        let interfaceLabel = totalSnapshot.interfaceLabel
+        totalSnapshot = LiveRateSnapshot(
+            threadID: "all",
+            threadTitle: "全会话输出汇总",
+            sourceLabel: "\(source.displayPath)/logs_2.sqlite",
+            status: "等待任意会话输出",
+            scopeLabel: "全会话",
+            interfaceLabel: interfaceLabel
+        )
         updateTokenCountingLabel()
-        totalSnapshot.status = "等待任意会话输出"
-        totalSnapshot.updatedAt = Date()
+    }
+
+    private func disableMonitoringSnapshots() {
+        let disabledAt = Date()
+        snapshot.rollingTokensPerSecond = 0
+        snapshot.averageTokensPerSecond = 0
+        snapshot.outputTokens = 0
+        snapshot.outputCharacters = 0
+        snapshot.breakdown = LiveTokenBreakdown()
+        snapshot.status = "实时速率已关闭"
+        snapshot.updatedAt = disabledAt
+
+        totalSnapshot.rollingTokensPerSecond = 0
+        totalSnapshot.averageTokensPerSecond = 0
+        totalSnapshot.outputTokens = 0
+        totalSnapshot.outputCharacters = 0
+        totalSnapshot.breakdown = LiveTokenBreakdown()
+        totalSnapshot.status = "实时速率已关闭"
+        totalSnapshot.updatedAt = disabledAt
     }
 
 
@@ -453,6 +785,47 @@ final class LiveRateMonitor: ObservableObject {
 
 #if DEBUG
 extension LiveRateMonitor {
+    func testPrepareForLiveRateProcessing(
+        selectedThreadID id: String,
+        threadOptions options: [LiveThreadOption] = []
+    ) {
+        threadID = id
+        selectedThreadID = id
+        threadOptions = options
+        snapshot.threadID = id
+        snapshot.threadTitle = "Test selected"
+        totalSnapshot.threadID = "all"
+        totalSnapshot.threadTitle = "全会话输出汇总"
+        selectedRate.clear()
+        totalRate.clear()
+        totalSessionRates.removeAll()
+        selectedSmoothedTokensPerSecond = 0
+        totalSmoothedTokensPerSecond = 0
+        clearStreamState()
+    }
+
+    func testProcessPollInputs(
+        streamRows: [LogRow],
+        rolloutReads: [RolloutRead],
+        now: TimeInterval
+    ) {
+        let processedStreamEvents = processStreamRows(streamRows)
+        let processedRolloutEvents = processRolloutReads(rolloutReads, now: now)
+        if processedStreamEvents || processedRolloutEvents {
+            lastPollProcessedRows = true
+            extendFastPolling(from: now)
+        }
+        updateSnapshots(now: now)
+    }
+
+    func testRefreshSnapshots(now: TimeInterval) {
+        updateSnapshots(now: now)
+    }
+
+    var testTotalSessionRateKeys: [String] {
+        totalSessionRates.keys.sorted()
+    }
+
     nonisolated static func testMaxLogID(logsDB: String, threadID: String) throws -> Int {
         try maxLogID(logsDB: logsDB, threadID: threadID)
     }

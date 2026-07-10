@@ -9,11 +9,13 @@ struct DashboardView: View {
     @StateObject private var store = CodexUsageStore()
     @StateObject private var quotaStore = AccountQuotaStore()
     @StateObject private var quotaHistoryStore = QuotaHistoryStore()
+    @StateObject private var radarStore = CodexRadarStore()
     @StateObject private var providerSyncStore = ProviderSyncStore()
     @State private var taskCompletionMonitor = TaskCompletionMonitor()
     @State private var liveMonitor = LiveRateMonitor()
     @AppStorage("floatingPanelEnabled") private var floatingPanelEnabled = true
     @AppStorage("statusBarPanelEnabled") private var statusBarPanelEnabled = false
+    @AppStorage("liveRateMonitoringEnabled") private var liveRateMonitoringEnabled = true
     @AppStorage("preciseTokenCountingEnabled") private var preciseTokenCountingEnabled = false
     @AppStorage("floatingPanelOpacity") private var floatingPanelOpacity = 0.88
     @AppStorage("floatingPanelScale") private var floatingPanelScale = FloatingTokenPanelMetrics.defaultScale
@@ -26,13 +28,22 @@ struct DashboardView: View {
     @AppStorage(FloatingPanelAppearance.directionKey) private var floatingPanelGradientDirection = FloatingPanelAppearance.defaultDirection
     @AppStorage(FloatingPanelAppearance.styleKey) private var floatingPanelGradientStyle = FloatingPanelAppearance.defaultStyle
     @AppStorage(FloatingPanelAppearance.unreadEffectKey) private var floatingPanelUnreadEffect = FloatingPanelAppearance.defaultUnreadEffect
+    @AppStorage(FloatingPanelContentVisibility.rateAndBarKey) private var floatingPanelShowRateAndBar = FloatingPanelContentVisibility.default.showRateAndBar
+    @AppStorage(FloatingPanelContentVisibility.usageStatusKey) private var floatingPanelShowUsageStatus = FloatingPanelContentVisibility.default.showUsageStatus
+    @AppStorage(FloatingPanelContentVisibility.metricsKey) private var floatingPanelShowMetrics = FloatingPanelContentVisibility.default.showMetrics
+    @AppStorage(FloatingPanelContentVisibility.quotaKey) private var floatingPanelShowQuota = FloatingPanelContentVisibility.default.showQuota
+    @AppStorage(FloatingPanelContentVisibility.radarKey) private var floatingPanelShowRadar = FloatingPanelContentVisibility.default.showRadar
+    @AppStorage(FloatingPanelContentVisibility.orderKey) private var floatingPanelContentOrderRaw = FloatingPanelContentVisibility.defaultOrderRaw
     @AppStorage("setupGuideCompletedV01") private var setupGuideCompleted = false
     @State private var showingProviderSync = false
     @State private var showingSetupGuide = false
     @State private var showingResetCreditDetails = false
+    @State private var showingCodexRadarDetails = false
     @State private var showingInterfaceScaleMenu = false
     @State private var showingPaletteMenu = false
     @State private var showingUnreadEffectMenu = false
+    @State private var showingContentSettingsMenu = false
+    @State private var usageRefreshCadenceRecoveryTask: Task<Void, Never>?
 
     init(
         loginItemStore: LoginItemStore,
@@ -72,12 +83,6 @@ struct DashboardView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if store.isInitialLoading {
-                InitialLoadingOverlay(status: store.status)
-                    .transition(.opacity)
-                    .zIndex(10)
-            }
-
             if showingResetCreditDetails {
                 GeometryReader { proxy in
                     ZStack(alignment: .top) {
@@ -94,6 +99,34 @@ struct DashboardView: View {
                         .frame(width: min(560, max(460, proxy.size.width - 108)))
                         .frame(maxHeight: max(360, proxy.size.height - 90))
                         .padding(.top, 78)
+                    }
+                }
+                .zIndex(9)
+            }
+
+            if showingCodexRadarDetails {
+                GeometryReader { proxy in
+                    ZStack(alignment: .top) {
+                        AppTheme.pageBackground.opacity(0.34)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                showingCodexRadarDetails = false
+                            }
+
+                        CodexRadarDetailCard(
+                            snapshot: radarStore.detailDisplaySnapshot,
+                            feedItems: radarStore.feedItems,
+                            status: radarStore.detailDisplayStatus,
+                            isRefreshing: radarStore.isDetailRefreshing,
+                            diagnostics: radarStore.detailDisplayDiagnostics,
+                            staleDataDisplayed: radarStore.detailDisplayStaleDataDisplayed,
+                            feedStaleDataDisplayed: radarStore.feedStaleDataDisplayed,
+                            onRefresh: radarStore.refreshDetail,
+                            onClose: { showingCodexRadarDetails = false }
+                        )
+                        .frame(width: min(900, max(680, proxy.size.width - 108)))
+                        .frame(maxHeight: max(520, proxy.size.height - 90))
+                        .padding(.top, 58)
                     }
                 }
                 .zIndex(9)
@@ -175,11 +208,36 @@ struct DashboardView: View {
                 }
             }
         }
+        .overlayPreferenceValue(FloatingPanelContentSettingsButtonBoundsKey.self) { anchor in
+            GeometryReader { proxy in
+                if showingContentSettingsMenu {
+                    let cardFrame = floatingSettingsCardFrame(in: proxy, anchor: anchor, width: 312, estimatedHeight: 272)
+
+                    ZStack(alignment: .topLeading) {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                showingContentSettingsMenu = false
+                            }
+
+                        FloatingPanelContentSettingsMenu(
+                            closeAction: { showingContentSettingsMenu = false }
+                        )
+                        .frame(width: cardFrame.width)
+                        .offset(x: cardFrame.minX, y: cardFrame.minY)
+                    }
+                    .zIndex(10)
+                    .transition(.identity)
+                }
+            }
+        }
         .animation(.easeInOut(duration: 0.18), value: store.isInitialLoading)
         .onExitCommand {
             showingResetCreditDetails = false
+            showingCodexRadarDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
+            showingContentSettingsMenu = false
             showingInterfaceScaleMenu = false
         }
         .onAppear {
@@ -187,7 +245,8 @@ struct DashboardView: View {
             liveMonitor.setPreciseTokenCountingEnabled(preciseTokenCountingEnabled)
             quotaStore.setHistoryStore(quotaHistoryStore)
             quotaHistoryStore.start()
-            quotaStore.start()
+            quotaStore.start(dataSource: store.currentDataSource)
+            radarStore.start()
             taskCompletionMonitor.start(dataSource: store.currentDataSource)
             updateTokenDisplaySurface()
             updateUsageRefreshCadence()
@@ -208,6 +267,9 @@ struct DashboardView: View {
         .onChange(of: floatingPanelScale) {
             updateTokenDisplaySurface()
         }
+        .onChange(of: floatingPanelContentVisibility) {
+            updateTokenDisplaySurface()
+        }
         .onChange(of: interfaceScaleAutoEnabled) {
             updateTokenDisplaySurface()
         }
@@ -217,8 +279,25 @@ struct DashboardView: View {
         .onChange(of: floatingPanelLocked) {
             updateTokenDisplaySurface()
         }
+        .onReceive(radarStore.$snapshot) { _ in
+            syncFloatingPanelRadarSnapshot()
+        }
+        .onReceive(radarStore.$diagnostics) { _ in
+            syncFloatingPanelRadarSnapshot()
+        }
+        .onReceive(radarStore.$staleDataDisplayed) { _ in
+            syncFloatingPanelRadarSnapshot()
+        }
+        .onReceive(radarStore.$feedStaleDataDisplayed) { _ in
+            syncFloatingPanelRadarSnapshot()
+        }
+        .onReceive(liveMonitor.$totalSnapshot) { snapshot in
+            updateUsageRefreshCadence(liveSnapshot: snapshot)
+        }
         .onChange(of: store.dataSourceLabel) {
             taskCompletionMonitor.start(dataSource: store.currentDataSource)
+            quotaStore.setDataSource(store.currentDataSource)
+            quotaStore.refresh(force: true)
         }
         .onChange(of: preciseTokenCountingEnabled) {
             liveMonitor.setPreciseTokenCountingEnabled(preciseTokenCountingEnabled)
@@ -227,15 +306,27 @@ struct DashboardView: View {
             guard showingInterfaceScaleMenu else { return }
             closePaletteMenu()
             showingUnreadEffectMenu = false
+            showingContentSettingsMenu = false
             showingResetCreditDetails = false
+            showingCodexRadarDetails = false
         }
         .onChange(of: showingPaletteMenu) {
             guard showingPaletteMenu else { return }
             showingInterfaceScaleMenu = false
+            showingContentSettingsMenu = false
         }
         .onChange(of: showingUnreadEffectMenu) {
             guard showingUnreadEffectMenu else { return }
             showingInterfaceScaleMenu = false
+            showingContentSettingsMenu = false
+        }
+        .onChange(of: showingContentSettingsMenu) {
+            guard showingContentSettingsMenu else { return }
+            closePaletteMenu()
+            showingUnreadEffectMenu = false
+            showingInterfaceScaleMenu = false
+            showingResetCreditDetails = false
+            showingCodexRadarDetails = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didHideNotification)) { _ in
             updateUsageRefreshCadence()
@@ -246,15 +337,26 @@ struct DashboardView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             updateUsageRefreshCadence()
         }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
+            refreshAllData(trigger: .systemWake)
+        }
+        .onDisappear {
+            usageRefreshCadenceRecoveryTask?.cancel()
+            usageRefreshCadenceRecoveryTask = nil
+        }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in
             showingResetCreditDetails = false
+            showingCodexRadarDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
+            showingContentSettingsMenu = false
             showingInterfaceScaleMenu = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            showingCodexRadarDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
+            showingContentSettingsMenu = false
             showingInterfaceScaleMenu = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMiniaturizeNotification)) { _ in
@@ -319,7 +421,14 @@ struct DashboardView: View {
                 dataSourceLabel: store.dataSourceLabel,
                 dataSourceOrigin: store.dataSourceOrigin,
                 isRefreshing: store.isRefreshing,
-                onRefresh: refreshAllData,
+                unreadThreadCount: taskCompletionMonitor.unreadThreadCount,
+                onRefresh: {
+                    refreshAllData()
+                },
+                onMarkAllRead: {
+                    taskCompletionMonitor.markAllRead()
+                    updateTokenDisplaySurface()
+                },
                 onChangeDirectory: store.chooseDataSourceDirectory,
                 onOpenProviderSync: {
                     showingProviderSync = true
@@ -331,12 +440,29 @@ struct DashboardView: View {
                 showingResetCreditDetails: $showingResetCreditDetails
             )
 
-            StatStrip(stats: store.snapshot.stats)
+            StatStrip(
+                snapshot: store.snapshot,
+                isPreparingUsageCache: store.isPreparingUsageCache,
+                cacheStatus: store.status
+            )
+
+            CodexRadarStrip(
+                snapshot: radarStore.snapshot,
+                status: radarStore.status,
+                isRefreshing: radarStore.isRefreshing,
+                diagnostics: radarStore.diagnostics,
+                staleDataDisplayed: radarStore.staleDataDisplayed,
+                feedStaleDataDisplayed: radarStore.feedStaleDataDisplayed,
+                onRefresh: radarStore.refresh,
+                onShowDetails: { showingCodexRadarDetails = true }
+            )
 
             LiveRateView(
                 monitor: liveMonitor,
                 floatingPanelEnabled: $floatingPanelEnabled,
                 statusBarPanelEnabled: $statusBarPanelEnabled,
+                liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
+                floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar,
                 preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
                 floatingPanelOpacity: $floatingPanelOpacity,
                 floatingPanelScale: $floatingPanelScale,
@@ -347,7 +473,8 @@ struct DashboardView: View {
                 floatingPanelGradientStyle: $floatingPanelGradientStyle,
                 floatingPanelUnreadEffect: $floatingPanelUnreadEffect,
                 showingPaletteMenu: $showingPaletteMenu,
-                showingUnreadEffectMenu: $showingUnreadEffectMenu
+                showingUnreadEffectMenu: $showingUnreadEffectMenu,
+                showingContentSettingsMenu: $showingContentSettingsMenu
             )
 
             ActivitySection(
@@ -380,12 +507,48 @@ struct DashboardView: View {
         )
     }
 
-    private func refreshAllData() {
-        store.refresh()
-        quotaStore.refresh()
-        if showingProviderSync {
-            providerSyncStore.scan(dataSource: store.currentDataSource)
+    private func refreshAllData(trigger: DashboardRefreshTrigger = .manual) {
+        let context = DashboardRefreshContext.fromSurfaces(
+            providerSyncVisible: showingProviderSync,
+            appActive: NSApp.isActive,
+            dashboardWindowVisible: hasVisibleDashboardWindow(),
+            floatingPanelEnabled: floatingPanelEnabled,
+            statusBarPanelEnabled: statusBarPanelEnabled,
+            usageStale: Date().timeIntervalSince(store.snapshot.generatedAt) >= 5 * 60,
+            radarDetailsVisible: showingCodexRadarDetails,
+            floatingPanelShowRadar: floatingPanelShowRadar,
+            radarStale: radarStore.snapshot == nil
+        )
+        let plan = DashboardRefreshPlan.make(trigger: trigger, context: context)
+        let trace = RefreshPerformanceProbe.begin(trigger.traceName, metadata: [
+            "trigger": trigger.traceValue,
+            "providerSyncVisible": context.providerSyncVisible ? "1" : "0",
+            "dashboardVisible": context.dashboardVisible ? "1" : "0",
+            "usageStale": context.usageStale ? "1" : "0",
+            "radarVisible": context.radarVisible ? "1" : "0",
+            "radarStale": context.radarStale ? "1" : "0"
+        ])
+        for action in plan.actions {
+            switch action {
+            case .refreshUsage:
+                store.refresh()
+                trace?.mark("usageStore.refresh.called")
+            case let .refreshQuota(force):
+                quotaStore.setDataSource(store.currentDataSource)
+                quotaStore.refresh(force: force)
+                trace?.mark("quotaStore.refresh.called")
+            case .refreshRadar:
+                radarStore.refresh()
+                trace?.mark("radarStore.refresh.called")
+            case .scanProviders:
+                providerSyncStore.scan(dataSource: store.currentDataSource)
+                trace?.mark("providerSync.scan.called")
+            case .reloadQuotaHistoryTimeline:
+                quotaHistoryStore.reload()
+                trace?.mark("quotaHistory.reload.called")
+            }
         }
+        trace?.end("dispatched")
     }
 
     private var requestedInterfaceScale: CGFloat {
@@ -403,6 +566,17 @@ struct DashboardView: View {
             FloatingTokenPanelMetrics.clampedScale(
                 floatingPanelScale * Double(requestedInterfaceScale)
             )
+        )
+    }
+
+    private var floatingPanelContentVisibility: FloatingPanelContentVisibility {
+        FloatingPanelContentVisibility(
+            showRateAndBar: floatingPanelShowRateAndBar,
+            showUsageStatus: floatingPanelShowUsageStatus,
+            showMetrics: floatingPanelShowMetrics,
+            showQuota: floatingPanelShowQuota,
+            showRadar: floatingPanelShowRadar,
+            groupOrder: FloatingPanelContentVisibility.order(from: floatingPanelContentOrderRaw)
         )
     }
 
@@ -460,8 +634,10 @@ struct DashboardView: View {
                 store: store,
                 monitor: liveMonitor,
                 quota: quotaStore,
+                radar: radarStore,
                 taskCompletionMonitor: taskCompletionMonitor,
                 scale: effectiveFloatingPanelScale,
+                visibility: floatingPanelContentVisibility,
                 isLocked: floatingPanelLocked,
                 onToggleLock: {
                     floatingPanelLocked.toggle()
@@ -475,7 +651,12 @@ struct DashboardView: View {
         }
 
         if statusBarPanelEnabled {
-            statusBarPanel.show(store: store, monitor: liveMonitor, quota: quotaStore) {
+            statusBarPanel.show(
+                store: store,
+                monitor: liveMonitor,
+                quota: quotaStore,
+                taskCompletionMonitor: taskCompletionMonitor
+            ) {
                 statusBarPanelEnabled = false
             }
         } else {
@@ -483,10 +664,31 @@ struct DashboardView: View {
         }
     }
 
-    private func updateUsageRefreshCadence() {
-        let onlyCompactSurfaceVisible = (floatingPanelEnabled || statusBarPanelEnabled) && !hasVisibleDashboardWindow()
-        store.setRefreshInterval(onlyCompactSurfaceVisible ? 180 : 300)
+    private func syncFloatingPanelRadarSnapshot() {
+        guard floatingPanelEnabled else { return }
+        updateTokenDisplaySurface()
     }
+
+    private func updateUsageRefreshCadence(liveSnapshot: LiveRateSnapshot? = nil) {
+        let onlyCompactSurfaceVisible = (floatingPanelEnabled || statusBarPanelEnabled) && !hasVisibleDashboardWindow()
+        let snapshot = liveSnapshot ?? liveMonitor.totalSnapshot
+        let decision = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: onlyCompactSurfaceVisible
+        )
+        store.setRefreshInterval(decision.interval)
+        scheduleUsageRefreshCadenceRecovery(after: decision.recoveryDelay)
+    }
+
+    private func scheduleUsageRefreshCadenceRecovery(after delay: TimeInterval?) {
+        UsageRefreshCadenceRecoveryScheduler.schedule(
+            replacing: &usageRefreshCadenceRecoveryTask,
+            after: delay
+        ) {
+            updateUsageRefreshCadence()
+        }
+    }
+
     private func hasVisibleDashboardWindow() -> Bool {
         guard !NSApp.isHidden else { return false }
         return NSApp.windows.contains { window in

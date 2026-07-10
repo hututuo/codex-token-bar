@@ -1,31 +1,121 @@
 import Foundation
 
 @MainActor
+protocol AccountQuotaTimerToken: AnyObject {
+    func invalidate()
+}
+
+@MainActor
+protocol AccountQuotaTimerScheduling {
+    func scheduleRepeatingTimer(
+        interval: TimeInterval,
+        handler: @escaping @MainActor @Sendable () -> Void
+    ) -> any AccountQuotaTimerToken
+}
+
+@MainActor
+private struct DefaultAccountQuotaTimerScheduler: AccountQuotaTimerScheduling {
+    func scheduleRepeatingTimer(
+        interval: TimeInterval,
+        handler: @escaping @MainActor @Sendable () -> Void
+    ) -> any AccountQuotaTimerToken {
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+            Task { @MainActor in
+                handler()
+            }
+        }
+        return FoundationAccountQuotaTimerToken(timer: timer)
+    }
+}
+
+@MainActor
+private final class FoundationAccountQuotaTimerToken: AccountQuotaTimerToken {
+    private let timer: Timer
+
+    init(timer: Timer) {
+        self.timer = timer
+    }
+
+    func invalidate() {
+        timer.invalidate()
+    }
+}
+
+@MainActor
 final class AccountQuotaStore: ObservableObject {
     @Published private(set) var snapshot = AccountQuotaSnapshot.empty
 
-    private var timer: Timer?
+    private var timer: (any AccountQuotaTimerToken)?
     private weak var historyStore: QuotaHistoryStore?
     private var isRefreshing = false
-    private let refreshInterval: TimeInterval = 60
+    private var lastSuccessfulRefreshCompletedAt: Date?
+    private(set) var automaticRefreshInterval: TimeInterval
     private let quotaReader: any QuotaReading
+    private let timerScheduler: any AccountQuotaTimerScheduling
+    private let userDefaults: UserDefaults
+    nonisolated(unsafe) private var cadenceObserver: NSObjectProtocol?
+    private var currentDataSource: CodexDataSource?
+    private var refreshTask: Task<Void, Never>?
+    private var refreshGeneration = 0
+    private var activeRefreshSourceID: String?
 
-    init(quotaReader: any QuotaReading = LiveAccountQuotaReader()) {
+    init(
+        quotaReader: any QuotaReading = LiveAccountQuotaReader(),
+        automaticRefreshInterval: TimeInterval? = nil,
+        timerScheduler: any AccountQuotaTimerScheduling = DefaultAccountQuotaTimerScheduler(),
+        userDefaults: UserDefaults = .standard,
+        observesUserDefaults: Bool = true
+    ) {
         self.quotaReader = quotaReader
+        self.timerScheduler = timerScheduler
+        self.userDefaults = userDefaults
+        self.automaticRefreshInterval = automaticRefreshInterval
+            ?? AccountQuotaRefreshCadence.storedValue(in: userDefaults).seconds
+        if observesUserDefaults {
+            cadenceObserver = NotificationCenter.default.addObserver(
+                forName: UserDefaults.didChangeNotification,
+                object: userDefaults,
+                queue: nil
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    let cadence = AccountQuotaRefreshCadence.storedValue(in: self.userDefaults)
+                    self.setAutomaticRefreshInterval(cadence.seconds)
+                }
+            }
+        }
+    }
+
+    deinit {
+        if let cadenceObserver {
+            NotificationCenter.default.removeObserver(cadenceObserver)
+        }
+    }
+
+    func setDataSource(_ dataSource: CodexDataSource?) {
+        let oldSourceID = quotaSourceID(for: currentDataSource)
+        let newSourceID = quotaSourceID(for: dataSource)
+        currentDataSource = dataSource
+        guard oldSourceID != newSourceID else { return }
+
+        lastSuccessfulRefreshCompletedAt = nil
+        if isRefreshing {
+            refreshTask?.cancel()
+            refreshGeneration += 1
+            activeRefreshSourceID = nil
+            isRefreshing = false
+        }
     }
 
     func setHistoryStore(_ historyStore: QuotaHistoryStore) {
         self.historyStore = historyStore
     }
 
-    func start() {
+    func start(dataSource: CodexDataSource? = nil) {
         guard timer == nil else { return }
-        refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.refresh()
-            }
-        }
+        setDataSource(dataSource)
+        refresh(force: true)
+        installAutomaticRefreshTimer()
     }
 
     func stop() {
@@ -33,36 +123,138 @@ final class AccountQuotaStore: ObservableObject {
         timer = nil
     }
 
-    func refresh() {
-        guard !isRefreshing else { return }
+    func setAutomaticRefreshInterval(_ interval: TimeInterval) {
+        guard automaticRefreshInterval != interval else { return }
+        automaticRefreshInterval = interval
+        guard timer != nil else { return }
+        installAutomaticRefreshTimer()
+    }
+
+    func refresh(force: Bool = true) {
+        let effectiveDataSource = currentDataSource
+        let sourceID = quotaSourceID(for: effectiveDataSource)
+        let recentSuccessAge = lastSuccessfulRefreshCompletedAt.map { Date().timeIntervalSince($0) }
+        let trace = RefreshPerformanceProbe.begin("quotaStore.refresh", metadata: [
+            "alreadyRefreshing": isRefreshing ? "1" : "0",
+            "available": snapshot.isAvailable ? "1" : "0",
+            "force": force ? "1" : "0",
+            "source": effectiveDataSource?.displayPath ?? "default",
+            "recentSuccessAge": recentSuccessAge.map { String(format: "%.2f", $0) } ?? "nil"
+        ])
+        if isRefreshing, sourceID == activeRefreshSourceID {
+            trace?.end("skipped-refresh-in-flight")
+            return
+        }
+        if isRefreshing {
+            refreshTask?.cancel()
+            refreshGeneration += 1
+            isRefreshing = false
+            trace?.mark("cancelled-stale-refresh")
+        }
+        if !force,
+           AccountQuotaAutomaticRefreshPolicy.shouldSkipAutomaticRefresh(
+                snapshotIsAvailable: snapshot.isAvailable,
+                recentSuccessAge: recentSuccessAge,
+                automaticRefreshInterval: automaticRefreshInterval
+           ) {
+            trace?.end("skipped-recent-success", metadata: [
+                "cooldown": String(format: "%.2f", AccountQuotaAutomaticRefreshPolicy.successCooldown(for: automaticRefreshInterval))
+            ])
+            return
+        }
         isRefreshing = true
+        refreshGeneration += 1
+        let generation = refreshGeneration
+        activeRefreshSourceID = sourceID
         var refreshing = snapshot
         refreshing.status = snapshot.isAvailable ? "正在更新额度" : "正在读取额度"
         snapshot = refreshing
 
         let reader = quotaReader
-        Task.detached(priority: .utility) {
-            let result = await reader.readQuota()
+        refreshTask = Task.detached(priority: .utility) {
+            trace?.mark("reader.begin")
+            let result = await reader.readQuota(dataSource: effectiveDataSource)
+            trace?.mark("reader.end")
+            guard !Task.isCancelled else {
+                trace?.end("cancelled")
+                return
+            }
+            guard await MainActor.run(body: { self.isCurrentRefresh(generation: generation, sourceID: sourceID) }) else {
+                trace?.end("stale-after-reader")
+                return
+            }
             switch result {
             case .success(let quota):
+                trace?.mark("mainActor.previousSnapshot.begin")
                 let previousSnapshot = await MainActor.run { self.snapshot }
+                trace?.mark("mainActor.previousSnapshot.end")
+                trace?.mark("mainActor.historyStore.begin")
                 let historyStore = await MainActor.run { self.historyStore }
+                trace?.mark("mainActor.historyStore.end")
+                trace?.mark("memoryNormalize.begin")
                 let memoryAdjustedQuota = QuotaMonotonicNormalizer.normalizedSnapshot(quota, after: previousSnapshot)
+                trace?.mark("memoryNormalize.end")
+                trace?.mark("historyNormalize.begin")
                 let adjustedQuota = await historyStore?.normalizedForDisplay(memoryAdjustedQuota) ?? memoryAdjustedQuota
+                trace?.mark("historyNormalize.end", metadata: [
+                    "fiveHour": adjustedQuota.fiveHour.map { String(format: "%.2f", $0.remainingPercent) } ?? "nil",
+                    "sevenDay": adjustedQuota.sevenDay.map { String(format: "%.2f", $0.remainingPercent) } ?? "nil",
+                    "resetCredits": String(adjustedQuota.availableResetCreditCount)
+                ])
 
                 await MainActor.run {
+                    guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else { return }
                     self.isRefreshing = false
+                    self.activeRefreshSourceID = nil
+                    self.lastSuccessfulRefreshCompletedAt = Date()
                     self.snapshot = adjustedQuota
                     self.historyStore?.record(adjustedQuota)
                 }
+                trace?.mark("mainActor.publish.end")
+                trace?.end("ok")
             case .failure(let error):
                 await MainActor.run {
+                    guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else { return }
                     self.isRefreshing = false
+                    self.activeRefreshSourceID = nil
                     var failed = self.snapshot
-                    failed.status = "额度读取失败：\(error.localizedDescription)"
+                    let occurredAt = Date()
+                    let diagnostic = AccountQuotaDiagnostic.classify(
+                        source: .accountQuota,
+                        error: error,
+                        occurredAt: occurredAt
+                    )
+                    var diagnostics = [diagnostic]
+                    if failed.isAvailable {
+                        diagnostics.append(
+                            .staleCachedData(
+                                source: .accountQuota,
+                                rawCause: diagnostic.rawCause,
+                                occurredAt: occurredAt
+                            )
+                        )
+                    }
+                    failed.diagnostics = diagnostics
+                    failed.status = "额度读取失败：\(diagnostic.message)"
                     self.snapshot = failed
                 }
+                trace?.end("failed", metadata: ["error": error.localizedDescription])
             }
         }
+    }
+
+    private func isCurrentRefresh(generation: Int, sourceID: String) -> Bool {
+        refreshGeneration == generation && activeRefreshSourceID == sourceID
+    }
+
+    private func installAutomaticRefreshTimer() {
+        timer?.invalidate()
+        timer = timerScheduler.scheduleRepeatingTimer(interval: automaticRefreshInterval) { [weak self] in
+            self?.refresh(force: false)
+        }
+    }
+
+    private func quotaSourceID(for dataSource: CodexDataSource?) -> String {
+        dataSource?.codexHome.resolvingSymlinksInPath().standardizedFileURL.path ?? "default"
     }
 }

@@ -4,6 +4,192 @@ import XCTest
 
 @MainActor
 final class CodexUsageStoreTests: XCTestCase {
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+    }
+
+    override func tearDownWithError() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+        try super.tearDownWithError()
+    }
+
+    func testVisibleDashboardRefreshesFasterThanCompactOnlySurfaces() throws {
+        var snapshot = LiveRateSnapshot()
+        snapshot.rollingTokensPerSecond = 0
+        snapshot.updatedAt = Date(timeIntervalSince1970: 2_000)
+
+        let visibleDashboard = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: false,
+            now: snapshot.updatedAt
+        )
+        let compactOnly = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: true,
+            now: snapshot.updatedAt
+        )
+
+        XCTAssertEqual(visibleDashboard.interval, 180, accuracy: 0.001)
+        XCTAssertEqual(compactOnly.interval, 300, accuracy: 0.001)
+    }
+
+    func testLiveActivityTemporarilyAcceleratesUsageRefresh() throws {
+        let now = Date(timeIntervalSince1970: 2_000)
+        var snapshot = LiveRateSnapshot()
+        snapshot.rollingTokensPerSecond = 12
+        snapshot.updatedAt = now.addingTimeInterval(-5)
+
+        let decision = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: false,
+            now: now
+        )
+
+        XCTAssertTrue(decision.isActive)
+        XCTAssertEqual(decision.interval, 30, accuracy: 0.001)
+        XCTAssertEqual(decision.recoveryDelay ?? 0, 25.25, accuracy: 0.001)
+    }
+
+    func testLiveActivityCadenceRestoresVisibleDashboardBaselineAfterWindowExpires() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        var snapshot = LiveRateSnapshot()
+        snapshot.rollingTokensPerSecond = 12
+        snapshot.updatedAt = now.addingTimeInterval(-31)
+
+        let decision = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: false,
+            now: now
+        )
+
+        XCTAssertFalse(decision.isActive)
+        XCTAssertEqual(decision.interval, 180, accuracy: 0.001)
+        XCTAssertNil(decision.recoveryDelay)
+    }
+
+    func testLiveActivityCadenceRestoresCompactOnlyBaselineAfterWindowExpires() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        var snapshot = LiveRateSnapshot()
+        snapshot.rollingTokensPerSecond = 12
+        snapshot.updatedAt = now.addingTimeInterval(-31)
+
+        let decision = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: true,
+            now: now
+        )
+
+        XCTAssertFalse(decision.isActive)
+        XCTAssertEqual(decision.interval, 300, accuracy: 0.001)
+        XCTAssertNil(decision.recoveryDelay)
+    }
+
+    func testZeroLiveRateDoesNotKeepUsageRefreshAccelerated() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        var snapshot = LiveRateSnapshot()
+        snapshot.rollingTokensPerSecond = 0
+        snapshot.updatedAt = now
+
+        let decision = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: false,
+            now: now
+        )
+
+        XCTAssertFalse(decision.isActive)
+        XCTAssertEqual(decision.interval, 180, accuracy: 0.001)
+        XCTAssertNil(decision.recoveryDelay)
+    }
+
+    func testUsageRefreshStatusDescribesIncrementalTokenUpdate() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let projectRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let usageStore = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexUsageStore.swift")
+        let source = try String(contentsOf: usageStore, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("正在增量更新 token"))
+        XCTAssertFalse(source.contains("正在扫描 \\(dataSource.displayPath)/sessions"))
+    }
+
+    func testUsageCacheInitializationUsesInlineNoticeInsteadOfBlockingOverlay() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let projectRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let usageStore = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexUsageStore.swift")
+        let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
+        let headerView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardHeaderView.swift")
+        let storeSource = try String(contentsOf: usageStore, encoding: .utf8)
+        let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
+        let headerSource = try String(contentsOf: headerView, encoding: .utf8)
+
+        XCTAssertTrue(storeSource.contains("UsageCacheLifecycle.isCurrentCachePrepared"))
+        XCTAssertTrue(storeSource.contains("UsageCacheLifecycle.markCurrentCachePrepared()"))
+        XCTAssertTrue(storeSource.contains("isPreparingUsageCache"))
+        XCTAssertFalse(dashboardSource.contains("if store.isPreparingUsageCache"))
+        XCTAssertTrue(dashboardSource.contains("StatStrip("))
+        XCTAssertTrue(dashboardSource.contains("isPreparingUsageCache: store.isPreparingUsageCache"))
+        XCTAssertTrue(dashboardSource.contains("cacheStatus: store.status"))
+        XCTAssertFalse(dashboardSource.contains("UsageCacheInitializationNotice(status: store.status)"))
+        XCTAssertFalse(dashboardSource.contains("if store.isInitialLoading {\n                InitialLoadingOverlay"))
+        XCTAssertTrue(headerSource.contains("StatStripStatusLinePresentation("))
+        XCTAssertTrue(headerSource.contains("正在初始化本地统计缓存"))
+    }
+
+    func testStatStripStatusLineUsesStableFooterForCachePreparation() throws {
+        let preparing = try XCTUnwrap(StatStripStatusLinePresentation(
+            hasPreciseTokenUsage: true,
+            isPreparingUsageCache: true,
+            cacheStatus: "正在增量更新 token"
+        ))
+        let metadataOnly = try XCTUnwrap(StatStripStatusLinePresentation(
+            hasPreciseTokenUsage: false,
+            isPreparingUsageCache: false,
+            cacheStatus: "仅显示会话元数据"
+        ))
+        let preciseIdle = StatStripStatusLinePresentation(
+            hasPreciseTokenUsage: true,
+            isPreparingUsageCache: false,
+            cacheStatus: "token_count · 更新于 12:00"
+        )
+
+        XCTAssertEqual(preparing.text, "正在初始化本地统计缓存 · 正在增量更新 token")
+        XCTAssertTrue(preparing.showsProgress)
+        XCTAssertEqual(metadataOnly.text, "仅显示会话元数据，精确 token 仍在读取，请稍后。")
+        XCTAssertFalse(metadataOnly.showsProgress)
+        XCTAssertNil(preciseIdle)
+    }
+
+    func testUsageCacheLifecycleMarksCurrentNamespacePrepared() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let stateRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexUsageStoreCacheState-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stateRoot, withIntermediateDirectories: true)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", stateRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", stateRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            try? FileManager.default.removeItem(at: stateRoot)
+        }
+
+        UsageCacheLifecycle.clearStateForTesting()
+        XCTAssertFalse(UsageCacheLifecycle.isCurrentCachePrepared)
+
+        UsageCacheLifecycle.markCurrentCachePrepared()
+
+        XCTAssertTrue(UsageCacheLifecycle.isCurrentCachePrepared)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stateRoot.appendingPathComponent("cache-state.json").path))
+    }
+
     func testInitialPreciseFailurePreservesFastUsageSnapshot() async {
         let source = CodexDataSource(
             codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/.codex"),
@@ -28,6 +214,72 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.stats.totalTokens, 88_000)
         XCTAssertEqual(store.snapshot.stats.totalThreads, 2)
         XCTAssertFalse(store.isInitialLoading)
+    }
+
+    func testMetadataOnlyPreciseResultRemainsDegradedAndDoesNotPrepareCache() async throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let stateRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexUsageStoreMetadataOnly-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stateRoot, withIntermediateDirectories: true)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", stateRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", stateRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            try? FileManager.default.removeItem(at: stateRoot)
+        }
+        UsageCacheLifecycle.clearStateForTesting()
+
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/.codex"),
+            origin: .defaultHome
+        )
+        let metadataOnlySnapshot = makeSnapshot(
+            totalTokens: 0,
+            dayTokens: 0,
+            usagePrecision: .metadataOnly
+        )
+        let loader = SequentialDashboardSnapshotLoader(
+            fastResults: [.success(metadataOnlySnapshot)],
+            preciseResults: [.success(metadataOnlySnapshot)]
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("metadata-only usage refresh") {
+            store.snapshot.usagePrecision == .metadataOnly && !store.isRefreshing
+        }
+
+        XCTAssertFalse(store.snapshot.hasPreciseTokenUsage)
+        XCTAssertTrue(store.status.contains("仅显示会话元数据"))
+        XCTAssertTrue(store.status.contains("精确 token 仍在读取"))
+        XCTAssertFalse(store.status.contains("token_count · 更新于"))
+        XCTAssertFalse(UsageCacheLifecycle.isCurrentCachePrepared)
+    }
+
+    func testMetadataOnlyTokenDisplayUsesPendingMetricLabels() {
+        let snapshot = TokenDisplaySnapshot(
+            title: "全会话实时",
+            status: "idle",
+            rate: 0,
+            consumedTokens: 0,
+            todayTokens: 0,
+            todayRequests: 0,
+            usagePrecision: .metadataOnly,
+            quota: .empty,
+            updatedAt: Date(timeIntervalSince1970: 1_800)
+        )
+
+        XCTAssertFalse(snapshot.hasPreciseTokenUsage)
+        XCTAssertEqual(snapshot.consumedTokensText, "待读取")
+        XCTAssertEqual(snapshot.todayTokensText, "待读取")
+        XCTAssertEqual(snapshot.todayRequestsText, "待读取")
+        XCTAssertEqual(snapshot.metadataOnlyStatusText, "仅会话元数据")
     }
 
     func testRefreshFailurePreservesLastSuccessfulUsageSnapshot() async {
@@ -67,7 +319,52 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertFalse(store.snapshot.dailyUsage.isEmpty)
     }
 
-    private func makeSnapshot(totalTokens: Int, dayTokens: Int) -> DashboardSnapshot {
+    func testInFlightRefreshFromOldSourceDoesNotOverwriteNewSourceSnapshot() async {
+        let sourceA = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/source-a/.codex"),
+            origin: .userSelected
+        )
+        let sourceB = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/source-b/.codex"),
+            origin: .userSelected
+        )
+        let resolver = MutableCodexDataSourceResolver(source: sourceA)
+        let loader = SuspendedDashboardSnapshotLoader()
+        let store = CodexUsageStore(
+            resolver: resolver,
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("old source precise request") {
+            await loader.hasPendingPreciseRequest(for: sourceA)
+        }
+
+        resolver.source = sourceB
+        store.refresh()
+        await waitUntil("new source precise request") {
+            await loader.hasPendingPreciseRequest(for: sourceB)
+        }
+
+        await loader.completePreciseRequest(for: sourceB, with: makeSnapshot(totalTokens: 22_000, dayTokens: 2_200))
+        await waitUntil("new source snapshot published") {
+            store.snapshot.stats.totalTokens == 22_000 && store.currentDataSource == sourceB
+        }
+
+        await loader.completePreciseRequest(for: sourceA, with: makeSnapshot(totalTokens: 11_000, dayTokens: 1_100))
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(store.snapshot.stats.totalTokens, 22_000)
+        XCTAssertEqual(store.currentDataSource, sourceB)
+        XCTAssertFalse(store.status.contains(sourceA.displayPath))
+    }
+
+    private func makeSnapshot(
+        totalTokens: Int,
+        dayTokens: Int,
+        usagePrecision: DashboardUsagePrecision = .precise
+    ) -> DashboardSnapshot {
         let now = Date(timeIntervalSince1970: 1_800)
         return DashboardSnapshot(
             stats: DashboardStats(
@@ -87,6 +384,7 @@ final class CodexUsageStoreTests: XCTestCase {
             hourlyUsage: [BinUsage(start: now, tokens: dayTokens, calls: 3)],
             pluginUsage: [],
             cacheUsage: .empty,
+            usagePrecision: usagePrecision,
             generatedAt: now
         )
     }
@@ -94,14 +392,30 @@ final class CodexUsageStoreTests: XCTestCase {
     private func waitUntil(
         _ label: String,
         timeout: TimeInterval = 2,
-        predicate: @escaping @MainActor () -> Bool
+        predicate: @escaping @MainActor () async -> Bool
     ) async {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if predicate() { return }
+            if await predicate() { return }
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
         XCTFail("Timed out waiting for \(label)")
+    }
+}
+
+private final class MutableCodexDataSourceResolver: CodexDataSourceResolving {
+    var source: CodexDataSource?
+
+    init(source: CodexDataSource?) {
+        self.source = source
+    }
+
+    func resolve() -> CodexDataSource? {
+        source
+    }
+
+    func saveSelectedDirectory(_ directory: URL) -> CodexDataSource? {
+        source
     }
 }
 
@@ -146,6 +460,28 @@ private actor SequentialDashboardSnapshotLoader: DashboardSnapshotLoading {
             throw UsageStoreTestError()
         }
         return try results.removeFirst().get()
+    }
+}
+
+private actor SuspendedDashboardSnapshotLoader: DashboardSnapshotLoading {
+    private var preciseContinuations: [String: CheckedContinuation<DashboardSnapshot, Error>] = [:]
+
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        .empty
+    }
+
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        try await withCheckedThrowingContinuation { continuation in
+            preciseContinuations[dataSource.codexHome.path] = continuation
+        }
+    }
+
+    func hasPendingPreciseRequest(for dataSource: CodexDataSource) -> Bool {
+        preciseContinuations[dataSource.codexHome.path] != nil
+    }
+
+    func completePreciseRequest(for dataSource: CodexDataSource, with snapshot: DashboardSnapshot) {
+        preciseContinuations.removeValue(forKey: dataSource.codexHome.path)?.resume(returning: snapshot)
     }
 }
 

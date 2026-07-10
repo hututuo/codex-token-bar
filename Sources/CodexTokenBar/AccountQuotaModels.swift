@@ -133,6 +133,7 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
     var limitCards: [AccountQuotaLimitCard] = []
     var resetCreditsAvailableCount: Int?
     var resetCredits: [AccountQuotaResetCredit] = []
+    var diagnostics: [AccountQuotaDiagnostic] = []
     var status: String = "额度未读取"
     var updatedAt: Date?
 
@@ -140,6 +141,12 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
 
     var isAvailable: Bool {
         fiveHour != nil || sevenDay != nil
+    }
+
+    var staleDataDisplayed: Bool {
+        diagnostics.contains { diagnostic in
+            diagnostic.staleDataDisplayed || diagnostic.category == .staleCachedData
+        }
     }
 
     var displayName: String {
@@ -172,20 +179,24 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
         resetCredits.filter(\.isAvailable)
     }
 
+    var sortedResetCreditsForDisplay: [AccountQuotaResetCredit] {
+        resetCredits.sorted(by: AccountQuotaResetCredit.displaySortPrecedes)
+    }
+
     var nearestExpiringResetCredit: AccountQuotaResetCredit? {
         availableResetCredits
-            .sorted {
-                switch ($0.expiresAt, $1.expiresAt) {
-                case let (lhs?, rhs?):
-                    return lhs < rhs
-                case (_?, nil):
-                    return true
-                case (nil, _?):
-                    return false
-                case (nil, nil):
-                    return $0.id.localizedStandardCompare($1.id) == .orderedAscending
-                }
+            .sorted(by: AccountQuotaResetCredit.displaySortPrecedes)
+            .first
+    }
+
+    var nearestFutureExpiringResetCredit: AccountQuotaResetCredit? {
+        let now = Date()
+        return availableResetCredits
+            .filter { credit in
+                guard let expiresAt = credit.expiresAt else { return false }
+                return expiresAt > now
             }
+            .sorted(by: AccountQuotaResetCredit.displaySortPrecedes)
             .first
     }
 
@@ -204,12 +215,35 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
         return " · \(count)卡"
     }
 
+    var compactResetCreditRateBarSuffix: String {
+        let count = availableResetCreditCount
+        guard count > 0 else { return "" }
+        guard let countdown = nearestFutureExpiringResetCredit?.compactExpiryCountdownText else {
+            return " · \(count)卡"
+        }
+        return " · \(count)卡 · \(countdown)"
+    }
+
+    var compactResetCreditStandaloneSuffix: String {
+        let count = availableResetCreditCount
+        guard count > 0 else { return "" }
+        guard let countdown = nearestFutureExpiringResetCredit?.compactExpiryCountdownText else {
+            return " · \(count)卡"
+        }
+        return " · \(count)卡 · 近\(countdown)到期"
+    }
+
     var resetCreditDetailSummary: String {
         let countText = compactResetCreditSummary ?? "暂无可用重置卡"
-        if let nearestExpiringResetCredit {
-            return "\(countText) · 最近 \(nearestExpiringResetCredit.compactExpiryText)"
+        if let nearestFutureExpiringResetCredit {
+            return "\(countText) · 最近 \(nearestFutureExpiringResetCredit.compactExpiryText)"
         }
         return countText
+    }
+
+    var resetCreditNearestLineText: String? {
+        guard let nearestFutureExpiringResetCredit else { return nil }
+        return "最近 \(nearestFutureExpiringResetCredit.compactRemainingTimeText)"
     }
 
     var resetCreditReadSummary: String {
@@ -227,6 +261,14 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
         if used > 0 { parts.append("\(used) 张已使用") }
         if expired > 0 { parts.append("\(expired) 张已过期") }
         return parts.joined(separator: "；")
+    }
+
+    var resetCreditDetailSubtitle: String {
+        guard !resetCredits.isEmpty else {
+            return resetCreditReadSummary
+        }
+        let sortText = nearestFutureExpiringResetCredit == nil ? "按状态排序" : "按最近到期排序"
+        return "\(resetCreditReadSummary) · \(sortText)"
     }
 
     var sevenDayPaceStatus: AccountQuotaPaceStatus? {
@@ -387,4 +429,3 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
         }
     }
 }
-

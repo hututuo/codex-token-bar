@@ -329,7 +329,6 @@ final class FloatingUnreadSpriteRippleView: NSView {
             }
         }
 
-        Self.drawEdgeContact(in: context, request: request, center: center, radius: baseRadius, intensity: waveAlpha)
     }
 
     private static nonisolated func drawCircularRing(
@@ -355,43 +354,6 @@ final class FloatingUnreadSpriteRippleView: NSView {
         context.setLineWidth(max(0.18, 0.24 * scale))
         context.addEllipse(in: Self.circleRect(center: center, radius: radius))
         context.strokePath()
-        context.restoreGState()
-    }
-
-    private static nonisolated func drawEdgeContact(
-        in context: CGContext,
-        request: RenderRequest,
-        center: CGPoint,
-        radius: CGFloat,
-        intensity: CGFloat
-    ) {
-        let size = request.size
-        let scale = request.scale
-        let top = Self.gaussian(Double(radius), center: Double(center.y), width: Double(6.4 * scale))
-        let bottom = Self.gaussian(Double(radius), center: Double(size.height - center.y), width: Double(6.4 * scale))
-        let left = Self.gaussian(Double(radius), center: Double(center.x), width: Double(9.0 * scale))
-        let right = Self.gaussian(Double(radius), center: Double(size.width - center.x), width: Double(9.0 * scale))
-        let topSecond = Self.gaussian(Double(radius), center: Double(2 * size.height - center.y), width: Double(10.5 * scale))
-        let bottomSecond = Self.gaussian(Double(radius), center: Double(size.height + center.y), width: Double(10.5 * scale))
-        Self.drawEdgeGlow(in: context, rect: CGRect(x: 0, y: 0, width: size.width, height: 2.35 * scale), amount: CGFloat(top) * intensity, scale: scale)
-        Self.drawEdgeGlow(in: context, rect: CGRect(x: 0, y: size.height - 2.35 * scale, width: size.width, height: 2.35 * scale), amount: CGFloat(bottom) * intensity, scale: scale)
-        Self.drawEdgeGlow(in: context, rect: CGRect(x: 0, y: 0, width: 2.35 * scale, height: size.height), amount: CGFloat(left) * intensity, scale: scale)
-        Self.drawEdgeGlow(in: context, rect: CGRect(x: size.width - 2.35 * scale, y: 0, width: 2.35 * scale, height: size.height), amount: CGFloat(right) * intensity, scale: scale)
-        Self.drawEdgeGlow(in: context, rect: CGRect(x: 0, y: 0, width: size.width, height: 2.05 * scale), amount: CGFloat(topSecond) * intensity * 0.68, scale: scale)
-        Self.drawEdgeGlow(in: context, rect: CGRect(x: 0, y: size.height - 2.05 * scale, width: size.width, height: 2.05 * scale), amount: CGFloat(bottomSecond) * intensity * 0.68, scale: scale)
-    }
-
-    private static nonisolated func drawEdgeGlow(in context: CGContext, rect: CGRect, amount: CGFloat, scale: CGFloat) {
-        guard amount > 0.02 else { return }
-        context.saveGState()
-        context.setFillColor(NSColor.white.withAlphaComponent(amount * 0.27).cgColor)
-        context.addPath(CGPath(
-            roundedRect: rect,
-            cornerWidth: 1.4 * scale,
-            cornerHeight: 1.4 * scale,
-            transform: nil
-        ))
-        context.fillPath()
         context.restoreGState()
     }
 

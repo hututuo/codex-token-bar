@@ -1,67 +1,95 @@
 import Foundation
 
 struct LiveAccountQuotaReader: QuotaReading {
-    func readQuota() async -> Result<AccountQuotaSnapshot, Error> {
-        await AccountQuotaReader.read()
+    func readQuota(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
+        await AccountQuotaReader.read(dataSource: dataSource)
     }
 }
 
 private enum AccountQuotaReader {
-    enum ReaderError: LocalizedError {
-        case codexBinaryNotFound
-        case invalidResponse
-        case emptyRateLimits
-        case serverError(String)
-
-        var errorDescription: String? {
-            switch self {
-            case .codexBinaryNotFound:
-                return "未找到 Codex"
-            case .invalidResponse:
-                return "响应格式异常"
-            case .emptyRateLimits:
-                return "额度暂无数据"
-            case .serverError(let message):
-                return message
-            }
-        }
-    }
-
-    static func read() async -> Result<AccountQuotaSnapshot, Error> {
+    static func read(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
+        let trace = RefreshPerformanceProbe.begin("accountQuotaReader.read", metadata: [
+            "source": dataSource?.displayPath ?? "default"
+        ])
         var lastError: Error?
         for attempt in 1...3 {
-            let result = readOnce()
+            trace?.mark("attempt.begin", metadata: ["attempt": String(attempt)])
+            let result = readOnce(dataSource: dataSource)
             switch result {
             case .success(let snapshot):
+                trace?.mark("attempt.success", metadata: [
+                    "attempt": String(attempt),
+                    "available": snapshot.isAvailable ? "1" : "0"
+                ])
                 if snapshot.isAvailable || attempt == 3 {
-                    return .success(await snapshotByAddingResetCredits(to: snapshot))
+                    let enriched = await snapshotByAddingResetCredits(to: snapshot, dataSource: dataSource)
+                    trace?.end("ok", metadata: [
+                        "attempt": String(attempt),
+                        "available": enriched.isAvailable ? "1" : "0",
+                        "resetCredits": String(enriched.availableResetCreditCount)
+                    ])
+                    return .success(enriched)
                 }
-                lastError = ReaderError.emptyRateLimits
+                lastError = AccountQuotaReaderError.emptyRateLimits
             case .failure(let error):
+                trace?.mark("attempt.failed", metadata: [
+                    "attempt": String(attempt),
+                    "error": error.localizedDescription
+                ])
                 if attempt == 3 {
+                    trace?.end("failed", metadata: [
+                        "attempt": String(attempt),
+                        "error": error.localizedDescription
+                    ])
                     return .failure(error)
                 }
                 lastError = error
             }
+            trace?.mark("attempt.sleep", metadata: ["attempt": String(attempt)])
             try? await Task.sleep(nanoseconds: 350_000_000)
         }
-        return .failure(lastError ?? ReaderError.invalidResponse)
+        trace?.end("failed", metadata: ["error": (lastError ?? AccountQuotaReaderError.invalidResponse).localizedDescription])
+        return .failure(lastError ?? AccountQuotaReaderError.invalidResponse)
     }
 
-    private static func snapshotByAddingResetCredits(to snapshot: AccountQuotaSnapshot) async -> AccountQuotaSnapshot {
-        guard let resetCredits = await readResetCredits() else { return snapshot }
+    private static func snapshotByAddingResetCredits(
+        to snapshot: AccountQuotaSnapshot,
+        dataSource: CodexDataSource?
+    ) async -> AccountQuotaSnapshot {
+        let trace = RefreshPerformanceProbe.begin("accountQuotaReader.addResetCredits")
         var enriched = snapshot
-        enriched.resetCreditsAvailableCount = resetCredits.availableCount
-        enriched.resetCredits = resetCredits.credits
+        switch await readResetCredits(dataSource: dataSource) {
+        case .success(let resetCredits):
+            enriched.resetCreditsAvailableCount = resetCredits.availableCount
+            enriched.resetCredits = resetCredits.credits
+            trace?.end("ok", metadata: [
+                "available": String(resetCredits.availableCount),
+                "credits": String(resetCredits.credits.count)
+            ])
+        case .failure(let diagnostic):
+            enriched.diagnostics.append(diagnostic)
+            trace?.end("unavailable", metadata: [
+                "category": diagnostic.category.rawValue,
+                "underlying": diagnostic.underlyingCategory?.rawValue ?? "none"
+            ])
+        }
         return enriched
     }
 
-    private static func readOnce() -> Result<AccountQuotaSnapshot, Error> {
+    private static func readOnce(dataSource: CodexDataSource?) -> Result<AccountQuotaSnapshot, Error> {
+        let trace = RefreshPerformanceProbe.begin("accountQuotaReader.readOnce")
         do {
+            trace?.mark("findCodexBinary.begin")
             let codexPath = try findCodexBinary()
+            trace?.mark("findCodexBinary.end", metadata: ["path": codexPath])
             let process = Process()
             process.executableURL = URL(fileURLWithPath: codexPath)
             process.arguments = ["app-server", "--listen", "stdio://"]
+            if let dataSource {
+                var environment = ProcessInfo.processInfo.environment
+                environment["CODEX_HOME"] = dataSource.codexHome.path
+                process.environment = environment
+            }
 
             let input = Pipe()
             let output = Pipe()
@@ -71,7 +99,9 @@ private enum AccountQuotaReader {
             process.standardError = error
 
             let reader = JSONLineReader(handle: output.fileHandleForReading)
+            trace?.mark("process.run.begin")
             try process.run()
+            trace?.mark("process.run.end", metadata: ["pid": String(process.processIdentifier)])
             defer {
                 output.fileHandleForReading.readabilityHandler = nil
                 if process.isRunning {
@@ -80,6 +110,7 @@ private enum AccountQuotaReader {
             }
 
             let writer = input.fileHandleForWriting
+            trace?.mark("initialize.write.begin")
             try write([
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -96,15 +127,25 @@ private enum AccountQuotaReader {
                     ]
                 ]
             ], to: writer)
+            trace?.mark("initialize.write.end")
 
             let deadline = Date().addingTimeInterval(12)
             var didSendRead = false
+            var waitCount = 0
 
             while Date() < deadline {
+                waitCount += 1
                 if let message = try reader.next(timeout: 0.5) {
+                    let messageID = (message["id"] as? Int).map(String.init) ?? "none"
+                    trace?.mark("message.received", metadata: [
+                        "id": messageID,
+                        "waitCount": String(waitCount)
+                    ])
                     if let id = message["id"] as? Int, id == 1, message["result"] != nil, !didSendRead {
+                        trace?.mark("initialized.write.begin")
                         try write(["jsonrpc": "2.0", "method": "initialized"], to: writer)
                         try write(["jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read"], to: writer)
+                        trace?.mark("initialized.write.end")
                         didSendRead = true
                         continue
                     }
@@ -112,42 +153,51 @@ private enum AccountQuotaReader {
                     if let id = message["id"] as? Int, id == 2 {
                         if let error = message["error"] as? [String: Any],
                            let message = error["message"] as? String {
-                            return .failure(ReaderError.serverError(message))
+                            trace?.end("server-error", metadata: ["error": message])
+                            return .failure(AccountQuotaReaderError.serverError(message))
                         }
                         guard let result = message["result"] as? [String: Any] else {
-                            return .failure(ReaderError.invalidResponse)
+                            trace?.end("invalid-response")
+                            return .failure(AccountQuotaReaderError.invalidResponse)
                         }
-                        return .success(parse(result))
+                        trace?.mark("parse.begin")
+                        let snapshot = parse(result, dataSource: dataSource)
+                        trace?.mark("parse.end", metadata: [
+                            "available": snapshot.isAvailable ? "1" : "0",
+                            "cards": String(snapshot.limitCards.count)
+                        ])
+                        trace?.end("ok", metadata: [
+                            "waitCount": String(waitCount),
+                            "available": snapshot.isAvailable ? "1" : "0"
+                        ])
+                        return .success(snapshot)
                     }
                 }
             }
 
             if process.isRunning {
+                trace?.mark("timeout.terminate.begin")
                 process.terminate()
                 process.waitUntilExit()
+                trace?.mark("timeout.terminate.end")
             }
             if let stderr = try? error.fileHandleForReading.readToEnd(),
                let text = String(data: stderr, encoding: .utf8),
                !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return .failure(ReaderError.serverError(text.trimmingCharacters(in: .whitespacesAndNewlines)))
+                let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                trace?.end("timeout", metadata: ["stderr": message])
+                return .failure(AccountQuotaReaderError.timeout(stderrText: message))
             }
-            return .failure(ReaderError.invalidResponse)
+            trace?.end("invalid-response-timeout")
+            return .failure(AccountQuotaReaderError.timeout)
         } catch {
+            trace?.end("failed", metadata: ["error": error.localizedDescription])
             return .failure(error)
         }
     }
 
     private static func findCodexBinary() throws -> String {
-        let candidates = [
-            "/Applications/Codex.app/Contents/Resources/codex",
-            "\(NSHomeDirectory())/Applications/Codex.app/Contents/Resources/codex",
-            "/opt/homebrew/bin/codex",
-            "/usr/local/bin/codex"
-        ]
-        if let path = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-            return path
-        }
-        throw ReaderError.codexBinaryNotFound
+        try CodexBinaryLocator.findExecutable()
     }
 
     private static func write(_ object: [String: Any], to handle: FileHandle) throws {
@@ -156,7 +206,7 @@ private enum AccountQuotaReader {
         handle.write(Data([0x0A]))
     }
 
-    private static func parse(_ result: [String: Any]) -> AccountQuotaSnapshot {
+    private static func parse(_ result: [String: Any], dataSource: CodexDataSource?) -> AccountQuotaSnapshot {
         let byLimit = result["rateLimitsByLimitId"] as? [String: Any]
         let fallbackLimit = result["rateLimits"] as? [String: Any]
         let limitCards = parseLimitCards(byLimit: byLimit, fallbackLimit: fallbackLimit)
@@ -166,7 +216,7 @@ private enum AccountQuotaReader {
         let secondary = parseWindow(codex["secondary"] as? [String: Any], label: "7d") ?? primaryCard?.sevenDay
         let planType = (codex["planType"] as? String) ?? primaryCard?.planType
         let limitName = (codex["limitName"] as? String) ?? primaryCard?.limitName
-        let accountName = readLocalAccountName()
+        let accountName = readLocalAccountName(dataSource: dataSource)
 
         var snapshot = AccountQuotaSnapshot(
             fiveHour: primary,
@@ -229,11 +279,36 @@ private enum AccountQuotaReader {
         let credits: [AccountQuotaResetCredit]
     }
 
-    private static func readResetCredits() async -> ResetCreditsSnapshot? {
-        guard let accessToken = readAccessToken(),
-              let url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits") else {
-            return nil
+    private static func readResetCredits(dataSource: CodexDataSource?) async -> Result<ResetCreditsSnapshot, AccountQuotaDiagnostic> {
+        let trace = RefreshPerformanceProbe.begin("accountQuotaReader.readResetCredits")
+        trace?.mark("readAccessToken.begin")
+        guard let accessToken = readAccessToken(dataSource: dataSource) else {
+            let underlying = AccountQuotaDiagnostic(
+                source: .resetCredit,
+                category: .authMissing,
+                severity: .warning,
+                message: "未找到登录 token",
+                rawCause: "auth.json missing or access_token empty",
+                retryable: false,
+                occurredAt: Date()
+            )
+            trace?.end("missing-access-token")
+            return .failure(.resetCreditFailure(underlying: underlying))
         }
+        guard let url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits") else {
+            let underlying = AccountQuotaDiagnostic(
+                source: .resetCredit,
+                category: .parseFailure,
+                severity: .error,
+                message: "重置卡请求地址异常",
+                rawCause: "Invalid reset-credit URL",
+                retryable: false,
+                occurredAt: Date()
+            )
+            trace?.end("invalid-url")
+            return .failure(.resetCreditFailure(underlying: underlying))
+        }
+        trace?.mark("readAccessToken.end")
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -250,23 +325,78 @@ private enum AccountQuotaReader {
         defer { session.finishTasksAndInvalidate() }
 
         do {
+            trace?.mark("http.begin")
             let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return nil
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            trace?.mark("http.end", metadata: [
+                "status": String(statusCode),
+                "bytes": String(data.count)
+            ])
+            guard let http = response as? HTTPURLResponse else {
+                trace?.end("invalid-response", metadata: ["status": String(statusCode)])
+                let underlying = AccountQuotaDiagnostic(
+                    source: .resetCredit,
+                    category: .parseFailure,
+                    severity: .error,
+                    message: "重置卡响应格式异常",
+                    rawCause: "Missing HTTP response",
+                    retryable: false,
+                    occurredAt: Date()
+                )
+                return .failure(.resetCreditFailure(underlying: underlying))
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                trace?.end("http-error", metadata: ["status": String(http.statusCode)])
+                let category = AccountQuotaDiagnostic.category(forHTTPStatus: http.statusCode)
+                let underlying = AccountQuotaDiagnostic(
+                    source: .resetCredit,
+                    category: category,
+                    severity: .error,
+                    message: "重置卡请求失败",
+                    rawCause: "HTTP \(http.statusCode)",
+                    httpStatus: http.statusCode,
+                    retryable: category != .httpAuth,
+                    occurredAt: Date()
+                )
+                return .failure(.resetCreditFailure(underlying: underlying))
+            }
+            guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                trace?.end("parse-failed", metadata: ["status": String(http.statusCode)])
+                let underlying = AccountQuotaDiagnostic(
+                    source: .resetCredit,
+                    category: .parseFailure,
+                    severity: .error,
+                    message: "重置卡响应格式异常",
+                    rawCause: String(data: data.prefix(512), encoding: .utf8) ?? "Invalid JSON",
+                    httpStatus: http.statusCode,
+                    retryable: false,
+                    occurredAt: Date()
+                )
+                return .failure(.resetCreditFailure(underlying: underlying))
             }
 
+            trace?.mark("parseResetCredits.begin")
             let credits = parseResetCredits(object["credits"])
             let availableCount = (object["available_count"] as? NSNumber)?.intValue
                 ?? (object["available_count"] as? Int)
                 ?? credits.filter(\.isAvailable).count
-            return ResetCreditsSnapshot(
+            let snapshot = ResetCreditsSnapshot(
                 availableCount: max(0, availableCount),
                 credits: credits
             )
+            trace?.end("ok", metadata: [
+                "available": String(snapshot.availableCount),
+                "credits": String(snapshot.credits.count)
+            ])
+            return .success(snapshot)
         } catch {
-            return nil
+            trace?.end("failed", metadata: ["error": error.localizedDescription])
+            let underlying = AccountQuotaDiagnostic.classify(
+                source: .resetCredit,
+                error: error,
+                occurredAt: Date()
+            )
+            return .failure(.resetCreditFailure(underlying: underlying))
         }
     }
 
@@ -324,8 +454,8 @@ private enum AccountQuotaReader {
         return plainFormatter.date(from: value)
     }
 
-    private static func readLocalAccountName() -> String? {
-        let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex/auth.json")
+    private static func readLocalAccountName(dataSource: CodexDataSource?) -> String? {
+        let url = authFileURL(dataSource: dataSource)
         guard let data = try? Data(contentsOf: url),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tokens = object["tokens"] as? [String: Any],
@@ -345,8 +475,8 @@ private enum AccountQuotaReader {
         return nil
     }
 
-    private static func readAccessToken() -> String? {
-        let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex/auth.json")
+    private static func readAccessToken(dataSource: CodexDataSource?) -> String? {
+        let url = authFileURL(dataSource: dataSource)
         guard let data = try? Data(contentsOf: url),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tokens = object["tokens"] as? [String: Any],
@@ -355,6 +485,12 @@ private enum AccountQuotaReader {
         }
         let trimmed = accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func authFileURL(dataSource: CodexDataSource?) -> URL {
+        let codexHome = dataSource?.codexHome
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex")
+        return codexHome.appendingPathComponent("auth.json")
     }
 
     private static func decodeJWTPayload(_ token: String) -> [String: Any]? {

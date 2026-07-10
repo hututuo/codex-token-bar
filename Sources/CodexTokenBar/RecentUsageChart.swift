@@ -9,9 +9,9 @@ enum RecentChartRange: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .twentyFourHours: "最近 24 小时"
-        case .sevenDays: "最近 7 天"
-        case .thirtyDays: "最近 30 天"
+        case .twentyFourHours: "24 小时窗口"
+        case .sevenDays: "7 天窗口"
+        case .thirtyDays: "30 天窗口"
         }
     }
 
@@ -25,9 +25,9 @@ enum RecentChartRange: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
-        case .twentyFourHours: "5 分钟粒度 · 5 分钟自动刷新"
-        case .sevenDays: "1 小时粒度 · 5 分钟自动刷新"
-        case .thirtyDays: "6 小时粒度 · 5 分钟自动刷新"
+        case .twentyFourHours: "5 分钟粒度 · 横向滚动查看 30 天内历史"
+        case .sevenDays: "1 小时粒度 · 横向滚动查看历史"
+        case .thirtyDays: "3 小时粒度 · 横向滚动查看历史"
         }
     }
 
@@ -35,8 +35,117 @@ enum RecentChartRange: String, CaseIterable, Identifiable {
         switch self {
         case .twentyFourHours: 5 * 60
         case .sevenDays: 60 * 60
-        case .thirtyDays: 6 * 60 * 60
+        case .thirtyDays: 3 * 60 * 60
         }
+    }
+}
+
+enum RecentChartScrollMetrics {
+    static let trailingAnchorID = "recent-chart-trailing-edge"
+
+    static func contentWidth(
+        range: RecentChartRange,
+        bins: [BinUsage],
+        bucketInterval: TimeInterval,
+        viewportWidth: CGFloat
+    ) -> CGFloat {
+        guard let first = bins.first,
+              let last = bins.last,
+              viewportWidth > 0 else {
+            return viewportWidth
+        }
+
+        let viewportDuration = windowDuration(for: range)
+        let contentDuration = max(
+            last.start.addingTimeInterval(bucketInterval).timeIntervalSince(first.start),
+            viewportDuration
+        )
+        return max(viewportWidth, viewportWidth * CGFloat(contentDuration / viewportDuration))
+    }
+
+    static func windowCount(
+        range: RecentChartRange,
+        bins: [BinUsage],
+        bucketInterval: TimeInterval
+    ) -> Int {
+        guard let first = bins.first,
+              let last = bins.last else {
+            return 1
+        }
+
+        let viewportDuration = windowDuration(for: range)
+        let contentDuration = max(
+            last.start.addingTimeInterval(bucketInterval).timeIntervalSince(first.start),
+            viewportDuration
+        )
+        return max(1, Int(ceil(contentDuration / viewportDuration)))
+    }
+
+    static func anchorID(for index: Int) -> String {
+        "recent-chart-window-\(index)"
+    }
+
+    static func shiftedWindowIndex(
+        current: Int,
+        direction: RecentChartScrollDirection,
+        windowCount: Int
+    ) -> Int {
+        let upperBound = max(windowCount - 1, 0)
+        return min(max(current + direction.delta, 0), upperBound)
+    }
+
+    static func windowDuration(for range: RecentChartRange) -> TimeInterval {
+        switch range {
+        case .twentyFourHours:
+            return 24 * 60 * 60
+        case .sevenDays:
+            return 7 * 24 * 60 * 60
+        case .thirtyDays:
+            return 30 * 24 * 60 * 60
+        }
+    }
+}
+
+enum RecentChartScrollDirection {
+    case backward
+    case forward
+
+    var delta: Int {
+        switch self {
+        case .backward: -1
+        case .forward: 1
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .backward: "chevron.left"
+        case .forward: "chevron.right"
+        }
+    }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .backward: "向左滚动曲线图"
+        case .forward: "向右滚动曲线图"
+        }
+    }
+}
+
+struct RecentChartEdgeFadeState: Equatable {
+    let showsLeft: Bool
+    let showsRight: Bool
+
+    init(showsLeft: Bool, showsRight: Bool) {
+        self.showsLeft = showsLeft
+        self.showsRight = showsRight
+    }
+
+    init(currentWindowIndex: Int, windowCount: Int) {
+        let upperBound = max(windowCount - 1, 0)
+        let clampedIndex = min(max(currentWindowIndex, 0), upperBound)
+        showsLeft = windowCount > 1 && clampedIndex > 0
+        showsRight = windowCount > 1 && clampedIndex < upperBound
     }
 }
 
@@ -140,7 +249,10 @@ struct RecentUsageChart: View {
     @AppStorage("recentChartShowCacheHitRate") private var showCacheHitRate = true
     @AppStorage("recentChartShowFiveHourQuota") private var showFiveHourQuota = true
     @AppStorage("recentChartShowSevenDayQuota") private var showSevenDayQuota = true
+    @AppStorage("recentChartQuotaEstimateModel") private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt55.rawValue
     @State private var hoveredIndex: Int?
+    @State private var consumptionSelectionState = RecentChartConsumptionSelectionState()
+    @State private var scrollWindowIndex: Int?
     @State var preparedData: RecentChartPreparedData
 
     init(
@@ -177,17 +289,36 @@ struct RecentUsageChart: View {
     private var chartHeader: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(selectedRange.title)
-                    .font(.system(size: 19, weight: .semibold))
+                HStack(spacing: 10) {
+                    Text(selectedRange.title)
+                        .font(.system(size: 19, weight: .semibold))
+                    Label(RecentChartQuotaEstimateAffordancePresentation.headerLabel, systemImage: "cursorarrow.click.2")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(AppTheme.accentBlue)
+                        .padding(.horizontal, 9)
+                        .frame(height: 24)
+                        .background(AppTheme.accentBlue.opacity(0.10), in: Capsule())
+                        .overlay(
+                            Capsule()
+                                .stroke(AppTheme.accentBlue.opacity(0.28), lineWidth: 1)
+                        )
+                        .help(RecentChartQuotaEstimateAffordancePresentation.headerHelp)
+                }
                 Text(selectedRange.subtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+                Text(RecentChartQuotaEstimateAffordancePresentation.inlineInstruction)
+                    .font(.system(size: 10))
+                    .foregroundStyle(AppTheme.accentBlue.opacity(0.82))
             }
 
             Spacer()
 
             VStack(alignment: .trailing, spacing: 7) {
-                RecentChartRangeSelector(selection: selectedRangeBinding)
+                HStack(spacing: 8) {
+                    RecentChartQuotaEstimateModelSelector(selectedModel: selectedQuotaEstimateModelBinding)
+                    RecentChartRangeSelector(selection: selectedRangeBinding)
+                }
 
                 HStack(spacing: 14) {
                     ChartLegend(color: .blue, label: "Token", value: preparedData.tokenTotal.abbreviatedTokens)
@@ -210,159 +341,352 @@ struct RecentUsageChart: View {
 
     private var chartPlot: some View {
         GeometryReader { proxy in
-            let plot = CGRect(x: 0, y: 18, width: proxy.size.width, height: proxy.size.height - 42)
-            let chartBins = preparedData.bins
-            let step = plot.width / CGFloat(max(chartBins.count - 1, 1))
-            let activeIndex = hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
-            let plotData = RecentChartPlotData(bins: chartBins, prepared: preparedData, plot: plot, step: step)
+            let buttonWidth: CGFloat = 28
+            let viewportWidth = max(proxy.size.width, 1)
+            let contentWidth = RecentChartScrollMetrics.contentWidth(
+                range: selectedRange,
+                bins: preparedData.bins,
+                bucketInterval: preparedData.bucketInterval,
+                viewportWidth: viewportWidth
+            )
+            let windowCount = RecentChartScrollMetrics.windowCount(
+                range: selectedRange,
+                bins: preparedData.bins,
+                bucketInterval: preparedData.bucketInterval
+            )
+            let currentWindowIndex = min(scrollWindowIndex ?? max(windowCount - 1, 0), max(windowCount - 1, 0))
 
-            ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+            ScrollViewReader { scrollProxy in
+                ZStack {
+                    ZStack {
+                        ScrollView(.horizontal, showsIndicators: contentWidth > viewportWidth + 1) {
+                            HStack(spacing: 0) {
+                                ZStack(alignment: .topLeading) {
+                                    chartPlotCanvas(width: contentWidth, height: proxy.size.height)
+                                        .frame(width: contentWidth, height: proxy.size.height)
+
+                                    chartScrollAnchors(
+                                        windowCount: windowCount,
+                                        viewportWidth: viewportWidth,
+                                        contentWidth: contentWidth
+                                    )
+                                }
+                                .frame(width: contentWidth, height: proxy.size.height)
+
+                                Color.clear
+                                    .frame(width: 1, height: 1)
+                                    .id(RecentChartScrollMetrics.trailingAnchorID)
+                            }
+                        }
+                        .scrollClipDisabled()
+                        .mask(chartViewportMask)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(selectedRange.title) 曲线图")
+                        .accessibilityValue(accessibilitySummary)
+
+                        RecentChartEdgeFadeOverlay(
+                            state: RecentChartEdgeFadeState(
+                                currentWindowIndex: currentWindowIndex,
+                                windowCount: windowCount
+                            )
+                        )
+                    }
+                    .frame(width: viewportWidth, height: proxy.size.height)
+
+                    HStack {
+                        RecentChartScrollButton(
+                            direction: .backward,
+                            isDisabled: windowCount <= 1 || currentWindowIndex <= 0,
+                            action: {
+                                scrollChart(by: .backward, windowCount: windowCount, proxy: scrollProxy)
+                            }
+                        )
+                        .frame(width: buttonWidth, height: proxy.size.height)
+                        .offset(x: -buttonWidth - 6)
+
+                        Spacer(minLength: 0)
+
+                        RecentChartScrollButton(
+                            direction: .forward,
+                            isDisabled: windowCount <= 1 || currentWindowIndex >= windowCount - 1,
+                            action: {
+                                scrollChart(by: .forward, windowCount: windowCount, proxy: scrollProxy)
+                            }
+                        )
+                        .frame(width: buttonWidth, height: proxy.size.height)
+                        .offset(x: buttonWidth + 6)
+                    }
+                }
+                .onAppear {
+                    scrollChartToLatestIfNeeded(scrollProxy, windowCount: windowCount)
+                }
+                .onChange(of: selectedRangeRaw) { _, _ in
+                    scrollChartToLatestIfNeeded(scrollProxy, windowCount: windowCount)
+                }
+                .onChange(of: preparedData.bins.count) { _, _ in
+                    scrollChartToLatestIfNeeded(scrollProxy, windowCount: windowCount)
+                }
+            }
+        }
+        .frame(height: 185)
+    }
+
+    private var chartViewportMask: some View {
+        Rectangle()
+            .padding(.vertical, -90)
+    }
+
+    @ViewBuilder
+    private func chartScrollAnchors(windowCount: Int, viewportWidth: CGFloat, contentWidth: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            ForEach(0..<max(windowCount, 1), id: \.self) { index in
+                Color.clear
+                    .frame(
+                        width: scrollAnchorWidth(
+                            index: index,
+                            windowCount: windowCount,
+                            viewportWidth: viewportWidth,
+                            contentWidth: contentWidth
+                        ),
+                        height: 1
+                    )
+                    .id(RecentChartScrollMetrics.anchorID(for: index))
+            }
+        }
+        .frame(width: contentWidth, height: 1, alignment: .leading)
+        .allowsHitTesting(false)
+    }
+
+    private func scrollAnchorWidth(
+        index: Int,
+        windowCount: Int,
+        viewportWidth: CGFloat,
+        contentWidth: CGFloat
+    ) -> CGFloat {
+        guard windowCount > 1 else { return max(contentWidth, 1) }
+        if index >= windowCount - 1 {
+            return max(contentWidth - viewportWidth * CGFloat(index), 1)
+        }
+        return max(viewportWidth, 1)
+    }
+
+    @ViewBuilder
+    private func chartPlotCanvas(width: CGFloat, height: CGFloat) -> some View {
+        let plot = CGRect(x: 0, y: 18, width: width, height: max(height - 42, 1))
+        let chartBins = preparedData.bins
+        let step = plot.width / CGFloat(max(chartBins.count - 1, 1))
+        let activeIndex = hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
+        let consumptionSelection = activeConsumptionSelection
+        let plotData = RecentChartPlotData(bins: chartBins, prepared: preparedData, plot: plot, step: step)
+
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [AppTheme.accentBlue.opacity(0.10), Color.clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(width: plot.width, height: plot.height)
+                .offset(x: plot.minX, y: plot.minY)
+
+            if let consumptionSelection {
+                let lowerX = plot.minX + CGFloat(consumptionSelection.startIndex) * step
+                let upperX = plot.minX + CGFloat(consumptionSelection.endIndex) * step
+                Rectangle()
+                    .fill(AppTheme.accentBlue.opacity(0.10))
+                    .frame(width: max(abs(upperX - lowerX), 2), height: plot.height)
+                    .position(x: (lowerX + upperX) / 2, y: plot.midY)
+
+                Path { path in
+                    path.move(to: CGPoint(x: lowerX, y: plot.minY))
+                    path.addLine(to: CGPoint(x: lowerX, y: plot.maxY))
+                }
+                .stroke(AppTheme.accentBlue.opacity(0.55), style: StrokeStyle(lineWidth: 1.2, dash: [4, 5]))
+
+                RecentChartQuotaEstimateOverlay(
+                    selection: consumptionSelection,
+                    onClose: {
+                        consumptionSelectionState.reset()
+                    }
+                )
+                    .position(x: plot.minX + 205, y: plot.minY - 58)
+                    .zIndex(12)
+            }
+
+            ForEach(0..<4, id: \.self) { line in
+                let y = plot.minY + CGFloat(line) * plot.height / 3
+                Path { path in
+                    path.move(to: CGPoint(x: plot.minX, y: y))
+                    path.addLine(to: CGPoint(x: plot.maxX, y: y))
+                }
+                .stroke(AppTheme.grid, style: StrokeStyle(lineWidth: 1, dash: [4, 8]))
+            }
+
+            if showTokens {
+                tokenAreaPath(points: plotData.tokenPoints, plot: plot)
                     .fill(
                         LinearGradient(
-                            colors: [AppTheme.accentBlue.opacity(0.10), Color.clear],
+                            colors: [AppTheme.accentBlue.opacity(0.22), AppTheme.accentBlue.opacity(0.055), Color.clear],
                             startPoint: .top,
                             endPoint: .bottom
                         )
                     )
-                    .frame(width: plot.width, height: plot.height)
-                    .offset(x: plot.minX, y: plot.minY)
 
-                ForEach(0..<4, id: \.self) { line in
-                    let y = plot.minY + CGFloat(line) * plot.height / 3
-                    Path { path in
-                        path.move(to: CGPoint(x: plot.minX, y: y))
-                        path.addLine(to: CGPoint(x: plot.maxX, y: y))
-                    }
-                    .stroke(AppTheme.grid, style: StrokeStyle(lineWidth: 1, dash: [4, 8]))
+                linePath(points: plotData.tokenPoints)
+                    .stroke(AppTheme.accentBlue, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
+            }
+
+            if showCalls {
+                linePath(points: plotData.callPoints)
+                    .stroke(AppTheme.accentOrange, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
+            }
+
+            if showCacheHitRate && preparedData.hasCacheCalls {
+                linePath(points: plotData.cachePoints)
+                    .stroke(AppTheme.accentCyan, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [5, 5]))
+            }
+
+            if showFiveHourQuota && preparedData.hasFiveHourQuota {
+                optionalLinePath(points: plotData.fiveHourQuotaPoints)
+                    .stroke(.purple.opacity(0.92), style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [3, 6]))
+            }
+
+            if showSevenDayQuota && preparedData.hasSevenDayQuota {
+                optionalLinePath(points: plotData.sevenDayQuotaPoints)
+                    .stroke(.green.opacity(0.88), style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [7, 5]))
+            }
+
+            if let activeIndex {
+                let tokenPoint = plotData.tokenPoints[safe: activeIndex] ?? .zero
+                let callPoint = plotData.callPoints[safe: activeIndex] ?? .zero
+                let cachePoint = plotData.cachePoints[safe: activeIndex] ?? .zero
+                let fiveHourPoint = plotData.fiveHourQuotaPoints[safe: activeIndex] ?? nil
+                let sevenDayPoint = plotData.sevenDayQuotaPoints[safe: activeIndex] ?? nil
+
+                Path { path in
+                    path.move(to: CGPoint(x: tokenPoint.x, y: plot.minY))
+                    path.addLine(to: CGPoint(x: tokenPoint.x, y: plot.maxY))
                 }
+                .stroke(AppTheme.accentBlue.opacity(0.28), style: StrokeStyle(lineWidth: 1, dash: [3, 5]))
 
                 if showTokens {
-                    tokenAreaPath(points: plotData.tokenPoints, plot: plot)
-                        .fill(
-                            LinearGradient(
-                                colors: [AppTheme.accentBlue.opacity(0.22), AppTheme.accentBlue.opacity(0.055), Color.clear],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-
-                    linePath(points: plotData.tokenPoints)
-                        .stroke(AppTheme.accentBlue, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
+                    Circle()
+                        .fill(AppTheme.pageBackground)
+                        .frame(width: 9, height: 9)
+                        .overlay(Circle().stroke(AppTheme.accentBlue, lineWidth: Self.hoverRingLineWidth))
+                        .position(tokenPoint)
                 }
 
                 if showCalls {
-                    linePath(points: plotData.callPoints)
-                        .stroke(AppTheme.accentOrange, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
+                    Circle()
+                        .fill(AppTheme.pageBackground)
+                        .frame(width: 8, height: 8)
+                        .overlay(Circle().stroke(AppTheme.accentOrange, lineWidth: Self.hoverRingLineWidth))
+                        .position(callPoint)
                 }
 
-                if showCacheHitRate && preparedData.hasCacheCalls {
-                    linePath(points: plotData.cachePoints)
-                        .stroke(AppTheme.accentCyan, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [5, 5]))
+                if showCacheHitRate && preparedData.cacheBreakdowns[safe: activeIndex]?.calls ?? 0 > 0 {
+                    Circle()
+                        .fill(AppTheme.pageBackground)
+                        .frame(width: 8, height: 8)
+                        .overlay(Circle().stroke(AppTheme.accentCyan, lineWidth: Self.hoverRingLineWidth))
+                        .position(cachePoint)
                 }
 
-                if showFiveHourQuota && preparedData.hasFiveHourQuota {
-                    optionalLinePath(points: plotData.fiveHourQuotaPoints)
-                        .stroke(.purple.opacity(0.92), style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [3, 6]))
+                if showFiveHourQuota, let fiveHourPoint {
+                    Circle()
+                        .fill(AppTheme.pageBackground)
+                        .frame(width: 7, height: 7)
+                        .overlay(Circle().stroke(.purple, lineWidth: Self.hoverRingLineWidth))
+                        .position(fiveHourPoint)
                 }
 
-                if showSevenDayQuota && preparedData.hasSevenDayQuota {
-                    optionalLinePath(points: plotData.sevenDayQuotaPoints)
-                        .stroke(.green.opacity(0.88), style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [7, 5]))
+                if showSevenDayQuota, let sevenDayPoint {
+                    Circle()
+                        .fill(AppTheme.pageBackground)
+                        .frame(width: 7, height: 7)
+                        .overlay(Circle().stroke(.green, lineWidth: Self.hoverRingLineWidth))
+                        .position(sevenDayPoint)
                 }
 
-                if let activeIndex {
-                    let tokenPoint = plotData.tokenPoints[safe: activeIndex] ?? .zero
-                    let callPoint = plotData.callPoints[safe: activeIndex] ?? .zero
-                    let cachePoint = plotData.cachePoints[safe: activeIndex] ?? .zero
-                    let fiveHourPoint = plotData.fiveHourQuotaPoints[safe: activeIndex] ?? nil
-                    let sevenDayPoint = plotData.sevenDayQuotaPoints[safe: activeIndex] ?? nil
+                ChartHoverBubble(
+                    bin: chartBins[activeIndex],
+                    cacheBreakdown: preparedData.cacheBreakdowns[safe: activeIndex],
+                    fiveHourRemaining: preparedData.fiveHourRemainingPercents[safe: activeIndex] ?? nil,
+                    sevenDayRemaining: preparedData.sevenDayRemainingPercents[safe: activeIndex] ?? nil,
+                    bucketInterval: preparedData.bucketInterval,
+                    isHovering: true
+                )
+                    .chartBubblePlacement(tokenX: tokenPoint.x, plot: plot)
+                    .zIndex(10)
+            }
 
-                    Path { path in
-                        path.move(to: CGPoint(x: tokenPoint.x, y: plot.minY))
-                        path.addLine(to: CGPoint(x: tokenPoint.x, y: plot.maxY))
-                    }
-                    .stroke(AppTheme.accentBlue.opacity(0.28), style: StrokeStyle(lineWidth: 1, dash: [3, 5]))
-
-                    if showTokens {
-                        Circle()
-                            .fill(AppTheme.pageBackground)
-                            .frame(width: 9, height: 9)
-                            .overlay(Circle().stroke(AppTheme.accentBlue, lineWidth: Self.hoverRingLineWidth))
-                            .position(tokenPoint)
-                    }
-
-                    if showCalls {
-                        Circle()
-                            .fill(AppTheme.pageBackground)
-                            .frame(width: 8, height: 8)
-                            .overlay(Circle().stroke(AppTheme.accentOrange, lineWidth: Self.hoverRingLineWidth))
-                            .position(callPoint)
-                    }
-
-                    if showCacheHitRate && preparedData.cacheBreakdowns[safe: activeIndex]?.calls ?? 0 > 0 {
-                        Circle()
-                            .fill(AppTheme.pageBackground)
-                            .frame(width: 8, height: 8)
-                            .overlay(Circle().stroke(AppTheme.accentCyan, lineWidth: Self.hoverRingLineWidth))
-                            .position(cachePoint)
-                    }
-
-                    if showFiveHourQuota, let fiveHourPoint {
-                        Circle()
-                            .fill(AppTheme.pageBackground)
-                            .frame(width: 7, height: 7)
-                            .overlay(Circle().stroke(.purple, lineWidth: Self.hoverRingLineWidth))
-                            .position(fiveHourPoint)
-                    }
-
-                    if showSevenDayQuota, let sevenDayPoint {
-                        Circle()
-                            .fill(AppTheme.pageBackground)
-                            .frame(width: 7, height: 7)
-                            .overlay(Circle().stroke(.green, lineWidth: Self.hoverRingLineWidth))
-                            .position(sevenDayPoint)
-                    }
-
-                    ChartHoverBubble(
-                        bin: chartBins[activeIndex],
-                        cacheBreakdown: preparedData.cacheBreakdowns[safe: activeIndex],
-                        fiveHourRemaining: preparedData.fiveHourRemainingPercents[safe: activeIndex] ?? nil,
-                        sevenDayRemaining: preparedData.sevenDayRemainingPercents[safe: activeIndex] ?? nil,
-                        bucketInterval: preparedData.bucketInterval,
-                        isHovering: true
+            HoverTrackingArea(
+                onMove: { location in
+                    let plotLocation = CGPoint(
+                        x: location.x + plot.minX,
+                        y: location.y + plot.minY
                     )
-                        .chartBubblePlacement(tokenX: tokenPoint.x, plot: plot)
-                        .zIndex(10)
+                    hoveredIndex = hoverIndex(at: plotLocation, in: plot, step: step)
+                },
+                onClick: { location in
+                    let plotLocation = CGPoint(
+                        x: location.x + plot.minX,
+                        y: location.y + plot.minY
+                    )
+                    guard let clickedIndex = hoverIndex(at: plotLocation, in: plot, step: step),
+                          preparedData.bins.indices.contains(clickedIndex) else { return }
+                    hoveredIndex = clickedIndex
+                    consumptionSelectionState.click(index: clickedIndex, validCount: preparedData.bins.count)
+                },
+                onExit: {
+                    hoveredIndex = nil
                 }
+            )
+            .frame(width: plot.width, height: plot.height)
+            .position(x: plot.midX, y: plot.midY)
 
-                HoverTrackingArea(
-                    onMove: { location in
-                        let plotLocation = CGPoint(
-                            x: location.x + plot.minX,
-                            y: location.y + plot.minY
-                        )
-                        hoveredIndex = hoverIndex(at: plotLocation, in: plot, step: step)
-                    },
-                    onExit: {
-                        hoveredIndex = nil
-                    }
-                )
-                .frame(width: plot.width, height: plot.height)
-                .position(x: plot.midX, y: plot.midY)
+            ChartTimeMarkers(
+                bins: chartBins,
+                markerIndices: preparedData.markerIndices,
+                range: preparedData.range,
+                plot: plot
+            )
+        }
+        .frame(width: width, height: height)
+    }
 
-                ChartTimeMarkers(
-                    bins: chartBins,
-                    markerIndices: preparedData.markerIndices,
-                    range: preparedData.range,
-                    plot: plot
-                )
+    private func scrollChart(by direction: RecentChartScrollDirection, windowCount: Int, proxy: ScrollViewProxy) {
+        guard windowCount > 1 else { return }
+        let current = min(scrollWindowIndex ?? windowCount - 1, windowCount - 1)
+        let target = RecentChartScrollMetrics.shiftedWindowIndex(
+            current: current,
+            direction: direction,
+            windowCount: windowCount
+        )
+        guard target != current else { return }
+        scrollWindowIndex = target
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.18)) {
+                if target >= windowCount - 1 {
+                    proxy.scrollTo(RecentChartScrollMetrics.trailingAnchorID, anchor: .trailing)
+                } else {
+                    proxy.scrollTo(RecentChartScrollMetrics.anchorID(for: target), anchor: .leading)
+                }
             }
         }
-        .frame(height: 185)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(selectedRange.title) 曲线图")
-        .accessibilityValue(accessibilitySummary)
+    }
+
+    private func scrollChartToLatestIfNeeded(_ proxy: ScrollViewProxy, windowCount: Int) {
+        guard preparedData.bins.count > 1 else { return }
+        scrollWindowIndex = max(windowCount - 1, 0)
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.18)) {
+                proxy.scrollTo(RecentChartScrollMetrics.trailingAnchorID, anchor: .trailing)
+            }
+        }
     }
 
     var body: some View {
@@ -373,6 +697,7 @@ struct RecentUsageChart: View {
         .frame(maxWidth: 980)
         .onAppear(perform: refreshPreparedData)
         .onChange(of: bins) { _, _ in
+            clampConsumptionSelection()
             refreshPreparedData()
         }
         .onChange(of: hourlyBins) { _, _ in
@@ -392,6 +717,7 @@ struct RecentUsageChart: View {
         }
         .onChange(of: selectedRangeRaw) { _, _ in
             hoveredIndex = nil
+            consumptionSelectionState.reset()
             refreshPreparedData()
         }
     }
@@ -430,6 +756,94 @@ struct RecentUsageChart: View {
             quotaRecentBins: quotaRecentBins,
             quotaHourlyBins: quotaHourlyBins
         )
+        clampConsumptionSelection()
     }
 
+    private var selectedQuotaEstimateModel: OfficialAPIPriceModel {
+        OfficialAPIPriceModel(rawValue: quotaEstimateModelRaw) ?? .gpt55
+    }
+
+    private var selectedQuotaEstimateModelBinding: Binding<OfficialAPIPriceModel> {
+        Binding(
+            get: { selectedQuotaEstimateModel },
+            set: { quotaEstimateModelRaw = $0.rawValue }
+        )
+    }
+
+    private var activeConsumptionSelection: QuotaConsumptionSelection? {
+        guard let startIndex = consumptionSelectionState.startIndex,
+              !preparedData.bins.isEmpty else { return nil }
+        let fallbackEnd = preparedData.bins.index(before: preparedData.bins.endIndex)
+        let validHover = hoveredIndex.flatMap { preparedData.bins.indices.contains($0) ? $0 : nil }
+        let endIndex = consumptionSelectionState.activeEndIndex(
+            hoveredIndex: validHover,
+            fallbackEndIndex: fallbackEnd
+        ) ?? fallbackEnd
+        return preparedData.quotaConsumptionSelection(
+            startIndex: startIndex,
+            endIndex: endIndex,
+            priceCard: .officialAPI(selectedQuotaEstimateModel)
+        )
+    }
+
+    private func clampConsumptionSelection() {
+        consumptionSelectionState.clamp(validCount: preparedData.bins.count)
+    }
+}
+
+private struct RecentChartScrollButton: View {
+    let direction: RecentChartScrollDirection
+    let isDisabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: direction.systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isDisabled ? .secondary.opacity(0.45) : AppTheme.accentBlue)
+                .frame(width: 24, height: 54)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(isDisabled ? AppTheme.solidControlBackground.opacity(0.55) : AppTheme.accentBlue.opacity(0.10))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(isDisabled ? AppTheme.border.opacity(0.45) : AppTheme.accentBlue.opacity(0.28), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .accessibilityLabel(direction.accessibilityLabel)
+    }
+}
+
+private struct RecentChartEdgeFadeOverlay: View {
+    let state: RecentChartEdgeFadeState
+
+    var body: some View {
+        ZStack {
+            if state.showsLeft {
+                edgeFade(start: AppTheme.pageBackground.opacity(0.96), end: .clear)
+                    .frame(width: 26)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if state.showsRight {
+                edgeFade(start: .clear, end: AppTheme.pageBackground.opacity(0.96))
+                    .frame(width: 26)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func edgeFade(start: Color, end: Color) -> some View {
+        LinearGradient(
+            colors: [start, end],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+    }
 }

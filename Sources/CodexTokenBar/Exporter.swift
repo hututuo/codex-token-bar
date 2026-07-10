@@ -59,7 +59,9 @@ struct ExportSnapshotView: View {
                     dataSourceLabel: "本地数据",
                     dataSourceOrigin: "导出",
                     isRefreshing: false,
+                    unreadThreadCount: 0,
                     onRefresh: {},
+                    onMarkAllRead: {},
                     onChangeDirectory: {},
                     onOpenProviderSync: {},
                     showingInterfaceScaleMenu: .constant(false),
@@ -67,7 +69,7 @@ struct ExportSnapshotView: View {
                     interfaceScaleManualMultiplier: .constant(InterfaceScaleSettings.defaultManualMultiplier),
                     showingResetCreditDetails: .constant(false)
                 )
-                StatStrip(stats: snapshot.stats)
+                StatStrip(snapshot: snapshot)
                 ActivitySection(
                     dailyUsage: snapshot.dailyUsage,
                     cacheDaily: snapshot.cacheUsage.daily,

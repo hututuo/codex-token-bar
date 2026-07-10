@@ -381,7 +381,7 @@ extension FloatingTokenPanelController {
         else {
             return nil
         }
-        return (value as! AXUIElement)
+        return unsafeDowncast(value, to: AXUIElement.self)
     }
 
     func accessibilityFrame(of window: AXUIElement) -> NSRect? {
@@ -396,8 +396,8 @@ extension FloatingTokenPanelController {
         else {
             return nil
         }
-        let positionAXValue = positionValue as! AXValue
-        let sizeAXValue = sizeValue as! AXValue
+        let positionAXValue = unsafeDowncast(positionValue, to: AXValue.self)
+        let sizeAXValue = unsafeDowncast(sizeValue, to: AXValue.self)
         var topLeft = CGPoint.zero
         var size = CGSize.zero
         guard AXValueGetValue(positionAXValue, .cgPoint, &topLeft),

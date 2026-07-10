@@ -176,7 +176,11 @@ enum TaskCompletionScanner {
             switch payloadType {
             case "task_started":
                 guard let turnID = payload["turn_id"] as? String else { break }
-                let startedAt = number(payload["started_at"]) ?? timestamp(object["timestamp"] as? String, dateParsers: dateParsers)
+                guard let startedAt = number(payload["started_at"])
+                    ?? timestamp(object["timestamp"] as? String, dateParsers: dateParsers)
+                else {
+                    break
+                }
                 state.activeTurns[turnID] = TaskCompletionTurnState(startedAt: startedAt, lastUserText: state.lastUserText)
             case "user_message":
                 state.lastUserText = (payload["message"] as? String ?? "").trimmedForNotification
@@ -187,7 +191,11 @@ enum TaskCompletionScanner {
                 break
             case "task_complete":
                 guard let turnID = payload["turn_id"] as? String else { break }
-                let completedAt = number(payload["completed_at"]) ?? timestamp(object["timestamp"] as? String, dateParsers: dateParsers)
+                guard let completedAt = number(payload["completed_at"])
+                    ?? timestamp(object["timestamp"] as? String, dateParsers: dateParsers)
+                else {
+                    break
+                }
                 let duration = (number(payload["duration_ms"]).map { $0 / 1000 })
                     ?? state.activeTurns[turnID].map { max(0, completedAt - $0.startedAt) }
                     ?? 0
@@ -274,10 +282,10 @@ enum TaskCompletionScanner {
         return nil
     }
 
-    private static func timestamp(_ raw: String?, dateParsers: TaskCompletionDateParsers) -> TimeInterval {
+    private static func timestamp(_ raw: String?, dateParsers: TaskCompletionDateParsers) -> TimeInterval? {
         guard let raw,
               let date = dateParsers.date(from: raw) else {
-            return Date().timeIntervalSince1970
+            return nil
         }
         return date.timeIntervalSince1970
     }

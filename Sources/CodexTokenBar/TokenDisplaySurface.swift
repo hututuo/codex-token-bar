@@ -1,10 +1,6 @@
 import AppKit
 import SwiftUI
 
-private enum TokenDisplayLayout {
-    static let metricOutset: CGFloat = 9
-}
-
 enum TokenDisplayLockState {
     case unlocked
     case locked
@@ -32,10 +28,73 @@ private struct TokenDisplayScaleKey: EnvironmentKey {
     static let defaultValue: CGFloat = 1
 }
 
+private struct TokenDisplayTextPaletteKey: EnvironmentKey {
+    static let defaultValue = FloatingPanelReadableTextPalette(backgroundLuminance: 0.88)
+}
+
+private struct TokenDisplayRowTextPalettesKey: EnvironmentKey {
+    static let defaultValue: [FloatingPanelContentGroup: FloatingPanelReadableTextPalette] = [:]
+}
+
+private struct TokenDisplayRadarActionTextPaletteKey: EnvironmentKey {
+    static let defaultValue: FloatingPanelReadableTextPalette? = nil
+}
+
+private struct TokenDisplayRadarModelTextPaletteKey: EnvironmentKey {
+    static let defaultValue: FloatingPanelReadableTextPalette? = nil
+}
+
+private struct TokenDisplayMetricTextPalettesKey: EnvironmentKey {
+    static let defaultValue: [FloatingPanelMetricTextRegion: FloatingPanelReadableTextPalette] = [:]
+}
+
+private struct TokenDisplayEmbeddedUsageStatusTextPaletteKey: EnvironmentKey {
+    static let defaultValue: FloatingPanelReadableTextPalette? = nil
+}
+
+private struct TokenDisplayStandaloneUsageStatusTextPaletteKey: EnvironmentKey {
+    static let defaultValue: FloatingPanelReadableTextPalette? = nil
+}
+
 extension EnvironmentValues {
     var tokenDisplayScale: CGFloat {
         get { self[TokenDisplayScaleKey.self] }
         set { self[TokenDisplayScaleKey.self] = newValue }
+    }
+
+    var tokenDisplayTextPalette: FloatingPanelReadableTextPalette {
+        get { self[TokenDisplayTextPaletteKey.self] }
+        set { self[TokenDisplayTextPaletteKey.self] = newValue }
+    }
+
+    var tokenDisplayRowTextPalettes: [FloatingPanelContentGroup: FloatingPanelReadableTextPalette] {
+        get { self[TokenDisplayRowTextPalettesKey.self] }
+        set { self[TokenDisplayRowTextPalettesKey.self] = newValue }
+    }
+
+    var tokenDisplayRadarActionTextPalette: FloatingPanelReadableTextPalette? {
+        get { self[TokenDisplayRadarActionTextPaletteKey.self] }
+        set { self[TokenDisplayRadarActionTextPaletteKey.self] = newValue }
+    }
+
+    var tokenDisplayRadarModelTextPalette: FloatingPanelReadableTextPalette? {
+        get { self[TokenDisplayRadarModelTextPaletteKey.self] }
+        set { self[TokenDisplayRadarModelTextPaletteKey.self] = newValue }
+    }
+
+    var tokenDisplayMetricTextPalettes: [FloatingPanelMetricTextRegion: FloatingPanelReadableTextPalette] {
+        get { self[TokenDisplayMetricTextPalettesKey.self] }
+        set { self[TokenDisplayMetricTextPalettesKey.self] = newValue }
+    }
+
+    var tokenDisplayEmbeddedUsageStatusTextPalette: FloatingPanelReadableTextPalette? {
+        get { self[TokenDisplayEmbeddedUsageStatusTextPaletteKey.self] }
+        set { self[TokenDisplayEmbeddedUsageStatusTextPaletteKey.self] = newValue }
+    }
+
+    var tokenDisplayStandaloneUsageStatusTextPalette: FloatingPanelReadableTextPalette? {
+        get { self[TokenDisplayStandaloneUsageStatusTextPaletteKey.self] }
+        set { self[TokenDisplayStandaloneUsageStatusTextPaletteKey.self] = newValue }
     }
 }
 
@@ -92,8 +151,31 @@ struct TokenDisplaySnapshot {
     let consumedTokens: Int
     let todayTokens: Int
     let todayRequests: Int
+    let usagePrecision: DashboardUsagePrecision
     let quota: AccountQuotaSnapshot
     let updatedAt: Date
+
+    init(
+        title: String,
+        status: String,
+        rate: Double,
+        consumedTokens: Int,
+        todayTokens: Int,
+        todayRequests: Int,
+        usagePrecision: DashboardUsagePrecision = .precise,
+        quota: AccountQuotaSnapshot,
+        updatedAt: Date
+    ) {
+        self.title = title
+        self.status = status
+        self.rate = rate
+        self.consumedTokens = consumedTokens
+        self.todayTokens = todayTokens
+        self.todayRequests = todayRequests
+        self.usagePrecision = usagePrecision
+        self.quota = quota
+        self.updatedAt = updatedAt
+    }
 
     @MainActor
     static func make(store: CodexUsageStore, monitor: LiveRateMonitor, quota: AccountQuotaStore) -> TokenDisplaySnapshot {
@@ -108,9 +190,30 @@ struct TokenDisplaySnapshot {
             consumedTokens: store.snapshot.stats.totalTokens,
             todayTokens: todayUsage?.tokens ?? 0,
             todayRequests: todayUsage?.calls ?? 0,
+            usagePrecision: store.snapshot.usagePrecision,
             quota: quota.snapshot,
             updatedAt: max(store.snapshot.generatedAt, max(monitor.totalSnapshot.updatedAt, quota.snapshot.updatedAt ?? .distantPast))
         )
+    }
+
+    var hasPreciseTokenUsage: Bool {
+        usagePrecision.hasPreciseTokenUsage
+    }
+
+    var consumedTokensText: String {
+        hasPreciseTokenUsage ? consumedTokens.abbreviatedTokens : "待读取"
+    }
+
+    var todayTokensText: String {
+        hasPreciseTokenUsage ? todayTokens.abbreviatedTokens : "待读取"
+    }
+
+    var todayRequestsText: String {
+        hasPreciseTokenUsage ? "\(todayRequests)" : "待读取"
+    }
+
+    var metadataOnlyStatusText: String? {
+        hasPreciseTokenUsage ? nil : "仅会话元数据"
     }
 
     var statusBarTitle: String {
@@ -124,6 +227,14 @@ struct TokenDisplaySnapshot {
     }
 
     var compactUsageStatus: String {
+        usageStatus(resetCreditSuffix: quota.compactResetCreditRateBarSuffix)
+    }
+
+    var standaloneUsageStatus: String {
+        usageStatus(resetCreditSuffix: quota.compactResetCreditStandaloneSuffix)
+    }
+
+    private func usageStatus(resetCreditSuffix: String) -> String {
         guard quota.isAvailable else {
             if quota.status.contains("失败") {
                 return "读取失败"
@@ -132,47 +243,79 @@ struct TokenDisplaySnapshot {
         }
 
         if let pace = quota.sevenDayPaceStatus {
-            return "\(pace.compactTitle)(\(pace.compactDetail))\(quota.compactResetCreditCountSuffix)"
+            return "\(pace.compactTitle)(\(pace.compactDetail))\(resetCreditSuffix)"
         }
 
         if let sevenDay = quota.sevenDay {
-            return "7d剩\(sevenDay.remainingPercent)%\(quota.compactResetCreditCountSuffix)"
+            return "7d剩\(sevenDay.remainingPercent)%\(resetCreditSuffix)"
         }
         if let fiveHour = quota.fiveHour {
-            return "5h剩\(fiveHour.remainingPercent)%\(quota.compactResetCreditCountSuffix)"
+            return "5h剩\(fiveHour.remainingPercent)%\(resetCreditSuffix)"
         }
-        return "额度已读\(quota.compactResetCreditCountSuffix)"
+        return "额度已读\(resetCreditSuffix)"
     }
 }
 
 struct TokenDisplayCard: View {
     let snapshot: TokenDisplaySnapshot
+    let radarSnapshot: CodexRadarSnapshot?
+    var radarPresentation: CodexRadarPresentationState? = nil
+    let visibility: FloatingPanelContentVisibility
     let onClose: (() -> Void)?
     var lockState: TokenDisplayLockState? = nil
     var lockTargetDescription: String? = nil
     var onToggleLock: (() -> Void)? = nil
     @Environment(\.tokenDisplayScale) private var displayScale
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
+    @Environment(\.tokenDisplayRowTextPalettes) private var rowTextPalettes
+    @Environment(\.tokenDisplayMetricTextPalettes) private var metricTextPalettes
+    @Environment(\.tokenDisplayEmbeddedUsageStatusTextPalette) private var embeddedUsageStatusTextPalette
+    @Environment(\.tokenDisplayStandaloneUsageStatusTextPalette) private var standaloneUsageStatusTextPalette
 
     var body: some View {
         GeometryReader { proxy in
-            let rowSpacing = 4.scaled(by: displayScale)
-            let rateRowHeight = 30.scaled(by: displayScale)
-            let metricRowHeight = 13.scaled(by: displayScale)
-            let quotaRowHeight = 16.5.scaled(by: displayScale)
-            let fixedContentHeight = rateRowHeight + metricRowHeight + quotaRowHeight + rowSpacing * 2
-            let topInset = max(0, (proxy.size.height - fixedContentHeight) / 2)
+            let radarPresentation = resolvedRadarPresentation
+            let presentation = FloatingPanelPresentationModel(
+                snapshot: snapshot,
+                visibility: visibility,
+                radarPresentation: radarPresentation
+            )
+            let rowSpacing = FloatingTokenPanelMetrics.rowSpacing.scaled(by: displayScale)
+            let rateRowHeight = FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale)
+            let usageStatusRowHeight = FloatingTokenPanelMetrics.usageStatusRowHeight.scaled(by: displayScale)
+            let metricRowHeight = FloatingTokenPanelMetrics.metricRowHeight.scaled(by: displayScale)
+            let quotaRowHeight = FloatingTokenPanelMetrics.quotaRowHeight.scaled(by: displayScale)
+            let radarRowHeight = FloatingTokenPanelMetrics.radarRowHeight.scaled(by: displayScale)
+            let topSafetyInset = presentation.needsTopSafetyInset ? FloatingTokenPanelMetrics.singleElementTopInset.scaled(by: displayScale) : 0
 
             VStack(alignment: .center, spacing: rowSpacing) {
-                rateRow
-                    .frame(height: rateRowHeight, alignment: .center)
-
-                metricRow
-                    .frame(height: metricRowHeight, alignment: .center)
-
-                TokenQuotaMiniStrip(snapshot: snapshot.quota)
-                    .frame(height: quotaRowHeight, alignment: .center)
+                ForEach(presentation.rows) { row in
+                    switch row.group {
+                    case .rateAndBar:
+                        rateRow(usageStatus: presentation.rateBarUsageStatus)
+                            .environment(\.tokenDisplayTextPalette, palette(for: .rateAndBar))
+                            .frame(height: rateRowHeight, alignment: .center)
+                    case .usageStatus:
+                        TokenDisplayUsageStatusLine(text: presentation.standaloneUsageStatus ?? snapshot.standaloneUsageStatus)
+                            .environment(\.tokenDisplayTextPalette, standaloneUsageStatusTextPalette ?? palette(for: .usageStatus))
+                            .frame(height: usageStatusRowHeight, alignment: .center)
+                    case .metrics:
+                        metricRow
+                            .environment(\.tokenDisplayTextPalette, palette(for: .metrics))
+                            .frame(height: metricRowHeight, alignment: .center)
+                    case .quota:
+                        TokenQuotaMiniStrip(snapshot: snapshot.quota)
+                            .environment(\.tokenDisplayTextPalette, palette(for: .quota))
+                            .frame(height: quotaRowHeight, alignment: .center)
+                    case .radar:
+                        TokenDisplayRadarStrip(presentation: radarPresentation)
+                            .environment(\.tokenDisplayTextPalette, palette(for: .radar))
+                            .frame(height: radarRowHeight, alignment: .center)
+                    }
+                }
             }
-            .padding(.top, topInset)
+            .frame(width: proxy.size.width, height: max(0, proxy.size.height - topSafetyInset), alignment: .center)
+            .padding(.top, topSafetyInset)
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
             .overlay(alignment: .topLeading) {
                 cardLockButton
@@ -184,51 +327,47 @@ struct TokenDisplayCard: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Codex Token Bar 悬浮窗")
-        .accessibilityValue(accessibilitySummary)
+        .accessibilityValue(FloatingPanelPresentationModel(
+            snapshot: snapshot,
+            visibility: visibility,
+            radarPresentation: resolvedRadarPresentation
+        ).accessibilityValue)
     }
 
-    private var accessibilitySummary: String {
-        var parts = [
-            String(format: "实时速率 %.1f token 每秒", snapshot.rate),
-            "累计 \(snapshot.consumedTokens.abbreviatedTokens) token",
-            "今天 \(snapshot.todayTokens.abbreviatedTokens) token",
-            "今天 \(snapshot.todayRequests) 次请求",
-            snapshot.compactUsageStatus
-        ]
-        if let fiveHour = snapshot.quota.fiveHour {
-            parts.append("5 小时额度剩余 \(fiveHour.remainingPercent)%，\(fiveHour.accessibleResetText) 重置")
-        }
-        if let sevenDay = snapshot.quota.sevenDay {
-            parts.append("7 天额度剩余 \(sevenDay.remainingPercent)%，\(sevenDay.accessibleResetText) 重置")
-        }
-        return parts.joined(separator: "；")
+    private var resolvedRadarPresentation: CodexRadarPresentationState {
+        radarPresentation ?? CodexRadarPresentationState(snapshot: radarSnapshot)
     }
 
-    private var rateRow: some View {
-        HStack(alignment: .center, spacing: 9.scaled(by: displayScale)) {
+    private func palette(for group: FloatingPanelContentGroup) -> FloatingPanelReadableTextPalette {
+        rowTextPalettes[group] ?? textPalette
+    }
+
+    private func metricPalette(for region: FloatingPanelMetricTextRegion) -> FloatingPanelReadableTextPalette {
+        metricTextPalettes[region] ?? palette(for: .metrics)
+    }
+
+    private func rateRow(usageStatus: String?) -> some View {
+        HStack(alignment: .center, spacing: 8.scaled(by: displayScale)) {
             HStack(alignment: .lastTextBaseline, spacing: 4.scaled(by: displayScale)) {
                 Text(String(format: "%.1f", snapshot.rate))
                     .font(.system(size: 20.scaled(by: displayScale), weight: .semibold, design: .rounded))
+                    .foregroundStyle(textPalette.primaryColor)
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                     .frame(width: 64.scaled(by: displayScale), alignment: .leading)
-                    .offset(x: 3.scaled(by: displayScale), y: 3.scaled(by: displayScale))
+                    .offset(x: 3.scaled(by: displayScale))
                 Text("tok/s")
                     .font(.system(size: 8.6.scaled(by: displayScale), weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .offset(y: 3.5.scaled(by: displayScale))
+                    .foregroundStyle(textPalette.secondaryColor)
             }
-            .frame(height: 30.scaled(by: displayScale), alignment: .center)
+            .frame(height: FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale), alignment: .center)
 
             TokenDisplayRateBar(
                 rate: snapshot.rate,
-                usageStatus: snapshot.compactUsageStatus,
-                lockState: nil,
-                lockTargetDescription: nil,
-                onToggleLock: nil,
-                onClose: nil
+                usageStatus: usageStatus
             )
+            .environment(\.tokenDisplayEmbeddedUsageStatusTextPalette, embeddedUsageStatusTextPalette)
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .frame(maxWidth: .infinity, alignment: .center)
@@ -240,7 +379,7 @@ struct TokenDisplayCard: View {
             Button(action: onToggleLock) {
                 Image(systemName: lockState.systemImage)
                     .font(.system(size: 7.8.scaled(by: displayScale), weight: .bold))
-                    .foregroundStyle(.primary.opacity(0.9))
+                    .foregroundStyle(textPalette.primaryColor)
                     .frame(width: 26.scaled(by: displayScale), height: 22.scaled(by: displayScale), alignment: .center)
                     .contentShape(Rectangle())
             }
@@ -258,7 +397,7 @@ struct TokenDisplayCard: View {
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 7.8.scaled(by: displayScale), weight: .bold))
-                    .foregroundStyle(.secondary.opacity(0.78))
+                    .foregroundStyle(textPalette.secondaryColor)
                     .frame(width: 22.scaled(by: displayScale), height: 20.scaled(by: displayScale), alignment: .center)
                     .contentShape(Rectangle())
             }
@@ -281,11 +420,18 @@ struct TokenDisplayCard: View {
 
     private var metricRow: some View {
         HStack(spacing: 6.scaled(by: displayScale)) {
-            TokenDisplayMetric(label: "总", value: snapshot.consumedTokens.abbreviatedTokens)
-                .offset(x: -TokenDisplayLayout.metricOutset.scaled(by: displayScale))
-            TokenDisplayMetric(label: "今", value: snapshot.todayTokens.abbreviatedTokens)
-            TokenDisplayMetric(label: "次", value: "\(snapshot.todayRequests)")
-                .offset(x: TokenDisplayLayout.metricOutset.scaled(by: displayScale))
+            TokenDisplayMetric(label: "总", value: snapshot.consumedTokensText)
+                .environment(\.tokenDisplayTextPalette, metricPalette(for: .total))
+                .offset(x: -FloatingTokenPanelMetrics.metricOutset.scaled(by: displayScale))
+            TokenDisplayMetric(label: "今", value: snapshot.todayTokensText)
+                .environment(\.tokenDisplayTextPalette, metricPalette(for: .today))
+                .offset(x: FloatingTokenPanelMetrics.metricTodayNudge.scaled(by: displayScale))
+            TokenDisplayMetric(label: "次", value: snapshot.todayRequestsText)
+                .environment(\.tokenDisplayTextPalette, metricPalette(for: .requests))
+                .offset(
+                    x: FloatingTokenPanelMetrics.metricOutset.scaled(by: displayScale)
+                        + FloatingTokenPanelMetrics.metricRequestsNudge(for: snapshot.todayRequests).scaled(by: displayScale)
+                )
         }
         .frame(maxWidth: .infinity, alignment: .center)
     }

@@ -3,6 +3,7 @@ import SwiftUI
 struct FloatingPanelCloseButton: View {
     let scale: CGFloat
     let action: () -> Void
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     var body: some View {
         Button(action: action) {
@@ -11,7 +12,7 @@ struct FloatingPanelCloseButton: View {
                     .frame(width: 24 * scale, height: 24 * scale)
                 Image(systemName: "xmark")
                     .font(.system(size: 7.8 * scale, weight: .bold))
-                    .foregroundStyle(Color.black.opacity(0.88))
+                    .foregroundStyle(textPalette.primaryColor)
                     .frame(width: 10 * scale, height: 10 * scale, alignment: .center)
                     .padding(.trailing, 5.5 * scale)
                     .padding(.top, 4.5 * scale)
@@ -30,6 +31,7 @@ struct FloatingPanelLockButton: View {
     let targetDescription: String?
     let scale: CGFloat
     let action: () -> Void
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     var body: some View {
         Button(action: action) {
@@ -38,7 +40,7 @@ struct FloatingPanelLockButton: View {
                     .frame(width: 24 * scale, height: 24 * scale)
                 Image(systemName: state.systemImage)
                     .font(.system(size: 7.8 * scale, weight: .bold))
-                    .foregroundStyle(Color.black.opacity(0.88))
+                    .foregroundStyle(textPalette.primaryColor)
                     .frame(width: 10 * scale, height: 10 * scale, alignment: .center)
                     .padding(.leading, 5.5 * scale)
                     .padding(.top, 4.5 * scale)

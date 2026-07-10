@@ -143,8 +143,10 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         store: CodexUsageStore,
         monitor: LiveRateMonitor,
         quota: AccountQuotaStore,
+        radar: CodexRadarStore,
         taskCompletionMonitor: TaskCompletionMonitor,
         scale: Double,
+        visibility: FloatingPanelContentVisibility,
         isLocked: Bool,
         onToggleLock: @escaping () -> Void,
         onClose: @escaping () -> Void
@@ -159,7 +161,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                     store: store,
                     monitor: monitor,
                     quota: quota,
+                    radar: radar,
                     taskCompletionMonitor: taskCompletionMonitor,
+                    visibility: visibility,
                     isLocked: isLocked,
                     lockTargetDescription: lockTargetDescription,
                     onToggleLock: { [weak self] in
@@ -170,7 +174,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                     }
                 )
             )
-            let initialSize = FloatingTokenPanelMetrics.size(scale: scale)
+            let initialSize = FloatingTokenPanelMetrics.size(scale: scale, visibility: visibility)
             hostingController.view.frame = NSRect(origin: .zero, size: initialSize)
             hostingController.view.autoresizingMask = [.width, .height]
 
@@ -204,7 +208,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 store: store,
                 monitor: monitor,
                 quota: quota,
+                radar: radar,
                 taskCompletionMonitor: taskCompletionMonitor,
+                visibility: visibility,
                 isLocked: isLocked,
                 lockTargetDescription: lockTargetDescription,
                 onToggleLock: { [weak self] in
@@ -217,16 +223,16 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         }
 
         let wasPresented = isPresented
-        updateSize(scale: scale)
+        updateSize(scale: scale, visibility: visibility)
         updateLockState(isLocked, force: !wasPresented)
         panel?.orderFrontRegardless()
         isPresented = true
     }
 
-    func updateSize(scale: Double) {
+    func updateSize(scale: Double, visibility: FloatingPanelContentVisibility) {
         guard let panel else { return }
         isProgrammaticPanelMove = true
-        resizePanel(panel, scale: scale)
+        resizePanel(panel, scale: scale, visibility: visibility)
         panel.contentView?.layer?.cornerRadius = FloatingTokenPanelMetrics.cornerRadius(scale: scale)
         saveLockedOrigin(panel.frame.origin)
         refreshLockedAnchorOffsetForCurrentFrame()
@@ -276,7 +282,9 @@ struct FloatingTokenPanelView: View {
     @ObservedObject var store: CodexUsageStore
     @ObservedObject var monitor: LiveRateMonitor
     @ObservedObject var quota: AccountQuotaStore
+    @ObservedObject var radar: CodexRadarStore
     @ObservedObject var taskCompletionMonitor: TaskCompletionMonitor
+    let visibility: FloatingPanelContentVisibility
     let isLocked: Bool
     var lockTargetDescription: String?
     let onToggleLock: () -> Void
@@ -288,6 +296,7 @@ struct FloatingTokenPanelView: View {
     @AppStorage(FloatingPanelAppearance.styleKey) private var floatingPanelGradientStyle = FloatingPanelAppearance.defaultStyle
     @AppStorage(FloatingPanelAppearance.unreadEffectKey) private var floatingPanelUnreadEffect = FloatingPanelAppearance.defaultUnreadEffect
     @AppStorage(FloatingPanelAppearance.unreadPreviewUntilKey) private var floatingPanelUnreadPreviewUntil = 0.0
+    @AppStorage(FloatingPanelAppearance.textWhiteOverrideKey) private var floatingPanelTextWhiteOverride = FloatingPanelAppearance.defaultTextWhiteOverride
     let onClose: () -> Void
 
     var body: some View {
@@ -298,7 +307,7 @@ struct FloatingTokenPanelView: View {
             && floatingPanelUnreadPreviewUntil > Date.timeIntervalSinceReferenceDate
         let shouldShowUnreadEffect = unreadEffect != .off && (unreadCount > 0 || isPreviewingUnreadEffect)
         let scale = FloatingTokenPanelMetrics.clampedScale(floatingPanelScale)
-        let size = FloatingTokenPanelMetrics.size(scale: floatingPanelScale)
+        let size = FloatingTokenPanelMetrics.size(scale: floatingPanelScale, visibility: visibility)
         let cornerRadius = FloatingTokenPanelMetrics.cornerRadius(scale: floatingPanelScale)
         let appearance = FloatingPanelAppearance(
             startHex: floatingPanelGradientStartHex,
@@ -306,6 +315,26 @@ struct FloatingTokenPanelView: View {
             directionRaw: floatingPanelGradientDirection,
             styleRaw: floatingPanelGradientStyle
         )
+        let textTone = FloatingPanelTextTonePreference.mode(for: floatingPanelTextWhiteOverride)
+        let automaticTextPalettes = appearance.textPalettes(
+            panelSize: size,
+            scale: scale,
+            opacity: floatingPanelOpacity,
+            automaticStrength: textTone.automaticStrength,
+            visibility: visibility
+        )
+        let overridePalette = textTone.manualWhite.map(FloatingPanelReadableTextPalette.init(fixedWhite:))
+        let baseTextPalette = overridePalette ?? automaticTextPalettes.controlPalette
+        let rowTextPalettes = overridePalette.map { palette in
+            Dictionary(uniqueKeysWithValues: FloatingPanelContentGroup.allCases.map { ($0, palette) })
+        } ?? automaticTextPalettes.rowPalettes
+        let metricTextPalettes = overridePalette.map { palette in
+            Dictionary(uniqueKeysWithValues: FloatingPanelMetricTextRegion.allCases.map { ($0, palette) })
+        } ?? automaticTextPalettes.metricPalettes
+        let embeddedUsageStatusTextPalette = overridePalette ?? automaticTextPalettes.embeddedUsageStatusPalette
+        let standaloneUsageStatusTextPalette = overridePalette ?? automaticTextPalettes.standaloneUsageStatusPalette
+        let radarActionTextPalette = overridePalette ?? automaticTextPalettes.radarActionPalette
+        let radarModelTextPalette = overridePalette ?? automaticTextPalettes.radarModelPalette
 
         return ZStack {
             TokenGlassBackground(
@@ -325,6 +354,15 @@ struct FloatingTokenPanelView: View {
             }
             TokenDisplayCard(
                 snapshot: TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota),
+                radarSnapshot: radar.snapshot,
+                radarPresentation: CodexRadarPresentationState(
+                    snapshot: radar.snapshot,
+                    status: radar.status,
+                    diagnostics: radar.diagnostics,
+                    staleDataDisplayed: radar.staleDataDisplayed,
+                    feedStaleDataDisplayed: radar.feedStaleDataDisplayed
+                ),
+                visibility: visibility,
                 onClose: nil,
                 lockState: nil,
                 lockTargetDescription: nil,
@@ -352,6 +390,13 @@ struct FloatingTokenPanelView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .zIndex(4)
         }
+        .environment(\.tokenDisplayTextPalette, baseTextPalette)
+        .environment(\.tokenDisplayRowTextPalettes, rowTextPalettes)
+        .environment(\.tokenDisplayMetricTextPalettes, metricTextPalettes)
+        .environment(\.tokenDisplayEmbeddedUsageStatusTextPalette, embeddedUsageStatusTextPalette)
+        .environment(\.tokenDisplayStandaloneUsageStatusTextPalette, standaloneUsageStatusTextPalette)
+        .environment(\.tokenDisplayRadarActionTextPalette, radarActionTextPalette)
+        .environment(\.tokenDisplayRadarModelTextPalette, radarModelTextPalette)
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .animation(.easeInOut(duration: 0.18), value: unreadCount > 0)
@@ -366,10 +411,10 @@ struct FloatingTokenPanelView: View {
 }
 
 @MainActor
-func resizePanel(_ panel: NSPanel, scale: Double) {
+func resizePanel(_ panel: NSPanel, scale: Double, visibility: FloatingPanelContentVisibility) {
     let previousFrame = panel.frame
     let topLeft = NSPoint(x: previousFrame.minX, y: previousFrame.maxY)
-    let targetSize = FloatingTokenPanelMetrics.size(scale: scale)
+    let targetSize = FloatingTokenPanelMetrics.size(scale: scale, visibility: visibility)
     let targetFrame = anchoredPanelFrame(for: panel, size: targetSize, topLeft: topLeft)
     panel.contentViewController?.view.frame = NSRect(origin: .zero, size: targetSize)
     panel.contentMinSize = targetSize

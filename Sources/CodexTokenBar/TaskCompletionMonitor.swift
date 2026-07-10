@@ -12,12 +12,14 @@ final class TaskCompletionMonitor: ObservableObject {
 
     private let pollInterval: TimeInterval = 2.0
     private let liveSeedWindow: TimeInterval = 30.0
+    private let defaults: UserDefaults
     private var dataSource: CodexDataSource?
     private var fileStates: [String: TaskCompletionFileState] = [:]
     private var completedEventIDs: Set<String> = []
     private var completedEventIDOrder: [String] = []
     private var completedTaskThreadIDs: [String: String] = [:]
     private var unreadThreadState = CodexUnreadThreadState()
+    private var readBaseline = TaskCompletionReadBaseline()
     private var hasCodexUnreadState = false
     private var timer: Timer?
     private var pollTask: Task<Void, Never>?
@@ -25,7 +27,8 @@ final class TaskCompletionMonitor: ObservableObject {
     private var seeded = false
     private var monitorStartedAt = Date()
 
-    init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         loadPersistedCompletedEventIDs()
         updateStatusText()
     }
@@ -43,6 +46,7 @@ final class TaskCompletionMonitor: ObservableObject {
             seeded = false
             monitorStartedAt = Date()
             loadPersistedCompletedEventIDs()
+            readBaseline = TaskCompletionReadBaselineStore.load(codexHomePath: newPath, defaults: defaults)
             completedTaskThreadIDs.removeAll()
             unreadThreadState = CodexUnreadThreadState()
             hasCodexUnreadState = false
@@ -66,8 +70,25 @@ final class TaskCompletionMonitor: ObservableObject {
         } else {
             completedTaskThreadIDs.removeAll()
         }
+        applyReadBaselineToFallbackEvents()
         recomputeUnreadThreadCount()
         updateStatusText(fileCount: fileStates.count)
+    }
+
+    func markAllRead() {
+        readBaseline.markAllRead(
+            unreadThreadIDs: unreadThreadState.threadIDs,
+            completedEventIDs: Set(completedTaskThreadIDs.keys)
+        )
+        persistReadBaseline()
+        unreadThreadState = CodexUnreadThreadState()
+        completedTaskThreadIDs.removeAll()
+        recomputeUnreadThreadCount()
+        updateStatusText(fileCount: fileStates.isEmpty ? nil : fileStates.count)
+    }
+
+    func applyForTesting(result: TaskCompletionScanResult?, unreadThreadRead: CodexUnreadThreadReadResult) {
+        apply(result, unreadThreadRead: unreadThreadRead)
     }
 
     private func configureTimer() {
@@ -155,6 +176,7 @@ final class TaskCompletionMonitor: ObservableObject {
             didAddUnread = true
         }
 
+        applyReadBaselineToFallbackEvents()
         recomputeUnreadThreadCount()
         if didAddUnread, !hasCodexUnreadState, unreadThreadCount > 0 {
             statusText = "有任务完成"
@@ -174,8 +196,17 @@ final class TaskCompletionMonitor: ObservableObject {
 
     private func applyCodexUnreadRead(_ result: CodexUnreadThreadReadResult) {
         guard case let .available(threadIDs) = result else { return }
-        unreadThreadState = CodexUnreadThreadState(threadIDs: threadIDs)
+        unreadThreadState = CodexUnreadThreadState(threadIDs: readBaseline.activeUnreadThreadIDs(from: threadIDs))
         hasCodexUnreadState = true
+        persistReadBaseline()
+    }
+
+    private func applyReadBaselineToFallbackEvents() {
+        completedTaskThreadIDs = readBaseline.activeCompletedTaskThreadIDs(from: completedTaskThreadIDs)
+    }
+
+    private func persistReadBaseline() {
+        TaskCompletionReadBaselineStore.save(readBaseline, codexHomePath: dataSource?.codexHome.path, defaults: defaults)
     }
 
     private func updateStatusText(fileCount: Int? = nil) {
@@ -223,7 +254,7 @@ final class TaskCompletionMonitor: ObservableObject {
     }
 
     private func loadPersistedCompletedEventIDs() {
-        let storedIDs = UserDefaults.standard.stringArray(forKey: Self.completedEventIDsKey) ?? []
+        let storedIDs = defaults.stringArray(forKey: Self.completedEventIDsKey) ?? []
         var ordered: [String] = []
         var seen = Set<String>()
         for id in storedIDs where !id.isEmpty && seen.insert(id).inserted {
@@ -231,7 +262,7 @@ final class TaskCompletionMonitor: ObservableObject {
         }
         if ordered.count > Self.maxPersistedCompletedEventIDs {
             ordered = Array(ordered.suffix(Self.maxPersistedCompletedEventIDs))
-            UserDefaults.standard.set(ordered, forKey: Self.completedEventIDsKey)
+            defaults.set(ordered, forKey: Self.completedEventIDsKey)
         }
         completedEventIDOrder = ordered
         completedEventIDs = Set(ordered)
@@ -249,7 +280,7 @@ final class TaskCompletionMonitor: ObservableObject {
             completedEventIDs.subtract(removed)
             completedEventIDOrder.removeFirst(overflow)
         }
-        UserDefaults.standard.set(completedEventIDOrder, forKey: Self.completedEventIDsKey)
+        defaults.set(completedEventIDOrder, forKey: Self.completedEventIDsKey)
         return true
     }
 }

@@ -36,6 +36,46 @@ final class AccountQuotaStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.fiveHour, successfulSnapshot.fiveHour)
         XCTAssertEqual(store.snapshot.sevenDay, successfulSnapshot.sevenDay)
         XCTAssertEqual(store.snapshot.accountName, "测试用户")
+        XCTAssertTrue(store.snapshot.staleDataDisplayed)
+        XCTAssertTrue(store.snapshot.diagnostics.contains { $0.category == .staleCachedData })
+        XCTAssertTrue(store.snapshot.diagnostics.contains { $0.category == .unknown })
+    }
+
+    func testSuccessfulQuotaWithResetCreditFailurePublishesDiagnosticWithoutClearingQuota() async {
+        var snapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 18, resetsAt: Date(timeIntervalSince1970: 1_800)),
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 28, resetsAt: Date(timeIntervalSince1970: 10_800)),
+            planType: "pro",
+            limitName: "codex",
+            accountName: "测试用户",
+            status: "额度已读取",
+            updatedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        snapshot.diagnostics = [
+            AccountQuotaDiagnostic.resetCreditFailure(
+                underlying: AccountQuotaDiagnostic(
+                    source: .resetCredit,
+                    category: .authMissing,
+                    severity: .warning,
+                    message: "未找到登录 token",
+                    rawCause: "auth.json missing",
+                    retryable: true,
+                    occurredAt: Date(timeIntervalSince1970: 1_000)
+                ),
+                occurredAt: Date(timeIntervalSince1970: 1_001)
+            )
+        ]
+        let reader = SequentialQuotaReader(results: [.success(snapshot)])
+        let store = AccountQuotaStore(quotaReader: reader)
+
+        store.refresh()
+        await waitUntil("quota refresh with reset-credit diagnostic") {
+            store.snapshot.diagnostics.contains { $0.category == .resetCreditFailure }
+        }
+
+        XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 18)
+        XCTAssertEqual(store.snapshot.sevenDay?.usedPercent, 28)
+        XCTAssertEqual(store.snapshot.diagnostics.first?.underlyingCategory, .authMissing)
     }
 
     func testRefreshClampsQuotaRegressionWithinSameResetWindow() async {
@@ -78,37 +118,432 @@ final class AccountQuotaStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.sevenDay?.usedPercent, 90)
     }
 
+    func testAutomaticRefreshSkipsSoonAfterSuccessfulManualRefresh() async {
+        let reset = Date().addingTimeInterval(60 * 60)
+        let firstSnapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: reset),
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 40, resetsAt: reset),
+            planType: "pro",
+            limitName: "codex",
+            accountName: "测试用户",
+            status: "额度已读取",
+            updatedAt: Date()
+        )
+        let reader = SequentialQuotaReader(results: [
+            .success(firstSnapshot),
+            .failure(QuotaTestError())
+        ])
+        let store = AccountQuotaStore(quotaReader: reader)
+
+        store.refresh(force: true)
+        await waitUntil("manual quota refresh") {
+            store.snapshot.fiveHour?.usedPercent == 20
+        }
+
+        store.refresh(force: false)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        let readCount = await reader.currentReadCount()
+        XCTAssertEqual(readCount, 1)
+        XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 20)
+        XCTAssertEqual(store.snapshot.status, "额度已读取")
+    }
+
+    func testRefreshPassesCurrentCodexHomeToQuotaReader() async throws {
+        let codexHome = try makeTemporaryDirectory(named: "QuotaSourceHome")
+        let dataSource = CodexDataSource(codexHome: codexHome, origin: .userSelected)
+        let snapshot = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 12, resetsAt: Date(timeIntervalSince1970: 1_800)),
+            sevenDay: nil,
+            planType: "pro",
+            limitName: "codex",
+            accountName: "测试用户",
+            status: "额度已读取",
+            updatedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        let reader = SequentialQuotaReader(results: [.success(snapshot)])
+        let store = AccountQuotaStore(quotaReader: reader)
+
+        store.setDataSource(dataSource)
+        store.refresh()
+        await waitUntil("quota refresh with source") {
+            store.snapshot.status == "额度已读取"
+        }
+
+        let sources = await reader.requestedSources()
+        XCTAssertEqual(sources, [dataSource])
+    }
+
+    func testExplicitNilSourceDoesNotReusePreviousCodexHome() async throws {
+        let sourceA = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaPreviousSource"), origin: .userSelected)
+        let reader = SequentialQuotaReader(results: [
+            .success(quotaSnapshot(usedPercent: 11, accountName: "old")),
+            .success(quotaSnapshot(usedPercent: 33, accountName: "default"))
+        ])
+        let store = AccountQuotaStore(quotaReader: reader)
+
+        store.setDataSource(sourceA)
+        store.refresh()
+        await waitUntil("old source quota refresh") {
+            store.snapshot.fiveHour?.usedPercent == 11
+        }
+
+        store.setDataSource(nil)
+        store.refresh()
+        await waitUntil("default source quota refresh") {
+            store.snapshot.fiveHour?.usedPercent == 33
+        }
+
+        let sources = await reader.requestedSources()
+        XCTAssertEqual(sources.count, 2)
+        XCTAssertEqual(sources[0], sourceA)
+        XCTAssertNil(sources[1])
+    }
+
+    func testInFlightQuotaRefreshFromOldSourceDoesNotOverwriteNewSourceSnapshot() async throws {
+        let sourceA = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaOldSource"), origin: .userSelected)
+        let sourceB = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaNewSource"), origin: .userSelected)
+        let reader = SuspendedQuotaReader()
+        let store = AccountQuotaStore(quotaReader: reader)
+
+        store.setDataSource(sourceA)
+        store.refresh()
+        await waitUntil("old quota request") {
+            await reader.hasPendingRequest(for: sourceA)
+        }
+
+        store.setDataSource(sourceB)
+        store.refresh()
+        await waitUntil("new quota request") {
+            await reader.hasPendingRequest(for: sourceB)
+        }
+
+        await reader.completeRequest(
+            for: sourceB,
+            with: quotaSnapshot(usedPercent: 22, accountName: "new")
+        )
+        await waitUntil("new quota snapshot published") {
+            store.snapshot.fiveHour?.usedPercent == 22
+        }
+
+        await reader.completeRequest(
+            for: sourceA,
+            with: quotaSnapshot(usedPercent: 77, accountName: "old")
+        )
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 22)
+        XCTAssertEqual(store.snapshot.accountName, "new")
+    }
+
+    func testInFlightQuotaRefreshFromOldSourceDoesNotOverwriteExplicitNilSourceSnapshot() async throws {
+        let sourceA = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaOldToNilSource"), origin: .userSelected)
+        let reader = SuspendedQuotaReader()
+        let store = AccountQuotaStore(quotaReader: reader)
+
+        store.setDataSource(sourceA)
+        store.refresh()
+        await waitUntil("old quota request") {
+            await reader.hasPendingRequest(for: sourceA)
+        }
+
+        store.setDataSource(nil)
+        store.refresh()
+        await waitUntil("nil quota request") {
+            await reader.hasPendingNilRequest()
+        }
+
+        await reader.completeNilRequest(with: quotaSnapshot(usedPercent: 44, accountName: "default"))
+        await waitUntil("nil source quota snapshot published") {
+            store.snapshot.fiveHour?.usedPercent == 44
+        }
+
+        await reader.completeRequest(
+            for: sourceA,
+            with: quotaSnapshot(usedPercent: 88, accountName: "old")
+        )
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 44)
+        XCTAssertEqual(store.snapshot.accountName, "default")
+    }
+
+    func testAutomaticRefreshReusesTrackedSourceWhenNoExplicitSourceChange() async throws {
+        let source = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaTrackedSource"), origin: .userSelected)
+        let reader = SequentialQuotaReader(results: [
+            .success(AccountQuotaSnapshot(status: "额度暂无数据", updatedAt: Date(timeIntervalSince1970: 1))),
+            .success(quotaSnapshot(usedPercent: 55, accountName: "tracked"))
+        ])
+        let store = AccountQuotaStore(quotaReader: reader)
+
+        store.setDataSource(source)
+        store.refresh(force: true)
+        await waitUntil("first unavailable quota refresh") {
+            await reader.currentReadCount() == 1
+        }
+
+        store.refresh(force: false)
+        await waitUntil("automatic quota refresh") {
+            store.snapshot.fiveHour?.usedPercent == 55
+        }
+
+        let sources = await reader.requestedSources()
+        XCTAssertEqual(sources, [source, source])
+    }
+
+    func testStartUsesDefaultAutomaticRefreshInterval() async {
+        let reader = SequentialQuotaReader(results: [.success(quotaSnapshot(usedPercent: 10, accountName: "default"))])
+        let timerScheduler = ManualQuotaTimerScheduler()
+        let store = AccountQuotaStore(
+            quotaReader: reader,
+            timerScheduler: timerScheduler,
+            observesUserDefaults: false
+        )
+
+        store.start()
+
+        XCTAssertEqual(store.automaticRefreshInterval, 60)
+        XCTAssertEqual(timerScheduler.scheduledIntervals, [60])
+    }
+
+    func testUpdatingAutomaticRefreshIntervalReschedulesTimerWithoutImmediateQuotaRequest() async {
+        let reader = SequentialQuotaReader(results: [.success(quotaSnapshot(usedPercent: 10, accountName: "default"))])
+        let timerScheduler = ManualQuotaTimerScheduler()
+        let store = AccountQuotaStore(
+            quotaReader: reader,
+            timerScheduler: timerScheduler,
+            observesUserDefaults: false
+        )
+        store.start()
+        await waitUntil("initial quota request") {
+            await reader.currentReadCount() == 1
+        }
+
+        store.setAutomaticRefreshInterval(300)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(store.automaticRefreshInterval, 300)
+        XCTAssertEqual(timerScheduler.scheduledIntervals, [60, 300])
+        XCTAssertTrue(timerScheduler.tokens.first?.isInvalidated == true)
+        let readCount = await reader.currentReadCount()
+        XCTAssertEqual(readCount, 1)
+    }
+
+    func testSettingSameAutomaticRefreshIntervalDoesNotRescheduleTimer() {
+        let reader = SequentialQuotaReader(results: [])
+        let timerScheduler = ManualQuotaTimerScheduler()
+        let store = AccountQuotaStore(
+            quotaReader: reader,
+            timerScheduler: timerScheduler,
+            observesUserDefaults: false
+        )
+
+        store.start()
+        store.setAutomaticRefreshInterval(60)
+
+        XCTAssertEqual(timerScheduler.scheduledIntervals, [60])
+    }
+
+    func testAutomaticTimerDoesNotStartConcurrentQuotaRefreshForSameSource() async {
+        let reader = SuspendedQuotaReader()
+        let timerScheduler = ManualQuotaTimerScheduler()
+        let store = AccountQuotaStore(
+            quotaReader: reader,
+            timerScheduler: timerScheduler,
+            observesUserDefaults: false
+        )
+
+        store.start()
+        await waitUntil("initial quota request") {
+            await reader.pendingRequestCount() == 1
+        }
+
+        timerScheduler.fireLatest()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        let readCount = await reader.currentReadCount()
+        XCTAssertEqual(readCount, 1)
+    }
+
+    func testInitialAutomaticRefreshIntervalUsesPersistedCadence() {
+        let suiteName = "AccountQuotaStoreTests-\(UUID().uuidString)"
+        let userDefaults = UserDefaults(suiteName: suiteName)!
+        defer { userDefaults.removePersistentDomain(forName: suiteName) }
+        userDefaults.set(AccountQuotaRefreshCadence.fiveMinutes.rawValue, forKey: AccountQuotaRefreshCadence.storageKey)
+
+        let store = AccountQuotaStore(
+            quotaReader: SequentialQuotaReader(results: []),
+            userDefaults: userDefaults,
+            observesUserDefaults: false
+        )
+
+        XCTAssertEqual(store.automaticRefreshInterval, 300)
+    }
+
+    func testPersistedCadenceChangeReschedulesRunningTimerWithoutImmediateQuotaRequest() async {
+        let suiteName = "AccountQuotaStoreTests-\(UUID().uuidString)"
+        let userDefaults = UserDefaults(suiteName: suiteName)!
+        defer { userDefaults.removePersistentDomain(forName: suiteName) }
+        let reader = SequentialQuotaReader(results: [.success(quotaSnapshot(usedPercent: 10, accountName: "default"))])
+        let timerScheduler = ManualQuotaTimerScheduler()
+        let store = AccountQuotaStore(
+            quotaReader: reader,
+            timerScheduler: timerScheduler,
+            userDefaults: userDefaults
+        )
+        store.start()
+        await waitUntil("initial quota request") {
+            await reader.currentReadCount() == 1
+        }
+
+        userDefaults.set(AccountQuotaRefreshCadence.fiveMinutes.rawValue, forKey: AccountQuotaRefreshCadence.storageKey)
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: userDefaults)
+        await waitUntil("persisted cadence reschedule") {
+            timerScheduler.scheduledIntervals == [60, 300]
+        }
+
+        let readCount = await reader.currentReadCount()
+        XCTAssertEqual(readCount, 1)
+    }
+
     private func waitUntil(
         _ label: String,
         timeout: TimeInterval = 2,
-        predicate: @escaping @MainActor () -> Bool
+        predicate: @escaping @MainActor () async -> Bool
     ) async {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if predicate() { return }
+            if await predicate() { return }
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
         XCTFail("Timed out waiting for \(label)")
+    }
+
+    private func makeTemporaryDirectory(named name: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func quotaSnapshot(usedPercent: Int, accountName: String) -> AccountQuotaSnapshot {
+        AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: usedPercent, resetsAt: Date(timeIntervalSince1970: 1_800)),
+            sevenDay: nil,
+            planType: "pro",
+            limitName: "codex",
+            accountName: accountName,
+            status: "额度已读取",
+            updatedAt: Date(timeIntervalSince1970: TimeInterval(usedPercent))
+        )
     }
 }
 
 private actor SequentialQuotaReader: QuotaReading {
     private var results: [Result<AccountQuotaSnapshot, Error>]
+    private(set) var readCount = 0
+    private var sources: [CodexDataSource?] = []
 
     init(results: [Result<AccountQuotaSnapshot, Error>]) {
         self.results = results
     }
 
-    func readQuota() async -> Result<AccountQuotaSnapshot, Error> {
+    func readQuota(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
+        readCount += 1
+        sources.append(dataSource)
         guard !results.isEmpty else {
             return .failure(QuotaTestError())
         }
         return results.removeFirst()
+    }
+
+    func currentReadCount() -> Int {
+        readCount
+    }
+
+    func requestedSources() -> [CodexDataSource?] {
+        sources
     }
 }
 
 private struct QuotaTestError: LocalizedError {
     var errorDescription: String? {
         "模拟网络失败"
+    }
+}
+
+private actor SuspendedQuotaReader: QuotaReading {
+    private var continuations: [String: CheckedContinuation<Result<AccountQuotaSnapshot, Error>, Never>] = [:]
+    private var readCount = 0
+
+    func readQuota(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
+        readCount += 1
+        let key = dataSource?.codexHome.path ?? "nil"
+        return await withCheckedContinuation { continuation in
+            continuations[key] = continuation
+        }
+    }
+
+    func hasPendingRequest(for dataSource: CodexDataSource) -> Bool {
+        continuations[dataSource.codexHome.path] != nil
+    }
+
+    func hasPendingNilRequest() -> Bool {
+        continuations["nil"] != nil
+    }
+
+    func pendingRequestCount() -> Int {
+        continuations.count
+    }
+
+    func currentReadCount() -> Int {
+        readCount
+    }
+
+    func completeRequest(for dataSource: CodexDataSource, with snapshot: AccountQuotaSnapshot) {
+        continuations.removeValue(forKey: dataSource.codexHome.path)?.resume(returning: .success(snapshot))
+    }
+
+    func completeNilRequest(with snapshot: AccountQuotaSnapshot) {
+        continuations.removeValue(forKey: "nil")?.resume(returning: .success(snapshot))
+    }
+}
+
+@MainActor
+private final class ManualQuotaTimerScheduler: AccountQuotaTimerScheduling {
+    private(set) var scheduledIntervals: [TimeInterval] = []
+    private(set) var tokens: [ManualQuotaTimerToken] = []
+
+    func scheduleRepeatingTimer(
+        interval: TimeInterval,
+        handler: @escaping @MainActor @Sendable () -> Void
+    ) -> any AccountQuotaTimerToken {
+        let token = ManualQuotaTimerToken(handler: handler)
+        scheduledIntervals.append(interval)
+        tokens.append(token)
+        return token
+    }
+
+    func fireLatest() {
+        tokens.last?.fire()
+    }
+}
+
+@MainActor
+private final class ManualQuotaTimerToken: AccountQuotaTimerToken {
+    private let handler: @MainActor @Sendable () -> Void
+    private(set) var isInvalidated = false
+
+    init(handler: @escaping @MainActor @Sendable () -> Void) {
+        self.handler = handler
+    }
+
+    func invalidate() {
+        isInvalidated = true
+    }
+
+    func fire() {
+        guard !isInvalidated else { return }
+        handler()
     }
 }

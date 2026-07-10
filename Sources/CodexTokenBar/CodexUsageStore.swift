@@ -8,6 +8,7 @@ final class CodexUsageStore: ObservableObject {
     @Published private(set) var status: String = "正在加载本地 Codex 用量..."
     @Published private(set) var isRefreshing = false
     @Published private(set) var isInitialLoading = true
+    @Published private(set) var isPreparingUsageCache = false
     @Published private(set) var dataSourceLabel: String = "查找 Codex 目录..."
     @Published private(set) var dataSourceOrigin: String = "自动"
     @Published var selectedMode: ActivityMode = .daily
@@ -17,6 +18,9 @@ final class CodexUsageStore: ObservableObject {
     private var dataSource: CodexDataSource?
     private var timer: Timer?
     private var initialPreciseTask: Task<Void, Never>?
+    private var refreshTask: Task<Void, Never>?
+    private var refreshGeneration = 0
+    private var activeRefreshSourceID: String?
     private var refreshInterval: TimeInterval = 300
     private var didFinishInitialLoad = false
     private var didRunPreciseScan = false
@@ -50,61 +54,161 @@ final class CodexUsageStore: ObservableObject {
     }
 
     private func refresh(includePreciseScan: Bool) {
-        guard !isRefreshing else { return }
-        dataSource = resolver.resolve()
+        let resolvedDataSource = resolver.resolve()
+        let requestedSourceID = resolvedDataSource.map { refreshSourceID(for: $0) }
+        let trace = RefreshPerformanceProbe.begin("usageStore.refresh", metadata: [
+            "includePreciseScan": includePreciseScan ? "1" : "0",
+            "alreadyRefreshing": isRefreshing ? "1" : "0",
+            "source": resolvedDataSource?.displayPath ?? "nil"
+        ])
+        if isRefreshing, requestedSourceID == activeRefreshSourceID {
+            trace?.end("skipped-refresh-in-flight")
+            return
+        }
+        if isRefreshing {
+            refreshTask?.cancel()
+            refreshGeneration += 1
+            isRefreshing = false
+            trace?.mark("cancelled-stale-refresh")
+        }
+        dataSource = resolvedDataSource
         updateDataSourceLabels()
 
         guard let dataSource else {
+            refreshTask?.cancel()
+            refreshGeneration += 1
+            activeRefreshSourceID = nil
             snapshot = .empty
             status = "未找到本地 Codex 数据目录"
             isInitialLoading = false
+            isPreparingUsageCache = false
             didFinishInitialLoad = true
+            trace?.end("no-data-source")
             return
         }
 
         let isFirstLoad = !didFinishInitialLoad
         let hasExistingSnapshot = didFinishInitialLoad || hasDisplayableSnapshot(snapshot)
+        let needsCacheInitialization = includePreciseScan && !UsageCacheLifecycle.isCurrentCachePrepared
         isRefreshing = true
+        refreshGeneration += 1
+        let generation = refreshGeneration
+        let sourceID = refreshSourceID(for: dataSource)
+        activeRefreshSourceID = sourceID
+        isPreparingUsageCache = needsCacheInitialization
         if isFirstLoad {
             isInitialLoading = true
-            status = "正在读取本地索引..."
+            status = needsCacheInitialization
+                ? "正在建立本地统计缓存..."
+                : "正在读取本地索引..."
         } else {
-            status = "正在扫描 \(dataSource.displayPath)/sessions..."
+            status = needsCacheInitialization
+                ? "正在建立本地统计缓存..."
+                : "正在增量更新 token..."
         }
 
-        Task { @MainActor [weak self] in
+        refreshTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 let source = dataSource
+                trace?.mark("task.started", metadata: [
+                    "source": source.displayPath,
+                    "origin": source.originLabel
+                ])
                 if isFirstLoad || !includePreciseScan {
                     if includePreciseScan {
+                        trace?.mark("fastSnapshot.begin")
                         if let quickSnapshot = try? await self.snapshotLoader.loadFastSnapshot(dataSource: source) {
+                            guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else {
+                                trace?.end("stale-after-fastSnapshot")
+                                return
+                            }
                             self.snapshot = quickSnapshot
-                            self.status = "\(source.originLabel) · state_5.sqlite · 正在扫描精确 token..."
+                            self.status = quickSnapshot.hasPreciseTokenUsage
+                                ? (needsCacheInitialization
+                                    ? "\(source.originLabel) · state_5.sqlite · 正在初始化本地统计缓存..."
+                                    : "\(source.originLabel) · state_5.sqlite · 正在增量更新 token...")
+                                : self.metadataOnlyStatus(origin: source.originLabel)
+                            trace?.mark("fastSnapshot.end", metadata: [
+                                "tokens": String(quickSnapshot.stats.totalTokens),
+                                "threads": String(quickSnapshot.stats.totalThreads)
+                            ])
                         }
                     } else {
+                        trace?.mark("fastSnapshot.begin")
                         let quickSnapshot = try await self.snapshotLoader.loadFastSnapshot(dataSource: source)
+                        guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else {
+                            trace?.end("stale-after-fastSnapshot")
+                            return
+                        }
                         self.snapshot = quickSnapshot
-                        self.status = "\(source.originLabel) · state_5.sqlite · 准备扫描精确 token..."
+                        self.status = quickSnapshot.hasPreciseTokenUsage
+                            ? "\(source.originLabel) · state_5.sqlite · 准备扫描精确 token..."
+                            : self.metadataOnlyStatus(origin: source.originLabel)
+                        trace?.mark("fastSnapshot.end", metadata: [
+                            "tokens": String(quickSnapshot.stats.totalTokens),
+                            "threads": String(quickSnapshot.stats.totalThreads)
+                        ])
                     }
                 }
 
                 if includePreciseScan {
+                    trace?.mark("preciseSnapshot.begin")
                     let loaded = try await self.snapshotLoader.loadSnapshot(dataSource: source)
-                    self.snapshot = loaded
-                    self.didRunPreciseScan = true
-                    self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
+                    guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else {
+                        trace?.end("stale-after-preciseSnapshot")
+                        return
+                    }
+                    if loaded.hasPreciseTokenUsage {
+                        self.snapshot = loaded
+                        self.didRunPreciseScan = true
+                        UsageCacheLifecycle.markCurrentCachePrepared()
+                        self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
+                        trace?.mark("preciseSnapshot.end", metadata: [
+                            "tokens": String(loaded.stats.totalTokens),
+                            "calls": String(loaded.stats.totalCalls),
+                            "threads": String(loaded.stats.totalThreads)
+                        ])
+                    } else {
+                        if !self.snapshot.hasPreciseTokenUsage {
+                            self.snapshot = loaded
+                        }
+                        self.status = self.metadataOnlyStatus(origin: source.originLabel)
+                        trace?.mark("preciseSnapshot.metadataOnly", metadata: [
+                            "threads": String(loaded.stats.totalThreads)
+                        ])
+                    }
                 }
+                trace?.end("ok")
             } catch {
+                guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else {
+                    trace?.end("stale-failed", metadata: ["error": error.localizedDescription])
+                    return
+                }
                 if !hasExistingSnapshot && !self.hasDisplayableSnapshot(self.snapshot) {
                     self.snapshot = .empty
                 }
                 self.status = "读取失败：\(error.localizedDescription)"
+                trace?.end("failed", metadata: ["error": error.localizedDescription])
             }
-            self.isRefreshing = false
-            self.didFinishInitialLoad = true
-            self.isInitialLoading = false
+            if self.isCurrentRefresh(generation: generation, sourceID: sourceID) {
+                self.isRefreshing = false
+                self.activeRefreshSourceID = nil
+                self.didFinishInitialLoad = true
+                self.isInitialLoading = false
+                self.isPreparingUsageCache = false
+            }
         }
+    }
+
+    private func isCurrentRefresh(generation: Int, sourceID: String) -> Bool {
+        !Task.isCancelled
+            && refreshGeneration == generation
+            && activeRefreshSourceID == sourceID
+    }
+
+    private func refreshSourceID(for dataSource: CodexDataSource) -> String {
+        dataSource.codexHome.resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     private func hasDisplayableSnapshot(_ snapshot: DashboardSnapshot) -> Bool {
@@ -113,6 +217,10 @@ final class CodexUsageStore: ObservableObject {
             || !snapshot.dailyUsage.isEmpty
             || !snapshot.recentBins.isEmpty
             || !snapshot.hourlyUsage.isEmpty
+    }
+
+    private func metadataOnlyStatus(origin: String) -> String {
+        "\(origin) · state_5.sqlite · 仅显示会话元数据，精确 token 仍在读取..."
     }
 
     private func scheduleInitialPreciseRefresh() {

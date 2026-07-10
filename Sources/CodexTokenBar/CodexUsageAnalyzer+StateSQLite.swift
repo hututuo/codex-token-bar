@@ -7,56 +7,10 @@ extension CodexUsageAnalyzer {
             throw NSError(domain: "CodexTokenBar", code: 1, userInfo: [NSLocalizedDescriptionKey: "\(dataSource.displayPath)/state_5.sqlite not found"])
         }
 
-        let dayRows = includeTimeSeries
-            ? try sqliteRows(
-                db: db,
-                sql: """
-                SELECT strftime('%Y-%m-%d', COALESCE(updated_at_ms, updated_at)/1000, 'unixepoch', 'localtime') AS day,
-                       SUM(tokens_used) AS tokens,
-                       COUNT(*) AS threads
-                FROM threads
-                GROUP BY day
-                ORDER BY day;
-                """
-            )
-            : []
-
-        let binRows = includeTimeSeries
-            ? try sqliteRows(
-                db: db,
-                sql: """
-                SELECT CAST((COALESCE(updated_at_ms, updated_at)/1000) / 300 AS INTEGER) * 300 AS bin_epoch,
-                       SUM(tokens_used) AS tokens,
-                       COUNT(*) AS threads
-                FROM threads
-                WHERE COALESCE(updated_at_ms, updated_at)/1000 >= strftime('%s','now','-24 hours')
-                GROUP BY bin_epoch
-                ORDER BY bin_epoch;
-                """
-            )
-            : []
-
-        let hourlyRows = includeTimeSeries
-            ? try sqliteRows(
-                db: db,
-                sql: """
-                SELECT CAST((COALESCE(updated_at_ms, updated_at)/1000) / 3600 AS INTEGER) * 3600 AS hour_epoch,
-                       SUM(tokens_used) AS tokens,
-                       COUNT(*) AS threads
-                FROM threads
-                WHERE COALESCE(updated_at_ms, updated_at)/1000 >= strftime('%s','now','-30 days')
-                GROUP BY hour_epoch
-                ORDER BY hour_epoch;
-                """
-            )
-            : []
-
         let summaryRows = try sqliteRows(
             db: db,
             sql: """
-            SELECT SUM(tokens_used) AS total_tokens,
-                   MAX(tokens_used) AS peak_thread_tokens,
-                   COUNT(*) AS total_threads
+            SELECT COUNT(*) AS total_threads
             FROM threads;
             """
         )
@@ -71,67 +25,9 @@ extension CodexUsageAnalyzer {
             """
         )
 
-        let today = calendar.startOfDay(for: Date())
-        guard let startDay = calendar.date(byAdding: .day, value: -364, to: today) else {
-            throw NSError(domain: "CodexTokenBar", code: 2, userInfo: [NSLocalizedDescriptionKey: "Unable to calculate date range"])
-        }
-
-        var dailyMap: [Date: (tokens: Int, calls: Int)] = [:]
-        let dayFormatter = DateFormatter()
-        dayFormatter.dateFormat = "yyyy-MM-dd"
-
-        for row in dayRows {
-            guard let dayText = row[safe: 0],
-                  let date = dayFormatter.date(from: dayText) else { continue }
-            dailyMap[calendar.startOfDay(for: date)] = (
-                Int(row[safe: 1] ?? "0") ?? 0,
-                Int(row[safe: 2] ?? "0") ?? 0
-            )
-        }
-
-        let daily = (0..<365).compactMap { offset -> DayUsage? in
-            guard let date = calendar.date(byAdding: .day, value: offset, to: startDay) else { return nil }
-            let usage = dailyMap[calendar.startOfDay(for: date)] ?? (0, 0)
-            return DayUsage(date: date, tokens: usage.tokens, calls: usage.calls)
-        }
-
-        let now = Date()
-        guard let recentStart = calendar.date(byAdding: .hour, value: -24, to: now) else {
-            throw NSError(domain: "CodexTokenBar", code: 3, userInfo: [NSLocalizedDescriptionKey: "Unable to calculate recent range"])
-        }
-        let interval: TimeInterval = 5 * 60
-        var binMap: [Int: (tokens: Int, calls: Int)] = [:]
-        for row in binRows {
-            guard let epoch = Int(row[safe: 0] ?? "") else { continue }
-            binMap[epoch] = (
-                Int(row[safe: 1] ?? "0") ?? 0,
-                Int(row[safe: 2] ?? "0") ?? 0
-            )
-        }
-
-        let recentBins = (0..<288).map { index -> BinUsage in
-            let date = recentStart.addingTimeInterval(Double(index) * interval)
-            let epoch = Int(floor(date.timeIntervalSince1970 / interval) * interval)
-            let usage = binMap[epoch] ?? (0, 0)
-            return BinUsage(start: date, tokens: usage.tokens, calls: usage.calls)
-        }
-
-        let currentHour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
-        let hourlyStart = calendar.date(byAdding: .hour, value: -719, to: currentHour) ?? currentHour
-        var hourlyMap: [Int: (tokens: Int, calls: Int)] = [:]
-        for row in hourlyRows {
-            guard let epoch = Int(row[safe: 0] ?? "") else { continue }
-            hourlyMap[epoch] = (
-                Int(row[safe: 1] ?? "0") ?? 0,
-                Int(row[safe: 2] ?? "0") ?? 0
-            )
-        }
-        let hourlyUsage = (0..<720).map { index -> BinUsage in
-            let date = hourlyStart.addingTimeInterval(Double(index) * 3600)
-            let epoch = Int(floor(date.timeIntervalSince1970 / 3600) * 3600)
-            let usage = hourlyMap[epoch] ?? (0, 0)
-            return BinUsage(start: date, tokens: usage.tokens, calls: usage.calls)
-        }
+        let daily: [DayUsage] = []
+        let recentBins: [BinUsage] = []
+        let hourlyUsage: [BinUsage] = []
 
         var pluginCounts: [String: Int] = [:]
         var reasoningCounts: [String: Int] = [:]
@@ -143,8 +39,8 @@ extension CodexUsageAnalyzer {
             collectReasoningEffort(row[safe: 3], into: &reasoningCounts)
         }
 
-        let totalTokens = Int(summaryRows.first?[safe: 0] ?? "0") ?? 0
-        let totalThreads = Int(summaryRows.first?[safe: 2] ?? "0") ?? 0
+        let totalTokens = 0
+        let totalThreads = Int(summaryRows.first?[safe: 0] ?? "0") ?? 0
         let peakDay = daily.map(\.tokens).max() ?? 0
         let pluginItems: [PluginUsage] = pluginCounts.map { key, value in
             PluginUsage(name: key, runs: value)
@@ -157,7 +53,7 @@ extension CodexUsageAnalyzer {
         let stats = DashboardStats(
             totalTokens: totalTokens,
             peakDayTokens: peakDay,
-            peakThreadTokens: Int(summaryRows.first?[safe: 1] ?? "0") ?? 0,
+            peakThreadTokens: 0,
             currentStreakDays: currentStreakDays(from: daily),
             longestStreakDays: longestStreakDays(from: daily),
             totalCalls: recentBins.reduce(0) { $0 + $1.calls },
@@ -174,6 +70,7 @@ extension CodexUsageAnalyzer {
             hourlyUsage: hourlyUsage,
             pluginUsage: Array(plugins),
             cacheUsage: .empty,
+            usagePrecision: .metadataOnly,
             generatedAt: Date()
         )
     }
@@ -184,9 +81,7 @@ extension CodexUsageAnalyzer {
               let row = try? sqliteRows(
                 db: db,
                 sql: """
-                SELECT SUM(tokens_used) AS total_tokens,
-                       MAX(tokens_used) AS peak_thread_tokens,
-                       COUNT(*) AS total_threads
+                SELECT COUNT(*) AS total_threads
                 FROM threads;
                 """
               ).first else {
@@ -194,9 +89,9 @@ extension CodexUsageAnalyzer {
         }
 
         return OfficialThreadSummary(
-            totalTokens: Int(row[safe: 0] ?? "0") ?? 0,
-            peakThreadTokens: Int(row[safe: 1] ?? "0") ?? 0,
-            totalThreads: Int(row[safe: 2] ?? "0") ?? 0
+            totalTokens: 0,
+            peakThreadTokens: 0,
+            totalThreads: Int(row[safe: 0] ?? "0") ?? 0
         )
     }
 

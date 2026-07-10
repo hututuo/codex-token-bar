@@ -7,6 +7,8 @@ struct RateAccumulator {
     private static let minimumCompletionPayloadSeconds: TimeInterval = 1
     private static let maximumCompletionPayloadSeconds: TimeInterval = 30
     private static let distributionStepSeconds: TimeInterval = 0.5
+    private static let duplicateVisibleCompletionSeconds: TimeInterval = 10
+    private static let deltaEstimatorOverlapCharacters = 96
 
     let resetsOnNewItem: Bool
     private(set) var breakdown = LiveTokenBreakdown()
@@ -15,9 +17,11 @@ struct RateAccumulator {
     private var currentKey = ""
     private var itemText: [String: String] = [:]
     private var itemTokens: [String: Int] = [:]
+    private var itemFractionalTokenCarry: [String: Double] = [:]
     private var firstDeltaAt: TimeInterval?
     private var lastDeltaAt: TimeInterval?
     private var rollingDeltas: [(time: TimeInterval, tokens: Int)] = []
+    private var recentVisibleCompletions: [String: TimeInterval] = [:]
 
     init(resetsOnNewItem: Bool) {
         self.resetsOnNewItem = resetsOnNewItem
@@ -34,9 +38,11 @@ struct RateAccumulator {
         currentKey = ""
         itemText.removeAll()
         itemTokens.removeAll()
+        itemFractionalTokenCarry.removeAll()
         firstDeltaAt = nil
         lastDeltaAt = nil
         rollingDeltas.removeAll()
+        recentVisibleCompletions.removeAll()
     }
 
     mutating func add(
@@ -52,17 +58,24 @@ struct RateAccumulator {
         }
         currentKey = key
 
-        let previousText = itemText[key] ?? ""
-        let nextText = previousText + delta
+        let previousTail = itemText[key] ?? ""
         let previousTokens = itemTokens[key] ?? 0
-        let nextTokens = estimator(nextText)
-        let deltaTokens = max(0, nextTokens - previousTokens)
+        let deltaTokens = estimatedDeltaTokens(
+            key: key,
+            previousTail: previousTail,
+            delta: delta,
+            estimator: estimator
+        )
 
-        itemText[key] = nextText
-        itemTokens[key] = nextTokens
+        itemText[key] = Self.suffix(previousTail + delta, maxCharacters: Self.deltaEstimatorOverlapCharacters)
+        itemTokens[key] = previousTokens + deltaTokens
         outputCharacters += delta.count
 
         guard deltaTokens > 0 else { return }
+        if category.usesConservativeDeltaLiveRate {
+            addDistributedLiveRate(tokens: deltaTokens, category: category, key: key, endingAt: timestamp, windowSeconds: windowSeconds)
+            return
+        }
         add(tokens: deltaTokens, category: category, key: key, at: timestamp, windowSeconds: windowSeconds)
     }
 
@@ -74,6 +87,9 @@ struct RateAccumulator {
         windowSeconds: TimeInterval,
         estimator: (String) -> Int
     ) {
+        guard !shouldSuppressDuplicateVisibleCompletion(text: text, category: category, key: key, at: timestamp) else {
+            return
+        }
         let tokens = estimator(text)
         outputCharacters += text.count
         add(tokens: tokens, category: category, key: key, at: timestamp, windowSeconds: windowSeconds)
@@ -98,6 +114,73 @@ struct RateAccumulator {
         prune(now: timestamp, windowSeconds: windowSeconds)
     }
 
+    private mutating func addDistributedLiveRate(
+        tokens: Int,
+        category: LiveTokenCategory,
+        key: String,
+        endingAt timestamp: TimeInterval,
+        windowSeconds: TimeInterval
+    ) {
+        addToBreakdown(tokens: tokens, category: category)
+        guard category.contributesToLiveRate else { return }
+
+        let duration = estimatedDistributionDuration(tokens: tokens)
+        let start = timestamp - duration
+        if firstDeltaAt == nil {
+            firstDeltaAt = start
+        } else if let existing = firstDeltaAt {
+            firstDeltaAt = min(existing, start)
+        }
+        lastDeltaAt = timestamp
+
+        let chunkCount = max(1, min(tokens, Int(ceil(duration / Self.distributionStepSeconds))))
+        var emitted = 0
+        for index in 1...chunkCount {
+            let cumulative = Int((Double(tokens) * Double(index) / Double(chunkCount)).rounded())
+            let chunkTokens = cumulative - emitted
+            emitted = cumulative
+            guard chunkTokens > 0 else { continue }
+            let ratio = Double(index) / Double(chunkCount)
+            rollingDeltas.append((start + duration * ratio, chunkTokens))
+        }
+
+        prune(now: timestamp, windowSeconds: windowSeconds)
+    }
+
+    private mutating func estimatedDeltaTokens(
+        key: String,
+        previousTail: String,
+        delta: String,
+        estimator: (String) -> Int
+    ) -> Int {
+        guard !delta.isEmpty else { return 0 }
+        let context = Self.suffix(previousTail, maxCharacters: Self.deltaEstimatorOverlapCharacters)
+        let previousContextTokens = estimator(context)
+        let nextContextTokens = estimator(context + delta)
+        let deltaTokens = max(0, nextContextTokens - previousContextTokens)
+
+        if deltaTokens > 0 {
+            itemFractionalTokenCarry.removeValue(forKey: key)
+            return deltaTokens
+        }
+
+        guard context.count >= Self.deltaEstimatorOverlapCharacters else { return 0 }
+
+        let density = Double(previousContextTokens) / Double(context.count)
+        guard density.isFinite, density > 0 else { return 0 }
+
+        let carry = (itemFractionalTokenCarry[key] ?? 0) + density * Double(delta.count)
+        let carriedTokens = Int(carry.rounded(.down))
+        itemFractionalTokenCarry[key] = carry - Double(carriedTokens)
+        return max(0, carriedTokens)
+    }
+
+    private static func suffix(_ text: String, maxCharacters: Int) -> String {
+        guard text.count > maxCharacters else { return text }
+        let start = text.index(text.endIndex, offsetBy: -maxCharacters)
+        return String(text[start...])
+    }
+
     mutating func addDistributed(
         text: String,
         category: LiveTokenCategory,
@@ -107,6 +190,9 @@ struct RateAccumulator {
         windowSeconds: TimeInterval,
         estimator: (String) -> Int
     ) {
+        guard !shouldSuppressDuplicateVisibleCompletion(text: text, category: category, key: key, at: timestamp) else {
+            return
+        }
         let tokens = estimator(text)
         outputCharacters += text.count
         addDistributed(tokens: tokens, category: category, key: key, startTimestamp: startTimestamp, endingAt: timestamp, windowSeconds: windowSeconds)
@@ -122,6 +208,7 @@ struct RateAccumulator {
         guard tokens > 0 else { return }
         currentKey = key
         addToBreakdown(tokens: tokens, category: category)
+        guard category.contributesToLiveRate else { return }
         if firstDeltaAt == nil {
             firstDeltaAt = timestamp
         }
@@ -146,6 +233,7 @@ struct RateAccumulator {
         guard deltaTokens > 0 else { return }
 
         addToBreakdown(tokens: deltaTokens, category: category)
+        guard category.contributesToLiveRate else { return }
 
         let estimatedDuration = estimatedDistributionDuration(tokens: deltaTokens)
         let start: TimeInterval
@@ -207,6 +295,10 @@ struct RateAccumulator {
         rollingDeltas.contains { $0.time <= now && now - $0.time <= windowSeconds }
     }
 
+    func hasRetainedRollingActivity(now: TimeInterval, windowSeconds: TimeInterval) -> Bool {
+        rollingDeltas.contains { $0.time > now || now - $0.time <= windowSeconds }
+    }
+
     private mutating func addToBreakdown(tokens: Int, category: LiveTokenCategory) {
         switch category {
         case .visibleText:
@@ -229,5 +321,48 @@ struct RateAccumulator {
             Self.maximumCompletionPayloadSeconds,
             max(Self.minimumCompletionPayloadSeconds, Double(tokens) / Self.completionPayloadTokensPerSecond)
         )
+    }
+
+    private mutating func shouldSuppressDuplicateVisibleCompletion(
+        text: String,
+        category: LiveTokenCategory,
+        key: String,
+        at timestamp: TimeInterval
+    ) -> Bool {
+        guard category == .visibleText, !text.isEmpty else { return false }
+        recentVisibleCompletions = recentVisibleCompletions.filter { timestamp - $0.value <= Self.duplicateVisibleCompletionSeconds }
+        let fingerprint = "\(scopePrefix(from: key)):\(text)"
+        if let previous = recentVisibleCompletions[fingerprint],
+           timestamp - previous <= Self.duplicateVisibleCompletionSeconds {
+            return true
+        }
+        recentVisibleCompletions[fingerprint] = timestamp
+        return false
+    }
+
+    private func scopePrefix(from key: String) -> String {
+        key.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            .first
+            .map(String.init) ?? key
+    }
+}
+
+extension LiveTokenCategory {
+    var contributesToLiveRate: Bool {
+        switch self {
+        case .visibleText, .toolArguments, .patchInput:
+            return true
+        case .patchApplied, .toolOutput, .reasoning:
+            return false
+        }
+    }
+
+    var usesConservativeDeltaLiveRate: Bool {
+        switch self {
+        case .toolArguments, .patchInput:
+            return true
+        case .visibleText, .patchApplied, .toolOutput, .reasoning:
+            return false
+        }
     }
 }

@@ -7,17 +7,84 @@ private enum CacheRankingScope: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum CacheRankingSortOrder: String, CaseIterable, Identifiable {
+    case lowHit = "低命中"
+    case latest = "最新"
+
+    var id: String { rawValue }
+
+    var subtitlePrefix: String {
+        switch self {
+        case .lowHit:
+            return "低命中优先"
+        case .latest:
+            return "最新优先"
+        }
+    }
+
+    func sortsBefore(_ lhs: CacheRankingSortValue, _ rhs: CacheRankingSortValue) -> Bool {
+        switch self {
+        case .lowHit:
+            return Self.lowHitSortsBefore(lhs, rhs)
+        case .latest:
+            switch (lhs.sortDate, rhs.sortDate) {
+            case let (left?, right?) where left != right:
+                return left > right
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                return Self.lowHitSortsBefore(lhs, rhs)
+            }
+        }
+    }
+
+    private static func lowHitSortsBefore(_ lhs: CacheRankingSortValue, _ rhs: CacheRankingSortValue) -> Bool {
+        let leftRate = lhs.breakdown.cacheHitRate
+        let rightRate = rhs.breakdown.cacheHitRate
+        if abs(leftRate - rightRate) > 0.0001 {
+            return leftRate < rightRate
+        }
+        if lhs.breakdown.uncachedInputTokens != rhs.breakdown.uncachedInputTokens {
+            return lhs.breakdown.uncachedInputTokens > rhs.breakdown.uncachedInputTokens
+        }
+        switch (lhs.sortDate, rhs.sortDate) {
+        case let (left?, right?) where left != right:
+            return left > right
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        default:
+            return lhs.id < rhs.id
+        }
+    }
+}
+
+struct CacheRankingSortValue: Equatable {
+    let id: String
+    let sortDate: Date?
+    let breakdown: TokenCacheBreakdown
+}
+
 private struct CacheRankingItem: Identifiable {
     let id: String
     let title: String
     let subtitle: String
     let context: String?
+    let sortDate: Date?
     let breakdown: TokenCacheBreakdown
+
+    var sortValue: CacheRankingSortValue {
+        CacheRankingSortValue(id: id, sortDate: sortDate, breakdown: breakdown)
+    }
 }
 
 struct CacheHitRankingSection: View {
     let cacheUsage: TokenCacheUsage
     @State private var scope: CacheRankingScope = .sessions
+    @State private var sortOrder: CacheRankingSortOrder = .lowHit
     @State private var excludesSingleTurnSessions = true
     @State private var excludesFirstTurns = true
 
@@ -41,6 +108,16 @@ struct CacheHitRankingSection: View {
                         isOn: scope == .sessions ? $excludesSingleTurnSessions : $excludesFirstTurns,
                         title: scope == .sessions ? "排除单轮会话" : "排除首轮"
                     )
+
+                    Picker("", selection: $sortOrder) {
+                        ForEach(CacheRankingSortOrder.allCases) { item in
+                            Text(item.rawValue).tag(item)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 126)
+                    .accessibilityLabel("缓存命中排行排序")
+                    .accessibilityValue(sortOrder.rawValue)
 
                     Picker("", selection: $scope) {
                         ForEach(CacheRankingScope.allCases) { item in
@@ -89,6 +166,7 @@ struct CacheHitRankingSection: View {
                         title: session.title,
                         subtitle: sessionSubtitle(session),
                         context: nil,
+                        sortDate: session.lastUpdated,
                         breakdown: session.breakdown
                     )
                 }
@@ -102,6 +180,7 @@ struct CacheHitRankingSection: View {
                         title: "问：\(turn.userPrompt.isEmpty ? "暂无可见问题" : turn.userPrompt)",
                         subtitle: "答：\(turn.assistantResponse.isEmpty ? "暂无可见回答" : turn.assistantResponse)",
                         context: "\(turn.sessionTitle) · 第 \(turn.turnIndexInSession) 轮 · \(time)",
+                        sortDate: turn.timestamp,
                         breakdown: turn.breakdown
                     )
                 }
@@ -109,14 +188,7 @@ struct CacheHitRankingSection: View {
 
         return source
             .filter { $0.breakdown.inputTokens >= minimumInputTokens && $0.breakdown.calls > 0 }
-            .sorted { lhs, rhs in
-                let leftRate = lhs.breakdown.cacheHitRate
-                let rightRate = rhs.breakdown.cacheHitRate
-                if abs(leftRate - rightRate) > 0.0001 {
-                    return leftRate < rightRate
-                }
-                return lhs.breakdown.uncachedInputTokens > rhs.breakdown.uncachedInputTokens
-            }
+            .sorted { sortOrder.sortsBefore($0.sortValue, $1.sortValue) }
             .prefix(10)
             .map { $0 }
     }
@@ -124,9 +196,9 @@ struct CacheHitRankingSection: View {
     private var rankingSubtitle: String {
         switch scope {
         case .sessions:
-            return excludesSingleTurnSessions ? "低命中优先 · 已排除只有一轮的会话" : "低命中优先 · 包含单轮会话"
+            return excludesSingleTurnSessions ? "\(sortOrder.subtitlePrefix) · 已排除只有一轮的会话" : "\(sortOrder.subtitlePrefix) · 包含单轮会话"
         case .turns:
-            return excludesFirstTurns ? "低命中优先 · 已排除每个会话首轮" : "低命中优先 · 包含首轮"
+            return excludesFirstTurns ? "\(sortOrder.subtitlePrefix) · 已排除每个会话首轮" : "\(sortOrder.subtitlePrefix) · 包含首轮"
         }
     }
 

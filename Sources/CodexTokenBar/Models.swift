@@ -13,27 +13,27 @@ struct TokenEvent: Identifiable {
     let assistantResponse: String
 }
 
-struct DayUsage: Identifiable, Equatable {
+struct DayUsage: Codable, Identifiable, Equatable {
     var id: Date { date }
     let date: Date
     let tokens: Int
     let calls: Int
 }
 
-struct BinUsage: Identifiable, Equatable {
+struct BinUsage: Codable, Identifiable, Equatable {
     var id: Date { start }
     let start: Date
     let tokens: Int
     let calls: Int
 }
 
-struct PluginUsage: Identifiable {
+struct PluginUsage: Codable, Identifiable {
     var id: String { name }
     let name: String
     let runs: Int
 }
 
-struct TokenCacheBreakdown: Equatable {
+struct TokenCacheBreakdown: Codable, Equatable {
     let inputTokens: Int
     let cachedInputTokens: Int
     let outputTokens: Int
@@ -64,20 +64,20 @@ struct TokenCacheBreakdown: Equatable {
     )
 }
 
-struct TokenCacheBucket: Identifiable, Equatable {
+struct TokenCacheBucket: Codable, Identifiable, Equatable {
     var id: Date { start }
     let start: Date
     let breakdown: TokenCacheBreakdown
 }
 
-struct SessionCacheUsage: Identifiable {
+struct SessionCacheUsage: Codable, Identifiable {
     let id: String
     let title: String
     let lastUpdated: Date?
     let breakdown: TokenCacheBreakdown
 }
 
-struct TurnCacheUsage: Identifiable {
+struct TurnCacheUsage: Codable, Identifiable {
     let id: String
     let sessionID: String
     let sessionTitle: String
@@ -86,9 +86,68 @@ struct TurnCacheUsage: Identifiable {
     let userPrompt: String
     let assistantResponse: String
     let breakdown: TokenCacheBreakdown
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case sessionID
+        case sessionTitle
+        case timestamp
+        case turnIndexInSession
+        case userPrompt
+        case assistantResponse
+        case breakdown
+    }
+
+    init(
+        id: String,
+        sessionID: String,
+        sessionTitle: String,
+        timestamp: Date,
+        turnIndexInSession: Int,
+        userPrompt: String,
+        assistantResponse: String,
+        breakdown: TokenCacheBreakdown
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.sessionTitle = sessionTitle
+        self.timestamp = timestamp
+        self.turnIndexInSession = turnIndexInSession
+        self.userPrompt = userPrompt
+        self.assistantResponse = assistantResponse
+        self.breakdown = breakdown
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        sessionTitle = try container.decode(String.self, forKey: .sessionTitle)
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        turnIndexInSession = try container.decode(Int.self, forKey: .turnIndexInSession)
+        userPrompt = try container.decodeIfPresent(String.self, forKey: .userPrompt) ?? ""
+        assistantResponse = try container.decodeIfPresent(String.self, forKey: .assistantResponse) ?? ""
+        breakdown = try container.decode(TokenCacheBreakdown.self, forKey: .breakdown)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encode(sessionTitle, forKey: .sessionTitle)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encode(turnIndexInSession, forKey: .turnIndexInSession)
+        if !userPrompt.isEmpty {
+            try container.encode(userPrompt, forKey: .userPrompt)
+        }
+        if !assistantResponse.isEmpty {
+            try container.encode(assistantResponse, forKey: .assistantResponse)
+        }
+        try container.encode(breakdown, forKey: .breakdown)
+    }
 }
 
-struct TokenCacheUsage {
+struct TokenCacheUsage: Codable {
     let total: TokenCacheBreakdown
     let daily: [TokenCacheBucket]
     let hourly: [TokenCacheBucket]
@@ -145,7 +204,7 @@ extension Sequence where Element == TokenCacheBreakdown {
     }
 }
 
-struct DashboardStats {
+struct DashboardStats: Codable {
     let totalTokens: Int
     let peakDayTokens: Int
     let peakThreadTokens: Int
@@ -158,6 +217,15 @@ struct DashboardStats {
     let totalSkillsUsed: Int
 }
 
+enum DashboardUsagePrecision: String, Codable, Equatable {
+    case precise
+    case metadataOnly
+
+    var hasPreciseTokenUsage: Bool {
+        self == .precise
+    }
+}
+
 extension Double {
     var percentString: String {
         guard isFinite else { return "0%" }
@@ -165,14 +233,74 @@ extension Double {
     }
 }
 
-struct DashboardSnapshot {
+struct DashboardSnapshot: Codable {
     let stats: DashboardStats
     let dailyUsage: [DayUsage]
     let recentBins: [BinUsage]
     let hourlyUsage: [BinUsage]
     let pluginUsage: [PluginUsage]
     let cacheUsage: TokenCacheUsage
+    let usagePrecision: DashboardUsagePrecision
     let generatedAt: Date
+
+    var hasPreciseTokenUsage: Bool {
+        usagePrecision.hasPreciseTokenUsage
+    }
+
+    init(
+        stats: DashboardStats,
+        dailyUsage: [DayUsage],
+        recentBins: [BinUsage],
+        hourlyUsage: [BinUsage],
+        pluginUsage: [PluginUsage],
+        cacheUsage: TokenCacheUsage,
+        usagePrecision: DashboardUsagePrecision = .precise,
+        generatedAt: Date
+    ) {
+        self.stats = stats
+        self.dailyUsage = dailyUsage
+        self.recentBins = recentBins
+        self.hourlyUsage = hourlyUsage
+        self.pluginUsage = pluginUsage
+        self.cacheUsage = cacheUsage
+        self.usagePrecision = usagePrecision
+        self.generatedAt = generatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case stats
+        case dailyUsage
+        case recentBins
+        case hourlyUsage
+        case pluginUsage
+        case cacheUsage
+        case usagePrecision
+        case generatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        stats = try container.decode(DashboardStats.self, forKey: .stats)
+        dailyUsage = try container.decode([DayUsage].self, forKey: .dailyUsage)
+        recentBins = try container.decode([BinUsage].self, forKey: .recentBins)
+        hourlyUsage = try container.decode([BinUsage].self, forKey: .hourlyUsage)
+        pluginUsage = try container.decode([PluginUsage].self, forKey: .pluginUsage)
+        cacheUsage = try container.decode(TokenCacheUsage.self, forKey: .cacheUsage)
+        usagePrecision = try container.decodeIfPresent(DashboardUsagePrecision.self, forKey: .usagePrecision) ?? .precise
+        generatedAt = try container.decode(Date.self, forKey: .generatedAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(stats, forKey: .stats)
+        try container.encode(dailyUsage, forKey: .dailyUsage)
+        try container.encode(recentBins, forKey: .recentBins)
+        try container.encode(hourlyUsage, forKey: .hourlyUsage)
+        try container.encode(pluginUsage, forKey: .pluginUsage)
+        try container.encode(cacheUsage, forKey: .cacheUsage)
+        try container.encode(usagePrecision, forKey: .usagePrecision)
+        try container.encode(generatedAt, forKey: .generatedAt)
+    }
 }
 
 extension Int {

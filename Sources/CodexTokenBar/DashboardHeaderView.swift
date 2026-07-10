@@ -51,7 +51,9 @@ struct HeaderView: View {
     let dataSourceLabel: String
     let dataSourceOrigin: String
     let isRefreshing: Bool
+    let unreadThreadCount: Int
     let onRefresh: () -> Void
+    let onMarkAllRead: () -> Void
     let onChangeDirectory: () -> Void
     let onOpenProviderSync: () -> Void
     @Binding var showingInterfaceScaleMenu: Bool
@@ -159,24 +161,36 @@ struct HeaderView: View {
 
                     Spacer(minLength: 8)
 
+                    if unreadThreadCount > 0 {
+                        Button(action: onMarkAllRead) {
+                            Label("全部已读", systemImage: "checkmark.circle")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("未读会话全部已读")
+                    }
+
                     Button(action: onRefresh) {
                         Label(isRefreshing ? "刷新中" : "立即刷新", systemImage: "arrow.clockwise")
                             .font(.system(size: 13, weight: .medium))
                     }
                     .buttonStyle(.bordered)
                     .disabled(isRefreshing)
+                    .accessibilityLabel(isRefreshing ? "刷新中" : "立即刷新")
 
                     Button(action: onChangeDirectory) {
                         Label("更改目录", systemImage: "folder")
                             .font(.system(size: 13, weight: .medium))
                     }
                     .buttonStyle(.bordered)
+                    .accessibilityLabel("更改目录")
 
                     Button(action: onOpenProviderSync) {
                         Label("会话消失修复", systemImage: "wrench.and.screwdriver")
                             .font(.system(size: 13, weight: .medium))
                     }
                     .buttonStyle(.bordered)
+                    .accessibilityLabel("会话消失修复")
                 }
                 .font(.system(size: 14))
                 .padding(.leading, 12)
@@ -238,20 +252,83 @@ struct DataSourceBadge: View {
     }
 }
 
+struct StatStripStatusLinePresentation: Equatable {
+    let text: String
+    let showsProgress: Bool
+
+    init?(
+        hasPreciseTokenUsage: Bool,
+        isPreparingUsageCache: Bool,
+        cacheStatus: String
+    ) {
+        if isPreparingUsageCache {
+            let trimmedStatus = cacheStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+            let statusText = trimmedStatus.isEmpty ? "后台准备中" : trimmedStatus
+            text = "正在初始化本地统计缓存 · \(statusText)"
+            showsProgress = true
+            return
+        }
+
+        guard !hasPreciseTokenUsage else { return nil }
+        text = "仅显示会话元数据，精确 token 仍在读取，请稍后。"
+        showsProgress = false
+    }
+}
+
 struct StatStrip: View {
-    let stats: DashboardStats
+    let snapshot: DashboardSnapshot
+    var isPreparingUsageCache = false
+    var cacheStatus = ""
+
+    private var stats: DashboardStats {
+        snapshot.stats
+    }
+
+    private var isMetadataOnly: Bool {
+        !snapshot.hasPreciseTokenUsage
+    }
+
+    private func tokenValue(_ value: String) -> String {
+        isMetadataOnly ? "待读取" : value
+    }
+
+    private var statusLine: StatStripStatusLinePresentation? {
+        StatStripStatusLinePresentation(
+            hasPreciseTokenUsage: snapshot.hasPreciseTokenUsage,
+            isPreparingUsageCache: isPreparingUsageCache,
+            cacheStatus: cacheStatus
+        )
+    }
 
     var body: some View {
-        HStack(spacing: 0) {
-            StatCell(value: stats.totalTokens.abbreviatedTokens, label: "累计 Token 数")
-            Divider().frame(height: 40)
-            StatCell(value: stats.peakDayTokens.abbreviatedTokens, label: "峰值 Token 数")
-            Divider().frame(height: 40)
-            StatCell(value: stats.peakThreadTokens.abbreviatedTokens, label: "单会话最大 Token")
-            Divider().frame(height: 40)
-            StatCell(value: "\(stats.currentStreakDays) 天", label: "当前连续天数")
-            Divider().frame(height: 40)
-            StatCell(value: "\(stats.longestStreakDays) 天", label: "最长连续天数")
+        VStack(spacing: 2) {
+            HStack(spacing: 0) {
+                StatCell(value: tokenValue(stats.totalTokens.abbreviatedTokens), label: "累计 Token 数")
+                Divider().frame(height: 40)
+                StatCell(value: tokenValue(stats.peakDayTokens.abbreviatedTokens), label: "峰值 Token 数")
+                Divider().frame(height: 40)
+                StatCell(value: tokenValue(stats.peakThreadTokens.abbreviatedTokens), label: "单会话最大 Token")
+                Divider().frame(height: 40)
+                StatCell(value: tokenValue("\(stats.currentStreakDays) 天"), label: "当前连续天数")
+                Divider().frame(height: 40)
+                StatCell(value: tokenValue("\(stats.longestStreakDays) 天"), label: "最长连续天数")
+            }
+
+            if let statusLine {
+                HStack(spacing: 5) {
+                    if statusLine.showsProgress {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .progressViewStyle(.circular)
+                    }
+                    Text(statusLine.text)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
         }
         .frame(height: 70)
         .background(

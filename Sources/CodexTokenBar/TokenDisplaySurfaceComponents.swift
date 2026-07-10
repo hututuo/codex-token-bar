@@ -4,6 +4,7 @@ import SwiftUI
 struct TokenQuotaMiniStrip: View {
     let snapshot: AccountQuotaSnapshot
     @Environment(\.tokenDisplayScale) private var displayScale
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     var body: some View {
         GeometryReader { proxy in
@@ -20,7 +21,7 @@ struct TokenQuotaMiniStrip: View {
                 if !snapshot.isAvailable {
                     Text("额度 --")
                         .font(.system(size: 9.2.scaled(by: displayScale), weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(textPalette.secondaryColor)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
@@ -47,6 +48,7 @@ struct TokenQuotaMiniStrip: View {
 struct TokenQuotaMiniSegment: View {
     let window: AccountQuotaWindow
     @Environment(\.tokenDisplayScale) private var displayScale
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     private var fillFraction: CGFloat {
         CGFloat(Double(window.remainingPercent) / 100.0)
@@ -56,22 +58,23 @@ struct TokenQuotaMiniSegment: View {
         GeometryReader { proxy in
             let clampedFraction = min(max(fillFraction, 0), 1)
             let fillWidth = proxy.size.width * clampedFraction
+            let quotaSegmentShape = quotaSegmentShape(height: proxy.size.height)
             ZStack(alignment: .leading) {
                 ZStack(alignment: .leading) {
-                    Capsule()
+                    quotaSegmentShape
                         .fill(floatingTrackColor)
                     if fillWidth > 0 {
-                        Capsule()
+                        quotaSegmentShape
                             .fill(AppTheme.accentBlue.opacity(0.78))
                             .frame(width: min(proxy.size.width, max(proxy.size.height, fillWidth)), height: proxy.size.height)
                     }
                 }
-                .clipShape(Capsule())
-                .overlay(Capsule().stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
+                .clipShape(quotaSegmentShape)
+                .overlay(quotaSegmentShape.stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
 
                 Text("\(window.compactDisplayLabel) \(window.remainingPercent)% \(window.compactResetText)")
                     .font(.system(size: 9.4.scaled(by: displayScale), weight: .bold))
-                    .foregroundStyle(.primary.opacity(0.82))
+                    .foregroundStyle(textPalette.primaryColor)
                     .monospacedDigit()
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -82,6 +85,11 @@ struct TokenQuotaMiniSegment: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(window.displayLabel)额度")
         .accessibilityValue("剩余 \(window.remainingPercent)%，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
+    }
+
+    private func quotaSegmentShape(height: CGFloat) -> RoundedRectangle {
+        let quotaSegmentCornerRadius = max(4.scaled(by: displayScale), height * 0.34)
+        return RoundedRectangle(cornerRadius: quotaSegmentCornerRadius, style: .continuous)
     }
 
     private var floatingTrackColor: Color {
@@ -101,14 +109,135 @@ struct TokenQuotaMiniSegment: View {
     }
 }
 
+struct TokenDisplayUsageStatusLine: View {
+    let text: String
+    @Environment(\.tokenDisplayScale) private var displayScale
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 9.5.scaled(by: displayScale), weight: .semibold))
+            .foregroundStyle(textPalette.primaryColor)
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .truncationMode(.tail)
+            .padding(.horizontal, 6.scaled(by: displayScale))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("趣味化余量")
+            .accessibilityValue(text)
+    }
+}
+
+struct TokenDisplayRadarStrip: View {
+    let presentation: CodexRadarPresentationState
+    @Environment(\.tokenDisplayScale) private var displayScale
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
+    @Environment(\.tokenDisplayRadarActionTextPalette) private var actionTextPalette
+    @Environment(\.tokenDisplayRadarModelTextPalette) private var modelTextPalette
+
+    var body: some View {
+        let snapshot = presentation.snapshot
+        let primary = snapshot?.modelIQ.primaryModelRow.point
+        let actionPalette = actionTextPalette ?? textPalette
+        let modelPalette = modelTextPalette ?? textPalette
+        HStack(spacing: 7.scaled(by: displayScale)) {
+            VStack(alignment: .leading, spacing: 2.scaled(by: displayScale)) {
+                HStack(alignment: .firstTextBaseline, spacing: 3.scaled(by: displayScale)) {
+                    Text("动作 \(snapshot?.recommendedAction ?? "--")")
+                        .font(.system(size: 9.3.scaled(by: displayScale), weight: .bold))
+                        .foregroundStyle(actionPalette.primaryColor)
+                    if let marker = presentation.compactMarkerText {
+                        Text(marker)
+                            .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold, design: .rounded))
+                            .foregroundStyle(actionPalette.secondaryColor)
+                            .padding(.horizontal, 2.4.scaled(by: displayScale))
+                            .padding(.vertical, 0.8.scaled(by: displayScale))
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(actionPalette.secondaryColor.opacity(0.16))
+                            )
+                    }
+                }
+                Text("24h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))  48h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))")
+                    .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
+                    .foregroundStyle(actionPalette.secondaryColor)
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.74)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Rectangle()
+                .fill(textPalette.dividerColor)
+                .frame(width: 1, height: 19.scaled(by: displayScale))
+
+            VStack(alignment: .leading, spacing: 1.scaled(by: displayScale)) {
+                HStack(alignment: .lastTextBaseline, spacing: 3.scaled(by: displayScale)) {
+                    Text(primary?.scoreDisplayText ?? "IQ --")
+                        .font(.system(size: 11.8.scaled(by: displayScale), weight: .bold, design: .rounded))
+                        .foregroundStyle(modelPalette.primaryColor)
+                        .monospacedDigit()
+                    Text(primary?.modelDisplayName ?? "模型 --")
+                        .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
+                        .foregroundStyle(modelPalette.primaryColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                }
+                Text(tokenDisplayRadarSecondaryIQText(snapshot))
+                    .font(.system(size: 8.1.scaled(by: displayScale), weight: .semibold))
+                    .foregroundStyle(modelPalette.secondaryColor)
+                    .monospacedDigit()
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .foregroundStyle(textPalette.primaryColor)
+        .lineLimit(1)
+        .minimumScaleFactor(0.72)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Codex 雷达")
+        .accessibilityValue(accessibilityText)
+    }
+
+    private var accessibilityText: String {
+        guard let snapshot = presentation.snapshot else {
+            return presentation.compactAccessibilityText ?? "等待读取"
+        }
+        let base = "建议 \(snapshot.recommendedAction)，24 小时概率 \(snapshot.prediction.probability24hPercent)%，48 小时概率 \(snapshot.prediction.probability48hPercent)%，\(snapshot.modelIQ.primaryModelRow.point.scoreDisplayText)"
+        guard let compactAccessibility = presentation.compactAccessibilityText else {
+            return base
+        }
+        return "\(base)，\(compactAccessibility)"
+    }
+}
+
+private func tokenDisplayRadarProbabilityText(_ percent: Int?) -> String {
+    guard let percent else { return "--" }
+    return "\(percent)%"
+}
+
+private func tokenDisplayRadarSecondaryIQText(_ snapshot: CodexRadarSnapshot?) -> String {
+    let rows = snapshot?.modelIQ.secondaryModelRows.prefix(2) ?? []
+    guard !rows.isEmpty else { return "其他模型 --" }
+    return rows.map { row in
+        "\(tokenDisplayRadarShortModelLabel(row.label)) \(CodexRadarModelIQPoint.display(row.point.score))"
+    }.joined(separator: "  ")
+}
+
+private func tokenDisplayRadarShortModelLabel(_ label: String) -> String {
+    label
+        .replacingOccurrences(of: "GPT-5.5 ", with: "")
+        .replacingOccurrences(of: "GPT-5.4 ", with: "5.4 ")
+        .replacingOccurrences(of: "xhigh", with: "X high")
+}
+
 struct TokenDisplayRateBar: View {
     let rate: Double
-    let usageStatus: String
-    let lockState: TokenDisplayLockState?
-    let lockTargetDescription: String?
-    let onToggleLock: (() -> Void)?
-    let onClose: (() -> Void)?
+    let usageStatus: String?
     @Environment(\.tokenDisplayScale) private var displayScale
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
+    @Environment(\.tokenDisplayEmbeddedUsageStatusTextPalette) private var embeddedUsageStatusTextPalette
     @AppStorage(TokenRateScaleSettings.key) private var tokenRateFullScale = TokenRateScaleSettings.defaultValue
 
     private var fillFraction: CGFloat {
@@ -116,106 +245,55 @@ struct TokenDisplayRateBar: View {
         return CGFloat(min(max(rate, 0), scale) / scale)
     }
 
-    private var controlHitSize: CGFloat {
-        max(30, 24.scaled(by: displayScale))
-    }
-
-    private var leadingControlInset: CGFloat {
-        lockState != nil && onToggleLock != nil ? 13.scaled(by: displayScale) : 0
-    }
-
-    private var trailingControlInset: CGFloat {
-        onClose != nil ? 11.scaled(by: displayScale) : 0
-    }
-
-    private var lockHelpText: String {
-        guard lockState == .locked else {
-            return TokenDisplayLockState.unlocked.helpText
-        }
-        if let lockTargetDescription, !lockTargetDescription.isEmpty {
-            return "已锁定到 \(lockTargetDescription)"
-        }
-        return TokenDisplayLockState.locked.helpText
-    }
-
     var body: some View {
         GeometryReader { proxy in
-            let height = 30.scaled(by: displayScale)
+            let height = FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale)
             let statusHeight = 13.scaled(by: displayScale)
-            let barHeight = 5.scaled(by: displayScale)
-            let contentDrop = 3.5.scaled(by: displayScale)
-            let statusTextDrop = contentDrop + 2.scaled(by: displayScale)
-            let barTop = 18.scaled(by: displayScale) + contentDrop
-            let leadingInset = leadingControlInset
-            let trailingInset = trailingControlInset
-            let contentWidth = max(1, proxy.size.width - leadingInset - trailingInset)
-            let barWidth = max(1, proxy.size.width - trailingInset)
-            let fillWidth = max(3.scaled(by: displayScale), barWidth * fillFraction)
+            let barHeight = 5.5.scaled(by: displayScale)
+            let statusBarGap = 4.scaled(by: displayScale)
+            let contentHeight = usageStatus == nil ? barHeight : statusHeight + statusBarGap + barHeight
+            let contentTop = max(0, (height - contentHeight) / 2)
+            let barWidth = max(1, proxy.size.width)
+            let minimumFillFraction = 3.scaled(by: displayScale) / barWidth
+            let statusCenterY = contentTop + statusHeight / 2
+            let barCenterY = usageStatus == nil
+                ? height / 2
+                : contentTop + statusHeight + statusBarGap + barHeight / 2
+            let statusPalette = embeddedUsageStatusTextPalette ?? textPalette
 
             ZStack(alignment: .topLeading) {
-                Text(usageStatus)
-                    .font(.system(size: 10.2.scaled(by: displayScale), weight: .semibold))
-                    .foregroundStyle(.secondary.opacity(0.92))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.86)
-                    .truncationMode(.tail)
-                    .frame(width: contentWidth, height: statusHeight, alignment: .leading)
-                    .position(x: leadingInset + contentWidth / 2, y: statusHeight / 2 + statusTextDrop)
+                if let usageStatus {
+                    Text(usageStatus)
+                        .font(.system(size: 9.1.scaled(by: displayScale), weight: .semibold))
+                        .foregroundStyle(statusPalette.primaryColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.86)
+                        .truncationMode(.tail)
+                        .frame(width: barWidth, height: statusHeight, alignment: .leading)
+                        .position(x: barWidth / 2, y: statusCenterY)
+                }
 
                 ZStack(alignment: .leading) {
                     Capsule()
                         .fill(floatingTrackColor)
                         .overlay(Capsule().stroke(floatingTrackBorder, lineWidth: 0.45.scaled(by: displayScale)))
-                    Capsule()
-                        .fill(
-                            LinearGradient(
-                                colors: [Color.cyan.opacity(0.98), Color.blue.opacity(0.92)],
-                                startPoint: .bottom,
-                                endPoint: .top
-                            )
-                        )
-                        .frame(width: fillWidth)
+                    SmoothRateFillBar(
+                        fraction: Double(fillFraction),
+                        minimumFraction: Double(minimumFillFraction),
+                        colors: [Color.cyan.opacity(0.98), Color.blue.opacity(0.92)],
+                        startPoint: .bottom,
+                        endPoint: .top
+                    )
                 }
                 .frame(width: barWidth, height: barHeight, alignment: .leading)
-                .position(x: barWidth / 2, y: barTop + barHeight / 2)
-
-                controls
-                    .frame(width: proxy.size.width, height: height, alignment: .topLeading)
+                .position(x: barWidth / 2, y: barCenterY)
             }
             .frame(width: proxy.size.width, height: height, alignment: .topLeading)
         }
-        .frame(height: 30.scaled(by: displayScale), alignment: .top)
-    }
-
-    @ViewBuilder
-    private var controls: some View {
-        ZStack(alignment: .topLeading) {
-            if let lockState, let onToggleLock {
-                Button(action: onToggleLock) {
-                    Image(systemName: lockState.systemImage)
-                        .font(.system(size: 7.8.scaled(by: displayScale), weight: .bold))
-                        .foregroundStyle(.primary.opacity(0.88))
-                        .frame(width: controlHitSize, height: controlHitSize, alignment: .center)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(lockHelpText)
-                .position(x: 4.5.scaled(by: displayScale), y: 3.5.scaled(by: displayScale))
-            }
-
-            if let onClose {
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 7.8.scaled(by: displayScale), weight: .bold))
-                        .foregroundStyle(.secondary.opacity(0.76))
-                        .frame(width: controlHitSize, height: controlHitSize, alignment: .center)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                .offset(x: 7.scaled(by: displayScale), y: -5.scaled(by: displayScale))
-            }
-        }
+        .frame(height: FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale), alignment: .center)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("实时速率条")
+        .accessibilityValue(String(format: "%.1f token 每秒", rate))
     }
 
     private var floatingTrackColor: Color {
@@ -239,15 +317,17 @@ struct TokenDisplayMetric: View {
     let label: String
     let value: String
     @Environment(\.tokenDisplayScale) private var displayScale
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     var body: some View {
         HStack(spacing: 3.scaled(by: displayScale)) {
             Text(label)
                 .font(.system(size: 9.4.scaled(by: displayScale), weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(textPalette.secondaryColor)
                 .lineLimit(1)
             Text(value)
                 .font(.system(size: 9.4.scaled(by: displayScale), weight: .semibold))
+                .foregroundStyle(textPalette.primaryColor)
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)

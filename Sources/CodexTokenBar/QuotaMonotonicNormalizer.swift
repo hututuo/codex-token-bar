@@ -30,6 +30,9 @@ enum QuotaMonotonicNormalizer {
 
         guard current < previous else { return current }
         if isSameObservedCycle(currentResetsAt: currentResetsAt, previousResetsAt: previousResetsAt) {
+            if previous - current >= 20 {
+                return current
+            }
             return previous
         }
         return current

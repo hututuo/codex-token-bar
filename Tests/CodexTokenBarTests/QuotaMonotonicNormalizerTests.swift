@@ -67,6 +67,18 @@ final class QuotaMonotonicNormalizerTests: XCTestCase {
         XCTAssertEqual(adjusted, 1)
     }
 
+    func testRecoveredFullUsageSpikeCanReturnToFreshLowerReadingWithinSameReset() {
+        let reset = Date(timeIntervalSince1970: 10_000)
+        let adjusted = QuotaMonotonicNormalizer.normalizedUsedPercent(
+            currentUsedPercent: 2,
+            currentResetsAt: reset,
+            previousUsedPercent: 100,
+            previousResetsAt: reset
+        )
+
+        XCTAssertEqual(adjusted, 2)
+    }
+
     func testDifferentResetWindowIsNotStitchedToPreviousCycle() {
         let previousReset = Date(timeIntervalSince1970: 10_000)
         let currentReset = Date(timeIntervalSince1970: 80_000)

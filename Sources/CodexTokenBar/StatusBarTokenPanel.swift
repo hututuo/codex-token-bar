@@ -11,13 +11,21 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
     private weak var store: CodexUsageStore?
     private weak var monitor: LiveRateMonitor?
     private weak var quota: AccountQuotaStore?
+    private weak var taskCompletionMonitor: TaskCompletionMonitor?
     private var onClose: (() -> Void)?
-    private var lastStatusTitle: String?
+    private var lastStatusPresentation: StatusBarTokenItemPresentation?
 
-    func show(store: CodexUsageStore, monitor: LiveRateMonitor, quota: AccountQuotaStore, onClose: @escaping () -> Void) {
+    func show(
+        store: CodexUsageStore,
+        monitor: LiveRateMonitor,
+        quota: AccountQuotaStore,
+        taskCompletionMonitor: TaskCompletionMonitor,
+        onClose: @escaping () -> Void
+    ) {
         self.store = store
         self.monitor = monitor
         self.quota = quota
+        self.taskCompletionMonitor = taskCompletionMonitor
         self.onClose = onClose
 
         if statusItem == nil {
@@ -39,9 +47,14 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
             popover.behavior = .transient
             popover.animates = false
             popover.delegate = self
-            popover.contentSize = NSSize(width: 360, height: 310)
+            popover.contentSize = NSSize(width: 360, height: 336)
             popover.contentViewController = NSHostingController(
-                rootView: StatusBarTokenPopoverView(store: store, monitor: monitor, quota: quota) { [weak self] in
+                rootView: StatusBarTokenPopoverView(
+                    store: store,
+                    monitor: monitor,
+                    quota: quota,
+                    taskCompletionMonitor: taskCompletionMonitor
+                ) { [weak self] in
                     self?.onClose?()
                 }
             )
@@ -67,7 +80,7 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
             NSStatusBar.system.removeStatusItem(statusItem)
         }
         statusItem = nil
-        lastStatusTitle = nil
+        lastStatusPresentation = nil
         isPresented = false
     }
 
@@ -85,28 +98,73 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
     }
 
     private func updateStatusItem() {
-        guard let store, let monitor, let quota else { return }
+        guard let store, let monitor, let quota, let taskCompletionMonitor else { return }
+        if let hostingController = popover?.contentViewController as? NSHostingController<StatusBarTokenPopoverView> {
+            hostingController.rootView = StatusBarTokenPopoverView(
+                store: store,
+                monitor: monitor,
+                quota: quota,
+                taskCompletionMonitor: taskCompletionMonitor
+            ) { [weak self] in
+                self?.onClose?()
+            }
+        }
         let snapshot = TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota)
         guard let button = statusItem?.button else { return }
         let title = "    \(snapshot.statusBarTitle)    "
-        guard title != lastStatusTitle else { return }
+        let presentation = StatusBarTokenItemPresentation(
+            title: title,
+            accessibilityValue: statusBarAccessibilityValue(
+                snapshot,
+                unreadThreadCount: taskCompletionMonitor.unreadThreadCount
+            )
+        )
+        guard presentation.needsApply(previous: lastStatusPresentation) else { return }
 
-        button.title = title
+        button.title = presentation.title
         button.setAccessibilityLabel("Codex Token Bar 状态栏速率")
-        button.setAccessibilityValue(statusBarAccessibilityValue(snapshot))
+        button.setAccessibilityValue(presentation.accessibilityValue)
         let length = max(132, button.intrinsicContentSize.width + 48)
         statusItem?.length = length
-        lastStatusTitle = title
+        lastStatusPresentation = presentation
     }
 
-    private func statusBarAccessibilityValue(_ snapshot: TokenDisplaySnapshot) -> String {
-        [
+    private func statusBarAccessibilityValue(_ snapshot: TokenDisplaySnapshot, unreadThreadCount: Int) -> String {
+        var parts = [
             String(format: "实时速率 %.1f token 每秒", snapshot.rate),
-            "累计 \(snapshot.consumedTokens.abbreviatedTokens) token",
-            "今天 \(snapshot.todayTokens.abbreviatedTokens) token",
-            "今天 \(snapshot.todayRequests) 次请求",
+            "累计 \(snapshot.consumedTokensText)",
+            "今天 \(snapshot.todayTokensText)",
+            "今天 \(snapshot.todayRequestsText) 次请求",
             snapshot.compactUsageStatus
-        ].joined(separator: "；")
+        ]
+        if !snapshot.hasPreciseTokenUsage {
+            parts.append("当前仅显示会话元数据，精确 token 仍在读取")
+        }
+        if unreadThreadCount > 0 {
+            parts.append("未读会话 \(unreadThreadCount) 个")
+        }
+        return parts.joined(separator: "；")
+    }
+}
+
+struct StatusBarTokenItemPresentation: Equatable {
+    let title: String
+    let accessibilityValue: String
+
+    func needsApply(previous: StatusBarTokenItemPresentation?) -> Bool {
+        previous != self
+    }
+}
+
+struct StatusBarUsageMetricsPresentation: Equatable {
+    let totalTokens: String
+    let todayTokens: String
+    let todayRequests: String
+
+    init(snapshot: TokenDisplaySnapshot) {
+        totalTokens = snapshot.consumedTokensText
+        todayTokens = snapshot.todayTokensText
+        todayRequests = snapshot.todayRequestsText
     }
 }
 
@@ -114,6 +172,7 @@ struct StatusBarTokenPopoverView: View {
     @ObservedObject var store: CodexUsageStore
     @ObservedObject var monitor: LiveRateMonitor
     @ObservedObject var quota: AccountQuotaStore
+    @ObservedObject var taskCompletionMonitor: TaskCompletionMonitor
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(InterfaceScaleSettings.autoEnabledKey) private var interfaceScaleAutoEnabled = InterfaceScaleSettings.defaultAutoEnabled
     @AppStorage(InterfaceScaleSettings.manualMultiplierKey) private var interfaceScaleManualMultiplier = InterfaceScaleSettings.defaultManualMultiplier
@@ -132,6 +191,7 @@ struct StatusBarTokenPopoverView: View {
     var body: some View {
         let snapshot = TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota)
         let live = monitor.totalSnapshot
+        let usageMetrics = StatusBarUsageMetricsPresentation(snapshot: snapshot)
         let interfaceScale = CGFloat(
             InterfaceScaleSettings.effectiveScale(
                 manualMultiplier: interfaceScaleManualMultiplier,
@@ -139,7 +199,7 @@ struct StatusBarTokenPopoverView: View {
                 screen: InterfaceScaleSettings.activeScreen()
             )
         )
-        let baseSize = CGSize(width: 360, height: 310)
+        let baseSize = CGSize(width: 360, height: 336)
 
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 10) {
@@ -189,15 +249,31 @@ struct StatusBarTokenPopoverView: View {
             StatusBarRateTrack(rate: snapshot.rate)
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 7), count: 2), spacing: 7) {
-                StatusBarMetricTile(title: "累计 Token", value: snapshot.consumedTokens.abbreviatedTokens)
-                StatusBarMetricTile(title: "今日 Token", value: snapshot.todayTokens.abbreviatedTokens)
-                StatusBarMetricTile(title: "今日请求", value: "\(snapshot.todayRequests)")
+                StatusBarMetricTile(title: "累计 Token", value: usageMetrics.totalTokens)
+                StatusBarMetricTile(title: "今日 Token", value: usageMetrics.todayTokens)
+                StatusBarMetricTile(title: "今日请求", value: usageMetrics.todayRequests)
                 StatusBarMetricTile(title: "模型生成", value: "\(live.breakdown.modelGenerated)")
             }
 
             VStack(alignment: .leading, spacing: 6) {
                 StatusBarQuotaLine(title: "5h", window: snapshot.quota.fiveHour)
                 StatusBarQuotaLine(title: "7d", window: snapshot.quota.sevenDay)
+            }
+
+            if taskCompletionMonitor.unreadThreadCount > 0 {
+                HStack(spacing: 8) {
+                    Label("\(taskCompletionMonitor.unreadThreadCount) 个未读", systemImage: "bell.badge")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(AppTheme.accentOrange)
+                    Spacer(minLength: 8)
+                    Button {
+                        taskCompletionMonitor.markAllRead()
+                    } label: {
+                        Label("全部已读", systemImage: "checkmark.circle")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .buttonStyle(.borderless)
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -214,7 +290,7 @@ struct StatusBarTokenPopoverView: View {
             }
         }
         .padding(16)
-        .frame(width: 360, height: 310, alignment: .topLeading)
+        .frame(width: 360, height: 336, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(panelFill)

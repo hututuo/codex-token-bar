@@ -31,12 +31,13 @@ final class InterfaceScaleSettingsTests: XCTestCase {
     }
 
     func testEffectiveScaleIgnoresManualWhenAutoIsEnabled() {
+        let automaticScale = InterfaceScaleSettings.autoScale(for: nil)
         let scale = InterfaceScaleSettings.effectiveScale(
             manualMultiplier: 1.38,
             autoEnabled: true,
             screen: nil
         )
-        XCTAssertEqual(scale, 1.0, accuracy: 0.001)
+        XCTAssertEqual(scale, automaticScale, accuracy: 0.001)
     }
 
     func testManualScaleAllowsUpToOneHundredThirtyEightPercent() {
@@ -76,9 +77,18 @@ final class InterfaceScaleSettingsTests: XCTestCase {
             skillsExplored: 0,
             totalSkillsUsed: 0
         )
+        let snapshot = DashboardSnapshot(
+            stats: stats,
+            dailyUsage: [],
+            recentBins: [],
+            hourlyUsage: [],
+            pluginUsage: [],
+            cacheUsage: .empty,
+            generatedAt: Date(timeIntervalSince1970: 1_800)
+        )
 
         let content = InterfaceScaledContainer(scale: 1.30, visualWidth: 980 * 1.30) {
-            StatStrip(stats: stats)
+            StatStrip(snapshot: snapshot)
         }
         let hostingView = NSHostingView(rootView: content)
         hostingView.frame = NSRect(x: 0, y: 0, width: 980 * 1.30, height: 400)
