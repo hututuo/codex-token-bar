@@ -83,20 +83,19 @@ pub fn default_codex_home_status() -> CodexHomeStatus {
 
 pub fn save_codex_home(path: &str) -> Result<CodexHomeStatus, String> {
     let path = validate_codex_home(path)?;
-    let mut settings = read_app_settings()?;
-    settings.codex_home = Some(path.display().to_string());
-    settings::write_app_settings(&settings)?;
+    let saved_path = path.display().to_string();
+    settings::mutate_app_settings(|settings| {
+        settings.codex_home = Some(saved_path.clone());
+    })?;
     Ok(CodexHomeStatus {
         exists: path.exists(),
-        path: path.display().to_string(),
+        path: saved_path,
         source: "manual".into(),
     })
 }
 
 pub fn reset_codex_home() -> Result<CodexHomeStatus, String> {
-    let mut settings = read_app_settings()?;
-    settings.codex_home = None;
-    settings::write_app_settings(&settings)?;
+    settings::mutate_app_settings(|settings| settings.codex_home = None)?;
     Ok(default_codex_home_status())
 }
 
