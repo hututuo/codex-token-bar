@@ -137,7 +137,7 @@ curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/script
 curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/scripts/patch_codex_desktop_sidebar.sh | bash -s -- rollback
 ```
 
-脚本会备份 `app.asar` 和原始签名，本地改写 Codex Desktop renderer bundle，重新 ad-hoc 签名 `Codex.app` 并重新打开。它不会修改 `~/.codex` 数据。后续官方 Codex 更新可能会覆盖这个补丁。
+脚本会按 bundle identifier 自动发现已安装的 Codex Desktop App，也可通过 `CODEX_APP_PATH` 或 `--app PATH` 显式指定。随后它会备份 `app.asar` 和原始签名，本地改写 renderer bundle，重新 ad-hoc 签名并打开该 App。它不会修改 `~/.codex` 数据。后续官方 Codex 更新可能会覆盖这个补丁。
 
 ## 数据源
 
@@ -314,7 +314,7 @@ Rollback:
 curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/scripts/patch_codex_desktop_sidebar.sh | bash -s -- rollback
 ```
 
-The patch backs up `app.asar` and the original signature, rewrites the Codex Desktop renderer bundle locally, ad-hoc re-signs `Codex.app`, and reopens Codex. It does not modify `~/.codex` data.
+The script auto-discovers the installed Codex Desktop app by bundle identifier, or accepts an explicit path through `CODEX_APP_PATH` or `--app PATH`. It then backs up `app.asar` and the original signature, rewrites the renderer bundle locally, ad-hoc re-signs the selected app, and reopens it. It does not modify `~/.codex` data.
 
 ## Data Sources
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_PATH="${CODEX_APP_PATH:-/Applications/Codex.app}"
+APP_PATH="${CODEX_APP_PATH:-}"
 BACKUP_ROOT="${CODEX_SIDEBAR_PATCH_BACKUP_ROOT:-$HOME/Library/Application Support/CodexTokenBar/codex-desktop-sidebar-patch/backups}"
 ACTION="${1:-install}"
 
@@ -24,7 +24,7 @@ Usage:
   patch_codex_desktop_sidebar.sh rollback [options]
 
 Options:
-  --app PATH          Codex.app path. Default: /Applications/Codex.app
+  --app PATH          Codex app path. Default: auto-detect by bundle identifier.
   --backup-root DIR  Backup root. Default: ~/Library/Application Support/CodexTokenBar/codex-desktop-sidebar-patch/backups
   --backup DIR       Roll back from a specific backup directory.
   --dry-run          Build and verify the patched ASAR without installing it.
@@ -89,7 +89,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$ACTION" in
-  install|status|rollback) ;;
+  install|status|rollback|resolve-app) ;;
   -h|--help)
     usage
     exit 0
@@ -101,18 +101,77 @@ esac
 
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 command -v shasum >/dev/null 2>&1 || fail "shasum is required"
+command -v plutil >/dev/null 2>&1 || fail "plutil is required"
+
+validate_codex_app() {
+  local candidate="$1" bundle_id
+  [[ -d "$candidate" ]] || return 1
+  [[ -f "$candidate/Contents/Info.plist" ]] || return 1
+  [[ -f "$candidate/Contents/Resources/app.asar" ]] || return 1
+  bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$candidate/Contents/Info.plist" 2>/dev/null || true)"
+  [[ "$bundle_id" == "com.openai.codex" ]]
+}
+
+discover_codex_app() {
+  local candidate root
+
+  if [[ "${CODEX_APP_MDFIND_DISABLE:-0}" != "1" ]] && command -v mdfind >/dev/null 2>&1; then
+    while IFS= read -r candidate; do
+      if validate_codex_app "$candidate"; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+    done < <(mdfind 'kMDItemCFBundleIdentifier == "com.openai.codex"' 2>/dev/null || true)
+  fi
+
+  if [[ -n "${CODEX_APP_DISCOVERY_ROOTS:-}" ]]; then
+    while IFS= read -r root; do
+      [[ -n "$root" ]] || continue
+      while IFS= read -r candidate; do
+        if validate_codex_app "$candidate"; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      done < <(find "$root" -mindepth 1 -maxdepth 1 -name '*.app' -print 2>/dev/null | LC_ALL=C sort)
+    done < <(printf '%s\n' "$CODEX_APP_DISCOVERY_ROOTS" | tr ':' '\n')
+  else
+    for root in /Applications "$HOME/Applications"; do
+      while IFS= read -r candidate; do
+        if validate_codex_app "$candidate"; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      done < <(find "$root" -mindepth 1 -maxdepth 1 -name '*.app' -print 2>/dev/null | LC_ALL=C sort)
+    done
+  fi
+
+  return 1
+}
+
+if [[ -n "$APP_PATH" ]]; then
+  validate_codex_app "$APP_PATH" || fail "Codex app is invalid or missing required resources: $APP_PATH"
+else
+  APP_PATH="$(discover_codex_app)" || fail "Codex app was not found by bundle identifier in LaunchServices or the standard Applications folders. Use --app PATH or CODEX_APP_PATH."
+fi
+
+if [[ "$ACTION" == "resolve-app" ]]; then
+  printf '%s\n' "$APP_PATH"
+  exit 0
+fi
 
 ASAR_PATH="$APP_PATH/Contents/Resources/app.asar"
 SIGNATURE_PATH="$APP_PATH/Contents/_CodeSignature"
 
-[[ -d "$APP_PATH" ]] || fail "Codex.app not found: $APP_PATH"
+[[ -d "$APP_PATH" ]] || fail "Codex app not found: $APP_PATH"
 [[ -f "$ASAR_PATH" ]] || fail "app.asar not found: $ASAR_PATH"
 
 quit_codex_if_needed() {
+  local executable_name
   [[ "$QUIT_CODEX" == "1" ]] || return 0
-  if pgrep -x Codex >/dev/null 2>&1; then
-    log "Quitting Codex so the patched renderer can be loaded cleanly..."
-    osascript -e 'quit app "Codex"' >/dev/null 2>&1 || true
+  executable_name="$(plutil -extract CFBundleExecutable raw -o - "$APP_PATH/Contents/Info.plist" 2>/dev/null || true)"
+  if [[ -n "$executable_name" ]] && pgrep -x "$executable_name" >/dev/null 2>&1; then
+    log "Quitting the Codex app so the patched renderer can be loaded cleanly..."
+    osascript -e 'tell application id "com.openai.codex" to quit' >/dev/null 2>&1 || true
     sleep 2
   fi
 }
@@ -425,7 +484,7 @@ curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/script
 Manual rollback:
 
 \`\`\`bash
-osascript -e 'quit app "Codex"'
+osascript -e 'tell application id "com.openai.codex" to quit'
 sleep 2
 cp -p "$backup_dir/app.asar.before" "$ASAR_PATH"
 rm -rf "$SIGNATURE_PATH"
