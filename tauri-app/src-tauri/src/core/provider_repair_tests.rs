@@ -201,12 +201,16 @@ fn sqlite_sync_rejects_invalid_provider_before_mutation() {
 fn canonical_home_lease_rejects_concurrent_mutation_until_owner_exits() {
     let root = temp_root("provider-operation-lease");
     fs::create_dir_all(&root).unwrap();
+    let owner_operation_id = operation_id(&root, "owner");
+    let second_operation_id = operation_id(&root, "second");
+    let after_operation_id = operation_id(&root, "after");
     let owner_home = root.clone();
+    let thread_owner_operation_id = owner_operation_id.clone();
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
 
     let owner = thread::spawn(move || {
-        run_provider_mutation(&owner_home, "operation-a", || {
+        run_provider_mutation(&owner_home, &thread_owner_operation_id, || {
             entered_tx.send(()).unwrap();
             release_rx.recv().unwrap();
             Ok(())
@@ -215,49 +219,160 @@ fn canonical_home_lease_rejects_concurrent_mutation_until_owner_exits() {
 
     entered_rx.recv().unwrap();
     let alias = root.join(".");
-    let second = run_provider_mutation(&alias, "operation-b", || Ok(()));
+    let second = run_provider_mutation(&alias, &second_operation_id, || Ok(()));
     assert!(matches!(
         second,
         Err(ProviderOperationError::Busy {
             active_operation_id,
             ..
-        }) if active_operation_id == "operation-a"
+        }) if active_operation_id == owner_operation_id
     ));
-    assert!(read_provider_operation_status(&alias, "operation-a")
-        .unwrap()
-        .active);
-    assert!(!read_provider_operation_status(&alias, "operation-b")
-        .unwrap()
-        .active);
+    assert_eq!(
+        read_provider_operation_status(&owner_operation_id).lifecycle,
+        ProviderOperationLifecycle::Active
+    );
+    assert_eq!(
+        read_provider_operation_status(&second_operation_id).lifecycle,
+        ProviderOperationLifecycle::NotStarted
+    );
 
     release_tx.send(()).unwrap();
     owner.join().unwrap().unwrap();
-    assert!(!read_provider_operation_status(&root, "operation-a")
-        .unwrap()
-        .active);
-    run_provider_mutation(&root, "operation-c", || Ok(())).unwrap();
+    assert_eq!(
+        read_provider_operation_status(&owner_operation_id).lifecycle,
+        ProviderOperationLifecycle::Finished
+    );
+    run_provider_mutation(&root, &after_operation_id, || Ok(())).unwrap();
 
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn operation_status_keeps_home_a_active_after_selected_source_changes_to_home_b() {
+    let home_a = temp_root("provider-operation-home-a");
+    let home_b = temp_root("provider-operation-home-b");
+    fs::create_dir_all(&home_a).unwrap();
+    fs::create_dir_all(&home_b).unwrap();
+    let operation_a = operation_id(&home_a, "operation-a");
+    let operation_b = operation_id(&home_b, "operation-b");
+    let thread_operation_a = operation_a.clone();
+    let thread_home_a = home_a.clone();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+
+    assert_eq!(
+        read_provider_operation_status(&operation_a).lifecycle,
+        ProviderOperationLifecycle::NotStarted
+    );
+
+    let owner = thread::spawn(move || {
+        run_provider_mutation(&thread_home_a, &thread_operation_a, || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Ok(())
+        })
+    });
+    entered_rx.recv().unwrap();
+
+    run_provider_mutation(&home_b, &operation_b, || Ok(())).unwrap();
+    assert_eq!(
+        read_provider_operation_status(&operation_b).lifecycle,
+        ProviderOperationLifecycle::Finished
+    );
+    assert_eq!(
+        read_provider_operation_status(&operation_a).lifecycle,
+        ProviderOperationLifecycle::Active
+    );
+
+    release_tx.send(()).unwrap();
+    owner.join().unwrap().unwrap();
+    assert_eq!(
+        read_provider_operation_status(&operation_a).lifecycle,
+        ProviderOperationLifecycle::Finished
+    );
+
+    fs::remove_dir_all(home_a).unwrap();
+    fs::remove_dir_all(home_b).unwrap();
 }
 
 #[test]
 fn provider_operation_lease_releases_after_mutation_error() {
     let root = temp_root("provider-operation-error-release");
     fs::create_dir_all(&root).unwrap();
+    let failed_operation_id = operation_id(&root, "failed");
+    let after_operation_id = operation_id(&root, "after");
 
-    let failure = run_provider_mutation::<()>(&root, "operation-error", || {
+    let failure = run_provider_mutation::<()>(&root, &failed_operation_id, || {
         Err("fixture mutation failed".into())
     });
     assert!(matches!(
         failure,
         Err(ProviderOperationError::Failed { message }) if message == "fixture mutation failed"
     ));
-    assert!(!read_provider_operation_status(&root, "operation-error")
-        .unwrap()
-        .active);
-    run_provider_mutation(&root, "operation-after-error", || Ok(())).unwrap();
+    assert_eq!(
+        read_provider_operation_status(&failed_operation_id).lifecycle,
+        ProviderOperationLifecycle::Finished
+    );
+    run_provider_mutation(&root, &after_operation_id, || Ok(())).unwrap();
 
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dropping_stale_owner_does_not_erase_replacement_owner() {
+    let root = temp_root("provider-operation-replacement-owner");
+    fs::create_dir_all(&root).unwrap();
+    let stale_operation_id = operation_id(&root, "stale");
+    let replacement_operation_id = operation_id(&root, "replacement");
+    let stale_lease = acquire_provider_operation_lease(&root, &stale_operation_id).unwrap();
+    let canonical_home = canonical_codex_home(&root).unwrap();
+
+    {
+        let mut registry = provider_operation_registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        registry.replace_owner_for_test(canonical_home, replacement_operation_id.clone());
+    }
+
+    drop(stale_lease);
+    assert_eq!(
+        read_provider_operation_status(&replacement_operation_id).lifecycle,
+        ProviderOperationLifecycle::Active
+    );
+
+    {
+        let mut registry = provider_operation_registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        registry.finish(&replacement_operation_id);
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn finished_operation_tombstones_are_bounded_and_pruned_oldest_first() {
+    let root = temp_root("provider-operation-tombstones");
+    let canonical_home = root.join("canonical-home");
+    let mut registry = ProviderOperationRegistry::default();
+    let total = MAX_FINISHED_PROVIDER_OPERATIONS + 1;
+
+    for index in 0..total {
+        let operation_id = format!("operation-{index}");
+        registry
+            .acquire(canonical_home.join(index.to_string()), &operation_id)
+            .unwrap();
+        registry.finish(&operation_id);
+    }
+
+    assert_eq!(registry.finished_count(), MAX_FINISHED_PROVIDER_OPERATIONS);
+    assert_eq!(
+        registry.status("operation-0").lifecycle,
+        ProviderOperationLifecycle::NotStarted
+    );
+    assert_eq!(
+        registry.status(&format!("operation-{}", total - 1)).lifecycle,
+        ProviderOperationLifecycle::Finished
+    );
 }
 
 #[test]
@@ -271,6 +386,18 @@ fn provider_busy_error_serializes_as_typed_frontend_payload() {
     assert_eq!(value["kind"], "busy");
     assert_eq!(value["activeOperationId"], "operation-a");
     assert_eq!(value["message"], "busy");
+}
+
+#[test]
+fn provider_operation_lifecycle_serializes_for_frontend_reconciliation() {
+    let value = serde_json::to_value(ProviderOperationStatus {
+        operation_id: "operation-a".into(),
+        lifecycle: ProviderOperationLifecycle::Active,
+    })
+    .unwrap();
+
+    assert_eq!(value["operationId"], "operation-a");
+    assert_eq!(value["lifecycle"], "active");
 }
 
 #[test]
@@ -342,6 +469,13 @@ fn temp_root(label: &str) -> PathBuf {
             .unwrap()
             .as_nanos()
     ))
+}
+
+fn operation_id(root: &Path, suffix: &str) -> String {
+    format!(
+        "{}-{suffix}",
+        root.file_name().unwrap().to_string_lossy()
+    )
 }
 
 fn backup_info_for_home(root: &Path) -> crate::models::ProviderRepairBackupInfo {

@@ -5,15 +5,16 @@ import type {
 } from "../types/dashboard";
 import { fallbackProviderRepairSnapshot } from "./fallback";
 import { callCommand, callCommandStrict } from "./command";
+import {
+  providerRepairSafetyLatch,
+  type ProviderOperationStatus,
+  type ProviderRepairSafetyLatch,
+} from "../components/providerRepair/providerOperationCoordinator";
 
 const PROVIDER_MUTATION_TIMEOUT_MS = 60_000;
 const PROVIDER_STATUS_TIMEOUT_MS = 5_000;
-const PROVIDER_STATUS_POLL_MS = 500;
 
-export interface ProviderOperationStatus {
-  operationId: string;
-  active: boolean;
-}
+export type { ProviderOperationStatus } from "../components/providerRepair/providerOperationCoordinator";
 
 interface ProviderOperationBackendError {
   kind: "busy" | "failed";
@@ -25,8 +26,7 @@ interface ExecuteProviderRepairMutationOptions<T> {
   mutation: () => Promise<T>;
   onUncertain?: (operationId: string) => void;
   operationId: string;
-  readStatus?: (operationId: string) => Promise<ProviderOperationStatus>;
-  waitForNextPoll?: () => Promise<void>;
+  safetyLatch?: ProviderRepairSafetyLatch;
 }
 
 export function scanProviderRepair(): Promise<ProviderRepairSnapshot> {
@@ -73,11 +73,13 @@ export async function executeProviderRepairMutation<T>({
   mutation,
   onUncertain,
   operationId,
-  readStatus = readProviderOperationStatus,
-  waitForNextPoll = waitForProviderStatusPoll,
+  safetyLatch = providerRepairSafetyLatch,
 }: ExecuteProviderRepairMutationOptions<T>): Promise<T> {
+  safetyLatch.latch(operationId);
   try {
-    return await mutation();
+    const result = await mutation();
+    safetyLatch.clearFinished(operationId);
+    return result;
   } catch (error) {
     const backendError = parseProviderOperationBackendError(error);
     const reconciliationId = isCommandTimeout(error)
@@ -87,11 +89,12 @@ export async function executeProviderRepairMutation<T>({
         : undefined;
 
     if (!reconciliationId) {
+      safetyLatch.clearFinished(operationId);
       throw backendError ? new Error(backendError.message) : error;
     }
 
+    safetyLatch.latch(reconciliationId);
     onUncertain?.(reconciliationId);
-    await waitForProviderOperationEnd(reconciliationId, readStatus, waitForNextPoll);
     throw backendError ? new Error(backendError.message) : error;
   }
 }
@@ -113,24 +116,6 @@ async function callProviderMutation(
   });
 }
 
-async function waitForProviderOperationEnd(
-  operationId: string,
-  readStatus: (operationId: string) => Promise<ProviderOperationStatus>,
-  waitForNextPoll: () => Promise<void>,
-) {
-  for (;;) {
-    try {
-      const status = await readStatus(operationId);
-      if (!status.active) {
-        return;
-      }
-    } catch {
-      // Status uncertainty is safety-sensitive: keep controls busy and retry.
-    }
-    await waitForNextPoll();
-  }
-}
-
 function createProviderOperationId() {
   if (typeof globalThis.crypto?.randomUUID === "function") {
     return globalThis.crypto.randomUUID();
@@ -148,17 +133,16 @@ function parseProviderOperationBackendError(error: unknown): ProviderOperationBa
   }
   try {
     const parsed = JSON.parse(error.message) as Partial<ProviderOperationBackendError>;
-    if ((parsed.kind === "busy" || parsed.kind === "failed") && typeof parsed.message === "string") {
+    if (parsed.kind === "busy"
+      && typeof parsed.activeOperationId === "string"
+      && typeof parsed.message === "string") {
+      return parsed as ProviderOperationBackendError;
+    }
+    if (parsed.kind === "failed" && typeof parsed.message === "string") {
       return parsed as ProviderOperationBackendError;
     }
   } catch {
     return null;
   }
   return null;
-}
-
-function waitForProviderStatusPoll() {
-  return new Promise<void>((resolve) => {
-    window.setTimeout(resolve, PROVIDER_STATUS_POLL_MS);
-  });
 }

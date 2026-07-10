@@ -72,6 +72,5 @@ pub fn read_provider_operation_status(
     operation_id: String,
 ) -> Result<ProviderOperationStatus, ProviderOperationError> {
     require_window_label(&window, "read_provider_operation_status")?;
-    let source = local_source();
-    provider_repair_core::read_provider_operation_status(source.codex_home(), &operation_id)
+    Ok(provider_repair_core::read_provider_operation_status(&operation_id))
 }

@@ -73,13 +73,13 @@ export async function callCommandStrict<T>(
     clearCommandFailure(command);
     return result;
   } catch (error) {
-    const normalized = normalizeError(error);
+    const normalized = normalizeCommandError(error);
     recordCommandFailure(command, normalized);
     throw normalized;
   }
 }
 
-function normalizeError(error: unknown): Error {
+export function normalizeCommandError(error: unknown): Error {
   if (error instanceof Error) {
     return error;
   }

@@ -1,6 +1,6 @@
 use crate::models::{ProviderRepairActionResult, ProviderRepairSnapshot};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -23,7 +23,9 @@ use session_files::{find_session_files, rewrite_session_provider, scan_session_p
 use sqlite_state::{scan_sqlite, sync_sqlite_provider, SQLiteScan};
 use target_provider::detect_target_provider;
 
-static PROVIDER_OPERATION_LEASES: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+const MAX_FINISHED_PROVIDER_OPERATIONS: usize = 256;
+
+static PROVIDER_OPERATION_REGISTRY: OnceLock<Mutex<ProviderOperationRegistry>> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -44,26 +46,135 @@ impl From<String> for ProviderOperationError {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderOperationLifecycle {
+    NotStarted,
+    Active,
+    Finished,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderOperationStatus {
     pub operation_id: String,
-    pub active: bool,
+    pub lifecycle: ProviderOperationLifecycle,
+}
+
+#[derive(Clone, Debug)]
+struct ProviderOperationRecord {
+    canonical_home: PathBuf,
+    lifecycle: ProviderOperationLifecycle,
+}
+
+#[derive(Default)]
+struct ProviderOperationRegistry {
+    active_by_home: HashMap<PathBuf, String>,
+    operations: HashMap<String, ProviderOperationRecord>,
+    finished_order: VecDeque<String>,
+}
+
+impl ProviderOperationRegistry {
+    fn acquire(
+        &mut self,
+        canonical_home: PathBuf,
+        operation_id: &str,
+    ) -> Result<(), ProviderOperationError> {
+        if let Some(active_operation_id) = self.active_by_home.get(&canonical_home) {
+            return Err(ProviderOperationError::Busy {
+                active_operation_id: active_operation_id.clone(),
+                message: "同一 Codex Home 正在执行另一个 Provider 写操作。".into(),
+            });
+        }
+        if self.operations.contains_key(operation_id) {
+            return Err(ProviderOperationError::Failed {
+                message: "Provider operation ID 已被使用，请重新发起操作。".into(),
+            });
+        }
+
+        self.active_by_home
+            .insert(canonical_home.clone(), operation_id.to_string());
+        self.operations.insert(
+            operation_id.to_string(),
+            ProviderOperationRecord {
+                canonical_home,
+                lifecycle: ProviderOperationLifecycle::Active,
+            },
+        );
+        Ok(())
+    }
+
+    fn finish(&mut self, operation_id: &str) {
+        let Some(record) = self.operations.get_mut(operation_id) else {
+            return;
+        };
+        if record.lifecycle != ProviderOperationLifecycle::Active {
+            return;
+        }
+
+        if self.active_by_home.get(&record.canonical_home).map(String::as_str)
+            == Some(operation_id)
+        {
+            self.active_by_home.remove(&record.canonical_home);
+        }
+        record.lifecycle = ProviderOperationLifecycle::Finished;
+        self.finished_order.push_back(operation_id.to_string());
+        self.prune_finished();
+    }
+
+    fn status(&self, operation_id: &str) -> ProviderOperationStatus {
+        ProviderOperationStatus {
+            operation_id: operation_id.to_string(),
+            lifecycle: self
+                .operations
+                .get(operation_id)
+                .map(|record| record.lifecycle)
+                .unwrap_or(ProviderOperationLifecycle::NotStarted),
+        }
+    }
+
+    fn prune_finished(&mut self) {
+        while self.finished_order.len() > MAX_FINISHED_PROVIDER_OPERATIONS {
+            let Some(operation_id) = self.finished_order.pop_front() else {
+                break;
+            };
+            if self.operations.get(&operation_id).map(|record| record.lifecycle)
+                == Some(ProviderOperationLifecycle::Finished)
+            {
+                self.operations.remove(&operation_id);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn finished_count(&self) -> usize {
+        self.finished_order.len()
+    }
+
+    #[cfg(test)]
+    fn replace_owner_for_test(&mut self, canonical_home: PathBuf, operation_id: String) {
+        self.active_by_home
+            .insert(canonical_home.clone(), operation_id.clone());
+        self.operations.insert(
+            operation_id,
+            ProviderOperationRecord {
+                canonical_home,
+                lifecycle: ProviderOperationLifecycle::Active,
+            },
+        );
+    }
 }
 
 struct ProviderOperationLease {
-    canonical_home: PathBuf,
     operation_id: String,
 }
 
 impl Drop for ProviderOperationLease {
     fn drop(&mut self) {
-        let mut leases = provider_operation_leases()
+        let mut registry = provider_operation_registry()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if leases.get(&self.canonical_home) == Some(&self.operation_id) {
-            leases.remove(&self.canonical_home);
-        }
+        registry.finish(&self.operation_id);
     }
 }
 
@@ -165,21 +276,16 @@ pub fn rollback_provider_backup(
 }
 
 pub fn read_provider_operation_status(
-    codex_home: &Path,
     operation_id: &str,
-) -> Result<ProviderOperationStatus, ProviderOperationError> {
-    let canonical_home = canonical_codex_home(codex_home)?;
-    let leases = provider_operation_leases()
+) -> ProviderOperationStatus {
+    let registry = provider_operation_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    Ok(ProviderOperationStatus {
-        operation_id: operation_id.to_string(),
-        active: leases.get(&canonical_home).map(String::as_str) == Some(operation_id),
-    })
+    registry.status(operation_id)
 }
 
-fn provider_operation_leases() -> &'static Mutex<HashMap<PathBuf, String>> {
-    PROVIDER_OPERATION_LEASES.get_or_init(|| Mutex::new(HashMap::new()))
+fn provider_operation_registry() -> &'static Mutex<ProviderOperationRegistry> {
+    PROVIDER_OPERATION_REGISTRY.get_or_init(|| Mutex::new(ProviderOperationRegistry::default()))
 }
 
 fn canonical_codex_home(codex_home: &Path) -> Result<PathBuf, ProviderOperationError> {
@@ -204,18 +310,11 @@ fn acquire_provider_operation_lease(
     }
 
     let canonical_home = canonical_codex_home(codex_home)?;
-    let mut leases = provider_operation_leases()
+    let mut registry = provider_operation_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(active_operation_id) = leases.get(&canonical_home) {
-        return Err(ProviderOperationError::Busy {
-            active_operation_id: active_operation_id.clone(),
-            message: "同一 Codex Home 正在执行另一个 Provider 写操作。".into(),
-        });
-    }
-    leases.insert(canonical_home.clone(), operation_id.to_string());
+    registry.acquire(canonical_home, operation_id)?;
     Ok(ProviderOperationLease {
-        canonical_home,
         operation_id: operation_id.to_string(),
     })
 }

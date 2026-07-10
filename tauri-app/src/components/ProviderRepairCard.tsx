@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   createProviderBackup,
   listProviderBackups,
+  readProviderOperationStatus,
   rollbackProviderBackup,
   scanProviderRepair,
   syncProviderHistory,
@@ -19,6 +20,10 @@ import {
   createProviderRepairOperationController,
   type ProviderRepairOperationKind,
 } from "./providerRepair/operationController";
+import {
+  providerRepairSafetyLatch,
+  reconcileProviderRepairOperation,
+} from "./providerRepair/providerOperationCoordinator";
 import { ProviderRepairSteps } from "./providerRepair/ProviderRepairSteps";
 
 interface ProviderRepairCardProps {
@@ -40,19 +45,50 @@ export function ProviderRepairCard({
   const [activeBackupId, setActiveBackupId] = useState<string | null>(null);
   const [message, setMessage] = useState(snapshot.status);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [outstandingOperationId, setOutstandingOperationId] = useState(
+    providerRepairSafetyLatch.getSnapshot,
+  );
   const autoScanControllerRef = useRef(createProviderRepairAutoScanController());
   const operationControllerRef = useRef(createProviderRepairOperationController());
+  const busy = busyAction !== null || outstandingOperationId !== null;
 
   useEffect(() => {
     setMessage(snapshot.status);
   }, [snapshot.status]);
 
   useEffect(() => {
-    onBusyChange?.(busyAction !== null);
+    onBusyChange?.(busy);
+  }, [busy, onBusyChange]);
+
+  useEffect(() => providerRepairSafetyLatch.subscribe(setOutstandingOperationId), []);
+
+  useEffect(() => {
+    if (outstandingOperationId === null) {
+      return;
+    }
+
+    const controller = new AbortController();
+    void reconcileProviderRepairOperation({
+      operationId: outstandingOperationId,
+      readStatus: readProviderOperationStatus,
+      signal: controller.signal,
+    }).then((outcome) => {
+      if (controller.signal.aborted) {
+        return;
+      }
+      if (outcome === "finished") {
+        if (providerRepairSafetyLatch.clearFinished(outstandingOperationId)) {
+          setMessage("后端已确认 Provider 写操作结束，可以继续操作。");
+        }
+      } else if (outcome === "statusUnavailable") {
+        setMessage("暂时无法确认 Provider 写操作状态；安全锁保持启用，重新打开面板后会再次核对。");
+      }
+    });
+
     return () => {
-      onBusyChange?.(false);
+      controller.abort();
     };
-  }, [busyAction, onBusyChange]);
+  }, [outstandingOperationId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,11 +104,14 @@ export function ProviderRepairCard({
   }, []);
 
   useEffect(() => {
+    if (outstandingOperationId !== null) {
+      return;
+    }
     if (!autoScanControllerRef.current.shouldStart(autoScanOnMount)) {
       return;
     }
     void runScan();
-  }, [autoScanOnMount]);
+  }, [autoScanOnMount, outstandingOperationId]);
 
   async function runScan() {
     await run("scan", scanProviderRepair, (next) => {
@@ -111,6 +150,10 @@ export function ProviderRepairCard({
     operation: () => Promise<T>,
     publishResult: (result: T) => void,
   ) {
+    if (providerRepairSafetyLatch.getSnapshot() !== null) {
+      setMessage("Provider 写操作状态尚未确认，修复操作保持禁用。");
+      return;
+    }
     const started = operationControllerRef.current.start(action);
     if (!started.started) {
       setMessage(started.message);
@@ -127,7 +170,7 @@ export function ProviderRepairCard({
       }
     } catch (error) {
       accepted = operationControllerRef.current.finish(started.operation);
-      if (accepted) {
+      if (accepted && providerRepairSafetyLatch.getSnapshot() === null) {
         setMessage(error instanceof Error ? error.message : String(error));
       }
     } finally {
@@ -153,7 +196,7 @@ export function ProviderRepairCard({
             provider {snapshot.detectedProvider} · {snapshot.providerSource} · {snapshot.sessionFilesFound} 个会话文件
           </span>
         </div>
-        <button className="toolbar-button" disabled={busyAction !== null} onClick={runScan} type="button">
+        <button className="toolbar-button" disabled={busy} onClick={runScan} type="button">
           重新扫描
         </button>
       </div>
@@ -165,7 +208,7 @@ export function ProviderRepairCard({
 
       <ProviderRepairActions
         activeBackupId={activeBackupId}
-        busy={busyAction !== null}
+        busy={busy}
         onBackup={runBackup}
         onScan={runScan}
         onSync={runSync}
@@ -175,7 +218,7 @@ export function ProviderRepairCard({
       <ProviderRepairBackups
         activeBackupId={activeBackupId}
         backups={backups}
-        busy={busyAction !== null}
+        busy={busy}
         onRollback={runRollback}
         onSelectBackup={setActiveBackupId}
       />

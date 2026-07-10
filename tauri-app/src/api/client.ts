@@ -40,6 +40,7 @@ export {
 export {
   createProviderBackup,
   listProviderBackups,
+  readProviderOperationStatus,
   rollbackProviderBackup,
   scanProviderRepair,
   syncProviderHistory,

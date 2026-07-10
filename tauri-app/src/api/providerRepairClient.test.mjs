@@ -2,63 +2,63 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
-test("provider timeout stays uncertain until the backend lease ends", async () => {
+test("provider timeout latches safety while pre-admission status stays notStarted", async () => {
   await withSsrModules(async (load) => {
     const { executeProviderRepairMutation } = await load("/src/api/providerRepairClient.ts");
-    const mutation = deferred();
-    const firstStatus = deferred();
-    const secondStatus = deferred();
-    const statusReads = [firstStatus, secondStatus];
-    let phase = "busy";
-    let settled = false;
+    const {
+      createProviderRepairSafetyLatch,
+      reconcileProviderRepairOperation,
+    } = await load("/src/components/providerRepair/providerOperationCoordinator.ts");
+    const latch = createProviderRepairSafetyLatch();
 
-    const execution = executeProviderRepairMutation({
-      mutation: () => mutation.promise,
-      onUncertain: () => {
-        phase = "uncertain";
+    await assert.rejects(executeProviderRepairMutation({
+      mutation: async () => {
+        throw new Error("Command timed out after 60000ms");
       },
       operationId: "operation-a",
-      readStatus: () => statusReads.shift().promise,
+      safetyLatch: latch,
+    }), /timed out/i);
+    assert.equal(latch.getSnapshot(), "operation-a");
+
+    const statuses = [
+      { lifecycle: "notStarted", operationId: "operation-a" },
+      { lifecycle: "active", operationId: "operation-a" },
+      { lifecycle: "finished", operationId: "operation-a" },
+    ];
+    const outcome = await reconcileProviderRepairOperation({
+      operationId: "operation-a",
+      readStatus: async () => statuses.shift(),
+      signal: new AbortController().signal,
       waitForNextPoll: async () => {},
-    }).finally(() => {
-      settled = true;
-      phase = "idle";
     });
-
-    mutation.reject(new Error("Command timed out after 60000ms"));
-    await nextTurn();
-    assert.equal(phase, "uncertain");
-    assert.equal(settled, false);
-    assert.equal(canStartDestructiveAction(phase), false);
-
-    firstStatus.resolve({ active: true, operationId: "operation-a" });
-    await nextTurn();
-    assert.equal(phase, "uncertain");
-    assert.equal(settled, false);
-    assert.equal(canStartDestructiveAction(phase), false);
-
-    secondStatus.resolve({ active: false, operationId: "operation-a" });
-    await assert.rejects(execution, /timed out/i);
-    assert.equal(phase, "idle");
-    assert.equal(settled, true);
-    assert.equal(canStartDestructiveAction(phase), true);
+    assert.equal(outcome, "finished");
+    assert.equal(latch.clearFinished("operation-a"), true);
+    assert.equal(latch.getSnapshot(), null);
   });
 });
 
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
+test("typed busy rejection survives command normalization and latches the real owner", async () => {
+  await withSsrModules(async (load) => {
+    const { normalizeCommandError } = await load("/src/api/command.ts");
+    const { executeProviderRepairMutation } = await load("/src/api/providerRepairClient.ts");
+    const { createProviderRepairSafetyLatch } = await load(
+      "/src/components/providerRepair/providerOperationCoordinator.ts",
+    );
+    const latch = createProviderRepairSafetyLatch();
+    const normalized = normalizeCommandError({
+      kind: "busy",
+      activeOperationId: "operation-owner",
+      message: "同一 Codex Home 正在执行另一个 Provider 写操作。",
+    });
+
+    await assert.rejects(executeProviderRepairMutation({
+      mutation: async () => {
+        throw normalized;
+      },
+      operationId: "operation-contender",
+      safetyLatch: latch,
+    }), /同一 Codex Home/);
+
+    assert.equal(latch.getSnapshot(), "operation-owner");
   });
-  return { promise, reject, resolve };
-}
-
-function nextTurn() {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-function canStartDestructiveAction(phase) {
-  return phase === "idle";
-}
+});
