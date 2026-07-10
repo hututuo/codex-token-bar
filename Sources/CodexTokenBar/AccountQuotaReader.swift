@@ -197,16 +197,9 @@ private enum AccountQuotaReader {
     }
 
     private static func findCodexBinary() throws -> String {
-        let candidates = [
-            "/Applications/Codex.app/Contents/Resources/codex",
-            "\(NSHomeDirectory())/Applications/Codex.app/Contents/Resources/codex",
-            "/opt/homebrew/bin/codex",
-            "/usr/local/bin/codex"
-        ]
-        if let path = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-            return path
-        }
-        throw AccountQuotaReaderError.codexBinaryNotFound
+        try CodexBinaryLocator.findExecutable(
+            in: CodexBinaryLocator.candidatePaths(homeDirectory: NSHomeDirectory())
+        )
     }
 
     private static func write(_ object: [String: Any], to handle: FileHandle) throws {
@@ -525,6 +518,26 @@ private enum AccountQuotaReader {
             usedPercent: usedPercent.intValue,
             resetsAt: resetsAtSeconds.map { Date(timeIntervalSince1970: $0.doubleValue) }
         )
+    }
+}
+
+enum CodexBinaryLocator {
+    static func candidatePaths(homeDirectory: String) -> [String] {
+        [
+            "/Applications/ChatGPT.app/Contents/Resources/codex",
+            "\(homeDirectory)/Applications/ChatGPT.app/Contents/Resources/codex",
+            "/Applications/Codex.app/Contents/Resources/codex",
+            "\(homeDirectory)/Applications/Codex.app/Contents/Resources/codex",
+            "/opt/homebrew/bin/codex",
+            "/usr/local/bin/codex"
+        ]
+    }
+
+    static func findExecutable(in candidates: [String]) throws -> String {
+        if let path = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            return path
+        }
+        throw AccountQuotaReaderError.codexBinaryNotFound
     }
 }
 
