@@ -3,54 +3,188 @@ import XCTest
 @testable import CodexTokenBar
 
 final class AccountQuotaReaderBinaryLocatorTests: XCTestCase {
-    func testCandidatePathsIncludeChatGPTAppBeforeLegacyCodexApp() {
-        let home = "/Users/tester"
+    func testExplicitOverrideWinsOverRegisteredAppScanAndPATH() throws {
+        let fixture = try makeFixture()
+        let override = try fixture.writeExecutable("override/codex")
+        let registeredApp = try fixture.writeApp("Elsewhere/Renamed.app")
+        _ = try fixture.writeApp("Applications/ChatGPT.app")
+        let pathBinary = try fixture.writeExecutable("bin/codex")
 
-        let candidates = CodexBinaryLocator.candidatePaths(homeDirectory: home)
+        let found = try locate(
+            fixture: fixture,
+            environment: [
+                CodexBinaryLocator.overrideEnvironmentKey: override.path,
+                "PATH": pathBinary.deletingLastPathComponent().path
+            ],
+            registeredApplicationURLs: [registeredApp]
+        )
 
-        XCTAssertEqual(candidates[0], "/Applications/ChatGPT.app/Contents/Resources/codex")
-        XCTAssertEqual(candidates[1], "\(home)/Applications/ChatGPT.app/Contents/Resources/codex")
-        XCTAssertTrue(candidates.contains("/Applications/Codex.app/Contents/Resources/codex"))
-        XCTAssertTrue(candidates.contains("\(home)/Applications/Codex.app/Contents/Resources/codex"))
-        XCTAssertTrue(candidates.contains("/opt/homebrew/bin/codex"))
-        XCTAssertTrue(candidates.contains("/usr/local/bin/codex"))
+        XCTAssertEqual(found, override.resolvingSymlinksInPath().path)
     }
 
-    func testFindExecutableUsesFirstExecutableCandidate() throws {
-        let root = try makeTemporaryDirectory(named: "CodexBinaryLocator")
-        let missing = root.appendingPathComponent("missing-codex").path
-        let nonExecutable = root.appendingPathComponent("non-executable-codex").path
-        let chatGPTCodex = root.appendingPathComponent("ChatGPT.app/Contents/Resources/codex").path
-        let legacyCodex = root.appendingPathComponent("Codex.app/Contents/Resources/codex").path
+    func testRegisteredRenamedAppOutsideStandardRootsIsDiscovered() throws {
+        let fixture = try makeFixture()
+        let registeredApp = try fixture.writeApp("Custom Location/My Renamed App.app")
 
-        try writeExecutableStub(at: nonExecutable, executable: false)
-        try writeExecutableStub(at: chatGPTCodex, executable: true)
-        try writeExecutableStub(at: legacyCodex, executable: true)
+        let found = try locate(
+            fixture: fixture,
+            registeredApplicationURLs: [registeredApp]
+        )
 
-        let found = try CodexBinaryLocator.findExecutable(in: [
-            missing,
-            nonExecutable,
-            chatGPTCodex,
-            legacyCodex
-        ])
-
-        XCTAssertEqual(found, chatGPTCodex)
+        XCTAssertEqual(found, fixture.codexBinary(in: registeredApp).path)
     }
 
-    private func makeTemporaryDirectory(named name: String) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
+    func testSystemAndUserApplicationsDiscoverRenamedAppsWithoutDependingOnName() throws {
+        let fixture = try makeFixture()
+        let systemApp = try fixture.writeApp("Applications/OpenAI Desktop Renamed.app")
+
+        let found = try locate(fixture: fixture)
+
+        XCTAssertEqual(found, fixture.codexBinary(in: systemApp).path)
     }
 
-    private func writeExecutableStub(at path: String, executable: Bool) throws {
+    func testUserApplicationsDiscoversRenamedAppWhenSystemRootHasNone() throws {
+        let fixture = try makeFixture()
+        let userApp = try fixture.writeApp("UserApplications/Another Name.app")
+
+        let found = try locate(fixture: fixture)
+
+        XCTAssertEqual(found, fixture.codexBinary(in: userApp).path)
+    }
+
+    func testLegacyAndCurrentNamesRemainCompatible() throws {
+        let fixture = try makeFixture()
+        let currentApp = try fixture.writeApp("Applications/ChatGPT.app")
+        _ = try fixture.writeApp("UserApplications/Codex.app")
+
+        let found = try locate(fixture: fixture)
+
+        XCTAssertEqual(found, fixture.codexBinary(in: currentApp).path)
+    }
+
+    func testScanIsBoundedToDirectApplicationChildren() throws {
+        let fixture = try makeFixture()
+        _ = try fixture.writeApp("Applications/Group/Nested.app")
+        let pathBinary = try fixture.writeExecutable("bin/codex")
+
+        let found = try locate(
+            fixture: fixture,
+            environment: ["PATH": pathBinary.deletingLastPathComponent().path]
+        )
+
+        XCTAssertEqual(found, pathBinary.path)
+    }
+
+    func testSkipsNonExecutableAndBrokenSymlinkButCanonicalizesValidSymlink() throws {
+        let fixture = try makeFixture()
+        let nonExecutableApp = try fixture.writeApp("Applications/NotExecutable.app", executable: false)
+        let nonExecutableBinary = fixture.codexBinary(in: nonExecutableApp)
+        let brokenLink = fixture.root.appendingPathComponent("broken-codex")
+        try FileManager.default.createSymbolicLink(
+            at: brokenLink,
+            withDestinationURL: fixture.root.appendingPathComponent("missing-target")
+        )
+        let target = try fixture.writeExecutable("real/codex")
+        let validLink = fixture.root.appendingPathComponent("linked-bin/codex")
+        try FileManager.default.createDirectory(
+            at: validLink.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(at: validLink, withDestinationURL: target)
+
+        let found = try locate(
+            fixture: fixture,
+            environment: [
+                CodexBinaryLocator.overrideEnvironmentKey: brokenLink.path,
+                "PATH": validLink.deletingLastPathComponent().path
+            ],
+            registeredApplicationURLs: [
+                nonExecutableBinary.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            ]
+        )
+
+        XCTAssertEqual(found, target.resolvingSymlinksInPath().path)
+    }
+
+    func testPATHOrderIsDeterministicAndKnownFallbackComesAfterPATH() throws {
+        let fixture = try makeFixture()
+        let first = try fixture.writeExecutable("first-bin/codex")
+        _ = try fixture.writeExecutable("second-bin/codex")
+        _ = try fixture.writeExecutable("known-bin/codex")
+
+        let found = try CodexBinaryLocator.findExecutable(
+            environment: [
+                "PATH": [
+                    first.deletingLastPathComponent().path,
+                    fixture.root.appendingPathComponent("second-bin").path
+                ].joined(separator: ":")
+            ],
+            registeredApplicationURLs: [],
+            applicationRoots: [],
+            knownApplicationURLs: [],
+            knownCLIPaths: [fixture.root.appendingPathComponent("known-bin/codex").path]
+        )
+
+        XCTAssertEqual(found, first.path)
+    }
+
+    private func locate(
+        fixture: Fixture,
+        environment: [String: String] = [:],
+        registeredApplicationURLs: [URL] = []
+    ) throws -> String {
+        try CodexBinaryLocator.findExecutable(
+            environment: environment,
+            registeredApplicationURLs: registeredApplicationURLs,
+            applicationRoots: [
+                fixture.root.appendingPathComponent("Applications", isDirectory: true),
+                fixture.root.appendingPathComponent("UserApplications", isDirectory: true)
+            ],
+            knownApplicationURLs: [],
+            knownCLIPaths: []
+        )
+    }
+
+    private func makeFixture() throws -> Fixture {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexBinaryLocator-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return Fixture(root: root)
+    }
+}
+
+private struct Fixture {
+    let root: URL
+
+    func writeApp(_ relativePath: String, executable: Bool = true) throws -> URL {
+        let appURL = root.appendingPathComponent(relativePath, isDirectory: true)
+        _ = try createExecutable(
+            appURL.appendingPathComponent("Contents/Resources/codex").path,
+            executable: executable
+        )
+        return appURL
+    }
+
+    func writeExecutable(_ relativePath: String, executable: Bool = true) throws -> URL {
+        try createExecutable(root.appendingPathComponent(relativePath).path, executable: executable)
+    }
+
+    func codexBinary(in appURL: URL) -> URL {
+        appURL.appendingPathComponent("Contents/Resources/codex")
+    }
+
+    private func createExecutable(_ path: String, executable: Bool) throws -> URL {
         let url = URL(fileURLWithPath: path)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         try "#!/bin/sh\nexit 0\n".write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
             [.posixPermissions: executable ? 0o755 : 0o644],
-            ofItemAtPath: path
+            ofItemAtPath: url.path
         )
+        return url
     }
 }
