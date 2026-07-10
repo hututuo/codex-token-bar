@@ -270,16 +270,20 @@ final class AccountQuotaStoreTests: XCTestCase {
 
     func testAutomaticRefreshReusesTrackedSourceWhenNoExplicitSourceChange() async throws {
         let source = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaTrackedSource"), origin: .userSelected)
+        let firstSnapshot = AccountQuotaSnapshot(
+            status: "首轮额度暂无数据",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
         let reader = SequentialQuotaReader(results: [
-            .success(AccountQuotaSnapshot(status: "额度暂无数据", updatedAt: Date(timeIntervalSince1970: 1))),
+            .success(firstSnapshot),
             .success(quotaSnapshot(usedPercent: 55, accountName: "tracked"))
         ])
         let store = AccountQuotaStore(quotaReader: reader)
 
         store.setDataSource(source)
         store.refresh(force: true)
-        await waitUntil("first unavailable quota refresh") {
-            await reader.currentReadCount() == 1
+        await waitUntil("first unavailable quota snapshot publication") {
+            store.snapshot == firstSnapshot
         }
 
         store.refresh(force: false)
