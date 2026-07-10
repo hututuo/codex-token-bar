@@ -53,6 +53,7 @@
 - Modify: tray ownership code and focused Rust/Node tests.
 
 - [ ] Red tests prove a hidden floating webview has no quota/live/unread/Radar timers or subscription.
+- [ ] Red StrictMode setup-cleanup-setup test proves compact quota publishing remains active after effect replay; effect setup must create a fresh generation/cancelled closure rather than leaving a one-way `mounted=false` latch.
 - [ ] Red hide/reopen status test proves trusted metrics persist without active work.
 - [ ] Red native test/model proves tray action reaches status panel and tray live text continues without Dashboard webview ownership.
 - [ ] Implement native visibility events, background tray updater ownership, and reachable status action.
@@ -99,6 +100,46 @@
 - [ ] Add a release gate that runs or verifies current Rust/Node suite evidence before packaging.
 - [ ] Test with disposable artifacts; never print or copy the real private key to Windows.
 - [ ] Commit scripts/tests, then update bilingual docs in a separate release-material commit.
+
+### Task 7: Swift Unread Effect Render Budget And Cancellation
+
+**Files:**
+- Modify: `Sources/CodexTokenBar/FloatingUnreadRippleEffect.swift`
+- Modify: `Sources/CodexTokenBar/FloatingUnreadShimmerEffect.swift`
+- Modify: `Sources/CodexTokenBar/FloatingUnreadFrameCache.swift`
+- Modify/add: `Tests/CodexTokenBarTests/FloatingUnreadEffectsTests.swift`
+
+- [ ] Add red instrumentation tests proving first attach and cache-miss rendering do not synchronously render the full 63/97-frame sequence on the main actor.
+- [ ] Add red rapid resize/effect/color change tests proving obsolete render generations cancel, publish no stale frames, and release their temporary buffers under the existing global memory budget.
+- [ ] Preserve the first visible frame and current ripple/shimmer timing while moving bulk rendering off main; use bounded batches or lazy generation rather than a second unbounded cache.
+- [ ] Run focused tests, profile first-unread latency and peak RSS in the new Swift debug app, and capture the same visual state before/after.
+- [ ] Commit the render-lifecycle change independently from other Swift UI work.
+
+### Task 8: Swift App-Scoped Store And Status Presentation Ownership
+
+**Files:**
+- Modify: `Sources/CodexTokenBar/CodexTokenBarApp.swift`
+- Modify: `Sources/CodexTokenBar/DashboardView.swift`
+- Modify: `Sources/CodexTokenBar/StatusBarTokenPanel.swift`
+- Add/modify focused app-model, dashboard-composition, and status presentation tests.
+
+- [ ] Add red composition tests proving two dashboard scenes do not create competing usage/quota/Radar/Provider/task/live monitor graphs or rebind shared floating/status controllers to different owners.
+- [ ] Add red status tests proving an unchanged snapshot does not replace the popover root view every 0.5 seconds and visible rates at/above 10 tok/s retain one decimal consistently with accessibility and floating surfaces.
+- [ ] Move long-lived stores/monitors to one app-scoped owner and inject them into dashboard/status/floating composition. Preserve the existing window command behavior; do not silently remove multi-window support unless runtime/product evidence requires it.
+- [ ] Let SwiftUI observation update popover content; keep only the minimum timer work required for the AppKit status title and gate it on presentation change.
+- [ ] Run focused tests, open two dashboards plus status/floating surfaces, verify one reader/monitor set and stable close/reopen behavior, then commit.
+
+### Task 9: Swift Export Result And User-Visible Failure
+
+**Files:**
+- Modify: `Sources/CodexTokenBar/Exporter.swift`
+- Modify the export action/error presentation seam in `Sources/CodexTokenBar/DashboardView.swift`.
+- Add focused exporter and presentation tests.
+
+- [ ] Add red injected-writer/renderer fixtures for CSV write denial, PNG render failure, PNG write failure, successful output, and user cancellation. Cancellation is not an error; every real failure returns a stable product message plus retained technical cause.
+- [ ] Replace `try?`/silent `guard return` paths with a typed result while keeping save-panel selection on the main actor and file/render work bounded.
+- [ ] Present failure in a stable alert/callout that does not add/remove a dashboard row; successful export and cancellation remain quiet.
+- [ ] Run focused tests, manually export one CSV and PNG to a disposable directory, verify failure copy with an unwritable fixture, and commit.
 
 ## Runtime Matrix And Gates
 
