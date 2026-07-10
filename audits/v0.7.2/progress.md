@@ -12,5 +12,6 @@
 | 8. Functional parity | complete-source-pass | `reports/parity-review.md` | Target-state matrix separates catch-up, common fix, redesign, runtime gate, and policy decisions. |
 | 9. Real UI/runtime review | in_progress | `reports/ui-audit.md`; `screenshots/01-04` | Current Swift/Tauri dashboard, loaded/pending transition, chart, and ranking states captured. Floating/status, Windows, pointer/keyboard, and lifecycle passes remain. |
 | 10. Commander triage | in_progress | `reports/commander-core-review.md`, `reports/tool-triage.md` | High-confidence findings are traced; remaining runtime-only candidates stay explicitly unconfirmed. |
-| 11. Evidence-based repair plans | in_progress | `plans/provider-data-safety-batch.md`, `plans/source-provenance-batch.md` | Provider Task 1/4 implementation workers are active; later batches will be written from the same target-state matrix. |
-| 12. Final re-audit | pending | | |
+| 11. Evidence-based repair plans | complete | `plans/provider-data-safety-batch.md`, `plans/source-provenance-batch.md`, `plans/quota-unread-live-rate-batch.md`, `plans/ui-runtime-release-batch.md` | Core data, provenance, continuous readers, UI/native lifecycle, and release work are split into review-gated batches. |
+| 12. Review-gated repairs | in_progress | Tauri `89809d3`; Swift `68e8fd2`; `.superpowers/sdd/task-1-review.md`, `task-4-review.md` | Tauri Provider target validation is approved with one test-portability follow-up queued into the next task. Swift running-app/lease protection has two Important review findings and is being corrected before acceptance. |
+| 13. Final re-audit | pending | | |
