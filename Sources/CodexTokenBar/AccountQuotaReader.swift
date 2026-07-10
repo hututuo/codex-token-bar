@@ -6,23 +6,363 @@ struct LiveAccountQuotaReader: QuotaReading {
     }
 }
 
-private enum AccountQuotaReader {
-    static func read(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
+struct AccountQuotaReaderDependencies: Sendable {
+    let transport: any AccountQuotaProcessTransport
+    let locateCodexBinary: @Sendable () throws -> String
+    let timeout: TimeInterval
+    let retryDelayNanoseconds: UInt64
+    let maxAttempts: Int
+    let shouldReadResetCredits: Bool
+
+    static let live = AccountQuotaReaderDependencies(
+        transport: FoundationAccountQuotaProcessTransport(),
+        locateCodexBinary: { try CodexBinaryLocator.findExecutable() },
+        timeout: 12,
+        retryDelayNanoseconds: 350_000_000,
+        maxAttempts: 3,
+        shouldReadResetCredits: true
+    )
+
+    static func testing(
+        transport: any AccountQuotaProcessTransport,
+        timeout: TimeInterval,
+        maxAttempts: Int = 1
+    ) -> AccountQuotaReaderDependencies {
+        AccountQuotaReaderDependencies(
+            transport: transport,
+            locateCodexBinary: { "/fake/codex" },
+            timeout: timeout,
+            retryDelayNanoseconds: 0,
+            maxAttempts: maxAttempts,
+            shouldReadResetCredits: false
+        )
+    }
+}
+
+protocol AccountQuotaProcessTransport: Sendable {
+    func start(codexPath: String, dataSource: CodexDataSource?) throws -> any AccountQuotaProcessSession
+}
+
+protocol AccountQuotaProcessSession: AnyObject, Sendable {
+    func writeStdin(_ data: Data) throws
+    func nextStdoutLine(timeout: TimeInterval) throws -> Data?
+    func stderrTailText() -> String?
+    func terminate()
+}
+
+struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sendable {
+    private let stderrTailLimit: Int
+
+    init(stderrTailLimit: Int = 16_384) {
+        self.stderrTailLimit = max(0, stderrTailLimit)
+    }
+
+    func start(codexPath: String, dataSource: CodexDataSource?) throws -> any AccountQuotaProcessSession {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: codexPath)
+        process.arguments = ["app-server", "--listen", "stdio://"]
+        if let dataSource {
+            var environment = ProcessInfo.processInfo.environment
+            environment["CODEX_HOME"] = dataSource.codexHome.path
+            process.environment = environment
+        }
+
+        let input = Pipe()
+        let output = Pipe()
+        let errorPipe = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = errorPipe
+
+        let stdoutReader = AccountQuotaLineReader(handle: output.fileHandleForReading)
+        let stderrTail = AccountQuotaStderrTail(maxBytes: stderrTailLimit)
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            stderrTail.append(handle.availableData)
+        }
+
+        do {
+            try process.run()
+        } catch {
+            output.fileHandleForReading.readabilityHandler = nil
+            errorPipe.fileHandleForReading.readabilityHandler = nil
+            throw error
+        }
+
+        return FoundationAccountQuotaProcessSession(
+            process: process,
+            input: input.fileHandleForWriting,
+            output: output.fileHandleForReading,
+            error: errorPipe.fileHandleForReading,
+            stdoutReader: stdoutReader,
+            stderrTail: stderrTail
+        )
+    }
+}
+
+final class AccountQuotaStderrTail: @unchecked Sendable {
+    private let lock = NSLock()
+    private let maxBytes: Int
+    private var buffer = Data()
+
+    init(maxBytes: Int) {
+        self.maxBytes = max(0, maxBytes)
+    }
+
+    func append(_ data: Data) {
+        guard !data.isEmpty, maxBytes > 0 else { return }
+        lock.withLock {
+            if data.count >= maxBytes {
+                buffer = Data(data.suffix(maxBytes))
+                return
+            }
+            buffer.append(data)
+            if buffer.count > maxBytes {
+                buffer.removeFirst(buffer.count - maxBytes)
+            }
+        }
+    }
+
+    var text: String? {
+        lock.withLock {
+            guard !buffer.isEmpty else { return nil }
+            let value = String(decoding: buffer, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+    }
+}
+
+struct AccountQuotaAppServerClient: Sendable {
+    private let transport: any AccountQuotaProcessTransport
+    private let timeout: TimeInterval
+
+    init(transport: any AccountQuotaProcessTransport, timeout: TimeInterval) {
+        self.transport = transport
+        self.timeout = timeout
+    }
+
+    func read(
+        codexPath: String,
+        dataSource: CodexDataSource?
+    ) async -> Result<AccountQuotaSnapshot, Error> {
+        do {
+            try Task.checkCancellation()
+            let session = try transport.start(codexPath: codexPath, dataSource: dataSource)
+            return await withTaskCancellationHandler {
+                defer { session.terminate() }
+                return read(session: session, dataSource: dataSource)
+            } onCancel: {
+                session.terminate()
+            }
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    private func read(
+        session: any AccountQuotaProcessSession,
+        dataSource: CodexDataSource?
+    ) -> Result<AccountQuotaSnapshot, Error> {
+        do {
+            try session.writeStdin(try Self.jsonLine([
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": [
+                    "clientInfo": [
+                        "name": "codex-token-bar",
+                        "title": "Codex Token Bar",
+                        "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+                    ],
+                    "capabilities": [
+                        "experimentalApi": false,
+                        "requestAttestation": false
+                    ]
+                ]
+            ]))
+
+            let deadline = Date().addingTimeInterval(timeout)
+            var stateMachine = AccountQuotaJSONRPCReaderStateMachine()
+            while Date() < deadline {
+                if Task.isCancelled {
+                    return .failure(CancellationError())
+                }
+                let remaining = max(0, deadline.timeIntervalSinceNow)
+                guard let line = try session.nextStdoutLine(timeout: min(0.05, remaining)) else {
+                    continue
+                }
+                switch stateMachine.consume(line) {
+                case .ignore:
+                    continue
+                case .sendRateLimitRead:
+                    try session.writeStdin(try Self.jsonLine([
+                        "jsonrpc": "2.0",
+                        "method": "initialized"
+                    ]))
+                    try session.writeStdin(try Self.jsonLine([
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "account/rateLimits/read"
+                    ]))
+                case .complete(let result):
+                    return .success(AccountQuotaReader.parse(result, dataSource: dataSource))
+                case .fail(let error):
+                    return .failure(error)
+                }
+            }
+            if Task.isCancelled {
+                return .failure(CancellationError())
+            }
+            return .failure(AccountQuotaReaderError.timeout(stderrText: session.stderrTailText()))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    private static func jsonLine(_ object: [String: Any]) throws -> Data {
+        var data = try JSONSerialization.data(withJSONObject: object)
+        data.append(0x0A)
+        return data
+    }
+}
+
+private struct AccountQuotaJSONRPCReaderStateMachine {
+    private enum State {
+        case awaitingInitialize
+        case awaitingRateLimits
+        case complete
+    }
+
+    enum Action {
+        case ignore
+        case sendRateLimitRead
+        case complete([String: Any])
+        case fail(AccountQuotaReaderError)
+    }
+
+    private var state = State.awaitingInitialize
+
+    mutating func consume(_ line: Data) -> Action {
+        guard state != .complete,
+              let message = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let id = message["id"] as? Int else {
+            return .ignore
+        }
+
+        switch (state, id) {
+        case (.awaitingInitialize, 1):
+            guard message["result"] != nil else { return .ignore }
+            state = .awaitingRateLimits
+            return .sendRateLimitRead
+        case (.awaitingRateLimits, 2):
+            state = .complete
+            if let error = message["error"] as? [String: Any],
+               let message = error["message"] as? String {
+                return .fail(.serverError(message))
+            }
+            guard let result = message["result"] as? [String: Any] else {
+                return .fail(.invalidResponse)
+            }
+            return .complete(result)
+        default:
+            return .ignore
+        }
+    }
+}
+
+private final class FoundationAccountQuotaProcessSession: AccountQuotaProcessSession, @unchecked Sendable {
+    private let terminationLock = NSLock()
+    private let process: Process
+    private let input: FileHandle
+    private let output: FileHandle
+    private let error: FileHandle
+    private let stdoutReader: AccountQuotaLineReader
+    private let stderrTail: AccountQuotaStderrTail
+    private var terminated = false
+
+    init(
+        process: Process,
+        input: FileHandle,
+        output: FileHandle,
+        error: FileHandle,
+        stdoutReader: AccountQuotaLineReader,
+        stderrTail: AccountQuotaStderrTail
+    ) {
+        self.process = process
+        self.input = input
+        self.output = output
+        self.error = error
+        self.stdoutReader = stdoutReader
+        self.stderrTail = stderrTail
+    }
+
+    deinit {
+        output.readabilityHandler = nil
+        error.readabilityHandler = nil
+    }
+
+    func writeStdin(_ data: Data) throws {
+        try input.write(contentsOf: data)
+    }
+
+    func nextStdoutLine(timeout: TimeInterval) throws -> Data? {
+        stdoutReader.next(timeout: timeout)
+    }
+
+    func stderrTailText() -> String? {
+        stderrTail.text
+    }
+
+    func terminate() {
+        let shouldTerminate = terminationLock.withLock {
+            guard !terminated else { return false }
+            terminated = true
+            return true
+        }
+        guard shouldTerminate else { return }
+        try? input.close()
+        if process.isRunning {
+            process.terminate()
+        }
+    }
+}
+
+enum AccountQuotaReader {
+    static func read(
+        dataSource: CodexDataSource?,
+        dependencies: AccountQuotaReaderDependencies = .live
+    ) async -> Result<AccountQuotaSnapshot, Error> {
         let trace = RefreshPerformanceProbe.begin("accountQuotaReader.read", metadata: [
             "source": dataSource?.displayPath ?? "default"
         ])
         var lastError: Error?
-        for attempt in 1...3 {
+        for attempt in 1...dependencies.maxAttempts {
+            if Task.isCancelled {
+                trace?.end("cancelled", metadata: ["attempt": String(attempt)])
+                return .failure(CancellationError())
+            }
             trace?.mark("attempt.begin", metadata: ["attempt": String(attempt)])
-            let result = readOnce(dataSource: dataSource)
+            let result: Result<AccountQuotaSnapshot, Error>
+            do {
+                let codexPath = try dependencies.locateCodexBinary()
+                let client = AccountQuotaAppServerClient(
+                    transport: dependencies.transport,
+                    timeout: dependencies.timeout
+                )
+                result = await client.read(codexPath: codexPath, dataSource: dataSource)
+            } catch {
+                result = .failure(error)
+            }
             switch result {
             case .success(let snapshot):
                 trace?.mark("attempt.success", metadata: [
                     "attempt": String(attempt),
                     "available": snapshot.isAvailable ? "1" : "0"
                 ])
-                if snapshot.isAvailable || attempt == 3 {
-                    let enriched = await snapshotByAddingResetCredits(to: snapshot, dataSource: dataSource)
+                if snapshot.isAvailable || attempt == dependencies.maxAttempts {
+                    let enriched = dependencies.shouldReadResetCredits
+                        ? await snapshotByAddingResetCredits(to: snapshot, dataSource: dataSource)
+                        : snapshot
                     trace?.end("ok", metadata: [
                         "attempt": String(attempt),
                         "available": enriched.isAvailable ? "1" : "0",
@@ -36,7 +376,11 @@ private enum AccountQuotaReader {
                     "attempt": String(attempt),
                     "error": error.localizedDescription
                 ])
-                if attempt == 3 {
+                if error is CancellationError || Task.isCancelled {
+                    trace?.end("cancelled", metadata: ["attempt": String(attempt)])
+                    return .failure(CancellationError())
+                }
+                if attempt == dependencies.maxAttempts {
                     trace?.end("failed", metadata: [
                         "attempt": String(attempt),
                         "error": error.localizedDescription
@@ -46,7 +390,12 @@ private enum AccountQuotaReader {
                 lastError = error
             }
             trace?.mark("attempt.sleep", metadata: ["attempt": String(attempt)])
-            try? await Task.sleep(nanoseconds: 350_000_000)
+            do {
+                try await Task.sleep(nanoseconds: dependencies.retryDelayNanoseconds)
+            } catch {
+                trace?.end("cancelled", metadata: ["attempt": String(attempt)])
+                return .failure(error)
+            }
         }
         trace?.end("failed", metadata: ["error": (lastError ?? AccountQuotaReaderError.invalidResponse).localizedDescription])
         return .failure(lastError ?? AccountQuotaReaderError.invalidResponse)
@@ -76,137 +425,7 @@ private enum AccountQuotaReader {
         return enriched
     }
 
-    private static func readOnce(dataSource: CodexDataSource?) -> Result<AccountQuotaSnapshot, Error> {
-        let trace = RefreshPerformanceProbe.begin("accountQuotaReader.readOnce")
-        do {
-            trace?.mark("findCodexBinary.begin")
-            let codexPath = try findCodexBinary()
-            trace?.mark("findCodexBinary.end", metadata: ["path": codexPath])
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: codexPath)
-            process.arguments = ["app-server", "--listen", "stdio://"]
-            if let dataSource {
-                var environment = ProcessInfo.processInfo.environment
-                environment["CODEX_HOME"] = dataSource.codexHome.path
-                process.environment = environment
-            }
-
-            let input = Pipe()
-            let output = Pipe()
-            let error = Pipe()
-            process.standardInput = input
-            process.standardOutput = output
-            process.standardError = error
-
-            let reader = JSONLineReader(handle: output.fileHandleForReading)
-            trace?.mark("process.run.begin")
-            try process.run()
-            trace?.mark("process.run.end", metadata: ["pid": String(process.processIdentifier)])
-            defer {
-                output.fileHandleForReading.readabilityHandler = nil
-                if process.isRunning {
-                    process.terminate()
-                }
-            }
-
-            let writer = input.fileHandleForWriting
-            trace?.mark("initialize.write.begin")
-            try write([
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": [
-                    "clientInfo": [
-                        "name": "codex-token-bar",
-                        "title": "Codex Token Bar",
-                        "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
-                    ],
-                    "capabilities": [
-                        "experimentalApi": false,
-                        "requestAttestation": false
-                    ]
-                ]
-            ], to: writer)
-            trace?.mark("initialize.write.end")
-
-            let deadline = Date().addingTimeInterval(12)
-            var didSendRead = false
-            var waitCount = 0
-
-            while Date() < deadline {
-                waitCount += 1
-                if let message = try reader.next(timeout: 0.5) {
-                    let messageID = (message["id"] as? Int).map(String.init) ?? "none"
-                    trace?.mark("message.received", metadata: [
-                        "id": messageID,
-                        "waitCount": String(waitCount)
-                    ])
-                    if let id = message["id"] as? Int, id == 1, message["result"] != nil, !didSendRead {
-                        trace?.mark("initialized.write.begin")
-                        try write(["jsonrpc": "2.0", "method": "initialized"], to: writer)
-                        try write(["jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read"], to: writer)
-                        trace?.mark("initialized.write.end")
-                        didSendRead = true
-                        continue
-                    }
-
-                    if let id = message["id"] as? Int, id == 2 {
-                        if let error = message["error"] as? [String: Any],
-                           let message = error["message"] as? String {
-                            trace?.end("server-error", metadata: ["error": message])
-                            return .failure(AccountQuotaReaderError.serverError(message))
-                        }
-                        guard let result = message["result"] as? [String: Any] else {
-                            trace?.end("invalid-response")
-                            return .failure(AccountQuotaReaderError.invalidResponse)
-                        }
-                        trace?.mark("parse.begin")
-                        let snapshot = parse(result, dataSource: dataSource)
-                        trace?.mark("parse.end", metadata: [
-                            "available": snapshot.isAvailable ? "1" : "0",
-                            "cards": String(snapshot.limitCards.count)
-                        ])
-                        trace?.end("ok", metadata: [
-                            "waitCount": String(waitCount),
-                            "available": snapshot.isAvailable ? "1" : "0"
-                        ])
-                        return .success(snapshot)
-                    }
-                }
-            }
-
-            if process.isRunning {
-                trace?.mark("timeout.terminate.begin")
-                process.terminate()
-                process.waitUntilExit()
-                trace?.mark("timeout.terminate.end")
-            }
-            if let stderr = try? error.fileHandleForReading.readToEnd(),
-               let text = String(data: stderr, encoding: .utf8),
-               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                trace?.end("timeout", metadata: ["stderr": message])
-                return .failure(AccountQuotaReaderError.timeout(stderrText: message))
-            }
-            trace?.end("invalid-response-timeout")
-            return .failure(AccountQuotaReaderError.timeout)
-        } catch {
-            trace?.end("failed", metadata: ["error": error.localizedDescription])
-            return .failure(error)
-        }
-    }
-
-    private static func findCodexBinary() throws -> String {
-        try CodexBinaryLocator.findExecutable()
-    }
-
-    private static func write(_ object: [String: Any], to handle: FileHandle) throws {
-        let data = try JSONSerialization.data(withJSONObject: object)
-        handle.write(data)
-        handle.write(Data([0x0A]))
-    }
-
-    private static func parse(_ result: [String: Any], dataSource: CodexDataSource?) -> AccountQuotaSnapshot {
+    static func parse(_ result: [String: Any], dataSource: CodexDataSource?) -> AccountQuotaSnapshot {
         let byLimit = result["rateLimitsByLimitId"] as? [String: Any]
         let fallbackLimit = result["rateLimits"] as? [String: Any]
         let limitCards = parseLimitCards(byLimit: byLimit, fallbackLimit: fallbackLimit)
@@ -519,7 +738,7 @@ private enum AccountQuotaReader {
     }
 }
 
-private final class JSONLineReader: @unchecked Sendable {
+private final class AccountQuotaLineReader: @unchecked Sendable {
     private let condition = NSCondition()
     private var buffer = Data()
     private var lines: [Data] = []
@@ -530,7 +749,7 @@ private final class JSONLineReader: @unchecked Sendable {
         }
     }
 
-    func next(timeout: TimeInterval) throws -> [String: Any]? {
+    func next(timeout: TimeInterval) -> Data? {
         let deadline = Date().addingTimeInterval(timeout)
         condition.lock()
         defer { condition.unlock() }
@@ -541,9 +760,7 @@ private final class JSONLineReader: @unchecked Sendable {
             condition.wait(until: Date().addingTimeInterval(remaining))
         }
 
-        let line = lines.removeFirst()
-        guard !line.isEmpty else { return nil }
-        return try JSONSerialization.jsonObject(with: line) as? [String: Any]
+        return lines.removeFirst()
     }
 
     private func append(_ data: Data) {
