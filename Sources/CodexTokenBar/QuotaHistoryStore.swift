@@ -1,7 +1,7 @@
 import Foundation
 
 protocol QuotaHistoryLoading: Sendable {
-    func loadSnapshot() async throws -> QuotaHistorySnapshot
+    func loadSnapshot(for quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot
     func recordAndLoadSnapshot(_ quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot
     func normalizedSnapshot(_ quota: AccountQuotaSnapshot) async throws -> AccountQuotaSnapshot
 }
@@ -13,18 +13,18 @@ struct LiveQuotaHistoryClient: QuotaHistoryLoading {
         self.database = database
     }
 
-    func loadSnapshot() async throws -> QuotaHistorySnapshot {
+    func loadSnapshot(for quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot {
         let database = database
         return try await Task.detached(priority: .utility) {
-            try database.loadSnapshot()
+            try database.loadSnapshot(for: quota)
         }.value
     }
 
     func recordAndLoadSnapshot(_ quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot {
         let database = database
         return try await Task.detached(priority: .utility) {
-            try database.record(quota)
-            return try database.loadSnapshot()
+            _ = try database.record(quota)
+            return try database.loadSnapshot(for: quota)
         }.value
     }
 
@@ -43,6 +43,7 @@ final class QuotaHistoryStore: ObservableObject {
     private let historyClient: any QuotaHistoryLoading
     private var operationTask: Task<Void, Never>?
     private var operationGeneration = 0
+    private var currentQuota: AccountQuotaSnapshot?
 
     init(historyClient: any QuotaHistoryLoading = LiveQuotaHistoryClient()) {
         self.historyClient = historyClient
@@ -53,10 +54,14 @@ final class QuotaHistoryStore: ObservableObject {
     }
 
     func start() {
-        reload()
+        clearIdentity()
     }
 
     func reload() {
+        guard let quota = currentQuota, quota.historyIdentity != nil else {
+            clearIdentity()
+            return
+        }
         operationTask?.cancel()
         operationGeneration += 1
         let generation = operationGeneration
@@ -65,7 +70,7 @@ final class QuotaHistoryStore: ObservableObject {
         operationTask = Task {
             trace?.mark("database.loadSnapshot.begin")
             do {
-                let loaded = try await historyClient.loadSnapshot()
+                let loaded = try await historyClient.loadSnapshot(for: quota)
                 trace?.mark("database.loadSnapshot.end", metadata: [
                     "daily": String(loaded.daily.count),
                     "recent": String(loaded.recentBins.count),
@@ -88,7 +93,14 @@ final class QuotaHistoryStore: ObservableObject {
     }
 
     func record(_ quota: AccountQuotaSnapshot) {
-        guard quota.isAvailable else { return }
+        guard quota.isAvailable, let identity = quota.historyIdentity else {
+            clearIdentity()
+            return
+        }
+        if currentQuota?.historyIdentity != identity {
+            clearIdentity()
+        }
+        currentQuota = quota
         operationTask?.cancel()
         operationGeneration += 1
         let generation = operationGeneration
@@ -124,13 +136,28 @@ final class QuotaHistoryStore: ObservableObject {
     }
 
     func normalizedForDisplay(_ quota: AccountQuotaSnapshot) async -> AccountQuotaSnapshot {
-        guard quota.isAvailable else { return quota }
+        guard quota.isAvailable, let identity = quota.historyIdentity else {
+            clearIdentity()
+            return quota
+        }
+        if currentQuota?.historyIdentity != identity {
+            clearIdentity()
+        }
+        currentQuota = quota
         let trace = RefreshPerformanceProbe.begin("quotaHistory.normalizedForDisplay")
         trace?.mark("database.normalizedSnapshot.begin")
         let normalized = (try? await historyClient.normalizedSnapshot(quota)) ?? quota
         trace?.mark("database.normalizedSnapshot.end")
         trace?.end("ok")
         return normalized
+    }
+
+    func clearIdentity() {
+        operationTask?.cancel()
+        operationTask = nil
+        operationGeneration += 1
+        currentQuota = nil
+        snapshot = .empty
     }
 
     private func isCurrentOperation(generation: Int) -> Bool {
@@ -152,6 +179,11 @@ private struct QuotaHistoryRow {
     let sevenDayUsedPercent: Int?
     let sevenDayResetsAt: Date?
     let status: String
+    let identityVersion: Int?
+    let homeIdentity: String?
+    let stableAccountKey: String?
+    let identityPlanType: String?
+    let identityLimitID: String?
 
     var fiveHourRemainingPercent: Double? {
         fiveHourUsedPercent.map { Double(max(0, min(100, 100 - $0))) }
@@ -184,7 +216,12 @@ private struct QuotaHistoryRow {
                 previousResetsAt: previous.sevenDayResetsAt
             ),
             sevenDayResetsAt: sevenDayResetsAt,
-            status: status
+            status: status,
+            identityVersion: identityVersion,
+            homeIdentity: homeIdentity,
+            stableAccountKey: stableAccountKey,
+            identityPlanType: identityPlanType,
+            identityLimitID: identityLimitID
         )
     }
 
@@ -200,7 +237,12 @@ private struct QuotaHistoryRow {
             fiveHourResetsAt: fiveHourResetsAt,
             sevenDayUsedPercent: sevenDayUsedPercent ?? self.sevenDayUsedPercent,
             sevenDayResetsAt: sevenDayResetsAt,
-            status: status
+            status: status,
+            identityVersion: identityVersion,
+            homeIdentity: homeIdentity,
+            stableAccountKey: stableAccountKey,
+            identityPlanType: identityPlanType,
+            identityLimitID: identityLimitID
         )
     }
 
@@ -236,44 +278,80 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     private let retentionDays = 45
     private let recentInterval: TimeInterval = 5 * 60
     private let maxCarryGap: TimeInterval = 90 * 60
+    private let legacyBridgeMaxAge: TimeInterval = 45 * 24 * 60 * 60
+    private let legacyBridgeMaxRows = 512
 
     init(databaseURL: URL? = nil, fileManager: FileManager = .default) {
         self.databaseURL = databaseURL
         self.fileManager = fileManager
     }
 
-    func record(_ quota: AccountQuotaSnapshot, createdAt: Date = Date()) throws {
-        let now = createdAt
-        let row = Self.row(from: quota, createdAt: now)
-
+    func migrate() throws {
         try withDatabase { database in
             try ensureSchema(database)
-            let latest = try latestTrustedRow(database: database, accountKey: row.accountKey)
+        }
+    }
+
+    @discardableResult
+    func record(_ quota: AccountQuotaSnapshot, createdAt: Date = Date()) throws -> Bool {
+        let now = createdAt
+        guard quota.isAvailable, let row = Self.row(from: quota, createdAt: now) else {
+            return false
+        }
+
+        return try withDatabase { database in
+            try ensureSchema(database)
+            let latest = try latestTrustedRow(database: database, row: row, now: now)
             let normalizedRow = row.normalized(after: latest)
             if let latest,
                !shouldInsert(normalizedRow, after: latest, now: now) {
-                return
+                return true
             }
             try insert(normalizedRow, database: database)
             try prune(database: database, now: now)
+            return true
         }
     }
 
     func normalizedSnapshot(_ quota: AccountQuotaSnapshot) throws -> AccountQuotaSnapshot {
-        let row = Self.row(from: quota, createdAt: Date())
+        let now = Date()
+        guard let row = Self.row(from: quota, createdAt: now) else { return quota }
         return try withDatabase { database in
             try ensureSchema(database)
-            let latest = try latestTrustedRow(database: database, accountKey: row.accountKey)
+            let latest = try latestTrustedRow(database: database, row: row, now: now)
             let normalizedRow = row.normalized(after: latest)
             return Self.snapshot(from: normalizedRow, base: quota)
         }
     }
 
-    func loadSnapshot(now: Date = Date()) throws -> QuotaHistorySnapshot {
-        try withDatabase { database in
+    func loadSnapshot(for quota: AccountQuotaSnapshot, now: Date = Date()) throws -> QuotaHistorySnapshot {
+        guard let row = Self.row(from: quota, createdAt: now) else { return .empty }
+        return try withDatabase { database in
             try ensureSchema(database)
-            let rows = try recentRows(database: database, now: now)
+            let rows = try matchingRows(
+                database: database,
+                row: row,
+                cutoff: now.addingTimeInterval(-31 * 24 * 60 * 60),
+                now: now
+            )
             return Self.makeSnapshot(rows: rows, recentInterval: recentInterval, maxCarryGap: maxCarryGap, now: now)
+        }
+    }
+
+    func recordedFiveHourUsedPercents(
+        for quota: AccountQuotaSnapshot,
+        now: Date = Date(),
+        age: TimeInterval = 31 * 24 * 60 * 60
+    ) throws -> [Int] {
+        guard let row = Self.row(from: quota, createdAt: now) else { return [] }
+        return try withDatabase { database in
+            try ensureSchema(database)
+            return try matchingRows(
+                database: database,
+                row: row,
+                cutoff: now.addingTimeInterval(-age),
+                now: now
+            ).compactMap(\.fiveHourUsedPercent)
         }
     }
 
@@ -415,20 +493,26 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         return nil
     }
 
-    private static func row(from quota: AccountQuotaSnapshot, createdAt: Date) -> QuotaHistoryRow {
-        let canonical = canonicalCodexIdentity(for: quota)
+    private static func row(from quota: AccountQuotaSnapshot, createdAt: Date) -> QuotaHistoryRow? {
+        guard let identity = quota.historyIdentity else { return nil }
+        let accountName = nonemptyText(quota.accountName)
         return QuotaHistoryRow(
             createdAt: createdAt,
-            accountKey: Self.accountKey(for: quota, canonical: canonical),
+            accountKey: Self.accountKey(accountName: accountName, identity: identity),
             source: "swift",
-            planType: canonical?.planType ?? quota.planType,
-            limitName: canonical?.limitName ?? quota.limitName,
-            accountName: quota.accountName,
+            planType: identity.planType,
+            limitName: identity.limitID,
+            accountName: accountName,
             fiveHourUsedPercent: quota.fiveHour?.usedPercent,
             fiveHourResetsAt: quota.fiveHour?.resetsAt,
             sevenDayUsedPercent: quota.sevenDay?.usedPercent,
             sevenDayResetsAt: quota.sevenDay?.resetsAt,
-            status: quota.status
+            status: quota.status,
+            identityVersion: identity.version,
+            homeIdentity: identity.homeIdentity,
+            stableAccountKey: identity.stableAccountKey,
+            identityPlanType: identity.planType,
+            identityLimitID: identity.limitID
         )
     }
 
@@ -560,6 +644,14 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         return values.reduce(0, +) / Double(values.count)
     }
 
+    private struct LegacyBridge {
+        let accountName: String
+        let planType: String
+        let limitID: String
+        let kind: String
+        let isFakePro: Bool
+    }
+
     private func ensureSchema(_ database: SQLiteDatabaseConnection) throws {
         try database.execute(
             """
@@ -575,15 +667,53 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 five_hour_resets_at REAL,
                 seven_day_used_percent INTEGER,
                 seven_day_resets_at REAL,
-                status TEXT NOT NULL
+                status TEXT NOT NULL,
+                identity_version INTEGER,
+                home_identity TEXT,
+                stable_account_key TEXT,
+                identity_plan_type TEXT,
+                identity_limit_id TEXT
             );
             """
         )
         try ensureColumn("source", definition: "TEXT", database: database)
         try ensureColumn("five_hour_resets_at", definition: "REAL", database: database)
         try ensureColumn("seven_day_resets_at", definition: "REAL", database: database)
+        try ensureColumn("identity_version", definition: "INTEGER", database: database)
+        try ensureColumn("home_identity", definition: "TEXT", database: database)
+        try ensureColumn("stable_account_key", definition: "TEXT", database: database)
+        try ensureColumn("identity_plan_type", definition: "TEXT", database: database)
+        try ensureColumn("identity_limit_id", definition: "TEXT", database: database)
         try database.execute("CREATE INDEX IF NOT EXISTS idx_quota_snapshots_created_at ON quota_snapshots(created_at);")
         try database.execute("CREATE INDEX IF NOT EXISTS idx_quota_snapshots_account_created ON quota_snapshots(account_key, created_at);")
+        try database.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_quota_snapshots_stable_identity_created
+            ON quota_snapshots(
+                identity_version, home_identity, stable_account_key,
+                identity_plan_type, identity_limit_id, created_at
+            );
+            """
+        )
+        try database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS quota_history_legacy_claims (
+                legacy_account_name TEXT NOT NULL,
+                legacy_plan_type TEXT NOT NULL,
+                legacy_limit_id TEXT NOT NULL,
+                bridge_kind TEXT NOT NULL,
+                owner_identity_version INTEGER NOT NULL,
+                owner_home_identity TEXT NOT NULL,
+                owner_stable_account_key TEXT NOT NULL,
+                owner_plan_type TEXT NOT NULL,
+                owner_limit_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                claimed_at REAL NOT NULL,
+                last_seen_at REAL NOT NULL,
+                PRIMARY KEY (legacy_account_name, legacy_plan_type, legacy_limit_id)
+            );
+            """
+        )
     }
 
     private func insert(_ row: QuotaHistoryRow, database: SQLiteDatabaseConnection) throws {
@@ -591,8 +721,10 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         INSERT INTO quota_snapshots (
             created_at, account_key, source, plan_type, limit_name, account_name,
             five_hour_used_percent, five_hour_resets_at,
-            seven_day_used_percent, seven_day_resets_at, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            seven_day_used_percent, seven_day_resets_at, status,
+            identity_version, home_identity, stable_account_key,
+            identity_plan_type, identity_limit_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         try database.execute(sql, bindings: [
             .date(row.createdAt),
@@ -605,93 +737,284 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             .optionalDate(row.fiveHourResetsAt),
             .optionalInt(row.sevenDayUsedPercent),
             .optionalDate(row.sevenDayResetsAt),
-            .text(row.status)
+            .text(row.status),
+            row.identityVersion.map(SQLiteBinding.int) ?? .null,
+            .optionalText(row.homeIdentity),
+            .optionalText(row.stableAccountKey),
+            .optionalText(row.identityPlanType),
+            .optionalText(row.identityLimitID)
         ])
     }
 
-    private func latestTrustedRow(database: SQLiteDatabaseConnection, accountKey: String) throws -> QuotaHistoryRow? {
-        let rawRows = try rows(
-            database: database,
-            sql: """
-            SELECT created_at, account_key, plan_type, limit_name, account_name,
-                   source, five_hour_used_percent, five_hour_resets_at,
-                   seven_day_used_percent, seven_day_resets_at, status
-            FROM quota_snapshots
-            WHERE account_key = ?
-            ORDER BY created_at DESC;
-            """,
-            bindings: [.text(accountKey)]
-        )
-        return Self.sanitizedRows(Array(rawRows.reversed())).last
+    private func latestTrustedRow(
+        database: SQLiteDatabaseConnection,
+        row: QuotaHistoryRow,
+        now: Date
+    ) throws -> QuotaHistoryRow? {
+        let rawRows = try matchingRows(database: database, row: row, cutoff: nil, now: now)
+        return Self.sanitizedRows(rawRows).last
     }
 
-    private func recentRows(database: SQLiteDatabaseConnection, now: Date = Date()) throws -> [QuotaHistoryRow] {
-        guard let latest = try latestHistoryRow(database: database) else { return [] }
-        let cutoff = now.addingTimeInterval(-31 * 24 * 60 * 60).timeIntervalSince1970
-        guard let accountName = Self.normalizedIdentityText(latest.accountName),
-              let planType = Self.normalizedIdentityText(latest.planType) else {
-            return try rows(
+    private func matchingRows(
+        database: SQLiteDatabaseConnection,
+        row: QuotaHistoryRow,
+        cutoff: Date?,
+        now: Date
+    ) throws -> [QuotaHistoryRow] {
+        guard let identity = stableIdentity(from: row) else { return [] }
+        var matched = try stableRows(database: database, identity: identity, cutoff: cutoff)
+        guard !matched.isEmpty else { return matched }
+
+        let legacyCutoff = max(cutoff ?? .distantPast, now.addingTimeInterval(-legacyBridgeMaxAge))
+        for bridge in legacyBridges(row: row, identity: identity) {
+            let legacyRows = try legacyRows(
                 database: database,
-                sql: """
-                SELECT created_at, account_key, plan_type, limit_name, account_name,
-                       source, five_hour_used_percent, five_hour_resets_at,
-                       seven_day_used_percent, seven_day_resets_at, status
-                FROM quota_snapshots
-                WHERE account_key = ? AND created_at >= ?
-                ORDER BY created_at ASC;
-                """,
-                bindings: [.text(latest.accountKey), .double(cutoff)]
+                bridge: bridge,
+                cutoff: legacyCutoff
             )
+            guard !legacyRows.isEmpty else { continue }
+            let knownAmbiguous = try legacyBridgeHasOtherStableIdentity(
+                database: database,
+                bridge: bridge,
+                identity: identity
+            )
+            if try claimLegacyBridge(
+                database: database,
+                bridge: bridge,
+                identity: identity,
+                knownAmbiguous: knownAmbiguous,
+                now: now
+            ) {
+                matched.append(contentsOf: legacyRows)
+            }
         }
-        let limitName = Self.normalizedLimitName(latest.limitName)
-        return try rows(
-            database: database,
-            sql: """
-            SELECT created_at, account_key, plan_type, limit_name, account_name,
-                   source, five_hour_used_percent, five_hour_resets_at,
-                   seven_day_used_percent, seven_day_resets_at, status
-            FROM quota_snapshots
-            WHERE created_at >= ?
-              AND (
-                account_key = ?
-                OR (
-                  lower(trim(account_name)) = ?
-                  AND lower(trim(plan_type)) = ?
-                  AND (
-                    lower(trim(COALESCE(limit_name, ''))) = ?
-                    OR (
-                      lower(trim(COALESCE(limit_name, ''))) IN ('', 'codex')
-                      AND ? IN ('', 'codex')
-                    )
-                  )
-                )
-              )
-            ORDER BY created_at ASC;
-            """,
-            bindings: [
-                .double(cutoff),
-                .text(latest.accountKey),
-                .text(accountName),
-                .text(planType),
-                .text(limitName),
-                .text(limitName)
-            ]
-        )
+        return matched.sorted { $0.createdAt < $1.createdAt }
     }
 
-    private func latestHistoryRow(database: SQLiteDatabaseConnection) throws -> QuotaHistoryRow? {
+    private func stableRows(
+        database: SQLiteDatabaseConnection,
+        identity: QuotaHistoryIdentity,
+        cutoff: Date?
+    ) throws -> [QuotaHistoryRow] {
+        var sql = """
+        SELECT created_at, account_key, plan_type, limit_name, account_name,
+               source, five_hour_used_percent, five_hour_resets_at,
+               seven_day_used_percent, seven_day_resets_at, status,
+               identity_version, home_identity, stable_account_key,
+               identity_plan_type, identity_limit_id
+        FROM quota_snapshots
+        WHERE identity_version = ?
+          AND home_identity = ?
+          AND stable_account_key = ?
+          AND identity_plan_type = ?
+          AND identity_limit_id = ?
+        """
+        var bindings: [SQLiteBinding] = [
+            .int(identity.version),
+            .text(identity.homeIdentity),
+            .text(identity.stableAccountKey),
+            .text(identity.planType),
+            .text(identity.limitID)
+        ]
+        if let cutoff {
+            sql += " AND created_at >= ?"
+            bindings.append(.date(cutoff))
+        }
+        sql += " ORDER BY created_at ASC;"
+        return try rows(database: database, sql: sql, bindings: bindings)
+    }
+
+    private func legacyBridges(
+        row: QuotaHistoryRow,
+        identity: QuotaHistoryIdentity
+    ) -> [LegacyBridge] {
+        guard let accountName = Self.nonemptyText(row.accountName) else { return [] }
+        var bridges = [LegacyBridge(
+            accountName: accountName,
+            planType: identity.planType,
+            limitID: identity.limitID,
+            kind: "exact-plan",
+            isFakePro: false
+        )]
+        if identity.planType.caseInsensitiveCompare("Pro") != .orderedSame,
+           identity.limitID.caseInsensitiveCompare("codex") == .orderedSame {
+            bridges.append(LegacyBridge(
+                accountName: accountName,
+                planType: "Pro",
+                limitID: identity.limitID,
+                kind: "swift-fake-pro",
+                isFakePro: true
+            ))
+        }
+        return bridges
+    }
+
+    private func legacyRows(
+        database: SQLiteDatabaseConnection,
+        bridge: LegacyBridge,
+        cutoff: Date
+    ) throws -> [QuotaHistoryRow] {
         try rows(
             database: database,
             sql: """
             SELECT created_at, account_key, plan_type, limit_name, account_name,
                    source, five_hour_used_percent, five_hour_resets_at,
-                   seven_day_used_percent, seven_day_resets_at, status
+                   seven_day_used_percent, seven_day_resets_at, status,
+                   identity_version, home_identity, stable_account_key,
+                   identity_plan_type, identity_limit_id
             FROM quota_snapshots
+            WHERE identity_version IS NULL
+              AND account_name = ?
+              AND lower(coalesce(plan_type, '')) = lower(?)
+              AND (
+                lower(coalesce(limit_name, '')) = lower(?)
+                OR (? = 'codex' AND coalesce(limit_name, '') = '')
+              )
+              AND created_at >= ?
+              AND (
+                source IS NULL
+                OR trim(source) = ''
+                OR lower(trim(source)) IN ('swift', 'tauri')
+              )
+              AND (
+                ? = 0
+                OR source IS NULL
+                OR trim(source) = ''
+                OR lower(trim(source)) = 'swift'
+              )
             ORDER BY created_at DESC
-            LIMIT 1;
-            """
+            LIMIT \(legacyBridgeMaxRows);
+            """,
+            bindings: [
+                .text(bridge.accountName),
+                .text(bridge.planType),
+                .text(bridge.limitID),
+                .text(bridge.limitID),
+                .date(cutoff),
+                .int(bridge.isFakePro ? 1 : 0)
+            ]
         )
-        .first
+    }
+
+    private func legacyBridgeHasOtherStableIdentity(
+        database: SQLiteDatabaseConnection,
+        bridge: LegacyBridge,
+        identity: QuotaHistoryIdentity
+    ) throws -> Bool {
+        let sharedProAlias = bridge.planType.caseInsensitiveCompare("Pro") == .orderedSame
+            && bridge.limitID.caseInsensitiveCompare("codex") == .orderedSame
+        let counts = try database.readRows(
+            """
+            SELECT count(*)
+            FROM (
+                SELECT DISTINCT identity_version, home_identity, stable_account_key,
+                                identity_plan_type, identity_limit_id
+                FROM quota_snapshots
+                WHERE identity_version = ?
+                  AND account_name = ?
+                  AND identity_limit_id = ?
+                  AND (? = 1 OR identity_plan_type = ?)
+                  AND NOT (
+                    home_identity = ?
+                    AND stable_account_key = ?
+                    AND identity_plan_type = ?
+                    AND identity_limit_id = ?
+                  )
+            );
+            """,
+            bindings: [
+                .int(identity.version),
+                .text(bridge.accountName),
+                .text(bridge.limitID),
+                .int(sharedProAlias ? 1 : 0),
+                .text(bridge.planType),
+                .text(identity.homeIdentity),
+                .text(identity.stableAccountKey),
+                .text(identity.planType),
+                .text(identity.limitID)
+            ]
+        ) { statement in
+            statement.int(0) ?? 0
+        }
+        return (counts.first ?? 0) > 0
+    }
+
+    private func claimLegacyBridge(
+        database: SQLiteDatabaseConnection,
+        bridge: LegacyBridge,
+        identity: QuotaHistoryIdentity,
+        knownAmbiguous: Bool,
+        now: Date
+    ) throws -> Bool {
+        try database.execute(
+            """
+            INSERT INTO quota_history_legacy_claims (
+                legacy_account_name, legacy_plan_type, legacy_limit_id, bridge_kind,
+                owner_identity_version, owner_home_identity, owner_stable_account_key,
+                owner_plan_type, owner_limit_id, state, claimed_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(legacy_account_name, legacy_plan_type, legacy_limit_id)
+            DO UPDATE SET
+                state = CASE
+                    WHEN excluded.state = 'claimed'
+                     AND quota_history_legacy_claims.state = 'claimed'
+                     AND quota_history_legacy_claims.owner_identity_version = excluded.owner_identity_version
+                     AND quota_history_legacy_claims.owner_home_identity = excluded.owner_home_identity
+                     AND quota_history_legacy_claims.owner_stable_account_key = excluded.owner_stable_account_key
+                     AND quota_history_legacy_claims.owner_plan_type = excluded.owner_plan_type
+                     AND quota_history_legacy_claims.owner_limit_id = excluded.owner_limit_id
+                    THEN 'claimed'
+                    ELSE 'ambiguous'
+                END,
+                last_seen_at = excluded.last_seen_at;
+            """,
+            bindings: [
+                .text(bridge.accountName),
+                .text(bridge.planType),
+                .text(bridge.limitID),
+                .text(bridge.kind),
+                .int(identity.version),
+                .text(identity.homeIdentity),
+                .text(identity.stableAccountKey),
+                .text(identity.planType),
+                .text(identity.limitID),
+                .text(knownAmbiguous ? "ambiguous" : "claimed"),
+                .date(now),
+                .date(now)
+            ]
+        )
+
+        let claims = try database.readRows(
+            """
+            SELECT state, owner_identity_version, owner_home_identity,
+                   owner_stable_account_key, owner_plan_type, owner_limit_id
+            FROM quota_history_legacy_claims
+            WHERE legacy_account_name = ?
+              AND legacy_plan_type = ?
+              AND legacy_limit_id = ?;
+            """,
+            bindings: [
+                .text(bridge.accountName),
+                .text(bridge.planType),
+                .text(bridge.limitID)
+            ]
+        ) { statement in
+            (
+                state: statement.text(0),
+                version: statement.int(1),
+                home: statement.text(2),
+                account: statement.text(3),
+                plan: statement.text(4),
+                limit: statement.text(5)
+            )
+        }
+        guard let claim = claims.first else { return false }
+        return claim.state == "claimed"
+            && claim.version == identity.version
+            && claim.home == identity.homeIdentity
+            && claim.account == identity.stableAccountKey
+            && claim.plan == identity.planType
+            && claim.limit == identity.limitID
     }
 
     private func rows(database: SQLiteDatabaseConnection, sql: String, bindings: [SQLiteBinding] = []) throws -> [QuotaHistoryRow] {
@@ -707,7 +1030,12 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 fiveHourResetsAt: statement.date(7),
                 sevenDayUsedPercent: statement.int(8),
                 sevenDayResetsAt: statement.date(9),
-                status: statement.text(10) ?? ""
+                status: statement.text(10) ?? "",
+                identityVersion: statement.int(11),
+                homeIdentity: statement.text(12),
+                stableAccountKey: statement.text(13),
+                identityPlanType: statement.text(14),
+                identityLimitID: statement.text(15)
             )
         }
     }
@@ -746,28 +1074,25 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             .appendingPathComponent("quota-history.sqlite")
     }
 
-    private static func accountKey(for quota: AccountQuotaSnapshot, canonical: (planType: String, limitName: String)? = nil) -> String {
-        let parts = [quota.accountName, canonical?.planType ?? quota.planType, canonical?.limitName ?? quota.limitName]
-            .compactMap { value -> String? in
-                let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                return trimmed.isEmpty ? nil : trimmed
-            }
-        return parts.isEmpty ? "default" : parts.joined(separator: "|")
+    private func stableIdentity(from row: QuotaHistoryRow) -> QuotaHistoryIdentity? {
+        guard let version = row.identityVersion else { return nil }
+        return QuotaHistoryIdentity(
+            version: version,
+            homeIdentity: row.homeIdentity,
+            stableAccountKey: row.stableAccountKey,
+            planType: row.identityPlanType,
+            limitID: row.identityLimitID
+        )
     }
 
-    private static func canonicalCodexIdentity(for quota: AccountQuotaSnapshot) -> (planType: String, limitName: String)? {
-        let limitName = normalizedLimitName(quota.limitName)
-        guard limitName.isEmpty || limitName == "codex" else { return nil }
-        guard normalizedIdentityText(quota.planType) != nil else { return nil }
-        return ("Pro", "codex")
+    private static func accountKey(accountName: String?, identity: QuotaHistoryIdentity) -> String {
+        [accountName ?? "default", identity.planType, identity.limitID]
+            .filter { !$0.isEmpty }
+            .joined(separator: "|")
     }
 
-    private static func normalizedIdentityText(_ value: String?) -> String? {
+    private static func nonemptyText(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? nil : trimmed.lowercased()
-    }
-
-    private static func normalizedLimitName(_ value: String?) -> String {
-        normalizedIdentityText(value) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

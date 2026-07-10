@@ -106,6 +106,7 @@ final class AccountQuotaStore: ObservableObject {
         let newSourceID = quotaSourceID(for: dataSource)
         currentDataSource = dataSource
         guard oldSourceID != newSourceID else { return }
+        historyStore?.clearIdentity()
 
         lastSuccessfulRefreshCompletedAt = nil
         refreshTask?.cancel()

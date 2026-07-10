@@ -12,24 +12,322 @@ final class QuotaHistoryStoreTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testSharedQuotaHistoryIdentityFixtureIsStrictAndFailClosed() throws {
+        let fixtureURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("SharedFixtures/quota-history-identity-v1.json")
+        let fixture = try JSONDecoder().decode(
+            SharedQuotaHistoryIdentityFixture.self,
+            from: Data(contentsOf: fixtureURL)
+        )
+
+        XCTAssertEqual(fixture.fixtureVersion, 1)
+        XCTAssertEqual(fixture.identityVersion, QuotaHistoryIdentity.currentVersion)
+
+        for scenario in fixture.scenarios {
+            let url = try makeDatabaseURL()
+            let database = QuotaHistoryDatabase(databaseURL: url)
+            try database.migrate()
+            let now = Date()
+
+            for (index, step) in scenario.steps.enumerated() {
+                XCTAssertFalse(step.limitId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                let createdAt = now.addingTimeInterval(Double(index - scenario.steps.count) * 60)
+                let quota = fixtureSnapshot(step, at: createdAt)
+
+                switch step.operation {
+                case "write":
+                    XCTAssertEqual(
+                        try database.record(quota, createdAt: createdAt),
+                        step.expectedAccepted ?? true,
+                        "scenario \(scenario.id) write acceptance"
+                    )
+                case "read":
+                    let actual = try database.recordedFiveHourUsedPercents(
+                        for: quota,
+                        now: now,
+                        age: 31 * 24 * 60 * 60
+                    ).sorted()
+                    XCTAssertEqual(
+                        actual,
+                        (step.expectedUsedPercents ?? []).sorted(),
+                        "scenario \(scenario.id) read"
+                    )
+                case "legacyWrite":
+                    try insertRawSnapshot(
+                        databaseURL: url,
+                        createdAt: createdAt,
+                        accountKey: "\(step.displayName)|\(step.plan)|\(step.limitId)",
+                        source: step.source,
+                        planType: step.plan,
+                        limitName: step.limitId,
+                        accountName: step.displayName,
+                        fiveHourUsedPercent: step.usedPercent ?? 0,
+                        fiveHourResetsAt: now.addingTimeInterval(3 * 60 * 60),
+                        sevenDayUsedPercent: step.usedPercent ?? 0,
+                        sevenDayResetsAt: now.addingTimeInterval(4 * 24 * 60 * 60)
+                    )
+                default:
+                    XCTFail("unsupported fixture operation \(step.operation)")
+                }
+            }
+        }
+    }
+
+    func testIdentityV1SchemaAndSwiftWriteAreAdditive() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let quota = identifiedSnapshot(
+            usedPercent: 12,
+            reset: now.addingTimeInterval(3 * 60 * 60),
+            homeIdentity: "/fixture/schema-home",
+            stableAccountKey: "sub:schema-account",
+            planType: "Plus",
+            limitID: "codex",
+            accountName: "Shared User",
+            at: now
+        )
+
+        XCTAssertTrue(try database.record(quota, createdAt: now))
+
+        let driver = SQLiteDatabaseDriver(url: url)
+        let columns = try driver.readRows("PRAGMA table_info(quota_snapshots);") { statement in
+            statement.text(1) ?? ""
+        }
+        let claimColumns = try driver.readRows("PRAGMA table_info(quota_history_legacy_claims);") { statement in
+            statement.text(1) ?? ""
+        }
+        let row = try XCTUnwrap(driver.readRows(
+            """
+            SELECT source, identity_version, home_identity, stable_account_key,
+                   identity_plan_type, identity_limit_id
+            FROM quota_snapshots LIMIT 1;
+            """
+        ) { statement in
+            (
+                source: statement.text(0),
+                version: statement.int(1),
+                home: statement.text(2),
+                account: statement.text(3),
+                plan: statement.text(4),
+                limit: statement.text(5)
+            )
+        }.first)
+
+        XCTAssertTrue(Set([
+            "identity_version", "home_identity", "stable_account_key",
+            "identity_plan_type", "identity_limit_id"
+        ]).isSubset(of: Set(columns)))
+        XCTAssertTrue(Set([
+            "legacy_account_name", "legacy_plan_type", "legacy_limit_id", "bridge_kind",
+            "owner_identity_version", "owner_home_identity", "owner_stable_account_key",
+            "owner_plan_type", "owner_limit_id", "state", "claimed_at", "last_seen_at"
+        ]).isSubset(of: Set(claimColumns)))
+        XCTAssertEqual(row.source, "swift")
+        XCTAssertEqual(row.version, 1)
+        XCTAssertEqual(row.home, "/fixture/schema-home")
+        XCTAssertEqual(row.account, "sub:schema-account")
+        XCTAssertEqual(row.plan, "Plus")
+        XCTAssertEqual(row.limit, "codex")
+    }
+
+    func testSwiftAndTauriIdentityV1RowsRemainIsolatedInOneDatabase() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let reset = now.addingTimeInterval(3 * 60 * 60)
+        let contexts = [
+            identifiedSnapshot(
+                usedPercent: 10,
+                reset: reset,
+                homeIdentity: "/fixture/alternate-home-a",
+                stableAccountKey: "sub:alternate-a",
+                planType: "Plus",
+                limitID: "codex",
+                accountName: "Alternating User",
+                at: now
+            ),
+            identifiedSnapshot(
+                usedPercent: 20,
+                reset: reset,
+                homeIdentity: "/fixture/alternate-home-a",
+                stableAccountKey: "sub:alternate-b",
+                planType: "Plus",
+                limitID: "codex",
+                accountName: "Alternating User",
+                at: now
+            ),
+            identifiedSnapshot(
+                usedPercent: 30,
+                reset: reset,
+                homeIdentity: "/fixture/alternate-home-b",
+                stableAccountKey: "sub:alternate-a",
+                planType: "Plus",
+                limitID: "codex",
+                accountName: "Alternating User",
+                at: now
+            ),
+            identifiedSnapshot(
+                usedPercent: 40,
+                reset: reset,
+                homeIdentity: "/fixture/alternate-home-a",
+                stableAccountKey: "sub:alternate-a",
+                planType: "Team",
+                limitID: "codex",
+                accountName: "Alternating User",
+                at: now
+            ),
+            identifiedSnapshot(
+                usedPercent: 50,
+                reset: reset,
+                homeIdentity: "/fixture/alternate-home-a",
+                stableAccountKey: "sub:alternate-a",
+                planType: "Plus",
+                limitID: "gpt-5.3-codex-spark",
+                accountName: "Alternating User",
+                at: now
+            )
+        ]
+
+        XCTAssertTrue(try database.record(contexts[0], createdAt: now.addingTimeInterval(-50)))
+        try database.migrate()
+        try insertStableIdentitySnapshot(
+            databaseURL: url,
+            quota: contexts[1],
+            source: "tauri",
+            createdAt: now.addingTimeInterval(-40)
+        )
+        XCTAssertTrue(try database.record(contexts[2], createdAt: now.addingTimeInterval(-30)))
+        try insertStableIdentitySnapshot(
+            databaseURL: url,
+            quota: contexts[3],
+            source: "tauri",
+            createdAt: now.addingTimeInterval(-20)
+        )
+        XCTAssertTrue(try database.record(contexts[4], createdAt: now.addingTimeInterval(-10)))
+
+        for (index, quota) in contexts.enumerated() {
+            XCTAssertEqual(
+                try database.recordedFiveHourUsedPercents(for: quota, now: now),
+                [(index + 1) * 10]
+            )
+        }
+    }
+
+    func testMissingIdentityUnknownPlanAndBlankLimitFailClosed() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let valid = identifiedSnapshot(
+            usedPercent: 21,
+            reset: now.addingTimeInterval(3 * 60 * 60),
+            homeIdentity: "/fixture/fail-closed",
+            stableAccountKey: "sub:valid",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Same Name",
+            at: now
+        )
+        XCTAssertTrue(try database.record(valid, createdAt: now))
+
+        var missingIdentity = valid
+        missingIdentity.historyIdentity = nil
+        let unknownPlan = QuotaHistoryIdentity(
+            homeIdentity: "/fixture/fail-closed",
+            stableAccountKey: "sub:unknown-plan",
+            planType: "unknown",
+            limitID: "codex"
+        )
+        let blankLimit = QuotaHistoryIdentity(
+            homeIdentity: "/fixture/fail-closed",
+            stableAccountKey: "sub:blank-limit",
+            planType: "Plus",
+            limitID: "   "
+        )
+
+        XCTAssertNil(unknownPlan)
+        XCTAssertNil(blankLimit)
+        XCTAssertFalse(try database.record(missingIdentity, createdAt: now.addingTimeInterval(60)))
+        XCTAssertTrue(try database.recordedFiveHourUsedPercents(for: missingIdentity, now: now).isEmpty)
+    }
+
+    func testLegacyBridgeIsBoundedToFortyFiveDaysAndFiveHundredTwelveRows() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let quota = identifiedSnapshot(
+            usedPercent: 7,
+            reset: now.addingTimeInterval(3 * 60 * 60),
+            homeIdentity: "/fixture/legacy-bounds",
+            stableAccountKey: "sub:legacy-bounds",
+            planType: "Plus",
+            limitID: "codex",
+            accountName: "Bounded Legacy",
+            at: now
+        )
+        XCTAssertTrue(try database.record(quota, createdAt: now.addingTimeInterval(-30)))
+        try insertLegacyRows(
+            databaseURL: url,
+            count: 513,
+            start: now.addingTimeInterval(-513 * 60),
+            accountName: "Bounded Legacy",
+            planType: "Plus",
+            limitID: "codex",
+            source: "swift"
+        )
+        try insertRawSnapshot(
+            databaseURL: url,
+            createdAt: now.addingTimeInterval(-46 * 24 * 60 * 60),
+            accountKey: "Bounded Legacy|Plus|codex",
+            source: "swift",
+            planType: "Plus",
+            limitName: "codex",
+            accountName: "Bounded Legacy",
+            fiveHourUsedPercent: 99,
+            fiveHourResetsAt: now.addingTimeInterval(3 * 60 * 60),
+            sevenDayUsedPercent: 99,
+            sevenDayResetsAt: now.addingTimeInterval(4 * 24 * 60 * 60)
+        )
+
+        let values = try database.recordedFiveHourUsedPercents(
+            for: quota,
+            now: now,
+            age: 60 * 24 * 60 * 60
+        )
+
+        XCTAssertEqual(values.count, 513, "one stable row plus at most 512 legacy rows")
+        XCTAssertFalse(values.contains(99), "legacy rows older than 45 days must not bridge")
+    }
+
     @MainActor
     func testOlderReloadCannotOverwriteNewerRecordedSnapshot() async throws {
         let client = SuspendedQuotaHistoryClient()
         let store = QuotaHistoryStore(historyClient: client)
         let now = Date()
-
-        store.reload()
-        await waitUntil("reload request pending") {
-            await client.hasPending(.reload)
-        }
-
-        store.record(snapshot(
+        let quota = snapshot(
             usedPercent: 20,
             reset: now.addingTimeInterval(3 * 60 * 60),
             planType: "Pro",
             limitName: "codex",
             at: now
-        ))
+        )
+
+        store.record(quota)
+        await waitUntil("seed record request pending") {
+            await client.hasPending(.record)
+        }
+        await client.complete(.record, with: quotaHistorySnapshot(latest: now.addingTimeInterval(-120)))
+        await waitUntil("seed record published") {
+            store.snapshot.latest == now.addingTimeInterval(-120)
+        }
+        store.reload()
+        await waitUntil("reload request pending") {
+            await client.hasPending(.reload)
+        }
+
+        store.record(quota)
         await waitUntil("record request pending") {
             await client.hasPending(.record)
         }
@@ -50,19 +348,28 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let client = SuspendedQuotaHistoryClient()
         let store = QuotaHistoryStore(historyClient: client)
         let now = Date()
-
-        store.reload()
-        await waitUntil("reload request pending") {
-            await client.hasPending(.reload)
-        }
-
-        store.record(snapshot(
+        let quota = snapshot(
             usedPercent: 20,
             reset: now.addingTimeInterval(3 * 60 * 60),
             planType: "Pro",
             limitName: "codex",
             at: now
-        ))
+        )
+
+        store.record(quota)
+        await waitUntil("seed record request pending") {
+            await client.hasPending(.record)
+        }
+        await client.complete(.record, with: quotaHistorySnapshot(latest: now.addingTimeInterval(-120)))
+        await waitUntil("seed record published") {
+            store.snapshot.latest == now.addingTimeInterval(-120)
+        }
+        store.reload()
+        await waitUntil("reload request pending") {
+            await client.hasPending(.reload)
+        }
+
+        store.record(quota)
         await waitUntil("record request pending") {
             await client.hasPending(.record)
         }
@@ -76,6 +383,61 @@ final class QuotaHistoryStoreTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 100_000_000)
 
         XCTAssertEqual(store.snapshot.latest, now)
+    }
+
+    @MainActor
+    func testUnavailableIdentityClearsPublishedHistoryWithoutStartingDatabaseWork() async {
+        let client = SuspendedQuotaHistoryClient()
+        let store = QuotaHistoryStore(historyClient: client)
+        let now = Date()
+        var quota = historyContext(at: now)
+
+        store.record(quota)
+        await waitUntil("identified record request pending") {
+            await client.hasPending(.record)
+        }
+        await client.complete(.record, with: quotaHistorySnapshot(latest: now))
+        await waitUntil("identified history published") {
+            store.snapshot.latest == now
+        }
+
+        quota.historyIdentity = nil
+        store.record(quota)
+
+        XCTAssertEqual(store.snapshot, .empty)
+        let hasPendingRecord = await client.hasPending(.record)
+        XCTAssertFalse(hasPendingRecord)
+    }
+
+    @MainActor
+    func testAccountQuotaSourceBindingChangeClearsPublishedHistoryImmediately() async throws {
+        let client = SuspendedQuotaHistoryClient()
+        let historyStore = QuotaHistoryStore(historyClient: client)
+        let quotaStore = AccountQuotaStore(observesUserDefaults: false)
+        quotaStore.setHistoryStore(historyStore)
+        let sourceA = CodexDataSource(
+            codexHome: try makeDatabaseURL().deletingLastPathComponent(),
+            origin: .userSelected
+        )
+        let sourceB = CodexDataSource(
+            codexHome: try makeDatabaseURL().deletingLastPathComponent(),
+            origin: .userSelected
+        )
+        quotaStore.setDataSource(sourceA)
+        let now = Date()
+
+        historyStore.record(historyContext(at: now))
+        await waitUntil("source A history request pending") {
+            await client.hasPending(.record)
+        }
+        await client.complete(.record, with: quotaHistorySnapshot(latest: now))
+        await waitUntil("source A history published") {
+            historyStore.snapshot.latest == now
+        }
+
+        quotaStore.setDataSource(sourceB)
+
+        XCTAssertEqual(historyStore.snapshot, .empty)
     }
 
     func testRecentHistoryIncludesLegacyCodexAccountKeyRows() throws {
@@ -97,7 +459,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
             databaseURL: url,
             createdAt: legacyTime,
             accountKey: "来先生|pro",
-            source: "legacy",
+            source: "swift",
             planType: "pro",
             limitName: nil,
             accountName: "来先生",
@@ -107,7 +469,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
             sevenDayResetsAt: reset.addingTimeInterval(4 * 24 * 60 * 60)
         )
 
-        let loaded = try database.loadSnapshot(now: now)
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let recentValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
 
         XCTAssertTrue(
@@ -138,7 +500,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
             at: now.addingTimeInterval(-15 * 60)
         ), createdAt: now.addingTimeInterval(-15 * 60))
 
-        let loaded = try database.loadSnapshot(now: now)
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let recentValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
 
         XCTAssertFalse(recentValues.contains(34), "non-codex limit rows should not be mixed into the Codex quota curve")
@@ -193,7 +555,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         try database.record(snapshot(usedPercent: 2, reset: reset, planType: "pro", limitName: nil, at: now.addingTimeInterval(-13 * 60)), createdAt: now.addingTimeInterval(-13 * 60))
         try database.record(snapshot(usedPercent: 2, reset: reset, planType: "Pro", limitName: "codex", at: now.addingTimeInterval(-10 * 60)), createdAt: now.addingTimeInterval(-10 * 60))
 
-        let loaded = try database.loadSnapshot(now: now)
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let recentValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
 
         XCTAssertFalse(recentValues.contains(0), "recovered full-usage spike should not create a 5h quota pit")
@@ -211,7 +573,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         try database.record(snapshot(usedPercent: 45, reset: reset, planType: "Pro", limitName: "codex", at: now.addingTimeInterval(-10 * 60)), createdAt: now.addingTimeInterval(-10 * 60))
         try database.record(snapshot(usedPercent: 12, reset: reset, planType: "pro", limitName: nil, at: now.addingTimeInterval(-5 * 60)), createdAt: now.addingTimeInterval(-5 * 60))
 
-        let loaded = try database.loadSnapshot(now: now)
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let recentValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
 
         XCTAssertFalse(recentValues.contains(55), "same-cycle quota jumps from another source should not create a false 5h pit")
@@ -233,7 +595,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
             createdAt: now.addingTimeInterval(-30 * 60)
         )
 
-        let loaded = try database.loadSnapshot(now: now)
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let recentValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
         let interpolatedValues = recentValues.filter { $0 < 79.9 && $0 > 78.1 }
 
@@ -251,7 +613,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         try database.record(snapshot(usedPercent: 3, sevenDayUsedPercent: 100, reset: fiveHourReset, sevenDayReset: sevenDayReset, planType: "Pro", limitName: "codex", at: now.addingTimeInterval(-15 * 60)), createdAt: now.addingTimeInterval(-15 * 60))
         try database.record(snapshot(usedPercent: 10, sevenDayUsedPercent: 2, reset: fiveHourReset, sevenDayReset: sevenDayReset, planType: "Pro", limitName: "codex", at: now.addingTimeInterval(-5 * 60)), createdAt: now.addingTimeInterval(-5 * 60))
 
-        let loaded = try database.loadSnapshot(now: now)
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let recentValues = loaded.recentBins.compactMap(\.sevenDayRemainingPercent)
 
         XCTAssertFalse(recentValues.contains(0), "recovered full-usage spike should not create a 7d quota pit")
@@ -268,7 +630,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         try database.record(snapshot(usedPercent: 2, sevenDayUsedPercent: 0, reset: fiveHourReset, sevenDayReset: sevenDayReset, planType: "Pro", limitName: "codex", at: now.addingTimeInterval(-20 * 60)), createdAt: now.addingTimeInterval(-20 * 60))
         try database.record(snapshot(usedPercent: 3, sevenDayUsedPercent: 100, reset: fiveHourReset, sevenDayReset: sevenDayReset, planType: "Pro", limitName: "codex", at: now.addingTimeInterval(-5 * 60)), createdAt: now.addingTimeInterval(-5 * 60))
 
-        let loaded = try database.loadSnapshot(now: now)
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let recentValues = loaded.recentBins.compactMap(\.sevenDayRemainingPercent)
 
         XCTAssertFalse(recentValues.contains(0), "latest full-usage spike should not leave a 7d quota pit")
@@ -303,7 +665,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
             createdAt: now.addingTimeInterval(-10 * 60)
         )
 
-        let loaded = try database.loadSnapshot(now: now)
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
 
         XCTAssertEqual(loaded.hourlyBins.last?.sevenDayRemainingPercent, 44)
     }
@@ -336,7 +698,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         )
 
         let start = Date()
-        let loaded = try database.loadSnapshot(now: now)
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let elapsed = Date().timeIntervalSince(start)
 
         XCTAssertEqual(loaded.recentBins.count, 30 * 24 * 12)
@@ -352,7 +714,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         limitName: String?,
         at date: Date
     ) -> AccountQuotaSnapshot {
-        AccountQuotaSnapshot(
+        var quota = AccountQuotaSnapshot(
             fiveHour: AccountQuotaWindow(label: "5h", usedPercent: usedPercent, resetsAt: reset),
             sevenDay: AccountQuotaWindow(label: "7d", usedPercent: sevenDayUsedPercent, resetsAt: sevenDayReset ?? reset.addingTimeInterval(4 * 24 * 60 * 60)),
             planType: planType,
@@ -361,6 +723,93 @@ final class QuotaHistoryStoreTests: XCTestCase {
             status: "额度已更新",
             updatedAt: date
         )
+        let limitID = limitName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? limitName
+            : "codex"
+        quota.selectedLimitID = limitID
+        quota.historyIdentity = QuotaHistoryIdentity(
+            homeIdentity: "/fixture/swift-history",
+            stableAccountKey: "sub:swift-history-account",
+            planType: planType,
+            limitID: limitID
+        )
+        return quota
+    }
+
+    private func historyContext(at date: Date) -> AccountQuotaSnapshot {
+        snapshot(
+            usedPercent: 0,
+            reset: date.addingTimeInterval(3 * 60 * 60),
+            planType: "Pro",
+            limitName: "codex",
+            at: date
+        )
+    }
+
+    private func identifiedSnapshot(
+        usedPercent: Int,
+        reset: Date,
+        homeIdentity: String,
+        stableAccountKey: String,
+        planType: String,
+        limitID: String,
+        accountName: String,
+        at date: Date
+    ) -> AccountQuotaSnapshot {
+        var quota = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: usedPercent, resetsAt: reset),
+            sevenDay: AccountQuotaWindow(
+                label: "7d",
+                usedPercent: usedPercent,
+                resetsAt: reset.addingTimeInterval(4 * 24 * 60 * 60)
+            ),
+            planType: planType,
+            limitName: limitID,
+            accountName: accountName,
+            status: "额度已更新",
+            updatedAt: date
+        )
+        quota.selectedLimitID = limitID
+        quota.historyIdentity = QuotaHistoryIdentity(
+            homeIdentity: homeIdentity,
+            stableAccountKey: stableAccountKey,
+            planType: planType,
+            limitID: limitID
+        )
+        return quota
+    }
+
+    private func fixtureSnapshot(
+        _ step: SharedQuotaHistoryIdentityStep,
+        at date: Date
+    ) -> AccountQuotaSnapshot {
+        var quota = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(
+                label: "5h",
+                usedPercent: step.usedPercent ?? 0,
+                resetsAt: date.addingTimeInterval(3 * 60 * 60)
+            ),
+            sevenDay: AccountQuotaWindow(
+                label: "7d",
+                usedPercent: step.usedPercent ?? 0,
+                resetsAt: date.addingTimeInterval(4 * 24 * 60 * 60)
+            ),
+            planType: step.plan,
+            limitName: step.limitId,
+            accountName: step.displayName,
+            status: "fixture",
+            updatedAt: date
+        )
+        quota.selectedLimitID = step.limitId
+        if let homeIdentity = step.homeIdentity {
+            quota.historyIdentity = QuotaHistoryIdentity(
+                homeIdentity: homeIdentity,
+                stableAccountKey: step.stableAccountKey,
+                planType: step.plan,
+                limitID: step.limitId
+            )
+        }
+        return quota
     }
 
     private func insertStableRawSnapshots(
@@ -380,13 +829,15 @@ final class QuotaHistoryStoreTests: XCTestCase {
                     INSERT INTO quota_snapshots (
                         created_at, account_key, source, plan_type, limit_name, account_name,
                         five_hour_used_percent, five_hour_resets_at,
-                        seven_day_used_percent, seven_day_resets_at, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        seven_day_used_percent, seven_day_resets_at, status,
+                        identity_version, home_identity, stable_account_key,
+                        identity_plan_type, identity_limit_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     bindings: [
                         .date(createdAt),
                         .text("来先生|Pro|codex"),
-                        .text("test"),
+                        .text("swift"),
                         .text("Pro"),
                         .text("codex"),
                         .text("来先生"),
@@ -394,7 +845,92 @@ final class QuotaHistoryStoreTests: XCTestCase {
                         .date(fiveHourReset),
                         .int(40),
                         .date(sevenDayReset),
-                        .text("stable")
+                        .text("stable"),
+                        .int(1),
+                        .text("/fixture/swift-history"),
+                        .text("sub:swift-history-account"),
+                        .text("Pro"),
+                        .text("codex")
+                    ]
+                )
+            }
+        }
+    }
+
+    private func insertStableIdentitySnapshot(
+        databaseURL: URL,
+        quota: AccountQuotaSnapshot,
+        source: String,
+        createdAt: Date
+    ) throws {
+        let identity = try XCTUnwrap(quota.historyIdentity)
+        let accountName = quota.accountName ?? "default"
+        let driver = SQLiteDatabaseDriver(url: databaseURL)
+        try driver.execute(
+            """
+            INSERT INTO quota_snapshots (
+                created_at, account_key, source, plan_type, limit_name, account_name,
+                five_hour_used_percent, five_hour_resets_at,
+                seven_day_used_percent, seven_day_resets_at, status,
+                identity_version, home_identity, stable_account_key,
+                identity_plan_type, identity_limit_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            bindings: [
+                .date(createdAt),
+                .text("\(accountName)|\(identity.planType)|\(identity.limitID)"),
+                .text(source),
+                .text(identity.planType),
+                .text(identity.limitID),
+                .text(accountName),
+                .optionalInt(quota.fiveHour?.usedPercent),
+                .optionalDate(quota.fiveHour?.resetsAt),
+                .optionalInt(quota.sevenDay?.usedPercent),
+                .optionalDate(quota.sevenDay?.resetsAt),
+                .text(quota.status),
+                .int(identity.version),
+                .text(identity.homeIdentity),
+                .text(identity.stableAccountKey),
+                .text(identity.planType),
+                .text(identity.limitID)
+            ]
+        )
+    }
+
+    private func insertLegacyRows(
+        databaseURL: URL,
+        count: Int,
+        start: Date,
+        accountName: String,
+        planType: String,
+        limitID: String,
+        source: String?
+    ) throws {
+        let driver = SQLiteDatabaseDriver(url: databaseURL)
+        try driver.transaction { connection in
+            for index in 0..<count {
+                let createdAt = start.addingTimeInterval(Double(index) * 60)
+                let usedPercent = 20 + index % 70
+                try connection.execute(
+                    """
+                    INSERT INTO quota_snapshots (
+                        created_at, account_key, source, plan_type, limit_name, account_name,
+                        five_hour_used_percent, five_hour_resets_at,
+                        seven_day_used_percent, seven_day_resets_at, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    bindings: [
+                        .date(createdAt),
+                        .text("\(accountName)|\(planType)|\(limitID)"),
+                        .optionalText(source),
+                        .text(planType),
+                        .text(limitID),
+                        .text(accountName),
+                        .int(usedPercent),
+                        .date(createdAt.addingTimeInterval(3 * 60 * 60)),
+                        .int(usedPercent),
+                        .date(createdAt.addingTimeInterval(4 * 24 * 60 * 60)),
+                        .text("legacy")
                     ]
                 )
             }
@@ -474,7 +1010,7 @@ private enum QuotaHistoryTestOperation: Hashable {
 private actor SuspendedQuotaHistoryClient: QuotaHistoryLoading {
     private var continuations: [QuotaHistoryTestOperation: CheckedContinuation<QuotaHistorySnapshot, Error>] = [:]
 
-    func loadSnapshot() async throws -> QuotaHistorySnapshot {
+    func loadSnapshot(for quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot {
         try await suspend(.reload)
     }
 
@@ -509,4 +1045,28 @@ private struct QuotaHistoryTestError: LocalizedError {
     var errorDescription: String? {
         "旧额度历史读取失败"
     }
+}
+
+private struct SharedQuotaHistoryIdentityFixture: Decodable {
+    let fixtureVersion: Int
+    let identityVersion: Int
+    let scenarios: [SharedQuotaHistoryIdentityScenario]
+}
+
+private struct SharedQuotaHistoryIdentityScenario: Decodable {
+    let id: String
+    let steps: [SharedQuotaHistoryIdentityStep]
+}
+
+private struct SharedQuotaHistoryIdentityStep: Decodable {
+    let operation: String
+    let homeIdentity: String?
+    let stableAccountKey: String?
+    let displayName: String
+    let plan: String
+    let limitId: String
+    let source: String?
+    let usedPercent: Int?
+    let expectedAccepted: Bool?
+    let expectedUsedPercents: [Int]?
 }

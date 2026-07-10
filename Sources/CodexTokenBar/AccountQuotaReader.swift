@@ -15,6 +15,31 @@ struct AccountQuotaReaderDependencies: Sendable {
     let maxAttempts: Int
     let shouldReadResetCredits: Bool
     let localAccountNameLookup: @Sendable (CodexDataSource?) -> String?
+    let historyIdentityLookup: @Sendable (CodexDataSource?, String?, String?) -> QuotaHistoryIdentity?
+
+    init(
+        transport: any AccountQuotaProcessTransport,
+        locateCodexBinary: @escaping @Sendable () throws -> String,
+        timeout: TimeInterval,
+        retryDelayNanoseconds: UInt64,
+        maxAttempts: Int,
+        shouldReadResetCredits: Bool,
+        localAccountNameLookup: @escaping @Sendable (CodexDataSource?) -> String?,
+        historyIdentityLookup: @escaping @Sendable (
+            CodexDataSource?,
+            String?,
+            String?
+        ) -> QuotaHistoryIdentity? = { _, _, _ in nil }
+    ) {
+        self.transport = transport
+        self.locateCodexBinary = locateCodexBinary
+        self.timeout = timeout
+        self.retryDelayNanoseconds = retryDelayNanoseconds
+        self.maxAttempts = maxAttempts
+        self.shouldReadResetCredits = shouldReadResetCredits
+        self.localAccountNameLookup = localAccountNameLookup
+        self.historyIdentityLookup = historyIdentityLookup
+    }
 
     static let live = AccountQuotaReaderDependencies(
         transport: FoundationAccountQuotaProcessTransport(),
@@ -23,13 +48,25 @@ struct AccountQuotaReaderDependencies: Sendable {
         retryDelayNanoseconds: 350_000_000,
         maxAttempts: 3,
         shouldReadResetCredits: true,
-        localAccountNameLookup: { AccountQuotaReader.readLocalAccountName(dataSource: $0) }
+        localAccountNameLookup: { AccountQuotaReader.readLocalAccountName(dataSource: $0) },
+        historyIdentityLookup: { dataSource, planType, limitID in
+            AccountQuotaReader.readHistoryIdentity(
+                dataSource: dataSource,
+                planType: planType,
+                limitID: limitID
+            )
+        }
     )
 
     static func testing(
         transport: any AccountQuotaProcessTransport,
         timeout: TimeInterval,
-        maxAttempts: Int = 1
+        maxAttempts: Int = 1,
+        historyIdentityLookup: @escaping @Sendable (
+            CodexDataSource?,
+            String?,
+            String?
+        ) -> QuotaHistoryIdentity? = { _, _, _ in nil }
     ) -> AccountQuotaReaderDependencies {
         AccountQuotaReaderDependencies(
             transport: transport,
@@ -38,7 +75,8 @@ struct AccountQuotaReaderDependencies: Sendable {
             retryDelayNanoseconds: 0,
             maxAttempts: maxAttempts,
             shouldReadResetCredits: false,
-            localAccountNameLookup: { _ in nil }
+            localAccountNameLookup: { _ in nil },
+            historyIdentityLookup: historyIdentityLookup
         )
     }
 }
@@ -984,12 +1022,17 @@ enum AccountQuotaReader {
                 result = .failure(error)
             }
             switch result {
-            case .success(let snapshot):
+            case .success(var snapshot):
                 trace?.mark("attempt.success", metadata: [
                     "attempt": String(attempt),
                     "available": snapshot.isAvailable ? "1" : "0"
                 ])
                 if snapshot.isAvailable || attempt == maxAttempts {
+                    snapshot.historyIdentity = dependencies.historyIdentityLookup(
+                        dataSource,
+                        snapshot.planType,
+                        snapshot.selectedLimitID
+                    )
                     let enriched = dependencies.shouldReadResetCredits
                         ? await snapshotByAddingResetCredits(to: snapshot, dataSource: dataSource)
                         : snapshot
@@ -1063,12 +1106,11 @@ enum AccountQuotaReader {
         let byLimit = result["rateLimitsByLimitId"] as? [String: Any]
         let fallbackLimit = result["rateLimits"] as? [String: Any]
         let limitCards = parseLimitCards(byLimit: byLimit, fallbackLimit: fallbackLimit)
-        let codex = (byLimit?["codex"] as? [String: Any]) ?? fallbackLimit ?? [:]
-        let primaryCard = limitCards.first
-        let primary = parseWindow(codex["primary"] as? [String: Any], label: "5h") ?? primaryCard?.fiveHour
-        let secondary = parseWindow(codex["secondary"] as? [String: Any], label: "7d") ?? primaryCard?.sevenDay
-        let planType = (codex["planType"] as? String) ?? primaryCard?.planType
-        let limitName = (codex["limitName"] as? String) ?? primaryCard?.limitName
+        let primaryCard = selectedLimitCard(from: limitCards)
+        let primary = primaryCard?.fiveHour
+        let secondary = primaryCard?.sevenDay
+        let planType = parsePlanType(result: result, selectedCard: primaryCard)
+        let limitName = primaryCard?.limitName
         var snapshot = AccountQuotaSnapshot(
             fiveHour: primary,
             sevenDay: secondary,
@@ -1079,40 +1121,91 @@ enum AccountQuotaReader {
             status: "额度已更新",
             updatedAt: Date()
         )
+        snapshot.selectedLimitID = primaryCard?.id
         if primary == nil && secondary == nil {
             snapshot.status = "额度暂无数据"
         }
         return snapshot
     }
 
+    private static func selectedLimitCard(from cards: [AccountQuotaLimitCard]) -> AccountQuotaLimitCard? {
+        cards.first { $0.id.caseInsensitiveCompare("codex") == .orderedSame }
+            ?? cards.min { $0.id < $1.id }
+    }
+
+    private static func parsePlanType(
+        result: [String: Any],
+        selectedCard: AccountQuotaLimitCard?
+    ) -> String? {
+        let keys = [
+            "planLabel", "plan_label", "planName", "plan_name", "tier",
+            "planType", "plan_type", "accountPlan", "account_plan",
+            "subscriptionPlan", "subscription_plan"
+        ]
+        for key in keys {
+            if let plan = canonicalPlanLabel(result[key] as? String) {
+                return plan
+            }
+        }
+        return canonicalPlanLabel(selectedCard?.planType)
+    }
+
+    private static func canonicalPlanLabel(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        let normalized = trimmed.lowercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: "_", with: "")
+        switch normalized {
+        case "plus", "chatgptplus":
+            return "Plus"
+        case "pro", "chatgptpro":
+            return "Pro"
+        case "team", "teams", "business":
+            return "Team"
+        case "enterprise":
+            return "Enterprise"
+        case "free":
+            return "Free"
+        case "unknown", "none", "null":
+            return nil
+        default:
+            return trimmed
+        }
+    }
+
     private static func parseLimitCards(byLimit: [String: Any]?, fallbackLimit: [String: Any]?) -> [AccountQuotaLimitCard] {
         var cards: [AccountQuotaLimitCard] = []
         if let byLimit {
             for (id, value) in byLimit {
-                guard let raw = value as? [String: Any],
-                      let card = parseLimitCard(raw, fallbackID: id)
+                guard let limitID = normalizedSelectedLimitID(id),
+                      let raw = value as? [String: Any],
+                      let card = parseLimitCard(raw, limitID: limitID)
                 else {
                     continue
                 }
                 cards.append(card)
             }
-        } else if let fallbackLimit,
-                  let card = parseLimitCard(fallbackLimit, fallbackID: "codex") {
+        }
+        if cards.isEmpty,
+           let fallbackLimit,
+           let limitID = fallbackSelectedLimitID(fallbackLimit),
+           let card = parseLimitCard(fallbackLimit, limitID: limitID) {
             cards.append(card)
         }
 
         return cards
             .filter(\.hasQuotaWindows)
             .sorted { lhs, rhs in
-                if lhs.id == "codex" { return true }
-                if rhs.id == "codex" { return false }
+                let lhsIsCodex = lhs.id.caseInsensitiveCompare("codex") == .orderedSame
+                let rhsIsCodex = rhs.id.caseInsensitiveCompare("codex") == .orderedSame
+                if lhsIsCodex != rhsIsCodex { return lhsIsCodex }
                 return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
             }
     }
 
-    private static func parseLimitCard(_ raw: [String: Any], fallbackID: String) -> AccountQuotaLimitCard? {
-        let id = (raw["limitId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let limitID = id?.isEmpty == false ? id! : fallbackID
+    private static func parseLimitCard(_ raw: [String: Any], limitID: String) -> AccountQuotaLimitCard? {
         let fiveHour = parseWindow(raw["primary"] as? [String: Any], label: "5h")
         let sevenDay = parseWindow(raw["secondary"] as? [String: Any], label: "7d")
         guard fiveHour != nil || sevenDay != nil else { return nil }
@@ -1123,6 +1216,17 @@ enum AccountQuotaReader {
             fiveHour: fiveHour,
             sevenDay: sevenDay
         )
+    }
+
+    private static func fallbackSelectedLimitID(_ raw: [String: Any]) -> String? {
+        guard raw.keys.contains("limitId") else { return "codex" }
+        return normalizedSelectedLimitID(raw["limitId"] as? String)
+    }
+
+    private static func normalizedSelectedLimitID(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.caseInsensitiveCompare("codex") == .orderedSame ? "codex" : trimmed
     }
 
     private struct ResetCreditsSnapshot: Sendable {
@@ -1306,15 +1410,7 @@ enum AccountQuotaReader {
     }
 
     fileprivate static func readLocalAccountName(dataSource: CodexDataSource?) -> String? {
-        let url = authFileURL(dataSource: dataSource)
-        guard let data = try? Data(contentsOf: url),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let tokens = object["tokens"] as? [String: Any],
-              let idToken = tokens["id_token"] as? String,
-              let payload = decodeJWTPayload(idToken) else {
-            return nil
-        }
-
+        guard let payload = readLocalIDTokenPayload(dataSource: dataSource) else { return nil }
         for key in ["name", "nickname", "preferred_username", "email"] {
             if let value = payload[key] as? String {
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1324,6 +1420,45 @@ enum AccountQuotaReader {
             }
         }
         return nil
+    }
+
+    static func readHistoryIdentity(
+        dataSource: CodexDataSource?,
+        planType: String?,
+        limitID: String?
+    ) -> QuotaHistoryIdentity? {
+        let codexHome = (dataSource?.codexHome
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex"))
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        return QuotaHistoryIdentity(
+            homeIdentity: codexHome.path,
+            stableAccountKey: readLocalStableAccountKey(dataSource: dataSource),
+            planType: planType,
+            limitID: limitID
+        )
+    }
+
+    private static func readLocalStableAccountKey(dataSource: CodexDataSource?) -> String? {
+        guard let payload = readLocalIDTokenPayload(dataSource: dataSource) else { return nil }
+        for (key, prefix) in [("sub", "sub:"), ("account_id", "account:"), ("accountId", "account:")] {
+            let trimmed = (payload[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty {
+                return prefix + trimmed
+            }
+        }
+        return nil
+    }
+
+    private static func readLocalIDTokenPayload(dataSource: CodexDataSource?) -> [String: Any]? {
+        let url = authFileURL(dataSource: dataSource)
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tokens = object["tokens"] as? [String: Any],
+              let idToken = tokens["id_token"] as? String else {
+            return nil
+        }
+        return decodeJWTPayload(idToken)
     }
 
     private static func readAccessToken(dataSource: CodexDataSource?) -> String? {

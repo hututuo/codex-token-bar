@@ -199,6 +199,162 @@ final class AccountQuotaReaderTests: XCTestCase {
         XCTAssertEqual(snapshot.limitCards.map(\.id), ["codex"])
     }
 
+    func testRateLimitsByLimitIDFallbackPreservesTrimmedMapKeyForHistoryIdentity() {
+        let snapshot = AccountQuotaReader.parse([
+            "rateLimitsByLimitId": [
+                "  gpt-5.3-codex-spark  ": [
+                    "limitId": "codex",
+                    "limitName": "Codex Spark",
+                    "planType": "plus",
+                    "primary": ["usedPercent": 37]
+                ]
+            ]
+        ], accountName: "Fallback User")
+
+        XCTAssertEqual(snapshot.fiveHour?.usedPercent, 37)
+        XCTAssertEqual(snapshot.limitCards.map(\.id), ["gpt-5.3-codex-spark"])
+        XCTAssertEqual(snapshot.selectedLimitID, "gpt-5.3-codex-spark")
+    }
+
+    func testNoCodexCardUsesStableFirstKeyAndCanonicalTopLevelPlan() {
+        let snapshot = AccountQuotaReader.parse([
+            "planType": "business",
+            "rateLimitsByLimitId": [
+                "zeta-limit": [
+                    "limitName": "A Display Name",
+                    "planType": "plus",
+                    "primary": ["usedPercent": 90]
+                ],
+                "alpha-limit": [
+                    "limitName": "Z Display Name",
+                    "planType": "plus",
+                    "primary": ["usedPercent": 10]
+                ]
+            ]
+        ], accountName: "Stable First Card")
+
+        XCTAssertEqual(snapshot.selectedLimitID, "alpha-limit")
+        XCTAssertEqual(snapshot.fiveHour?.usedPercent, 10)
+        XCTAssertEqual(snapshot.planType, "Team")
+    }
+
+    func testBlankRateLimitMapKeysAndExplicitBlankFallbackLimitFailClosed() {
+        let blankMap = AccountQuotaReader.parse([
+            "rateLimitsByLimitId": [
+                "   ": [
+                    "limitId": "codex",
+                    "planType": "plus",
+                    "primary": ["usedPercent": 91]
+                ]
+            ]
+        ], accountName: "Blank Map")
+        let blankFallback = AccountQuotaReader.parse([
+            "rateLimits": [
+                "limitId": "  ",
+                "planType": "plus",
+                "primary": ["usedPercent": 92]
+            ]
+        ], accountName: "Blank Fallback")
+
+        for snapshot in [blankMap, blankFallback] {
+            XCTAssertFalse(snapshot.isAvailable)
+            XCTAssertTrue(snapshot.limitCards.isEmpty)
+            XCTAssertNil(snapshot.selectedLimitID)
+            XCTAssertNil(snapshot.historyIdentity)
+        }
+    }
+
+    func testLocalStableSubjectBuildsCanonicalNonsecretHistoryIdentity() throws {
+        let codexHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("QuotaHistoryIdentity-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: codexHome) }
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "sub": "  account-subject  ",
+            "account_id": "fallback-account",
+            "email": "visible@example.com"
+        ])
+        let encodedPayload = payload.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let auth = ["tokens": ["id_token": "header.\(encodedPayload).signature"]]
+        let authData = try JSONSerialization.data(withJSONObject: auth)
+        try authData.write(to: codexHome.appendingPathComponent("auth.json"))
+        let dataSource = CodexDataSource(codexHome: codexHome, origin: .userSelected)
+
+        let identity = AccountQuotaReader.readHistoryIdentity(
+            dataSource: dataSource,
+            planType: "chatgpt-plus",
+            limitID: " Codex "
+        )
+
+        XCTAssertEqual(identity?.version, 1)
+        XCTAssertEqual(identity?.homeIdentity, dataSource.codexHome.path)
+        XCTAssertEqual(identity?.stableAccountKey, "sub:account-subject")
+        XCTAssertEqual(identity?.planType, "Plus")
+        XCTAssertEqual(identity?.limitID, "codex")
+        XCTAssertFalse(identity?.stableAccountKey.contains("visible@example.com") ?? true)
+
+        let fallbackPayload = try JSONSerialization.data(withJSONObject: [
+            "sub": "   ",
+            "accountId": "  fallback-account  "
+        ])
+        let fallbackEncodedPayload = fallbackPayload.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let fallbackAuth = ["tokens": ["id_token": "header.\(fallbackEncodedPayload).signature"]]
+        try JSONSerialization.data(withJSONObject: fallbackAuth)
+            .write(to: codexHome.appendingPathComponent("auth.json"))
+
+        let fallbackIdentity = AccountQuotaReader.readHistoryIdentity(
+            dataSource: dataSource,
+            planType: "Pro",
+            limitID: "codex"
+        )
+        XCTAssertEqual(fallbackIdentity?.stableAccountKey, "account:fallback-account")
+    }
+
+    func testSuccessfulReadCarriesSelectedLimitIntoInjectedHistoryIdentity() async throws {
+        let transport = ScriptedQuotaProcessTransport(scenarios: [
+            successfulScenario(result: [
+                "rateLimitsByLimitId": [
+                    "gpt-5.3-codex-spark": [
+                        "planType": "team",
+                        "primary": ["usedPercent": 44]
+                    ]
+                ]
+            ])
+        ])
+        let expectedIdentity = try XCTUnwrap(QuotaHistoryIdentity(
+            homeIdentity: "/fixture/swift-reader",
+            stableAccountKey: "sub:reader-account",
+            planType: "Team",
+            limitID: "gpt-5.3-codex-spark"
+        ))
+        let dependencies = AccountQuotaReaderDependencies.testing(
+            transport: transport,
+            timeout: 0.2,
+            historyIdentityLookup: { _, planType, limitID in
+                QuotaHistoryIdentity(
+                    homeIdentity: "/fixture/swift-reader",
+                    stableAccountKey: "sub:reader-account",
+                    planType: planType,
+                    limitID: limitID
+                )
+            }
+        )
+
+        let snapshot = try await AccountQuotaReader.read(
+            dataSource: nil,
+            dependencies: dependencies
+        ).get()
+
+        XCTAssertEqual(snapshot.selectedLimitID, "gpt-5.3-codex-spark")
+        XCTAssertEqual(snapshot.historyIdentity, expectedIdentity)
+    }
+
     func testSuccessfulReadUsesInjectedAccountLookupWithoutResolvingDefaultHome() async throws {
         let transport = ScriptedQuotaProcessTransport(scenarios: [
             successfulScenario(result: fallbackRateLimits(usedPercent: 18))

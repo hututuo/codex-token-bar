@@ -103,6 +103,75 @@ struct AccountQuotaLimitCard: Equatable, Sendable {
     }
 }
 
+struct QuotaHistoryIdentity: Equatable, Hashable, Sendable {
+    static let currentVersion = 1
+
+    let version: Int
+    let homeIdentity: String
+    let stableAccountKey: String
+    let planType: String
+    let limitID: String
+
+    init?(
+        version: Int = currentVersion,
+        homeIdentity: String?,
+        stableAccountKey: String?,
+        planType: String?,
+        limitID: String?
+    ) {
+        guard version == Self.currentVersion,
+              let homeIdentity = Self.nonempty(homeIdentity),
+              let stableAccountKey = Self.nonempty(stableAccountKey),
+              let limitID = Self.canonicalStableLimitID(limitID),
+              let planType = Self.canonicalPlanType(planType)
+        else {
+            return nil
+        }
+        self.version = version
+        self.homeIdentity = homeIdentity
+        self.stableAccountKey = stableAccountKey
+        self.planType = planType
+        self.limitID = limitID
+    }
+
+    private static func canonicalPlanType(_ value: String?) -> String? {
+        guard let value = nonempty(value) else { return nil }
+        let normalized = value.lowercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: "_", with: "")
+        switch normalized {
+        case "plus", "chatgptplus":
+            return "Plus"
+        case "pro", "chatgptpro":
+            return "Pro"
+        case "team", "teams", "business":
+            return "Team"
+        case "enterprise":
+            return "Enterprise"
+        case "free":
+            return "Free"
+        case "unknown", "null", "none", "unread":
+            return nil
+        default:
+            if value.contains("待读取") || value.contains("未知") {
+                return nil
+            }
+            return value
+        }
+    }
+
+    private static func canonicalStableLimitID(_ value: String?) -> String? {
+        guard let value = nonempty(value) else { return nil }
+        return value.caseInsensitiveCompare("codex") == .orderedSame ? "codex" : value
+    }
+
+    private static func nonempty(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 
 enum AccountQuotaPaceSeverity: Equatable {
     case urgent
@@ -136,6 +205,8 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
     var diagnostics: [AccountQuotaDiagnostic] = []
     var status: String = "额度未读取"
     var updatedAt: Date?
+    var selectedLimitID: String?
+    var historyIdentity: QuotaHistoryIdentity?
 
     static let empty = AccountQuotaSnapshot()
 
