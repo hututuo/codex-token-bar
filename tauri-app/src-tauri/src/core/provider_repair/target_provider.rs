@@ -1,5 +1,6 @@
 use super::session_files::SessionScan;
 use super::sqlite_state::SQLiteScan;
+use super::validated_provider_candidate;
 use std::fs;
 use std::path::Path;
 
@@ -19,13 +20,21 @@ pub(super) fn detect_target_provider(
             source: "config.toml".into(),
         };
     }
-    if let Some(provider) = sqlite_scan.latest_unarchived_provider.clone() {
+    if let Some(provider) = sqlite_scan
+        .latest_unarchived_provider
+        .as_deref()
+        .and_then(validated_provider_candidate)
+    {
         return TargetProvider {
             provider,
             source: "SQLite 最新会话".into(),
         };
     }
-    if let Some(provider) = session_scan.newest_provider.clone() {
+    if let Some(provider) = session_scan
+        .newest_provider
+        .as_deref()
+        .and_then(validated_provider_candidate)
+    {
         return TargetProvider {
             provider,
             source: "最新 JSONL".into(),
@@ -39,23 +48,9 @@ pub(super) fn detect_target_provider(
 
 fn config_provider(codex_home: &Path) -> Option<String> {
     let text = fs::read_to_string(codex_home.join("config.toml")).ok()?;
-    for raw_line in text.lines() {
-        let line = raw_line.split('#').next().unwrap_or("").trim();
-        let Some(value) = line.strip_prefix("model_provider") else {
-            continue;
-        };
-        let Some((_, assigned)) = value.split_once('=') else {
-            continue;
-        };
-        let trimmed = assigned.trim();
-        let provider = trimmed
-            .strip_prefix('"')
-            .and_then(|value| value.split('"').next())
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        if let Some(provider) = provider {
-            return Some(provider.to_string());
-        }
-    }
-    None
+    let config = toml::from_str::<toml::Table>(&text).ok()?;
+    config
+        .get("model_provider")
+        .and_then(toml::Value::as_str)
+        .and_then(validated_provider_candidate)
 }

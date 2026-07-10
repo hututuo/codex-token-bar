@@ -20,6 +20,20 @@ use session_files::{find_session_files, rewrite_session_provider, scan_session_p
 use sqlite_state::{scan_sqlite, sync_sqlite_provider, SQLiteScan};
 use target_provider::detect_target_provider;
 
+fn validated_provider_candidate(value: &str) -> Option<String> {
+    let provider = value.trim();
+    if provider.is_empty() || provider == "(missing)" {
+        None
+    } else {
+        Some(provider.to_string())
+    }
+}
+
+fn provider_for_mutation(value: &str) -> Result<String, String> {
+    validated_provider_candidate(value)
+        .ok_or_else(|| "拒绝使用空值或缺失哨兵作为 provider 写入目标。".into())
+}
+
 pub fn scan_provider_repair(codex_home: &Path) -> ProviderRepairSnapshot {
     match scan_provider_repair_result(codex_home) {
         Ok(report) => snapshot_from_report(report),
@@ -46,19 +60,20 @@ pub fn sync_provider_history(
     let backup = backup_by_id(backup_id)?;
     ensure_backup_matches_codex_home(&backup, codex_home)?;
     let report = scan_provider_repair_result(codex_home)?;
+    let target_provider = provider_for_mutation(&report.target.provider)?;
     let mut rewritten_sessions = 0_u32;
     for file in find_session_files(codex_home, true) {
-        if rewrite_session_provider(&file, &report.target.provider)? {
+        if rewrite_session_provider(&file, &target_provider)? {
             rewritten_sessions = rewritten_sessions.saturating_add(1);
         }
     }
 
-    let sqlite_rows = sync_sqlite_provider(codex_home, &report.target.provider)?;
+    let sqlite_rows = sync_sqlite_provider(codex_home, &target_provider)?;
     let index_changed = repair_session_index(codex_home)?;
     let snapshot = scan_provider_repair(codex_home);
     let message = format!(
         "已同步为 {}：JSONL {} 个，SQLite {} 行，session_index {}。",
-        report.target.provider,
+        target_provider,
         rewritten_sessions,
         sqlite_rows,
         if index_changed { "已补齐" } else { "无需修改" }
@@ -93,7 +108,11 @@ pub fn rollback_provider_backup(
 
 fn scan_provider_repair_result(codex_home: &Path) -> Result<ProviderRepairReport, String> {
     let session_files = find_session_files(codex_home, true);
-    let session_scan = scan_session_providers(&session_files);
+    let mut session_scan = scan_session_providers(&session_files);
+    session_scan.newest_provider = session_scan
+        .newest_provider
+        .as_deref()
+        .and_then(validated_provider_candidate);
     let sqlite_scan = scan_sqlite(codex_home).unwrap_or_else(|error| SQLiteScan {
         integrity: format!("读取失败：{error}"),
         ..SQLiteScan::default()

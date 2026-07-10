@@ -67,6 +67,134 @@ fn scan_falls_back_to_latest_sqlite_provider_when_config_is_missing() {
 }
 
 #[test]
+fn scan_ignores_empty_latest_sqlite_provider_and_uses_newest_jsonl() {
+    let root = temp_root("provider-empty-sqlite-jsonl");
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    fs::write(root.join("config.toml"), "# no top-level target provider\n").unwrap();
+    write_session(&root.join("sessions/openai.jsonl"), "thread-openai", "openai");
+    create_state_database(
+        &root,
+        &[("thread-openai", "openai", 0), ("thread-empty", "", 0)],
+    );
+
+    let snapshot = scan_provider_repair(&root);
+    assert_eq!(snapshot.detected_provider, "openai");
+    assert_eq!(snapshot.provider_source, "最新 JSONL");
+    assert_ne!(snapshot.detected_provider, "(missing)");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn config_provider_accepts_only_non_empty_top_level_toml_values() {
+    let cases = [
+        (
+            "double-quoted",
+            r#"model_provider = "codex_local_access""#,
+            "codex_local_access",
+            "config.toml",
+        ),
+        (
+            "single-quoted",
+            "model_provider = 'custom_provider'",
+            "custom_provider",
+            "config.toml",
+        ),
+        (
+            "backup-lookalike",
+            r#"model_provider_backup = "codex_local_access""#,
+            "openai",
+            "默认 openai",
+        ),
+        (
+            "table-local-lookalike",
+            r#"[profile]
+model_provider = "codex_local_access""#,
+            "openai",
+            "默认 openai",
+        ),
+        (
+            "commented-lookalike",
+            r#"# model_provider = "codex_local_access""#,
+            "openai",
+            "默认 openai",
+        ),
+        (
+            "blank-double-quoted",
+            r#"model_provider = """#,
+            "openai",
+            "默认 openai",
+        ),
+        (
+            "blank-single-quoted",
+            "model_provider = ''",
+            "openai",
+            "默认 openai",
+        ),
+        (
+            "malformed-toml",
+            r#"model_provider = "codex_local_access"
+["#,
+            "openai",
+            "默认 openai",
+        ),
+    ];
+
+    for (label, config, expected_provider, expected_source) in cases {
+        let root = temp_root(label);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("config.toml"), format!("{config}\n")).unwrap();
+
+        let snapshot = scan_provider_repair(&root);
+        assert_eq!(snapshot.detected_provider, expected_provider, "{label}");
+        assert_eq!(snapshot.provider_source, expected_source, "{label}");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn scan_does_not_select_missing_jsonl_provider() {
+    let root = temp_root("provider-missing-jsonl");
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    fs::write(
+        root.join("sessions/missing.jsonl"),
+        r#"{"type":"session_meta","payload":{"id":"thread-missing"}}"#,
+    )
+    .unwrap();
+
+    let snapshot = scan_provider_repair(&root);
+    assert_eq!(snapshot.detected_provider, "openai");
+    assert_eq!(snapshot.provider_source, "默认 openai");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn sqlite_sync_rejects_invalid_provider_before_mutation() {
+    let root = temp_root("provider-invalid-mutation");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, &[("thread-openai", "openai", 0)]);
+
+    for provider in ["", "   ", "(missing)"] {
+        let error = sync_sqlite_provider(&root, provider).unwrap_err();
+        assert!(error.contains("provider"), "{provider:?}: {error}");
+    }
+
+    let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
+    let provider: String = connection
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'thread-openai';",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "openai");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn sync_core_logic_rewrites_sources_and_repairs_index() {
     let root = temp_root("provider-sync-core");
     fs::create_dir_all(root.join("sessions/2026/06")).unwrap();

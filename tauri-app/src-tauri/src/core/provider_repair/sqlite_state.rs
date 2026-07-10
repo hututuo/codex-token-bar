@@ -1,3 +1,4 @@
+use super::{provider_for_mutation, validated_provider_candidate};
 use crate::core::sqlite;
 use rusqlite::{Connection, Result as SqlResult};
 use serde_json::{json, Value};
@@ -51,7 +52,10 @@ pub(super) fn scan_sqlite(codex_home: &Path) -> SqlResult<SQLiteScan> {
     let provider_counts = sqlite_provider_counts(&connection, &columns)?;
     let latest_unarchived = latest_sqlite_provider(&connection, &columns)?;
     let (latest_unarchived_provider, latest_unarchived_thread_id) = match latest_unarchived {
-        Some(row) => (Some(row.provider), Some(row.thread_id)),
+        Some(row) => (
+            validated_provider_candidate(&row.provider),
+            Some(row.thread_id),
+        ),
         None => (None, None),
     };
     Ok(SQLiteScan {
@@ -66,6 +70,7 @@ pub(super) fn sync_sqlite_provider(
     codex_home: &Path,
     target_provider: &str,
 ) -> Result<u32, String> {
+    let target_provider = provider_for_mutation(target_provider)?;
     let db_path = codex_home.join("state_5.sqlite");
     if !db_path.exists() {
         return Ok(0);
@@ -79,7 +84,7 @@ pub(super) fn sync_sqlite_provider(
     let changed = connection
         .execute(
             "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1;",
-            [target_provider],
+            [target_provider.as_str()],
         )
         .map_err(|error| error.to_string())?;
     sqlite::checkpoint_wal_full(&connection);
