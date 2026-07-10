@@ -4,6 +4,7 @@ use crate::core::{dashboard::DashboardDataSource, provider_repair as provider_re
 use crate::models::{ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot};
 use provider_repair_core::{
     ProviderOperationError, ProviderOperationOwnershipDiscovery, ProviderOperationStatus,
+    ProviderRecoveryState,
 };
 
 #[tauri::command]
@@ -25,9 +26,11 @@ pub fn list_provider_backups(
 #[tauri::command]
 pub fn create_provider_backup(
     window: tauri::WebviewWindow,
+    recovery_state: tauri::State<'_, ProviderRecoveryState>,
     operation_id: String,
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
     require_window_label(&window, "create_provider_backup")?;
+    recovery_state.guard_destructive_action()?;
     let source = local_source();
     provider_repair_core::create_provider_backup(source.codex_home(), &operation_id)
 }
@@ -35,9 +38,11 @@ pub fn create_provider_backup(
 #[tauri::command]
 pub fn sync_provider_history(
     window: tauri::WebviewWindow,
+    recovery_state: tauri::State<'_, ProviderRecoveryState>,
     operation_id: String,
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
     require_window_label(&window, "sync_provider_history")?;
+    recovery_state.guard_destructive_action()?;
     let source = local_source();
     provider_repair_core::sync_provider_history(source.codex_home(), &operation_id)
 }
@@ -56,10 +61,12 @@ pub fn verify_provider_repair(
 #[tauri::command]
 pub fn rollback_provider_backup(
     window: tauri::WebviewWindow,
+    recovery_state: tauri::State<'_, ProviderRecoveryState>,
     backup_id: String,
     operation_id: String,
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
     require_window_label(&window, "rollback_provider_backup")?;
+    recovery_state.guard_destructive_action()?;
     let source = local_source();
     provider_repair_core::rollback_provider_backup(source.codex_home(), &backup_id, &operation_id)
 }
@@ -78,7 +85,10 @@ pub fn read_provider_operation_status(
 #[tauri::command]
 pub fn discover_provider_operation_ownership(
     window: tauri::WebviewWindow,
+    recovery_state: tauri::State<'_, ProviderRecoveryState>,
 ) -> Result<ProviderOperationOwnershipDiscovery, ProviderOperationError> {
     require_window_label(&window, "discover_provider_operation_ownership")?;
-    Ok(provider_repair_core::discover_provider_operation_ownership())
+    Ok(provider_repair_core::discover_provider_operation_ownership(
+        recovery_state.snapshot(),
+    ))
 }

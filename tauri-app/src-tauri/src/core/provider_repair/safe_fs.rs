@@ -1,3 +1,5 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -27,6 +29,18 @@ pub(super) enum AtomicInstallPhase {
     BeforeReplace,
     BeforeFileSync,
     BeforeParentSync,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub(super) enum HomeGenerationIdentity {
+    #[cfg(unix)]
+    Unix { device: u64, inode: u64 },
+    #[cfg(windows)]
+    Windows {
+        volume_serial_number: u64,
+        file_id: String,
+    },
 }
 
 #[cfg(test)]
@@ -105,6 +119,63 @@ impl PinnedHome {
 
     pub(super) fn canonical_path(&self) -> &Path {
         &self.canonical_path
+    }
+
+    pub(super) fn generation_identity(&self) -> Result<HomeGenerationIdentity, String> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            let root = File::from(
+                rustix::io::dup(&self.root)
+                    .map_err(|error| format!("复制固定 Codex Home 句柄失败：{error}"))?,
+            );
+            let metadata = root.metadata().map_err(|error| {
+                format!(
+                    "读取固定 Codex Home generation 失败 {}：{error}",
+                    self.canonical_path.display()
+                )
+            })?;
+            return Ok(HomeGenerationIdentity::Unix {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            });
+        }
+
+        #[cfg(windows)]
+        {
+            return Ok(HomeGenerationIdentity::Windows {
+                volume_serial_number: self.root_identity.volume_serial_number,
+                file_id: self
+                    .root_identity
+                    .file_id
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+            });
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            Err(unsupported_platform_error())
+        }
+    }
+
+    pub(super) fn account_identity_fingerprint(&self) -> Result<Option<String>, String> {
+        let relative = Path::new("auth.json");
+        let Some(mut file) = self.open_file(relative)? else {
+            return Ok(None);
+        };
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|error| format!("读取 Provider auth.json 失败：{error}"))?;
+        let Some(account_key) = stable_account_key_from_auth_json(&bytes) else {
+            return Ok(None);
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(b"provider-account-identity-v1\0");
+        hasher.update(account_key.as_bytes());
+        Ok(Some(format!("sha256:{:x}", hasher.finalize())))
     }
 
     pub(super) fn ensure_canonical_path_identity(&self) -> Result<(), String> {
@@ -789,6 +860,31 @@ impl PinnedHome {
             relative.display()
         ))
     }
+}
+
+fn stable_account_key_from_auth_json(bytes: &[u8]) -> Option<String> {
+    let auth: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let id_token = auth
+        .get("tokens")
+        .and_then(|tokens| tokens.get("id_token"))
+        .and_then(serde_json::Value::as_str)?;
+    let payload = id_token.split('.').nth(1)?;
+    let payload: serde_json::Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).ok()?).ok()?;
+    [
+        ("sub", "sub:"),
+        ("account_id", "account:"),
+        ("accountId", "account:"),
+    ]
+    .into_iter()
+    .find_map(|(key, prefix)| {
+        payload
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("{prefix}{value}"))
+    })
 }
 
 #[cfg(unix)]

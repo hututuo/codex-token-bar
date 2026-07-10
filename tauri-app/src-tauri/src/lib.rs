@@ -3,6 +3,8 @@ mod core;
 mod models;
 mod platform;
 
+use tauri::Manager as _;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     if platform::activate_existing_instance_and_exit() {
@@ -11,12 +13,16 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(commands::live::LiveRateMonitorRegistry::default())
+        .manage(core::provider_repair::ProviderRecoveryState::default())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
         .setup(|app| {
+            let recovery_state =
+                app.state::<core::provider_repair::ProviderRecoveryState>();
+            commands::startup::initialize_provider_recovery(recovery_state.inner());
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
             platform::setup_desktop_surfaces(app)?;

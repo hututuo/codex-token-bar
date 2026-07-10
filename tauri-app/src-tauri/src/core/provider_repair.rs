@@ -2,6 +2,7 @@ use crate::models::{ProviderRepairActionResult, ProviderRepairSnapshot};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 mod backups;
@@ -37,6 +38,7 @@ use target_provider::detect_target_provider;
 const MAX_FINISHED_PROVIDER_OPERATIONS: usize = 256;
 
 static PROVIDER_OPERATION_REGISTRY: OnceLock<Mutex<ProviderOperationRegistry>> = OnceLock::new();
+static STARTUP_RECOVERY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -49,11 +51,96 @@ pub enum ProviderOperationError {
     Failed {
         message: String,
     },
+    RecoveryBlocked {
+        code: String,
+        message: String,
+        #[serde(rename = "recoveryPath")]
+        recovery_path: Option<PathBuf>,
+    },
 }
 
 impl From<String> for ProviderOperationError {
     fn from(message: String) -> Self {
         Self::Failed { message }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRecoveryStatus {
+    pub blocked: bool,
+    pub code: Option<String>,
+    pub message: Option<String>,
+    pub recovery_path: Option<PathBuf>,
+}
+
+impl ProviderRecoveryStatus {
+    fn ready() -> Self {
+        Self {
+            blocked: false,
+            code: None,
+            message: None,
+            recovery_path: None,
+        }
+    }
+
+    pub(crate) fn blocked(
+        code: impl Into<String>,
+        recovery_path: Option<PathBuf>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            blocked: true,
+            code: Some(code.into()),
+            message: Some(message.into()),
+            recovery_path,
+        }
+    }
+}
+
+pub struct ProviderRecoveryState {
+    status: Mutex<ProviderRecoveryStatus>,
+}
+
+impl Default for ProviderRecoveryState {
+    fn default() -> Self {
+        Self {
+            status: Mutex::new(ProviderRecoveryStatus::blocked(
+                "startupNotInitialized",
+                None,
+                "Provider startup recovery 尚未完成，写操作保持禁用。",
+            )),
+        }
+    }
+}
+
+impl ProviderRecoveryState {
+    pub fn snapshot(&self) -> ProviderRecoveryStatus {
+        self.status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn replace(&self, status: ProviderRecoveryStatus) {
+        *self
+            .status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = status;
+    }
+
+    pub fn guard_destructive_action(&self) -> Result<(), ProviderOperationError> {
+        let status = self.snapshot();
+        if !status.blocked {
+            return Ok(());
+        }
+        Err(ProviderOperationError::RecoveryBlocked {
+            code: status.code.unwrap_or_else(|| "recoveryBlocked".into()),
+            message: status
+                .message
+                .unwrap_or_else(|| "Provider recovery blocked。".into()),
+            recovery_path: status.recovery_path,
+        })
     }
 }
 
@@ -83,6 +170,7 @@ pub struct ProviderOperationOwnership {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderOperationOwnershipDiscovery {
     pub active_operations: Vec<ProviderOperationOwnership>,
+    pub recovery_status: ProviderRecoveryStatus,
 }
 
 #[derive(Clone, Debug)]
@@ -541,12 +629,93 @@ pub fn read_provider_operation_status(operation_id: &str) -> ProviderOperationSt
     registry.status(operation_id)
 }
 
-pub fn discover_provider_operation_ownership() -> ProviderOperationOwnershipDiscovery {
+pub fn discover_provider_operation_ownership(
+    recovery_status: ProviderRecoveryStatus,
+) -> ProviderOperationOwnershipDiscovery {
     let registry = provider_operation_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     ProviderOperationOwnershipDiscovery {
         active_operations: registry.active_ownership(),
+        recovery_status,
+    }
+}
+
+pub(crate) fn provider_recovery_backup_root() -> Result<PathBuf, String> {
+    provider_backup_root()
+}
+
+pub(crate) fn reconcile_provider_recovery_on_startup_at(
+    codex_home: &Path,
+    backup_root: &Path,
+    probe: impl FnOnce() -> Result<bool, String>,
+) -> ProviderRecoveryStatus {
+    let pending_path = match backups::first_unfinished_restore_transaction_at(backup_root) {
+        Ok(Some(path)) => path,
+        Ok(None) => return ProviderRecoveryStatus::ready(),
+        Err(error) => {
+            return ProviderRecoveryStatus::blocked("journalDiscoveryFailed", None, error)
+        }
+    };
+    let operation_id = format!(
+        "provider-startup-recovery-{}",
+        STARTUP_RECOVERY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    let lease = match acquire_provider_operation_lease(codex_home, &operation_id) {
+        Ok(lease) => lease,
+        Err(ProviderOperationError::Busy { message, .. }) => {
+            return ProviderRecoveryStatus::blocked(
+                "backendGuardBusy",
+                Some(pending_path),
+                message,
+            )
+        }
+        Err(ProviderOperationError::Failed { message })
+        | Err(ProviderOperationError::RecoveryBlocked { message, .. }) => {
+            return ProviderRecoveryStatus::blocked(
+                "backendGuardFailed",
+                Some(pending_path),
+                message,
+            )
+        }
+    };
+    let pinned_home = match PinnedHome::open(&lease.canonical_home) {
+        Ok(home) => home,
+        Err(error) => {
+            return ProviderRecoveryStatus::blocked(
+                "homeUnavailable",
+                Some(pending_path),
+                error,
+            )
+        }
+    };
+    let running = match probe() {
+        Ok(running) => running,
+        Err(error) => {
+            return ProviderRecoveryStatus::blocked(
+                "runningProbeFailed",
+                Some(pending_path),
+                format!("启动恢复前无法确认 Codex Desktop 运行状态：{error}"),
+            )
+        }
+    };
+    if running {
+        return ProviderRecoveryStatus::blocked(
+            "codexRunning",
+            Some(pending_path),
+            "启动恢复已阻止：Codex Desktop 正在运行，journal 保持不变。",
+        );
+    }
+    match backups::reconcile_unfinished_restore_transactions_with_diagnostics(
+        backup_root,
+        &pinned_home,
+    ) {
+        Ok(()) => ProviderRecoveryStatus::ready(),
+        Err(blocked) => ProviderRecoveryStatus::blocked(
+            blocked.code,
+            blocked.recovery_path,
+            blocked.message,
+        ),
     }
 }
 

@@ -17,11 +17,11 @@ use time::{OffsetDateTime, UtcOffset};
 
 #[cfg(windows)]
 use super::safe_fs::windows_extended_length_path;
-use super::safe_fs::{AtomicInstallPhase, PinnedHome};
+use super::safe_fs::{AtomicInstallPhase, HomeGenerationIdentity, PinnedHome};
 use super::session_files::{find_session_files, write_file_atomically};
 
 const BACKUP_MANIFEST_SCHEMA_VERSION: u32 = 2;
-const RESTORE_JOURNAL_SCHEMA_VERSION: u32 = 1;
+const RESTORE_JOURNAL_SCHEMA_VERSION: u32 = 2;
 const LEGACY_UNSUPPORTED_REASON: &str = "旧版 v1 清单缺少可验证的成员摘要。";
 const UNIQUE_DIRECTORY_ATTEMPTS: usize = 64;
 const MAX_SYNC_DIRECTORIES: usize = 100_000;
@@ -68,9 +68,24 @@ struct RestoreJournal {
     phase: RestoreJournalPhase,
     codex_home: String,
     codex_home_fingerprint: String,
+    home_generation: HomeGenerationIdentity,
+    account_identity: String,
     source_backup_id: String,
     source_backup_path: String,
     members: Vec<BackupMember>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RestoreRecoveryBlocked {
+    pub code: String,
+    pub recovery_path: Option<PathBuf>,
+    pub message: String,
+}
+
+impl std::fmt::Display for RestoreRecoveryBlocked {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -840,6 +855,18 @@ fn capture_and_publish_live_state(
     source_manifest: &BackupManifest,
     hook: &mut impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
 ) -> Result<RestoreJournal, String> {
+    let home_generation = pinned_home.generation_identity()?;
+    let account_identity = pinned_home
+        .account_identity_fingerprint()?
+        .ok_or_else(|| {
+            "恢复前无法确认非 secret 稳定账号身份，已在任何 Provider 写入前拒绝。".to_string()
+        })?;
+    let canonical_source_backup_path = source_backup_path.canonicalize().map_err(|error| {
+        format!(
+            "无法固定恢复源备份路径 {}：{error}",
+            source_backup_path.display()
+        )
+    })?;
     let mut captured = Vec::with_capacity(source_manifest.members.len());
     for (index, member) in source_manifest.members.iter().enumerate() {
         let relative = Path::new(&member.relative_path);
@@ -878,14 +905,22 @@ fn capture_and_publish_live_state(
             checksum_sha256: Some(checksum_sha256),
         });
     }
+    let account_identity_after_capture = pinned_home
+        .account_identity_fingerprint()?
+        .ok_or_else(|| "恢复状态捕获期间账号身份变为未知，已拒绝发布 journal。".to_string())?;
+    if account_identity_after_capture != account_identity {
+        return Err("恢复状态捕获期间账号身份发生变化，已拒绝发布 journal。".into());
+    }
     let journal = RestoreJournal {
         schema_version: RESTORE_JOURNAL_SCHEMA_VERSION,
         transaction_id: recovery_id.to_string(),
         phase: RestoreJournalPhase::Prepared,
         codex_home: source_manifest.codex_home.clone(),
         codex_home_fingerprint: source_manifest.codex_home_fingerprint.clone(),
+        home_generation,
+        account_identity,
         source_backup_id: source_manifest.id.clone(),
-        source_backup_path: source_backup_path.display().to_string(),
+        source_backup_path: canonical_source_backup_path.display().to_string(),
         members: captured.clone(),
     };
     sync_directory_tree(recovery_path)?;
@@ -1268,40 +1303,21 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_pinned(
 }
 
 pub(super) fn has_unfinished_restore_transactions_at(backup_root: &Path) -> Result<bool, String> {
-    let entries = match fs::read_dir(backup_root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(format!(
-                "读取恢复事务目录失败 {}：{error}",
-                backup_root.display()
-            ))
-        }
-    };
-    for entry in entries {
-        let entry = entry.map_err(|error| error.to_string())?;
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".restore-recovery-")
-            || entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".restore-quarantine-")
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(!unfinished_restore_transaction_paths_at(backup_root)?.is_empty())
 }
 
-fn reconcile_unfinished_restore_transactions_with_home(
+pub(super) fn first_unfinished_restore_transaction_at(
     backup_root: &Path,
-    pinned_home: &PinnedHome,
-) -> Result<(), String> {
+) -> Result<Option<PathBuf>, String> {
+    Ok(unfinished_restore_transaction_paths_at(backup_root)?
+        .into_iter()
+        .next())
+}
+
+fn unfinished_restore_transaction_paths_at(backup_root: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = match fs::read_dir(backup_root) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => {
             return Err(format!(
                 "读取恢复事务目录失败 {}：{error}",
@@ -1322,49 +1338,135 @@ fn reconcile_unfinished_restore_transactions_with_home(
         })
         .collect::<Vec<_>>();
     candidates.sort();
+    Ok(candidates)
+}
+
+fn reconcile_unfinished_restore_transactions_with_home(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+) -> Result<(), String> {
+    reconcile_unfinished_restore_transactions_with_diagnostics(backup_root, pinned_home)
+        .map_err(|blocked| blocked.message)
+}
+
+pub(super) fn reconcile_unfinished_restore_transactions_with_diagnostics(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+) -> Result<(), RestoreRecoveryBlocked> {
+    let candidates = unfinished_restore_transaction_paths_at(backup_root).map_err(|error| {
+        recovery_blocked("journalDiscoveryFailed", None, error)
+    })?;
 
     for recovery_path in candidates {
         let journal = read_restore_journal(&recovery_path).map_err(|error| {
-            format!(
-                "恢复事务协调失败，恢复材料保留于 {}：{error}",
-                recovery_path.display()
-            )
+            recovery_blocked("journalInvalid", Some(&recovery_path), error)
+        })?;
+        validate_recovery_journal(&recovery_path, &journal).map_err(|error| {
+            recovery_blocked("journalInvalid", Some(&recovery_path), error)
         })?;
         if journal.codex_home_fingerprint != pinned_home_fingerprint(pinned_home) {
-            continue;
+            return Err(recovery_blocked(
+                "codexHomeMismatch",
+                Some(&recovery_path),
+                "journal 的 Codex Home 路径身份与当前 Home 不一致",
+            ));
         }
-        validate_recovery_journal(&recovery_path, &journal).map_err(|error| {
-            format!(
-                "恢复事务协调失败，恢复材料保留于 {}：{error}",
-                recovery_path.display()
-            )
+        let current_generation = pinned_home.generation_identity().map_err(|error| {
+            recovery_blocked("homeGenerationUnavailable", Some(&recovery_path), error)
+        })?;
+        if journal.home_generation != current_generation {
+            return Err(recovery_blocked(
+                "homeGenerationMismatch",
+                Some(&recovery_path),
+                "journal 的 Home generation 与当前固定 Home 句柄不一致",
+            ));
+        }
+        let current_account = pinned_home
+            .account_identity_fingerprint()
+            .map_err(|error| {
+                recovery_blocked("accountIdentityUnknown", Some(&recovery_path), error)
+            })?
+            .ok_or_else(|| {
+                recovery_blocked(
+                    "accountIdentityUnknown",
+                    Some(&recovery_path),
+                    "当前 Home 缺少可验证的非 secret 稳定账号身份",
+                )
+            })?;
+        if journal.account_identity != current_account {
+            return Err(recovery_blocked(
+                "accountIdentityMismatch",
+                Some(&recovery_path),
+                "journal 的账号身份与当前 Home 账号不一致",
+            ));
+        }
+        validate_journal_source_backup(backup_root, &journal).map_err(|error| {
+            recovery_blocked("sourceBackupMismatch", Some(&recovery_path), error)
         })?;
         let mut hook = noop_restore_hook;
         if journal.phase != RestoreJournalPhase::Committed {
             let errors =
                 compensate_restore(pinned_home, &recovery_path, &journal.members, &mut hook);
             if !errors.is_empty() {
-                return Err(format!(
-                    "恢复事务补偿未完成，恢复材料保留于 {}：{}",
-                    recovery_path.display(),
-                    errors.join("；")
+                return Err(recovery_blocked(
+                    "compensationFailed",
+                    Some(&recovery_path),
+                    format!("恢复事务补偿未完成：{}", errors.join("；")),
                 ));
             }
             verify_installed_members(pinned_home, &journal.members).map_err(|error| {
-                format!(
-                    "恢复事务补偿验证失败，恢复材料保留于 {}：{error}",
-                    recovery_path.display()
-                )
+                recovery_blocked("compensationVerificationFailed", Some(&recovery_path), error)
             })?;
         }
         cleanup_recovery_path(backup_root, &recovery_path, &mut hook).map_err(|error| {
-            format!(
-                "恢复事务清理未完成，恢复材料路径 {}：{error}",
-                recovery_path.display()
-            )
+            recovery_blocked("recoveryCleanupFailed", Some(&recovery_path), error)
         })?;
     }
     Ok(())
+}
+
+fn validate_journal_source_backup(
+    backup_root: &Path,
+    journal: &RestoreJournal,
+) -> Result<(), String> {
+    let canonical_root = backup_root
+        .canonicalize()
+        .map_err(|error| format!("无法确认备份根目录 {}：{error}", backup_root.display()))?;
+    let recorded_source = PathBuf::from(&journal.source_backup_path);
+    let canonical_source = recorded_source.canonicalize().map_err(|error| {
+        format!(
+            "journal 源备份路径不可用 {}：{error}",
+            recorded_source.display()
+        )
+    })?;
+    if recorded_source != canonical_source || canonical_source.parent() != Some(&canonical_root) {
+        return Err(format!(
+            "journal 源备份路径不属于当前备份根目录：{}",
+            recorded_source.display()
+        ));
+    }
+    let manifest = validate_backup_manifest(&canonical_source)?;
+    if manifest.id != journal.source_backup_id
+        || manifest.codex_home_fingerprint != journal.codex_home_fingerprint
+    {
+        return Err("journal 源备份 ID、路径或 Home 身份不一致".into());
+    }
+    Ok(())
+}
+
+fn recovery_blocked(
+    code: &str,
+    recovery_path: Option<&Path>,
+    detail: impl std::fmt::Display,
+) -> RestoreRecoveryBlocked {
+    let path_message = recovery_path
+        .map(|path| format!("，恢复材料保留于 {}", path.display()))
+        .unwrap_or_default();
+    RestoreRecoveryBlocked {
+        code: code.to_string(),
+        recovery_path: recovery_path.map(Path::to_path_buf),
+        message: format!("Provider recovery blocked [{code}]{path_message}：{detail}"),
+    }
 }
 
 fn noop_restore_hook(_: RestorePhase, _: usize, _: &Path) -> Result<(), String> {

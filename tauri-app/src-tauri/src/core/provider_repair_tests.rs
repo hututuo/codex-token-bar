@@ -1,4 +1,5 @@
 use super::*;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -357,6 +358,7 @@ fn sync_and_automatic_restore_keep_using_the_original_home_after_root_swap() {
     let outside = fixture.join("outside");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::create_dir_all(outside.join("sessions")).unwrap();
     fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
     let original_session = home.join("sessions/thread.jsonl");
@@ -534,8 +536,10 @@ fn discovery_reports_active_provider_owners_without_operation_ids() {
     let canonical_home_b = canonical_codex_home(&home_b).unwrap();
     let lease_a = acquire_provider_operation_lease(&home_a, &operation_a).unwrap();
     let lease_b = acquire_provider_operation_lease(&home_b, &operation_b).unwrap();
+    let recovery_status = ProviderRecoveryState::default().snapshot();
 
-    let discovery = discover_provider_operation_ownership();
+    let discovery = discover_provider_operation_ownership(recovery_status.clone());
+    assert!(discovery.recovery_status.blocked);
     let discovered_owners = discovery
         .active_operations
         .into_iter()
@@ -556,7 +560,7 @@ fn discovery_reports_active_provider_owners_without_operation_ids() {
     );
 
     drop(lease_a);
-    let after_first_drop = discover_provider_operation_ownership();
+    let after_first_drop = discover_provider_operation_ownership(recovery_status.clone());
     assert!(!after_first_drop
         .active_operations
         .iter()
@@ -570,7 +574,7 @@ fn discovery_reports_active_provider_owners_without_operation_ids() {
     );
 
     drop(lease_b);
-    assert!(!discover_provider_operation_ownership()
+    assert!(!discover_provider_operation_ownership(recovery_status)
         .active_operations
         .iter()
         .any(|owner| owner.operation_id == operation_a || owner.operation_id == operation_b));
@@ -671,6 +675,22 @@ fn provider_busy_error_serializes_as_typed_frontend_payload() {
     assert_eq!(value["kind"], "busy");
     assert_eq!(value["activeOperationId"], "operation-a");
     assert_eq!(value["message"], "busy");
+}
+
+#[test]
+fn provider_recovery_blocked_error_serializes_diagnostic_status() {
+    let value = serde_json::to_value(ProviderOperationError::RecoveryBlocked {
+        code: "accountIdentityMismatch".into(),
+        message: "blocked".into(),
+        recovery_path: Some(PathBuf::from("/tmp/recovery")),
+    })
+    .unwrap();
+
+    assert_eq!(value["kind"], "recoveryBlocked");
+    assert_eq!(value["code"], "accountIdentityMismatch");
+    assert_eq!(value["message"], "blocked");
+    assert_eq!(value["recoveryPath"], "/tmp/recovery");
+    assert!(value.get("recovery_path").is_none());
 }
 
 #[test]
@@ -813,6 +833,7 @@ fn verification_error_automatically_restores_the_fresh_backup() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
     let session = home.join("sessions/thread.jsonl");
     write_session(&session, "thread", "codex_local_access");
@@ -842,6 +863,7 @@ fn verification_mismatch_after_all_writes_automatically_restores() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
     let session = home.join("sessions/thread.jsonl");
     write_session(&session, "thread", "codex_local_access");
@@ -916,6 +938,7 @@ fn sqlite_backup_preserves_committed_wal_rows_and_integrity() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     let database_path = home.join("state_5.sqlite");
     let writer = Connection::open(&database_path).unwrap();
     writer
@@ -974,6 +997,7 @@ fn later_restore_failure_with_active_wal_uses_verified_sqlite_compensation() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::write(home.join("config.toml"), "backup-config").unwrap();
     fs::write(home.join("session_index.jsonl"), "backup-index").unwrap();
     let database_path = home.join("state_5.sqlite");
@@ -1189,6 +1213,7 @@ fn restore_capture_failure_cleans_partial_recovery_staging() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::write(home.join("config.toml"), "backup-config").unwrap();
     fs::write(home.join("session_index.jsonl"), "backup-index").unwrap();
     let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
@@ -1219,6 +1244,7 @@ fn recovery_manifest_publication_failure_cleans_staging_before_apply() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::write(home.join("config.toml"), "backup-config").unwrap();
     let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
     fs::write(home.join("config.toml"), "live-config").unwrap();
@@ -1248,6 +1274,7 @@ fn restore_temp_validation_failure_removes_staged_temp_file() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::write(home.join("config.toml"), "backup-config").unwrap();
     let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
     fs::write(home.join("config.toml"), "live-config").unwrap();
@@ -1285,6 +1312,7 @@ fn successful_restore_cleanup_failure_quarantines_and_reports_recovery_material(
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::write(home.join("config.toml"), "backup-config").unwrap();
     let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
     fs::write(home.join("config.toml"), "live-config").unwrap();
@@ -1357,6 +1385,7 @@ fn failed_post_restore_verification_compensates_before_recovery_cleanup() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::write(home.join("config.toml"), "backup-config").unwrap();
     create_state_database(&home, &[("thread", "backup-provider", 0)]);
     let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
@@ -1397,6 +1426,7 @@ fn final_restore_verification_rehashes_every_installed_member_before_cleanup() {
     let backup_root = fixture.join("backups");
     let session = home.join("sessions/thread.jsonl");
     fs::create_dir_all(session.parent().unwrap()).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
     fs::write(
         &session,
@@ -1515,6 +1545,7 @@ fn restore_revalidates_member_bytes_immediately_before_replacement() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::write(home.join("config.toml"), "AAAA").unwrap();
     let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
     fs::write(home.join("config.toml"), "LIVE").unwrap();
@@ -1600,6 +1631,7 @@ fn later_restore_failure_compensates_to_the_pre_restore_state() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::write(home.join("config.toml"), "backup-config").unwrap();
     fs::write(home.join("session_index.jsonl"), "backup-index").unwrap();
     write_session(&home.join("sessions/thread.jsonl"), "thread", "openai");
@@ -1644,6 +1676,7 @@ fn incomplete_restore_compensation_retains_recovery_material() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::write(home.join("config.toml"), "backup-config").unwrap();
     fs::write(home.join("session_index.jsonl"), "backup-index").unwrap();
     write_session(&home.join("sessions/thread.jsonl"), "thread", "openai");
@@ -1742,6 +1775,7 @@ fn manifest_rejects_case_folded_session_aliases_before_mutation() {
 
 #[test]
 fn startup_reconciliation_handles_each_durable_restore_phase() {
+    use crate::commands::startup::initialize_provider_recovery_at;
     use backups::RestoreCrashPoint::{Committed, MidApply, Prepared, Verified};
 
     for (label, crash_point, expected_after_reconcile) in [
@@ -1754,6 +1788,7 @@ fn startup_reconciliation_handles_each_durable_restore_phase() {
         let home = fixture.join("home");
         let backup_root = fixture.join("backups");
         fs::create_dir_all(&home).unwrap();
+        write_test_auth_subject(&home, "startup-account");
         fs::write(home.join("config.toml"), "backup-config").unwrap();
         let backup =
             backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
@@ -1770,14 +1805,35 @@ fn startup_reconciliation_handles_each_durable_restore_phase() {
             .unwrap();
         }
 
-        backups::reconcile_unfinished_restore_transactions_at(&backup_root, &home).unwrap();
+        let recovery_state = ProviderRecoveryState::default();
+        let status = initialize_provider_recovery_at(
+            &recovery_state,
+            &home,
+            &backup_root,
+            || Ok(false),
+        );
 
+        assert!(!status.blocked, "{label}: {status:?}");
+        assert!(!recovery_state.snapshot().blocked, "{label}");
         assert_eq!(
             fs::read_to_string(home.join("config.toml")).unwrap(),
             expected_after_reconcile,
             "{label}"
         );
         assert_no_recovery_staging(&backup_root);
+
+        let second = initialize_provider_recovery_at(
+            &recovery_state,
+            &home,
+            &backup_root,
+            || Ok(false),
+        );
+        assert!(!second.blocked, "second startup {label}: {second:?}");
+        assert_eq!(
+            fs::read_to_string(home.join("config.toml")).unwrap(),
+            expected_after_reconcile,
+            "idempotent {label}"
+        );
         fs::remove_dir_all(fixture).unwrap();
     }
 }
@@ -1788,6 +1844,7 @@ fn failed_startup_reconciliation_retains_and_names_exact_recovery_path() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "reconcile-failure-account");
     fs::write(home.join("config.toml"), "backup-config").unwrap();
     let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
     fs::write(home.join("config.toml"), "live-config").unwrap();
@@ -1808,29 +1865,195 @@ fn failed_startup_reconciliation_retains_and_names_exact_recovery_path() {
 }
 
 #[test]
-fn pending_startup_recovery_is_blocked_while_codex_is_running() {
-    let fixture = temp_root("provider-restart-running-guard");
+fn startup_running_or_probe_failure_blocks_without_writing() {
+    use crate::commands::startup::initialize_provider_recovery_at;
+
+    for (label, probe_fails, expected_code) in [
+        ("running", false, "codexRunning"),
+        ("probe-failure", true, "runningProbeFailed"),
+    ] {
+        let fixture = temp_root(&format!("provider-restart-{label}"));
+        let home = fixture.join("home");
+        let backup_root = fixture.join("backups");
+        fs::create_dir_all(&home).unwrap();
+        write_test_auth_subject(&home, "blocked-startup-account");
+        fs::write(home.join("config.toml"), "backup-config").unwrap();
+        let backup =
+            backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+        fs::write(home.join("config.toml"), "live-config").unwrap();
+        let recovery_path = backups::simulate_restore_crash_at(
+            &home,
+            &backup,
+            backups::RestoreCrashPoint::Prepared,
+        )
+        .unwrap();
+        let home_before = fs::read(home.join("config.toml")).unwrap();
+        let journal_before = fs::read(recovery_path.join("recovery-manifest.json")).unwrap();
+        let recovery_state = ProviderRecoveryState::default();
+
+        let status = initialize_provider_recovery_at(
+            &recovery_state,
+            &home,
+            &backup_root,
+            || {
+                if probe_fails {
+                    Err("probe unavailable".into())
+                } else {
+                    Ok(true)
+                }
+            },
+        );
+
+        assert!(status.blocked, "{label}: {status:?}");
+        assert_eq!(status.code.as_deref(), Some(expected_code), "{label}");
+        assert_eq!(status.recovery_path.as_deref(), Some(recovery_path.as_path()));
+        assert!(matches!(
+            recovery_state.guard_destructive_action(),
+            Err(ProviderOperationError::RecoveryBlocked { .. })
+        ));
+        assert_eq!(fs::read(home.join("config.toml")).unwrap(), home_before);
+        assert_eq!(
+            fs::read(recovery_path.join("recovery-manifest.json")).unwrap(),
+            journal_before
+        );
+        fs::remove_dir_all(fixture).unwrap();
+    }
+}
+
+#[test]
+fn startup_same_path_new_home_generation_is_blocked_without_compensation() {
+    use crate::commands::startup::initialize_provider_recovery_at;
+
+    let fixture = temp_root("provider-restart-new-generation");
     let home = fixture.join("home");
+    let old_home = fixture.join("old-home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "generation-account");
     fs::write(home.join("config.toml"), "backup-config").unwrap();
     let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
     fs::write(home.join("config.toml"), "live-config").unwrap();
     let recovery_path =
         backups::simulate_restore_crash_at(&home, &backup, backups::RestoreCrashPoint::Prepared)
             .unwrap();
+    fs::rename(&home, &old_home).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "generation-account");
+    fs::write(home.join("config.toml"), "new-generation-sentinel").unwrap();
+    let recovery_state = ProviderRecoveryState::default();
 
-    let pinned_home = PinnedHome::open(&home).unwrap();
-    let error = reconcile_pending_restore_before_backup(&backup_root, &pinned_home, || Ok(true))
-        .unwrap_err();
+    let status = initialize_provider_recovery_at(
+        &recovery_state,
+        &home,
+        &backup_root,
+        || Ok(false),
+    );
 
-    assert!(error.contains("Codex 正在运行"), "{error}");
-    assert!(recovery_path.exists());
+    assert!(status.blocked, "{status:?}");
+    assert_eq!(status.code.as_deref(), Some("homeGenerationMismatch"));
+    assert_eq!(status.recovery_path.as_deref(), Some(recovery_path.as_path()));
     assert_eq!(
         fs::read_to_string(home.join("config.toml")).unwrap(),
-        "live-config"
+        "new-generation-sentinel"
     );
+    assert!(recovery_path.exists());
     fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn startup_same_home_different_account_or_unknown_account_is_blocked() {
+    use crate::commands::startup::initialize_provider_recovery_at;
+
+    for (label, replacement_subject, expected_code) in [
+        ("different", Some("account-b"), "accountIdentityMismatch"),
+        ("unknown", None, "accountIdentityUnknown"),
+    ] {
+        let fixture = temp_root(&format!("provider-restart-account-{label}"));
+        let home = fixture.join("home");
+        let backup_root = fixture.join("backups");
+        fs::create_dir_all(&home).unwrap();
+        write_test_auth_subject(&home, "account-a");
+        fs::write(home.join("config.toml"), "backup-config").unwrap();
+        let backup =
+            backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+        fs::write(home.join("config.toml"), "live-config").unwrap();
+        let recovery_path = backups::simulate_restore_crash_at(
+            &home,
+            &backup,
+            backups::RestoreCrashPoint::Prepared,
+        )
+        .unwrap();
+        match replacement_subject {
+            Some(subject) => write_test_auth_subject(&home, subject),
+            None => fs::remove_file(home.join("auth.json")).unwrap(),
+        }
+        let recovery_state = ProviderRecoveryState::default();
+
+        let status = initialize_provider_recovery_at(
+            &recovery_state,
+            &home,
+            &backup_root,
+            || Ok(false),
+        );
+
+        assert!(status.blocked, "{label}: {status:?}");
+        assert_eq!(status.code.as_deref(), Some(expected_code), "{label}");
+        assert_eq!(status.recovery_path.as_deref(), Some(recovery_path.as_path()));
+        assert_eq!(
+            fs::read_to_string(home.join("config.toml")).unwrap(),
+            "live-config"
+        );
+        assert!(recovery_path.exists());
+        fs::remove_dir_all(fixture).unwrap();
+    }
+}
+
+#[test]
+fn startup_wrong_source_backup_id_or_path_is_blocked() {
+    use crate::commands::startup::initialize_provider_recovery_at;
+
+    for field in ["source_backup_id", "source_backup_path"] {
+        let fixture = temp_root(&format!("provider-restart-wrong-{field}"));
+        let home = fixture.join("home");
+        let backup_root = fixture.join("backups");
+        fs::create_dir_all(&home).unwrap();
+        write_test_auth_subject(&home, "source-account");
+        fs::write(home.join("config.toml"), "backup-config").unwrap();
+        let backup =
+            backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+        fs::write(home.join("config.toml"), "live-config").unwrap();
+        let recovery_path = backups::simulate_restore_crash_at(
+            &home,
+            &backup,
+            backups::RestoreCrashPoint::Prepared,
+        )
+        .unwrap();
+        rewrite_recovery_journal(&recovery_path, |journal| {
+            journal[field] = match field {
+                "source_backup_id" => "wrong-backup-id".into(),
+                "source_backup_path" => backup_root.join("wrong-backup-path").display().to_string().into(),
+                _ => unreachable!(),
+            };
+        });
+        let recovery_state = ProviderRecoveryState::default();
+
+        let status = initialize_provider_recovery_at(
+            &recovery_state,
+            &home,
+            &backup_root,
+            || Ok(false),
+        );
+
+        assert!(status.blocked, "{field}: {status:?}");
+        assert_eq!(status.code.as_deref(), Some("sourceBackupMismatch"));
+        assert_eq!(status.recovery_path.as_deref(), Some(recovery_path.as_path()));
+        assert_eq!(
+            fs::read_to_string(home.join("config.toml")).unwrap(),
+            "live-config"
+        );
+        assert!(recovery_path.exists());
+        fs::remove_dir_all(fixture).unwrap();
+    }
 }
 
 #[test]
@@ -1839,6 +2062,7 @@ fn restore_durability_events_precede_apply_and_follow_destination_and_cleanup_ch
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::write(home.join("config.toml"), "backup-config").unwrap();
     let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
     fs::write(home.join("config.toml"), "live-config").unwrap();
@@ -1895,6 +2119,7 @@ fn restore_component_swap_cannot_replace_a_file_outside_the_pinned_home() {
     let outside = fixture.join("outside");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "fixture-account");
     fs::create_dir_all(&outside).unwrap();
     fs::write(home.join("config.toml"), "backup-config").unwrap();
     fs::write(outside.join("config.toml"), "outside-sentinel").unwrap();
@@ -2292,6 +2517,27 @@ fn temp_root(label: &str) -> PathBuf {
             .unwrap()
             .as_nanos()
     ))
+}
+
+fn write_test_auth_subject(home: &Path, subject: &str) {
+    let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"sub":"{subject}"}}"#));
+    let auth = serde_json::json!({
+        "tokens": {
+            "id_token": format!("header.{payload}.signature")
+        }
+    });
+    fs::write(home.join("auth.json"), serde_json::to_vec(&auth).unwrap()).unwrap();
+}
+
+fn rewrite_recovery_journal(
+    recovery_path: &Path,
+    mutate: impl FnOnce(&mut serde_json::Value),
+) {
+    let path = recovery_path.join("recovery-manifest.json");
+    let mut journal: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    mutate(&mut journal);
+    fs::write(path, serde_json::to_vec_pretty(&journal).unwrap()).unwrap();
 }
 
 #[cfg(windows)]
