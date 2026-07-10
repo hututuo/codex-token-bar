@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
@@ -30,13 +32,15 @@ use ranking::{cache_hit_ranking, cache_usage, sanitize_cache_usage_for_persisten
 use session_files::jsonl_files_for_codex_home;
 use token_event_cache::{file_cache_key, file_signature, CachedFileSignature};
 
-static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<Option<CachedDashboardAggregate>>> =
-    OnceLock::new();
+static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<DashboardAggregateCacheState>> = OnceLock::new();
+static DASHBOARD_BUILD_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 static USAGE_SUMMARY_REFRESH_IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 #[cfg(test)]
 static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
+#[cfg(test)]
+static DASHBOARD_SCAN_SIGNATURE_COUNT: AtomicUsize = AtomicUsize::new(0);
 const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 10;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -60,6 +64,10 @@ struct TokenEvent {
 }
 
 pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String> {
+    let build_gate = DASHBOARD_BUILD_GATE.get_or_init(|| Mutex::new(()));
+    let _build_guard = build_gate
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut warnings = Vec::new();
     let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings);
     let signature = dashboard_scan_signature(codex_home, &session_files);
@@ -145,18 +153,21 @@ pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, S
 }
 
 pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, String> {
-    if let Some(summary) = cached_dashboard_usage_summary(codex_home) {
-        return Ok(summary);
-    }
-    schedule_usage_summary_refresh(codex_home);
-    Err("精确 token summary 尚未就绪，正在后台初始化".into())
-}
-
-pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
     let mut warnings = Vec::new();
     let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings);
     let signature = dashboard_scan_signature(codex_home, &session_files);
-    cached_dashboard_aggregate(&signature).map(|cached| cached.summary)
+    if let Some(cached) = cached_dashboard_aggregate(&signature) {
+        return Ok(cached.summary);
+    }
+
+    let last_trusted = cached_dashboard_usage_summary(codex_home);
+    schedule_usage_summary_refresh(codex_home);
+    last_trusted.ok_or_else(|| "精确 token summary 尚未就绪，正在后台初始化".into())
+}
+
+pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    cached_dashboard_usage_summary_at(codex_home, OffsetDateTime::now_utc(), local_offset)
 }
 
 pub(crate) fn cached_dashboard_snapshot_for_startup(
@@ -248,6 +259,19 @@ struct CachedDashboardAggregate {
     summary: TokenUsageSummary,
 }
 
+#[derive(Default)]
+struct DashboardAggregateCacheState {
+    persistent_loaded: bool,
+    aggregate: Option<CachedDashboardAggregate>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DashboardUsageScope {
+    codex_home: PathBuf,
+    local_date: String,
+    utc_offset_seconds: i32,
+}
+
 #[cfg(test)]
 #[derive(Clone, Debug)]
 struct CachedUsageSummary {
@@ -270,8 +294,49 @@ struct SessionFileSignature {
 }
 
 fn dashboard_scan_signature(codex_home: &Path, session_files: &[PathBuf]) -> DashboardScanSignature {
+    #[cfg(test)]
+    DASHBOARD_SCAN_SIGNATURE_COUNT.fetch_add(1, Ordering::Relaxed);
     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
     dashboard_scan_signature_at(codex_home, session_files, OffsetDateTime::now_utc(), local_offset)
+}
+
+fn dashboard_usage_scope_at(
+    codex_home: &Path,
+    now_utc: OffsetDateTime,
+    local_offset: UtcOffset,
+) -> DashboardUsageScope {
+    DashboardUsageScope {
+        codex_home: codex_home.to_path_buf(),
+        local_date: local_date_string(now_utc.to_offset(local_offset)),
+        utc_offset_seconds: local_offset.whole_seconds(),
+    }
+}
+
+fn cached_dashboard_usage_summary_at(
+    codex_home: &Path,
+    now_utc: OffsetDateTime,
+    local_offset: UtcOffset,
+) -> Option<TokenUsageSummary> {
+    hydrate_dashboard_aggregate_cache_once();
+    let expected_scope = dashboard_usage_scope_at(codex_home, now_utc, local_offset);
+    let cache = DASHBOARD_AGGREGATE_CACHE
+        .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()));
+    cache
+        .lock()
+        .ok()
+        .and_then(|guard| guard.aggregate.clone())
+        .filter(|cached| cached.signature.usage_scope() == expected_scope)
+        .map(|cached| cached.summary)
+}
+
+impl DashboardScanSignature {
+    fn usage_scope(&self) -> DashboardUsageScope {
+        DashboardUsageScope {
+            codex_home: self.codex_home.clone(),
+            local_date: self.local_date.clone(),
+            utc_offset_seconds: self.utc_offset_seconds,
+        }
+    }
 }
 
 fn dashboard_scan_signature_at(
@@ -316,25 +381,40 @@ fn cached_dashboard_snapshot(signature: &DashboardScanSignature) -> Option<Dashb
 fn cached_dashboard_aggregate(
     signature: &DashboardScanSignature,
 ) -> Option<CachedDashboardAggregate> {
-    let cache = DASHBOARD_AGGREGATE_CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(guard) = cache.lock() {
-        if let Some(cached) = guard.as_ref() {
-            if &cached.signature == signature {
-                return Some(cached.clone());
-            }
+    hydrate_dashboard_aggregate_cache_once();
+    let cache = DASHBOARD_AGGREGATE_CACHE
+        .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()));
+    cache
+        .lock()
+        .ok()
+        .and_then(|guard| guard.aggregate.clone())
+        .filter(|cached| &cached.signature == signature)
+}
+
+fn hydrate_dashboard_aggregate_cache_once() {
+    let cache = DASHBOARD_AGGREGATE_CACHE
+        .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()));
+    let should_load = if let Ok(mut guard) = cache.lock() {
+        if guard.persistent_loaded {
+            false
+        } else {
+            guard.persistent_loaded = true;
+            true
         }
+    } else {
+        false
+    };
+    if !should_load {
+        return;
     }
 
-    let cached = load_persistent_dashboard_aggregate()?;
-    if &cached.signature == signature {
-        store_dashboard_aggregate(
-            cached.signature.clone(),
-            cached.snapshot.clone(),
-            cached.summary.clone(),
-        );
-        Some(cached)
-    } else {
-        None
+    let Some(persistent) = load_persistent_dashboard_aggregate() else {
+        return;
+    };
+    if let Ok(mut guard) = cache.lock() {
+        if guard.aggregate.is_none() {
+            guard.aggregate = Some(persistent);
+        }
     }
 }
 
@@ -343,14 +423,16 @@ fn store_dashboard_aggregate(
     snapshot: Option<DashboardSnapshot>,
     summary: TokenUsageSummary,
 ) {
-    let cache = DASHBOARD_AGGREGATE_CACHE.get_or_init(|| Mutex::new(None));
+    let cache = DASHBOARD_AGGREGATE_CACHE
+        .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()));
     let aggregate = CachedDashboardAggregate {
         signature,
         snapshot,
         summary,
     };
     if let Ok(mut guard) = cache.lock() {
-        *guard = Some(aggregate.clone());
+        guard.persistent_loaded = true;
+        guard.aggregate = Some(aggregate.clone());
     }
     save_persistent_dashboard_aggregate(&aggregate);
 }
@@ -391,11 +473,12 @@ fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSum
     }
 
     let memory_snapshot = DASHBOARD_AGGREGATE_CACHE
-        .get_or_init(|| Mutex::new(None))
+        .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
         .lock()
         .ok()
         .and_then(|guard| {
             guard
+                .aggregate
                 .as_ref()
                 .filter(|cached| cached.signature == signature)
                 .and_then(|cached| cached.snapshot.clone())
@@ -489,14 +572,15 @@ fn record_dashboard_aggregate_build_for_testing(_codex_home: &Path) {
 }
 
 #[cfg(test)]
-pub(super) fn reset_dashboard_aggregate_build_count_for_testing() {
+pub(crate) fn reset_dashboard_aggregate_build_count_for_testing() {
     let counts = DASHBOARD_AGGREGATE_BUILD_COUNT.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(mut counts) = counts.lock() {
         counts.clear();
     }
-    let cache = DASHBOARD_AGGREGATE_CACHE.get_or_init(|| Mutex::new(None));
+    let cache = DASHBOARD_AGGREGATE_CACHE
+        .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()));
     if let Ok(mut guard) = cache.lock() {
-        *guard = None;
+        *guard = DashboardAggregateCacheState::default();
     }
     let summary_cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = summary_cache.lock() {
@@ -506,14 +590,25 @@ pub(super) fn reset_dashboard_aggregate_build_count_for_testing() {
     if let Ok(mut guard) = in_flight.lock() {
         guard.clear();
     }
+    DASHBOARD_SCAN_SIGNATURE_COUNT.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
-pub(super) fn dashboard_aggregate_build_count_for_testing(codex_home: &Path) -> usize {
+pub(crate) fn dashboard_aggregate_build_count_for_testing(codex_home: &Path) -> usize {
     let counts = DASHBOARD_AGGREGATE_BUILD_COUNT.get_or_init(|| Mutex::new(HashMap::new()));
     counts
         .lock()
         .ok()
         .and_then(|counts| counts.get(codex_home).copied())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_dashboard_scan_signature_count_for_testing() {
+    DASHBOARD_SCAN_SIGNATURE_COUNT.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn dashboard_scan_signature_count_for_testing() -> usize {
+    DASHBOARD_SCAN_SIGNATURE_COUNT.load(Ordering::Relaxed)
 }

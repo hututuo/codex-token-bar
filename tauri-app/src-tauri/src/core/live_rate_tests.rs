@@ -201,7 +201,7 @@ fn read_snapshot_uses_safe_shell_before_precise_cache_exists() {
 }
 
 #[test]
-fn read_snapshot_backgrounds_precise_summary_after_safe_shell() {
+fn live_rate_ticks_leave_precise_summary_rebuild_to_usage_refresh() {
     let root = temp_root("live-rate-background-precise-summary");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
@@ -210,20 +210,37 @@ fn read_snapshot_backgrounds_precise_summary_after_safe_shell() {
 
     let first = read_snapshot(&root, None);
     assert_eq!(first.total_tokens_today, 0);
+    crate::core::usage::token_count_jsonl::reset_dashboard_aggregate_build_count_for_testing();
 
+    for _ in 0..5 {
+        let snapshot = read_snapshot(&root, None);
+        assert_eq!(snapshot.total_tokens_today, 0);
+        assert_ne!(snapshot.total_tokens_today, 9_999_999);
+    }
+    assert_eq!(
+        crate::core::usage::token_count_jsonl::dashboard_aggregate_build_count_for_testing(&root),
+        0,
+        "live-rate ticks must not start precise dashboard rebuilds"
+    );
+    assert_eq!(
+        crate::core::usage::token_count_jsonl::dashboard_scan_signature_count_for_testing(),
+        0,
+        "live-rate ticks must not scan the session tree"
+    );
+
+    assert!(crate::core::usage::token_count_jsonl::usage_summary_snapshot(&root).is_err());
     for _ in 0..50 {
         std::thread::sleep(Duration::from_millis(20));
-        let snapshot = read_snapshot(&root, None);
-        if snapshot.total_tokens_today == 40 {
-            assert_eq!(snapshot.requests_today, 1);
-            assert_eq!(snapshot.total_tokens, 1_040);
+        if let Ok(summary) = crate::core::usage::token_count_jsonl::usage_summary_snapshot(&root) {
+            assert_eq!(summary.today_tokens, 40);
+            assert_eq!(summary.today_requests, 1);
+            assert_eq!(summary.total_tokens, 1_040);
             fs::remove_dir_all(root).unwrap();
             return;
         }
-        assert_ne!(snapshot.total_tokens_today, 9_999_999);
     }
 
-    panic!("background precise summary did not become available");
+    panic!("usage refresh did not make the precise summary available");
 }
 
 #[test]
@@ -274,7 +291,7 @@ fn floating_snapshot_uses_precise_token_summary_when_cached() {
 }
 
 #[test]
-fn floating_snapshot_rejects_stale_precise_summary_after_session_changes() {
+fn floating_snapshot_keeps_same_scope_precise_summary_without_live_tick_rescan() {
     let root = temp_root("live-rate-stale-precise-summary");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
@@ -285,17 +302,34 @@ fn floating_snapshot_rejects_stale_precise_summary_after_session_changes() {
     let cached = read_snapshot(&root, None);
     assert_eq!(cached.total_tokens_today, 40);
 
+    crate::core::usage::token_count_jsonl::reset_dashboard_scan_signature_count_for_testing();
     append_token_count_to_first_session(&root, 80);
-    let changed = read_snapshot(&root, None);
+    let mut changed = read_snapshot(&root, None);
+    for _ in 0..4 {
+        changed = read_snapshot(&root, None);
+        let _ = read_floating_snapshot_from_live(&root, &changed);
+    }
+    assert_eq!(
+        crate::core::usage::token_count_jsonl::dashboard_scan_signature_count_for_testing(),
+        0,
+        "live-rate and floating reads must not rescan the session tree to validate totals"
+    );
     assert_eq!(
         changed.total_tokens_today, 40,
         "stale precise cache should keep the last safe precise summary instead of falling back to duplicated state summary"
     );
+    assert!(
+        changed
+            .warnings
+            .iter()
+            .all(|warning| warning.source != "live_rate_summary"),
+        "same-scope stale-safe totals must not be presented as a preparation state"
+    );
 
     let floating = read_floating_snapshot_from_live(&root, &changed);
-    assert_eq!(floating.total_tokens_label, "总 待读取");
-    assert_eq!(floating.today_tokens_label, "今 待读取");
-    assert_eq!(floating.requests_label, "次 待读取");
+    assert_eq!(floating.total_tokens_label, "总 1040");
+    assert_eq!(floating.today_tokens_label, "今 40");
+    assert_eq!(floating.requests_label, "次 1");
 
     fs::remove_dir_all(root).unwrap();
 }

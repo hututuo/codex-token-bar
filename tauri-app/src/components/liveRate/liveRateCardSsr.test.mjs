@@ -58,6 +58,20 @@ test("LiveRateCard treats precise summary cache warnings as a wait state during 
   });
 });
 
+test("LiveRateCard does not infer a rebuild notice from an ordinary refresh", async () => {
+  await withSsrModules(async (load) => {
+    const { LiveRateCard } = await load("/src/components/LiveRateCard.tsx");
+    const html = renderComponent(LiveRateCard, cardProps({
+      refreshing: true,
+      snapshot: liveRateSnapshot({ warnings: [] }),
+    }));
+
+    assert.doesNotMatch(html, /用量统计重建中/);
+    assert.doesNotMatch(html, /精确 token 缓存/);
+    assert.doesNotMatch(html, /class="live-rate-warning/);
+  });
+});
+
 test("LiveRateCard ignores dashboard usage precision warnings when they leak into live snapshot", async () => {
   await withSsrModules(async (load) => {
     const { LiveRateCard } = await load("/src/components/LiveRateCard.tsx");

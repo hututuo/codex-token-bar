@@ -981,6 +981,46 @@ fn cached_usage_summary_is_scoped_to_codex_home() {
 }
 
 #[test]
+fn cached_usage_summary_scope_rejects_date_and_offset_changes() {
+    let root = temp_root();
+    let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
+    let now = OffsetDateTime::from_unix_timestamp(1_781_715_600).unwrap();
+    let offset = UtcOffset::from_hms(8, 0, 0).unwrap();
+    let signature = dashboard_scan_signature_at(&root, &[], now, offset);
+    store_dashboard_aggregate(
+        signature,
+        None,
+        TokenUsageSummary {
+            total_tokens: 120,
+            today_tokens: 120,
+            today_requests: 1,
+        },
+    );
+
+    assert_eq!(
+        cached_dashboard_usage_summary_at(&root, now, offset)
+            .expect("matching lightweight scope should reuse the trusted summary")
+            .total_tokens,
+        120
+    );
+    assert!(cached_dashboard_usage_summary_at(
+        &root,
+        now + time::Duration::days(1),
+        offset,
+    )
+    .is_none());
+    assert!(cached_dashboard_usage_summary_at(
+        &root,
+        now,
+        UtcOffset::from_hms(9, 0, 0).unwrap(),
+    )
+    .is_none());
+    assert!(cached_dashboard_usage_summary_at(&root.join("other-home"), now, offset).is_none());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
     let root = temp_root();
     let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
@@ -1027,15 +1067,28 @@ fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
         .unwrap();
     }
 
-    assert!(
-        cached_dashboard_usage_summary(&root).is_none(),
-        "changed active rollout signature must invalidate the previous aggregate summary"
+    assert_eq!(
+        cached_dashboard_usage_summary(&root)
+            .expect("same-scope append should retain the last trusted summary")
+            .total_tokens,
+        120
     );
-    let rebuilt = dashboard_snapshot(&root).unwrap();
-    assert_eq!(rebuilt.stats.total_tokens, 260);
-    assert_eq!(usage_summary_snapshot(&root).unwrap().total_tokens, 260);
+    assert_eq!(
+        usage_summary_snapshot(&root).unwrap().total_tokens,
+        120,
+        "signature drift should return stale-safe trusted totals while scheduling one rebuild"
+    );
 
-    fs::remove_dir_all(root).unwrap();
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        if usage_summary_snapshot(&root).unwrap().total_tokens == 260 {
+            assert_eq!(dashboard_aggregate_build_count_for_testing(&root), 1);
+            fs::remove_dir_all(root).unwrap();
+            return;
+        }
+    }
+
+    panic!("stale-safe usage summary background refresh did not finish");
 }
 
 #[test]
