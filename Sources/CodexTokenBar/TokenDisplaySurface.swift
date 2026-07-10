@@ -152,6 +152,7 @@ struct TokenDisplaySnapshot {
     let todayTokens: Int
     let todayRequests: Int
     let usagePrecision: DashboardUsagePrecision
+    let usageReadStatus: String
     let quota: AccountQuotaSnapshot
     let updatedAt: Date
 
@@ -163,6 +164,7 @@ struct TokenDisplaySnapshot {
         todayTokens: Int,
         todayRequests: Int,
         usagePrecision: DashboardUsagePrecision = .precise,
+        usageReadStatus: String = "",
         quota: AccountQuotaSnapshot,
         updatedAt: Date
     ) {
@@ -173,6 +175,7 @@ struct TokenDisplaySnapshot {
         self.todayTokens = todayTokens
         self.todayRequests = todayRequests
         self.usagePrecision = usagePrecision
+        self.usageReadStatus = usageReadStatus
         self.quota = quota
         self.updatedAt = updatedAt
     }
@@ -191,6 +194,7 @@ struct TokenDisplaySnapshot {
             todayTokens: todayUsage?.tokens ?? 0,
             todayRequests: todayUsage?.calls ?? 0,
             usagePrecision: store.snapshot.usagePrecision,
+            usageReadStatus: store.status,
             quota: quota.snapshot,
             updatedAt: max(store.snapshot.generatedAt, max(monitor.totalSnapshot.updatedAt, quota.snapshot.updatedAt ?? .distantPast))
         )
@@ -213,7 +217,7 @@ struct TokenDisplaySnapshot {
     }
 
     var metadataOnlyStatusText: String? {
-        hasPreciseTokenUsage ? nil : "仅会话元数据"
+        usageReadDiagnostic ?? (hasPreciseTokenUsage ? nil : "仅会话元数据")
     }
 
     var statusBarTitle: String {
@@ -235,6 +239,9 @@ struct TokenDisplaySnapshot {
     }
 
     private func usageStatus(resetCreditSuffix: String) -> String {
+        if let usageReadDiagnostic {
+            return usageReadDiagnostic
+        }
         guard quota.isAvailable else {
             if quota.status.contains("失败") {
                 return "读取失败"
@@ -253,6 +260,16 @@ struct TokenDisplaySnapshot {
             return "5h剩\(fiveHour.remainingPercent)%\(resetCreditSuffix)"
         }
         return "额度已读\(resetCreditSuffix)"
+    }
+
+    private var usageReadDiagnostic: String? {
+        if usageReadStatus.contains("当前显示已陈旧") {
+            return "用量已陈旧"
+        }
+        if usageReadStatus.hasPrefix("读取失败") {
+            return "用量读取失败"
+        }
+        return nil
     }
 }
 

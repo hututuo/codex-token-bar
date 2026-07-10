@@ -1,34 +1,56 @@
 import Foundation
 
+enum CodexUsageDiscoveryError: LocalizedError {
+    case selectedHomeUnavailable(path: String)
+    case selectedHomeIdentityChanged(path: String)
+    case traversalFailed(path: String, reason: String)
+    case traversalLimitExceeded(path: String, limit: String)
+    case stateDatabaseReadFailed(path: String, reason: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .selectedHomeUnavailable(let path):
+            return "所选 Codex Home 身份无法验证：\(path)"
+        case .selectedHomeIdentityChanged(let path):
+            return "所选 Codex Home 身份已变化，已停止读取：\(path)"
+        case .traversalFailed(let path, let reason):
+            return "会话目录遍历失败：\(path)（\(reason)）"
+        case .traversalLimitExceeded(let path, let limit):
+            return "会话目录遍历超过安全上限：\(path)（\(limit)）"
+        case .stateDatabaseReadFailed(let path, let reason):
+            return "活动会话索引读取失败：\(path)（\(reason)）"
+        }
+    }
+}
+
 extension CodexUsageAnalyzer {
     private static let forkReplayExitGrace: TimeInterval = 2
     private static let maximumSessionTraversalDepth = 64
     private static let maximumSessionTraversalEntries = 200_000
 
-    func usageJSONLFiles() -> [URL] {
-        guard let canonicalHome = canonicalSelectedHome() else {
-            return []
-        }
+    func usageJSONLFiles() throws -> [URL] {
+        let canonicalHome = try canonicalSelectedHome()
         var files: [URL] = []
         if fileManager.fileExists(atPath: dataSource.sessionsRoot.path) {
-            guard let sessionFiles = jsonlFiles(
+            let sessionFiles = try jsonlFiles(
                 under: dataSource.sessionsRoot,
                 canonicalHome: canonicalHome
-            ) else {
-                return []
-            }
+            )
             files.append(contentsOf: sessionFiles)
         }
-        files.append(contentsOf: activeStateRolloutFiles(canonicalHome: canonicalHome))
+        files.append(contentsOf: try activeStateRolloutFiles(canonicalHome: canonicalHome))
         return deduplicateJSONLFiles(files)
     }
 
-    private func jsonlFiles(under root: URL, canonicalHome: URL) -> [URL]? {
+    private func jsonlFiles(under root: URL, canonicalHome: URL) throws -> [URL] {
         guard let rootValues = fileResourceValues(for: root),
               rootValues.isSymbolicLink != true,
               rootValues.isDirectory == true,
               isContained(root.resolvingSymlinksInPath(), in: canonicalHome) else {
-            return nil
+            throw CodexUsageDiscoveryError.traversalFailed(
+                path: root.path,
+                reason: "根目录不可读取或不再位于所选 Home 内"
+            )
         }
 
         var files: [URL] = []
@@ -36,27 +58,44 @@ extension CodexUsageAnalyzer {
         var visitedEntries = 0
 
         while let directory = pendingDirectories.popLast() {
-            guard let children = try? fileManager.contentsOfDirectory(
-                at: directory.url,
-                includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
-                options: [.skipsHiddenFiles]
-            ) else {
-                return nil
+            let children: [URL]
+            do {
+                children = try fileManager.contentsOfDirectory(
+                    at: directory.url,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+                    options: [.skipsHiddenFiles]
+                )
+            } catch {
+                throw CodexUsageDiscoveryError.traversalFailed(
+                    path: directory.url.path,
+                    reason: error.localizedDescription
+                )
             }
             var childDirectories: [URL] = []
 
             for child in children.sorted(by: { $0.path < $1.path }) {
                 visitedEntries += 1
-                guard visitedEntries <= Self.maximumSessionTraversalEntries,
-                      let values = fileResourceValues(for: child) else {
-                    return nil
+                guard visitedEntries <= Self.maximumSessionTraversalEntries else {
+                    throw CodexUsageDiscoveryError.traversalLimitExceeded(
+                        path: root.path,
+                        limit: "最多 \(Self.maximumSessionTraversalEntries) 个条目"
+                    )
+                }
+                guard let values = fileResourceValues(for: child) else {
+                    throw CodexUsageDiscoveryError.traversalFailed(
+                        path: child.path,
+                        reason: "无法读取文件类型"
+                    )
                 }
                 guard values.isSymbolicLink != true else {
                     continue
                 }
                 if values.isDirectory == true {
                     guard directory.depth < Self.maximumSessionTraversalDepth else {
-                        return nil
+                        throw CodexUsageDiscoveryError.traversalLimitExceeded(
+                            path: child.path,
+                            limit: "最大深度 \(Self.maximumSessionTraversalDepth)"
+                        )
                     }
                     let resolvedDirectory = child.resolvingSymlinksInPath()
                     guard isContained(resolvedDirectory, in: canonicalHome) else {
@@ -64,7 +103,7 @@ extension CodexUsageAnalyzer {
                     }
                     childDirectories.append(child)
                 } else if values.isRegularFile == true,
-                          let file = trustedJSONLFile(child, canonicalHome: canonicalHome) {
+                          let file = try trustedJSONLFile(child, canonicalHome: canonicalHome) {
                     files.append(file)
                 }
             }
@@ -96,11 +135,11 @@ extension CodexUsageAnalyzer {
         )
     }
 
-    private func activeStateRolloutFiles(canonicalHome: URL) -> [URL] {
+    private func activeStateRolloutFiles(canonicalHome: URL) throws -> [URL] {
         guard fileManager.fileExists(atPath: dataSource.stateDatabase.path) else {
             return []
         }
-        let columns = threadColumnNames()
+        let columns = try threadColumnNames()
         guard columns.contains("rollout_path") else {
             return []
         }
@@ -114,24 +153,36 @@ extension CodexUsageAnalyzer {
           AND rollout_path IS NOT NULL
           AND rollout_path <> '';
         """
-        guard let rows = try? sqliteRows(db: dataSource.stateDatabase.path, sql: sql) else {
-            return []
+        let rows: [[String]]
+        do {
+            rows = try sqliteRows(db: dataSource.stateDatabase.path, sql: sql)
+        } catch {
+            throw CodexUsageDiscoveryError.stateDatabaseReadFailed(
+                path: dataSource.stateDatabase.path,
+                reason: error.localizedDescription
+            )
         }
-        return rows.compactMap { row in
+        return try rows.compactMap { row in
             guard let rawPath = row.first?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !rawPath.isEmpty else {
                 return nil
             }
-            return trustedJSONLFile(
+            return try trustedJSONLFile(
                 normalizedRolloutPath(rawPath),
                 canonicalHome: canonicalHome
             )
         }
     }
 
-    private func threadColumnNames() -> Set<String> {
-        guard let rows = try? sqliteRows(db: dataSource.stateDatabase.path, sql: "PRAGMA table_info(threads);") else {
-            return []
+    private func threadColumnNames() throws -> Set<String> {
+        let rows: [[String]]
+        do {
+            rows = try sqliteRows(db: dataSource.stateDatabase.path, sql: "PRAGMA table_info(threads);")
+        } catch {
+            throw CodexUsageDiscoveryError.stateDatabaseReadFailed(
+                path: dataSource.stateDatabase.path,
+                reason: error.localizedDescription
+            )
         }
         return Set(rows.compactMap { row in
             row.count > 1 ? row[1] : nil
@@ -176,27 +227,51 @@ extension CodexUsageAnalyzer {
         file.resolvingSymlinksInPath().path
     }
 
-    private func canonicalSelectedHome() -> URL? {
-        let home = dataSource.codexHome.standardizedFileURL.resolvingSymlinksInPath()
+    private func canonicalSelectedHome() throws -> URL {
+        let home = dataSource.codexHome.standardizedFileURL
         guard let values = fileResourceValues(for: home),
-              values.isSymbolicLink != true,
               values.isDirectory == true else {
-            return nil
+            throw CodexUsageDiscoveryError.selectedHomeUnavailable(path: home.path)
         }
-        return home
+        guard values.isSymbolicLink != true else {
+            throw CodexUsageDiscoveryError.selectedHomeIdentityChanged(path: home.path)
+        }
+        guard let expectedIdentity = dataSource.homeIdentity,
+              let currentIdentity = CodexHomeIdentity.read(at: home) else {
+            throw CodexUsageDiscoveryError.selectedHomeUnavailable(path: home.path)
+        }
+        guard currentIdentity == expectedIdentity else {
+            throw CodexUsageDiscoveryError.selectedHomeIdentityChanged(path: home.path)
+        }
+        return home.resolvingSymlinksInPath()
     }
 
-    private func trustedJSONLFile(_ file: URL, canonicalHome: URL) -> URL? {
+    private func trustedJSONLFile(_ file: URL, canonicalHome: URL) throws -> URL? {
         guard file.pathExtension == "jsonl",
-              let values = fileResourceValues(for: file),
-              values.isSymbolicLink != true,
+              fileManager.fileExists(atPath: file.path) else {
+            return nil
+        }
+        guard let values = fileResourceValues(for: file) else {
+            throw CodexUsageDiscoveryError.traversalFailed(
+                path: file.path,
+                reason: "无法读取 JSONL 文件属性"
+            )
+        }
+        guard values.isSymbolicLink != true,
               values.isRegularFile == true else {
             return nil
         }
         let resolved = file.standardizedFileURL.resolvingSymlinksInPath()
-        guard isContained(resolved, in: canonicalHome),
-              let resolvedValues = fileResourceValues(for: resolved),
-              resolvedValues.isSymbolicLink != true,
+        guard isContained(resolved, in: canonicalHome) else {
+            return nil
+        }
+        guard let resolvedValues = fileResourceValues(for: resolved) else {
+            throw CodexUsageDiscoveryError.traversalFailed(
+                path: resolved.path,
+                reason: "无法验证 JSONL 文件属性"
+            )
+        }
+        guard resolvedValues.isSymbolicLink != true,
               resolvedValues.isRegularFile == true else {
             return nil
         }

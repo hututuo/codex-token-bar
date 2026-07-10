@@ -159,12 +159,26 @@ final class CodexUsageStoreTests: XCTestCase {
             isPreparingUsageCache: false,
             cacheStatus: "token_count · 更新于 12:00"
         )
+        let failedMetadata = try XCTUnwrap(StatStripStatusLinePresentation(
+            hasPreciseTokenUsage: false,
+            isPreparingUsageCache: false,
+            cacheStatus: "读取失败：会话目录遍历失败"
+        ))
+        let stalePrecise = try XCTUnwrap(StatStripStatusLinePresentation(
+            hasPreciseTokenUsage: true,
+            isPreparingUsageCache: false,
+            cacheStatus: "读取失败（保留上次可信数据，当前显示已陈旧）：会话目录遍历失败"
+        ))
 
         XCTAssertEqual(preparing.text, "正在初始化本地统计缓存 · 正在增量更新 token")
         XCTAssertTrue(preparing.showsProgress)
         XCTAssertEqual(metadataOnly.text, "仅显示会话元数据，精确 token 仍在读取，请稍后。")
         XCTAssertFalse(metadataOnly.showsProgress)
         XCTAssertNil(preciseIdle)
+        XCTAssertEqual(failedMetadata.text, "读取失败：会话目录遍历失败")
+        XCTAssertFalse(failedMetadata.showsProgress)
+        XCTAssertTrue(stalePrecise.text.contains("当前显示已陈旧"))
+        XCTAssertFalse(stalePrecise.showsProgress)
     }
 
     func testUsageCacheLifecycleMarksCurrentNamespacePrepared() throws {
@@ -213,7 +227,41 @@ final class CodexUsageStoreTests: XCTestCase {
 
         XCTAssertEqual(store.snapshot.stats.totalTokens, 88_000)
         XCTAssertEqual(store.snapshot.stats.totalThreads, 2)
+        XCTAssertTrue(store.status.contains("当前显示已陈旧"))
         XCTAssertFalse(store.isInitialLoading)
+    }
+
+    func testColdStartFailureDoesNotPublishPreciseZero() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/cold-failure/.codex"),
+            origin: .defaultHome
+        )
+        let loader = SequentialDashboardSnapshotLoader(
+            fastResults: [.failure(UsageStoreTestError())],
+            preciseResults: [.failure(UsageStoreTestError())]
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("cold usage failure") {
+            store.status.hasPrefix("读取失败") && !store.isRefreshing
+        }
+
+        XCTAssertFalse(store.snapshot.hasPreciseTokenUsage)
+        XCTAssertEqual(store.snapshot.stats.totalTokens, 0)
+        XCTAssertFalse(store.status.contains("当前显示已陈旧"))
+
+        let display = TokenDisplaySnapshot.make(
+            store: store,
+            monitor: LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: false),
+            quota: AccountQuotaStore(observesUserDefaults: false)
+        )
+        XCTAssertEqual(display.metadataOnlyStatusText, "用量读取失败")
+        XCTAssertEqual(display.standaloneUsageStatus, "用量读取失败")
     }
 
     func testMetadataOnlyPreciseResultRemainsDegradedAndDoesNotPrepareCache() async throws {
@@ -317,6 +365,54 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.stats.totalTokens, 12_345)
         XCTAssertEqual(store.snapshot.dailyUsage.reduce(0) { $0 + $1.tokens }, 678)
         XCTAssertFalse(store.snapshot.dailyUsage.isEmpty)
+        XCTAssertTrue(store.status.contains("当前显示已陈旧"))
+
+        let display = TokenDisplaySnapshot.make(
+            store: store,
+            monitor: LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: false),
+            quota: AccountQuotaStore(observesUserDefaults: false)
+        )
+        XCTAssertEqual(display.standaloneUsageStatus, "用量已陈旧")
+    }
+
+    func testFailureAfterSourceSwitchDoesNotRetainPreviousSourceSnapshot() async {
+        let sourceA = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/failure-source-a/.codex"),
+            origin: .userSelected
+        )
+        let sourceB = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/failure-source-b/.codex"),
+            origin: .userSelected
+        )
+        let resolver = MutableCodexDataSourceResolver(source: sourceA)
+        let loader = SequentialDashboardSnapshotLoader(
+            fastResults: [.success(.empty)],
+            preciseResults: [
+                .success(makeSnapshot(totalTokens: 12_345, dayTokens: 678)),
+                .failure(UsageStoreTestError())
+            ]
+        )
+        let store = CodexUsageStore(
+            resolver: resolver,
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("source A usage snapshot") {
+            store.snapshot.stats.totalTokens == 12_345 && !store.isRefreshing
+        }
+
+        resolver.source = sourceB
+        store.refresh()
+        await waitUntil("source B usage failure") {
+            store.status.hasPrefix("读取失败") && !store.isRefreshing
+        }
+
+        XCTAssertEqual(store.currentDataSource, sourceB)
+        XCTAssertEqual(store.snapshot.stats.totalTokens, 0)
+        XCTAssertFalse(store.snapshot.hasPreciseTokenUsage)
+        XCTAssertFalse(store.status.contains("当前显示已陈旧"))
     }
 
     func testInFlightRefreshFromOldSourceDoesNotOverwriteNewSourceSnapshot() async {

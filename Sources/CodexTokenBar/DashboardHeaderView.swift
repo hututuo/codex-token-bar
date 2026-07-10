@@ -261,8 +261,14 @@ struct StatStripStatusLinePresentation: Equatable {
         isPreparingUsageCache: Bool,
         cacheStatus: String
     ) {
+        let trimmedStatus = cacheStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedStatus.hasPrefix("读取失败") {
+            text = trimmedStatus
+            showsProgress = false
+            return
+        }
+
         if isPreparingUsageCache {
-            let trimmedStatus = cacheStatus.trimmingCharacters(in: .whitespacesAndNewlines)
             let statusText = trimmedStatus.isEmpty ? "后台准备中" : trimmedStatus
             text = "正在初始化本地统计缓存 · \(statusText)"
             showsProgress = true

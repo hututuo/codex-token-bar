@@ -21,6 +21,7 @@ final class CodexUsageStore: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var refreshGeneration = 0
     private var activeRefreshSourceID: String?
+    private var snapshotSourceID: String?
     private var refreshInterval: TimeInterval = 300
     private var didFinishInitialLoad = false
     private var didRunPreciseScan = false
@@ -79,6 +80,7 @@ final class CodexUsageStore: ObservableObject {
             refreshGeneration += 1
             activeRefreshSourceID = nil
             snapshot = .empty
+            snapshotSourceID = nil
             status = "未找到本地 Codex 数据目录"
             isInitialLoading = false
             isPreparingUsageCache = false
@@ -87,13 +89,16 @@ final class CodexUsageStore: ObservableObject {
             return
         }
 
+        let sourceID = refreshSourceID(for: dataSource)
+        if let snapshotSourceID, snapshotSourceID != sourceID {
+            snapshot = .empty
+            self.snapshotSourceID = nil
+        }
         let isFirstLoad = !didFinishInitialLoad
-        let hasExistingSnapshot = didFinishInitialLoad || hasDisplayableSnapshot(snapshot)
         let needsCacheInitialization = includePreciseScan && !UsageCacheLifecycle.isCurrentCachePrepared
         isRefreshing = true
         refreshGeneration += 1
         let generation = refreshGeneration
-        let sourceID = refreshSourceID(for: dataSource)
         activeRefreshSourceID = sourceID
         isPreparingUsageCache = needsCacheInitialization
         if isFirstLoad {
@@ -123,7 +128,7 @@ final class CodexUsageStore: ObservableObject {
                                 trace?.end("stale-after-fastSnapshot")
                                 return
                             }
-                            self.snapshot = quickSnapshot
+                            self.publish(quickSnapshot, sourceID: sourceID)
                             self.status = quickSnapshot.hasPreciseTokenUsage
                                 ? (needsCacheInitialization
                                     ? "\(source.originLabel) · state_5.sqlite · 正在初始化本地统计缓存..."
@@ -141,7 +146,7 @@ final class CodexUsageStore: ObservableObject {
                             trace?.end("stale-after-fastSnapshot")
                             return
                         }
-                        self.snapshot = quickSnapshot
+                        self.publish(quickSnapshot, sourceID: sourceID)
                         self.status = quickSnapshot.hasPreciseTokenUsage
                             ? "\(source.originLabel) · state_5.sqlite · 准备扫描精确 token..."
                             : self.metadataOnlyStatus(origin: source.originLabel)
@@ -160,7 +165,7 @@ final class CodexUsageStore: ObservableObject {
                         return
                     }
                     if loaded.hasPreciseTokenUsage {
-                        self.snapshot = loaded
+                        self.publish(loaded, sourceID: sourceID)
                         self.didRunPreciseScan = true
                         UsageCacheLifecycle.markCurrentCachePrepared()
                         self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
@@ -171,7 +176,7 @@ final class CodexUsageStore: ObservableObject {
                         ])
                     } else {
                         if !self.snapshot.hasPreciseTokenUsage {
-                            self.snapshot = loaded
+                            self.publish(loaded, sourceID: sourceID)
                         }
                         self.status = self.metadataOnlyStatus(origin: source.originLabel)
                         trace?.mark("preciseSnapshot.metadataOnly", metadata: [
@@ -185,10 +190,15 @@ final class CodexUsageStore: ObservableObject {
                     trace?.end("stale-failed", metadata: ["error": error.localizedDescription])
                     return
                 }
-                if !hasExistingSnapshot && !self.hasDisplayableSnapshot(self.snapshot) {
+                let retainedTrustedSnapshot = self.snapshotSourceID == sourceID
+                    && self.hasDisplayableSnapshot(self.snapshot)
+                if !retainedTrustedSnapshot {
                     self.snapshot = .empty
+                    self.snapshotSourceID = nil
                 }
-                self.status = "读取失败：\(error.localizedDescription)"
+                self.status = retainedTrustedSnapshot
+                    ? "读取失败（保留上次可信数据，当前显示已陈旧）：\(error.localizedDescription)"
+                    : "读取失败：\(error.localizedDescription)"
                 trace?.end("failed", metadata: ["error": error.localizedDescription])
             }
             if self.isCurrentRefresh(generation: generation, sourceID: sourceID) {
@@ -208,7 +218,12 @@ final class CodexUsageStore: ObservableObject {
     }
 
     private func refreshSourceID(for dataSource: CodexDataSource) -> String {
-        dataSource.codexHome.resolvingSymlinksInPath().standardizedFileURL.path
+        dataSource.stableIdentityKey
+    }
+
+    private func publish(_ snapshot: DashboardSnapshot, sourceID: String) {
+        self.snapshot = snapshot
+        snapshotSourceID = sourceID
     }
 
     private func hasDisplayableSnapshot(_ snapshot: DashboardSnapshot) -> Bool {
@@ -316,6 +331,7 @@ extension DashboardSnapshot {
         hourlyUsage: [],
         pluginUsage: [],
         cacheUsage: .empty,
+        usagePrecision: .metadataOnly,
         generatedAt: Date()
     )
 

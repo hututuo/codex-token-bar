@@ -223,7 +223,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
 
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
-        let files = analyzer.usageJSONLFiles()
+        let files = try analyzer.usageJSONLFiles()
         let snapshot = try analyzer.load()
 
         XCTAssertEqual(files.map { $0.resolvingSymlinksInPath().path }, [trustedFile.resolvingSymlinksInPath().path])
@@ -247,7 +247,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         let startedAt = Date()
-        let files = analyzer.usageJSONLFiles()
+        let files = try analyzer.usageJSONLFiles()
         let elapsed = Date().timeIntervalSince(startedAt)
         let snapshot = try analyzer.load()
 
@@ -279,7 +279,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
 
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
-        let files = analyzer.usageJSONLFiles()
+        let files = try analyzer.usageJSONLFiles()
         let snapshot = try analyzer.load()
 
         XCTAssertEqual(files.map { $0.resolvingSymlinksInPath().path }, [trustedFile.resolvingSymlinksInPath().path])
@@ -309,7 +309,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
 
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
-        let files = analyzer.usageJSONLFiles()
+        let files = try analyzer.usageJSONLFiles()
         let snapshot = try analyzer.load()
 
         XCTAssertEqual(files.map { $0.resolvingSymlinksInPath().path }, [trustedFile.resolvingSymlinksInPath().path])
@@ -331,12 +331,120 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
 
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
-        let files = analyzer.usageJSONLFiles()
+        let files = try analyzer.usageJSONLFiles()
         let snapshot = try analyzer.load()
 
         XCTAssertEqual(files.map { $0.resolvingSymlinksInPath().path }, [nestedFile.resolvingSymlinksInPath().path])
         XCTAssertEqual(snapshot.stats.totalTokens, 120)
         XCTAssertEqual(snapshot.stats.totalCalls, 1)
+    }
+
+    func testSelectedHomeReplacementWithExternalSymlinkFailsClosed() throws {
+        let codexHome = try makeCodexHome()
+        let source = dataSource(for: codexHome)
+        let externalHome = try makeCodexHome()
+        _ = try writeTokenCountRollout(
+            in: externalHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-cccc-dddd-retargetedhome",
+            timestamp: Date().addingTimeInterval(-30),
+            totalTokens: 700
+        )
+        _ = try replaceDirectoryWithSymlink(at: codexHome, destination: externalHome)
+
+        XCTAssertThrowsError(try CodexUsageAnalyzer(dataSource: source).load()) { error in
+            XCTAssertTrue(error.localizedDescription.contains("身份"), error.localizedDescription)
+        }
+    }
+
+    func testPersistedSelectedHomeIdentityRejectsLaterPathRetarget() throws {
+        let codexHome = try makeCodexHome()
+        let externalHome = try makeCodexHome()
+        _ = try writeTokenCountRollout(
+            in: externalHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-cccc-dddd-persistedhome",
+            timestamp: Date().addingTimeInterval(-30),
+            totalTokens: 700
+        )
+        let suiteName = "CodexUsageAnalyzerSelectedHome-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let bookmarkKey = "CodexUsageAnalyzerSelectedHomeBookmark-\(UUID().uuidString)"
+        let resolver = CodexDataSourceResolver(
+            defaults: defaults,
+            scopedAccess: SecurityScopedCodexDirectoryAccess(defaults: defaults, bookmarkKey: bookmarkKey)
+        )
+        _ = try XCTUnwrap(resolver.saveSelectedDirectory(codexHome))
+        defaults.removeObject(forKey: bookmarkKey)
+        _ = try replaceDirectoryWithSymlink(at: codexHome, destination: externalHome)
+
+        let resolved = try XCTUnwrap(resolver.resolve())
+
+        XCTAssertThrowsError(try CodexUsageAnalyzer(dataSource: resolved).load()) { error in
+            XCTAssertTrue(error.localizedDescription.contains("身份"), error.localizedDescription)
+        }
+    }
+
+    func testInitialSelectedHomeSymlinkCanonicalizesToItsRealDirectory() throws {
+        let realHome = try makeCodexHome()
+        _ = try writeTokenCountRollout(
+            in: realHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-cccc-dddd-initialsymlink",
+            timestamp: Date().addingTimeInterval(-30),
+            totalTokens: 120
+        )
+        let linkParent = try makeTemporaryDirectory(named: "CodexInitialHomeSymlink")
+        let selectedLink = linkParent.appendingPathComponent("selected-home")
+        try FileManager.default.createSymbolicLink(at: selectedLink, withDestinationURL: realHome)
+        let suiteName = "CodexUsageAnalyzerInitialSymlink-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let resolver = CodexDataSourceResolver(
+            defaults: defaults,
+            scopedAccess: SecurityScopedCodexDirectoryAccess(
+                defaults: defaults,
+                bookmarkKey: "CodexUsageAnalyzerInitialSymlinkBookmark-\(UUID().uuidString)"
+            )
+        )
+
+        let selected = try XCTUnwrap(resolver.saveSelectedDirectory(selectedLink))
+        let snapshot = try CodexUsageAnalyzer(dataSource: selected).load()
+
+        XCTAssertEqual(selected.codexHome.path, realHome.resolvingSymlinksInPath().path)
+        XCTAssertEqual(snapshot.stats.totalTokens, 120)
+        XCTAssertTrue(snapshot.hasPreciseTokenUsage)
+    }
+
+    func testUnreadableSessionDirectoryThrowsDiscoveryFailure() throws {
+        let codexHome = try makeCodexHome()
+        let blockedDirectory = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("blocked", isDirectory: true)
+        try FileManager.default.createDirectory(at: blockedDirectory, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: blockedDirectory.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: blockedDirectory.path)
+        }
+
+        XCTAssertThrowsError(
+            try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).usageJSONLFiles()
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("遍历"), error.localizedDescription)
+        }
+    }
+
+    func testTraversalDepthLimitThrowsDiscoveryFailure() throws {
+        let codexHome = try makeCodexHome()
+        var directory = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        for index in 0..<65 {
+            directory.appendPathComponent("level-\(index)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        }
+
+        XCTAssertThrowsError(
+            try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).usageJSONLFiles()
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("上限"), error.localizedDescription)
+        }
     }
 
     func testPreciseJSONLScanDeduplicatesStateRolloutPathsAlreadyUnderSessions() throws {
@@ -424,7 +532,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             )
         ].joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
-        let files = analyzer.usageJSONLFiles()
+        let files = try analyzer.usageJSONLFiles()
 
         let before = analyzer.sessionTreeSignature(
             for: files,
@@ -1020,6 +1128,17 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         temporaryDirectories.append(directory)
         return directory
+    }
+
+    @discardableResult
+    private func replaceDirectoryWithSymlink(at directory: URL, destination: URL) throws -> URL {
+        let preservedDirectory = directory
+            .deletingLastPathComponent()
+            .appendingPathComponent("\(directory.lastPathComponent)-preserved-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.moveItem(at: directory, to: preservedDirectory)
+        temporaryDirectories.append(preservedDirectory)
+        try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: destination)
+        return preservedDirectory
     }
 
     private func swiftUsageCacheRoot(in cacheRoot: URL) -> URL {

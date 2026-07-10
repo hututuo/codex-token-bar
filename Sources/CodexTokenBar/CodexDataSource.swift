@@ -1,14 +1,47 @@
 import Foundation
 
-struct CodexDataSource: Equatable {
+struct CodexHomeIdentity: Equatable, Sendable {
+    let deviceID: UInt64
+    let fileID: UInt64
+
+    static func read(at directory: URL, fileManager: FileManager = .default) -> CodexHomeIdentity? {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: directory.path),
+              attributes[.type] as? FileAttributeType == .typeDirectory,
+              let deviceID = (attributes[.systemNumber] as? NSNumber)?.uint64Value,
+              let fileID = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value else {
+            return nil
+        }
+        return CodexHomeIdentity(deviceID: deviceID, fileID: fileID)
+    }
+}
+
+struct CodexDataSource: Equatable, Sendable {
     let codexHome: URL
     let origin: Origin
+    let homeIdentity: CodexHomeIdentity?
 
-    enum Origin: Equatable {
+    enum Origin: Equatable, Sendable {
         case environment
         case defaultHome
         case oneLevelScan
         case userSelected
+    }
+
+    init(
+        codexHome: URL,
+        origin: Origin,
+        expectedHomeIdentity: CodexHomeIdentity? = nil
+    ) {
+        let standardizedHome = codexHome.standardizedFileURL
+        if let expectedHomeIdentity {
+            self.codexHome = standardizedHome
+            homeIdentity = expectedHomeIdentity
+        } else {
+            let canonicalHome = standardizedHome.resolvingSymlinksInPath()
+            self.codexHome = canonicalHome
+            homeIdentity = CodexHomeIdentity.read(at: canonicalHome)
+        }
+        self.origin = origin
     }
 
     var sessionsRoot: URL {
@@ -17,6 +50,13 @@ struct CodexDataSource: Equatable {
 
     var stateDatabase: URL {
         codexHome.appendingPathComponent("state_5.sqlite")
+    }
+
+    var stableIdentityKey: String {
+        guard let homeIdentity else {
+            return "path:\(codexHome.path)"
+        }
+        return "fs:\(homeIdentity.deviceID):\(homeIdentity.fileID)"
     }
 
     var displayPath: String {
@@ -63,6 +103,8 @@ final class CodexDataSourceResolver {
     private let scopedAccess: SecurityScopedCodexDirectoryAccess
     private let selectedPathKey = "CodexTokenBar.selectedCodexHome"
     private let legacySelectedPathKey = "CodexTokenDashboard.selectedCodexHome"
+    private let selectedDeviceIDKey = "CodexTokenBar.selectedCodexHomeDeviceID"
+    private let selectedFileIDKey = "CodexTokenBar.selectedCodexHomeFileID"
 
     init(
         defaults: UserDefaults = .standard,
@@ -73,8 +115,11 @@ final class CodexDataSourceResolver {
     }
 
     func resolve() -> CodexDataSource? {
-        if let selected = selectedDataSource(), isUsable(selected) {
+        if let selected = selectedDataSource() {
             return selected
+        }
+        if hasPersistedSelection {
+            return nil
         }
 
         for candidate in automaticCandidates() {
@@ -88,16 +133,25 @@ final class CodexDataSourceResolver {
 
     func saveSelectedDirectory(_ directory: URL) -> CodexDataSource? {
         let normalized = normalize(directory)
+        guard let identity = CodexHomeIdentity.read(at: normalized) else {
+            return nil
+        }
         scopedAccess.saveAccess(for: normalized)
-        defaults.set(normalized.path, forKey: selectedPathKey)
-        defaults.removeObject(forKey: legacySelectedPathKey)
-        return selectedDataSource()
+        persistSelection(path: normalized.path, identity: identity)
+        return CodexDataSource(
+            codexHome: normalized,
+            origin: .userSelected,
+            expectedHomeIdentity: identity
+        )
     }
 
     func selectedDataSource() -> CodexDataSource? {
         let bookmarkedURL = scopedAccess.restoreAccess()
         let currentPath = defaults.string(forKey: selectedPathKey)
         let legacyPath = defaults.string(forKey: legacySelectedPathKey)
+        let persistedPath = [currentPath, legacyPath]
+            .compactMap { $0 }
+            .first(where: { !$0.isEmpty })
         let selectedURL = bookmarkedURL ?? [currentPath, legacyPath]
             .compactMap { $0 }
             .first(where: { !$0.isEmpty })
@@ -107,10 +161,37 @@ final class CodexDataSourceResolver {
             return nil
         }
 
-        if currentPath == nil {
-            defaults.set(selectedURL.path, forKey: selectedPathKey)
+        let normalized = normalize(selectedURL)
+        if let expectedIdentity = persistedSelectedIdentity() {
+            if CodexHomeIdentity.read(at: normalized) == expectedIdentity {
+                if currentPath != normalized.path {
+                    scopedAccess.saveAccess(for: normalized)
+                    persistSelection(path: normalized.path, identity: expectedIdentity)
+                }
+                return CodexDataSource(
+                    codexHome: normalized,
+                    origin: .userSelected,
+                    expectedHomeIdentity: expectedIdentity
+                )
+            }
+
+            let pinnedURL = persistedPath.map(lexicallyNormalizedHome) ?? normalized
+            return CodexDataSource(
+                codexHome: pinnedURL,
+                origin: .userSelected,
+                expectedHomeIdentity: expectedIdentity
+            )
         }
-        return CodexDataSource(codexHome: normalize(selectedURL), origin: .userSelected)
+
+        guard let identity = CodexHomeIdentity.read(at: normalized) else {
+            return CodexDataSource(codexHome: normalized, origin: .userSelected)
+        }
+        persistSelection(path: normalized.path, identity: identity)
+        return CodexDataSource(
+            codexHome: normalized,
+            origin: .userSelected,
+            expectedHomeIdentity: identity
+        )
     }
 
     private func automaticCandidates() -> [CodexDataSource] {
@@ -143,6 +224,35 @@ final class CodexDataSourceResolver {
 
     private func normalize(_ directory: URL) -> URL {
         let url = directory.resolvingSymlinksInPath()
+        if url.lastPathComponent == "sessions" {
+            return url.deletingLastPathComponent()
+        }
+        return url
+    }
+
+    private var hasPersistedSelection: Bool {
+        defaults.string(forKey: selectedPathKey) != nil
+            || defaults.string(forKey: legacySelectedPathKey) != nil
+    }
+
+    private func persistedSelectedIdentity() -> CodexHomeIdentity? {
+        guard let deviceID = defaults.string(forKey: selectedDeviceIDKey).flatMap(UInt64.init),
+              let fileID = defaults.string(forKey: selectedFileIDKey).flatMap(UInt64.init) else {
+            return nil
+        }
+        return CodexHomeIdentity(deviceID: deviceID, fileID: fileID)
+    }
+
+    private func persistSelection(path: String, identity: CodexHomeIdentity) {
+        defaults.set(path, forKey: selectedPathKey)
+        defaults.set(String(identity.deviceID), forKey: selectedDeviceIDKey)
+        defaults.set(String(identity.fileID), forKey: selectedFileIDKey)
+        defaults.removeObject(forKey: legacySelectedPathKey)
+    }
+
+    private func lexicallyNormalizedHome(_ path: String) -> URL {
+        let expanded = (path as NSString).expandingTildeInPath
+        let url = URL(fileURLWithPath: expanded).standardizedFileURL
         if url.lastPathComponent == "sessions" {
             return url.deletingLastPathComponent()
         }

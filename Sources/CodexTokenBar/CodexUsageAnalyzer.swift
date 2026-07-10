@@ -23,14 +23,21 @@ final class CodexUsageAnalyzer {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.load", metadata: [
             "source": dataSource.displayPath
         ])
-        if let preciseSnapshot = try? loadFromTokenCountJSONL() {
+        do {
+            let preciseSnapshot = try loadFromTokenCountJSONL()
             trace?.end("precise", metadata: [
                 "tokens": String(preciseSnapshot.stats.totalTokens),
                 "calls": String(preciseSnapshot.stats.totalCalls)
             ])
             return preciseSnapshot
+        } catch let error as CodexUsageDiscoveryError {
+            trace?.end("discovery-failed", metadata: ["error": error.localizedDescription])
+            throw error
+        } catch {
+            trace?.mark("precise.failed.fallbackStateSQLite", metadata: [
+                "error": error.localizedDescription
+            ])
         }
-        trace?.mark("precise.failed.fallbackStateSQLite")
         let snapshot = try loadFromStateSQLite()
         trace?.end("stateSQLite", metadata: [
             "tokens": String(snapshot.stats.totalTokens),
@@ -44,7 +51,7 @@ final class CodexUsageAnalyzer {
             "source": dataSource.displayPath
         ])
         do {
-            if let cachedPreciseSnapshot = cachedPreciseSnapshot() {
+            if let cachedPreciseSnapshot = try cachedPreciseSnapshot() {
                 trace?.end("precise-cache", metadata: [
                     "tokens": String(cachedPreciseSnapshot.stats.totalTokens),
                     "threads": String(cachedPreciseSnapshot.stats.totalThreads)
@@ -63,8 +70,8 @@ final class CodexUsageAnalyzer {
         }
     }
 
-    private func cachedPreciseSnapshot() -> DashboardSnapshot? {
-        let sessionFiles = usageJSONLFiles()
+    private func cachedPreciseSnapshot() throws -> DashboardSnapshot? {
+        let sessionFiles = try usageJSONLFiles()
         guard !sessionFiles.isEmpty else {
             return nil
         }
@@ -77,7 +84,7 @@ final class CodexUsageAnalyzer {
             "sessionsRoot": dataSource.sessionsRoot.path
         ])
         trace?.mark("jsonlFiles.begin")
-        let sessionFiles = usageJSONLFiles()
+        let sessionFiles = try usageJSONLFiles()
         trace?.mark("jsonlFiles.end", metadata: ["count": String(sessionFiles.count)])
         guard !sessionFiles.isEmpty else {
             trace?.end("missing-token-jsonl-files")
