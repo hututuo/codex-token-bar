@@ -12,7 +12,7 @@
 
 - Product audit baseline is `v0.7.2` at `e48930a626679230d5d52267c830812f254fdd26`; audit integration starts from post-release `origin/main` at `04124ea5f7d731024496b7b8441d7fec96cc0540`.
 - Human review is the coverage authority; automatic tools are auxiliary signals only.
-- Blind human reviewers do not receive previous findings or tool output before their first report is sealed.
+- Fresh blind human reviewers do not receive previous findings or tool output before their first report is sealed. Existing Swift/Tauri executor threads are context-rich reviewers and must re-read current source rather than treating prior reports as coverage.
 - Discovery tasks are read-only: no production edits, commits, builds that open Apps, process kills, pushes, tags, releases, or updater publication.
 - Swift and Tauri workers never manage the other lane's runtime or worktree.
 - No reset-card consumption request may be made. Provider write operations use disposable copied fixtures only.
@@ -125,13 +125,13 @@ If any command fails, record the exact failing test and classify it as a baselin
 - Consumes: Swift production source/tests and the design document; does not consume previous findings or tool reports.
 - Produces: independent findings, actual explored scope, flow maps, invariants, uncovered areas, and suggested reproductions.
 
-- [ ] **Step 1: Dispatch the existing Swift executor with a blind read-only brief**
+- [ ] **Step 1: Dispatch the existing Swift executor as a context-rich read-only reviewer**
 
-The brief states the repository/worktree boundary, baseline commit, human-first requirement, evidence schema, and forbidden actions. It must not list suspected files or previous bugs.
+The brief states the repository/worktree boundary, baseline commit, human-first requirement, evidence schema, and forbidden actions. It must not prescribe suspected files. The executor may use historical knowledge to recognize recurring patterns, but must re-read current source and report actual current coverage.
 
 - [ ] **Step 2: Dispatch an independent Swift code-review agent**
 
-The second reviewer uses the Swift code-review guide but remains blind to the first report and tool output.
+The second reviewer uses the Swift code-review guide and starts without the existing thread history, first report, or tool output.
 
 - [ ] **Step 3: Seal both reports before comparison**
 
@@ -151,9 +151,9 @@ Do not merge conclusions yet. Mark only modules actually read or traced by the r
 - Consumes: React/TypeScript/Rust/Tauri source/tests and the design document; does not consume previous findings or tool reports.
 - Produces: independent Tauri findings, flow maps, platform-specific risks, uncovered areas, and suggested reproductions.
 
-- [ ] **Step 1: Dispatch the existing Tauri executor with a blind read-only brief**
+- [ ] **Step 1: Dispatch the existing Tauri executor as a context-rich read-only reviewer**
 
-- [ ] **Step 2: Dispatch an independent Tauri code-review agent**
+- [ ] **Step 2: Dispatch an independent blind Tauri code-review agent**
 
 - [ ] **Step 3: Seal both reports before comparison**
 
@@ -356,4 +356,3 @@ Each implementation task receives a fresh bounded worker, a task reviewer, and a
 - [ ] **Step 6: Mark findings closed only with evidence links**
 
 - [ ] **Step 7: Use superpowers:finishing-a-development-branch for integration choices**
-
