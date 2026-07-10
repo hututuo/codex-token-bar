@@ -36,6 +36,13 @@ struct SettingsMutationOutcome {
     diagnostic: Option<String>,
 }
 
+#[derive(Debug)]
+enum PrimarySettingsRead {
+    Missing,
+    Valid(AppSettingsSnapshot),
+    Invalid(String),
+}
+
 #[derive(Clone, Debug)]
 struct RecoveryCandidate {
     path: PathBuf,
@@ -384,9 +391,17 @@ where
 
     let bytes = serde_json::to_vec_pretty(settings).map_err(|error| error.to_string())?;
     let existing_candidates = interrupted_temp_candidates(path)?;
-    ensure_new_ready_candidate_fits(&existing_candidates, bytes.len() as u64)?;
     let (existing_marker, marker_repair_diagnostic) =
         read_or_repair_commit_marker_for_write(path, &existing_candidates, &mut sync_parent)?;
+    let existing_candidates = prepare_ready_candidates_for_admission(
+        path,
+        existing_candidates,
+        existing_marker.as_ref(),
+        bytes.len() as u64,
+        &mut sync_parent,
+        &mut cleanup_candidate,
+    )
+    .map_err(|error| attach_prior_diagnostic(error, &marker_repair_diagnostic))?;
     let generation = next_ready_generation(&existing_candidates, existing_marker.as_ref())
         .map_err(|error| attach_prior_diagnostic(error, &marker_repair_diagnostic))?;
     let (in_progress_path, sequence, mut temp_file) = create_unique_in_progress_file(path)
@@ -582,6 +597,147 @@ fn ensure_new_ready_candidate_fits(
     Ok(())
 }
 
+fn prepare_ready_candidates_for_admission<SyncParent, CleanupCandidate>(
+    path: &Path,
+    existing: Vec<RecoveryCandidate>,
+    marker: Option<&SettingsCommitMarker>,
+    new_bytes: u64,
+    sync_parent: &mut SyncParent,
+    cleanup_candidate: &mut CleanupCandidate,
+) -> Result<Vec<RecoveryCandidate>, String>
+where
+    SyncParent: FnMut(&Path) -> Result<(), String>,
+    CleanupCandidate: FnMut(&Path) -> Result<(), String>,
+{
+    let capacity_error = match ensure_new_ready_candidate_fits(&existing, new_bytes) {
+        Ok(()) => return Ok(existing),
+        Err(error) => error,
+    };
+    if new_bytes > RECOVERY_CANDIDATE_MAX_BYTES {
+        return Err(capacity_error);
+    }
+
+    let marker_before = marker.cloned();
+    let retained_pending = match marker_before.as_ref() {
+        Some(SettingsCommitMarker::Pending { .. }) => {
+            let eligible =
+                eligible_recovery_candidates_for_marker(marker_before.clone(), existing.clone())?;
+            let candidate = eligible
+                .first()
+                .ok_or_else(|| "待提交设置恢复候选缺失；拒绝容量清理".to_string())?;
+            if candidate.precheck.is_some() {
+                return Err(format!(
+                    "待提交设置恢复候选不再是可安全恢复的普通文件，拒绝容量清理：{}",
+                    candidate.path.display()
+                ));
+            }
+            Some(candidate.path.clone())
+        }
+        Some(SettingsCommitMarker::Committed { .. }) => None,
+        None => {
+            return Err(format!(
+                "{capacity_error}；没有耐久提交标记可证明哪些恢复候选已被取代，拒绝自动清理"
+            ));
+        }
+    };
+
+    let cleanup_targets: Vec<&RecoveryCandidate> = existing
+        .iter()
+        .filter(|candidate| retained_pending.as_ref() != Some(&candidate.path))
+        .collect();
+    if cleanup_targets.is_empty() {
+        return Err(format!(
+            "{capacity_error}；唯一候选是必须保留的待提交恢复候选，无法安全腾出容量"
+        ));
+    }
+
+    let mut failures = Vec::new();
+    let mut omitted = 0usize;
+    let mut removed = 0usize;
+    for candidate in cleanup_targets {
+        match cleanup_candidate(&candidate.path) {
+            Ok(()) => removed += 1,
+            Err(error) => record_recovery_diagnostic(&mut failures, &mut omitted, || {
+                format!("{}（{}）", candidate.path.display(), error)
+            }),
+        }
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("设置文件缺少父目录：{}", path.display()))?;
+    if let Err(error) = sync_parent(parent) {
+        return Err(format_capacity_cleanup_failure(
+            retained_pending.as_deref(),
+            removed,
+            &failures,
+            omitted,
+            Some(format!("父目录同步失败：{error}")),
+            &capacity_error,
+        ));
+    }
+    if !failures.is_empty() {
+        return Err(format_capacity_cleanup_failure(
+            retained_pending.as_deref(),
+            removed,
+            &failures,
+            omitted,
+            None,
+            &capacity_error,
+        ));
+    }
+
+    let marker_after = read_commit_marker(path).map_err(|error| {
+        format!("设置恢复候选容量清理后无法重新验证提交标记，已停止保存：{error}")
+    })?;
+    if marker_after != marker_before {
+        return Err("设置恢复候选容量清理期间提交标记发生变化，已停止保存".into());
+    }
+    let refreshed = interrupted_temp_candidates(path)?;
+    if matches!(marker_after, Some(SettingsCommitMarker::Pending { .. })) {
+        let eligible =
+            eligible_recovery_candidates_for_marker(marker_after.clone(), refreshed.clone())?;
+        if eligible
+            .first()
+            .is_none_or(|candidate| candidate.precheck.is_some())
+        {
+            return Err("容量清理后待提交设置恢复候选不再可安全恢复，已停止保存".into());
+        }
+    }
+    ensure_new_ready_candidate_fits(&refreshed, new_bytes)?;
+    Ok(refreshed)
+}
+
+fn format_capacity_cleanup_failure(
+    retained_pending: Option<&Path>,
+    removed: usize,
+    failures: &[String],
+    omitted: usize,
+    durability_error: Option<String>,
+    capacity_error: &str,
+) -> String {
+    let retained = retained_pending.map_or_else(
+        || "没有待提交候选需要保留".to_string(),
+        |path| format!("已保留待提交候选 {}", path.display()),
+    );
+    let failures = if failures.is_empty() {
+        "没有逐项清理错误".to_string()
+    } else {
+        format!("清理失败：{}", failures.join("；"))
+    };
+    let omitted = if omitted == 0 {
+        String::new()
+    } else {
+        format!("；另省略 {omitted} 项")
+    };
+    let durability_error = durability_error
+        .map(|error| format!("；{error}"))
+        .unwrap_or_default();
+    format!(
+        "设置恢复候选容量清理不确定，已停止保存：{retained}；已清理 {removed} 项；{failures}{omitted}{durability_error}；原容量诊断：{capacity_error}"
+    )
+}
+
 fn next_ready_generation(
     candidates: &[RecoveryCandidate],
     marker: Option<&SettingsCommitMarker>,
@@ -668,32 +824,11 @@ where
 }
 
 fn validate_authoritative_primary_for_marker_repair(path: &Path) -> Result<(), String> {
-    let entry_metadata = std::fs::symlink_metadata(path)
-        .map_err(|error| format!("检查主设置目录项失败：{}（{}）", path.display(), error))?;
-    if !entry_metadata.file_type().is_file()
-        || entry_metadata.file_type().is_symlink()
-        || metadata_is_reparse_point(&entry_metadata)
-    {
-        return Err(format!("主设置不是安全普通文件：{}", path.display()));
+    match read_primary_settings_at(path) {
+        PrimarySettingsRead::Valid(_) => Ok(()),
+        PrimarySettingsRead::Missing => Err(format!("主设置不存在：{}", path.display())),
+        PrimarySettingsRead::Invalid(error) => Err(error),
     }
-
-    let mut options = OpenOptions::new();
-    options.read(true);
-    configure_recovery_open_no_follow(&mut options);
-    let mut file = options
-        .open(path)
-        .map_err(|error| format!("安全打开主设置失败：{}（{}）", path.display(), error))?;
-    let opened_metadata = file
-        .metadata()
-        .map_err(|error| format!("读取已打开主设置元数据失败：{}", error))?;
-    if !opened_metadata.file_type().is_file() || metadata_is_reparse_point(&opened_metadata) {
-        return Err(format!("已打开主设置不是安全普通文件：{}", path.display()));
-    }
-
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .map_err(|error| format!("读取主设置用于提交标记修复失败：{}", error))?;
-    parse_settings(path, &bytes).map(|_| ())
 }
 
 fn quarantine_bad_commit_marker<SyncParent>(
@@ -1011,15 +1146,12 @@ fn read_app_settings_at(path: &Path) -> Result<AppSettingsSnapshot, String> {
 }
 
 fn read_app_settings_at_with_diagnostics(path: &Path) -> Result<SettingsReadOutcome, String> {
-    match std::fs::read(path) {
-        Ok(bytes) => match parse_settings(path, &bytes) {
-            Ok(settings) => Ok(SettingsReadOutcome {
-                settings,
-                diagnostic: None,
-            }),
-            Err(primary_error) => recover_interrupted_settings(path, primary_error),
-        },
-        Err(error) if error.kind() == ErrorKind::NotFound => {
+    match read_primary_settings_at(path) {
+        PrimarySettingsRead::Valid(settings) => Ok(SettingsReadOutcome {
+            settings,
+            diagnostic: None,
+        }),
+        PrimarySettingsRead::Missing => {
             let candidates = interrupted_temp_candidates(path)?;
             if candidates.is_empty() && read_commit_marker(path)?.is_none() {
                 Ok(SettingsReadOutcome {
@@ -1034,7 +1166,187 @@ fn read_app_settings_at_with_diagnostics(path: &Path) -> Result<SettingsReadOutc
                 )
             }
         }
-        Err(error) => Err(format!("读取设置文件失败：{}（{}）", path.display(), error)),
+        PrimarySettingsRead::Invalid(primary_error) => {
+            recover_interrupted_settings(path, primary_error)
+        }
+    }
+}
+
+fn read_primary_settings_at(path: &Path) -> PrimarySettingsRead {
+    read_primary_settings_at_with_controls(path, || {}, metadata_is_reparse_point)
+}
+
+fn read_primary_settings_at_with_controls<AfterOpen, IsReparse>(
+    path: &Path,
+    after_open: AfterOpen,
+    is_reparse: IsReparse,
+) -> PrimarySettingsRead
+where
+    AfterOpen: FnOnce(),
+    IsReparse: Fn(&std::fs::Metadata) -> bool,
+{
+    let entry_metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return PrimarySettingsRead::Missing,
+        Err(error) => {
+            return PrimarySettingsRead::Invalid(format!(
+                "检查主设置目录项失败：{}（{}）",
+                path.display(),
+                error
+            ));
+        }
+    };
+    if is_reparse(&entry_metadata) {
+        return PrimarySettingsRead::Invalid(format!(
+            "主设置是 Windows reparse point：{}",
+            path.display()
+        ));
+    }
+    if !entry_metadata.file_type().is_file() || entry_metadata.file_type().is_symlink() {
+        return PrimarySettingsRead::Invalid(format!("主设置不是安全普通文件：{}", path.display()));
+    }
+    if entry_metadata.len() > RECOVERY_CANDIDATE_MAX_BYTES {
+        return PrimarySettingsRead::Invalid(format!(
+            "主设置大小超过上限：{} > {} bytes（{}）",
+            entry_metadata.len(),
+            RECOVERY_CANDIDATE_MAX_BYTES,
+            path.display()
+        ));
+    }
+
+    let mut options = OpenOptions::new();
+    options.read(true);
+    configure_recovery_open_no_follow(&mut options);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) => {
+            return PrimarySettingsRead::Invalid(format!(
+                "安全打开主设置失败：{}（{}）",
+                path.display(),
+                error
+            ));
+        }
+    };
+    let opened_metadata = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return PrimarySettingsRead::Invalid(format!(
+                "读取已打开主设置元数据失败：{}（{}）",
+                path.display(),
+                error
+            ));
+        }
+    };
+    if is_reparse(&opened_metadata) {
+        return PrimarySettingsRead::Invalid(format!(
+            "已打开主设置是 Windows reparse point：{}",
+            path.display()
+        ));
+    }
+    if !opened_metadata.file_type().is_file() {
+        return PrimarySettingsRead::Invalid(format!(
+            "已打开主设置不是安全普通文件：{}",
+            path.display()
+        ));
+    }
+    if opened_metadata.len() > RECOVERY_CANDIDATE_MAX_BYTES {
+        return PrimarySettingsRead::Invalid(format!(
+            "已打开主设置大小超过上限：{} > {} bytes（{}）",
+            opened_metadata.len(),
+            RECOVERY_CANDIDATE_MAX_BYTES,
+            path.display()
+        ));
+    }
+    if !primary_metadata_identity_matches(&entry_metadata, &opened_metadata) {
+        return PrimarySettingsRead::Invalid(format!(
+            "主设置身份在安全打开期间发生变化：{}",
+            path.display()
+        ));
+    }
+    if let Err(error) =
+        validate_primary_opened_path_identity(path, &file, &is_reparse, "安全打开期间")
+    {
+        return PrimarySettingsRead::Invalid(error);
+    }
+
+    after_open();
+
+    let mut bytes = Vec::new();
+    if let Err(error) = (&mut file)
+        .take(RECOVERY_CANDIDATE_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+    {
+        return PrimarySettingsRead::Invalid(format!(
+            "读取主设置失败：{}（{}）",
+            path.display(),
+            error
+        ));
+    }
+    if bytes.len() as u64 > RECOVERY_CANDIDATE_MAX_BYTES {
+        return PrimarySettingsRead::Invalid(format!(
+            "读取主设置超过大小上限：{} > {} bytes（{}）",
+            bytes.len(),
+            RECOVERY_CANDIDATE_MAX_BYTES,
+            path.display()
+        ));
+    }
+
+    let post_opened_metadata = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return PrimarySettingsRead::Invalid(format!(
+                "读取后重新检查已打开主设置失败：{}（{}）",
+                path.display(),
+                error
+            ));
+        }
+    };
+    if is_reparse(&post_opened_metadata) || !post_opened_metadata.file_type().is_file() {
+        return PrimarySettingsRead::Invalid(format!(
+            "读取后已打开主设置不是安全普通文件：{}",
+            path.display()
+        ));
+    }
+    if post_opened_metadata.len() > RECOVERY_CANDIDATE_MAX_BYTES {
+        return PrimarySettingsRead::Invalid(format!(
+            "读取后主设置大小超过上限：{} > {} bytes（{}）",
+            post_opened_metadata.len(),
+            RECOVERY_CANDIDATE_MAX_BYTES,
+            path.display()
+        ));
+    }
+    if !primary_metadata_identity_matches(&opened_metadata, &post_opened_metadata) {
+        return PrimarySettingsRead::Invalid(format!(
+            "已打开主设置身份在读取期间发生变化：{}",
+            path.display()
+        ));
+    }
+
+    if let Err(error) = validate_primary_opened_path_identity(path, &file, &is_reparse, "读取期间")
+    {
+        return PrimarySettingsRead::Invalid(error);
+    }
+
+    match parse_settings(path, &bytes) {
+        Ok(settings) => PrimarySettingsRead::Valid(settings),
+        Err(error) => PrimarySettingsRead::Invalid(error),
+    }
+}
+
+#[cfg(test)]
+fn read_primary_settings_at_for_test<AfterOpen, IsReparse>(
+    path: &Path,
+    after_open: AfterOpen,
+    is_reparse: IsReparse,
+) -> Result<AppSettingsSnapshot, String>
+where
+    AfterOpen: FnOnce(),
+    IsReparse: Fn(&std::fs::Metadata) -> bool,
+{
+    match read_primary_settings_at_with_controls(path, after_open, is_reparse) {
+        PrimarySettingsRead::Valid(settings) => Ok(settings),
+        PrimarySettingsRead::Missing => Err(format!("主设置不存在：{}", path.display())),
+        PrimarySettingsRead::Invalid(error) => Err(error),
     }
 }
 
@@ -1562,6 +1874,179 @@ fn metadata_is_reparse_point(metadata: &std::fs::Metadata) -> bool {
 #[cfg(not(windows))]
 fn metadata_is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
     false
+}
+
+fn validate_primary_opened_path_identity<IsReparse>(
+    path: &Path,
+    opened_file: &File,
+    is_reparse: &IsReparse,
+    phase: &str,
+) -> Result<(), String>
+where
+    IsReparse: Fn(&std::fs::Metadata) -> bool,
+{
+    let path_metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        format!(
+            "主设置身份在{phase}无法重新验证：{}（{}）",
+            path.display(),
+            error
+        )
+    })?;
+    if is_reparse(&path_metadata)
+        || !path_metadata.file_type().is_file()
+        || path_metadata.file_type().is_symlink()
+    {
+        return Err(format!(
+            "主设置身份在{phase}发生变化或变为非安全普通文件：{}",
+            path.display()
+        ));
+    }
+    if path_metadata.len() > RECOVERY_CANDIDATE_MAX_BYTES {
+        return Err(format!(
+            "主设置在{phase}超过大小上限：{} > {} bytes（{}）",
+            path_metadata.len(),
+            RECOVERY_CANDIDATE_MAX_BYTES,
+            path.display()
+        ));
+    }
+    let opened_metadata = opened_file.metadata().map_err(|error| {
+        format!(
+            "主设置身份在{phase}无法重新读取已打开文件元数据：{}（{}）",
+            path.display(),
+            error
+        )
+    })?;
+    if !primary_metadata_identity_matches(&opened_metadata, &path_metadata) {
+        return Err(format!("主设置身份在{phase}发生变化：{}", path.display()));
+    }
+    validate_windows_primary_handle_identity(path, opened_file, is_reparse, phase)
+}
+
+#[cfg(unix)]
+fn primary_metadata_identity_matches(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(windows)]
+fn primary_metadata_identity_matches(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    left.creation_time() == right.creation_time()
+        && left.last_write_time() == right.last_write_time()
+        && left.file_size() == right.file_size()
+        && left.file_attributes() == right.file_attributes()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn primary_metadata_identity_matches(
+    _left: &std::fs::Metadata,
+    _right: &std::fs::Metadata,
+) -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn validate_windows_primary_handle_identity<IsReparse>(
+    path: &Path,
+    opened_file: &File,
+    is_reparse: &IsReparse,
+    phase: &str,
+) -> Result<(), String>
+where
+    IsReparse: Fn(&std::fs::Metadata) -> bool,
+{
+    let mut options = OpenOptions::new();
+    options.read(true);
+    configure_recovery_open_no_follow(&mut options);
+    let current_file = options.open(path).map_err(|error| {
+        format!(
+            "主设置身份在{phase}无法通过非跟随句柄重新验证：{}（{}）",
+            path.display(),
+            error
+        )
+    })?;
+    let current_metadata = current_file.metadata().map_err(|error| {
+        format!(
+            "主设置身份在{phase}无法读取当前路径句柄元数据：{}（{}）",
+            path.display(),
+            error
+        )
+    })?;
+    if is_reparse(&current_metadata) || !current_metadata.file_type().is_file() {
+        return Err(format!(
+            "主设置身份在{phase}变为 Windows reparse point 或非普通文件：{}",
+            path.display()
+        ));
+    }
+    let opened_identity = windows_file_identity(opened_file)?;
+    let current_identity = windows_file_identity(&current_file)?;
+    if opened_identity != current_identity {
+        return Err(format!("主设置身份在{phase}发生变化：{}", path.display()));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn validate_windows_primary_handle_identity<IsReparse>(
+    _path: &Path,
+    _opened_file: &File,
+    _is_reparse: &IsReparse,
+    _phase: &str,
+) -> Result<(), String>
+where
+    IsReparse: Fn(&std::fs::Metadata) -> bool,
+{
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_file_identity(file: &File) -> Result<(u32, u64), String> {
+    use std::{ffi::c_void, mem::MaybeUninit, os::windows::io::AsRawHandle};
+
+    #[repr(C)]
+    struct FileTime {
+        low_date_time: u32,
+        high_date_time: u32,
+    }
+
+    #[repr(C)]
+    struct ByHandleFileInformation {
+        file_attributes: u32,
+        creation_time: FileTime,
+        last_access_time: FileTime,
+        last_write_time: FileTime,
+        volume_serial_number: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(
+            file: *mut c_void,
+            information: *mut ByHandleFileInformation,
+        ) -> i32;
+    }
+
+    let mut information = MaybeUninit::<ByHandleFileInformation>::uninit();
+    let result = unsafe {
+        GetFileInformationByHandle(file.as_raw_handle().cast(), information.as_mut_ptr())
+    };
+    if result == 0 {
+        return Err(format!(
+            "读取 Windows 主设置文件身份失败：{}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let information = unsafe { information.assume_init() };
+    let file_index =
+        (u64::from(information.file_index_high) << 32) | u64::from(information.file_index_low);
+    Ok((information.volume_serial_number, file_index))
 }
 
 fn discard_recovery_candidate(candidate: &Path) -> Result<(), String> {
@@ -2199,6 +2684,118 @@ mod tests {
     }
 
     #[test]
+    fn sixteen_failed_replacements_are_pruned_before_a_healthy_save() {
+        let root = TestSettingsRoot::new("sixteen-failed-replacements");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+        let candidates = accumulate_ready_candidates_after_replace_failures(
+            &path,
+            RECOVERY_TOTAL_CANDIDATE_LIMIT,
+        );
+        assert_eq!(candidates.len(), RECOVERY_TOTAL_CANDIDATE_LIMIT);
+
+        let pending_path = pending_candidate_path(&path);
+        assert!(pending_path.exists());
+        let in_progress = in_progress_temp_path(&path, 999, 7, 1);
+        let mut active_file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&in_progress)
+            .unwrap();
+        active_file.write_all(b"active-write").unwrap();
+        let sync_calls = Cell::new(0usize);
+
+        let saved = mutate_app_settings_at_with_hooks(
+            &path,
+            |_| {},
+            |_, _| {},
+            |parent| {
+                sync_calls.set(sync_calls.get() + 1);
+                sync_parent_directory(parent)
+            },
+            |settings| settings.custom_account_display_name = "healthy-save".into(),
+        )
+        .unwrap()
+        .settings;
+
+        assert_eq!(saved.custom_account_display_name, "healthy-save");
+        assert_eq!(
+            sync_calls.get(),
+            5,
+            "capacity cleanup plus ready, pending, primary, and committed must each sync"
+        );
+        assert_eq!(
+            read_app_settings_at(&path)
+                .unwrap()
+                .custom_account_display_name,
+            "healthy-save"
+        );
+        assert!(interrupted_temp_candidates(&path).unwrap().is_empty());
+        assert!(in_progress.exists());
+        active_file.write_all(b"-continues").unwrap();
+        assert_eq!(
+            std::fs::read(&in_progress).unwrap(),
+            b"active-write-continues"
+        );
+        assert!(matches!(
+            read_commit_marker(&path).unwrap(),
+            Some(SettingsCommitMarker::Committed { .. })
+        ));
+    }
+
+    #[test]
+    fn undeletable_superseded_candidates_fail_closed_with_bounded_diagnostics() {
+        let root = TestSettingsRoot::new("undeletable-superseded-capacity");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+        let candidates = accumulate_ready_candidates_after_replace_failures(
+            &path,
+            RECOVERY_TOTAL_CANDIDATE_LIMIT,
+        );
+        let pending_path = pending_candidate_path(&path);
+        let superseded: Vec<PathBuf> = candidates
+            .into_iter()
+            .filter(|candidate| candidate != &pending_path)
+            .collect();
+        assert_eq!(superseded.len(), RECOVERY_TOTAL_CANDIDATE_LIMIT - 1);
+        for candidate in &superseded {
+            std::fs::remove_file(candidate).unwrap();
+            std::fs::create_dir(candidate).unwrap();
+            std::fs::write(candidate.join("keep"), b"undeletable").unwrap();
+        }
+        let in_progress = in_progress_temp_path(&path, 1_000, 7, 2);
+        std::fs::write(&in_progress, b"active").unwrap();
+        let sync_calls = Cell::new(0usize);
+        let replacement_reached = Cell::new(false);
+
+        let error = mutate_app_settings_at_with_hooks(
+            &path,
+            |_| {},
+            |_, _| replacement_reached.set(true),
+            |parent| {
+                sync_calls.set(sync_calls.get() + 1);
+                sync_parent_directory(parent)
+            },
+            |settings| settings.custom_account_display_name = "must-not-save".into(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("容量清理不确定"));
+        assert!(error.contains(&pending_path.display().to_string()));
+        assert!(error.contains("另省略 7 项"));
+        assert!(error.len() < 8_192, "diagnostic must remain bounded");
+        assert!(pending_path.exists());
+        assert!(superseded.iter().all(|candidate| candidate.exists()));
+        assert!(in_progress.exists());
+        assert_eq!(sync_calls.get(), 1);
+        assert!(!replacement_reached.get());
+        assert!(read_app_settings_at(&path)
+            .unwrap()
+            .custom_account_display_name
+            .is_empty());
+    }
+
+    #[test]
     fn ready_directory_sync_failure_stops_before_primary_replacement_and_reports_ready_path() {
         let root = TestSettingsRoot::new("ready-sync-failure");
         let path = root.settings_path();
@@ -2406,6 +3003,112 @@ mod tests {
 
         assert_eq!(outcome.settings.custom_account_display_name, "primary");
         assert!(outcome.diagnostic.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn primary_symlink_is_never_authoritative_or_followed() {
+        use std::os::unix::fs::symlink;
+
+        let root = TestSettingsRoot::new("primary-symlink");
+        let path = root.settings_path();
+        let target = root.path.join("symlink-target.json");
+        write_fixture(
+            &target,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "must-not-follow".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        let target_before = std::fs::read(&target).unwrap();
+        symlink(&target, &path).unwrap();
+
+        let error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
+
+        assert!(error.contains("主设置不是安全普通文件"));
+        assert_eq!(std::fs::read(&target).unwrap(), target_before);
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn non_regular_primary_enters_fail_closed_recovery() {
+        let root = TestSettingsRoot::new("primary-non-regular");
+        let path = root.settings_path();
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("keep"), b"untouched").unwrap();
+
+        let error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
+
+        assert!(error.contains("主设置不是安全普通文件"));
+        assert_eq!(std::fs::read(path.join("keep")).unwrap(), b"untouched");
+    }
+
+    #[test]
+    fn oversized_primary_is_never_accepted_as_authoritative() {
+        let root = TestSettingsRoot::new("primary-oversized");
+        let path = root.settings_path();
+        let settings = AppSettingsSnapshot {
+            custom_account_display_name: "valid-prefix-must-not-win".into(),
+            ..AppSettingsSnapshot::default()
+        };
+        let mut oversized = serde_json::to_vec_pretty(&settings).unwrap();
+        oversized.resize(RECOVERY_CANDIDATE_MAX_BYTES as usize + 1, b' ');
+        std::fs::write(&path, oversized).unwrap();
+
+        let error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
+
+        assert!(error.contains("主设置大小超过上限"));
+    }
+
+    #[test]
+    fn reparse_classified_primary_is_rejected() {
+        let root = TestSettingsRoot::new("primary-reparse-classified");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+
+        let error = read_primary_settings_at_for_test(&path, || {}, |_| true).unwrap_err();
+
+        assert!(error.contains("reparse"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn primary_identity_swap_after_open_is_rejected() {
+        let root = TestSettingsRoot::new("primary-identity-swap");
+        let path = root.settings_path();
+        write_fixture(
+            &path,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "opened-primary".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        let replacement = root.path.join("replacement.json");
+        write_fixture(
+            &replacement,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "replacement-primary".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+
+        let error = read_primary_settings_at_for_test(
+            &path,
+            || replace_settings_file(&replacement, &path).unwrap(),
+            |_| false,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("身份在读取期间发生变化"));
+        assert_eq!(
+            serde_json::from_slice::<AppSettingsSnapshot>(&std::fs::read(&path).unwrap())
+                .unwrap()
+                .custom_account_display_name,
+            "replacement-primary"
+        );
     }
 
     #[test]
@@ -3017,6 +3720,43 @@ mod tests {
         std::fs::remove_dir(path).unwrap();
         write_fixture(path, &AppSettingsSnapshot::default());
         ready
+    }
+
+    fn accumulate_ready_candidates_after_replace_failures(
+        path: &Path,
+        failure_count: usize,
+    ) -> Vec<PathBuf> {
+        for index in 0..failure_count {
+            let result = mutate_app_settings_at_with_hooks(
+                path,
+                |_| {},
+                |_, destination| {
+                    std::fs::remove_file(destination).unwrap();
+                    std::fs::create_dir(destination).unwrap();
+                },
+                sync_parent_directory,
+                |settings| settings.custom_account_display_name = format!("failed-save-{index}"),
+            );
+            let error = result.unwrap_err();
+            assert!(error.contains("原子替换设置文件失败"));
+            std::fs::remove_dir(path).unwrap();
+            write_fixture(path, &AppSettingsSnapshot::default());
+        }
+
+        interrupted_temp_candidates(path)
+            .unwrap()
+            .into_iter()
+            .map(|candidate| candidate.path)
+            .collect()
+    }
+
+    fn pending_candidate_path(settings_path: &Path) -> PathBuf {
+        let Some(SettingsCommitMarker::Pending { candidate_name, .. }) =
+            read_commit_marker(settings_path).unwrap()
+        else {
+            panic!("expected pending commit marker");
+        };
+        settings_path.parent().unwrap().join(candidate_name)
     }
 
     fn write_fixture(path: &Path, settings: &AppSettingsSnapshot) {
