@@ -1,5 +1,30 @@
 import Foundation
 
+final class ProviderSyncPreparedSessionMutation {
+    let binding: ProviderSyncSessionMutationBinding
+    let file: ProviderSyncPinnedFile
+    let source: ProviderSyncRegularFileSnapshot
+    let replacementData: Data?
+    var currentIdentity: ProviderSyncFileIdentity
+
+    init(
+        binding: ProviderSyncSessionMutationBinding,
+        file: ProviderSyncPinnedFile,
+        source: ProviderSyncRegularFileSnapshot,
+        replacementData: Data?
+    ) {
+        self.binding = binding
+        self.file = file
+        self.source = source
+        self.replacementData = replacementData
+        currentIdentity = source.identity
+    }
+
+    var expectedData: Data {
+        replacementData ?? source.data
+    }
+}
+
 extension ProviderSyncEngine {
     func configProvider(codexHome: URL) throws -> String? {
         let config = codexHome.appendingPathComponent("config.toml")
@@ -82,18 +107,80 @@ extension ProviderSyncEngine {
         }
     }
 
-    func rewriteSessionMetaProvider(file: URL, targetProvider: String) throws -> Bool {
-        let originalModificationDate = modificationDate(of: file)
-        let data = try Data(contentsOf: file)
-        guard let parts = firstLineParts(in: data), !parts.line.isEmpty else { return false }
+    func prepareSessionMutations(
+        homeDirectory: ProviderSyncHomeDirectory,
+        bindings: [ProviderSyncSessionMutationBinding],
+        targetProvider: String
+    ) throws -> [ProviderSyncPreparedSessionMutation] {
+        try bindings.map { binding in
+            let file = try homeDirectory.pinFile(
+                relativePath: binding.relativePath,
+                createParents: false
+            )
+            let source = try homeDirectory.readRegularFile(
+                file,
+                expectedIdentity: binding.identity,
+                requireSingleLink: true
+            )
+            guard providerSyncSHA256Hex(source.data) == binding.sha256 else {
+                throw providerSyncDescriptorError(
+                    "session 内容与已发布备份不一致：\(file.displayURL.path)"
+                )
+            }
+            return ProviderSyncPreparedSessionMutation(
+                binding: binding,
+                file: file,
+                source: source,
+                replacementData: try rewrittenSessionData(
+                    source.data,
+                    targetProvider: targetProvider
+                )
+            )
+        }
+    }
+
+    func applyPreparedSessionMutation(
+        _ mutation: ProviderSyncPreparedSessionMutation,
+        homeDirectory: ProviderSyncHomeDirectory
+    ) throws -> Bool {
+        guard let replacementData = mutation.replacementData else { return false }
+        mutation.currentIdentity = try homeDirectory.replaceRegularFile(
+            mutation.file,
+            expectedIdentity: mutation.currentIdentity,
+            data: replacementData,
+            preserving: mutation.source.metadata
+        )
+        return true
+    }
+
+    func validatePreparedSessionMutations(
+        _ mutations: [ProviderSyncPreparedSessionMutation],
+        homeDirectory: ProviderSyncHomeDirectory
+    ) throws {
+        for mutation in mutations {
+            let snapshot = try homeDirectory.readRegularFile(
+                mutation.file,
+                expectedIdentity: mutation.currentIdentity,
+                requireSingleLink: true
+            )
+            guard providerSyncSHA256Hex(snapshot.data) == providerSyncSHA256Hex(mutation.expectedData) else {
+                throw providerSyncDescriptorError(
+                    "session 写后内容发生变化：\(mutation.file.displayURL.path)"
+                )
+            }
+        }
+    }
+
+    private func rewrittenSessionData(_ data: Data, targetProvider: String) throws -> Data? {
+        guard let parts = firstLineParts(in: data), !parts.line.isEmpty else { return nil }
 
         guard var object = try JSONSerialization.jsonObject(with: parts.line, options: []) as? [String: Any],
               object["type"] as? String == "session_meta",
               var payload = object["payload"] as? [String: Any] else {
-            return false
+            return nil
         }
         let currentProvider = payload["model_provider"] as? String
-        guard currentProvider != targetProvider else { return false }
+        guard currentProvider != targetProvider else { return nil }
 
         payload["model_provider"] = targetProvider
         object["payload"] = payload
@@ -102,9 +189,7 @@ extension ProviderSyncEngine {
         output.append(updatedLine)
         output.append(parts.separator)
         output.append(parts.rest)
-        try output.write(to: file, options: [.atomic])
-        restoreModificationDate(originalModificationDate, for: file)
-        return true
+        return output
     }
 
     func firstLineParts(in data: Data) -> (line: Data, separator: Data, rest: Data)? {

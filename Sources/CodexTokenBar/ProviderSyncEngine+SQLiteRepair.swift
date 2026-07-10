@@ -102,14 +102,38 @@ extension ProviderSyncEngine {
         }
     }
 
-    func repairSQLiteThreadTimestamps(codexHome: URL, sessionFiles: [URL]) throws -> Int {
-        var timestampsByID: [String: ProviderSyncSessionTimestamp] = [:]
-        for timestamp in try sessionFiles.compactMap({ try readSessionTimestamp(file: $0) }) {
-            if let current = timestampsByID[timestamp.id],
-               current.updatedAtMilliseconds >= timestamp.updatedAtMilliseconds {
+    func repairSQLiteThreadTimestamps(
+        codexHome: URL,
+        sessionMutations: [ProviderSyncPreparedSessionMutation],
+        homeDirectory: ProviderSyncHomeDirectory
+    ) throws -> Int {
+        var timestampsByID: [String: ProviderSyncBoundSessionTimestamp] = [:]
+        for mutation in sessionMutations {
+            let snapshot = try homeDirectory.readRegularFile(
+                mutation.file,
+                expectedIdentity: mutation.currentIdentity,
+                requireSingleLink: true
+            )
+            guard providerSyncSHA256Hex(snapshot.data) == providerSyncSHA256Hex(mutation.expectedData) else {
+                throw providerSyncDescriptorError(
+                    "session 时间戳读取前内容发生变化：\(mutation.file.displayURL.path)"
+                )
+            }
+            guard let timestamp = try readSessionTimestamp(
+                data: snapshot.data,
+                fileURL: mutation.file.displayURL
+            ) else {
                 continue
             }
-            timestampsByID[timestamp.id] = timestamp
+            let boundTimestamp = ProviderSyncBoundSessionTimestamp(
+                timestamp: timestamp,
+                mutation: mutation
+            )
+            if let current = timestampsByID[timestamp.id],
+               current.timestamp.updatedAtMilliseconds >= timestamp.updatedAtMilliseconds {
+                continue
+            }
+            timestampsByID[timestamp.id] = boundTimestamp
         }
         guard !timestampsByID.isEmpty else { return 0 }
 
@@ -131,8 +155,8 @@ extension ProviderSyncEngine {
             var repairTargets: [ProviderSyncSessionTimestamp] = []
             for (second, group) in collisionGroups {
                 let sorted = group.sorted { lhs, rhs in
-                    let lhsActual = timestampsByID[lhs.id]?.updatedAtMilliseconds ?? lhs.updatedAtMilliseconds
-                    let rhsActual = timestampsByID[rhs.id]?.updatedAtMilliseconds ?? rhs.updatedAtMilliseconds
+                    let lhsActual = timestampsByID[lhs.id]?.timestamp.updatedAtMilliseconds ?? lhs.updatedAtMilliseconds
+                    let rhsActual = timestampsByID[rhs.id]?.timestamp.updatedAtMilliseconds ?? rhs.updatedAtMilliseconds
                     if lhsActual != rhsActual {
                         return lhsActual > rhsActual
                     }
@@ -140,12 +164,12 @@ extension ProviderSyncEngine {
                 }
 
                 for (offset, row) in sorted.enumerated() {
-                    guard let timestamp = timestampsByID[row.id] else { continue }
+                    guard let boundTimestamp = timestampsByID[row.id] else { continue }
                     let target = (second - Int64(offset)) * 1_000
                     repairTargets.append(ProviderSyncSessionTimestamp(
                         id: row.id,
                         updatedAtMilliseconds: target,
-                        fileURL: timestamp.fileURL
+                        fileURL: boundTimestamp.timestamp.fileURL
                     ))
                 }
             }
@@ -166,7 +190,8 @@ extension ProviderSyncEngine {
                 sessionTimestamps: Array(timestampsByID.values),
                 rowsByID: rowsByID,
                 repairTargets: repairTargets,
-                collisionSeconds: Set(collisionGroups.keys)
+                collisionSeconds: Set(collisionGroups.keys),
+                homeDirectory: homeDirectory
             )
             return changed
         }

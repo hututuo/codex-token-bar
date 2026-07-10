@@ -916,6 +916,349 @@ final class ProviderSyncEngineTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: sentinel, encoding: .utf8), "sentinel-before\n")
     }
 
+    func testCurrentManifestRejectsRegularArchiveSwapBetweenLstatAndOpen() throws {
+        let fixture = try makeFixture()
+        let setupEngine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+        let synced = try setupEngine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )
+        let backup = URL(fileURLWithPath: try XCTUnwrap(synced.lastBackupPath))
+        let archive = backup.appendingPathComponent("session-jsonl.before.tar")
+        let swappedArchive = fixture.backupRoot.appendingPathComponent("current-swapped.tar")
+        try writeUSTAR(entries: [
+            TestTarEntry(
+                name: "sessions/2026/07/06/thread-a.jsonl",
+                data: Data("current manifest swapped bytes\n".utf8)
+            )
+        ], to: swappedArchive)
+        let destinationBefore = try Data(contentsOf: fixture.activeSession)
+        var didSwap = false
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            regularFileWillOpen: { source in
+                guard !didSwap, source.standardizedFileURL.path == archive.standardizedFileURL.path else { return }
+                didSwap = true
+                try FileManager.default.removeItem(at: archive)
+                try FileManager.default.copyItem(at: swappedArchive, to: archive)
+            }
+        )
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backup.path)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("身份变化"))
+        }
+        XCTAssertTrue(didSwap)
+        XCTAssertEqual(try Data(contentsOf: fixture.activeSession), destinationBefore)
+    }
+
+    func testLegacyManifestRejectsRegularArchiveSwapBetweenLstatAndOpen() throws {
+        let fixture = try makeFixture()
+        let archivedData = try Data(contentsOf: fixture.activeSession)
+        let backup = try makeLegacyBackup(
+            fixture: fixture,
+            entries: [TestTarEntry(name: "sessions/2026/07/06/thread-a.jsonl", data: archivedData)],
+            declaredCount: 1
+        )
+        try writeSession(id: "thread-a", provider: "current", to: fixture.activeSession)
+        let destinationBefore = try Data(contentsOf: fixture.activeSession)
+        let archive = backup.appendingPathComponent("session-jsonl.before.tar")
+        let swappedArchive = fixture.backupRoot.appendingPathComponent("legacy-swapped.tar")
+        let swappedData = try sessionData(id: "thread-a", provider: "swapped-legacy")
+        try writeUSTAR(entries: [
+            TestTarEntry(name: "sessions/2026/07/06/thread-a.jsonl", data: swappedData)
+        ], to: swappedArchive)
+        var didSwap = false
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            regularFileWillOpen: { source in
+                guard !didSwap, source.standardizedFileURL.path == archive.standardizedFileURL.path else { return }
+                didSwap = true
+                try FileManager.default.removeItem(at: archive)
+                try FileManager.default.copyItem(at: swappedArchive, to: archive)
+            }
+        )
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backup.path)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("身份变化"))
+        }
+        XCTAssertTrue(didSwap)
+        XCTAssertEqual(try Data(contentsOf: fixture.activeSession), destinationBefore)
+    }
+
+    func testSyncRejectsPostManifestSessionAncestorRetargetWithoutOutsideMutation() throws {
+        let fixture = try makeFixture()
+        let outsideBefore = try sessionData(id: "thread-a", provider: "outside-before")
+        var retarget: ProviderSyncAncestorRetarget?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            sessionMutationsWillBegin: {
+                retarget = try self.retargetActiveSessionAncestor(
+                    fixture,
+                    outsideDestinationData: outsideBefore
+                )
+            }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        ))
+        let changedTree = try XCTUnwrap(retarget)
+        XCTAssertEqual(try Data(contentsOf: changedTree.outsideDestination), outsideBefore)
+        XCTAssertEqual(try String(contentsOf: changedTree.outsideSentinel, encoding: .utf8), "outside-sentinel-before\n")
+        XCTAssertEqual(try manifestFiles(in: fixture.backupRoot).count, 1)
+    }
+
+    func testSyncRejectsPostManifestRegularSessionReplacementWithoutMutation() throws {
+        let fixture = try makeFixture()
+        let replacementData = try Data(contentsOf: fixture.activeSession)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            sessionMutationsWillBegin: {
+                let replacement = fixture.activeSession.deletingLastPathComponent()
+                    .appendingPathComponent("replacement-\(UUID().uuidString).jsonl")
+                try replacementData.write(to: replacement)
+                try FileManager.default.removeItem(at: fixture.activeSession)
+                try FileManager.default.moveItem(at: replacement, to: fixture.activeSession)
+            }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        ))
+        XCTAssertEqual(try Data(contentsOf: fixture.activeSession), replacementData)
+        XCTAssertEqual(try manifestFiles(in: fixture.backupRoot).count, 1)
+    }
+
+    func testPostRewriteAncestorRetargetDoesNotMutateOutsideDuringTimestampRepair() throws {
+        let fixture = try makeFixture()
+        let sessionParent = fixture.activeSession.deletingLastPathComponent()
+        let additionalIDs = ["thread-b", "thread-c", "thread-d"]
+        for id in additionalIDs {
+            try writeSession(
+                id: id,
+                provider: "anthropic",
+                to: sessionParent.appendingPathComponent("\(id).jsonl")
+            )
+        }
+        try seedTimestampCollisionRows(at: fixture.codexHome, ids: additionalIDs)
+
+        let outsideBefore = try sessionData(id: "thread-a", provider: "outside-before")
+        let outsideModificationDate = Date(timeIntervalSince1970: 946_684_800.125)
+        var retarget: ProviderSyncAncestorRetarget?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            sessionMutationsDidApply: {
+                let changedTree = try self.retargetActiveSessionAncestor(
+                    fixture,
+                    outsideDestinationData: outsideBefore
+                )
+                let outsideParent = changedTree.outsideDestination.deletingLastPathComponent()
+                for id in additionalIDs {
+                    try self.writeSession(
+                        id: id,
+                        provider: "outside-before",
+                        to: outsideParent.appendingPathComponent("\(id).jsonl")
+                    )
+                }
+                try FileManager.default.setAttributes(
+                    [.modificationDate: outsideModificationDate],
+                    ofItemAtPath: changedTree.outsideDestination.path
+                )
+                retarget = changedTree
+            }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        ))
+        let changedTree = try XCTUnwrap(retarget)
+        XCTAssertEqual(try Data(contentsOf: changedTree.outsideDestination), outsideBefore)
+        let attributes = try FileManager.default.attributesOfItem(atPath: changedTree.outsideDestination.path)
+        let actualModificationDate = try XCTUnwrap(attributes[.modificationDate] as? Date)
+        XCTAssertEqual(
+            actualModificationDate.timeIntervalSince1970,
+            outsideModificationDate.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+    }
+
+    func testDescriptorBoundTimestampRepairPreservesNormalCollisionRepair() throws {
+        let fixture = try makeFixture()
+        let sessionParent = fixture.activeSession.deletingLastPathComponent()
+        let additionalIDs = ["thread-b", "thread-c", "thread-d"]
+        for id in additionalIDs {
+            try writeSession(
+                id: id,
+                provider: "anthropic",
+                to: sessionParent.appendingPathComponent("\(id).jsonl")
+            )
+        }
+        try seedTimestampCollisionRows(at: fixture.codexHome, ids: additionalIDs)
+        for id in ["thread-a"] + additionalIDs {
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: 946_684_800.125)],
+                ofItemAtPath: sessionParent.appendingPathComponent("\(id).jsonl").path
+            )
+        }
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+
+        _ = try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: fixture.activeSession.path)
+        let modificationDate = try XCTUnwrap(attributes[.modificationDate] as? Date)
+        XCTAssertEqual(modificationDate.timeIntervalSince1970, 1_783_468_800, accuracy: 0.001)
+        XCTAssertEqual(try readSessionProvider(at: fixture.activeSession), "openai")
+    }
+
+    func testRestoreApplyAncestorRetargetKeepsOutsideAndJournalOriginal() throws {
+        let fixture = try makeFixture()
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        let outsideBefore = try sessionData(id: "thread-a", provider: "outside-apply")
+        var retarget: ProviderSyncAncestorRetarget?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            restoreWillApply: { _, destination in
+                guard retarget == nil, self.isActiveSessionDestination(destination) else { return }
+                retarget = try self.retargetActiveSessionAncestor(
+                    fixture,
+                    outsideDestinationData: outsideBefore
+                )
+            }
+        )
+
+        try assertRetargetedRestorePreservesOutsideAndJournal(
+            fixture: fixture,
+            backupPath: backupPath,
+            outsideBefore: outsideBefore,
+            retarget: { retarget }
+        ) {
+            try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath)
+        }
+    }
+
+    func testRestoreAppliedVerificationAncestorRetargetKeepsOutsideAndJournalOriginal() throws {
+        let fixture = try makeFixture()
+        let backupSessionData = try Data(contentsOf: fixture.activeSession)
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        var retarget: ProviderSyncAncestorRetarget?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            restoreWillVerifyApplied: { _, destination in
+                guard retarget == nil, self.isActiveSessionDestination(destination) else { return }
+                retarget = try self.retargetActiveSessionAncestor(
+                    fixture,
+                    outsideDestinationData: backupSessionData
+                )
+            }
+        )
+
+        try assertRetargetedRestorePreservesOutsideAndJournal(
+            fixture: fixture,
+            backupPath: backupPath,
+            outsideBefore: backupSessionData,
+            retarget: { retarget }
+        ) {
+            try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath)
+        }
+    }
+
+    func testRestoreCompensationAncestorRetargetKeepsOutsideAndJournalOriginal() throws {
+        let fixture = try makeFixture()
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        let outsideBefore = try sessionData(id: "thread-a", provider: "outside-compensate")
+        var retarget: ProviderSyncAncestorRetarget?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            reportWillBuild: {
+                throw NSError(
+                    domain: "ProviderSyncEngineTests",
+                    code: 913,
+                    userInfo: [NSLocalizedDescriptionKey: "injected report failure before compensation"]
+                )
+            },
+            restoreWillCompensate: { _, destination in
+                guard retarget == nil, self.isActiveSessionDestination(destination) else { return }
+                retarget = try self.retargetActiveSessionAncestor(
+                    fixture,
+                    outsideDestinationData: outsideBefore
+                )
+            }
+        )
+
+        try assertRetargetedRestorePreservesOutsideAndJournal(
+            fixture: fixture,
+            backupPath: backupPath,
+            outsideBefore: outsideBefore,
+            retarget: { retarget }
+        ) {
+            try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath)
+        }
+    }
+
+    func testRestoreCompensatedVerificationAncestorRetargetKeepsOutsideAndJournalOriginal() throws {
+        let fixture = try makeFixture()
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        let preRollbackData = try Data(contentsOf: fixture.activeSession)
+        var retarget: ProviderSyncAncestorRetarget?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            reportWillBuild: {
+                throw NSError(
+                    domain: "ProviderSyncEngineTests",
+                    code: 914,
+                    userInfo: [NSLocalizedDescriptionKey: "injected report failure before compensated verification"]
+                )
+            },
+            restoreWillVerifyCompensated: { _, destination in
+                guard retarget == nil, self.isActiveSessionDestination(destination) else { return }
+                retarget = try self.retargetActiveSessionAncestor(
+                    fixture,
+                    outsideDestinationData: preRollbackData
+                )
+            }
+        )
+
+        try assertRetargetedRestorePreservesOutsideAndJournal(
+            fixture: fixture,
+            backupPath: backupPath,
+            outsideBefore: preRollbackData,
+            retarget: { retarget }
+        ) {
+            try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath)
+        }
+    }
+
     func testRollbackPostRestoreReportFailurePreservesPreRollbackDestinationBytesAndAbsence() throws {
         let fixture = try makeFixture()
         let setupEngine = ProviderSyncEngine(
@@ -1075,6 +1418,72 @@ final class ProviderSyncEngineTests: XCTestCase {
         let journal = try XCTUnwrap(transactionRoots(in: fixture.codexHome).first)
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: journal.path).isEmpty)
         XCTAssertTrue(message.contains(journal.path))
+    }
+
+    private func assertRetargetedRestorePreservesOutsideAndJournal(
+        fixture: ProviderSyncFixture,
+        backupPath: String,
+        outsideBefore: Data,
+        retarget: () -> ProviderSyncAncestorRetarget?,
+        operation: () throws -> ProviderSyncSnapshot
+    ) throws {
+        var message = ""
+        XCTAssertThrowsError(try operation()) { error in
+            message = error.localizedDescription
+        }
+        let changedTree = try XCTUnwrap(retarget(), "backup: \(backupPath)")
+        XCTAssertEqual(try Data(contentsOf: changedTree.outsideDestination), outsideBefore)
+        XCTAssertEqual(
+            try String(contentsOf: changedTree.outsideSentinel, encoding: .utf8),
+            "outside-sentinel-before\n"
+        )
+        let journal = try XCTUnwrap(transactionRoots(in: fixture.codexHome).first)
+        XCTAssertTrue(message.contains(journal.path))
+        XCTAssertFalse(try journalOriginalFiles(in: journal).isEmpty)
+    }
+
+    private func retargetActiveSessionAncestor(
+        _ fixture: ProviderSyncFixture,
+        outsideDestinationData: Data
+    ) throws -> ProviderSyncAncestorRetarget {
+        let ancestor = fixture.activeSession
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let detachedAncestor = ancestor.deletingLastPathComponent()
+            .appendingPathComponent("07-detached-\(UUID().uuidString)", isDirectory: true)
+        let outsideRoot = fixture.codexHome.deletingLastPathComponent()
+            .appendingPathComponent("outside-session-\(UUID().uuidString)", isDirectory: true)
+        let outsideParent = outsideRoot.appendingPathComponent("06", isDirectory: true)
+        try FileManager.default.createDirectory(at: outsideParent, withIntermediateDirectories: true)
+        let outsideDestination = outsideParent.appendingPathComponent("thread-a.jsonl")
+        try outsideDestinationData.write(to: outsideDestination)
+        let outsideSentinel = outsideRoot.appendingPathComponent("sentinel.txt")
+        try "outside-sentinel-before\n".write(to: outsideSentinel, atomically: true, encoding: .utf8)
+        try FileManager.default.moveItem(at: ancestor, to: detachedAncestor)
+        try FileManager.default.createSymbolicLink(at: ancestor, withDestinationURL: outsideRoot)
+        return ProviderSyncAncestorRetarget(
+            ancestor: ancestor,
+            detachedAncestor: detachedAncestor,
+            outsideDestination: outsideDestination,
+            outsideSentinel: outsideSentinel
+        )
+    }
+
+    private func isActiveSessionDestination(_ destination: URL) -> Bool {
+        destination.path.hasSuffix("/sessions/2026/07/06/thread-a.jsonl")
+    }
+
+    private func journalOriginalFiles(in journal: URL) throws -> [URL] {
+        let originals = journal.appendingPathComponent("originals", isDirectory: true)
+        guard let enumerator = FileManager.default.enumerator(
+            at: originals,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else {
+            return []
+        }
+        return enumerator.compactMap { $0 as? URL }.filter { url in
+            (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
     }
 
     private func createSyncedBackupAndSeedRollbackDestination(_ fixture: ProviderSyncFixture) throws -> String {
@@ -1337,7 +1746,7 @@ final class ProviderSyncEngineTests: XCTestCase {
         )
     }
 
-    private func writeSession(id: String, provider: String, to file: URL) throws {
+    private func sessionData(id: String, provider: String) throws -> Data {
         let lines = [
             encodeLine([
                 "timestamp": "2026-07-06T01:00:00.000Z",
@@ -1356,7 +1765,11 @@ final class ProviderSyncEngineTests: XCTestCase {
                 ]
             ])
         ]
-        try lines.joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+        return Data(lines.joined(separator: "\n").appending("\n").utf8)
+    }
+
+    private func writeSession(id: String, provider: String, to file: URL) throws {
+        try sessionData(id: id, provider: provider).write(to: file, options: .atomic)
     }
 
     private func seedStateDatabase(at codexHome: URL) throws {
@@ -1398,6 +1811,34 @@ final class ProviderSyncEngineTests: XCTestCase {
                 .int64(1_783_468_800_000)
             ]
         )
+    }
+
+    private func seedTimestampCollisionRows(at codexHome: URL, ids: [String]) throws {
+        let driver = SQLiteDatabaseDriver(url: codexHome.appendingPathComponent("state_5.sqlite"))
+        for id in ids {
+            try driver.execute(
+                """
+                INSERT INTO threads (
+                    id, title, first_user_message, preview, source, cwd, archived,
+                    thread_source, model_provider, updated_at, updated_at_ms
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                bindings: [
+                    .text(id),
+                    .text(id),
+                    .text("first"),
+                    .text("preview"),
+                    .text("vscode"),
+                    .text("/tmp/workspace"),
+                    .int(0),
+                    .text("user"),
+                    .text("anthropic"),
+                    .int64(1_783_468_800),
+                    .int64(1_783_468_800_000)
+                ]
+            )
+        }
     }
 
     private func readSessionProvider(at file: URL) throws -> String? {
@@ -1491,6 +1932,13 @@ private struct ProviderSyncFixture {
     let unrelatedSessionText: String
     let sessionIndex: URL
     let originalSessionIndexText: String
+}
+
+private struct ProviderSyncAncestorRetarget {
+    let ancestor: URL
+    let detachedAncestor: URL
+    let outsideDestination: URL
+    let outsideSentinel: URL
 }
 
 private struct ProviderSyncDisposableState: Equatable {

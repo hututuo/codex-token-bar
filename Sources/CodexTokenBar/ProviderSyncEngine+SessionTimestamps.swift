@@ -1,8 +1,15 @@
 import Foundation
 
+struct ProviderSyncBoundSessionTimestamp {
+    let timestamp: ProviderSyncSessionTimestamp
+    let mutation: ProviderSyncPreparedSessionMutation
+}
+
 extension ProviderSyncEngine {
-    func readSessionTimestamp(file: URL) throws -> ProviderSyncSessionTimestamp? {
-        let text = try String(contentsOf: file, encoding: .utf8)
+    func readSessionTimestamp(data: Data, fileURL: URL) throws -> ProviderSyncSessionTimestamp? {
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw providerSyncDescriptorError("session 不是 UTF-8：\(fileURL.path)")
+        }
         var lines = text.split(separator: "\n", omittingEmptySubsequences: true).makeIterator()
         guard let firstLine = lines.next(),
               let firstData = String(firstLine).data(using: .utf8),
@@ -24,7 +31,9 @@ extension ProviderSyncEngine {
             latest = max(latest, timestamp)
         }
 
-        return latest > 0 ? ProviderSyncSessionTimestamp(id: id, updatedAtMilliseconds: latest, fileURL: file) : nil
+        return latest > 0
+            ? ProviderSyncSessionTimestamp(id: id, updatedAtMilliseconds: latest, fileURL: fileURL)
+            : nil
     }
 
     func readSQLiteThreadTimestampRows(
@@ -48,18 +57,29 @@ extension ProviderSyncEngine {
     }
 
     func repairSessionFileModificationDates(
-        sessionTimestamps: [ProviderSyncSessionTimestamp],
+        sessionTimestamps: [ProviderSyncBoundSessionTimestamp],
         rowsByID: [String: ProviderSyncThreadTimestampRow],
         repairTargets: [ProviderSyncSessionTimestamp],
-        collisionSeconds: Set<Int64>
+        collisionSeconds: Set<Int64>,
+        homeDirectory: ProviderSyncHomeDirectory
     ) throws -> Int {
         let targetByID = Dictionary(uniqueKeysWithValues: repairTargets.map { ($0.id, $0.updatedAtMilliseconds) })
         var changed = 0
-        for timestamp in sessionTimestamps {
-            let attributes = try fileManager.attributesOfItem(atPath: timestamp.fileURL.path)
-            guard let modificationDate = attributes[.modificationDate] as? Date else { continue }
-
-            let currentMilliseconds = Int64(modificationDate.timeIntervalSince1970 * 1_000)
+        for boundTimestamp in sessionTimestamps {
+            let timestamp = boundTimestamp.timestamp
+            let mutation = boundTimestamp.mutation
+            let snapshot = try homeDirectory.readRegularFile(
+                mutation.file,
+                expectedIdentity: mutation.currentIdentity,
+                requireSingleLink: true
+            )
+            guard providerSyncSHA256Hex(snapshot.data) == providerSyncSHA256Hex(mutation.expectedData) else {
+                throw providerSyncDescriptorError(
+                    "session 时间修复前内容发生变化：\(mutation.file.displayURL.path)"
+                )
+            }
+            let currentMilliseconds = Int64(snapshot.metadata.st_mtimespec.tv_sec) * 1_000
+                + Int64(snapshot.metadata.st_mtimespec.tv_nsec) / 1_000_000
             let currentSecond = currentMilliseconds / 1_000
             var targetMilliseconds = targetByID[timestamp.id]
             if targetMilliseconds == nil,
@@ -73,9 +93,10 @@ extension ProviderSyncEngine {
                 continue
             }
 
-            try fileManager.setAttributes(
-                [.modificationDate: Date(timeIntervalSince1970: Double(targetMilliseconds) / 1_000)],
-                ofItemAtPath: timestamp.fileURL.path
+            try homeDirectory.setModificationTime(
+                mutation.file,
+                expectedIdentity: mutation.currentIdentity,
+                milliseconds: targetMilliseconds
             )
             changed += 1
         }

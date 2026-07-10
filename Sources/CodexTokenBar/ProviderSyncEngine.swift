@@ -91,11 +91,16 @@ final class ProviderSyncEngine {
     private let mutationLeaseDidAcquire: (@Sendable () -> Void)?
     private let reportWillBuild: (() throws -> Void)?
     let restoreWillApply: ((Int, URL) throws -> Void)?
+    let restoreWillVerifyApplied: ((Int, URL) throws -> Void)?
     let restoreWillCompensate: ((Int, URL) throws -> Void)?
+    let restoreWillVerifyCompensated: ((Int, URL) throws -> Void)?
     let sessionArchiveDidList: (() throws -> Void)?
+    let regularFileWillOpen: ((URL) throws -> Void)?
     let sessionTarWillRun: (() throws -> Void)?
     let sessionTarStageWillRun: ((URL) throws -> Void)?
     let sessionTarDidRun: ((URL) throws -> Void)?
+    let sessionMutationsWillBegin: (() throws -> Void)?
+    let sessionMutationsDidApply: (() throws -> Void)?
 
     init(
         fileManager: FileManager = .default,
@@ -104,11 +109,16 @@ final class ProviderSyncEngine {
         mutationLeaseDidAcquire: (@Sendable () -> Void)? = nil,
         reportWillBuild: (() throws -> Void)? = nil,
         restoreWillApply: ((Int, URL) throws -> Void)? = nil,
+        restoreWillVerifyApplied: ((Int, URL) throws -> Void)? = nil,
         restoreWillCompensate: ((Int, URL) throws -> Void)? = nil,
+        restoreWillVerifyCompensated: ((Int, URL) throws -> Void)? = nil,
         sessionArchiveDidList: (() throws -> Void)? = nil,
+        regularFileWillOpen: ((URL) throws -> Void)? = nil,
         sessionTarWillRun: (() throws -> Void)? = nil,
         sessionTarStageWillRun: ((URL) throws -> Void)? = nil,
-        sessionTarDidRun: ((URL) throws -> Void)? = nil
+        sessionTarDidRun: ((URL) throws -> Void)? = nil,
+        sessionMutationsWillBegin: (() throws -> Void)? = nil,
+        sessionMutationsDidApply: (() throws -> Void)? = nil
     ) {
         self.fileManager = fileManager
         self.backupRootOverride = backupRoot
@@ -116,11 +126,16 @@ final class ProviderSyncEngine {
         self.mutationLeaseDidAcquire = mutationLeaseDidAcquire
         self.reportWillBuild = reportWillBuild
         self.restoreWillApply = restoreWillApply
+        self.restoreWillVerifyApplied = restoreWillVerifyApplied
         self.restoreWillCompensate = restoreWillCompensate
+        self.restoreWillVerifyCompensated = restoreWillVerifyCompensated
         self.sessionArchiveDidList = sessionArchiveDidList
+        self.regularFileWillOpen = regularFileWillOpen
         self.sessionTarWillRun = sessionTarWillRun
         self.sessionTarStageWillRun = sessionTarStageWillRun
         self.sessionTarDidRun = sessionTarDidRun
+        self.sessionMutationsWillBegin = sessionMutationsWillBegin
+        self.sessionMutationsDidApply = sessionMutationsDidApply
     }
 
     func backupRootDirectory() -> URL {
@@ -147,7 +162,7 @@ final class ProviderSyncEngine {
         targetProviderOverride: String?,
         dryRunOnly: Bool
     ) throws -> ProviderSyncSnapshot {
-        return try withMutationLease(codexHome: codexHome) { canonicalHome in
+        return try withMutationLease(codexHome: codexHome) { canonicalHome, homeDirectory in
             let initial = try makeReport(
                 codexHome: canonicalHome,
                 includeArchivedSessions: includeArchivedSessions,
@@ -157,11 +172,12 @@ final class ProviderSyncEngine {
                 try rejectMutationIfCodexIsRunning(operation: "同步")
             }
 
-            let backupPath = try createBackup(
+            let createdBackup = try createBackupForMutation(
                 codexHome: canonicalHome,
                 sessionFiles: initial.sessionFiles,
                 targetProvider: initial.targetProvider
             )
+            let backupPath = createdBackup.url
 
             var changedSessionFiles = 0
             var sqliteRowsChanged = 0
@@ -176,16 +192,38 @@ final class ProviderSyncEngine {
                 return next
             }
 
+            try sessionMutationsWillBegin?()
+            let preparedSessionMutations = try prepareSessionMutations(
+                homeDirectory: homeDirectory,
+                bindings: createdBackup.sessionBindings,
+                targetProvider: initial.targetProvider
+            )
+
             do {
-                for file in initial.sessionFiles {
-                    if try rewriteSessionMetaProvider(file: file, targetProvider: initial.targetProvider) {
+                for mutation in preparedSessionMutations {
+                    if try applyPreparedSessionMutation(
+                        mutation,
+                        homeDirectory: homeDirectory
+                    ) {
                         changedSessionFiles += 1
                     }
                 }
-                sqliteRowsChanged = try updateSQLite(codexHome: canonicalHome, targetProvider: initial.targetProvider)
-                sqliteRowsChanged += try repairSQLiteThreadTimestamps(codexHome: canonicalHome, sessionFiles: initial.sessionFiles)
+                try sessionMutationsDidApply?()
+                sqliteRowsChanged = try repairSQLiteThreadTimestamps(
+                    codexHome: canonicalHome,
+                    sessionMutations: preparedSessionMutations,
+                    homeDirectory: homeDirectory
+                )
+                sqliteRowsChanged += try updateSQLite(
+                    codexHome: canonicalHome,
+                    targetProvider: initial.targetProvider
+                )
                 _ = try reconcileSessionIndex(codexHome: canonicalHome)
                 _ = try reconcileWorkspaceOrder(codexHome: canonicalHome)
+                try validatePreparedSessionMutations(
+                    preparedSessionMutations,
+                    homeDirectory: homeDirectory
+                )
 
                 let verified = try makeReport(
                     codexHome: canonicalHome,
@@ -206,6 +244,10 @@ final class ProviderSyncEngine {
                         ]
                     )
                 }
+                try validatePreparedSessionMutations(
+                    preparedSessionMutations,
+                    homeDirectory: homeDirectory
+                )
 
                 var next = snapshot(from: verified, status: "同步完成并已验证")
                 next.changedSessionFiles = changedSessionFiles
@@ -214,7 +256,11 @@ final class ProviderSyncEngine {
                 return next
             } catch let operationError {
                 do {
-                    _ = try restoreBackup(backupPath, codexHome: canonicalHome) {
+                    _ = try restoreBackup(
+                        backupPath,
+                        codexHome: canonicalHome,
+                        homeDirectory: homeDirectory
+                    ) {
                         try makeReport(
                             codexHome: canonicalHome,
                             includeArchivedSessions: includeArchivedSessions,
@@ -242,26 +288,37 @@ final class ProviderSyncEngine {
     }
 
     func rollbackLatest(codexHome: URL) throws -> ProviderSyncSnapshot {
-        try withMutationLease(codexHome: codexHome) { canonicalHome in
+        try withMutationLease(codexHome: codexHome) { canonicalHome, homeDirectory in
             try rejectMutationIfCodexIsRunning(operation: "回滚")
             let backup = try latestBackupDirectory(for: canonicalHome)
-            return try rollbackWithoutLease(codexHome: canonicalHome, backup: backup, status: "已从最近备份回滚")
+            return try rollbackWithoutLease(
+                codexHome: canonicalHome,
+                homeDirectory: homeDirectory,
+                backup: backup,
+                status: "已从最近备份回滚"
+            )
         }
     }
 
     func rollback(codexHome: URL, backupPath: String) throws -> ProviderSyncSnapshot {
-        try withMutationLease(codexHome: codexHome) { canonicalHome in
+        try withMutationLease(codexHome: codexHome) { canonicalHome, homeDirectory in
             try rejectMutationIfCodexIsRunning(operation: "回滚")
             return try rollbackWithoutLease(
                 codexHome: canonicalHome,
+                homeDirectory: homeDirectory,
                 backup: URL(fileURLWithPath: backupPath),
                 status: "已从所选备份回滚"
             )
         }
     }
 
-    private func rollbackWithoutLease(codexHome: URL, backup: URL, status: String) throws -> ProviderSyncSnapshot {
-        try restoreBackup(backup, codexHome: codexHome) {
+    private func rollbackWithoutLease(
+        codexHome: URL,
+        homeDirectory: ProviderSyncHomeDirectory,
+        backup: URL,
+        status: String
+    ) throws -> ProviderSyncSnapshot {
+        try restoreBackup(backup, codexHome: codexHome, homeDirectory: homeDirectory) {
             let report = try makeReport(
                 codexHome: codexHome,
                 includeArchivedSessions: true,
@@ -408,11 +465,6 @@ final class ProviderSyncEngine {
         (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? nil
     }
 
-    func restoreModificationDate(_ date: Date?, for file: URL) {
-        guard let date else { return }
-        try? fileManager.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
-    }
-
     func isCodexRunning() -> Bool {
         applicationRunningProbe()
     }
@@ -432,7 +484,10 @@ final class ProviderSyncEngine {
         }
     }
 
-    private func withMutationLease<T>(codexHome: URL, body: (URL) throws -> T) throws -> T {
+    private func withMutationLease<T>(
+        codexHome: URL,
+        body: (URL, ProviderSyncHomeDirectory) throws -> T
+    ) throws -> T {
         let canonicalHome = canonicalProviderHome(codexHome)
         guard Self.mutationLeaseRegistry.acquire(canonicalHome.path) else {
             throw NSError(
@@ -447,7 +502,9 @@ final class ProviderSyncEngine {
             Self.mutationLeaseRegistry.release(canonicalHome.path)
         }
         mutationLeaseDidAcquire?()
-        return try body(canonicalHome)
+        let homeDirectory = try ProviderSyncHomeDirectory(canonicalURL: canonicalHome)
+        defer { try? homeDirectory.close() }
+        return try body(canonicalHome, homeDirectory)
     }
 
     func canonicalProviderHome(_ codexHome: URL) -> URL {

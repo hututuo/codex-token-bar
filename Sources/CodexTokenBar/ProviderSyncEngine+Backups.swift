@@ -1,9 +1,20 @@
-import CryptoKit
 import Darwin
 import Foundation
 
 extension ProviderSyncEngine {
     func createBackup(codexHome: URL, sessionFiles: [URL], targetProvider: String) throws -> URL {
+        try createBackupForMutation(
+            codexHome: codexHome,
+            sessionFiles: sessionFiles,
+            targetProvider: targetProvider
+        ).url
+    }
+
+    func createBackupForMutation(
+        codexHome: URL,
+        sessionFiles: [URL],
+        targetProvider: String
+    ) throws -> ProviderSyncCreatedBackup {
         let canonicalHome = canonicalProviderHome(codexHome)
         let root = backupRootDirectory()
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
@@ -22,7 +33,7 @@ extension ProviderSyncEngine {
         try copyIfExists(canonicalHome.appendingPathComponent("session_index.jsonl"), to: backup.appendingPathComponent("session_index.jsonl.before"))
         try copyIfExists(canonicalHome.appendingPathComponent(".codex-global-state.json"), to: backup.appendingPathComponent("codex-global-state.json.before"))
         try copyIfExists(canonicalHome.appendingPathComponent(".codex-global-state.json.bak"), to: backup.appendingPathComponent("codex-global-state.json.bak.before"))
-        let sessionMembers = try createSessionTar(
+        let sessionBackup = try createSessionTar(
             files: sessionFiles,
             relativeTo: canonicalHome,
             destination: backup.appendingPathComponent("session-jsonl.before.tar")
@@ -33,14 +44,17 @@ extension ProviderSyncEngine {
             "codex_home": canonicalHome.path,
             "canonical_codex_home": canonicalHome.path,
             "target_provider": targetProvider,
-            "session_file_count": sessionMembers.count,
-            "session_members": sessionMembers.map { member in
+            "session_file_count": sessionBackup.members.count,
+            "session_members": sessionBackup.members.map { member in
                 ["path": member.path, "sha256": member.sha256]
             }
         ]
         let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
         try manifestData.write(to: backup.appendingPathComponent("manifest.json"), options: [.atomic])
-        return backup
+        return ProviderSyncCreatedBackup(
+            url: backup,
+            sessionBindings: sessionBackup.bindings
+        )
     }
 
     func copyIfExists(_ source: URL, to destination: URL) throws {
@@ -70,7 +84,7 @@ extension ProviderSyncEngine {
         files: [URL],
         relativeTo codexHome: URL,
         destination: URL
-    ) throws -> [ProviderSyncManifestSessionMember] {
+    ) throws -> ProviderSyncSessionBackupResult {
         let canonicalHome = canonicalBackupHome(codexHome)
         var seenIdentities = Set<ProviderSyncFileIdentity>()
         var seenPaths = Set<String>()
@@ -142,7 +156,21 @@ extension ProviderSyncEngine {
             invokeListHook: false
         )
         defer { try? fileManager.removeItem(at: validated.cleanupRoot) }
-        return sessionMembers
+        let digests = Dictionary(uniqueKeysWithValues: sessionMembers.map { ($0.path, $0.sha256) })
+        let bindings = try candidates.map { candidate in
+            guard let digest = digests[candidate.relativePath] else {
+                throw backupArchiveError("staged session digest 缺失：\(candidate.relativePath)")
+            }
+            return ProviderSyncSessionMutationBinding(
+                relativePath: candidate.relativePath,
+                identity: candidate.identity,
+                sha256: digest
+            )
+        }
+        return ProviderSyncSessionBackupResult(
+            members: sessionMembers,
+            bindings: bindings
+        )
     }
 
     func latestBackupDirectory(for codexHome: URL) throws -> URL {
@@ -210,6 +238,7 @@ extension ProviderSyncEngine {
     func restoreBackup<T>(
         _ backup: URL,
         codexHome: URL,
+        homeDirectory: ProviderSyncHomeDirectory,
         afterRestore: () throws -> T
     ) throws -> T {
         guard fileManager.fileExists(atPath: backup.appendingPathComponent("manifest.json").path) else {
@@ -236,6 +265,7 @@ extension ProviderSyncEngine {
         let transaction = try makeRestoreTransaction(
             backup: backup,
             canonicalHome: canonicalHome,
+            homeDirectory: homeDirectory,
             stagedArchive: stagedArchive
         )
         do {
@@ -319,6 +349,7 @@ extension ProviderSyncEngine {
     private func makeRestoreTransaction(
         backup: URL,
         canonicalHome: URL,
+        homeDirectory: ProviderSyncHomeDirectory,
         stagedArchive: ProviderSyncStagedSessionArchive?
     ) throws -> ProviderSyncRestoreTransaction {
         var specifications: [ProviderSyncRestoreSpecification] = []
@@ -327,12 +358,12 @@ extension ProviderSyncEngine {
             if fileManager.fileExists(atPath: source.path) {
                 specifications.append(ProviderSyncRestoreSpecification(
                     source: source,
-                    destination: canonicalHome.appendingPathComponent(destinationName)
+                    relativeDestination: destinationName
                 ))
             } else if removeIfMissing {
                 specifications.append(ProviderSyncRestoreSpecification(
                     source: nil,
-                    destination: canonicalHome.appendingPathComponent(destinationName)
+                    relativeDestination: destinationName
                 ))
             }
         }
@@ -342,15 +373,15 @@ extension ProviderSyncEngine {
         if fileManager.fileExists(atPath: sqliteBackup.path) {
             specifications.append(ProviderSyncRestoreSpecification(
                 source: sqliteBackup,
-                destination: canonicalHome.appendingPathComponent("state_5.sqlite")
+                relativeDestination: "state_5.sqlite"
             ))
             specifications.append(ProviderSyncRestoreSpecification(
                 source: nil,
-                destination: canonicalHome.appendingPathComponent("state_5.sqlite-wal")
+                relativeDestination: "state_5.sqlite-wal"
             ))
             specifications.append(ProviderSyncRestoreSpecification(
                 source: nil,
-                destination: canonicalHome.appendingPathComponent("state_5.sqlite-shm")
+                relativeDestination: "state_5.sqlite-shm"
             ))
         }
         appendBackedUpFile("session_index.jsonl.before", destinationName: "session_index.jsonl", removeIfMissing: true)
@@ -361,7 +392,7 @@ extension ProviderSyncEngine {
             for member in stagedArchive.members {
                 specifications.append(ProviderSyncRestoreSpecification(
                     source: stagedArchive.root.appendingPathComponent(member.archivePath),
-                    destination: canonicalHome.appendingPathComponent(member.relativePath)
+                    relativeDestination: member.relativePath
                 ))
             }
         }
@@ -369,9 +400,12 @@ extension ProviderSyncEngine {
         return try ProviderSyncRestoreTransaction(
             fileManager: fileManager,
             canonicalHome: canonicalHome,
+            homeDirectory: homeDirectory,
             specifications: specifications,
             willApply: restoreWillApply,
-            willCompensate: restoreWillCompensate
+            willVerifyApplied: restoreWillVerifyApplied,
+            willCompensate: restoreWillCompensate,
+            willVerifyCompensated: restoreWillVerifyCompensated
         )
     }
 
@@ -697,6 +731,7 @@ extension ProviderSyncEngine {
         if let expectedIdentity, identityBeforeOpen != expectedIdentity {
             throw backupArchiveError("文件在检查与复制之间发生身份变化：\(source.path)")
         }
+        try regularFileWillOpen?(source)
         let sourceDescriptor = Darwin.open(source.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         guard sourceDescriptor >= 0 else {
             throw backupArchiveError("无法无跟随打开文件：\(source.path)（\(providerSyncPOSIXMessage())）")
@@ -712,6 +747,9 @@ extension ProviderSyncEngine {
             throw backupArchiveError("打开后的源存在 hardlink，已拒绝备份：\(source.path)")
         }
         let actualIdentity = ProviderSyncFileIdentity(metadata)
+        guard actualIdentity == identityBeforeOpen else {
+            throw backupArchiveError("文件在 lstat 与 open 之间发生身份变化：\(source.path)")
+        }
         if let expectedIdentity, actualIdentity != expectedIdentity {
             throw backupArchiveError("文件在检查与复制之间发生身份变化：\(source.path)")
         }
@@ -777,14 +815,20 @@ private struct ProviderSyncArchiveSource {
     let identity: ProviderSyncFileIdentity
 }
 
-private struct ProviderSyncFileIdentity: Hashable {
-    let device: UInt64
-    let inode: UInt64
+struct ProviderSyncSessionMutationBinding {
+    let relativePath: String
+    let identity: ProviderSyncFileIdentity
+    let sha256: String
+}
 
-    init(_ metadata: stat) {
-        device = UInt64(UInt32(bitPattern: metadata.st_dev))
-        inode = UInt64(metadata.st_ino)
-    }
+struct ProviderSyncCreatedBackup {
+    let url: URL
+    let sessionBindings: [ProviderSyncSessionMutationBinding]
+}
+
+private struct ProviderSyncSessionBackupResult {
+    let members: [ProviderSyncManifestSessionMember]
+    let bindings: [ProviderSyncSessionMutationBinding]
 }
 
 private struct ProviderSyncStagedSessionArchive {
@@ -807,13 +851,13 @@ private struct ProviderSyncManifestSessionMember {
 
 private struct ProviderSyncRestoreSpecification {
     let source: URL?
-    let destination: URL
+    let relativeDestination: String
 }
 
 private struct ProviderSyncRestoreOperation {
-    let replacement: URL?
-    let original: URL
-    let destination: URL
+    let replacementName: String?
+    let originalName: String
+    let destination: ProviderSyncPinnedFile
     let expectedDigest: String?
     var destinationExisted = false
     var originalDigest: String?
@@ -822,53 +866,100 @@ private struct ProviderSyncRestoreOperation {
     var compensated = false
 }
 
+private struct ProviderSyncDestinationIdentity: Hashable {
+    let parent: ProviderSyncFileIdentity
+    let name: String
+}
+
 private final class ProviderSyncRestoreTransaction {
-    private let fileManager: FileManager
-    private let canonicalHome: URL
-    private let transactionRoot: URL
+    private let homeDirectory: ProviderSyncHomeDirectory
+    private let transactionName: String
+    private let transactionRootURL: URL
+    private let transaction: ProviderSyncOwnedFileDescriptor
+    private let originals: ProviderSyncOwnedFileDescriptor
+    private let replacements: ProviderSyncOwnedFileDescriptor
+    private let discarded: ProviderSyncOwnedFileDescriptor
+    private let recovery: ProviderSyncOwnedFileDescriptor
     private let willApply: ((Int, URL) throws -> Void)?
+    private let willVerifyApplied: ((Int, URL) throws -> Void)?
     private let willCompensate: ((Int, URL) throws -> Void)?
+    private let willVerifyCompensated: ((Int, URL) throws -> Void)?
     private var operations: [ProviderSyncRestoreOperation]
     private var journaledIndices: [Int] = []
-    private var createdDirectories: [URL] = []
+    private var createdDirectories: [String] = []
+    private var discardedNames: [String] = []
+    private var recoveryNames: [String] = []
     private var finished = false
 
-    var journalPath: URL { transactionRoot }
+    var journalPath: URL { transactionRootURL }
 
     init(
         fileManager: FileManager,
         canonicalHome: URL,
+        homeDirectory: ProviderSyncHomeDirectory,
         specifications: [ProviderSyncRestoreSpecification],
         willApply: ((Int, URL) throws -> Void)?,
-        willCompensate: ((Int, URL) throws -> Void)?
+        willVerifyApplied: ((Int, URL) throws -> Void)?,
+        willCompensate: ((Int, URL) throws -> Void)?,
+        willVerifyCompensated: ((Int, URL) throws -> Void)?
     ) throws {
-        let root = canonicalHome.appendingPathComponent(
-            ".provider-restore-transaction-\(UUID().uuidString)",
-            isDirectory: true
+        _ = fileManager
+        let transactionName = ".provider-restore-transaction-\(UUID().uuidString)"
+        let rootURL = canonicalHome.appendingPathComponent(transactionName, isDirectory: true)
+        let transaction = try providerSyncCreateDirectoryDescriptor(
+            parent: homeDirectory.descriptor,
+            name: transactionName
         )
-        try fileManager.createDirectory(at: root, withIntermediateDirectories: false)
+        var originals: ProviderSyncOwnedFileDescriptor?
+        var replacements: ProviderSyncOwnedFileDescriptor?
+        var discarded: ProviderSyncOwnedFileDescriptor?
+        var recovery: ProviderSyncOwnedFileDescriptor?
         var prepared: [ProviderSyncRestoreOperation] = []
-        var seenDestinations = Set<String>()
+        var seenDestinations = Set<ProviderSyncDestinationIdentity>()
+        var createdDirectories: [String] = []
         do {
-            for specification in specifications {
-                let canonicalDestination = specification.destination
-                    .standardizedFileURL
-                    .resolvingSymlinksInPath()
-                guard canonicalDestination.path == canonicalHome.path
-                        || canonicalDestination.path.hasPrefix(canonicalHome.path + "/"),
-                      seenDestinations.insert(canonicalDestination.path).inserted else {
+            originals = try providerSyncCreateDirectoryDescriptor(
+                parent: transaction.rawValue,
+                name: "originals"
+            )
+            replacements = try providerSyncCreateDirectoryDescriptor(
+                parent: transaction.rawValue,
+                name: "replacements"
+            )
+            discarded = try providerSyncCreateDirectoryDescriptor(
+                parent: transaction.rawValue,
+                name: "discarded"
+            )
+            recovery = try providerSyncCreateDirectoryDescriptor(
+                parent: transaction.rawValue,
+                name: "recovery"
+            )
+            guard originals != nil,
+                  let replacementDirectory = replacements,
+                  discarded != nil,
+                  recovery != nil else {
+                throw providerSyncDescriptorError("无法建立 restore transaction descriptor 目录")
+            }
+
+            for (index, specification) in specifications.enumerated() {
+                let destination = try homeDirectory.pinFile(
+                    relativePath: specification.relativeDestination,
+                    createParents: true
+                )
+                createdDirectories.append(contentsOf: destination.createdDirectories)
+                let destinationIdentity = ProviderSyncDestinationIdentity(
+                    parent: destination.parentIdentity,
+                    name: destination.name
+                )
+                guard seenDestinations.insert(destinationIdentity).inserted else {
                     throw NSError(
                         domain: "CodexTokenBar",
                         code: 400,
-                        userInfo: [NSLocalizedDescriptionKey: "回滚 canonical 目标越界或重复：\(specification.destination.path)"]
+                        userInfo: [NSLocalizedDescriptionKey: "回滚 descriptor 目标重复：\(destination.displayURL.path)"]
                     )
                 }
-            }
-            for (index, specification) in specifications.enumerated() {
-                let original = root
-                    .appendingPathComponent("originals", isDirectory: true)
-                    .appendingPathComponent(String(index))
-                var replacement: URL?
+                let entryName = String(index)
+                var replacementName: String?
                 var expectedDigest: String?
                 if let source = specification.source {
                     let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
@@ -879,70 +970,116 @@ private final class ProviderSyncRestoreTransaction {
                             userInfo: [NSLocalizedDescriptionKey: "回滚源不是常规文件：\(source.path)"]
                         )
                     }
-                    let staged = root
-                        .appendingPathComponent("replacements", isDirectory: true)
-                        .appendingPathComponent(String(index))
-                    try fileManager.createDirectory(
-                        at: staged.deletingLastPathComponent(),
-                        withIntermediateDirectories: true
+                    let data = try Data(contentsOf: source)
+                    try providerSyncCreateRegularFile(
+                        directory: replacementDirectory.rawValue,
+                        name: entryName,
+                        data: data
                     )
-                    try fileManager.copyItem(at: source, to: staged)
-                    replacement = staged
-                    expectedDigest = providerSyncSHA256Hex(try Data(contentsOf: staged))
+                    replacementName = entryName
+                    expectedDigest = providerSyncSHA256Hex(data)
                 }
                 prepared.append(ProviderSyncRestoreOperation(
-                    replacement: replacement,
-                    original: original,
-                    destination: specification.destination,
+                    replacementName: replacementName,
+                    originalName: entryName,
+                    destination: destination,
                     expectedDigest: expectedDigest
                 ))
             }
         } catch {
-            try? fileManager.removeItem(at: root)
+            Self.cleanupInitializationFailure(
+                homeDirectory: homeDirectory,
+                transactionName: transactionName,
+                transaction: transaction,
+                originals: originals,
+                replacements: replacements,
+                discarded: discarded,
+                recovery: recovery,
+                possibleEntryCount: specifications.count
+            )
+            for directory in Set(createdDirectories).sorted(by: { $0.count > $1.count }) {
+                homeDirectory.removeCreatedDirectoryIfEmpty(relativePath: directory)
+            }
             throw error
         }
-        self.fileManager = fileManager
-        self.canonicalHome = canonicalHome
-        self.transactionRoot = root
+        guard let openedOriginals = originals,
+              let openedReplacements = replacements,
+              let openedDiscarded = discarded,
+              let openedRecovery = recovery else {
+            Self.cleanupInitializationFailure(
+                homeDirectory: homeDirectory,
+                transactionName: transactionName,
+                transaction: transaction,
+                originals: originals,
+                replacements: replacements,
+                discarded: discarded,
+                recovery: recovery,
+                possibleEntryCount: specifications.count
+            )
+            for directory in Set(createdDirectories).sorted(by: { $0.count > $1.count }) {
+                homeDirectory.removeCreatedDirectoryIfEmpty(relativePath: directory)
+            }
+            throw providerSyncDescriptorError("restore transaction descriptor 初始化不完整")
+        }
+        self.homeDirectory = homeDirectory
+        self.transactionName = transactionName
+        self.transactionRootURL = rootURL
+        self.transaction = transaction
+        self.originals = openedOriginals
+        self.replacements = openedReplacements
+        self.discarded = openedDiscarded
+        self.recovery = openedRecovery
         self.willApply = willApply
+        self.willVerifyApplied = willVerifyApplied
         self.willCompensate = willCompensate
+        self.willVerifyCompensated = willVerifyCompensated
         self.operations = prepared
+        self.createdDirectories = Array(Set(createdDirectories))
     }
 
     func apply() throws {
         for index in operations.indices {
             do {
-                try ensureDestinationParent(for: operations[index].destination)
-                let destinationExisted = providerSyncPathExistsNoFollow(operations[index].destination.path)
+                let destination = operations[index].destination
+                try homeDirectory.verifyParent(destination)
+                let destinationMetadata = try homeDirectory.entryMetadata(destination)
+                let destinationExisted = destinationMetadata != nil
                 operations[index].destinationExisted = destinationExisted
                 if destinationExisted {
-                    let values = try operations[index].destination.resourceValues(
-                        forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
-                    )
-                    guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                    guard let destinationMetadata,
+                          (destinationMetadata.st_mode & S_IFMT) == S_IFREG else {
                         throw NSError(
                             domain: "CodexTokenBar",
                             code: 400,
-                            userInfo: [NSLocalizedDescriptionKey: "回滚目标不是常规文件：\(operations[index].destination.path)"]
+                            userInfo: [NSLocalizedDescriptionKey: "回滚目标不是常规文件：\(destination.displayURL.path)"]
                         )
                     }
-                    operations[index].originalDigest = providerSyncSHA256Hex(
-                        try Data(contentsOf: operations[index].destination)
-                    )
-                    try fileManager.createDirectory(
-                        at: operations[index].original.deletingLastPathComponent(),
-                        withIntermediateDirectories: true
-                    )
-                    try fileManager.moveItem(
-                        at: operations[index].destination,
-                        to: operations[index].original
+                    let original = try homeDirectory.readRegularFile(destination)
+                    guard let currentMetadata = try homeDirectory.entryMetadata(destination),
+                          ProviderSyncFileIdentity(currentMetadata) == original.identity else {
+                        throw providerSyncDescriptorError(
+                            "journal 前目标身份发生变化：\(destination.displayURL.path)"
+                        )
+                    }
+                    operations[index].originalDigest = providerSyncSHA256Hex(original.data)
+                    try providerSyncRename(
+                        fromDirectory: destination.parent.rawValue,
+                        fromName: destination.name,
+                        toDirectory: originals.rawValue,
+                        toName: operations[index].originalName
                     )
                 }
                 operations[index].journaled = true
                 journaledIndices.append(index)
-                try willApply?(index, operations[index].destination)
-                if let replacement = operations[index].replacement {
-                    try fileManager.moveItem(at: replacement, to: operations[index].destination)
+                try willApply?(index, destination.displayURL)
+                try homeDirectory.verifyParent(destination)
+                if let replacementName = operations[index].replacementName {
+                    try providerSyncRename(
+                        fromDirectory: replacements.rawValue,
+                        fromName: replacementName,
+                        toDirectory: destination.parent.rawValue,
+                        toName: destination.name
+                    )
                 }
                 operations[index].applied = true
             } catch {
@@ -961,21 +1098,26 @@ private final class ProviderSyncRestoreTransaction {
     }
 
     func verifyAppliedState() throws {
-        for operation in operations where operation.applied {
+        for (index, operation) in operations.enumerated() where operation.applied {
+            try willVerifyApplied?(index, operation.destination.displayURL)
+            try homeDirectory.verifyParent(operation.destination)
             if let expectedDigest = operation.expectedDigest {
-                guard fileManager.fileExists(atPath: operation.destination.path),
-                      providerSyncSHA256Hex(try Data(contentsOf: operation.destination)) == expectedDigest else {
+                guard let metadata = try homeDirectory.entryMetadata(operation.destination),
+                      (metadata.st_mode & S_IFMT) == S_IFREG,
+                      providerSyncSHA256Hex(
+                        try homeDirectory.readRegularFile(operation.destination).data
+                      ) == expectedDigest else {
                     throw NSError(
                         domain: "CodexTokenBar",
                         code: 500,
-                        userInfo: [NSLocalizedDescriptionKey: "回滚目标内容校验失败：\(operation.destination.path)"]
+                        userInfo: [NSLocalizedDescriptionKey: "回滚目标内容校验失败：\(operation.destination.displayURL.path)"]
                     )
                 }
-            } else if fileManager.fileExists(atPath: operation.destination.path) {
+            } else if try homeDirectory.entryMetadata(operation.destination) != nil {
                 throw NSError(
                     domain: "CodexTokenBar",
                     code: 500,
-                    userInfo: [NSLocalizedDescriptionKey: "回滚目标应保持不存在：\(operation.destination.path)"]
+                    userInfo: [NSLocalizedDescriptionKey: "回滚目标应保持不存在：\(operation.destination.displayURL.path)"]
                 )
             }
         }
@@ -990,7 +1132,7 @@ private final class ProviderSyncRestoreTransaction {
                 try verifyCompensatedState(index)
                 operations[index].compensated = true
             } catch {
-                failures.append("\(operations[index].destination.path)：\(error.localizedDescription)")
+                failures.append("\(operations[index].destination.displayURL.path)：\(error.localizedDescription)")
             }
         }
         for index in journaledIndices where operations[index].compensated {
@@ -998,7 +1140,7 @@ private final class ProviderSyncRestoreTransaction {
                 try verifyCompensatedState(index)
             } catch {
                 operations[index].compensated = false
-                failures.append("\(operations[index].destination.path)：\(error.localizedDescription)")
+                failures.append("\(operations[index].destination.displayURL.path)：\(error.localizedDescription)")
             }
         }
         guard failures.isEmpty,
@@ -1007,124 +1149,174 @@ private final class ProviderSyncRestoreTransaction {
                 domain: "CodexTokenBar",
                 code: 500,
                 userInfo: [
-                    NSLocalizedDescriptionKey: "补偿未完整恢复，已保留 journal：\(transactionRoot.path)；\(failures.joined(separator: "；"))"
+                    NSLocalizedDescriptionKey: "补偿未完整恢复，已保留 journal：\(transactionRootURL.path)；\(failures.joined(separator: "；"))"
                 ]
             )
         }
         finished = true
-        try fileManager.removeItem(at: transactionRoot)
+        try cleanupTransactionRoot()
         removeCreatedDirectoriesIfEmpty()
     }
 
     func commit() {
         guard !finished else { return }
         finished = true
-        try? fileManager.removeItem(at: transactionRoot)
+        try? cleanupTransactionRoot()
     }
 
     private func compensateOperation(_ index: Int) throws {
         let operation = operations[index]
-        try willCompensate?(index, operation.destination)
-        if providerSyncPathExistsNoFollow(operation.destination.path) {
-            let discarded = transactionRoot
-                .appendingPathComponent("discarded", isDirectory: true)
-                .appendingPathComponent("\(index)-\(UUID().uuidString)")
-            try fileManager.createDirectory(
-                at: discarded.deletingLastPathComponent(),
-                withIntermediateDirectories: true
+        try willCompensate?(index, operation.destination.displayURL)
+        try homeDirectory.verifyParent(operation.destination)
+        if try homeDirectory.entryMetadata(operation.destination) != nil {
+            let discardedName = "\(index)-\(UUID().uuidString)"
+            try providerSyncRename(
+                fromDirectory: operation.destination.parent.rawValue,
+                fromName: operation.destination.name,
+                toDirectory: discarded.rawValue,
+                toName: discardedName
             )
-            try fileManager.moveItem(at: operation.destination, to: discarded)
+            discardedNames.append(discardedName)
         }
         if operation.destinationExisted {
-            guard providerSyncPathExistsNoFollow(operation.original.path) else {
+            guard try providerSyncEntryMetadata(
+                directory: originals.rawValue,
+                name: operation.originalName
+            ) != nil else {
                 throw NSError(
                     domain: "CodexTokenBar",
                     code: 500,
-                    userInfo: [NSLocalizedDescriptionKey: "journal 原始文件缺失：\(operation.original.path)"]
+                    userInfo: [NSLocalizedDescriptionKey: "journal 原始文件缺失：\(operation.originalName)"]
                 )
             }
-            try ensureDestinationParent(for: operation.destination)
-            try fileManager.moveItem(at: operation.original, to: operation.destination)
+            let original = try providerSyncReadRegularFile(
+                directory: originals.rawValue,
+                name: operation.originalName
+            )
+            let recoveryName = "\(index)-\(UUID().uuidString)"
+            try providerSyncCreateRegularFile(
+                directory: recovery.rawValue,
+                name: recoveryName,
+                data: original.data,
+                metadata: original.metadata
+            )
+            recoveryNames.append(recoveryName)
+            try homeDirectory.verifyParent(operation.destination)
+            try providerSyncRename(
+                fromDirectory: recovery.rawValue,
+                fromName: recoveryName,
+                toDirectory: operation.destination.parent.rawValue,
+                toName: operation.destination.name
+            )
         }
     }
 
     private func verifyCompensatedState(_ index: Int) throws {
         let operation = operations[index]
+        try willVerifyCompensated?(index, operation.destination.displayURL)
+        try homeDirectory.verifyParent(operation.destination)
         if operation.destinationExisted {
             guard let originalDigest = operation.originalDigest,
-                  providerSyncPathExistsNoFollow(operation.destination.path),
-                  providerSyncSHA256Hex(try Data(contentsOf: operation.destination)) == originalDigest else {
+                  let metadata = try homeDirectory.entryMetadata(operation.destination),
+                  (metadata.st_mode & S_IFMT) == S_IFREG,
+                  providerSyncSHA256Hex(
+                    try homeDirectory.readRegularFile(operation.destination).data
+                  ) == originalDigest else {
                 throw NSError(
                     domain: "CodexTokenBar",
                     code: 500,
-                    userInfo: [NSLocalizedDescriptionKey: "补偿后原始内容校验失败：\(operation.destination.path)"]
+                    userInfo: [NSLocalizedDescriptionKey: "补偿后原始内容校验失败：\(operation.destination.displayURL.path)"]
                 )
             }
-        } else if providerSyncPathExistsNoFollow(operation.destination.path) {
+        } else if try homeDirectory.entryMetadata(operation.destination) != nil {
             throw NSError(
                 domain: "CodexTokenBar",
                 code: 500,
-                userInfo: [NSLocalizedDescriptionKey: "补偿后目标应保持不存在：\(operation.destination.path)"]
+                userInfo: [NSLocalizedDescriptionKey: "补偿后目标应保持不存在：\(operation.destination.displayURL.path)"]
             )
         }
     }
 
-    private func ensureDestinationParent(for destination: URL) throws {
-        let parent = destination.deletingLastPathComponent()
-        let resolvedParent = parent.standardizedFileURL.resolvingSymlinksInPath()
-        guard resolvedParent.path == canonicalHome.path
-                || resolvedParent.path.hasPrefix(canonicalHome.path + "/") else {
-            throw NSError(
-                domain: "CodexTokenBar",
-                code: 400,
-                userInfo: [NSLocalizedDescriptionKey: "回滚目标父目录解析到 Codex Home 之外：\(parent.path)"]
+    private func cleanupTransactionRoot() throws {
+        for operation in operations {
+            try providerSyncUnlinkIfExists(
+                directory: originals.rawValue,
+                name: operation.originalName
             )
-        }
-        var ancestor = parent
-        while ancestor.path != canonicalHome.path {
-            if providerSyncPathIsSymlink(ancestor.path) {
-                throw NSError(
-                    domain: "CodexTokenBar",
-                    code: 400,
-                    userInfo: [NSLocalizedDescriptionKey: "回滚目标含符号链接父目录：\(ancestor.path)"]
+            if let replacementName = operation.replacementName {
+                try providerSyncUnlinkIfExists(
+                    directory: replacements.rawValue,
+                    name: replacementName
                 )
             }
-            ancestor.deleteLastPathComponent()
         }
-        var missing: [URL] = []
-        var cursor = parent
-        while cursor.path != canonicalHome.path,
-              !fileManager.fileExists(atPath: cursor.path) {
-            missing.append(cursor)
-            cursor.deleteLastPathComponent()
+        for name in discardedNames {
+            try providerSyncUnlinkIfExists(directory: discarded.rawValue, name: name)
         }
-        for directory in missing.reversed() {
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: false)
-            createdDirectories.append(directory)
+        for name in recoveryNames {
+            try providerSyncUnlinkIfExists(directory: recovery.rawValue, name: name)
         }
+        try originals.close()
+        try replacements.close()
+        try discarded.close()
+        try recovery.close()
+        try providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "originals", flags: AT_REMOVEDIR)
+        try providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "replacements", flags: AT_REMOVEDIR)
+        try providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "discarded", flags: AT_REMOVEDIR)
+        try providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "recovery", flags: AT_REMOVEDIR)
+        try transaction.close()
+        try providerSyncUnlinkIfExists(
+            directory: homeDirectory.descriptor,
+            name: transactionName,
+            flags: AT_REMOVEDIR
+        )
+    }
+
+    private static func cleanupInitializationFailure(
+        homeDirectory: ProviderSyncHomeDirectory,
+        transactionName: String,
+        transaction: ProviderSyncOwnedFileDescriptor,
+        originals: ProviderSyncOwnedFileDescriptor?,
+        replacements: ProviderSyncOwnedFileDescriptor?,
+        discarded: ProviderSyncOwnedFileDescriptor?,
+        recovery: ProviderSyncOwnedFileDescriptor?,
+        possibleEntryCount: Int
+    ) {
+        for index in 0..<possibleEntryCount {
+            let name = String(index)
+            if let originals {
+                try? providerSyncUnlinkIfExists(directory: originals.rawValue, name: name)
+            }
+            if let replacements {
+                try? providerSyncUnlinkIfExists(directory: replacements.rawValue, name: name)
+            }
+        }
+        try? originals?.close()
+        try? replacements?.close()
+        try? discarded?.close()
+        try? recovery?.close()
+        try? providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "originals", flags: AT_REMOVEDIR)
+        try? providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "replacements", flags: AT_REMOVEDIR)
+        try? providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "discarded", flags: AT_REMOVEDIR)
+        try? providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "recovery", flags: AT_REMOVEDIR)
+        try? transaction.close()
+        try? providerSyncUnlinkIfExists(
+            directory: homeDirectory.descriptor,
+            name: transactionName,
+            flags: AT_REMOVEDIR
+        )
     }
 
     private func removeCreatedDirectoriesIfEmpty() {
-        for directory in createdDirectories.reversed() {
-            guard let contents = try? fileManager.contentsOfDirectory(atPath: directory.path),
-                  contents.isEmpty else { continue }
-            try? fileManager.removeItem(at: directory)
+        for directory in createdDirectories.sorted(by: { $0.count > $1.count }) {
+            homeDirectory.removeCreatedDirectoryIfEmpty(relativePath: directory)
         }
     }
-}
-
-private func providerSyncSHA256Hex(_ data: Data) -> String {
-    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
 }
 
 private func providerSyncPathExistsNoFollow(_ path: String) -> Bool {
     var metadata = stat()
     return lstat(path, &metadata) == 0
-}
-
-private func providerSyncPathIsSymlink(_ path: String) -> Bool {
-    var metadata = stat()
-    return lstat(path, &metadata) == 0 && (metadata.st_mode & S_IFMT) == S_IFLNK
 }
 
 private func providerSyncPOSIXMessage() -> String {
