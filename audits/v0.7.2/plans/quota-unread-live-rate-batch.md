@@ -122,10 +122,29 @@
 - [ ] Repeated identical genuine outputs with distinct event identity still count separately.
 - [ ] Implement source-local reset and normalized fingerprint; run live/rate tests and commit.
 
+### Task 8: Tauri Long-Chart Quota Horizon Parity
+
+**Files:**
+- Modify: `tauri-app/src-tauri/src/core/quota_history.rs`
+- Modify: `tauri-app/src-tauri/src/core/quota_history/database.rs` only where the long-horizon query/bin contract requires it.
+- Modify/add: `tauri-app/src-tauri/src/core/quota_history_tests.rs`
+- Modify: `tauri-app/src/state/dashboardMergers.ts`
+- Modify: recent-chart model tests and quota-estimator tests that consume the merged series.
+
+**Produces:** One explicit 30-day/five-minute horizon contract shared by the scrollable usage canvas and its 5h/7d quota overlay.
+
+- [ ] Add a red 30-day fixture with quota samples before and after the newest 24 hours; merged chart points at 2, 7, and 29 days old must retain the correct quota evidence instead of `null`.
+- [ ] Add red boundary fixtures for first/last bin, a reset crossing, an allowed short carry gap, and a gap beyond the accepted carry policy. Do not synthesize measured 100% indefinitely after reset.
+- [ ] Observe the current 289-point quota result fail against the 8640-point usage horizon before production edits.
+- [ ] Replace the misleading `recent_24h` implementation contract with a versioned horizon/bucket model. Keep compatibility decoding only where an older persisted/API shape can still be interpreted without inventing data.
+- [ ] Merge by canonical bucket start and local offset; do not use array index or UI labels as identity. Feed the same aligned series to visible chart lines, hover selection, and consumption estimator inputs.
+- [ ] Run focused quota-history Rust tests, dashboard merger/recent-chart/estimator Node tests, `npm run build`, and `git diff --check`.
+- [ ] Commit after Task 3 identity migration is accepted, as a separate Tauri quota-chart change.
+
 ## Integration Gates
 
 - Commander reviews every task diff and red/green evidence; worker reports alone are insufficient.
 - Full Swift suite runs once after integrated Swift Tasks 1, 3, 4, and 7.
-- Full Rust/Node/frontend suites run once after integrated Tauri Tasks 2, 3, 5, and 6.
+- Full Rust/Node/frontend suites run once after integrated Tauri Tasks 2, 3, 5, 6, and 8.
 - Fake child processes, temporary Homes, and isolated SQLite files only; no real reset-credit consumption, Provider mutation, or user-source switch in automated tests.
 - Runtime closure includes long stderr, sleep/wake, WAL-only thread creation, database replacement, hidden surface CPU/IO, and multi-surface stream ownership.
