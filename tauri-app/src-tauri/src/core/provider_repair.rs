@@ -61,6 +61,19 @@ pub struct ProviderOperationStatus {
     pub lifecycle: ProviderOperationLifecycle,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderOperationOwnership {
+    pub operation_id: String,
+    pub canonical_home: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderOperationOwnershipDiscovery {
+    pub active_operations: Vec<ProviderOperationOwnership>,
+}
+
 #[derive(Clone, Debug)]
 struct ProviderOperationRecord {
     canonical_home: PathBuf,
@@ -131,6 +144,23 @@ impl ProviderOperationRegistry {
                 .map(|record| record.lifecycle)
                 .unwrap_or(ProviderOperationLifecycle::NotStarted),
         }
+    }
+
+    fn active_ownership(&self) -> Vec<ProviderOperationOwnership> {
+        let mut active_operations = self
+            .active_by_home
+            .iter()
+            .map(|(canonical_home, operation_id)| ProviderOperationOwnership {
+                operation_id: operation_id.clone(),
+                canonical_home: canonical_home.clone(),
+            })
+            .collect::<Vec<_>>();
+        active_operations.sort_by(|left, right| {
+            left.canonical_home
+                .cmp(&right.canonical_home)
+                .then_with(|| left.operation_id.cmp(&right.operation_id))
+        });
+        active_operations
     }
 
     fn prune_finished(&mut self) {
@@ -282,6 +312,15 @@ pub fn read_provider_operation_status(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     registry.status(operation_id)
+}
+
+pub fn discover_provider_operation_ownership() -> ProviderOperationOwnershipDiscovery {
+    let registry = provider_operation_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    ProviderOperationOwnershipDiscovery {
+        active_operations: registry.active_ownership(),
+    }
 }
 
 fn provider_operation_registry() -> &'static Mutex<ProviderOperationRegistry> {

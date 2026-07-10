@@ -7,7 +7,9 @@ use super::window_auth::require_window_label;
 use crate::models::{
     ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
 };
-use provider_repair_core::{ProviderOperationError, ProviderOperationStatus};
+use provider_repair_core::{
+    ProviderOperationError, ProviderOperationOwnershipDiscovery, ProviderOperationStatus,
+};
 
 #[tauri::command]
 pub fn scan_provider_repair(
@@ -73,4 +75,12 @@ pub fn read_provider_operation_status(
 ) -> Result<ProviderOperationStatus, ProviderOperationError> {
     require_window_label(&window, "read_provider_operation_status")?;
     Ok(provider_repair_core::read_provider_operation_status(&operation_id))
+}
+
+#[tauri::command]
+pub fn discover_provider_operation_ownership(
+    window: tauri::WebviewWindow,
+) -> Result<ProviderOperationOwnershipDiscovery, ProviderOperationError> {
+    require_window_label(&window, "discover_provider_operation_ownership")?;
+    Ok(provider_repair_core::discover_provider_operation_ownership())
 }

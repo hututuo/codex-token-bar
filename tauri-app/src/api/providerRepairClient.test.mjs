@@ -8,8 +8,9 @@ test("provider timeout latches safety while pre-admission status stays notStarte
     const {
       createProviderRepairSafetyLatch,
       reconcileProviderRepairOperation,
-    } = await load("/src/components/providerRepair/providerOperationCoordinator.ts");
+    } = await load("/src/services/providerRepairOperationCoordinator.ts");
     const latch = createProviderRepairSafetyLatch();
+    latch.completeBootstrap([]);
 
     await assert.rejects(executeProviderRepairMutation({
       mutation: async () => {
@@ -18,7 +19,8 @@ test("provider timeout latches safety while pre-admission status stays notStarte
       operationId: "operation-a",
       safetyLatch: latch,
     }), /timed out/i);
-    assert.equal(latch.getSnapshot(), "operation-a");
+    assert.equal(latch.getSnapshot().phase, "uncertain");
+    assert.deepEqual(latch.getSnapshot().operationIds, ["operation-a"]);
 
     const statuses = [
       { lifecycle: "notStarted", operationId: "operation-a" },
@@ -33,7 +35,58 @@ test("provider timeout latches safety while pre-admission status stays notStarte
     });
     assert.equal(outcome, "finished");
     assert.equal(latch.clearFinished("operation-a"), true);
-    assert.equal(latch.getSnapshot(), null);
+    assert.equal(latch.getSnapshot().phase, "ready");
+  });
+});
+
+test("timeout starts a fresh reconciliation generation after an early pre-admission budget is exhausted", async () => {
+  await withSsrModules(async (load) => {
+    const { executeProviderRepairMutation } = await load("/src/api/providerRepairClient.ts");
+    const {
+      createProviderRepairSafetyLatch,
+      reconcileProviderRepairOperation,
+    } = await load("/src/services/providerRepairOperationCoordinator.ts");
+    const latch = createProviderRepairSafetyLatch();
+    latch.completeBootstrap([]);
+    const invoke = deferred();
+    const mutation = executeProviderRepairMutation({
+      mutation: () => invoke.promise,
+      operationId: "operation-ordering",
+      safetyLatch: latch,
+    });
+    const pending = latch.getSnapshot();
+    assert.equal(pending.phase, "invokePending");
+
+    let admitted = false;
+    const earlyOutcome = await reconcileProviderRepairOperation({
+      maxNotStartedReads: 2,
+      operationId: "operation-ordering",
+      readStatus: async () => ({
+        lifecycle: admitted ? "active" : "notStarted",
+        operationId: "operation-ordering",
+      }),
+      signal: new AbortController().signal,
+      waitForNextPoll: async () => {},
+    });
+    assert.equal(earlyOutcome, "statusUnavailable");
+
+    admitted = true;
+    invoke.reject(new Error("Command timed out after 60000ms"));
+    await assert.rejects(mutation, /timed out/i);
+    const uncertain = latch.getSnapshot();
+    assert.equal(uncertain.phase, "uncertain");
+    assert.ok(uncertain.generation > pending.generation);
+
+    const statuses = [
+      { lifecycle: "active", operationId: "operation-ordering" },
+      { lifecycle: "finished", operationId: "operation-ordering" },
+    ];
+    assert.equal(await reconcileProviderRepairOperation({
+      operationId: "operation-ordering",
+      readStatus: async () => statuses.shift(),
+      signal: new AbortController().signal,
+      waitForNextPoll: async () => {},
+    }), "finished");
   });
 });
 
@@ -42,9 +95,10 @@ test("typed busy rejection survives command normalization and latches the real o
     const { normalizeCommandError } = await load("/src/api/command.ts");
     const { executeProviderRepairMutation } = await load("/src/api/providerRepairClient.ts");
     const { createProviderRepairSafetyLatch } = await load(
-      "/src/components/providerRepair/providerOperationCoordinator.ts",
+      "/src/services/providerRepairOperationCoordinator.ts",
     );
     const latch = createProviderRepairSafetyLatch();
+    latch.completeBootstrap([]);
     const normalized = normalizeCommandError({
       kind: "busy",
       activeOperationId: "operation-owner",
@@ -59,6 +113,16 @@ test("typed busy rejection survives command normalization and latches the real o
       safetyLatch: latch,
     }), /同一 Codex Home/);
 
-    assert.equal(latch.getSnapshot(), "operation-owner");
+    assert.deepEqual(latch.getSnapshot().operationIds, ["operation-owner"]);
   });
 });
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}

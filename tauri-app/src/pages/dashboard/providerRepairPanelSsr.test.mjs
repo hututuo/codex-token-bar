@@ -40,12 +40,12 @@ test("ProviderRepairPanel model disables close while a repair operation is busy"
       "/src/pages/dashboard/providerRepairPanelModel.ts",
     );
 
-    assert.deepEqual(buildProviderRepairPanelModel({ busy: false, open: true, snapshot: snapshotFixture() }), {
+    assert.deepEqual(buildProviderRepairPanelModel({ closeBlocked: false, open: true, snapshot: snapshotFixture() }), {
       closeDisabled: false,
       closeTitle: "关闭会话消失修复",
       autoScanOnMount: true,
     });
-    assert.deepEqual(buildProviderRepairPanelModel({ busy: true, open: true, snapshot: snapshotFixture() }), {
+    assert.deepEqual(buildProviderRepairPanelModel({ closeBlocked: true, open: true, snapshot: snapshotFixture() }), {
       closeDisabled: true,
       closeTitle: "正在执行修复操作，请等待当前步骤完成。",
       autoScanOnMount: false,
@@ -60,16 +60,16 @@ test("ProviderRepairPanel model scans only when opened on an unscanned repair sn
     );
 
     assert.equal(
-      buildProviderRepairPanelModel({ busy: false, open: true, snapshot: snapshotFixture() }).autoScanOnMount,
+      buildProviderRepairPanelModel({ closeBlocked: false, open: true, snapshot: snapshotFixture() }).autoScanOnMount,
       true,
     );
     assert.equal(
-      buildProviderRepairPanelModel({ busy: false, open: false, snapshot: snapshotFixture() }).autoScanOnMount,
+      buildProviderRepairPanelModel({ closeBlocked: false, open: false, snapshot: snapshotFixture() }).autoScanOnMount,
       false,
     );
     assert.equal(
       buildProviderRepairPanelModel({
-        busy: false,
+        closeBlocked: false,
         open: true,
         snapshot: snapshotFixture({
           detectedProvider: "codex",

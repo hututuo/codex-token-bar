@@ -3,17 +3,42 @@ const DEFAULT_MAX_STATUS_FAILURES = 3;
 const DEFAULT_MAX_NOT_STARTED_READS = 8;
 
 export type ProviderOperationLifecycle = "notStarted" | "active" | "finished";
+export type ProviderRepairSafetyPhase =
+  | "bootstrapping"
+  | "ready"
+  | "invokePending"
+  | "uncertain"
+  | "statusUnavailable";
 
 export interface ProviderOperationStatus {
   operationId: string;
   lifecycle: ProviderOperationLifecycle;
 }
 
+export interface ProviderOperationOwnership {
+  canonicalHome: string;
+  operationId: string;
+}
+
+export interface ProviderOperationOwnershipDiscovery {
+  activeOperations: ProviderOperationOwnership[];
+}
+
+export interface ProviderRepairSafetySnapshot {
+  generation: number;
+  operationIds: string[];
+  phase: ProviderRepairSafetyPhase;
+}
+
 export interface ProviderRepairSafetyLatch {
+  beginBootstrap: () => void;
   clearFinished: (operationId: string) => boolean;
-  getSnapshot: () => string | null;
-  latch: (operationId: string) => void;
-  subscribe: (listener: (operationId: string | null) => void) => () => void;
+  completeBootstrap: (operationIds: string[], expectedGeneration?: number) => boolean;
+  getSnapshot: () => ProviderRepairSafetySnapshot;
+  markInvokePending: (operationId: string) => void;
+  markStatusUnavailable: (expectedGeneration: number) => boolean;
+  markUncertain: (operationId: string) => void;
+  subscribe: (listener: (snapshot: ProviderRepairSafetySnapshot) => void) => () => void;
 }
 
 interface ReconcileProviderRepairOperationOptions {
@@ -25,35 +50,71 @@ interface ReconcileProviderRepairOperationOptions {
   waitForNextPoll?: (signal: AbortSignal) => Promise<void>;
 }
 
+interface BootstrapProviderRepairSafetyLatchOptions {
+  discoverOwnership: () => Promise<ProviderOperationOwnershipDiscovery>;
+  safetyLatch: ProviderRepairSafetyLatch;
+}
+
 export type ProviderOperationReconciliationOutcome = "aborted" | "finished" | "statusUnavailable";
+export type ProviderRepairBootstrapOutcome =
+  | "ownersDiscovered"
+  | "ready"
+  | "stale"
+  | "statusUnavailable";
 
 export function createProviderRepairSafetyLatch(): ProviderRepairSafetyLatch {
-  let operationId: string | null = null;
-  const listeners = new Set<(nextOperationId: string | null) => void>();
+  let snapshot: ProviderRepairSafetySnapshot = {
+    generation: 0,
+    operationIds: [],
+    phase: "bootstrapping",
+  };
+  const listeners = new Set<(nextSnapshot: ProviderRepairSafetySnapshot) => void>();
 
-  function publish(nextOperationId: string | null) {
-    if (operationId === nextOperationId) {
-      return;
-    }
-    operationId = nextOperationId;
+  function publish(phase: ProviderRepairSafetyPhase, operationIds: string[]) {
+    snapshot = {
+      generation: snapshot.generation + 1,
+      operationIds: [...new Set(operationIds)],
+      phase,
+    };
     for (const listener of listeners) {
-      listener(operationId);
+      listener(snapshot);
     }
   }
 
   return {
-    clearFinished(finishedOperationId) {
-      if (operationId !== finishedOperationId) {
+    beginBootstrap() {
+      publish("bootstrapping", []);
+    },
+    clearFinished(operationId) {
+      if (!snapshot.operationIds.includes(operationId)) {
         return false;
       }
-      publish(null);
+      const remaining = snapshot.operationIds.filter((candidate) => candidate !== operationId);
+      publish(remaining.length === 0 ? "ready" : "uncertain", remaining);
+      return true;
+    },
+    completeBootstrap(operationIds, expectedGeneration = snapshot.generation) {
+      if (snapshot.phase !== "bootstrapping" || snapshot.generation !== expectedGeneration) {
+        return false;
+      }
+      publish(operationIds.length === 0 ? "ready" : "uncertain", operationIds);
       return true;
     },
     getSnapshot() {
-      return operationId;
+      return snapshot;
     },
-    latch(nextOperationId) {
-      publish(nextOperationId);
+    markInvokePending(operationId) {
+      publish("invokePending", [operationId]);
+    },
+    markStatusUnavailable(expectedGeneration) {
+      if (snapshot.generation !== expectedGeneration) {
+        return false;
+      }
+      publish("statusUnavailable", snapshot.operationIds);
+      return true;
+    },
+    markUncertain(operationId) {
+      publish("uncertain", [operationId]);
     },
     subscribe(listener) {
       listeners.add(listener);
@@ -65,6 +126,41 @@ export function createProviderRepairSafetyLatch(): ProviderRepairSafetyLatch {
 }
 
 export const providerRepairSafetyLatch = createProviderRepairSafetyLatch();
+
+export function deriveProviderRepairInteractionState(
+  hasPendingLocalAction: boolean,
+  safetyPhase: ProviderRepairSafetyPhase,
+) {
+  return {
+    closeBlocked: hasPendingLocalAction
+      && safetyPhase !== "uncertain"
+      && safetyPhase !== "statusUnavailable",
+    controlsDisabled: hasPendingLocalAction || safetyPhase !== "ready",
+  };
+}
+
+export async function bootstrapProviderRepairSafetyLatch({
+  discoverOwnership,
+  safetyLatch,
+}: BootstrapProviderRepairSafetyLatchOptions): Promise<ProviderRepairBootstrapOutcome> {
+  const bootstrapSnapshot = safetyLatch.getSnapshot();
+  if (bootstrapSnapshot.phase !== "bootstrapping") {
+    return "stale";
+  }
+
+  try {
+    const discovery = await discoverOwnership();
+    const operationIds = discovery.activeOperations.map((operation) => operation.operationId);
+    if (!safetyLatch.completeBootstrap(operationIds, bootstrapSnapshot.generation)) {
+      return "stale";
+    }
+    return operationIds.length === 0 ? "ready" : "ownersDiscovered";
+  } catch {
+    return safetyLatch.markStatusUnavailable(bootstrapSnapshot.generation)
+      ? "statusUnavailable"
+      : "stale";
+  }
+}
 
 export async function reconcileProviderRepairOperation({
   maxNotStartedReads = DEFAULT_MAX_NOT_STARTED_READS,

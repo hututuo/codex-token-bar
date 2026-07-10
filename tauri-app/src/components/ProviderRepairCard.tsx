@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   createProviderBackup,
+  discoverProviderOperationOwnership,
   listProviderBackups,
   readProviderOperationStatus,
   rollbackProviderBackup,
@@ -21,15 +22,17 @@ import {
   type ProviderRepairOperationKind,
 } from "./providerRepair/operationController";
 import {
+  bootstrapProviderRepairSafetyLatch,
+  deriveProviderRepairInteractionState,
   providerRepairSafetyLatch,
   reconcileProviderRepairOperation,
-} from "./providerRepair/providerOperationCoordinator";
+} from "../services/providerRepairOperationCoordinator";
 import { ProviderRepairSteps } from "./providerRepair/ProviderRepairSteps";
 
 interface ProviderRepairCardProps {
   autoScanOnMount?: boolean;
   id?: string;
-  onBusyChange?: (busy: boolean) => void;
+  onCloseBlockedChange?: (blocked: boolean) => void;
   onSnapshotChange: (snapshot: ProviderRepairSnapshot) => void;
   snapshot: ProviderRepairSnapshot;
 }
@@ -37,7 +40,7 @@ interface ProviderRepairCardProps {
 export function ProviderRepairCard({
   autoScanOnMount = false,
   id,
-  onBusyChange,
+  onCloseBlockedChange,
   onSnapshotChange,
   snapshot,
 }: ProviderRepairCardProps) {
@@ -45,50 +48,93 @@ export function ProviderRepairCard({
   const [activeBackupId, setActiveBackupId] = useState<string | null>(null);
   const [message, setMessage] = useState(snapshot.status);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [outstandingOperationId, setOutstandingOperationId] = useState(
+  const [safetySnapshot, setSafetySnapshot] = useState(
     providerRepairSafetyLatch.getSnapshot,
   );
   const autoScanControllerRef = useRef(createProviderRepairAutoScanController());
   const operationControllerRef = useRef(createProviderRepairOperationController());
-  const busy = busyAction !== null || outstandingOperationId !== null;
+  const interactionState = deriveProviderRepairInteractionState(
+    busyAction !== null,
+    safetySnapshot.phase,
+  );
+  const busy = interactionState.controlsDisabled;
+  const closeBlocked = interactionState.closeBlocked;
 
   useEffect(() => {
     setMessage(snapshot.status);
   }, [snapshot.status]);
 
   useEffect(() => {
-    onBusyChange?.(busy);
-  }, [busy, onBusyChange]);
+    onCloseBlockedChange?.(closeBlocked);
+  }, [closeBlocked, onCloseBlockedChange]);
 
-  useEffect(() => providerRepairSafetyLatch.subscribe(setOutstandingOperationId), []);
+  useEffect(() => providerRepairSafetyLatch.subscribe(setSafetySnapshot), []);
 
   useEffect(() => {
-    if (outstandingOperationId === null) {
+    if (providerRepairSafetyLatch.getSnapshot().phase === "statusUnavailable") {
+      providerRepairSafetyLatch.beginBootstrap();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (safetySnapshot.phase !== "bootstrapping") {
+      return;
+    }
+
+    let cancelled = false;
+    void bootstrapProviderRepairSafetyLatch({
+      discoverOwnership: discoverProviderOperationOwnership,
+      safetyLatch: providerRepairSafetyLatch,
+    }).then((outcome) => {
+      if (cancelled) {
+        return;
+      }
+      if (outcome === "ownersDiscovered") {
+        setMessage("检测到后端仍有 Provider 写操作，正在核对完成状态。");
+      } else if (outcome === "statusUnavailable") {
+        setMessage("暂时无法读取 Provider 后端状态；修复操作保持禁用，可关闭后重新打开面板核对。");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [safetySnapshot.generation, safetySnapshot.phase]);
+
+  useEffect(() => {
+    if (safetySnapshot.phase !== "uncertain" || safetySnapshot.operationIds.length === 0) {
       return;
     }
 
     const controller = new AbortController();
-    void reconcileProviderRepairOperation({
-      operationId: outstandingOperationId,
+    const reconciliationGeneration = safetySnapshot.generation;
+    const operationIds = safetySnapshot.operationIds;
+    void Promise.all(operationIds.map((operationId) => reconcileProviderRepairOperation({
+      operationId,
       readStatus: readProviderOperationStatus,
       signal: controller.signal,
-    }).then((outcome) => {
+    }))).then((outcomes) => {
       if (controller.signal.aborted) {
         return;
       }
-      if (outcome === "finished") {
-        if (providerRepairSafetyLatch.clearFinished(outstandingOperationId)) {
-          setMessage("后端已确认 Provider 写操作结束，可以继续操作。");
+      if (outcomes.some((outcome) => outcome === "statusUnavailable")) {
+        if (providerRepairSafetyLatch.markStatusUnavailable(reconciliationGeneration)) {
+          setMessage("暂时无法确认 Provider 写操作状态；安全锁保持启用，可关闭后重新打开面板核对。");
         }
-      } else if (outcome === "statusUnavailable") {
-        setMessage("暂时无法确认 Provider 写操作状态；安全锁保持启用，重新打开面板后会再次核对。");
+        return;
+      }
+      if (outcomes.every((outcome) => outcome === "finished")) {
+        for (const operationId of operationIds) {
+          providerRepairSafetyLatch.clearFinished(operationId);
+        }
+        setMessage("后端已确认 Provider 写操作结束，可以继续操作。");
       }
     });
 
     return () => {
       controller.abort();
     };
-  }, [outstandingOperationId]);
+  }, [safetySnapshot.generation, safetySnapshot.operationIds, safetySnapshot.phase]);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,14 +150,14 @@ export function ProviderRepairCard({
   }, []);
 
   useEffect(() => {
-    if (outstandingOperationId !== null) {
+    if (safetySnapshot.phase !== "ready") {
       return;
     }
     if (!autoScanControllerRef.current.shouldStart(autoScanOnMount)) {
       return;
     }
     void runScan();
-  }, [autoScanOnMount, outstandingOperationId]);
+  }, [autoScanOnMount, safetySnapshot.phase]);
 
   async function runScan() {
     await run("scan", scanProviderRepair, (next) => {
@@ -150,7 +196,7 @@ export function ProviderRepairCard({
     operation: () => Promise<T>,
     publishResult: (result: T) => void,
   ) {
-    if (providerRepairSafetyLatch.getSnapshot() !== null) {
+    if (providerRepairSafetyLatch.getSnapshot().phase !== "ready") {
       setMessage("Provider 写操作状态尚未确认，修复操作保持禁用。");
       return;
     }
@@ -170,7 +216,7 @@ export function ProviderRepairCard({
       }
     } catch (error) {
       accepted = operationControllerRef.current.finish(started.operation);
-      if (accepted && providerRepairSafetyLatch.getSnapshot() === null) {
+      if (accepted && providerRepairSafetyLatch.getSnapshot().phase === "ready") {
         setMessage(error instanceof Error ? error.message : String(error));
       }
     } finally {

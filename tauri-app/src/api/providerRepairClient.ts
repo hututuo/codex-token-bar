@@ -7,14 +7,18 @@ import { fallbackProviderRepairSnapshot } from "./fallback";
 import { callCommand, callCommandStrict } from "./command";
 import {
   providerRepairSafetyLatch,
+  type ProviderOperationOwnershipDiscovery,
   type ProviderOperationStatus,
   type ProviderRepairSafetyLatch,
-} from "../components/providerRepair/providerOperationCoordinator";
+} from "../services/providerRepairOperationCoordinator";
 
 const PROVIDER_MUTATION_TIMEOUT_MS = 60_000;
 const PROVIDER_STATUS_TIMEOUT_MS = 5_000;
 
-export type { ProviderOperationStatus } from "../components/providerRepair/providerOperationCoordinator";
+export type {
+  ProviderOperationOwnershipDiscovery,
+  ProviderOperationStatus,
+} from "../services/providerRepairOperationCoordinator";
 
 interface ProviderOperationBackendError {
   kind: "busy" | "failed";
@@ -69,13 +73,21 @@ export function readProviderOperationStatus(operationId: string): Promise<Provid
   );
 }
 
+export function discoverProviderOperationOwnership(): Promise<ProviderOperationOwnershipDiscovery> {
+  return callCommandStrict<ProviderOperationOwnershipDiscovery>(
+    "discover_provider_operation_ownership",
+    undefined,
+    PROVIDER_STATUS_TIMEOUT_MS,
+  );
+}
+
 export async function executeProviderRepairMutation<T>({
   mutation,
   onUncertain,
   operationId,
   safetyLatch = providerRepairSafetyLatch,
 }: ExecuteProviderRepairMutationOptions<T>): Promise<T> {
-  safetyLatch.latch(operationId);
+  safetyLatch.markInvokePending(operationId);
   try {
     const result = await mutation();
     safetyLatch.clearFinished(operationId);
@@ -93,7 +105,7 @@ export async function executeProviderRepairMutation<T>({
       throw backendError ? new Error(backendError.message) : error;
     }
 
-    safetyLatch.latch(reconciliationId);
+    safetyLatch.markUncertain(reconciliationId);
     onUncertain?.(reconciliationId);
     throw backendError ? new Error(backendError.message) : error;
   }

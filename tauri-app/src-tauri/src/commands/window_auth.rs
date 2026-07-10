@@ -21,6 +21,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "verify_provider_repair",
     "rollback_provider_backup",
     "read_provider_operation_status",
+    "discover_provider_operation_ownership",
     "read_codex_radar_full_snapshot",
 ];
 

@@ -1,16 +1,16 @@
 import type { ProviderRepairSnapshot } from "../../types/dashboard";
 
 interface ProviderRepairPanelModelInput {
-  busy: boolean;
+  closeBlocked: boolean;
   open: boolean;
   snapshot: ProviderRepairSnapshot;
 }
 
-export function buildProviderRepairPanelModel({ busy, open, snapshot }: ProviderRepairPanelModelInput) {
+export function buildProviderRepairPanelModel({ closeBlocked, open, snapshot }: ProviderRepairPanelModelInput) {
   return {
-    autoScanOnMount: open && !busy && shouldAutoScanProviderRepair(snapshot),
-    closeDisabled: busy,
-    closeTitle: busy ? "正在执行修复操作，请等待当前步骤完成。" : "关闭会话消失修复",
+    autoScanOnMount: open && !closeBlocked && shouldAutoScanProviderRepair(snapshot),
+    closeDisabled: closeBlocked,
+    closeTitle: closeBlocked ? "正在执行修复操作，请等待当前步骤完成。" : "关闭会话消失修复",
   };
 }
 

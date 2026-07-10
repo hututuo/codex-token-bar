@@ -296,6 +296,60 @@ fn operation_status_keeps_home_a_active_after_selected_source_changes_to_home_b(
 }
 
 #[test]
+fn discovery_reports_active_provider_owners_without_operation_ids() {
+    let home_a = temp_root("provider-operation-discovery-a");
+    let home_b = temp_root("provider-operation-discovery-b");
+    fs::create_dir_all(&home_a).unwrap();
+    fs::create_dir_all(&home_b).unwrap();
+    let operation_a = operation_id(&home_a, "operation-a");
+    let operation_b = operation_id(&home_b, "operation-b");
+    let canonical_home_a = canonical_codex_home(&home_a).unwrap();
+    let canonical_home_b = canonical_codex_home(&home_b).unwrap();
+    let lease_a = acquire_provider_operation_lease(&home_a, &operation_a).unwrap();
+    let lease_b = acquire_provider_operation_lease(&home_b, &operation_b).unwrap();
+
+    let discovery = discover_provider_operation_ownership();
+    let discovered_owners = discovery
+        .active_operations
+        .into_iter()
+        .filter(|owner| owner.operation_id == operation_a || owner.operation_id == operation_b)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        discovered_owners,
+        vec![
+            ProviderOperationOwnership {
+                operation_id: operation_a.clone(),
+                canonical_home: canonical_home_a,
+            },
+            ProviderOperationOwnership {
+                operation_id: operation_b.clone(),
+                canonical_home: canonical_home_b.clone(),
+            },
+        ]
+    );
+
+    drop(lease_a);
+    let after_first_drop = discover_provider_operation_ownership();
+    assert!(!after_first_drop
+        .active_operations
+        .iter()
+        .any(|owner| owner.operation_id == operation_a));
+    assert!(after_first_drop
+        .active_operations
+        .iter()
+        .any(|owner| owner.operation_id == operation_b
+            && owner.canonical_home == canonical_home_b));
+
+    drop(lease_b);
+    assert!(!discover_provider_operation_ownership()
+        .active_operations
+        .iter()
+        .any(|owner| owner.operation_id == operation_a || owner.operation_id == operation_b));
+    fs::remove_dir_all(home_a).unwrap();
+    fs::remove_dir_all(home_b).unwrap();
+}
+
+#[test]
 fn provider_operation_lease_releases_after_mutation_error() {
     let root = temp_root("provider-operation-error-release");
     fs::create_dir_all(&root).unwrap();

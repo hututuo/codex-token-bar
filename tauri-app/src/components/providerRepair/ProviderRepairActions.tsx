@@ -18,7 +18,9 @@ export function ProviderRepairActions({
   onVerify,
 }: ProviderRepairActionsProps) {
   const actions = buildProviderRepairActionModel({ activeBackupId, busy });
-  const missingBackupNote = !busy && !activeBackupId ? actions.sync.reason : null;
+  const missingBackupNote = !activeBackupId
+    ? buildProviderRepairActionModel({ activeBackupId, busy: false }).sync.reason
+    : null;
 
   return (
     <>
