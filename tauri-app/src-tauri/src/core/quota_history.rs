@@ -9,7 +9,7 @@ use crate::models::RecentUsagePoint;
 use rusqlite::{Connection, Result as SqlResult};
 #[cfg(test)]
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use time::OffsetDateTime;
@@ -33,7 +33,59 @@ const HEARTBEAT_SECONDS: f64 = 60.0 * 60.0;
 const RETENTION_DAYS: i64 = 45;
 const RECENT_BIN_COUNT: usize = 289;
 const QUOTA_HISTORY_SOURCE: &str = "tauri";
+pub(crate) const QUOTA_HISTORY_IDENTITY_VERSION: i64 = 1;
+const CODEX_MAIN_LIMIT_ID: &str = "codex";
 static QUOTA_HISTORY_DATABASE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct QuotaHistoryIdentity {
+    version: i64,
+    home_identity: String,
+    stable_account_key: String,
+    plan_type: String,
+    limit_id: String,
+}
+
+impl QuotaHistoryIdentity {
+    pub(crate) fn from_bundle(
+        canonical_codex_home: &Path,
+        stable_account_key: Option<&str>,
+        bundle: &AccountQuotaBundle,
+    ) -> Option<Self> {
+        Self::from_canonical_parts(
+            canonical_codex_home,
+            stable_account_key,
+            &bundle.account.plan_label,
+            CODEX_MAIN_LIMIT_ID,
+        )
+    }
+
+    pub(crate) fn from_canonical_parts(
+        canonical_codex_home: &Path,
+        stable_account_key: Option<&str>,
+        plan_type: &str,
+        limit_id: &str,
+    ) -> Option<Self> {
+        let home_identity = canonical_codex_home
+            .to_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?
+            .to_string();
+        let stable_account_key = stable_account_key
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?
+            .to_string();
+        let limit_id = canonical_limit_name(Some(limit_id))?;
+        let plan_type = canonical_plan_type(Some(plan_type), Some(&limit_id))?;
+        Some(Self {
+            version: QUOTA_HISTORY_IDENTITY_VERSION,
+            home_identity,
+            stable_account_key,
+            plan_type,
+            limit_id,
+        })
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct QuotaHistoryBundle {
@@ -43,26 +95,27 @@ pub struct QuotaHistoryBundle {
     pub recent_30d: Vec<QuotaHistoryPoint>,
 }
 
-pub fn record_bundle(bundle: &AccountQuotaBundle) -> Result<(), String> {
+pub fn record_bundle(
+    identity: &QuotaHistoryIdentity,
+    bundle: &AccountQuotaBundle,
+) -> Result<(), String> {
     if !quota_available(&bundle.quota) {
         return Ok(());
     }
     QuotaHistoryDatabase::default()?
-        .record(bundle)
+        .record_for_identity(Some(identity), bundle)
+        .map(|_| ())
         .map_err(|error| format!("写入额度历史失败：{error}"))
 }
 
 pub fn history_bundle_for(
+    identity: &QuotaHistoryIdentity,
     bundle: &AccountQuotaBundle,
     day_count: usize,
 ) -> Result<QuotaHistoryBundle, String> {
     QuotaHistoryDatabase::default()?
-        .history_bundle_for(bundle, day_count, RECENT_BIN_COUNT)
+        .history_bundle_for_identity(Some(identity), bundle, day_count, RECENT_BIN_COUNT)
         .map_err(|error| format!("读取额度历史失败：{error}"))
-}
-
-pub fn legacy_history_key(bundle: &AccountQuotaBundle) -> String {
-    QuotaHistoryRow::from_bundle(bundle, 0.0).history_match_key()
 }
 
 #[cfg(test)]
@@ -103,23 +156,42 @@ impl QuotaHistoryDatabase {
             .ok_or_else(|| "无法定位系统应用支持目录，不能读取额度历史".into())
     }
 
-    fn record(&self, bundle: &AccountQuotaBundle) -> SqlResult<()> {
+    fn record_for_identity(
+        &self,
+        identity: Option<&QuotaHistoryIdentity>,
+        bundle: &AccountQuotaBundle,
+    ) -> SqlResult<bool> {
+        let Some(identity) = identity else {
+            return Ok(false);
+        };
         let _database_guard = quota_history_database_guard();
         let connection = self.open()?;
         let now = now_unix();
         ensure_schema(&connection)?;
-        let row = QuotaHistoryRow::from_bundle(bundle, now);
+        let row = QuotaHistoryRow::from_bundle(identity, bundle, now);
         let latest = latest_trusted_row(&connection, &row)?;
         let normalized = row.normalized_after(latest.as_ref());
         if latest
             .as_ref()
             .is_some_and(|latest| !should_insert(&normalized, latest, now))
         {
-            return Ok(());
+            return Ok(true);
         }
         insert_row(&connection, &normalized)?;
         prune(&connection, now)?;
-        Ok(())
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    fn record(&self, bundle: &AccountQuotaBundle) -> SqlResult<()> {
+        let stable_account_key = format!("sub:test:{}", bundle.account.display_name);
+        let identity = QuotaHistoryIdentity::from_bundle(
+            self.path.parent().unwrap_or_else(|| Path::new("/fixture/test-home")),
+            Some(&stable_account_key),
+            bundle,
+        )
+        .expect("test quota bundle must have a stable history identity");
+        self.record_for_identity(Some(&identity), bundle).map(|_| ())
     }
 
     #[cfg(test)]
@@ -173,22 +245,59 @@ impl QuotaHistoryDatabase {
         })
     }
 
-    fn history_bundle_for(
+    fn history_bundle_for_identity(
         &self,
+        identity: Option<&QuotaHistoryIdentity>,
         bundle: &AccountQuotaBundle,
         day_count: usize,
         recent_count: usize,
     ) -> SqlResult<QuotaHistoryBundle> {
+        let Some(identity) = identity else {
+            return Ok(QuotaHistoryBundle::default());
+        };
         let _database_guard = quota_history_database_guard();
         let connection = self.open()?;
         ensure_schema(&connection)?;
-        let filter_row = QuotaHistoryRow::from_bundle(bundle, now_unix());
+        let filter_row = QuotaHistoryRow::from_bundle(identity, bundle, now_unix());
         let rows = rows_since_for_row(
             &connection,
             day_count.max(31) as f64 * 24.0 * 60.0 * 60.0,
             &filter_row,
         )?;
         Ok(history_bundle_from_rows(rows, recent_count))
+    }
+
+    #[cfg(test)]
+    fn history_bundle_for(
+        &self,
+        bundle: &AccountQuotaBundle,
+        day_count: usize,
+        recent_count: usize,
+    ) -> SqlResult<QuotaHistoryBundle> {
+        let stable_account_key = format!("sub:test:{}", bundle.account.display_name);
+        let identity = QuotaHistoryIdentity::from_bundle(
+            self.path.parent().unwrap_or_else(|| Path::new("/fixture/test-home")),
+            Some(&stable_account_key),
+            bundle,
+        );
+        self.history_bundle_for_identity(identity.as_ref(), bundle, day_count, recent_count)
+    }
+
+    #[cfg(test)]
+    fn rows_for_identity(
+        &self,
+        identity: Option<&QuotaHistoryIdentity>,
+        bundle: &AccountQuotaBundle,
+        age_seconds: f64,
+    ) -> SqlResult<Vec<QuotaHistoryRow>> {
+        let Some(identity) = identity else {
+            return Ok(Vec::new());
+        };
+        let _database_guard = quota_history_database_guard();
+        let connection = self.open()?;
+        ensure_schema(&connection)?;
+        let filter_row = QuotaHistoryRow::from_bundle(identity, bundle, now_unix());
+        rows_since_for_row(&connection, age_seconds, &filter_row)
     }
 
     fn open(&self) -> SqlResult<Connection> {
@@ -212,15 +321,23 @@ struct QuotaHistoryRow {
     seven_day_used_percent: Option<i32>,
     seven_day_resets_at: Option<f64>,
     status: String,
+    identity_version: Option<i64>,
+    home_identity: Option<String>,
+    stable_account_key: Option<String>,
+    identity_plan_type: Option<String>,
+    identity_limit_id: Option<String>,
 }
 
 impl QuotaHistoryRow {
-    fn from_bundle(bundle: &AccountQuotaBundle, created_at: f64) -> Self {
+    fn from_bundle(
+        identity: &QuotaHistoryIdentity,
+        bundle: &AccountQuotaBundle,
+        created_at: f64,
+    ) -> Self {
         let account_name =
             Some(bundle.account.display_name.clone()).filter(|value| !value.trim().is_empty());
-        let limit_name = Some("codex".to_string());
-        let plan_type =
-            canonical_plan_type(Some(&bundle.account.plan_label), limit_name.as_deref());
+        let limit_name = Some(identity.limit_id.clone());
+        let plan_type = Some(identity.plan_type.clone());
         let account_key = canonical_account_key(
             account_name.as_deref(),
             plan_type.as_deref(),
@@ -239,6 +356,11 @@ impl QuotaHistoryRow {
             seven_day_used_percent: measured_used_percent(&bundle.quota.seven_day),
             seven_day_resets_at: measured_reset_timestamp(&bundle.quota.seven_day),
             status: bundle.quota.pace_label.clone(),
+            identity_version: Some(identity.version),
+            home_identity: Some(identity.home_identity.clone()),
+            stable_account_key: Some(identity.stable_account_key.clone()),
+            identity_plan_type: Some(identity.plan_type.clone()),
+            identity_limit_id: Some(identity.limit_id.clone()),
         }
     }
 
@@ -281,6 +403,27 @@ impl QuotaHistoryRow {
 
     fn match_limit_name(&self) -> Option<String> {
         canonical_limit_name(self.limit_name.as_deref())
+    }
+
+    fn stable_identity(&self) -> Option<QuotaHistoryIdentity> {
+        let version = self.identity_version?;
+        if version != QUOTA_HISTORY_IDENTITY_VERSION {
+            return None;
+        }
+        let home_identity = nonempty_owned(self.home_identity.as_deref())?;
+        let stable_account_key = nonempty_owned(self.stable_account_key.as_deref())?;
+        let plan_type = canonical_plan_type(
+            self.identity_plan_type.as_deref(),
+            self.identity_limit_id.as_deref(),
+        )?;
+        let limit_id = canonical_limit_name(self.identity_limit_id.as_deref())?;
+        Some(QuotaHistoryIdentity {
+            version,
+            home_identity,
+            stable_account_key,
+            plan_type,
+            limit_id,
+        })
     }
 
     fn five_hour_remaining(&self) -> Option<f64> {
@@ -402,6 +545,13 @@ fn canonical_account_name(account_name: Option<&str>, fallback_key: Option<&str>
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         })
+}
+
+fn nonempty_owned(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn canonical_plan_type(plan_type: Option<&str>, _limit_name: Option<&str>) -> Option<String> {

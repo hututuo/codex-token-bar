@@ -68,18 +68,16 @@ impl QuotaCacheScope {
             && self.flight_fingerprint == current.flight_fingerprint
     }
 
-    fn history_scope(&self) -> Option<QuotaHistoryScope> {
-        Some(QuotaHistoryScope {
-            codex_home: self.codex_home.clone(),
-            account_key: self.account_key.clone()?,
-        })
+    fn history_identity(
+        &self,
+        bundle: &AccountQuotaBundle,
+    ) -> Option<quota_history::QuotaHistoryIdentity> {
+        quota_history::QuotaHistoryIdentity::from_bundle(
+            &self.codex_home,
+            self.account_key.as_deref(),
+            bundle,
+        )
     }
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct QuotaHistoryScope {
-    codex_home: PathBuf,
-    account_key: String,
 }
 
 #[derive(Clone)]
@@ -97,43 +95,21 @@ struct QuotaHistoryCacheEntry {
 
 #[derive(Default)]
 struct QuotaHistoryMemoryCache {
-    entries: HashMap<QuotaHistoryScope, QuotaHistoryCacheEntry>,
-    legacy_owners: HashMap<String, Option<QuotaHistoryScope>>,
+    entries: HashMap<quota_history::QuotaHistoryIdentity, QuotaHistoryCacheEntry>,
 }
 
 impl QuotaHistoryMemoryCache {
-    fn claim_legacy_scope(&mut self, scope: &QuotaHistoryScope, legacy_key: &str) -> bool {
-        match self.legacy_owners.get(legacy_key) {
-            Some(Some(owner)) if owner == scope => true,
-            Some(Some(_)) => {
-                self.legacy_owners.insert(legacy_key.into(), None);
-                false
-            }
-            Some(None) => false,
-            None => {
-                self.legacy_owners
-                    .insert(legacy_key.into(), Some(scope.clone()));
-                true
-            }
-        }
-    }
-
     fn load_or_refresh<F>(
         &mut self,
-        scope: &QuotaHistoryScope,
-        legacy_key: &str,
+        identity: &quota_history::QuotaHistoryIdentity,
         force_refresh: bool,
         mut loader: F,
     ) -> Result<quota_history::QuotaHistoryBundle, String>
     where
         F: FnMut() -> Result<quota_history::QuotaHistoryBundle, String>,
     {
-        if !self.claim_legacy_scope(scope, legacy_key) {
-            return Ok(quota_history::QuotaHistoryBundle::default());
-        }
-
         if !force_refresh {
-            if let Some(entry) = self.entries.get(scope) {
+            if let Some(entry) = self.entries.get(identity) {
                 if entry.cached_at.elapsed() <= HISTORY_CACHE_TTL {
                     return Ok(entry.bundle.clone());
                 }
@@ -142,7 +118,7 @@ impl QuotaHistoryMemoryCache {
 
         let bundle = loader()?;
         self.entries.insert(
-            scope.clone(),
+            identity.clone(),
             QuotaHistoryCacheEntry {
                 bundle: bundle.clone(),
                 cached_at: Instant::now(),
@@ -485,23 +461,14 @@ fn finalize_account_quota(
     scope: &QuotaCacheScope,
     mut bundle: AccountQuotaBundle,
 ) -> Result<AccountQuotaBundle, String> {
-    let Some(history_scope) = scope.history_scope() else {
+    let Some(history_identity) = scope.history_identity(&bundle) else {
         return Ok(bundle);
     };
-    let legacy_key = quota_history::legacy_history_key(&bundle);
-    let cache = QUOTA_HISTORY_CACHE.get_or_init(|| Mutex::new(QuotaHistoryMemoryCache::default()));
-    let scope_is_safe = cache
-        .lock()
-        .map_err(|error| error.to_string())?
-        .claim_legacy_scope(&history_scope, &legacy_key);
-    if !scope_is_safe {
-        return Ok(bundle);
-    }
-    if let Err(error) = quota_history::record_bundle(&bundle) {
+    if let Err(error) = quota_history::record_bundle(&history_identity, &bundle) {
         bundle.warnings.push(quota_history::warning(error));
         return Ok(bundle);
     }
-    refresh_quota_histories(&mut bundle, &history_scope, true);
+    refresh_quota_histories(&mut bundle, &history_identity, true);
     Ok(bundle)
 }
 
@@ -584,18 +551,17 @@ fn stale_quota_bundle(
 
 fn refresh_quota_histories(
     bundle: &mut AccountQuotaBundle,
-    scope: &QuotaHistoryScope,
+    identity: &quota_history::QuotaHistoryIdentity,
     force_refresh: bool,
 ) {
     let cache = QUOTA_HISTORY_CACHE.get_or_init(|| Mutex::new(QuotaHistoryMemoryCache::default()));
-    let legacy_key = quota_history::legacy_history_key(bundle);
     let history_request = bundle.clone();
     let history = cache
         .lock()
         .map_err(|error| error.to_string())
         .and_then(|mut cache| {
-            cache.load_or_refresh(scope, &legacy_key, force_refresh, || {
-                quota_history::history_bundle_for(&history_request, 365)
+            cache.load_or_refresh(identity, force_refresh, || {
+                quota_history::history_bundle_for(identity, &history_request, 365)
             })
         });
 
@@ -1483,8 +1449,8 @@ mod tests {
         use std::cell::Cell;
 
         let mut cache = QuotaHistoryMemoryCache::default();
-        let scope = quota_cache_scope(Path::new("history-home"), Some("sub:history".into()))
-            .history_scope()
+        let identity = quota_cache_scope(Path::new("history-home"), Some("sub:history".into()))
+            .history_identity(&measured_quota_bundle("History User"))
             .unwrap();
         let load_count = Cell::new(0);
         let mut loader = || {
@@ -1502,26 +1468,36 @@ mod tests {
         };
 
         let first = cache
-            .load_or_refresh(&scope, "history|Pro|codex", false, &mut loader)
+            .load_or_refresh(&identity, false, &mut loader)
             .unwrap();
         let second = cache
-            .load_or_refresh(&scope, "history|Pro|codex", false, &mut loader)
+            .load_or_refresh(&identity, false, &mut loader)
             .unwrap();
         assert_eq!(load_count.get(), 1);
         assert_eq!(first.recent_24h[0].label, "load-1");
         assert_eq!(second.recent_24h[0].label, "load-1");
 
         let forced = cache
-            .load_or_refresh(&scope, "history|Pro|codex", true, &mut loader)
+            .load_or_refresh(&identity, true, &mut loader)
             .unwrap();
         assert_eq!(load_count.get(), 2);
         assert_eq!(forced.recent_24h[0].label, "load-2");
+
+        let failed = cache.load_or_refresh(&identity, true, || Err("history failed".into()));
+        assert!(failed.is_err());
+        let preserved = cache
+            .load_or_refresh(&identity, false, || {
+                panic!("failed refresh must preserve the stable identity cache")
+            })
+            .unwrap();
+        assert_eq!(preserved.recent_24h[0].label, "load-2");
     }
 
     #[test]
-    fn stable_account_token_rotation_keeps_history_scope_owned() {
+    fn stable_account_token_rotation_keeps_history_identity_owned() {
         let mut cache = QuotaHistoryMemoryCache::default();
         let codex_home = PathBuf::from("rotation-home");
+        let bundle = measured_quota_bundle("Stable User");
         let before_rotation = QuotaCacheScope {
             codex_home: codex_home.clone(),
             account_key: Some("sub:stable-account".into()),
@@ -1532,37 +1508,33 @@ mod tests {
             account_key: Some("sub:stable-account".into()),
             flight_fingerprint: [2; 32],
         };
-        let before_history_scope = before_rotation.history_scope().unwrap();
-        let after_history_scope = after_rotation.history_scope().unwrap();
-        let legacy_key = "stable-account|Pro|codex";
+        let before_history_identity = before_rotation.history_identity(&bundle).unwrap();
+        let after_history_identity = after_rotation.history_identity(&bundle).unwrap();
 
         let first = cache
-            .load_or_refresh(&before_history_scope, legacy_key, true, || {
+            .load_or_refresh(&before_history_identity, true, || {
                 Ok(history_bundle_fixture("before-rotation"))
             })
             .unwrap();
         let second = cache
-            .load_or_refresh(&after_history_scope, legacy_key, true, || {
+            .load_or_refresh(&after_history_identity, true, || {
                 Ok(history_bundle_fixture("after-rotation"))
             })
             .unwrap();
 
-        assert_eq!(before_history_scope, after_history_scope);
+        assert_eq!(before_history_identity, after_history_identity);
         assert_eq!(first.recent_24h[0].label, "before-rotation");
         assert_eq!(
             second.recent_24h.first().map(|point| point.label.as_str()),
             Some("after-rotation")
         );
-        assert!(cache
-            .legacy_owners
-            .get(legacy_key)
-            .is_some_and(Option::is_some));
     }
 
     #[test]
-    fn different_stable_accounts_do_not_share_history_scope() {
+    fn different_stable_accounts_do_not_share_history_identity() {
         let mut cache = QuotaHistoryMemoryCache::default();
         let codex_home = PathBuf::from("shared-home");
+        let bundle = measured_quota_bundle("Shared User");
         let account_a = QuotaCacheScope {
             codex_home: codex_home.clone(),
             account_key: Some("sub:account-a".into()),
@@ -1573,164 +1545,44 @@ mod tests {
             account_key: Some("sub:account-b".into()),
             flight_fingerprint: [4; 32],
         };
-        let history_scope_a = account_a.history_scope().unwrap();
-        let history_scope_b = account_b.history_scope().unwrap();
-        let legacy_key = "shared-name|Pro|codex";
+        let identity_a = account_a.history_identity(&bundle).unwrap();
+        let identity_b = account_b.history_identity(&bundle).unwrap();
 
         let a = cache
-            .load_or_refresh(&history_scope_a, legacy_key, true, || {
+            .load_or_refresh(&identity_a, true, || {
                 Ok(history_bundle_fixture("account-a"))
             })
             .unwrap();
         let b = cache
-            .load_or_refresh(&history_scope_b, legacy_key, true, || {
-                Ok(history_bundle_fixture("must-not-publish"))
+            .load_or_refresh(&identity_b, true, || {
+                Ok(history_bundle_fixture("account-b"))
             })
             .unwrap();
 
-        assert_ne!(history_scope_a, history_scope_b);
+        assert_ne!(identity_a, identity_b);
         assert_eq!(a.recent_24h[0].label, "account-a");
-        assert!(b.recent_24h.is_empty());
-        assert!(cache.legacy_owners.get(legacy_key).is_some_and(Option::is_none));
+        assert_eq!(b.recent_24h[0].label, "account-b");
     }
 
     #[test]
-    fn missing_stable_account_key_cannot_own_history_scope() {
+    fn missing_stable_account_key_or_plan_cannot_create_history_identity() {
         let scope = QuotaCacheScope {
             codex_home: PathBuf::from("unkeyed-home"),
             account_key: None,
             flight_fingerprint: [5; 32],
         };
+        assert!(scope
+            .history_identity(&measured_quota_bundle("Unknown User"))
+            .is_none());
 
-        assert!(scope.history_scope().is_none());
-    }
-
-    #[test]
-    fn quota_history_memory_cache_is_scope_aware_and_fails_closed_for_legacy_name_collision() {
-        let mut cache = QuotaHistoryMemoryCache::default();
-        let scope_a = quota_cache_scope(Path::new("history-home-a"), Some("sub:a".into()))
-            .history_scope()
-            .unwrap();
-        let scope_b = quota_cache_scope(Path::new("history-home-b"), Some("sub:b".into()))
-            .history_scope()
-            .unwrap();
-
-        let a = cache
-            .load_or_refresh(&scope_a, "account-a|Pro|codex", true, || {
-                Ok(history_bundle_fixture("a"))
-            })
-            .unwrap();
-        let b = cache
-            .load_or_refresh(&scope_b, "account-b|Pro|codex", true, || {
-                Ok(history_bundle_fixture("b"))
-            })
-            .unwrap();
-        let cached_a = cache
-            .load_or_refresh(&scope_a, "account-a|Pro|codex", false, || {
-                panic!("same-scope cache hit must preserve trusted A history")
-            })
-            .unwrap();
-
-        assert_eq!(a.recent_24h[0].label, "a");
-        assert_eq!(b.recent_24h[0].label, "b");
-        assert_eq!(cached_a.recent_24h[0].label, "a");
-
-        let failed_refresh = cache.load_or_refresh(
-            &scope_a,
-            "account-a|Pro|codex",
-            true,
-            || Err("record failed".into()),
-        );
-        assert!(failed_refresh.is_err());
-        let preserved_a = cache
-            .load_or_refresh(&scope_a, "account-a|Pro|codex", false, || {
-                panic!("record failure must preserve trusted same-scope history")
-            })
-            .unwrap();
-        assert_eq!(preserved_a.recent_24h[0].label, "a");
-
-        let same_name_b = cache
-            .load_or_refresh(&scope_b, "shared-name|Pro|codex", true, || {
-                Ok(history_bundle_fixture("must-not-publish"))
-            })
-            .unwrap();
-        let same_name_a = cache
-            .load_or_refresh(&scope_a, "shared-name|Pro|codex", true, || {
-                Ok(history_bundle_fixture("a-shared"))
-            })
-            .unwrap();
-        assert!(same_name_b.recent_24h.is_empty() || same_name_a.recent_24h.is_empty());
-        assert!(!same_name_a
-            .recent_24h
-            .iter()
-            .any(|point| point.label == "must-not-publish"));
-    }
-
-    #[test]
-    fn legacy_history_scope_is_claimed_before_recording_and_invalidated_on_collision() {
-        let mut cache = QuotaHistoryMemoryCache::default();
-        let scope_a = quota_cache_scope(Path::new("claim-home-a"), Some("sub:a".into()))
-            .history_scope()
-            .unwrap();
-        let scope_b = quota_cache_scope(Path::new("claim-home-b"), Some("sub:b".into()))
-            .history_scope()
-            .unwrap();
-        let legacy_key = "shared-name|Pro|codex";
-
-        assert!(cache.claim_legacy_scope(&scope_a, legacy_key));
-        assert!(!cache.claim_legacy_scope(&scope_b, legacy_key));
-        let a_after_collision = cache
-            .load_or_refresh(&scope_a, legacy_key, true, || {
-                panic!("ambiguous legacy identity must not reach database load")
-            })
-            .unwrap();
-        assert!(a_after_collision.recent_24h.is_empty());
-    }
-
-    #[test]
-    fn concurrent_same_name_history_claims_publish_no_cross_scope_history() {
-        use std::sync::Barrier;
-
-        let cache = Arc::new(Mutex::new(QuotaHistoryMemoryCache::default()));
-        let barrier = Arc::new(Barrier::new(3));
-        let claims_done = Arc::new(Barrier::new(3));
-        let scopes = [
-            quota_cache_scope(Path::new("concurrent-history-a"), Some("sub:a".into()))
-                .history_scope()
-                .unwrap(),
-            quota_cache_scope(Path::new("concurrent-history-b"), Some("sub:b".into()))
-                .history_scope()
-                .unwrap(),
-        ];
-        let handles = scopes
-            .into_iter()
-            .map(|scope| {
-                let cache = cache.clone();
-                let barrier = barrier.clone();
-                let claims_done = claims_done.clone();
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    cache
-                        .lock()
-                        .unwrap()
-                        .claim_legacy_scope(&scope, "shared-name|Pro|codex");
-                    claims_done.wait();
-                    cache
-                        .lock()
-                        .unwrap()
-                        .load_or_refresh(&scope, "shared-name|Pro|codex", true, || {
-                            panic!("ambiguous concurrent identity must not load history")
-                        })
-                        .unwrap()
-                })
-            })
-            .collect::<Vec<_>>();
-
-        barrier.wait();
-        claims_done.wait();
-        for handle in handles {
-            assert!(handle.join().unwrap().recent_24h.is_empty());
-        }
+        let keyed_scope = QuotaCacheScope {
+            codex_home: PathBuf::from("unknown-plan-home"),
+            account_key: Some("sub:unknown-plan".into()),
+            flight_fingerprint: [6; 32],
+        };
+        let mut unknown_plan = measured_quota_bundle("Unknown User");
+        unknown_plan.account.plan_label = "计划待读取".into();
+        assert!(keyed_scope.history_identity(&unknown_plan).is_none());
     }
 
     #[test]

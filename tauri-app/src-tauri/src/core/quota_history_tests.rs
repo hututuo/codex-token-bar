@@ -1,6 +1,127 @@
 use super::*;
 use crate::models::{AccountInfo, QuotaLimit, ResetCreditSummary};
+use serde::Deserialize;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SharedIdentityFixture {
+    fixture_version: u32,
+    identity_version: i64,
+    limit_id: String,
+    scenarios: Vec<SharedIdentityScenario>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SharedIdentityScenario {
+    id: String,
+    steps: Vec<SharedIdentityStep>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SharedIdentityStep {
+    operation: String,
+    home_identity: Option<String>,
+    stable_account_key: Option<String>,
+    display_name: String,
+    plan: String,
+    source: Option<String>,
+    used_percent: Option<i32>,
+    expected_accepted: Option<bool>,
+    expected_used_percents: Option<Vec<i32>>,
+}
+
+#[test]
+fn shared_quota_history_identity_fixture_is_strict_and_fail_closed() {
+    let fixture: SharedIdentityFixture = serde_json::from_str(include_str!(
+        "../../../../Tests/SharedFixtures/quota-history-identity-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(fixture.fixture_version, 1);
+    assert_eq!(fixture.identity_version, QUOTA_HISTORY_IDENTITY_VERSION);
+
+    for scenario in fixture.scenarios {
+        let path = temp_db_path(&format!("shared-identity-{}", scenario.id));
+        let database = QuotaHistoryDatabase { path: path.clone() };
+        let connection = database.open().unwrap();
+        ensure_schema(&connection).unwrap();
+        drop(connection);
+
+        for step in scenario.steps {
+            let reset = now_unix() as i64 + 3_600;
+            let used_percent = step.used_percent.unwrap_or_default();
+            let snapshot = bundle_with_plan(
+                &step.display_name,
+                &step.plan,
+                used_percent as f64 / 100.0,
+                reset,
+                used_percent as f64 / 100.0,
+                reset + 500_000,
+            );
+            let identity = step.home_identity.as_deref().and_then(|home| {
+                QuotaHistoryIdentity::from_canonical_parts(
+                    Path::new(home),
+                    step.stable_account_key.as_deref(),
+                    &step.plan,
+                    &fixture.limit_id,
+                )
+            });
+
+            match step.operation.as_str() {
+                "write" => {
+                    let accepted = database
+                        .record_for_identity(identity.as_ref(), &snapshot)
+                        .unwrap();
+                    assert_eq!(
+                        accepted,
+                        step.expected_accepted.unwrap_or(true),
+                        "scenario {} write acceptance",
+                        scenario.id
+                    );
+                }
+                "read" => {
+                    let mut actual = database
+                        .rows_for_identity(identity.as_ref(), &snapshot, 31.0 * 24.0 * 60.0 * 60.0)
+                        .unwrap()
+                        .into_iter()
+                        .filter_map(|row| row.five_hour_used_percent)
+                        .collect::<Vec<_>>();
+                    actual.sort_unstable();
+                    let mut expected = step.expected_used_percents.unwrap_or_default();
+                    expected.sort_unstable();
+                    assert_eq!(actual, expected, "scenario {} read", scenario.id);
+                }
+                "legacyWrite" => {
+                    let connection = database.open().unwrap();
+                    let mut legacy_row = history_row(
+                        now_unix() - 600.0,
+                        &format!(
+                            "{}|{}|{}",
+                            step.display_name, step.plan, fixture.limit_id
+                        ),
+                        &step.plan,
+                        Some(&fixture.limit_id),
+                        used_percent,
+                        reset as f64,
+                        used_percent,
+                        (reset + 500_000) as f64,
+                    );
+                    legacy_row.account_name = Some(step.display_name.clone());
+                    insert_history_row_with_source(
+                        &connection,
+                        &legacy_row,
+                        step.source.as_deref(),
+                    );
+                }
+                operation => panic!("unsupported fixture operation {operation}"),
+            }
+        }
+
+        let _ = std::fs::remove_file(path);
+    }
+}
 
 #[test]
 fn record_normalizes_same_reset_window_regressions() {
@@ -92,7 +213,12 @@ fn record_writes_canonical_codex_key_and_source() {
     let connection = database.open().unwrap();
     let stored = connection
         .query_row(
-            "SELECT account_key, plan_type, limit_name, source FROM quota_snapshots ORDER BY id DESC LIMIT 1;",
+            r#"
+            SELECT account_key, plan_type, limit_name, source,
+                   identity_version, home_identity, stable_account_key,
+                   identity_plan_type, identity_limit_id
+            FROM quota_snapshots ORDER BY id DESC LIMIT 1;
+            "#,
             [],
             |row| {
                 Ok((
@@ -100,6 +226,11 @@ fn record_writes_canonical_codex_key_and_source() {
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             },
         )
@@ -109,6 +240,11 @@ fn record_writes_canonical_codex_key_and_source() {
     assert_eq!(stored.1.as_deref(), Some("Pro"));
     assert_eq!(stored.2.as_deref(), Some("codex"));
     assert_eq!(stored.3.as_deref(), Some("tauri"));
+    assert_eq!(stored.4, Some(QUOTA_HISTORY_IDENTITY_VERSION));
+    assert!(stored.5.as_deref().is_some_and(|home| !home.is_empty()));
+    assert_eq!(stored.6.as_deref(), Some("sub:test:来先生"));
+    assert_eq!(stored.7.as_deref(), Some("Pro"));
+    assert_eq!(stored.8.as_deref(), Some("codex"));
 
     let _ = std::fs::remove_file(path);
 }
@@ -157,43 +293,38 @@ fn record_unknown_plan_does_not_write_fake_pro() {
     let path = temp_db_path("unknown-plan");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let reset = now_unix() + 3_600.0;
+    let snapshot = bundle_with_plan(
+        "来先生",
+        "计划待读取",
+        0.01,
+        reset as i64,
+        0.50,
+        (reset + 500_000.0) as i64,
+    );
+    let identity = QuotaHistoryIdentity::from_bundle(
+        Path::new("/fixture/unknown-plan"),
+        Some("sub:unknown-plan"),
+        &snapshot,
+    );
 
-    database
-        .record(&bundle_with_plan(
-            "来先生",
-            "计划待读取",
-            0.01,
-            reset as i64,
-            0.50,
-            (reset + 500_000.0) as i64,
-        ))
-        .unwrap();
+    assert!(identity.is_none());
+    assert!(!database
+        .record_for_identity(identity.as_ref(), &snapshot)
+        .unwrap());
 
     let connection = database.open().unwrap();
-    let stored = connection
-        .query_row(
-            "SELECT account_key, plan_type, limit_name FROM quota_snapshots ORDER BY id DESC LIMIT 1;",
-            [],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            },
-        )
+    ensure_schema(&connection).unwrap();
+    let stored_count: i64 = connection
+        .query_row("SELECT count(*) FROM quota_snapshots;", [], |row| row.get(0))
         .unwrap();
-
-    assert_eq!(stored.0, "来先生|codex");
-    assert_eq!(stored.1, None);
-    assert_eq!(stored.2.as_deref(), Some("codex"));
+    assert_eq!(stored_count, 0);
 
     let _ = std::fs::remove_file(path);
 }
 
 #[test]
-fn schema_adds_nullable_source_column_to_existing_database() {
-    let path = temp_db_path("source-migration");
+fn schema_adds_versioned_identity_without_rewriting_legacy_rows() {
+    let path = temp_db_path("identity-migration");
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection
         .execute_batch(
@@ -211,19 +342,67 @@ fn schema_adds_nullable_source_column_to_existing_database() {
                 seven_day_resets_at REAL,
                 status TEXT NOT NULL
             );
+            INSERT INTO quota_snapshots (
+                created_at, account_key, plan_type, limit_name, account_name,
+                five_hour_used_percent, five_hour_resets_at,
+                seven_day_used_percent, seven_day_resets_at, status
+            ) VALUES (1, 'Legacy User|Pro|codex', 'Pro', 'codex', 'Legacy User',
+                      10, 100, 20, 200, 'legacy');
             "#,
         )
         .unwrap();
 
     ensure_schema(&connection).unwrap();
-    let has_source = connection
+    let columns = connection
         .prepare("PRAGMA table_info(quota_snapshots);")
         .unwrap()
         .query_map([], |row| row.get::<_, String>(1))
         .unwrap()
-        .any(|name| name.unwrap() == "source");
+        .collect::<SqlResult<Vec<_>>>()
+        .unwrap();
 
-    assert!(has_source);
+    for expected in [
+        "source",
+        "identity_version",
+        "home_identity",
+        "stable_account_key",
+        "identity_plan_type",
+        "identity_limit_id",
+    ] {
+        assert!(columns.iter().any(|column| column == expected));
+    }
+    assert!(columns.iter().all(|column| {
+        !column.contains("fingerprint")
+            && !column.contains("token")
+            && !column.contains("auth")
+    }));
+    let legacy = connection
+        .query_row(
+            "SELECT account_key, identity_version, home_identity, stable_account_key FROM quota_snapshots WHERE status = 'legacy';",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(legacy.0, "Legacy User|Pro|codex");
+    assert_eq!(legacy.1, None);
+    assert_eq!(legacy.2, None);
+    assert_eq!(legacy.3, None);
+
+    let claim_table_count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'quota_history_legacy_claims';",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(claim_table_count, 1);
 
     let _ = std::fs::remove_file(path);
 }
@@ -249,7 +428,7 @@ fn recent_history_includes_legacy_fake_pro_rows_for_same_codex_account() {
             20,
             reset + 500_000.0,
         ),
-        Some("tauri"),
+        Some("swift"),
     );
     database
         .record(&bundle_with_plan(
@@ -268,6 +447,68 @@ fn recent_history_includes_legacy_fake_pro_rows_for_same_codex_account() {
         .any(|point| point.five_hour_remaining_percent == Some(0.90)));
     assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(0.85));
 
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn legacy_fake_pro_bridge_is_time_and_source_bounded() {
+    let path = temp_db_path("legacy-fake-pro-bounds");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let connection = database.open().unwrap();
+    ensure_schema(&connection).unwrap();
+    let now = now_unix();
+    let reset = now + 3_600.0;
+
+    for (created_at, source, used) in [
+        (now - 46.0 * 24.0 * 60.0 * 60.0, Some("swift"), 80),
+        (now - 600.0, Some("tauri"), 70),
+    ] {
+        insert_history_row_with_source(
+            &connection,
+            &history_row(
+                created_at,
+                "tester|Pro|codex",
+                "Pro",
+                Some("codex"),
+                used,
+                reset,
+                used,
+                reset + 500_000.0,
+            ),
+            source,
+        );
+    }
+    drop(connection);
+
+    let snapshot = bundle_with_plan(
+        "tester",
+        "Plus",
+        0.15,
+        reset as i64,
+        0.15,
+        (reset + 500_000.0) as i64,
+    );
+    let identity = QuotaHistoryIdentity::from_bundle(
+        Path::new("/fixture/bounded-bridge"),
+        Some("sub:bounded-bridge"),
+        &snapshot,
+    )
+    .unwrap();
+    database
+        .record_for_identity(Some(&identity), &snapshot)
+        .unwrap();
+    let used = database
+        .rows_for_identity(
+            Some(&identity),
+            &snapshot,
+            365.0 * 24.0 * 60.0 * 60.0,
+        )
+        .unwrap()
+        .into_iter()
+        .filter_map(|row| row.five_hour_used_percent)
+        .collect::<Vec<_>>();
+
+    assert_eq!(used, vec![15]);
     let _ = std::fs::remove_file(path);
 }
 
@@ -812,7 +1053,13 @@ fn unavailable_window_ignores_compatibility_zero_when_building_history_row() {
         limit.remaining_percent = Some(0.0);
         limit.used_percent = Some(1.0);
 
-        let row = QuotaHistoryRow::from_bundle(&snapshot, now_unix());
+        let identity = QuotaHistoryIdentity::from_bundle(
+            Path::new("/fixture/unavailable-window"),
+            Some("sub:unavailable-window"),
+            &snapshot,
+        )
+        .unwrap();
+        let row = QuotaHistoryRow::from_bundle(&identity, &snapshot, now_unix());
         if unavailable_window == "five" {
             assert_eq!(row.five_hour_used_percent, None);
             assert_eq!(row.five_hour_resets_at, None);
@@ -904,6 +1151,11 @@ fn history_row(
         seven_day_used_percent: Some(seven_used_percent),
         seven_day_resets_at: Some(seven_reset),
         status: "测试".into(),
+        identity_version: None,
+        home_identity: None,
+        stable_account_key: None,
+        identity_plan_type: None,
+        identity_limit_id: None,
     }
 }
 
