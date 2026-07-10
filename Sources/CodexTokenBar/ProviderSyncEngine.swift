@@ -91,7 +91,11 @@ final class ProviderSyncEngine {
     private let mutationLeaseDidAcquire: (@Sendable () -> Void)?
     private let reportWillBuild: (() throws -> Void)?
     let restoreWillApply: ((Int, URL) throws -> Void)?
+    let restoreWillCompensate: ((Int, URL) throws -> Void)?
+    let sessionArchiveDidList: (() throws -> Void)?
     let sessionTarWillRun: (() throws -> Void)?
+    let sessionTarStageWillRun: ((URL) throws -> Void)?
+    let sessionTarDidRun: ((URL) throws -> Void)?
 
     init(
         fileManager: FileManager = .default,
@@ -100,7 +104,11 @@ final class ProviderSyncEngine {
         mutationLeaseDidAcquire: (@Sendable () -> Void)? = nil,
         reportWillBuild: (() throws -> Void)? = nil,
         restoreWillApply: ((Int, URL) throws -> Void)? = nil,
-        sessionTarWillRun: (() throws -> Void)? = nil
+        restoreWillCompensate: ((Int, URL) throws -> Void)? = nil,
+        sessionArchiveDidList: (() throws -> Void)? = nil,
+        sessionTarWillRun: (() throws -> Void)? = nil,
+        sessionTarStageWillRun: ((URL) throws -> Void)? = nil,
+        sessionTarDidRun: ((URL) throws -> Void)? = nil
     ) {
         self.fileManager = fileManager
         self.backupRootOverride = backupRoot
@@ -108,7 +116,11 @@ final class ProviderSyncEngine {
         self.mutationLeaseDidAcquire = mutationLeaseDidAcquire
         self.reportWillBuild = reportWillBuild
         self.restoreWillApply = restoreWillApply
+        self.restoreWillCompensate = restoreWillCompensate
+        self.sessionArchiveDidList = sessionArchiveDidList
         self.sessionTarWillRun = sessionTarWillRun
+        self.sessionTarStageWillRun = sessionTarStageWillRun
+        self.sessionTarDidRun = sessionTarDidRun
     }
 
     func backupRootDirectory() -> URL {
@@ -135,9 +147,9 @@ final class ProviderSyncEngine {
         targetProviderOverride: String?,
         dryRunOnly: Bool
     ) throws -> ProviderSyncSnapshot {
-        return try withMutationLease(codexHome: codexHome) {
+        return try withMutationLease(codexHome: codexHome) { canonicalHome in
             let initial = try makeReport(
-                codexHome: codexHome,
+                codexHome: canonicalHome,
                 includeArchivedSessions: includeArchivedSessions,
                 targetProviderOverride: targetProviderOverride
             )
@@ -145,13 +157,17 @@ final class ProviderSyncEngine {
                 try rejectMutationIfCodexIsRunning(operation: "同步")
             }
 
-            let backupPath = try createBackup(codexHome: codexHome, sessionFiles: initial.sessionFiles, targetProvider: initial.targetProvider)
+            let backupPath = try createBackup(
+                codexHome: canonicalHome,
+                sessionFiles: initial.sessionFiles,
+                targetProvider: initial.targetProvider
+            )
 
             var changedSessionFiles = 0
             var sqliteRowsChanged = 0
             if dryRunOnly {
                 let report = try makeReport(
-                    codexHome: codexHome,
+                    codexHome: canonicalHome,
                     includeArchivedSessions: includeArchivedSessions,
                     targetProviderOverride: targetProviderOverride
                 )
@@ -166,13 +182,13 @@ final class ProviderSyncEngine {
                         changedSessionFiles += 1
                     }
                 }
-                sqliteRowsChanged = try updateSQLite(codexHome: codexHome, targetProvider: initial.targetProvider)
-                sqliteRowsChanged += try repairSQLiteThreadTimestamps(codexHome: codexHome, sessionFiles: initial.sessionFiles)
-                _ = try reconcileSessionIndex(codexHome: codexHome)
-                _ = try reconcileWorkspaceOrder(codexHome: codexHome)
+                sqliteRowsChanged = try updateSQLite(codexHome: canonicalHome, targetProvider: initial.targetProvider)
+                sqliteRowsChanged += try repairSQLiteThreadTimestamps(codexHome: canonicalHome, sessionFiles: initial.sessionFiles)
+                _ = try reconcileSessionIndex(codexHome: canonicalHome)
+                _ = try reconcileWorkspaceOrder(codexHome: canonicalHome)
 
                 let verified = try makeReport(
-                    codexHome: codexHome,
+                    codexHome: canonicalHome,
                     includeArchivedSessions: includeArchivedSessions,
                     targetProviderOverride: targetProviderOverride
                 )
@@ -198,9 +214,9 @@ final class ProviderSyncEngine {
                 return next
             } catch let operationError {
                 do {
-                    _ = try restoreBackup(backupPath, codexHome: codexHome) {
+                    _ = try restoreBackup(backupPath, codexHome: canonicalHome) {
                         try makeReport(
-                            codexHome: codexHome,
+                            codexHome: canonicalHome,
                             includeArchivedSessions: includeArchivedSessions,
                             targetProviderOverride: nil
                         )
@@ -226,17 +242,21 @@ final class ProviderSyncEngine {
     }
 
     func rollbackLatest(codexHome: URL) throws -> ProviderSyncSnapshot {
-        try withMutationLease(codexHome: codexHome) {
+        try withMutationLease(codexHome: codexHome) { canonicalHome in
             try rejectMutationIfCodexIsRunning(operation: "回滚")
-            let backup = try latestBackupDirectory(for: codexHome)
-            return try rollbackWithoutLease(codexHome: codexHome, backup: backup, status: "已从最近备份回滚")
+            let backup = try latestBackupDirectory(for: canonicalHome)
+            return try rollbackWithoutLease(codexHome: canonicalHome, backup: backup, status: "已从最近备份回滚")
         }
     }
 
     func rollback(codexHome: URL, backupPath: String) throws -> ProviderSyncSnapshot {
-        try withMutationLease(codexHome: codexHome) {
+        try withMutationLease(codexHome: codexHome) { canonicalHome in
             try rejectMutationIfCodexIsRunning(operation: "回滚")
-            return try rollbackWithoutLease(codexHome: codexHome, backup: URL(fileURLWithPath: backupPath), status: "已从所选备份回滚")
+            return try rollbackWithoutLease(
+                codexHome: canonicalHome,
+                backup: URL(fileURLWithPath: backupPath),
+                status: "已从所选备份回滚"
+            )
         }
     }
 
@@ -412,9 +432,9 @@ final class ProviderSyncEngine {
         }
     }
 
-    private func withMutationLease<T>(codexHome: URL, body: () throws -> T) throws -> T {
-        let canonicalHome = canonicalHomeKey(for: codexHome)
-        guard Self.mutationLeaseRegistry.acquire(canonicalHome) else {
+    private func withMutationLease<T>(codexHome: URL, body: (URL) throws -> T) throws -> T {
+        let canonicalHome = canonicalProviderHome(codexHome)
+        guard Self.mutationLeaseRegistry.acquire(canonicalHome.path) else {
             throw NSError(
                 domain: "CodexTokenBar",
                 code: 409,
@@ -424,14 +444,14 @@ final class ProviderSyncEngine {
             )
         }
         defer {
-            Self.mutationLeaseRegistry.release(canonicalHome)
+            Self.mutationLeaseRegistry.release(canonicalHome.path)
         }
         mutationLeaseDidAcquire?()
-        return try body()
+        return try body(canonicalHome)
     }
 
-    private func canonicalHomeKey(for codexHome: URL) -> String {
-        codexHome.standardizedFileURL.resolvingSymlinksInPath().path
+    func canonicalProviderHome(_ codexHome: URL) -> URL {
+        codexHome.standardizedFileURL.resolvingSymlinksInPath()
     }
 
     func withDatabase<T>(path: String, readOnly: Bool, body: (SQLiteDatabaseConnection) throws -> T) throws -> T {

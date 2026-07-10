@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import CodexTokenBar
@@ -271,6 +272,73 @@ final class ProviderSyncEngineTests: XCTestCase {
         XCTAssertEqual(retry.detectedProvider, "openai")
     }
 
+    func testSyncPinsCanonicalHomeBeforeLeaseHookRetargetsAlias() throws {
+        let first = try makeFixture()
+        let second = try makeFixture()
+        let alias = first.codexHome.deletingLastPathComponent()
+            .appendingPathComponent("retargetable-home", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: first.codexHome)
+        let engine = ProviderSyncEngine(
+            backupRoot: first.backupRoot,
+            applicationRunningProbe: { false },
+            mutationLeaseDidAcquire: {
+                do {
+                    try FileManager.default.removeItem(at: alias)
+                    try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: second.codexHome)
+                } catch {
+                    XCTFail("failed to retarget alias: \(error)")
+                }
+            }
+        )
+
+        _ = try engine.sync(
+            codexHome: alias,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )
+
+        XCTAssertEqual(try readSessionProvider(at: first.activeSession), "openai")
+        XCTAssertEqual(try readSQLiteProviders(at: first.codexHome), ["openai"])
+        XCTAssertEqual(try readSessionProvider(at: second.activeSession), "anthropic")
+        XCTAssertEqual(try readSQLiteProviders(at: second.codexHome), ["anthropic"])
+    }
+
+    func testSyncPinsCanonicalHomeWhenAliasRetargetsDuringBackupCreation() throws {
+        let first = try makeFixture()
+        let second = try makeFixture()
+        let alias = first.codexHome.deletingLastPathComponent()
+            .appendingPathComponent("backup-retargetable-home", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: first.codexHome)
+        let engine = ProviderSyncEngine(
+            backupRoot: first.backupRoot,
+            applicationRunningProbe: { false },
+            sessionTarWillRun: {
+                try FileManager.default.removeItem(at: alias)
+                try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: second.codexHome)
+            }
+        )
+
+        let result = try engine.sync(
+            codexHome: alias,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )
+
+        XCTAssertEqual(try readSessionProvider(at: first.activeSession), "openai")
+        XCTAssertEqual(try readSQLiteProviders(at: first.codexHome), ["openai"])
+        XCTAssertEqual(try readSessionProvider(at: second.activeSession), "anthropic")
+        XCTAssertEqual(try readSQLiteProviders(at: second.codexHome), ["anthropic"])
+        let backupPath = try XCTUnwrap(result.lastBackupPath)
+        let manifest = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: Data(contentsOf: URL(fileURLWithPath: backupPath).appendingPathComponent("manifest.json"))
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(manifest["canonical_codex_home"] as? String, first.codexHome.path)
+    }
+
     func testVerifyReportsCoherentStatusAfterSyncAndRollback() throws {
         let fixture = try makeFixture()
         let engine = ProviderSyncEngine(
@@ -523,6 +591,10 @@ final class ProviderSyncEngineTests: XCTestCase {
             ("carriage-return", [TestTarEntry(name: "sessions/carriage\rreturn.jsonl")]),
             ("line-feed", [TestTarEntry(name: "sessions/line\nfeed.jsonl")]),
             ("tab-control", [TestTarEntry(name: "sessions/tab\tcontrol.jsonl")]),
+            ("next-line-control", [TestTarEntry(name: "sessions/next\u{0085}line.jsonl")]),
+            ("line-separator", [TestTarEntry(name: "sessions/line\u{2028}separator.jsonl")]),
+            ("paragraph-separator", [TestTarEntry(name: "sessions/paragraph\u{2029}separator.jsonl")]),
+            ("format-character", [TestTarEntry(name: "sessions/zero\u{200D}joiner.jsonl")]),
             ("symlink", [TestTarEntry(name: "sessions/link.jsonl", type: .symbolicLink, linkName: "target.jsonl")]),
             ("hardlink", [
                 TestTarEntry(name: "sessions/source.jsonl"),
@@ -556,6 +628,35 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
             XCTAssertEqual(try rollbackDestinationState(for: fixture), before, "case: \(name)")
         }
+    }
+
+    func testRollbackRejectsLexicalMembersWithOneCanonicalDestination() throws {
+        let fixture = try makeFixture()
+        let realDirectory = fixture.codexHome
+            .appendingPathComponent("sessions/canonical-target", isDirectory: true)
+        try FileManager.default.createDirectory(at: realDirectory, withIntermediateDirectories: true)
+        let aliasDirectory = fixture.codexHome
+            .appendingPathComponent("sessions/canonical-alias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: aliasDirectory, withDestinationURL: realDirectory)
+        let destination = realDirectory.appendingPathComponent("thread.jsonl")
+        try Data("destination-before\n".utf8).write(to: destination)
+        let backup = try makeLegacyBackup(
+            fixture: fixture,
+            entries: [
+                TestTarEntry(name: "sessions/canonical-target/thread.jsonl"),
+                TestTarEntry(name: "sessions/canonical-alias/thread.jsonl")
+            ],
+            declaredCount: 2
+        )
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backup.path)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("重复"))
+        }
+        XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8), "destination-before\n")
     }
 
     func testRollbackSupportsLegacyArchiveCreatedThroughCanonicalizingHomeAlias() throws {
@@ -695,10 +796,10 @@ final class ProviderSyncEngineTests: XCTestCase {
         let engine = ProviderSyncEngine(
             backupRoot: fixture.backupRoot,
             applicationRunningProbe: { false },
-            sessionTarWillRun: {
-                for file in files {
-                    try FileManager.default.removeItem(at: file)
-                }
+            sessionTarStageWillRun: { stageRoot in
+                try FileManager.default.removeItem(
+                    at: stageRoot.appendingPathComponent("sessions/high-volume", isDirectory: true)
+                )
             }
         )
 
@@ -711,33 +812,108 @@ final class ProviderSyncEngineTests: XCTestCase {
         }
     }
 
-    func testBackupManifestDigestDescribesCompletedArchiveWhenSourceChangesDuringTarCreation() throws {
+    func testBackupRejectsSourceTypeChangesBeforeSyncMutation() throws {
+        let cases: [(String, (ProviderSyncFixture) throws -> Void)] = [
+            ("symlink", { fixture in
+                let target = fixture.codexHome.appendingPathComponent("symlink-target.jsonl")
+                try Data("symlink target\n".utf8).write(to: target)
+                try FileManager.default.removeItem(at: fixture.activeSession)
+                try FileManager.default.createSymbolicLink(at: fixture.activeSession, withDestinationURL: target)
+            }),
+            ("hardlink", { fixture in
+                let target = fixture.codexHome.appendingPathComponent("hardlink-target.jsonl")
+                try Data("hardlink target\n".utf8).write(to: target)
+                try FileManager.default.removeItem(at: fixture.activeSession)
+                try FileManager.default.linkItem(at: target, to: fixture.activeSession)
+            }),
+            ("directory", { fixture in
+                try FileManager.default.removeItem(at: fixture.activeSession)
+                try FileManager.default.createDirectory(at: fixture.activeSession, withIntermediateDirectories: false)
+            }),
+            ("fifo", { fixture in
+                try FileManager.default.removeItem(at: fixture.activeSession)
+                guard mkfifo(fixture.activeSession.path, 0o600) == 0 else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                }
+            })
+        ]
+
+        for (name, mutateSource) in cases {
+            let fixture = try makeFixture()
+            let engine = ProviderSyncEngine(
+                backupRoot: fixture.backupRoot,
+                applicationRunningProbe: { false },
+                sessionTarWillRun: {
+                    try mutateSource(fixture)
+                }
+            )
+
+            XCTAssertThrowsError(try engine.sync(
+                codexHome: fixture.codexHome,
+                includeArchivedSessions: false,
+                targetProviderOverride: "openai",
+                dryRunOnly: false
+            ), "case: \(name)")
+            XCTAssertEqual(try readSQLiteProviders(at: fixture.codexHome), ["anthropic"], "case: \(name)")
+            XCTAssertTrue(try manifestFiles(in: fixture.backupRoot).isEmpty, "case: \(name)")
+        }
+    }
+
+    func testBackupRejectsCompletedTarThatRestoreValidatorWouldReject() throws {
         let fixture = try makeFixture()
-        let backupEngine = ProviderSyncEngine(
+        let relativePath = "sessions/2026/07/06/thread-a.jsonl"
+        let engine = ProviderSyncEngine(
             backupRoot: fixture.backupRoot,
             applicationRunningProbe: { false },
-            sessionTarWillRun: {
-                try self.writeSession(
-                    id: "thread-a",
-                    provider: "changed-during-backup",
-                    to: fixture.activeSession
-                )
+            sessionTarDidRun: { archive in
+                try self.writeUSTAR(entries: [
+                    TestTarEntry(name: "sessions/source.jsonl"),
+                    TestTarEntry(name: relativePath, type: .hardLink, linkName: "sessions/source.jsonl")
+                ], to: archive)
             }
         )
-        let backup = try backupEngine.createBackup(
+
+        XCTAssertThrowsError(try engine.sync(
             codexHome: fixture.codexHome,
-            sessionFiles: [fixture.activeSession],
-            targetProvider: "openai"
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        ))
+        XCTAssertEqual(try readSessionProvider(at: fixture.activeSession), "anthropic")
+        XCTAssertEqual(try readSQLiteProviders(at: fixture.codexHome), ["anthropic"])
+        XCTAssertTrue(try manifestFiles(in: fixture.backupRoot).isEmpty)
+    }
+
+    func testRestoreUsesImmutableArchiveSnapshotWhenOriginalSwapsAfterListing() throws {
+        let fixture = try makeFixture()
+        let archivedData = try Data(contentsOf: fixture.activeSession)
+        let backup = try makeLegacyBackup(
+            fixture: fixture,
+            entries: [TestTarEntry(name: "sessions/2026/07/06/thread-a.jsonl", data: archivedData)],
+            declaredCount: 1
         )
         try writeSession(id: "thread-a", provider: "current", to: fixture.activeSession)
-        let rollbackEngine = ProviderSyncEngine(
+        let sentinel = fixture.backupRoot.appendingPathComponent("escape-sentinel.jsonl")
+        try Data("sentinel-before\n".utf8).write(to: sentinel)
+        let maliciousArchive = fixture.backupRoot.appendingPathComponent("swapped-malicious.tar")
+        try writeUSTAR(
+            entries: [TestTarEntry(name: "../escape-sentinel.jsonl", data: Data("mutated\n".utf8))],
+            to: maliciousArchive
+        )
+        let archive = backup.appendingPathComponent("session-jsonl.before.tar")
+        let engine = ProviderSyncEngine(
             backupRoot: fixture.backupRoot,
-            applicationRunningProbe: { false }
+            applicationRunningProbe: { false },
+            sessionArchiveDidList: {
+                try FileManager.default.removeItem(at: archive)
+                try FileManager.default.copyItem(at: maliciousArchive, to: archive)
+            }
         )
 
-        _ = try rollbackEngine.rollback(codexHome: fixture.codexHome, backupPath: backup.path)
+        _ = try engine.rollback(codexHome: fixture.codexHome, backupPath: backup.path)
 
-        XCTAssertEqual(try readSessionProvider(at: fixture.activeSession), "changed-during-backup")
+        XCTAssertEqual(try Data(contentsOf: fixture.activeSession), archivedData)
+        XCTAssertEqual(try String(contentsOf: sentinel, encoding: .utf8), "sentinel-before\n")
     }
 
     func testRollbackPostRestoreReportFailurePreservesPreRollbackDestinationBytesAndAbsence() throws {
@@ -794,6 +970,147 @@ final class ProviderSyncEngineTests: XCTestCase {
                     userInfo: [NSLocalizedDescriptionKey: "injected later replacement failure"]
                 )
             }
+        }
+    }
+
+    func testCurrentOperationRecoveryFailureIsRetriedByGeneralCompensation() throws {
+        let fixture = try makeFixture()
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        let before = try rollbackDestinationState(for: fixture)
+        var compensationAttempts = 0
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            restoreWillApply: { index, _ in
+                if index == 0 {
+                    throw NSError(
+                        domain: "ProviderSyncEngineTests",
+                        code: 907,
+                        userInfo: [NSLocalizedDescriptionKey: "injected current replacement failure"]
+                    )
+                }
+            },
+            restoreWillCompensate: { index, _ in
+                guard index == 0 else { return }
+                compensationAttempts += 1
+                if compensationAttempts == 1 {
+                    throw NSError(
+                        domain: "ProviderSyncEngineTests",
+                        code: 908,
+                        userInfo: [NSLocalizedDescriptionKey: "injected current recovery failure"]
+                    )
+                }
+            }
+        )
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath))
+        XCTAssertEqual(compensationAttempts, 2)
+        XCTAssertEqual(try rollbackDestinationState(for: fixture), before)
+        XCTAssertTrue(try transactionRoots(in: fixture.codexHome).isEmpty)
+    }
+
+    func testIncompleteCurrentCompensationKeepsJournalAndReportsPath() throws {
+        let fixture = try makeFixture()
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            restoreWillApply: { index, _ in
+                if index == 0 {
+                    throw NSError(
+                        domain: "ProviderSyncEngineTests",
+                        code: 909,
+                        userInfo: [NSLocalizedDescriptionKey: "injected current replacement failure"]
+                    )
+                }
+            },
+            restoreWillCompensate: { index, _ in
+                if index == 0 {
+                    throw NSError(
+                        domain: "ProviderSyncEngineTests",
+                        code: 910,
+                        userInfo: [NSLocalizedDescriptionKey: "persistent current compensation failure"]
+                    )
+                }
+            }
+        )
+        var message = ""
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath)) { error in
+            message = error.localizedDescription
+        }
+        let journal = try XCTUnwrap(transactionRoots(in: fixture.codexHome).first)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: journal.appendingPathComponent("originals/0").path))
+        XCTAssertTrue(message.contains(journal.path))
+    }
+
+    func testLaterReverseCompensationFailureKeepsNeededJournalAndReportsPath() throws {
+        let fixture = try makeFixture()
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            reportWillBuild: {
+                throw NSError(
+                    domain: "ProviderSyncEngineTests",
+                    code: 911,
+                    userInfo: [NSLocalizedDescriptionKey: "injected post-restore failure"]
+                )
+            },
+            restoreWillCompensate: { _, destination in
+                if destination.lastPathComponent == "state_5.sqlite" {
+                    throw NSError(
+                        domain: "ProviderSyncEngineTests",
+                        code: 912,
+                        userInfo: [NSLocalizedDescriptionKey: "injected later reverse compensation failure"]
+                    )
+                }
+            }
+        )
+        var message = ""
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath)) { error in
+            message = error.localizedDescription
+        }
+        let journal = try XCTUnwrap(transactionRoots(in: fixture.codexHome).first)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: journal.path).isEmpty)
+        XCTAssertTrue(message.contains(journal.path))
+    }
+
+    private func createSyncedBackupAndSeedRollbackDestination(_ fixture: ProviderSyncFixture) throws -> String {
+        let setupEngine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+        let synced = try setupEngine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: true,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )
+        try seedPreRollbackDestination(fixture)
+        return try XCTUnwrap(synced.lastBackupPath)
+    }
+
+    private func transactionRoots(in codexHome: URL) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(
+            at: codexHome,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: []
+        ).filter { $0.lastPathComponent.hasPrefix(".provider-restore-transaction-") }
+            .map { $0.standardizedFileURL.resolvingSymlinksInPath() }
+    }
+
+    private func manifestFiles(in backupRoot: URL) throws -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: backupRoot,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else {
+            return []
+        }
+        return enumerator.compactMap { item in
+            guard let url = item as? URL, url.lastPathComponent == "manifest.json" else { return nil }
+            return url
         }
     }
 
