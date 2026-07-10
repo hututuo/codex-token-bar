@@ -33,6 +33,7 @@ pub(super) fn placeholder_quota() -> QuotaSnapshot {
 pub(super) struct ParsedRateLimits {
     pub quota: QuotaSnapshot,
     pub plan_label: Option<String>,
+    pub limit_id: String,
 }
 
 #[cfg(test)]
@@ -60,22 +61,23 @@ pub(super) fn parse_rate_limits_with_plan(result: &Value) -> Result<ParsedRateLi
         by_limit
     };
 
-    let codex = cards
+    let selected_card = cards
         .iter()
         .find(|card| card.id == "codex")
         .or_else(|| cards.first())
         .ok_or_else(|| "额度暂无数据".to_string())?;
-    let five_hour = codex
+    let five_hour = selected_card
         .five_hour
         .clone()
         .unwrap_or_else(|| placeholder_quota().five_hour);
-    let seven_day = codex
+    let seven_day = selected_card
         .seven_day
         .clone()
         .unwrap_or_else(|| placeholder_quota().seven_day);
 
     Ok(ParsedRateLimits {
         plan_label: parse_plan_label(result),
+        limit_id: selected_card.id.clone(),
         quota: QuotaSnapshot {
             pace_label: pace_label(&seven_day),
             five_hour,
@@ -347,6 +349,44 @@ mod tests {
         assert_eq!(quota.five_hour.label, "5h");
         assert!((quota.five_hour.used_percent.unwrap() - 0.25).abs() < 0.001);
         assert!((quota.seven_day.remaining_percent.unwrap() - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn fallback_first_card_preserves_actual_limit_id() {
+        let result = json!({
+            "rateLimitsByLimitId": {
+                "gpt-5.3-codex-spark": {
+                    "planType": "plus",
+                    "primary": { "usedPercent": 25, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 20, "resetsAt": 1782144492 }
+                }
+            }
+        });
+
+        let parsed = parse_rate_limits_with_plan(&result).unwrap();
+        assert_eq!(parsed.limit_id, "gpt-5.3-codex-spark");
+    }
+
+    #[test]
+    fn codex_card_is_preferred_and_preserves_codex_limit_id() {
+        let result = json!({
+            "rateLimitsByLimitId": {
+                "gpt-5.3-codex-spark": {
+                    "limitId": "gpt-5.3-codex-spark",
+                    "primary": { "usedPercent": 80, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 70, "resetsAt": 1782144492 }
+                },
+                "codex": {
+                    "limitId": "codex",
+                    "primary": { "usedPercent": 25, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 20, "resetsAt": 1782144492 }
+                }
+            }
+        });
+
+        let parsed = parse_rate_limits_with_plan(&result).unwrap();
+        assert_eq!(parsed.limit_id, "codex");
+        assert_eq!(parsed.quota.five_hour.used_percent, Some(0.25));
     }
 
     #[test]

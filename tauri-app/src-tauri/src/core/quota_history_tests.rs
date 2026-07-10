@@ -9,7 +9,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 struct SharedIdentityFixture {
     fixture_version: u32,
     identity_version: i64,
-    limit_id: String,
     scenarios: Vec<SharedIdentityScenario>,
 }
 
@@ -27,6 +26,7 @@ struct SharedIdentityStep {
     stable_account_key: Option<String>,
     display_name: String,
     plan: String,
+    limit_id: String,
     source: Option<String>,
     used_percent: Option<i32>,
     expected_accepted: Option<bool>,
@@ -50,6 +50,11 @@ fn shared_quota_history_identity_fixture_is_strict_and_fail_closed() {
         drop(connection);
 
         for step in scenario.steps {
+            assert!(
+                !step.limit_id.trim().is_empty(),
+                "scenario {} step limit id",
+                scenario.id
+            );
             let reset = now_unix() as i64 + 3_600;
             let used_percent = step.used_percent.unwrap_or_default();
             let snapshot = bundle_with_plan(
@@ -65,7 +70,7 @@ fn shared_quota_history_identity_fixture_is_strict_and_fail_closed() {
                     Path::new(home),
                     step.stable_account_key.as_deref(),
                     &step.plan,
-                    &fixture.limit_id,
+                    &step.limit_id,
                 )
             });
 
@@ -99,10 +104,10 @@ fn shared_quota_history_identity_fixture_is_strict_and_fail_closed() {
                         now_unix() - 600.0,
                         &format!(
                             "{}|{}|{}",
-                            step.display_name, step.plan, fixture.limit_id
+                            step.display_name, step.plan, step.limit_id
                         ),
                         &step.plan,
-                        Some(&fixture.limit_id),
+                        Some(&step.limit_id),
                         used_percent,
                         reset as f64,
                         used_percent,
@@ -305,6 +310,7 @@ fn record_unknown_plan_does_not_write_fake_pro() {
         Path::new("/fixture/unknown-plan"),
         Some("sub:unknown-plan"),
         &snapshot,
+        Some("codex"),
     );
 
     assert!(identity.is_none());
@@ -492,6 +498,7 @@ fn legacy_fake_pro_bridge_is_time_and_source_bounded() {
         Path::new("/fixture/bounded-bridge"),
         Some("sub:bounded-bridge"),
         &snapshot,
+        Some("codex"),
     )
     .unwrap();
     database
@@ -1057,6 +1064,7 @@ fn unavailable_window_ignores_compatibility_zero_when_building_history_row() {
             Path::new("/fixture/unavailable-window"),
             Some("sub:unavailable-window"),
             &snapshot,
+            Some("codex"),
         )
         .unwrap();
         let row = QuotaHistoryRow::from_bundle(&identity, &snapshot, now_unix());

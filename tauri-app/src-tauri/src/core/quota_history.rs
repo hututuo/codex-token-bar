@@ -34,7 +34,6 @@ const RETENTION_DAYS: i64 = 45;
 const RECENT_BIN_COUNT: usize = 289;
 const QUOTA_HISTORY_SOURCE: &str = "tauri";
 pub(crate) const QUOTA_HISTORY_IDENTITY_VERSION: i64 = 1;
-const CODEX_MAIN_LIMIT_ID: &str = "codex";
 static QUOTA_HISTORY_DATABASE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -51,12 +50,13 @@ impl QuotaHistoryIdentity {
         canonical_codex_home: &Path,
         stable_account_key: Option<&str>,
         bundle: &AccountQuotaBundle,
+        limit_id: Option<&str>,
     ) -> Option<Self> {
         Self::from_canonical_parts(
             canonical_codex_home,
             stable_account_key,
             &bundle.account.plan_label,
-            CODEX_MAIN_LIMIT_ID,
+            limit_id?,
         )
     }
 
@@ -189,6 +189,7 @@ impl QuotaHistoryDatabase {
             self.path.parent().unwrap_or_else(|| Path::new("/fixture/test-home")),
             Some(&stable_account_key),
             bundle,
+            Some("codex"),
         )
         .expect("test quota bundle must have a stable history identity");
         self.record_for_identity(Some(&identity), bundle).map(|_| ())
@@ -279,6 +280,7 @@ impl QuotaHistoryDatabase {
             self.path.parent().unwrap_or_else(|| Path::new("/fixture/test-home")),
             Some(&stable_account_key),
             bundle,
+            Some("codex"),
         );
         self.history_bundle_for_identity(identity.as_ref(), bundle, day_count, recent_count)
     }

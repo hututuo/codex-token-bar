@@ -71,13 +71,20 @@ impl QuotaCacheScope {
     fn history_identity(
         &self,
         bundle: &AccountQuotaBundle,
+        limit_id: Option<&str>,
     ) -> Option<quota_history::QuotaHistoryIdentity> {
         quota_history::QuotaHistoryIdentity::from_bundle(
             &self.codex_home,
             self.account_key.as_deref(),
             bundle,
+            limit_id,
         )
     }
+}
+
+struct LoadedAccountQuota {
+    bundle: AccountQuotaBundle,
+    history_limit_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -171,8 +178,13 @@ where
         codex_home,
         force_refresh,
         cadence_loader,
-        loader,
-        |_, bundle| Ok(bundle),
+        |path| {
+            loader(path).map(|bundle| LoadedAccountQuota {
+                bundle,
+                history_limit_id: None,
+            })
+        },
+        |_, bundle, _| Ok(bundle),
     )
 }
 
@@ -185,8 +197,12 @@ fn read_account_quota_with_policy_loader_and_finalizer<F, L, Finalize>(
 ) -> Result<AccountQuotaBundle, String>
 where
     F: FnOnce() -> u64,
-    L: FnOnce(&Path) -> Result<AccountQuotaBundle, String>,
-    Finalize: FnOnce(&QuotaCacheScope, AccountQuotaBundle) -> Result<AccountQuotaBundle, String>,
+    L: FnOnce(&Path) -> Result<LoadedAccountQuota, String>,
+    Finalize: FnOnce(
+        &QuotaCacheScope,
+        AccountQuotaBundle,
+        Option<&str>,
+    ) -> Result<AccountQuotaBundle, String>,
 {
     let success_freshness = success_freshness_for_cadence_ms(cadence_loader());
     let initial_scope = observed_quota_cache_scope(codex_home);
@@ -226,14 +242,18 @@ where
     if !scope.allows_flight_reuse(&completed_scope) {
         return Ok(identity_changed_quota_bundle(codex_home));
     }
-    let result = loaded.and_then(|bundle| {
+    let result = loaded.and_then(|loaded| {
+        let LoadedAccountQuota {
+            bundle,
+            history_limit_id,
+        } = loaded;
         if account_quota_failed(&bundle) {
             if let Some(previous) = previous_success {
                 return Ok(stale_quota_bundle(previous, bundle));
             }
         }
         if quota_available(&bundle.quota) {
-            return finalizer(&completed_scope, bundle);
+            return finalizer(&completed_scope, bundle, history_limit_id.as_deref());
         }
         Ok(bundle)
     });
@@ -409,11 +429,12 @@ fn bundle_has_stale_data(bundle: &AccountQuotaBundle) -> bool {
         .any(|diagnostic| diagnostic.stale_data_displayed)
 }
 
-fn read_account_quota_raw(codex_home: &Path) -> Result<AccountQuotaBundle, String> {
-    let mut bundle = match read_rate_limits(codex_home) {
+fn read_account_quota_raw(codex_home: &Path) -> Result<LoadedAccountQuota, String> {
+    let (mut bundle, history_limit_id) = match read_rate_limits(codex_home) {
         Ok(ParsedRateLimits {
             mut quota,
             plan_label,
+            limit_id,
         }) => {
             let mut warnings = Vec::new();
             let mut diagnostics = Vec::new();
@@ -427,18 +448,21 @@ fn read_account_quota_raw(codex_home: &Path) -> Result<AccountQuotaBundle, Strin
                     credits: Vec::new(),
                 }
             });
-            AccountQuotaBundle {
-                account: account_info(codex_home, plan_label.as_deref()),
-                quota,
-                quota_history_daily: Vec::new(),
-                quota_history_24h: Vec::new(),
-                quota_history_7d: Vec::new(),
-                quota_history_30d: Vec::new(),
-                warnings,
-                diagnostics,
-            }
+            (
+                AccountQuotaBundle {
+                    account: account_info(codex_home, plan_label.as_deref()),
+                    quota,
+                    quota_history_daily: Vec::new(),
+                    quota_history_24h: Vec::new(),
+                    quota_history_7d: Vec::new(),
+                    quota_history_30d: Vec::new(),
+                    warnings,
+                    diagnostics,
+                },
+                Some(limit_id),
+            )
         }
-        Err(error) => quota_failure_bundle(codex_home, error),
+        Err(error) => (quota_failure_bundle(codex_home, error), None),
     };
 
     if bundle.quota.reset_credit.status == "重置卡待读取" {
@@ -454,14 +478,18 @@ fn read_account_quota_raw(codex_home: &Path) -> Result<AccountQuotaBundle, Strin
         });
     }
 
-    Ok(bundle)
+    Ok(LoadedAccountQuota {
+        bundle,
+        history_limit_id,
+    })
 }
 
 fn finalize_account_quota(
     scope: &QuotaCacheScope,
     mut bundle: AccountQuotaBundle,
+    history_limit_id: Option<&str>,
 ) -> Result<AccountQuotaBundle, String> {
-    let Some(history_identity) = scope.history_identity(&bundle) else {
+    let Some(history_identity) = scope.history_identity(&bundle, history_limit_id) else {
         return Ok(bundle);
     };
     if let Err(error) = quota_history::record_bundle(&history_identity, &bundle) {
@@ -1428,9 +1456,12 @@ mod tests {
             || 30_000,
             |home| {
                 write_test_auth_subject(home, "account-b");
-                Ok(measured_quota_bundle("account-b"))
+                Ok(LoadedAccountQuota {
+                    bundle: measured_quota_bundle("account-b"),
+                    history_limit_id: Some("codex".into()),
+                })
             },
-            |_, bundle| {
+            |_, bundle, _| {
                 record_calls.fetch_add(1, Ordering::SeqCst);
                 history_load_calls.fetch_add(1, Ordering::SeqCst);
                 Ok(bundle)
@@ -1445,12 +1476,60 @@ mod tests {
     }
 
     #[test]
+    fn selected_limit_id_reaches_history_finalizer() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-quota-limit-finalizer-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        write_test_auth_subject(&root, "limit-account");
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        let expected = quota_history::QuotaHistoryIdentity::from_canonical_parts(
+            &canonical_root,
+            Some("sub:limit-account"),
+            "Pro",
+            "gpt-5.3-codex-spark",
+        )
+        .unwrap();
+        let mut observed = None;
+
+        let result = read_account_quota_with_policy_loader_and_finalizer(
+            &root,
+            true,
+            || 30_000,
+            |_| {
+                Ok(LoadedAccountQuota {
+                    bundle: measured_quota_bundle("Limit User"),
+                    history_limit_id: Some("gpt-5.3-codex-spark".into()),
+                })
+            },
+            |scope, bundle, limit_id| {
+                observed = scope.history_identity(&bundle, limit_id);
+                Ok(bundle)
+            },
+        )
+        .unwrap();
+
+        assert!(quota_available(&result.quota));
+        assert_eq!(observed, Some(expected));
+        QUOTA_READ_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .remove(&canonical_root);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn quota_history_cache_reuses_recent_bundle_until_forced() {
         use std::cell::Cell;
 
         let mut cache = QuotaHistoryMemoryCache::default();
         let identity = quota_cache_scope(Path::new("history-home"), Some("sub:history".into()))
-            .history_identity(&measured_quota_bundle("History User"))
+            .history_identity(&measured_quota_bundle("History User"), Some("codex"))
             .unwrap();
         let load_count = Cell::new(0);
         let mut loader = || {
@@ -1508,8 +1587,12 @@ mod tests {
             account_key: Some("sub:stable-account".into()),
             flight_fingerprint: [2; 32],
         };
-        let before_history_identity = before_rotation.history_identity(&bundle).unwrap();
-        let after_history_identity = after_rotation.history_identity(&bundle).unwrap();
+        let before_history_identity = before_rotation
+            .history_identity(&bundle, Some("codex"))
+            .unwrap();
+        let after_history_identity = after_rotation
+            .history_identity(&bundle, Some("codex"))
+            .unwrap();
 
         let first = cache
             .load_or_refresh(&before_history_identity, true, || {
@@ -1545,8 +1628,12 @@ mod tests {
             account_key: Some("sub:account-b".into()),
             flight_fingerprint: [4; 32],
         };
-        let identity_a = account_a.history_identity(&bundle).unwrap();
-        let identity_b = account_b.history_identity(&bundle).unwrap();
+        let identity_a = account_a
+            .history_identity(&bundle, Some("codex"))
+            .unwrap();
+        let identity_b = account_b
+            .history_identity(&bundle, Some("codex"))
+            .unwrap();
 
         let a = cache
             .load_or_refresh(&identity_a, true, || {
@@ -1565,6 +1652,22 @@ mod tests {
     }
 
     #[test]
+    fn different_selected_limits_do_not_share_history_identity() {
+        let scope = quota_cache_scope(
+            Path::new("shared-limit-home"),
+            Some("sub:shared-limit-account".into()),
+        );
+        let bundle = measured_quota_bundle("Shared Limit User");
+
+        let codex = scope.history_identity(&bundle, Some("codex")).unwrap();
+        let spark = scope
+            .history_identity(&bundle, Some("gpt-5.3-codex-spark"))
+            .unwrap();
+
+        assert_ne!(codex, spark);
+    }
+
+    #[test]
     fn missing_stable_account_key_or_plan_cannot_create_history_identity() {
         let scope = QuotaCacheScope {
             codex_home: PathBuf::from("unkeyed-home"),
@@ -1572,7 +1675,7 @@ mod tests {
             flight_fingerprint: [5; 32],
         };
         assert!(scope
-            .history_identity(&measured_quota_bundle("Unknown User"))
+            .history_identity(&measured_quota_bundle("Unknown User"), Some("codex"))
             .is_none());
 
         let keyed_scope = QuotaCacheScope {
@@ -1582,7 +1685,12 @@ mod tests {
         };
         let mut unknown_plan = measured_quota_bundle("Unknown User");
         unknown_plan.account.plan_label = "计划待读取".into();
-        assert!(keyed_scope.history_identity(&unknown_plan).is_none());
+        assert!(keyed_scope
+            .history_identity(&unknown_plan, Some("codex"))
+            .is_none());
+        assert!(keyed_scope
+            .history_identity(&measured_quota_bundle("Unknown User"), None)
+            .is_none());
     }
 
     #[test]

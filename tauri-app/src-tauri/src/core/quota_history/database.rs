@@ -469,7 +469,17 @@ fn query_legacy_bridge_rows(
                 OR (?3 = 'codex' AND coalesce(limit_name, '') = '')
               )
               AND created_at >= ?4
-              AND (?5 = 0 OR source IS NULL OR lower(source) = 'swift')
+              AND (
+                source IS NULL
+                OR trim(source) = ''
+                OR lower(trim(source)) IN ('swift', 'tauri')
+              )
+              AND (
+                ?5 = 0
+                OR source IS NULL
+                OR trim(source) = ''
+                OR lower(trim(source)) = 'swift'
+              )
             ORDER BY created_at DESC
             LIMIT {LEGACY_BRIDGE_MAX_ROWS};
             "#

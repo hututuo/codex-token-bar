@@ -1,72 +1,100 @@
 {
   "fixtureVersion": 1,
   "identityVersion": 1,
-  "limitId": "codex",
   "scenarios": [
     {
       "id": "same-display-different-sub",
       "steps": [
-        { "operation": "write", "homeIdentity": "/fixture/home-a", "stableAccountKey": "sub:account-a", "displayName": "Shared User", "plan": "Plus", "usedPercent": 10 },
-        { "operation": "write", "homeIdentity": "/fixture/home-a", "stableAccountKey": "sub:account-b", "displayName": "Shared User", "plan": "Plus", "usedPercent": 70 },
-        { "operation": "read", "homeIdentity": "/fixture/home-a", "stableAccountKey": "sub:account-a", "displayName": "Shared User", "plan": "Plus", "expectedUsedPercents": [10] },
-        { "operation": "read", "homeIdentity": "/fixture/home-a", "stableAccountKey": "sub:account-b", "displayName": "Shared User", "plan": "Plus", "expectedUsedPercents": [70] }
+        { "operation": "write", "homeIdentity": "/fixture/home-a", "stableAccountKey": "sub:account-a", "displayName": "Shared User", "plan": "Plus", "limitId": "codex", "usedPercent": 10 },
+        { "operation": "write", "homeIdentity": "/fixture/home-a", "stableAccountKey": "sub:account-b", "displayName": "Shared User", "plan": "Plus", "limitId": "codex", "usedPercent": 70 },
+        { "operation": "read", "homeIdentity": "/fixture/home-a", "stableAccountKey": "sub:account-a", "displayName": "Shared User", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [10] },
+        { "operation": "read", "homeIdentity": "/fixture/home-a", "stableAccountKey": "sub:account-b", "displayName": "Shared User", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [70] }
       ]
     },
     {
       "id": "same-account-different-home",
       "steps": [
-        { "operation": "write", "homeIdentity": "/fixture/home-a", "stableAccountKey": "sub:portable-account", "displayName": "Portable User", "plan": "Pro", "usedPercent": 20 },
-        { "operation": "write", "homeIdentity": "/fixture/home-b", "stableAccountKey": "sub:portable-account", "displayName": "Portable User", "plan": "Pro", "usedPercent": 80 },
-        { "operation": "read", "homeIdentity": "/fixture/home-a", "stableAccountKey": "sub:portable-account", "displayName": "Portable User", "plan": "Pro", "expectedUsedPercents": [20] },
-        { "operation": "read", "homeIdentity": "/fixture/home-b", "stableAccountKey": "sub:portable-account", "displayName": "Portable User", "plan": "Pro", "expectedUsedPercents": [80] }
+        { "operation": "write", "homeIdentity": "/fixture/home-a", "stableAccountKey": "sub:portable-account", "displayName": "Portable User", "plan": "Pro", "limitId": "codex", "usedPercent": 20 },
+        { "operation": "write", "homeIdentity": "/fixture/home-b", "stableAccountKey": "sub:portable-account", "displayName": "Portable User", "plan": "Pro", "limitId": "codex", "usedPercent": 80 },
+        { "operation": "read", "homeIdentity": "/fixture/home-a", "stableAccountKey": "sub:portable-account", "displayName": "Portable User", "plan": "Pro", "limitId": "codex", "expectedUsedPercents": [20] },
+        { "operation": "read", "homeIdentity": "/fixture/home-b", "stableAccountKey": "sub:portable-account", "displayName": "Portable User", "plan": "Pro", "limitId": "codex", "expectedUsedPercents": [80] }
+      ]
+    },
+    {
+      "id": "same-account-different-limit",
+      "steps": [
+        { "operation": "write", "homeIdentity": "/fixture/home-limit", "stableAccountKey": "sub:limit-account", "displayName": "Limit User", "plan": "Plus", "limitId": "codex", "usedPercent": 12 },
+        { "operation": "write", "homeIdentity": "/fixture/home-limit", "stableAccountKey": "sub:limit-account", "displayName": "Limit User", "plan": "Plus", "limitId": "gpt-5.3-codex-spark", "usedPercent": 82 },
+        { "operation": "read", "homeIdentity": "/fixture/home-limit", "stableAccountKey": "sub:limit-account", "displayName": "Limit User", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [12] },
+        { "operation": "read", "homeIdentity": "/fixture/home-limit", "stableAccountKey": "sub:limit-account", "displayName": "Limit User", "plan": "Plus", "limitId": "gpt-5.3-codex-spark", "expectedUsedPercents": [82] }
       ]
     },
     {
       "id": "plus-to-team-plan-transition",
       "steps": [
-        { "operation": "write", "homeIdentity": "/fixture/home-plan", "stableAccountKey": "sub:plan-account", "displayName": "Plan User", "plan": "Plus", "usedPercent": 30 },
-        { "operation": "write", "homeIdentity": "/fixture/home-plan", "stableAccountKey": "sub:plan-account", "displayName": "Plan User", "plan": "Team", "usedPercent": 60 },
-        { "operation": "read", "homeIdentity": "/fixture/home-plan", "stableAccountKey": "sub:plan-account", "displayName": "Plan User", "plan": "Plus", "expectedUsedPercents": [30] },
-        { "operation": "read", "homeIdentity": "/fixture/home-plan", "stableAccountKey": "sub:plan-account", "displayName": "Plan User", "plan": "Team", "expectedUsedPercents": [60] }
+        { "operation": "write", "homeIdentity": "/fixture/home-plan", "stableAccountKey": "sub:plan-account", "displayName": "Plan User", "plan": "Plus", "limitId": "codex", "usedPercent": 30 },
+        { "operation": "write", "homeIdentity": "/fixture/home-plan", "stableAccountKey": "sub:plan-account", "displayName": "Plan User", "plan": "Team", "limitId": "codex", "usedPercent": 60 },
+        { "operation": "read", "homeIdentity": "/fixture/home-plan", "stableAccountKey": "sub:plan-account", "displayName": "Plan User", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [30] },
+        { "operation": "read", "homeIdentity": "/fixture/home-plan", "stableAccountKey": "sub:plan-account", "displayName": "Plan User", "plan": "Team", "limitId": "codex", "expectedUsedPercents": [60] }
       ]
     },
     {
       "id": "unknown-identity-and-plan-fail-closed",
       "steps": [
-        { "operation": "write", "homeIdentity": "/fixture/home-unknown", "stableAccountKey": null, "displayName": "Unknown User", "plan": "Plus", "usedPercent": 90, "expectedAccepted": false },
-        { "operation": "write", "homeIdentity": "/fixture/home-unknown", "stableAccountKey": "sub:unknown-plan", "displayName": "Unknown User", "plan": "unknown", "usedPercent": 91, "expectedAccepted": false },
-        { "operation": "read", "homeIdentity": "/fixture/home-unknown", "stableAccountKey": null, "displayName": "Unknown User", "plan": "Plus", "expectedUsedPercents": [] },
-        { "operation": "read", "homeIdentity": "/fixture/home-unknown", "stableAccountKey": "sub:unknown-plan", "displayName": "Unknown User", "plan": "unknown", "expectedUsedPercents": [] }
+        { "operation": "write", "homeIdentity": "/fixture/home-unknown", "stableAccountKey": null, "displayName": "Unknown User", "plan": "Plus", "limitId": "codex", "usedPercent": 90, "expectedAccepted": false },
+        { "operation": "write", "homeIdentity": "/fixture/home-unknown", "stableAccountKey": "sub:unknown-plan", "displayName": "Unknown User", "plan": "unknown", "limitId": "codex", "usedPercent": 91, "expectedAccepted": false },
+        { "operation": "read", "homeIdentity": "/fixture/home-unknown", "stableAccountKey": null, "displayName": "Unknown User", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [] },
+        { "operation": "read", "homeIdentity": "/fixture/home-unknown", "stableAccountKey": "sub:unknown-plan", "displayName": "Unknown User", "plan": "unknown", "limitId": "codex", "expectedUsedPercents": [] }
       ]
     },
     {
       "id": "source-switch-failure-does-not-reuse-previous-home",
       "steps": [
-        { "operation": "write", "homeIdentity": "/fixture/source-a", "stableAccountKey": "sub:source-a", "displayName": "Source User", "plan": "Pro", "usedPercent": 25 },
-        { "operation": "read", "homeIdentity": "/fixture/source-b", "stableAccountKey": null, "displayName": "Source User", "plan": "unknown", "expectedUsedPercents": [] },
-        { "operation": "read", "homeIdentity": "/fixture/source-a", "stableAccountKey": "sub:source-a", "displayName": "Source User", "plan": "Pro", "expectedUsedPercents": [25] }
+        { "operation": "write", "homeIdentity": "/fixture/source-a", "stableAccountKey": "sub:source-a", "displayName": "Source User", "plan": "Pro", "limitId": "codex", "usedPercent": 25 },
+        { "operation": "read", "homeIdentity": "/fixture/source-b", "stableAccountKey": null, "displayName": "Source User", "plan": "unknown", "limitId": "codex", "expectedUsedPercents": [] },
+        { "operation": "read", "homeIdentity": "/fixture/source-a", "stableAccountKey": "sub:source-a", "displayName": "Source User", "plan": "Pro", "limitId": "codex", "expectedUsedPercents": [25] }
       ]
     },
     {
       "id": "legacy-fake-pro-bridge-becomes-ambiguous",
       "steps": [
-        { "operation": "legacyWrite", "displayName": "Legacy User", "plan": "Pro", "source": "swift", "usedPercent": 90 },
-        { "operation": "write", "homeIdentity": "/fixture/legacy-home", "stableAccountKey": "sub:legacy-owner", "displayName": "Legacy User", "plan": "Plus", "usedPercent": 15 },
-        { "operation": "read", "homeIdentity": "/fixture/legacy-home", "stableAccountKey": "sub:legacy-owner", "displayName": "Legacy User", "plan": "Plus", "expectedUsedPercents": [15, 90] },
-        { "operation": "write", "homeIdentity": "/fixture/legacy-home", "stableAccountKey": "sub:same-name-other-account", "displayName": "Legacy User", "plan": "Plus", "usedPercent": 75 },
-        { "operation": "read", "homeIdentity": "/fixture/legacy-home", "stableAccountKey": "sub:legacy-owner", "displayName": "Legacy User", "plan": "Plus", "expectedUsedPercents": [15] },
-        { "operation": "read", "homeIdentity": "/fixture/legacy-home", "stableAccountKey": "sub:same-name-other-account", "displayName": "Legacy User", "plan": "Plus", "expectedUsedPercents": [75] }
+        { "operation": "legacyWrite", "displayName": "Legacy User", "plan": "Pro", "limitId": "codex", "source": "swift", "usedPercent": 90 },
+        { "operation": "write", "homeIdentity": "/fixture/legacy-home", "stableAccountKey": "sub:legacy-owner", "displayName": "Legacy User", "plan": "Plus", "limitId": "codex", "usedPercent": 15 },
+        { "operation": "read", "homeIdentity": "/fixture/legacy-home", "stableAccountKey": "sub:legacy-owner", "displayName": "Legacy User", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [15, 90] },
+        { "operation": "write", "homeIdentity": "/fixture/legacy-home", "stableAccountKey": "sub:same-name-other-account", "displayName": "Legacy User", "plan": "Plus", "limitId": "codex", "usedPercent": 75 },
+        { "operation": "read", "homeIdentity": "/fixture/legacy-home", "stableAccountKey": "sub:legacy-owner", "displayName": "Legacy User", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [15] },
+        { "operation": "read", "homeIdentity": "/fixture/legacy-home", "stableAccountKey": "sub:same-name-other-account", "displayName": "Legacy User", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [75] }
       ]
     },
     {
       "id": "legacy-pro-alias-cannot-bridge-two-plans",
       "steps": [
-        { "operation": "legacyWrite", "displayName": "Transition User", "plan": "Pro", "source": "swift", "usedPercent": 90 },
-        { "operation": "write", "homeIdentity": "/fixture/transition-home", "stableAccountKey": "sub:transition-account", "displayName": "Transition User", "plan": "Pro", "usedPercent": 20 },
-        { "operation": "read", "homeIdentity": "/fixture/transition-home", "stableAccountKey": "sub:transition-account", "displayName": "Transition User", "plan": "Pro", "expectedUsedPercents": [20, 90] },
-        { "operation": "write", "homeIdentity": "/fixture/transition-home", "stableAccountKey": "sub:transition-account", "displayName": "Transition User", "plan": "Team", "usedPercent": 75 },
-        { "operation": "read", "homeIdentity": "/fixture/transition-home", "stableAccountKey": "sub:transition-account", "displayName": "Transition User", "plan": "Pro", "expectedUsedPercents": [20] },
-        { "operation": "read", "homeIdentity": "/fixture/transition-home", "stableAccountKey": "sub:transition-account", "displayName": "Transition User", "plan": "Team", "expectedUsedPercents": [75] }
+        { "operation": "legacyWrite", "displayName": "Transition User", "plan": "Pro", "limitId": "codex", "source": "swift", "usedPercent": 90 },
+        { "operation": "write", "homeIdentity": "/fixture/transition-home", "stableAccountKey": "sub:transition-account", "displayName": "Transition User", "plan": "Pro", "limitId": "codex", "usedPercent": 20 },
+        { "operation": "read", "homeIdentity": "/fixture/transition-home", "stableAccountKey": "sub:transition-account", "displayName": "Transition User", "plan": "Pro", "limitId": "codex", "expectedUsedPercents": [20, 90] },
+        { "operation": "write", "homeIdentity": "/fixture/transition-home", "stableAccountKey": "sub:transition-account", "displayName": "Transition User", "plan": "Team", "limitId": "codex", "usedPercent": 75 },
+        { "operation": "read", "homeIdentity": "/fixture/transition-home", "stableAccountKey": "sub:transition-account", "displayName": "Transition User", "plan": "Pro", "limitId": "codex", "expectedUsedPercents": [20] },
+        { "operation": "read", "homeIdentity": "/fixture/transition-home", "stableAccountKey": "sub:transition-account", "displayName": "Transition User", "plan": "Team", "limitId": "codex", "expectedUsedPercents": [75] }
+      ]
+    },
+    {
+      "id": "legacy-source-allowlist",
+      "steps": [
+        { "operation": "legacyWrite", "displayName": "Swift Legacy", "plan": "Plus", "limitId": "codex", "source": "swift", "usedPercent": 31 },
+        { "operation": "write", "homeIdentity": "/fixture/legacy-sources", "stableAccountKey": "sub:swift-legacy", "displayName": "Swift Legacy", "plan": "Plus", "limitId": "codex", "usedPercent": 11 },
+        { "operation": "read", "homeIdentity": "/fixture/legacy-sources", "stableAccountKey": "sub:swift-legacy", "displayName": "Swift Legacy", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [11, 31] },
+        { "operation": "legacyWrite", "displayName": "Tauri Legacy", "plan": "Plus", "limitId": "codex", "source": "tauri", "usedPercent": 32 },
+        { "operation": "write", "homeIdentity": "/fixture/legacy-sources", "stableAccountKey": "sub:tauri-legacy", "displayName": "Tauri Legacy", "plan": "Plus", "limitId": "codex", "usedPercent": 12 },
+        { "operation": "read", "homeIdentity": "/fixture/legacy-sources", "stableAccountKey": "sub:tauri-legacy", "displayName": "Tauri Legacy", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [12, 32] },
+        { "operation": "legacyWrite", "displayName": "Null Legacy", "plan": "Plus", "limitId": "codex", "source": null, "usedPercent": 33 },
+        { "operation": "write", "homeIdentity": "/fixture/legacy-sources", "stableAccountKey": "sub:null-legacy", "displayName": "Null Legacy", "plan": "Plus", "limitId": "codex", "usedPercent": 13 },
+        { "operation": "read", "homeIdentity": "/fixture/legacy-sources", "stableAccountKey": "sub:null-legacy", "displayName": "Null Legacy", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [13, 33] },
+        { "operation": "legacyWrite", "displayName": "Blank Legacy", "plan": "Plus", "limitId": "codex", "source": "", "usedPercent": 34 },
+        { "operation": "write", "homeIdentity": "/fixture/legacy-sources", "stableAccountKey": "sub:blank-legacy", "displayName": "Blank Legacy", "plan": "Plus", "limitId": "codex", "usedPercent": 14 },
+        { "operation": "read", "homeIdentity": "/fixture/legacy-sources", "stableAccountKey": "sub:blank-legacy", "displayName": "Blank Legacy", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [14, 34] },
+        { "operation": "legacyWrite", "displayName": "Unknown Legacy", "plan": "Plus", "limitId": "codex", "source": "unknown-writer", "usedPercent": 99 },
+        { "operation": "write", "homeIdentity": "/fixture/legacy-sources", "stableAccountKey": "sub:unknown-legacy", "displayName": "Unknown Legacy", "plan": "Plus", "limitId": "codex", "usedPercent": 15 },
+        { "operation": "read", "homeIdentity": "/fixture/legacy-sources", "stableAccountKey": "sub:unknown-legacy", "displayName": "Unknown Legacy", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [15] }
       ]
     }
   ]
