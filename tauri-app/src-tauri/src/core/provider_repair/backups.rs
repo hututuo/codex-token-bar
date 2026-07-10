@@ -1302,15 +1302,20 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_pinned(
     reconcile_unfinished_restore_transactions_with_home(backup_root, pinned_home)
 }
 
-pub(super) fn has_unfinished_restore_transactions_at(backup_root: &Path) -> Result<bool, String> {
-    Ok(!unfinished_restore_transaction_paths_at(backup_root)?.is_empty())
+pub(super) fn has_unfinished_restore_transactions_for_home_with_pinned(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+) -> Result<bool, RestoreRecoveryBlocked> {
+    Ok(!unfinished_restore_transactions_for_home(backup_root, pinned_home)?.is_empty())
 }
 
-pub(super) fn first_unfinished_restore_transaction_at(
+pub(super) fn first_unfinished_restore_transaction_for_home_with_pinned(
     backup_root: &Path,
-) -> Result<Option<PathBuf>, String> {
-    Ok(unfinished_restore_transaction_paths_at(backup_root)?
+    pinned_home: &PinnedHome,
+) -> Result<Option<PathBuf>, RestoreRecoveryBlocked> {
+    Ok(unfinished_restore_transactions_for_home(backup_root, pinned_home)?
         .into_iter()
+        .map(|(path, _)| path)
         .next())
 }
 
@@ -1353,56 +1358,9 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_diagnostics(
     backup_root: &Path,
     pinned_home: &PinnedHome,
 ) -> Result<(), RestoreRecoveryBlocked> {
-    let candidates = unfinished_restore_transaction_paths_at(backup_root).map_err(|error| {
-        recovery_blocked("journalDiscoveryFailed", None, error)
-    })?;
+    let transactions = unfinished_restore_transactions_for_home(backup_root, pinned_home)?;
 
-    for recovery_path in candidates {
-        let journal = read_restore_journal(&recovery_path).map_err(|error| {
-            recovery_blocked("journalInvalid", Some(&recovery_path), error)
-        })?;
-        validate_recovery_journal(&recovery_path, &journal).map_err(|error| {
-            recovery_blocked("journalInvalid", Some(&recovery_path), error)
-        })?;
-        if journal.codex_home_fingerprint != pinned_home_fingerprint(pinned_home) {
-            return Err(recovery_blocked(
-                "codexHomeMismatch",
-                Some(&recovery_path),
-                "journal 的 Codex Home 路径身份与当前 Home 不一致",
-            ));
-        }
-        let current_generation = pinned_home.generation_identity().map_err(|error| {
-            recovery_blocked("homeGenerationUnavailable", Some(&recovery_path), error)
-        })?;
-        if journal.home_generation != current_generation {
-            return Err(recovery_blocked(
-                "homeGenerationMismatch",
-                Some(&recovery_path),
-                "journal 的 Home generation 与当前固定 Home 句柄不一致",
-            ));
-        }
-        let current_account = pinned_home
-            .account_identity_fingerprint()
-            .map_err(|error| {
-                recovery_blocked("accountIdentityUnknown", Some(&recovery_path), error)
-            })?
-            .ok_or_else(|| {
-                recovery_blocked(
-                    "accountIdentityUnknown",
-                    Some(&recovery_path),
-                    "当前 Home 缺少可验证的非 secret 稳定账号身份",
-                )
-            })?;
-        if journal.account_identity != current_account {
-            return Err(recovery_blocked(
-                "accountIdentityMismatch",
-                Some(&recovery_path),
-                "journal 的账号身份与当前 Home 账号不一致",
-            ));
-        }
-        validate_journal_source_backup(backup_root, &journal).map_err(|error| {
-            recovery_blocked("sourceBackupMismatch", Some(&recovery_path), error)
-        })?;
+    for (recovery_path, journal) in transactions {
         let mut hook = noop_restore_hook;
         if journal.phase != RestoreJournalPhase::Committed {
             let errors =
@@ -1423,6 +1381,78 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_diagnostics(
         })?;
     }
     Ok(())
+}
+
+fn unfinished_restore_transactions_for_home(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+) -> Result<Vec<(PathBuf, RestoreJournal)>, RestoreRecoveryBlocked> {
+    let candidates = unfinished_restore_transaction_paths_at(backup_root)
+        .map_err(|error| recovery_blocked("journalDiscoveryFailed", None, error))?;
+    let current_home_fingerprint = pinned_home_fingerprint(pinned_home);
+    let mut current_home_identity = None;
+    let mut transactions = Vec::new();
+
+    for recovery_path in candidates {
+        let journal = read_restore_journal(&recovery_path).map_err(|error| {
+            recovery_blocked("journalInvalid", Some(&recovery_path), error)
+        })?;
+        validate_recovery_journal(&recovery_path, &journal).map_err(|error| {
+            recovery_blocked("journalInvalid", Some(&recovery_path), error)
+        })?;
+        if journal.codex_home_fingerprint
+            != codex_home_fingerprint_for_identity(&journal.codex_home)
+        {
+            return Err(recovery_blocked(
+                "journalInvalid",
+                Some(&recovery_path),
+                "journal 的 Codex Home 路径与 fingerprint 不一致，无法安全归属",
+            ));
+        }
+        validate_journal_source_backup(backup_root, &journal).map_err(|error| {
+            recovery_blocked("sourceBackupMismatch", Some(&recovery_path), error)
+        })?;
+        if journal.codex_home_fingerprint != current_home_fingerprint {
+            continue;
+        }
+        let (current_generation, current_account) = match &current_home_identity {
+            Some(identity) => identity,
+            None => {
+                let generation = pinned_home.generation_identity().map_err(|error| {
+                    recovery_blocked("homeGenerationUnavailable", Some(&recovery_path), error)
+                })?;
+                let account = pinned_home
+                    .account_identity_fingerprint()
+                    .map_err(|error| {
+                        recovery_blocked("accountIdentityUnknown", Some(&recovery_path), error)
+                    })?
+                    .ok_or_else(|| {
+                        recovery_blocked(
+                            "accountIdentityUnknown",
+                            Some(&recovery_path),
+                            "当前 Home 缺少可验证的非 secret 稳定账号身份",
+                        )
+                    })?;
+                current_home_identity.insert((generation, account))
+            }
+        };
+        if &journal.home_generation != current_generation {
+            return Err(recovery_blocked(
+                "homeGenerationMismatch",
+                Some(&recovery_path),
+                "journal 的 Home generation 与当前固定 Home 句柄不一致",
+            ));
+        }
+        if &journal.account_identity != current_account {
+            return Err(recovery_blocked(
+                "accountIdentityMismatch",
+                Some(&recovery_path),
+                "journal 的账号身份与当前 Home 账号不一致",
+            ));
+        }
+        transactions.push((recovery_path, journal));
+    }
+    Ok(transactions)
 }
 
 fn validate_journal_source_backup(
@@ -1923,7 +1953,7 @@ pub(super) fn codex_home_fingerprint(codex_home: &Path) -> String {
     codex_home_fingerprint_for_identity(&codex_home_identity(codex_home))
 }
 
-fn pinned_home_fingerprint(pinned_home: &PinnedHome) -> String {
+pub(super) fn pinned_home_fingerprint(pinned_home: &PinnedHome) -> String {
     codex_home_fingerprint_for_identity(&pinned_home.canonical_path().display().to_string())
 }
 

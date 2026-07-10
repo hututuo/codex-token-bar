@@ -1839,6 +1839,188 @@ fn startup_reconciliation_handles_each_durable_restore_phase() {
 }
 
 #[test]
+fn startup_recovery_scopes_journals_to_current_home_in_both_sort_orders() {
+    use crate::commands::startup::initialize_provider_recovery_at;
+
+    for current_label in ["b", "a"] {
+        let fixture = temp_root(&format!("provider-restart-home-scope-{current_label}"));
+        let home_a = fixture.join("home-a");
+        let home_b = fixture.join("home-b");
+        let backup_root = fixture.join("backups");
+        fs::create_dir_all(&home_a).unwrap();
+        fs::create_dir_all(&home_b).unwrap();
+        write_test_auth_subject(&home_a, "scope-account-a");
+        write_test_auth_subject(&home_b, "scope-account-b");
+        fs::write(home_a.join("config.toml"), "backup-a").unwrap();
+        fs::write(home_b.join("config.toml"), "backup-b").unwrap();
+        let backup_a =
+            backups::create_provider_backup_files_at(&backup_root, &home_a, "openai").unwrap();
+        let backup_b =
+            backups::create_provider_backup_files_at(&backup_root, &home_b, "openai").unwrap();
+        fs::write(home_a.join("config.toml"), "live-a").unwrap();
+        fs::write(home_b.join("config.toml"), "live-b").unwrap();
+
+        let (recovery_a, recovery_b) = if current_label == "b" {
+            let recovery_a = backups::simulate_restore_crash_at(
+                &home_a,
+                &backup_a,
+                backups::RestoreCrashPoint::MidApply,
+            )
+            .unwrap();
+            let recovery_b = backups::simulate_restore_crash_at(
+                &home_b,
+                &backup_b,
+                backups::RestoreCrashPoint::MidApply,
+            )
+            .unwrap();
+            (recovery_a, recovery_b)
+        } else {
+            let recovery_b = backups::simulate_restore_crash_at(
+                &home_b,
+                &backup_b,
+                backups::RestoreCrashPoint::MidApply,
+            )
+            .unwrap();
+            let recovery_a = backups::simulate_restore_crash_at(
+                &home_a,
+                &backup_a,
+                backups::RestoreCrashPoint::MidApply,
+            )
+            .unwrap();
+            (recovery_a, recovery_b)
+        };
+        let (current_home, current_recovery, current_expected, other_home, other_recovery) =
+            if current_label == "b" {
+                (&home_b, &recovery_b, "live-b", &home_a, &recovery_a)
+            } else {
+                (&home_a, &recovery_a, "live-a", &home_b, &recovery_b)
+            };
+        let other_config_before = fs::read(other_home.join("config.toml")).unwrap();
+        let other_journal_before =
+            fs::read(other_recovery.join("recovery-manifest.json")).unwrap();
+        let recovery_state = ProviderRecoveryState::default();
+
+        let status = initialize_provider_recovery_at(
+            &recovery_state,
+            current_home,
+            &backup_root,
+            || Ok(false),
+        );
+
+        assert!(!status.blocked, "current {current_label}: {status:?}");
+        assert_eq!(
+            fs::read_to_string(current_home.join("config.toml")).unwrap(),
+            current_expected
+        );
+        assert!(!current_recovery.exists());
+        assert!(other_recovery.exists());
+        assert_eq!(
+            fs::read(other_home.join("config.toml")).unwrap(),
+            other_config_before
+        );
+        assert_eq!(
+            fs::read(other_recovery.join("recovery-manifest.json")).unwrap(),
+            other_journal_before
+        );
+        fs::remove_dir_all(fixture).unwrap();
+    }
+}
+
+#[test]
+fn startup_recovery_processes_every_journal_for_the_current_home() {
+    use crate::commands::startup::initialize_provider_recovery_at;
+
+    let fixture = temp_root("provider-restart-multiple-current-journals");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "multiple-journal-account");
+    fs::write(home.join("config.toml"), "backup-config").unwrap();
+    let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    fs::write(home.join("config.toml"), "live-config").unwrap();
+    let first_recovery =
+        backups::simulate_restore_crash_at(&home, &backup, backups::RestoreCrashPoint::Prepared)
+            .unwrap();
+    let second_recovery = backup_root.join(".restore-recovery-zz-current-home-duplicate");
+    copy_test_tree(&first_recovery, &second_recovery);
+    rewrite_recovery_journal(&second_recovery, |journal| {
+        journal["transaction_id"] = second_recovery
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+            .into();
+    });
+    let recovery_state = ProviderRecoveryState::default();
+
+    let status = initialize_provider_recovery_at(
+        &recovery_state,
+        &home,
+        &backup_root,
+        || Ok(false),
+    );
+
+    assert!(!status.blocked, "{status:?}");
+    assert!(!first_recovery.exists());
+    assert!(!second_recovery.exists());
+    assert_eq!(
+        fs::read_to_string(home.join("config.toml")).unwrap(),
+        "live-config"
+    );
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn startup_recovery_fails_closed_for_an_unassignable_journal() {
+    use crate::commands::startup::initialize_provider_recovery_at;
+
+    let fixture = temp_root("provider-restart-unassignable-journal");
+    let home_a = fixture.join("home-a");
+    let home_b = fixture.join("home-b");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(&home_a).unwrap();
+    fs::create_dir_all(&home_b).unwrap();
+    write_test_auth_subject(&home_a, "unassignable-account-a");
+    write_test_auth_subject(&home_b, "unassignable-account-b");
+    fs::write(home_a.join("config.toml"), "backup-a").unwrap();
+    fs::write(home_b.join("config.toml"), "sentinel-b").unwrap();
+    let backup_a =
+        backups::create_provider_backup_files_at(&backup_root, &home_a, "openai").unwrap();
+    fs::write(home_a.join("config.toml"), "live-a").unwrap();
+    let recovery_path = backups::simulate_restore_crash_at(
+        &home_a,
+        &backup_a,
+        backups::RestoreCrashPoint::Prepared,
+    )
+    .unwrap();
+    rewrite_recovery_journal(&recovery_path, |journal| {
+        journal["codex_home_fingerprint"] = backups::codex_home_fingerprint(&home_b).into();
+    });
+    let journal_before = fs::read(recovery_path.join("recovery-manifest.json")).unwrap();
+    let recovery_state = ProviderRecoveryState::default();
+
+    let status = initialize_provider_recovery_at(
+        &recovery_state,
+        &home_b,
+        &backup_root,
+        || panic!("an unassignable journal must fail before the running probe"),
+    );
+
+    assert!(status.blocked, "{status:?}");
+    assert_eq!(status.code.as_deref(), Some("journalInvalid"));
+    assert_eq!(status.recovery_path.as_deref(), Some(recovery_path.as_path()));
+    assert_eq!(
+        fs::read_to_string(home_b.join("config.toml")).unwrap(),
+        "sentinel-b"
+    );
+    assert_eq!(
+        fs::read(recovery_path.join("recovery-manifest.json")).unwrap(),
+        journal_before
+    );
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
 fn failed_startup_reconciliation_retains_and_names_exact_recovery_path() {
     let fixture = temp_root("provider-restart-reconcile-failure");
     let home = fixture.join("home");
@@ -1908,7 +2090,7 @@ fn startup_running_or_probe_failure_blocks_without_writing() {
         assert_eq!(status.code.as_deref(), Some(expected_code), "{label}");
         assert_eq!(status.recovery_path.as_deref(), Some(recovery_path.as_path()));
         assert!(matches!(
-            recovery_state.guard_destructive_action(),
+            recovery_state.guard_destructive_action_for_home(&home),
             Err(ProviderOperationError::RecoveryBlocked { .. })
         ));
         assert_eq!(fs::read(home.join("config.toml")).unwrap(), home_before);
@@ -1918,6 +2100,199 @@ fn startup_running_or_probe_failure_blocks_without_writing() {
         );
         fs::remove_dir_all(fixture).unwrap();
     }
+}
+
+#[test]
+fn later_action_retries_startup_running_or_probe_blocks_after_codex_stops() {
+    use crate::commands::startup::initialize_provider_recovery_at;
+
+    for (label, startup_probe_fails, expected_code) in [
+        ("running", false, "codexRunning"),
+        ("probe-failure", true, "runningProbeFailed"),
+    ] {
+        let fixture = temp_root(&format!("provider-action-retries-{label}"));
+        let home = fixture.join("home");
+        let backup_root = fixture.join("backups");
+        fs::create_dir_all(&home).unwrap();
+        write_test_auth_subject(&home, "retry-account");
+        fs::write(home.join("config.toml"), "backup-config").unwrap();
+        let backup =
+            backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+        fs::write(home.join("config.toml"), "live-config").unwrap();
+        let recovery_path = backups::simulate_restore_crash_at(
+            &home,
+            &backup,
+            backups::RestoreCrashPoint::MidApply,
+        )
+        .unwrap();
+        let recovery_state = ProviderRecoveryState::default();
+
+        let startup = initialize_provider_recovery_at(
+            &recovery_state,
+            &home,
+            &backup_root,
+            || {
+                if startup_probe_fails {
+                    Err("probe temporarily unavailable".into())
+                } else {
+                    Ok(true)
+                }
+            },
+        );
+        assert!(startup.blocked, "{label}: {startup:?}");
+        assert_eq!(startup.code.as_deref(), Some(expected_code), "{label}");
+        assert!(recovery_path.exists());
+        let journal_before = fs::read(recovery_path.join("recovery-manifest.json")).unwrap();
+
+        let still_blocked = reconcile_provider_recovery_for_action_at(
+            &recovery_state,
+            &home,
+            &backup_root,
+            || {
+                if startup_probe_fails {
+                    Err("probe still unavailable".into())
+                } else {
+                    Ok(true)
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            still_blocked,
+            ProviderOperationError::RecoveryBlocked { ref code, .. } if code == expected_code
+        ));
+        assert_eq!(
+            fs::read(recovery_path.join("recovery-manifest.json")).unwrap(),
+            journal_before
+        );
+
+        let retried = reconcile_provider_recovery_for_action_at(
+            &recovery_state,
+            &home,
+            &backup_root,
+            || Ok(false),
+        )
+        .unwrap();
+
+        assert!(!retried.blocked, "{label}: {retried:?}");
+        assert!(!recovery_path.exists());
+        assert_eq!(
+            fs::read_to_string(home.join("config.toml")).unwrap(),
+            "live-config"
+        );
+        assert!(recovery_state
+            .guard_destructive_action_for_home(&home)
+            .is_ok());
+
+        let idempotent = reconcile_provider_recovery_for_action_at(
+            &recovery_state,
+            &home,
+            &backup_root,
+            || panic!("no pending current-Home journal should not probe"),
+        )
+        .unwrap();
+        assert!(!idempotent.blocked, "{label}: {idempotent:?}");
+        fs::remove_dir_all(fixture).unwrap();
+    }
+}
+
+#[test]
+fn recovery_state_and_ownership_are_scoped_to_home_and_generation() {
+    use crate::commands::startup::initialize_provider_recovery_at;
+
+    let fixture = temp_root("provider-recovery-state-home-scope");
+    let home_a = fixture.join("home-a");
+    let home_b = fixture.join("home-b");
+    let old_home_b = fixture.join("old-home-b");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(&home_a).unwrap();
+    fs::create_dir_all(&home_b).unwrap();
+    write_test_auth_subject(&home_a, "state-account-a");
+    write_test_auth_subject(&home_b, "state-account-b");
+    fs::write(home_a.join("config.toml"), "backup-a").unwrap();
+    fs::write(home_b.join("config.toml"), "live-b").unwrap();
+    let backup_a =
+        backups::create_provider_backup_files_at(&backup_root, &home_a, "openai").unwrap();
+    fs::write(home_a.join("config.toml"), "live-a").unwrap();
+    let recovery_a = backups::simulate_restore_crash_at(
+        &home_a,
+        &backup_a,
+        backups::RestoreCrashPoint::Prepared,
+    )
+    .unwrap();
+    let recovery_state = ProviderRecoveryState::default();
+
+    let blocked_a = initialize_provider_recovery_at(
+        &recovery_state,
+        &home_a,
+        &backup_root,
+        || Ok(true),
+    );
+    assert!(blocked_a.blocked, "{blocked_a:?}");
+    assert!(blocked_a.home_scope.is_some());
+
+    let ready_b = reconcile_provider_recovery_for_action_at(
+        &recovery_state,
+        &home_b,
+        &backup_root,
+        || panic!("other-Home journal must not trigger a running probe"),
+    )
+    .unwrap();
+    assert!(!ready_b.blocked, "{ready_b:?}");
+    let old_b_scope = ready_b.home_scope.clone().unwrap();
+    assert!(recovery_a.exists());
+
+    let b_discovery =
+        discover_provider_operation_ownership_for_home(&recovery_state, &home_b);
+    assert!(!b_discovery.recovery_status.blocked, "{b_discovery:?}");
+    let a_discovery =
+        discover_provider_operation_ownership_for_home(&recovery_state, &home_a);
+    assert!(a_discovery.recovery_status.blocked, "{a_discovery:?}");
+    assert_eq!(
+        a_discovery.recovery_status.code.as_deref(),
+        Some("homeNotCoordinated")
+    );
+    assert!(matches!(
+        recovery_state.guard_destructive_action_for_home(&home_a),
+        Err(ProviderOperationError::RecoveryBlocked { .. })
+    ));
+
+    fs::rename(&home_b, &old_home_b).unwrap();
+    fs::create_dir_all(&home_b).unwrap();
+    write_test_auth_subject(&home_b, "state-account-b");
+    fs::write(home_b.join("config.toml"), "new-generation-b").unwrap();
+    let new_generation = recovery_state.status_for_home(&home_b);
+    assert!(new_generation.blocked, "{new_generation:?}");
+    assert_eq!(
+        new_generation.code.as_deref(),
+        Some("homeNotCoordinated")
+    );
+    assert_ne!(new_generation.home_scope.as_ref(), Some(&old_b_scope));
+
+    let ready_new_b = reconcile_provider_recovery_for_action_at(
+        &recovery_state,
+        &home_b,
+        &backup_root,
+        || panic!("other-Home journal must not trigger a running probe"),
+    )
+    .unwrap();
+    assert!(!ready_new_b.blocked, "{ready_new_b:?}");
+    assert_ne!(ready_new_b.home_scope.as_ref(), Some(&old_b_scope));
+
+    let recovered_a = reconcile_provider_recovery_for_action_at(
+        &recovery_state,
+        &home_a,
+        &backup_root,
+        || Ok(false),
+    )
+    .unwrap();
+    assert!(!recovered_a.blocked, "{recovered_a:?}");
+    assert!(!recovery_a.exists());
+    assert_eq!(
+        fs::read_to_string(home_a.join("config.toml")).unwrap(),
+        "live-a"
+    );
+    fs::remove_dir_all(fixture).unwrap();
 }
 
 #[test]
@@ -2538,6 +2913,19 @@ fn rewrite_recovery_journal(
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     mutate(&mut journal);
     fs::write(path, serde_json::to_vec_pretty(&journal).unwrap()).unwrap();
+}
+
+fn copy_test_tree(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let target = destination.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_test_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
 }
 
 #[cfg(windows)]

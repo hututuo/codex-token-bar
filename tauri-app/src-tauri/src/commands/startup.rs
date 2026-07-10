@@ -15,7 +15,12 @@ pub(crate) fn initialize_provider_recovery(
             platform::codex_desktop_is_running,
         ),
         Err(error) => {
-            let status = ProviderRecoveryStatus::blocked("backupRootUnavailable", None, error);
+            let status = provider_repair::provider_recovery_blocked_status_for_home(
+                &codex_home,
+                "backupRootUnavailable",
+                None,
+                error,
+            );
             recovery_state.replace(status.clone());
             status
         }

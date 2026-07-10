@@ -67,20 +67,40 @@ impl From<String> for ProviderOperationError {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProviderRecoveryHomeScope {
+    pub canonical_home_fingerprint: String,
+    pub home_generation: String,
+}
+
+impl ProviderRecoveryHomeScope {
+    fn from_pinned(pinned_home: &PinnedHome) -> Result<Self, String> {
+        let home_generation = serde_json::to_string(&pinned_home.generation_identity()?)
+            .map_err(|error| format!("序列化 Codex Home generation 失败：{error}"))?;
+        Ok(Self {
+            canonical_home_fingerprint: backups::pinned_home_fingerprint(pinned_home),
+            home_generation,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderRecoveryStatus {
     pub blocked: bool,
     pub code: Option<String>,
     pub message: Option<String>,
     pub recovery_path: Option<PathBuf>,
+    pub home_scope: Option<ProviderRecoveryHomeScope>,
 }
 
 impl ProviderRecoveryStatus {
-    fn ready() -> Self {
+    fn ready(home_scope: ProviderRecoveryHomeScope) -> Self {
         Self {
             blocked: false,
             code: None,
             message: None,
             recovery_path: None,
+            home_scope: Some(home_scope),
         }
     }
 
@@ -94,6 +114,22 @@ impl ProviderRecoveryStatus {
             code: Some(code.into()),
             message: Some(message.into()),
             recovery_path,
+            home_scope: None,
+        }
+    }
+
+    fn blocked_for_scope(
+        home_scope: ProviderRecoveryHomeScope,
+        code: impl Into<String>,
+        recovery_path: Option<PathBuf>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            blocked: true,
+            code: Some(code.into()),
+            message: Some(message.into()),
+            recovery_path,
+            home_scope: Some(home_scope),
         }
     }
 }
@@ -129,8 +165,30 @@ impl ProviderRecoveryState {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = status;
     }
 
-    pub fn guard_destructive_action(&self) -> Result<(), ProviderOperationError> {
+    pub fn status_for_home(&self, codex_home: &Path) -> ProviderRecoveryStatus {
+        let home_scope = match provider_recovery_home_scope(codex_home) {
+            Ok(scope) => scope,
+            Err(error) => {
+                return ProviderRecoveryStatus::blocked("homeUnavailable", None, error)
+            }
+        };
         let status = self.snapshot();
+        if status.home_scope.as_ref() == Some(&home_scope) {
+            return status;
+        }
+        ProviderRecoveryStatus::blocked_for_scope(
+            home_scope,
+            "homeNotCoordinated",
+            None,
+            "当前 Codex Home generation 尚未完成 Provider recovery 协调，写操作保持禁用。",
+        )
+    }
+
+    pub fn guard_destructive_action_for_home(
+        &self,
+        codex_home: &Path,
+    ) -> Result<(), ProviderOperationError> {
+        let status = self.status_for_home(codex_home);
         if !status.blocked {
             return Ok(());
         }
@@ -371,7 +429,12 @@ fn reconcile_pending_restore_before_backup(
     pinned_home: &PinnedHome,
     probe: impl FnOnce() -> Result<bool, String>,
 ) -> Result<(), String> {
-    if !backups::has_unfinished_restore_transactions_at(backup_root)? {
+    if !backups::has_unfinished_restore_transactions_for_home_with_pinned(
+        backup_root,
+        pinned_home,
+    )
+    .map_err(|blocked| blocked.message)?
+    {
         return Ok(());
     }
     let running = probe()
@@ -641,6 +704,13 @@ pub fn discover_provider_operation_ownership(
     }
 }
 
+pub fn discover_provider_operation_ownership_for_home(
+    recovery_state: &ProviderRecoveryState,
+    codex_home: &Path,
+) -> ProviderOperationOwnershipDiscovery {
+    discover_provider_operation_ownership(recovery_state.status_for_home(codex_home))
+}
+
 pub(crate) fn provider_recovery_backup_root() -> Result<PathBuf, String> {
     provider_backup_root()
 }
@@ -650,13 +720,7 @@ pub(crate) fn reconcile_provider_recovery_on_startup_at(
     backup_root: &Path,
     probe: impl FnOnce() -> Result<bool, String>,
 ) -> ProviderRecoveryStatus {
-    let pending_path = match backups::first_unfinished_restore_transaction_at(backup_root) {
-        Ok(Some(path)) => path,
-        Ok(None) => return ProviderRecoveryStatus::ready(),
-        Err(error) => {
-            return ProviderRecoveryStatus::blocked("journalDiscoveryFailed", None, error)
-        }
-    };
+    let preliminary_scope = provider_recovery_home_scope(codex_home).ok();
     let operation_id = format!(
         "provider-startup-recovery-{}",
         STARTUP_RECOVERY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
@@ -664,17 +728,19 @@ pub(crate) fn reconcile_provider_recovery_on_startup_at(
     let lease = match acquire_provider_operation_lease(codex_home, &operation_id) {
         Ok(lease) => lease,
         Err(ProviderOperationError::Busy { message, .. }) => {
-            return ProviderRecoveryStatus::blocked(
+            return provider_recovery_blocked_for_optional_scope(
+                preliminary_scope,
                 "backendGuardBusy",
-                Some(pending_path),
+                None,
                 message,
             )
         }
         Err(ProviderOperationError::Failed { message })
         | Err(ProviderOperationError::RecoveryBlocked { message, .. }) => {
-            return ProviderRecoveryStatus::blocked(
+            return provider_recovery_blocked_for_optional_scope(
+                preliminary_scope,
                 "backendGuardFailed",
-                Some(pending_path),
+                None,
                 message,
             )
         }
@@ -682,17 +748,45 @@ pub(crate) fn reconcile_provider_recovery_on_startup_at(
     let pinned_home = match PinnedHome::open(&lease.canonical_home) {
         Ok(home) => home,
         Err(error) => {
-            return ProviderRecoveryStatus::blocked(
+            return provider_recovery_blocked_for_optional_scope(
+                preliminary_scope,
                 "homeUnavailable",
-                Some(pending_path),
+                None,
                 error,
+            )
+        }
+    };
+    let home_scope = match ProviderRecoveryHomeScope::from_pinned(&pinned_home) {
+        Ok(scope) => scope,
+        Err(error) => {
+            return provider_recovery_blocked_for_optional_scope(
+                preliminary_scope,
+                "homeGenerationUnavailable",
+                None,
+                error,
+            )
+        }
+    };
+    let pending_path = match backups::first_unfinished_restore_transaction_for_home_with_pinned(
+        backup_root,
+        &pinned_home,
+    ) {
+        Ok(Some(path)) => path,
+        Ok(None) => return ProviderRecoveryStatus::ready(home_scope),
+        Err(blocked) => {
+            return ProviderRecoveryStatus::blocked_for_scope(
+                home_scope,
+                blocked.code,
+                blocked.recovery_path,
+                blocked.message,
             )
         }
     };
     let running = match probe() {
         Ok(running) => running,
         Err(error) => {
-            return ProviderRecoveryStatus::blocked(
+            return ProviderRecoveryStatus::blocked_for_scope(
+                home_scope,
                 "runningProbeFailed",
                 Some(pending_path),
                 format!("启动恢复前无法确认 Codex Desktop 运行状态：{error}"),
@@ -700,7 +794,8 @@ pub(crate) fn reconcile_provider_recovery_on_startup_at(
         }
     };
     if running {
-        return ProviderRecoveryStatus::blocked(
+        return ProviderRecoveryStatus::blocked_for_scope(
+            home_scope,
             "codexRunning",
             Some(pending_path),
             "启动恢复已阻止：Codex Desktop 正在运行，journal 保持不变。",
@@ -710,13 +805,91 @@ pub(crate) fn reconcile_provider_recovery_on_startup_at(
         backup_root,
         &pinned_home,
     ) {
-        Ok(()) => ProviderRecoveryStatus::ready(),
-        Err(blocked) => ProviderRecoveryStatus::blocked(
+        Ok(()) => ProviderRecoveryStatus::ready(home_scope),
+        Err(blocked) => ProviderRecoveryStatus::blocked_for_scope(
+            home_scope,
             blocked.code,
             blocked.recovery_path,
             blocked.message,
         ),
     }
+}
+
+pub(crate) fn reconcile_provider_recovery_for_action(
+    recovery_state: &ProviderRecoveryState,
+    codex_home: &Path,
+) -> Result<ProviderRecoveryStatus, ProviderOperationError> {
+    let backup_root = match provider_recovery_backup_root() {
+        Ok(root) => root,
+        Err(error) => {
+            let status = provider_recovery_blocked_status_for_home(
+                codex_home,
+                "backupRootUnavailable",
+                None,
+                error,
+            );
+            recovery_state.replace(status.clone());
+            recovery_state.guard_destructive_action_for_home(codex_home)?;
+            return Ok(status);
+        }
+    };
+    reconcile_provider_recovery_for_action_at(
+        recovery_state,
+        codex_home,
+        &backup_root,
+        crate::platform::codex_desktop_is_running,
+    )
+}
+
+pub(crate) fn reconcile_provider_recovery_for_action_at(
+    recovery_state: &ProviderRecoveryState,
+    codex_home: &Path,
+    backup_root: &Path,
+    probe: impl FnOnce() -> Result<bool, String>,
+) -> Result<ProviderRecoveryStatus, ProviderOperationError> {
+    let status = reconcile_provider_recovery_on_startup_at(codex_home, backup_root, probe);
+    recovery_state.replace(status.clone());
+    recovery_state.guard_destructive_action_for_home(codex_home)?;
+    Ok(status)
+}
+
+pub(crate) fn provider_recovery_blocked_status_for_home(
+    codex_home: &Path,
+    code: &str,
+    recovery_path: Option<PathBuf>,
+    message: impl Into<String>,
+) -> ProviderRecoveryStatus {
+    let message = message.into();
+    match provider_recovery_home_scope(codex_home) {
+        Ok(scope) => {
+            ProviderRecoveryStatus::blocked_for_scope(scope, code, recovery_path, message)
+        }
+        Err(scope_error) => ProviderRecoveryStatus::blocked(
+            code,
+            recovery_path,
+            format!("{message}；无法绑定当前 Codex Home scope：{scope_error}"),
+        ),
+    }
+}
+
+fn provider_recovery_blocked_for_optional_scope(
+    home_scope: Option<ProviderRecoveryHomeScope>,
+    code: &str,
+    recovery_path: Option<PathBuf>,
+    message: impl Into<String>,
+) -> ProviderRecoveryStatus {
+    let message = message.into();
+    match home_scope {
+        Some(scope) => {
+            ProviderRecoveryStatus::blocked_for_scope(scope, code, recovery_path, message)
+        }
+        None => ProviderRecoveryStatus::blocked(code, recovery_path, message),
+    }
+}
+
+fn provider_recovery_home_scope(codex_home: &Path) -> Result<ProviderRecoveryHomeScope, String> {
+    let pinned_home = PinnedHome::open(codex_home)?;
+    ProviderRecoveryHomeScope::from_pinned(&pinned_home)
 }
 
 fn provider_operation_registry() -> &'static Mutex<ProviderOperationRegistry> {
