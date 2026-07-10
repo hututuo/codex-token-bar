@@ -5,10 +5,18 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::safe_fs::{AtomicInstallPhase, PinnedHome};
+
 const MAX_SESSION_TRAVERSAL_DEPTH: usize = 64;
 const MAX_SESSION_TRAVERSAL_ENTRIES: usize = 200_000;
 const ATOMIC_TEMP_ATTEMPTS: usize = 64;
 static ATOMIC_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SessionRewritePhase {
+    BeforeTempCreate,
+    BeforeReplace,
+}
 
 pub(super) struct SessionScan {
     pub(super) files_found: u32,
@@ -147,53 +155,89 @@ pub(super) fn scan_session_providers(files: &[PathBuf]) -> SessionScan {
     }
 }
 
+#[cfg(test)]
 pub(super) fn rewrite_session_provider(
     canonical_home: &Path,
     file: &Path,
     target_provider: &str,
 ) -> Result<bool, String> {
-    let canonical_home = canonical_home
-        .canonicalize()
-        .map_err(|error| format!("无法确认 Codex Home {}：{error}", canonical_home.display()))?;
-    let metadata = fs::symlink_metadata(file).map_err(|error| error.to_string())?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(format!(
-            "拒绝改写符号链接或非普通会话文件：{}",
-            file.display()
-        ));
-    }
-    let canonical_file = file.canonicalize().map_err(|error| error.to_string())?;
-    if !canonical_file.starts_with(&canonical_home) {
-        return Err(format!(
-            "拒绝改写 Codex Home 外的会话文件：{}",
-            canonical_file.display()
-        ));
-    }
+    let pinned_home = PinnedHome::open(canonical_home)?;
+    rewrite_session_provider_in(&pinned_home, file, target_provider, |_, _| Ok(()))
+}
 
-    let text = fs::read_to_string(&canonical_file).map_err(|error| error.to_string())?;
-    let (first_line, rest) = match text.find('\n') {
-        Some(index) => (&text[..index], &text[index..]),
-        None => (text.as_str(), ""),
-    };
-    let mut value: Value = serde_json::from_str(first_line.trim_end())
-        .map_err(|error| format!("{}: {error}", canonical_file.display()))?;
-    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
-        return Ok(false);
-    }
-    let payload = value
-        .get_mut("payload")
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| format!("{} 缺少 session_meta.payload", canonical_file.display()))?;
-    if payload.get("model_provider").and_then(Value::as_str) == Some(target_provider) {
-        return Ok(false);
-    }
-    payload.insert(
-        "model_provider".into(),
-        Value::String(target_provider.into()),
-    );
-    let first_line = serde_json::to_string(&value).map_err(|error| error.to_string())?;
-    write_atomic(&canonical_file, format!("{first_line}{rest}").as_bytes())?;
-    Ok(true)
+#[cfg(test)]
+pub(super) fn rewrite_session_provider_with_hook(
+    canonical_home: &Path,
+    file: &Path,
+    target_provider: &str,
+    hook: impl FnMut(SessionRewritePhase, &Path) -> Result<(), String>,
+) -> Result<bool, String> {
+    let pinned_home = PinnedHome::open(canonical_home)?;
+    rewrite_session_provider_in(&pinned_home, file, target_provider, hook)
+}
+
+pub(super) fn rewrite_session_provider_in(
+    pinned_home: &PinnedHome,
+    file: &Path,
+    target_provider: &str,
+    hook: impl FnMut(SessionRewritePhase, &Path) -> Result<(), String>,
+) -> Result<bool, String> {
+    let canonical_file = file.canonicalize().map_err(|error| error.to_string())?;
+    let relative = canonical_file
+        .strip_prefix(pinned_home.canonical_path())
+        .map_err(|_| {
+            format!(
+                "拒绝改写 Codex Home 外的会话文件：{}",
+                canonical_file.display()
+            )
+        })?;
+    rewrite_session_provider_relative_in(pinned_home, relative, target_provider, hook)
+}
+
+pub(super) fn rewrite_session_provider_relative_in(
+    pinned_home: &PinnedHome,
+    relative: &Path,
+    target_provider: &str,
+    mut hook: impl FnMut(SessionRewritePhase, &Path) -> Result<(), String>,
+) -> Result<bool, String> {
+    let display_path = pinned_home.canonical_path().join(relative);
+    pinned_home.transform_file_atomically(
+        relative,
+        |bytes| {
+            let text = String::from_utf8(bytes).map_err(|error| {
+                format!("会话文件不是有效 UTF-8 {}：{error}", display_path.display())
+            })?;
+            let (first_line, rest) = match text.find('\n') {
+                Some(index) => (&text[..index], &text[index..]),
+                None => (text.as_str(), ""),
+            };
+            let mut value: Value = serde_json::from_str(first_line.trim_end())
+                .map_err(|error| format!("{}: {error}", display_path.display()))?;
+            if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+                return Ok(None);
+            }
+            let payload = value
+                .get_mut("payload")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| format!("{} 缺少 session_meta.payload", display_path.display()))?;
+            if payload.get("model_provider").and_then(Value::as_str) == Some(target_provider) {
+                return Ok(None);
+            }
+            payload.insert(
+                "model_provider".into(),
+                Value::String(target_provider.into()),
+            );
+            let first_line = serde_json::to_string(&value).map_err(|error| error.to_string())?;
+            Ok(Some(format!("{first_line}{rest}").into_bytes()))
+        },
+        |phase, path| match phase {
+            AtomicInstallPhase::BeforeTempCreate => {
+                hook(SessionRewritePhase::BeforeTempCreate, path)
+            }
+            AtomicInstallPhase::BeforeReplace => hook(SessionRewritePhase::BeforeReplace, path),
+            _ => Ok(()),
+        },
+    )
 }
 
 fn read_session_provider(file: &Path) -> Result<Option<String>, String> {

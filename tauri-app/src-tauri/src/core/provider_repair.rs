@@ -6,21 +6,32 @@ use std::sync::{Mutex, OnceLock};
 
 mod backups;
 mod report;
+mod safe_fs;
 mod session_files;
 mod session_index;
 mod sqlite_state;
 mod target_provider;
 
 use backups::{
-    backup_by_id, create_provider_backup_files, ensure_backup_matches_codex_home,
-    provider_backup_root, restore_provider_backup_files_with_verification,
+    backup_by_id, ensure_backup_matches_codex_home, provider_backup_root,
+    restore_provider_backup_files_with_pinned_verification,
+    restore_provider_backup_files_with_verification,
 };
 #[cfg(test)]
 use backups::{codex_home_fingerprint, codex_home_identity};
 use report::{action_result, error_snapshot, snapshot_from_report, ProviderRepairReport};
-use session_files::{find_session_files, rewrite_session_provider, scan_session_providers};
-use session_index::{latest_thread_index_missing, repair_session_index, scan_session_index};
-use sqlite_state::{scan_sqlite, sync_sqlite_provider, SQLiteScan};
+use safe_fs::PinnedHome;
+#[cfg(test)]
+use session_files::rewrite_session_provider;
+use session_files::{
+    find_session_files, rewrite_session_provider_relative_in, scan_session_providers,
+};
+#[cfg(test)]
+use session_index::repair_session_index;
+use session_index::{latest_thread_index_missing, repair_session_index_in, scan_session_index};
+#[cfg(test)]
+use sqlite_state::sync_sqlite_provider;
+use sqlite_state::{scan_sqlite, sync_sqlite_provider_from_snapshot_in, SQLiteScan};
 use target_provider::detect_target_provider;
 
 const MAX_FINISHED_PROVIDER_OPERATIONS: usize = 256;
@@ -245,14 +256,45 @@ pub fn create_provider_backup(
     operation_id: &str,
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
     run_provider_mutation(codex_home, operation_id, |canonical_home| {
-        let report = scan_provider_repair_result(canonical_home)?;
-        let backup = create_provider_backup_files(canonical_home, &report.target.provider)?;
+        let backup_root = provider_backup_root()?;
+        let pinned_home = PinnedHome::open(canonical_home)?;
+        reconcile_pending_restore_before_backup(
+            &backup_root,
+            &pinned_home,
+            crate::platform::codex_desktop_is_running,
+        )?;
+        let report = scan_provider_repair_result_for_home(&pinned_home)?;
+        let backup = backups::create_provider_backup_files_at_with_pinned_hook(
+            &backup_root,
+            &pinned_home,
+            &report.target.provider,
+            |_, _| Ok(()),
+        )?;
         Ok(action_result(
-            scan_provider_repair(canonical_home),
+            snapshot_from_report(scan_provider_repair_result_for_home(&pinned_home)?),
             format!("已创建备份：{}", backup.id),
             Some(backup),
         ))
     })
+}
+
+fn reconcile_pending_restore_before_backup(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    probe: impl FnOnce() -> Result<bool, String>,
+) -> Result<(), String> {
+    if !backups::has_unfinished_restore_transactions_at(backup_root)? {
+        return Ok(());
+    }
+    let running = probe()
+        .map_err(|error| format!("恢复未完成事务前无法确认 Codex Desktop 运行状态：{error}"))?;
+    if running {
+        return Err(
+            "恢复未完成事务已拒绝：Codex 正在运行。请先退出 Codex Desktop，再重新创建 Provider 备份。"
+                .into(),
+        );
+    }
+    backups::reconcile_unfinished_restore_transactions_with_pinned(backup_root, pinned_home)
 }
 
 pub fn sync_provider_history(
@@ -306,21 +348,20 @@ fn sync_provider_history_transaction_at_with_backup_hook(
     verify: impl FnOnce(&Path) -> Result<ProviderRepairReport, String>,
     hook: impl FnMut(backups::BackupPublicationPhase, &Path) -> Result<(), String>,
 ) -> Result<ProviderSyncTransactionOutcome, String> {
-    let canonical_home = codex_home
-        .canonicalize()
-        .map_err(|error| format!("无法确认 Codex Home {}：{error}", codex_home.display()))?;
-    let report = scan_provider_repair_result(&canonical_home)?;
+    let pinned_home = PinnedHome::open(codex_home)?;
+    backups::reconcile_unfinished_restore_transactions_with_pinned(backup_root, &pinned_home)?;
+    let report = scan_provider_repair_result_for_home(&pinned_home)?;
     let target_provider = provider_for_mutation(&report.target.provider)?;
-    let backup = backups::create_provider_backup_files_at_with_hook(
+    let backup = backups::create_provider_backup_files_at_with_pinned_stopped_hook(
         backup_root,
-        &canonical_home,
+        &pinned_home,
         &target_provider,
         hook,
     )?;
 
-    let transaction = perform_provider_sync(&canonical_home, &target_provider).and_then(
+    let transaction = perform_provider_sync(&pinned_home, &target_provider, &backup).and_then(
         |(rewritten_sessions, sqlite_rows, index_changed)| {
-            let verified_report = verify(&canonical_home)?;
+            let verified_report = verify(pinned_home.canonical_path())?;
             validate_provider_sync_report(&verified_report, &backup, &target_provider)?;
             let snapshot = snapshot_from_report(verified_report);
             let message = format!(
@@ -345,10 +386,10 @@ fn sync_provider_history_transaction_at_with_backup_hook(
             snapshot,
             message,
         }),
-        Err(original_error) => match restore_provider_backup_files_with_verification(
-            &canonical_home,
+        Err(original_error) => match restore_provider_backup_files_with_pinned_verification(
+            &pinned_home,
             &backup,
-            |restored_home| verify_restored_provider_backup(restored_home, &backup).map(|_| ()),
+            |_| Ok(()),
         ) {
             Ok(()) => Err(format!(
                 "Provider 同步或验证失败：{original_error}；已自动恢复恢复点 {}。",
@@ -364,17 +405,31 @@ fn sync_provider_history_transaction_at_with_backup_hook(
 }
 
 fn perform_provider_sync(
-    canonical_home: &Path,
+    pinned_home: &PinnedHome,
     target_provider: &str,
+    backup: &crate::models::ProviderRepairBackupInfo,
 ) -> Result<(u32, u32, bool), String> {
     let mut rewritten_sessions = 0_u32;
-    for file in find_session_files(canonical_home, true)? {
-        if rewrite_session_provider(canonical_home, &file, target_provider)? {
+    for relative in backups::verified_session_relative_paths(backup)? {
+        if rewrite_session_provider_relative_in(pinned_home, &relative, target_provider, |_, _| {
+            Ok(())
+        })? {
             rewritten_sessions = rewritten_sessions.saturating_add(1);
         }
     }
-    let sqlite_rows = sync_sqlite_provider(canonical_home, target_provider)?;
-    let index_changed = repair_session_index(canonical_home)?;
+    let sqlite_snapshot = backups::verified_sqlite_snapshot(backup)?;
+    let sqlite_rows = if let Some(snapshot) = sqlite_snapshot {
+        sync_sqlite_provider_from_snapshot_in(
+            pinned_home,
+            target_provider,
+            &snapshot.path,
+            snapshot.size,
+            &snapshot.checksum_sha256,
+        )?
+    } else {
+        0
+    };
+    let index_changed = repair_session_index_in(pinned_home)?;
     Ok((rewritten_sessions, sqlite_rows, index_changed))
 }
 
@@ -588,6 +643,15 @@ fn scan_provider_repair_result(codex_home: &Path) -> Result<ProviderRepairReport
         index_missing,
         inconsistent_count,
     })
+}
+
+fn scan_provider_repair_result_for_home(
+    pinned_home: &PinnedHome,
+) -> Result<ProviderRepairReport, String> {
+    pinned_home.ensure_canonical_path_identity()?;
+    let mut report = scan_provider_repair_result(&pinned_home.access_path())?;
+    report.codex_home = pinned_home.canonical_path().to_path_buf();
+    Ok(report)
 }
 
 #[cfg(test)]

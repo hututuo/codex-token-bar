@@ -1,5 +1,6 @@
 use super::*;
 use rusqlite::{params, Connection};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -212,6 +213,59 @@ fn sqlite_sync_rejects_invalid_provider_before_mutation() {
 }
 
 #[test]
+fn sqlite_sync_rehashes_published_snapshot_before_live_mutation() {
+    let root = temp_root("provider-snapshot-rehash-live");
+    let snapshot_root = temp_root("provider-snapshot-rehash-source");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&snapshot_root).unwrap();
+    create_state_database(&root, &[("thread-live", "openai", 0)]);
+    create_state_database(&snapshot_root, &[("thread-snapshot", "openai", 0)]);
+
+    let snapshot = snapshot_root.join("state_5.sqlite");
+    let original = fs::read(&snapshot).unwrap();
+    let expected_size = u64::try_from(original.len()).unwrap();
+    let expected_checksum = format!("{:x}", Sha256::digest(&original));
+    let connection = Connection::open(&snapshot).unwrap();
+    connection
+        .execute(
+            "UPDATE threads SET model_provider = 'vertex' WHERE id = 'thread-snapshot';",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+    assert_eq!(fs::metadata(&snapshot).unwrap().len(), expected_size);
+
+    let pinned_home = PinnedHome::open(&root).unwrap();
+    let error = sqlite_state::sync_sqlite_provider_from_snapshot_in(
+        &pinned_home,
+        "codex_local_access",
+        &snapshot,
+        expected_size,
+        &expected_checksum,
+    )
+    .unwrap_err();
+    assert!(error.contains("SHA-256"), "{error}");
+    assert!(
+        error.contains(snapshot.to_string_lossy().as_ref()),
+        "{error}"
+    );
+
+    let live = Connection::open(root.join("state_5.sqlite")).unwrap();
+    let provider: String = live
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'thread-live';",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "openai");
+
+    drop(live);
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(snapshot_root).unwrap();
+}
+
+#[test]
 fn canonical_home_lease_rejects_concurrent_mutation_until_owner_exits() {
     let root = temp_root("provider-operation-lease");
     fs::create_dir_all(&root).unwrap();
@@ -289,6 +343,68 @@ fn provider_operation_pins_canonical_home_when_alias_is_retargeted() {
         "home-a"
     );
     assert!(!home_b.join("pinned.txt").exists());
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_and_automatic_restore_keep_using_the_original_home_after_root_swap() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = temp_root("provider-sync-root-swap");
+    let home = fixture.join("home");
+    let held_home = fixture.join("held-home");
+    let outside = fixture.join("outside");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::create_dir_all(outside.join("sessions")).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let original_session = home.join("sessions/thread.jsonl");
+    write_session(&original_session, "thread", "legacy-provider");
+    create_state_database(&home, &[("thread", "legacy-provider", 0)]);
+    fs::write(
+        outside.join("config.toml"),
+        "model_provider = \"outside-provider\"\n",
+    )
+    .unwrap();
+    write_session(
+        &outside.join("sessions/thread.jsonl"),
+        "outside-thread",
+        "outside-provider",
+    );
+    let outside_before = fs::read_to_string(outside.join("sessions/thread.jsonl")).unwrap();
+    let mut swapped = false;
+
+    let error = sync_provider_history_transaction_at_with_backup_hook(
+        &home,
+        &backup_root,
+        scan_provider_repair_result,
+        |phase, _| {
+            if phase == backups::BackupPublicationPhase::SyncBackupRoot && !swapped {
+                fs::rename(&home, &held_home).unwrap();
+                symlink(&outside, &home).unwrap();
+                swapped = true;
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+
+    assert!(swapped);
+    assert!(error.contains("已自动恢复"), "{error}");
+    assert!(fs::read_to_string(held_home.join("sessions/thread.jsonl"))
+        .unwrap()
+        .contains("legacy-provider"));
+    assert_eq!(
+        sqlite_provider_for_thread(&held_home, "thread"),
+        "legacy-provider"
+    );
+    assert_eq!(
+        fs::read_to_string(outside.join("sessions/thread.jsonl")).unwrap(),
+        outside_before
+    );
+    assert!(!outside.join("state_5.sqlite").exists());
+    fs::remove_file(&home).unwrap();
     fs::remove_dir_all(fixture).unwrap();
 }
 
@@ -1247,6 +1363,59 @@ fn failed_post_restore_verification_compensates_before_recovery_cleanup() {
 }
 
 #[test]
+fn final_restore_verification_rehashes_every_installed_member_before_cleanup() {
+    let fixture = temp_root("provider-final-installed-member-verification");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    let session = home.join("sessions/thread.jsonl");
+    fs::create_dir_all(session.parent().unwrap()).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    fs::write(
+        &session,
+        concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread\",\"model_provider\":\"openai\"}}\n",
+            "{\"type\":\"event\",\"payload\":\"backup-body\"}\n"
+        ),
+    )
+    .unwrap();
+    let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    let live_before_restore = concat!(
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread\",\"model_provider\":\"openai\"}}\n",
+        "{\"type\":\"event\",\"payload\":\"live-body\"}\n"
+    );
+    fs::write(&session, live_before_restore).unwrap();
+
+    let error = backups::restore_provider_backup_files_at_with_verification_and_hook(
+        &home,
+        &backup,
+        |phase, _, _| {
+            if phase == backups::RestorePhase::Verify {
+                fs::write(
+                    &session,
+                    concat!(
+                        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread\",\"model_provider\":\"openai\"}}\n",
+                        "{\"type\":\"event\",\"payload\":\"tampered-after-apply\"}\n"
+                    ),
+                )
+                .unwrap();
+            }
+            Ok(())
+        },
+        |restored_home| verify_restored_provider_backup(restored_home, &backup).map(|_| ()),
+    )
+    .unwrap_err();
+
+    assert!(
+        error.contains("SHA-256") || error.contains("大小"),
+        "{error}"
+    );
+    assert!(error.contains("已补偿"), "{error}");
+    assert_eq!(fs::read_to_string(&session).unwrap(), live_before_restore);
+    assert_no_recovery_staging(&backup_root);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
 fn failed_sqlite_snapshot_never_publishes_a_manifest() {
     let fixture = temp_root("provider-backup-incomplete");
     let home = fixture.join("home");
@@ -1475,6 +1644,323 @@ fn incomplete_restore_compensation_retains_recovery_material() {
     });
     assert!(retained);
     fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn manifest_rejects_dot_and_repeated_separator_aliases_before_mutation() {
+    for alias in ["sessions/./thread.jsonl", "sessions//thread.jsonl"] {
+        let fixture = temp_root("provider-manifest-normalized-alias");
+        let home = fixture.join("home");
+        let backup_root = fixture.join("backups");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        write_session(&home.join("sessions/thread.jsonl"), "thread", "openai");
+        let backup =
+            backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+        fs::write(home.join("sessions/thread.jsonl"), "live-must-remain\n").unwrap();
+        rewrite_backup_manifest(&backup, |manifest| {
+            let members = manifest["members"].as_array_mut().unwrap();
+            let mut duplicate = members
+                .iter()
+                .find(|member| member["relative_path"] == "sessions/thread.jsonl")
+                .unwrap()
+                .clone();
+            duplicate["relative_path"] = alias.into();
+            duplicate["backup_path"] = format!("session-jsonl/{alias}").into();
+            members.push(duplicate);
+        });
+
+        let error = backups::restore_provider_backup_files_at(&home, &backup).unwrap_err();
+
+        assert!(error.contains("非规范序列化"), "{alias}: {error}");
+        assert_eq!(
+            fs::read_to_string(home.join("sessions/thread.jsonl")).unwrap(),
+            "live-must-remain\n"
+        );
+        fs::remove_dir_all(fixture).unwrap();
+    }
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn manifest_rejects_case_folded_session_aliases_before_mutation() {
+    let fixture = temp_root("provider-manifest-case-alias");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    write_session(&home.join("sessions/thread.jsonl"), "thread", "openai");
+    let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    fs::write(home.join("sessions/thread.jsonl"), "live-must-remain\n").unwrap();
+    rewrite_backup_manifest(&backup, |manifest| {
+        let members = manifest["members"].as_array_mut().unwrap();
+        let mut duplicate = members
+            .iter()
+            .find(|member| member["relative_path"] == "sessions/thread.jsonl")
+            .unwrap()
+            .clone();
+        duplicate["relative_path"] = "sessions/THREAD.jsonl".into();
+        duplicate["backup_path"] = "session-jsonl/sessions/THREAD.jsonl".into();
+        members.push(duplicate);
+    });
+
+    let error = backups::restore_provider_backup_files_at(&home, &backup).unwrap_err();
+
+    assert!(error.contains("大小写逻辑重复"), "{error}");
+    assert_eq!(
+        fs::read_to_string(home.join("sessions/thread.jsonl")).unwrap(),
+        "live-must-remain\n"
+    );
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn startup_reconciliation_handles_each_durable_restore_phase() {
+    use backups::RestoreCrashPoint::{Committed, MidApply, Prepared, Verified};
+
+    for (label, crash_point, expected_after_reconcile) in [
+        ("prepared", Prepared, "live-config"),
+        ("mid-apply", MidApply, "live-config"),
+        ("verified", Verified, "live-config"),
+        ("committed", Committed, "backup-config"),
+    ] {
+        let fixture = temp_root(&format!("provider-restart-{label}"));
+        let home = fixture.join("home");
+        let backup_root = fixture.join("backups");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join("config.toml"), "backup-config").unwrap();
+        let backup =
+            backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+        fs::write(home.join("config.toml"), "live-config").unwrap();
+
+        let recovery_path =
+            backups::simulate_restore_crash_at(&home, &backup, crash_point).unwrap();
+        assert!(recovery_path.join("recovery-manifest.json").is_file());
+        if crash_point == Committed {
+            fs::write(
+                recovery_path.join("live/config.toml"),
+                "corrupt-but-committed",
+            )
+            .unwrap();
+        }
+
+        backups::reconcile_unfinished_restore_transactions_at(&backup_root, &home).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(home.join("config.toml")).unwrap(),
+            expected_after_reconcile,
+            "{label}"
+        );
+        assert_no_recovery_staging(&backup_root);
+        fs::remove_dir_all(fixture).unwrap();
+    }
+}
+
+#[test]
+fn failed_startup_reconciliation_retains_and_names_exact_recovery_path() {
+    let fixture = temp_root("provider-restart-reconcile-failure");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("config.toml"), "backup-config").unwrap();
+    let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    fs::write(home.join("config.toml"), "live-config").unwrap();
+    let recovery_path =
+        backups::simulate_restore_crash_at(&home, &backup, backups::RestoreCrashPoint::MidApply)
+            .unwrap();
+    fs::write(recovery_path.join("live/config.toml"), "corrupt-recovery").unwrap();
+
+    let error =
+        backups::reconcile_unfinished_restore_transactions_at(&backup_root, &home).unwrap_err();
+
+    assert!(
+        error.contains(&recovery_path.display().to_string()),
+        "{error}"
+    );
+    assert!(recovery_path.exists());
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn pending_startup_recovery_is_blocked_while_codex_is_running() {
+    let fixture = temp_root("provider-restart-running-guard");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("config.toml"), "backup-config").unwrap();
+    let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    fs::write(home.join("config.toml"), "live-config").unwrap();
+    let recovery_path =
+        backups::simulate_restore_crash_at(&home, &backup, backups::RestoreCrashPoint::Prepared)
+            .unwrap();
+
+    let pinned_home = PinnedHome::open(&home).unwrap();
+    let error = reconcile_pending_restore_before_backup(&backup_root, &pinned_home, || Ok(true))
+        .unwrap_err();
+
+    assert!(error.contains("Codex 正在运行"), "{error}");
+    assert!(recovery_path.exists());
+    assert_eq!(
+        fs::read_to_string(home.join("config.toml")).unwrap(),
+        "live-config"
+    );
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn restore_durability_events_precede_apply_and_follow_destination_and_cleanup_changes() {
+    let fixture = temp_root("provider-restore-durability-order");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("config.toml"), "backup-config").unwrap();
+    let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    fs::write(home.join("config.toml"), "live-config").unwrap();
+    let mut events = Vec::<(backups::RestorePhase, PathBuf)>::new();
+
+    backups::restore_provider_backup_files_at_with_hook(&home, &backup, |phase, _, path| {
+        events.push((phase, path.to_path_buf()));
+        Ok(())
+    })
+    .unwrap();
+
+    let position = |phase, path: Option<&Path>| {
+        events
+            .iter()
+            .position(|(candidate, candidate_path)| {
+                *candidate == phase && path.is_none_or(|path| candidate_path == path)
+            })
+            .unwrap_or_else(|| panic!("missing {phase:?} for {path:?}: {events:?}"))
+    };
+    let publish = position(backups::RestorePhase::PublishRecoveryManifest, None);
+    let prepared = position(backups::RestorePhase::JournalPrepared, None);
+    let recovery_root = position(backups::RestorePhase::SyncRecoveryRoot, None);
+    let applying = position(backups::RestorePhase::JournalApplying, None);
+    let apply = position(backups::RestorePhase::Apply, Some(Path::new("config.toml")));
+    let file_sync = position(
+        backups::RestorePhase::SyncDestinationFile,
+        Some(Path::new("config.toml")),
+    );
+    let parent_sync = position(
+        backups::RestorePhase::SyncDestinationParent,
+        Some(Path::new("config.toml")),
+    );
+    let verify = position(backups::RestorePhase::Verify, None);
+    let verified = position(backups::RestorePhase::JournalVerified, None);
+    let committed = position(backups::RestorePhase::JournalCommitted, None);
+    let cleanup = position(backups::RestorePhase::Cleanup, None);
+    let cleanup_root = position(backups::RestorePhase::SyncCleanupRoot, None);
+
+    assert!(publish < prepared && prepared < recovery_root && recovery_root < applying);
+    assert!(applying < apply && apply < file_sync && file_sync < parent_sync);
+    assert!(parent_sync < verify && verify < verified && verified < committed);
+    assert!(committed < cleanup && cleanup < cleanup_root);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn restore_component_swap_cannot_replace_a_file_outside_the_pinned_home() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = temp_root("provider-restore-component-swap");
+    let home = fixture.join("home");
+    let held_home = fixture.join("held-home");
+    let outside = fixture.join("outside");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(home.join("config.toml"), "backup-config").unwrap();
+    fs::write(outside.join("config.toml"), "outside-sentinel").unwrap();
+    let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    fs::write(home.join("config.toml"), "live-config").unwrap();
+    let mut swapped = false;
+
+    backups::restore_provider_backup_files_at_with_hook(&home, &backup, |phase, _, relative| {
+        if phase == backups::RestorePhase::BeforeReplace
+            && relative == Path::new("config.toml")
+            && !swapped
+        {
+            let temp = fs::read_dir(&home)
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.file_name().is_some_and(|name| {
+                        name.to_string_lossy().contains(".config.toml.restore-")
+                    })
+                })
+                .expect("restore temp must exist before replacement");
+            fs::copy(&temp, outside.join(temp.file_name().unwrap())).unwrap();
+            fs::rename(&home, &held_home).unwrap();
+            symlink(&outside, &home).unwrap();
+            swapped = true;
+        }
+        Ok(())
+    })
+    .unwrap();
+
+    assert!(swapped);
+    assert_eq!(
+        fs::read_to_string(outside.join("config.toml")).unwrap(),
+        "outside-sentinel"
+    );
+    assert_eq!(
+        fs::read_to_string(held_home.join("config.toml")).unwrap(),
+        "backup-config"
+    );
+    fs::remove_file(&home).unwrap();
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn session_rewrite_component_swap_cannot_replace_a_file_outside_the_pinned_home() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = temp_root("provider-session-component-swap");
+    let home = fixture.join("home");
+    let sessions = home.join("sessions");
+    let held_sessions = fixture.join("held-sessions");
+    let outside = fixture.join("outside");
+    let session = sessions.join("thread.jsonl");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    write_session(&session, "thread", "legacy-provider");
+    write_session(&outside.join("thread.jsonl"), "outside", "outside-sentinel");
+    let outside_before = fs::read_to_string(outside.join("thread.jsonl")).unwrap();
+    let mut swapped = false;
+
+    let changed =
+        session_files::rewrite_session_provider_with_hook(&home, &session, "openai", |phase, _| {
+            if phase == session_files::SessionRewritePhase::BeforeTempCreate && !swapped {
+                fs::rename(&sessions, &held_sessions).unwrap();
+                symlink(&outside, &sessions).unwrap();
+                swapped = true;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+    assert!(changed && swapped);
+    assert_eq!(
+        fs::read_to_string(outside.join("thread.jsonl")).unwrap(),
+        outside_before
+    );
+    assert!(fs::read_to_string(held_sessions.join("thread.jsonl"))
+        .unwrap()
+        .contains("openai"));
+    fs::remove_file(&sessions).unwrap();
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn unsupported_windows_handle_relative_mutation_fails_closed_before_live_write() {
+    let error = safe_fs::provider_mutation_support_for_platform("windows").unwrap_err();
+    assert!(error.contains("Windows"), "{error}");
+    assert!(
+        error.contains("重解析") || error.contains("handle"),
+        "{error}"
+    );
+    assert!(safe_fs::provider_mutation_support_for_platform("unix").is_ok());
 }
 
 fn temp_root(label: &str) -> PathBuf {

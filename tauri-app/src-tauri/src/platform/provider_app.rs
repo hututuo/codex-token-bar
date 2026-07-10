@@ -26,6 +26,31 @@ fn windows_process_name_matches(name: &str) -> bool {
         .any(|expected| name.eq_ignore_ascii_case(expected))
 }
 
+#[cfg(any(test, windows))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsProcessIteration {
+    Continue,
+    Exhausted,
+}
+
+#[cfg(any(test, windows))]
+fn classify_process32_next(
+    succeeded: bool,
+    last_error: u32,
+) -> Result<WindowsProcessIteration, String> {
+    if succeeded {
+        return Ok(WindowsProcessIteration::Continue);
+    }
+    const ERROR_NO_MORE_FILES_CODE: u32 = 18;
+    if last_error == ERROR_NO_MORE_FILES_CODE {
+        Ok(WindowsProcessIteration::Exhausted)
+    } else {
+        Err(format!(
+            "Windows Process32NextW 失败，错误码 {last_error}，已拒绝判定为未运行。"
+        ))
+    }
+}
+
 #[cfg(test)]
 fn probe_windows_process_names<'a>(
     names: impl IntoIterator<Item = &'a str>,
@@ -70,7 +95,7 @@ fn platform_codex_desktop_is_running() -> Result<bool, String> {
 fn platform_codex_desktop_is_running() -> Result<bool, String> {
     use std::mem::{size_of, zeroed};
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+        Foundation::{CloseHandle, GetLastError, INVALID_HANDLE_VALUE},
         System::Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
             TH32CS_SNAPPROCESS,
@@ -114,8 +139,15 @@ fn platform_codex_desktop_is_running() -> Result<bool, String> {
         if windows_process_name_matches(&executable) {
             return Ok(true);
         }
-        if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
-            return Ok(false);
+        let next_succeeded = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        let last_error = if next_succeeded {
+            0
+        } else {
+            unsafe { GetLastError() }
+        };
+        match classify_process32_next(next_succeeded, last_error)? {
+            WindowsProcessIteration::Continue => {}
+            WindowsProcessIteration::Exhausted => return Ok(false),
         }
     }
     Err(format!(
@@ -163,5 +195,19 @@ mod tests {
         let mut names = vec!["unrelated.exe"; 33];
         names.push("Codex.exe");
         assert!(probe_windows_process_names(names, 32).is_err());
+    }
+
+    #[test]
+    fn windows_process32_next_distinguishes_exhaustion_from_native_failure() {
+        assert_eq!(
+            classify_process32_next(true, 5),
+            Ok(WindowsProcessIteration::Continue)
+        );
+        assert_eq!(
+            classify_process32_next(false, 18),
+            Ok(WindowsProcessIteration::Exhausted)
+        );
+        let error = classify_process32_next(false, 5).unwrap_err();
+        assert!(error.contains("5"), "{error}");
     }
 }

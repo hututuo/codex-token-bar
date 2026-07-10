@@ -1,12 +1,20 @@
+use super::safe_fs::PinnedHome;
 use super::{provider_for_mutation, validated_provider_candidate};
 use crate::core::sqlite;
 use rusqlite::{Connection, Result as SqlResult};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Seek, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+
+const SQLITE_STAGE_ATTEMPTS: usize = 64;
+static SQLITE_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
 pub(super) struct SQLiteScan {
@@ -66,33 +74,225 @@ pub(super) fn scan_sqlite(codex_home: &Path) -> SqlResult<SQLiteScan> {
     })
 }
 
+#[cfg(test)]
 pub(super) fn sync_sqlite_provider(
     codex_home: &Path,
     target_provider: &str,
 ) -> Result<u32, String> {
+    let pinned_home = PinnedHome::open(codex_home)?;
+    sync_sqlite_provider_in(&pinned_home, target_provider)
+}
+
+pub(super) fn sync_sqlite_provider_in(
+    pinned_home: &PinnedHome,
+    target_provider: &str,
+) -> Result<u32, String> {
+    sync_sqlite_provider_from_source(pinned_home, target_provider, None)
+}
+
+pub(super) fn sync_sqlite_provider_from_snapshot_in(
+    pinned_home: &PinnedHome,
+    target_provider: &str,
+    snapshot: &Path,
+    expected_size: u64,
+    expected_checksum: &str,
+) -> Result<u32, String> {
+    sync_sqlite_provider_from_source(
+        pinned_home,
+        target_provider,
+        Some((snapshot, expected_size, expected_checksum)),
+    )
+}
+
+fn sync_sqlite_provider_from_source(
+    pinned_home: &PinnedHome,
+    target_provider: &str,
+    snapshot: Option<(&Path, u64, &str)>,
+) -> Result<u32, String> {
     let target_provider = provider_for_mutation(target_provider)?;
-    let db_path = codex_home.join("state_5.sqlite");
-    if !db_path.exists() {
+    let relative = Path::new("state_5.sqlite");
+    if pinned_home.open_file(relative)?.is_none() {
         return Ok(0);
     }
-    let connection = sqlite::open_read_write(&db_path, Duration::from_secs(2))
-        .map_err(|error| error.to_string())?;
-    let columns = thread_columns(&connection).map_err(|error| error.to_string())?;
-    if !columns.contains("model_provider") {
-        return Ok(0);
+    let stage = create_sqlite_stage_directory()?;
+    let result = (|| {
+        if let Some((snapshot, expected_size, expected_checksum)) = snapshot {
+            copy_snapshot_file(
+                snapshot,
+                &stage.join("state_5.sqlite"),
+                expected_size,
+                expected_checksum,
+            )?;
+        } else {
+            copy_pinned_member(pinned_home, relative, &stage.join("state_5.sqlite"))?;
+            if pinned_home
+                .open_file(Path::new("state_5.sqlite-wal"))?
+                .is_some()
+            {
+                copy_pinned_member(
+                    pinned_home,
+                    Path::new("state_5.sqlite-wal"),
+                    &stage.join("state_5.sqlite-wal"),
+                )?;
+            }
+        }
+
+        let staged_database = stage.join("state_5.sqlite");
+        let connection = sqlite::open_read_write(&staged_database, Duration::from_secs(2))
+            .map_err(|error| error.to_string())?;
+        let columns = thread_columns(&connection).map_err(|error| error.to_string())?;
+        if !columns.contains("model_provider") {
+            return Ok(0);
+        }
+        let changed = connection
+            .execute(
+                "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1;",
+                [target_provider.as_str()],
+            )
+            .map_err(|error| error.to_string())?;
+        sqlite::checkpoint_wal_full(&connection);
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|error| format!("固化 Provider SQLite WAL 失败：{error}"))?;
+        let journal_mode: String = connection
+            .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
+            .map_err(|error| format!("固化 Provider SQLite journal_mode 失败：{error}"))?;
+        if !journal_mode.eq_ignore_ascii_case("delete") {
+            return Err(format!(
+                "Provider SQLite journal_mode 未固化为 delete：{journal_mode}"
+            ));
+        }
+        let integrity = sqlite_integrity(&connection).map_err(|error| error.to_string())?;
+        if integrity != "ok" {
+            return Err(format!("SQLite integrity_check: {integrity}"));
+        }
+        drop(connection);
+        if changed == 0 {
+            return Ok(0);
+        }
+
+        for sidecar in ["state_5.sqlite-wal", "state_5.sqlite-shm"] {
+            pinned_home.remove_file(Path::new(sidecar), || Ok(()))?;
+        }
+        let mut source = OpenOptions::new()
+            .read(true)
+            .open(&staged_database)
+            .map_err(|error| error.to_string())?;
+        pinned_home.install_atomically(
+            relative,
+            None,
+            None,
+            |target| {
+                source
+                    .rewind()
+                    .and_then(|_| std::io::copy(&mut source, target).map(|_| ()))
+                    .map_err(|error| error.to_string())
+            },
+            |_, _| Ok(()),
+        )?;
+        Ok(u32::try_from(changed).unwrap_or(u32::MAX))
+    })();
+    cleanup_sqlite_stage(&stage, result)
+}
+
+fn copy_snapshot_file(
+    source: &Path,
+    target: &Path,
+    expected_size: u64,
+    expected_checksum: &str,
+) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(source).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "Provider SQLite 恢复点成员不是普通文件：{}",
+            source.display()
+        ));
     }
-    let changed = connection
-        .execute(
-            "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1;",
-            [target_provider.as_str()],
-        )
+    let mut source_file = OpenOptions::new()
+        .read(true)
+        .open(source)
         .map_err(|error| error.to_string())?;
-    sqlite::checkpoint_wal_full(&connection);
-    let integrity = sqlite_integrity(&connection).map_err(|error| error.to_string())?;
-    if integrity != "ok" {
-        return Err(format!("SQLite integrity_check: {integrity}"));
+    let mut target_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .map_err(|error| error.to_string())?;
+    let mut size = 0_u64;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = source_file
+            .read(&mut buffer)
+            .map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        target_file
+            .write_all(&buffer[..read])
+            .map_err(|error| error.to_string())?;
+        hasher.update(&buffer[..read]);
+        size = size.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
     }
-    Ok(u32::try_from(changed).unwrap_or(u32::MAX))
+    target_file.sync_all().map_err(|error| error.to_string())?;
+    let checksum = format!("{:x}", hasher.finalize());
+    if size != expected_size || checksum != expected_checksum {
+        return Err(format!(
+            "Provider SQLite 恢复点成员在安装前 SHA-256 或大小校验失败：{}",
+            source.display()
+        ));
+    }
+    Ok(())
+}
+
+fn create_sqlite_stage_directory() -> Result<std::path::PathBuf, String> {
+    let root = std::env::temp_dir();
+    for _ in 0..SQLITE_STAGE_ATTEMPTS {
+        let sequence = SQLITE_STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = root.join(format!(
+            "codex-token-bar-provider-sqlite-{}-{sequence:020}",
+            std::process::id()
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("创建 Provider SQLite 暂存目录失败：{error}")),
+        }
+    }
+    Err("无法创建唯一 Provider SQLite 暂存目录".into())
+}
+
+fn copy_pinned_member(
+    pinned_home: &PinnedHome,
+    relative: &Path,
+    target: &Path,
+) -> Result<(), String> {
+    let mut source = pinned_home
+        .open_file(relative)?
+        .ok_or_else(|| format!("Provider SQLite 成员不存在：{}", relative.display()))?;
+    let mut target = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .map_err(|error| error.to_string())?;
+    std::io::copy(&mut source, &mut target).map_err(|error| error.to_string())?;
+    target.sync_all().map_err(|error| error.to_string())
+}
+
+fn cleanup_sqlite_stage<T>(stage: &Path, result: Result<T, String>) -> Result<T, String> {
+    match fs::remove_dir_all(stage) {
+        Ok(()) => result,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => result,
+        Err(error) => match result {
+            Ok(_) => Err(format!(
+                "Provider SQLite 已处理，但敏感暂存目录清理失败，残留于 {}：{error}",
+                stage.display()
+            )),
+            Err(operation_error) => Err(format!(
+                "{operation_error}；敏感暂存目录清理失败，残留于 {}：{error}",
+                stage.display()
+            )),
+        },
+    }
 }
 
 pub(super) fn latest_thread_index_entry(
@@ -114,7 +314,9 @@ pub(super) fn latest_thread_index_entry(
         "SELECT id, {title_expression}, {updated_expression} FROM threads WHERE id = ?1 LIMIT 1;"
     );
     let (id, title, updated_ms): (String, String, i64) = connection
-        .query_row(&sql, [thread_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .query_row(&sql, [thread_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
         .map_err(|error| error.to_string())?;
     Ok(json!({
         "id": id,
@@ -206,7 +408,11 @@ fn open_read_only(path: &Path) -> SqlResult<Connection> {
 }
 
 fn format_unix_millis_rfc3339(millis: i64) -> String {
-    let seconds = if millis > 10_000_000_000 { millis / 1000 } else { millis };
+    let seconds = if millis > 10_000_000_000 {
+        millis / 1000
+    } else {
+        millis
+    };
     OffsetDateTime::from_unix_timestamp(seconds)
         .unwrap_or_else(|_| OffsetDateTime::UNIX_EPOCH)
         .format(&Rfc3339)
