@@ -48,6 +48,17 @@ Health: usable.
 - Swift and Tauri totals were captured at different times while live output was active; the small visible difference is not evidence of a calculation divergence by itself.
 - The Computer Use snapshot omitted the Swift activity-mode button descriptions, but source inspection confirms distinct `Token 活动模式 <mode>` accessibility labels. Keep a real VoiceOver pass as the final runtime check rather than treating this as a confirmed code defect.
 
+## Step 5 - Synchronized total display check
+
+Health: the observed `88.0亿` / `87.9亿` difference was refresh timing, not a reproduced parser divergence.
+
+- Tauri's persisted precise aggregate was generated at 16:39:05 local time with `8,798,111,134` tokens and `61,628` calls.
+- Swift's session-event cache was last current at 16:36:26 with `8,794,520,683` tokens and `61,613` calls.
+- The newer Tauri snapshot therefore contained 15 additional calls and 3,590,451 additional tokens. That small delta crossed the one-decimal `亿` rounding boundary.
+- A manual Swift refresh completed at 16:40:32 and its dashboard then also displayed `88.0亿`.
+
+This rejects the visible-number mismatch as a bug for this runtime sample. It does not replace the planned two-Home, same-files, same-date/offset cross-language fixture, which is still required to prove parser parity deterministically.
+
 ## Highest-impact UI fixes
 
 1. Move updater success/failure into a stable, bounded status area and translate plugin failures into product copy. Never render raw updater internals in the top command row.
@@ -59,4 +70,4 @@ Health: usable.
 
 - Screenshots and accessibility snapshots do not prove full WCAG compliance.
 - Pointer hover, horizontal chart drag, Windows rendering, status-panel interaction, and floating-window focus behavior still need dedicated passes.
-- Dynamic total/quota differences were not compared from synchronized source fixtures in this UI pass.
+- Current live totals were synchronized once and matched at display precision; deterministic source-fixture parity is still pending.
