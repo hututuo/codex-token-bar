@@ -101,11 +101,28 @@
 - [ ] Run focused Rust aggregate/token-count tests, recent-chart and token-activity Node tests, `npm run build`, and `git diff --check`.
 - [ ] Commit Tauri Rust/TypeScript cache normalization separately from streak and discovery.
 
+### Task 6: Tauri Windows-Safe Usage Cache Persistence
+
+**Files:**
+- Modify: `tauri-app/src-tauri/src/core/usage/cache_lifecycle.rs`
+- Modify: `tauri-app/src-tauri/src/core/usage/token_count_jsonl.rs`
+- Modify/add focused cache lifecycle and token-count persistence tests.
+- Reuse or extract a neutral cross-platform atomic-file helper only after the accepted settings/Provider work establishes its final contract; usage code must not depend on Provider UI/domain modules.
+
+**Produces:** Repeated cache marker and dashboard aggregate saves that durably replace an existing destination on Windows, clean task-owned temporary files, and surface a bounded persistence diagnostic without blocking correct in-memory totals.
+
+- [ ] Add red second-save fixtures for both `cache-state.json` and `dashboard-aggregate.json` under injectable Windows replacement semantics; the second payload must replace the first and no task-owned temp remains.
+- [ ] Add red failure fixtures for write, file-sync, replacement, and parent-directory-sync stages. The marker must not claim ready when persistence failed; the aggregate must retain correct in-memory data while exposing/logging the persistence failure once rather than rebuilding forever without evidence.
+- [ ] Observe the existing rename-over-destination path fail in the Windows-semantics fixture before production edits.
+- [ ] Implement unique temp creation, complete write/file sync, platform-correct replace, parent-directory durability where supported, and exact task-owned cleanup. Do not delete an unrelated temp or a valid prior cache on failed replacement.
+- [ ] Run focused cache lifecycle/token-count tests, full `cargo test --manifest-path tauri-app/src-tauri/Cargo.toml -- --test-threads=1` once after the task is otherwise green, and `git diff --check`.
+- [ ] Commit usage-cache persistence independently from settings and Provider transactions.
+
 ## Review And Integration Gates
 
 - File-discovery tasks are high-risk core-total changes and use a high-reasoning implementer/reviewer. Streak tasks use GPT-5.6 medium.
 - Commander reads the actual diff and tests before dispatching one fresh independent reviewer per task; worker reports are not acceptance.
 - Reviewers verify that a rejected path cannot enter a cache signature, trusted aggregate, unread result, or later fallback under a different label.
-- After all five tasks are accepted, run the full Swift suite once and the full Rust/Node suites once, serially within each lane, then compare one deterministic disposable-Home fixture across languages.
+- After all six tasks are accepted, run the full Swift suite once and the full Rust/Node suites once, serially within each lane, then compare one deterministic disposable-Home fixture across languages.
 - UI/runtime acceptance confirms totals remain visible after a normal scan and that streak labels match, but UI evidence does not replace source tests.
 - Do not merge stable/release branches or publish an update during this batch.
