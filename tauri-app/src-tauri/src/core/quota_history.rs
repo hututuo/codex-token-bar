@@ -75,7 +75,7 @@ impl QuotaHistoryIdentity {
             .map(str::trim)
             .filter(|value| !value.is_empty())?
             .to_string();
-        let limit_id = canonical_limit_name(Some(limit_id))?;
+        let limit_id = canonical_stable_limit_name(Some(limit_id))?;
         let plan_type = canonical_plan_type(Some(plan_type), Some(&limit_id))?;
         Some(Self {
             version: QUOTA_HISTORY_IDENTITY_VERSION,
@@ -414,11 +414,9 @@ impl QuotaHistoryRow {
         }
         let home_identity = nonempty_owned(self.home_identity.as_deref())?;
         let stable_account_key = nonempty_owned(self.stable_account_key.as_deref())?;
-        let plan_type = canonical_plan_type(
-            self.identity_plan_type.as_deref(),
-            self.identity_limit_id.as_deref(),
-        )?;
-        let limit_id = canonical_limit_name(self.identity_limit_id.as_deref())?;
+        let limit_id = canonical_stable_limit_name(self.identity_limit_id.as_deref())?;
+        let plan_type =
+            canonical_plan_type(self.identity_plan_type.as_deref(), Some(&limit_id))?;
         Some(QuotaHistoryIdentity {
             version,
             home_identity,
@@ -582,6 +580,13 @@ fn canonical_limit_name(limit_name: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn canonical_stable_limit_name(limit_name: Option<&str>) -> Option<String> {
+    let limit_name = limit_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    canonical_limit_name(Some(limit_name))
 }
 
 fn is_codex_main_limit(limit_name: Option<&str>) -> bool {

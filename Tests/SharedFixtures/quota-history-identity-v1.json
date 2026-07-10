@@ -96,6 +96,26 @@
         { "operation": "write", "homeIdentity": "/fixture/legacy-sources", "stableAccountKey": "sub:unknown-legacy", "displayName": "Unknown Legacy", "plan": "Plus", "limitId": "codex", "usedPercent": 15 },
         { "operation": "read", "homeIdentity": "/fixture/legacy-sources", "stableAccountKey": "sub:unknown-legacy", "displayName": "Unknown Legacy", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [15] }
       ]
+    },
+    {
+      "id": "legacy-fake-pro-source-matrix",
+      "steps": [
+        { "operation": "legacyWrite", "displayName": "Swift Fake Pro", "plan": "Pro", "limitId": "codex", "source": "swift", "usedPercent": 51 },
+        { "operation": "write", "homeIdentity": "/fixture/fake-pro-sources", "stableAccountKey": "sub:swift-fake-pro", "displayName": "Swift Fake Pro", "plan": "Plus", "limitId": "codex", "usedPercent": 11 },
+        { "operation": "read", "homeIdentity": "/fixture/fake-pro-sources", "stableAccountKey": "sub:swift-fake-pro", "displayName": "Swift Fake Pro", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [11, 51] },
+        { "operation": "legacyWrite", "displayName": "Null Fake Pro", "plan": "Pro", "limitId": "codex", "source": null, "usedPercent": 52 },
+        { "operation": "write", "homeIdentity": "/fixture/fake-pro-sources", "stableAccountKey": "sub:null-fake-pro", "displayName": "Null Fake Pro", "plan": "Plus", "limitId": "codex", "usedPercent": 12 },
+        { "operation": "read", "homeIdentity": "/fixture/fake-pro-sources", "stableAccountKey": "sub:null-fake-pro", "displayName": "Null Fake Pro", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [12, 52] },
+        { "operation": "legacyWrite", "displayName": "Blank Fake Pro", "plan": "Pro", "limitId": "codex", "source": "", "usedPercent": 53 },
+        { "operation": "write", "homeIdentity": "/fixture/fake-pro-sources", "stableAccountKey": "sub:blank-fake-pro", "displayName": "Blank Fake Pro", "plan": "Plus", "limitId": "codex", "usedPercent": 13 },
+        { "operation": "read", "homeIdentity": "/fixture/fake-pro-sources", "stableAccountKey": "sub:blank-fake-pro", "displayName": "Blank Fake Pro", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [13, 53] },
+        { "operation": "legacyWrite", "displayName": "Tauri Fake Pro", "plan": "Pro", "limitId": "codex", "source": "tauri", "usedPercent": 98 },
+        { "operation": "write", "homeIdentity": "/fixture/fake-pro-sources", "stableAccountKey": "sub:tauri-fake-pro", "displayName": "Tauri Fake Pro", "plan": "Plus", "limitId": "codex", "usedPercent": 14 },
+        { "operation": "read", "homeIdentity": "/fixture/fake-pro-sources", "stableAccountKey": "sub:tauri-fake-pro", "displayName": "Tauri Fake Pro", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [14] },
+        { "operation": "legacyWrite", "displayName": "Unknown Fake Pro", "plan": "Pro", "limitId": "codex", "source": "unknown-writer", "usedPercent": 99 },
+        { "operation": "write", "homeIdentity": "/fixture/fake-pro-sources", "stableAccountKey": "sub:unknown-fake-pro", "displayName": "Unknown Fake Pro", "plan": "Plus", "limitId": "codex", "usedPercent": 15 },
+        { "operation": "read", "homeIdentity": "/fixture/fake-pro-sources", "stableAccountKey": "sub:unknown-fake-pro", "displayName": "Unknown Fake Pro", "plan": "Plus", "limitId": "codex", "expectedUsedPercents": [15] }
+      ]
     }
   ]
 }

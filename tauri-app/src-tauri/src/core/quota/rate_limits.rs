@@ -54,7 +54,7 @@ pub(super) fn parse_rate_limits_with_plan(result: &Value) -> Result<ParsedRateLi
         .unwrap_or_default();
     let fallback_card = result
         .get("rateLimits")
-        .and_then(|value| parse_limit_card(value, "codex"));
+        .and_then(parse_fallback_limit_card);
     let cards = if by_limit.is_empty() {
         fallback_card.into_iter().collect::<Vec<_>>()
     } else {
@@ -152,14 +152,12 @@ struct ParsedLimitCard {
     seven_day: Option<QuotaLimit>,
 }
 
-fn parse_limit_card(value: &Value, fallback_id: &str) -> Option<ParsedLimitCard> {
-    let id = value
-        .get("limitId")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(fallback_id)
-        .to_string();
+fn parse_limit_card(value: &Value, selected_id: &str) -> Option<ParsedLimitCard> {
+    let id = selected_id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let id = id.to_string();
     let five_hour = parse_window(value.get("primary"), "5h");
     let seven_day = parse_window(value.get("secondary"), "7d");
     if five_hour.is_none() && seven_day.is_none() {
@@ -170,6 +168,14 @@ fn parse_limit_card(value: &Value, fallback_id: &str) -> Option<ParsedLimitCard>
         five_hour,
         seven_day,
     })
+}
+
+fn parse_fallback_limit_card(value: &Value) -> Option<ParsedLimitCard> {
+    let selected_id = match value.get("limitId") {
+        Some(value) => value.as_str()?,
+        None => "codex",
+    };
+    parse_limit_card(value, selected_id)
 }
 
 fn parse_window(value: Option<&Value>, label: &str) -> Option<QuotaLimit> {
@@ -357,6 +363,49 @@ mod tests {
             "rateLimitsByLimitId": {
                 "gpt-5.3-codex-spark": {
                     "planType": "plus",
+                    "primary": { "usedPercent": 25, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 20, "resetsAt": 1782144492 }
+                }
+            }
+        });
+
+        let parsed = parse_rate_limits_with_plan(&result).unwrap();
+        assert_eq!(parsed.limit_id, "gpt-5.3-codex-spark");
+    }
+
+    #[test]
+    fn blank_rate_limit_map_keys_do_not_select_a_card() {
+        for result in [
+            json!({
+                "rateLimitsByLimitId": {
+                    "": {
+                        "primary": { "usedPercent": 25, "resetsAt": 1781715600 },
+                        "secondary": { "usedPercent": 20, "resetsAt": 1782144492 }
+                    }
+                }
+            }),
+            json!({
+                "rateLimitsByLimitId": {
+                    "   ": {
+                        "primary": { "usedPercent": 25, "resetsAt": 1781715600 },
+                        "secondary": { "usedPercent": 20, "resetsAt": 1782144492 }
+                    }
+                }
+            }),
+        ] {
+            let error = match parse_rate_limits_with_plan(&result) {
+                Ok(_) => panic!("blank rate-limit key must not select a card"),
+                Err(error) => error,
+            };
+            assert_eq!(error, "额度暂无数据");
+        }
+    }
+
+    #[test]
+    fn selected_rate_limit_map_key_is_trimmed() {
+        let result = json!({
+            "rateLimitsByLimitId": {
+                "  gpt-5.3-codex-spark  ": {
                     "primary": { "usedPercent": 25, "resetsAt": 1781715600 },
                     "secondary": { "usedPercent": 20, "resetsAt": 1782144492 }
                 }

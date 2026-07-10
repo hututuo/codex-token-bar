@@ -329,6 +329,76 @@ fn record_unknown_plan_does_not_write_fake_pro() {
 }
 
 #[test]
+fn blank_stable_limit_cannot_write_or_read_codex_history() {
+    let path = temp_db_path("blank-stable-limit");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let reset = now_unix() as i64 + 3_600;
+    let codex_snapshot = bundle_with_plan(
+        "Limit User",
+        "Plus",
+        0.10,
+        reset,
+        0.10,
+        reset + 500_000,
+    );
+    let codex_identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/blank-limit"),
+        Some("sub:blank-limit"),
+        "Plus",
+        "codex",
+    )
+    .unwrap();
+    database
+        .record_for_identity(Some(&codex_identity), &codex_snapshot)
+        .unwrap();
+
+    for limit_id in ["", "   "] {
+        let blank_snapshot = bundle_with_plan(
+            "Limit User",
+            "Plus",
+            0.90,
+            reset,
+            0.90,
+            reset + 500_000,
+        );
+        let blank_identity = QuotaHistoryIdentity::from_canonical_parts(
+            Path::new("/fixture/blank-limit"),
+            Some("sub:blank-limit"),
+            "Plus",
+            limit_id,
+        );
+        let accepted = database
+            .record_for_identity(blank_identity.as_ref(), &blank_snapshot)
+            .unwrap();
+        let blank_rows = database
+            .rows_for_identity(
+                blank_identity.as_ref(),
+                &blank_snapshot,
+                31.0 * 24.0 * 60.0 * 60.0,
+            )
+            .unwrap();
+
+        assert!(blank_identity.is_none());
+        assert!(!accepted);
+        assert!(blank_rows.is_empty());
+    }
+
+    let codex_used = database
+        .rows_for_identity(
+            Some(&codex_identity),
+            &codex_snapshot,
+            31.0 * 24.0 * 60.0 * 60.0,
+        )
+        .unwrap()
+        .into_iter()
+        .filter_map(|row| row.five_hour_used_percent)
+        .collect::<Vec<_>>();
+    assert_eq!(codex_used, vec![10]);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn schema_adds_versioned_identity_without_rewriting_legacy_rows() {
     let path = temp_db_path("identity-migration");
     let connection = rusqlite::Connection::open(&path).unwrap();
