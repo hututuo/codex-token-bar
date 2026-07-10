@@ -304,6 +304,150 @@ final class ProviderSyncEngineTests: XCTestCase {
         XCTAssertTrue(restored.status.contains("验证通过"))
     }
 
+    func testSyncRollsBackWhenPostWriteReportThrows() throws {
+        let fixture = try makeFixture()
+        var reportCalls = 0
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            reportWillBuild: {
+                reportCalls += 1
+                if reportCalls == 2 {
+                    throw NSError(
+                        domain: "ProviderSyncEngineTests",
+                        code: 901,
+                        userInfo: [NSLocalizedDescriptionKey: "injected post-write report failure"]
+                    )
+                }
+            }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("injected post-write report failure"))
+            XCTAssertTrue(error.localizedDescription.contains("已自动回滚"))
+        }
+        XCTAssertEqual(try readSessionProvider(at: fixture.activeSession), "anthropic")
+        XCTAssertEqual(try readSQLiteProviders(at: fixture.codexHome), ["anthropic"])
+    }
+
+    func testSyncRollsBackWhenPostWriteReportFindsInvalidSessionFile() throws {
+        let fixture = try makeFixture()
+        var reportCalls = 0
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            reportWillBuild: {
+                reportCalls += 1
+                if reportCalls == 2 {
+                    try #"{"payload":{},"type":"event_msg"}"#.appending("\n")
+                        .write(to: fixture.activeSession, atomically: true, encoding: .utf8)
+                }
+            }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("无效会话文件"))
+            XCTAssertTrue(error.localizedDescription.contains("已自动回滚"))
+        }
+        XCTAssertEqual(try readSessionProvider(at: fixture.activeSession), "anthropic")
+        XCTAssertEqual(try readSQLiteProviders(at: fixture.codexHome), ["anthropic"])
+    }
+
+    func testSyncRollsBackWhenPostWriteProviderSetBecomesVacuous() throws {
+        let fixture = try makeFixture()
+        var reportCalls = 0
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            reportWillBuild: {
+                reportCalls += 1
+                if reportCalls == 2 {
+                    try FileManager.default.removeItem(at: fixture.activeSession)
+                }
+            }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("会话校验为空"))
+            XCTAssertTrue(error.localizedDescription.contains("已自动回滚"))
+        }
+        XCTAssertEqual(try readSessionProvider(at: fixture.activeSession), "anthropic")
+        XCTAssertEqual(try readSQLiteProviders(at: fixture.codexHome), ["anthropic"])
+    }
+
+    func testRollbackRejectsOutOfRootArchiveMemberBeforeDestinationMutation() throws {
+        let fixture = try makeFixture()
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+        let synced = try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )
+        let backupPath = try XCTUnwrap(synced.lastBackupPath)
+        let backup = URL(fileURLWithPath: backupPath)
+        let outside = fixture.codexHome.deletingLastPathComponent().appendingPathComponent("outside.txt")
+        try "archived-outside\n".write(to: outside, atomically: true, encoding: .utf8)
+        try appendToTar(
+            file: outside,
+            archive: backup.appendingPathComponent("session-jsonl.before.tar")
+        )
+        try "destination-must-not-change\n".write(to: outside, atomically: true, encoding: .utf8)
+        let destinationBeforeRollback = try disposableState(for: fixture)
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("归档成员"))
+        }
+        XCTAssertEqual(try disposableState(for: fixture), destinationBeforeRollback)
+        XCTAssertEqual(try String(contentsOf: outside, encoding: .utf8), "destination-must-not-change\n")
+    }
+
+    func testAppCreatedArchiveRoundTripsScopedSessionMembers() throws {
+        let fixture = try makeFixture()
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+        let synced = try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: true,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )
+        let backupPath = try XCTUnwrap(synced.lastBackupPath)
+        let archive = URL(fileURLWithPath: backupPath).appendingPathComponent("session-jsonl.before.tar")
+
+        XCTAssertEqual(
+            try tarMembers(archive: archive),
+            [
+                "archived_sessions/2026/thread-archived.jsonl",
+                "sessions/2026/07/06/thread-a.jsonl"
+            ]
+        )
+        _ = try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath)
+        XCTAssertEqual(try readSessionProvider(at: fixture.activeSession), "anthropic")
+        XCTAssertEqual(try readSessionProvider(at: fixture.archivedSession), "anthropic")
+        XCTAssertEqual(try readSQLiteProviders(at: fixture.codexHome), ["anthropic"])
+    }
+
     private func makeFixture() throws -> ProviderSyncFixture {
         let root = try makeTemporaryDirectory(named: "ProviderSyncEngine")
         let codexHome = root.appendingPathComponent("codex-home", isDirectory: true)
@@ -460,6 +604,38 @@ final class ProviderSyncEngineTests: XCTestCase {
     private func writeJSON(_ object: [String: Any], to file: URL) throws {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: file, options: [.atomic])
+    }
+
+    private func appendToTar(file: URL, archive: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        process.arguments = ["-rf", archive.path, "-C", "/", String(file.path.dropFirst())]
+        let error = Pipe()
+        process.standardError = error
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let message = String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "tar append failed"
+            throw NSError(domain: "ProviderSyncEngineTests", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
+        }
+    }
+
+    private func tarMembers(archive: URL) throws -> [String] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        process.arguments = ["-tf", archive.path]
+        let output = Pipe()
+        let error = Pipe()
+        process.standardOutput = output
+        process.standardError = error
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let message = String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "tar list failed"
+            throw NSError(domain: "ProviderSyncEngineTests", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: message])
+        }
+        let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return text.split(separator: "\n").map(String.init).sorted()
     }
 }
 

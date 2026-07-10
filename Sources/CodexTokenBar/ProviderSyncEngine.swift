@@ -89,17 +89,20 @@ final class ProviderSyncEngine {
     private let backupRootOverride: URL?
     private let applicationRunningProbe: @Sendable () -> Bool
     private let mutationLeaseDidAcquire: (@Sendable () -> Void)?
+    private let reportWillBuild: (() throws -> Void)?
 
     init(
         fileManager: FileManager = .default,
         backupRoot: URL? = nil,
         applicationRunningProbe: @escaping @Sendable () -> Bool = ProviderSyncEngine.defaultApplicationRunningProbe,
-        mutationLeaseDidAcquire: (@Sendable () -> Void)? = nil
+        mutationLeaseDidAcquire: (@Sendable () -> Void)? = nil,
+        reportWillBuild: (() throws -> Void)? = nil
     ) {
         self.fileManager = fileManager
         self.backupRootOverride = backupRoot
         self.applicationRunningProbe = applicationRunningProbe
         self.mutationLeaseDidAcquire = mutationLeaseDidAcquire
+        self.reportWillBuild = reportWillBuild
     }
 
     func backupRootDirectory() -> URL {
@@ -114,13 +117,7 @@ final class ProviderSyncEngine {
 
     func verify(codexHome: URL, includeArchivedSessions: Bool, targetProviderOverride: String?) throws -> ProviderSyncSnapshot {
         let report = try makeReport(codexHome: codexHome, includeArchivedSessions: includeArchivedSessions, targetProviderOverride: targetProviderOverride)
-        let allSessionsMatch = report.sessionProviders.keys.allSatisfy { $0 == report.targetProvider }
-        let allSQLiteMatch = report.sqliteProviders.allSatisfy { $0.provider == report.targetProvider }
-        let status = allSessionsMatch
-            && allSQLiteMatch
-            && report.sqliteRowsToRepair == 0
-            && report.workspaceIssues.isEmpty
-            && report.sqliteIntegrity == "ok"
+        let status = verificationIssues(in: report).isEmpty
             ? "验证通过"
             : "验证完成：仍有历史或前端工作区状态未同步"
         return snapshot(from: report, status: status)
@@ -146,54 +143,73 @@ final class ProviderSyncEngine {
 
             var changedSessionFiles = 0
             var sqliteRowsChanged = 0
-            if !dryRunOnly {
+            if dryRunOnly {
+                let report = try makeReport(
+                    codexHome: codexHome,
+                    includeArchivedSessions: includeArchivedSessions,
+                    targetProviderOverride: targetProviderOverride
+                )
+                var next = snapshot(from: report, status: "Dry run 完成，已创建备份但未改历史")
+                next.lastBackupPath = backupPath.path
+                return next
+            }
+
+            do {
+                for file in initial.sessionFiles {
+                    if try rewriteSessionMetaProvider(file: file, targetProvider: initial.targetProvider) {
+                        changedSessionFiles += 1
+                    }
+                }
+                sqliteRowsChanged = try updateSQLite(codexHome: codexHome, targetProvider: initial.targetProvider)
+                sqliteRowsChanged += try repairSQLiteThreadTimestamps(codexHome: codexHome, sessionFiles: initial.sessionFiles)
+                _ = try reconcileSessionIndex(codexHome: codexHome)
+                _ = try reconcileWorkspaceOrder(codexHome: codexHome)
+
+                let verified = try makeReport(
+                    codexHome: codexHome,
+                    includeArchivedSessions: includeArchivedSessions,
+                    targetProviderOverride: targetProviderOverride
+                )
+                let issues = verificationIssues(
+                    in: verified,
+                    expectedSessionFileCount: initial.sessionFiles.count,
+                    expectedSQLiteRowCount: initial.sqliteProviders.reduce(0) { $0 + $1.count }
+                )
+                guard issues.isEmpty else {
+                    throw NSError(
+                        domain: "CodexTokenBar",
+                        code: 422,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "写后验证失败：\(issues.joined(separator: "；"))"
+                        ]
+                    )
+                }
+
+                var next = snapshot(from: verified, status: "同步完成并已验证")
+                next.changedSessionFiles = changedSessionFiles
+                next.sqliteRowsChanged = sqliteRowsChanged
+                next.lastBackupPath = backupPath.path
+                return next
+            } catch let operationError {
                 do {
-                    for file in initial.sessionFiles {
-                        if try rewriteSessionMetaProvider(file: file, targetProvider: initial.targetProvider) {
-                            changedSessionFiles += 1
-                        }
-                    }
-                    sqliteRowsChanged = try updateSQLite(codexHome: codexHome, targetProvider: initial.targetProvider)
-                    sqliteRowsChanged += try repairSQLiteThreadTimestamps(codexHome: codexHome, sessionFiles: initial.sessionFiles)
-                    _ = try reconcileSessionIndex(codexHome: codexHome)
-                    _ = try reconcileWorkspaceOrder(codexHome: codexHome)
-                } catch {
-                    do {
-                        try restoreBackup(backupPath, codexHome: codexHome)
-                    } catch {
-                        throw NSError(
-                            domain: "CodexTokenBar",
-                            code: 500,
-                            userInfo: [
-                                NSLocalizedDescriptionKey: "同步失败，且自动回滚失败：\(error.localizedDescription)"
-                            ]
-                        )
-                    }
+                    try restoreBackup(backupPath, codexHome: codexHome)
+                } catch let rollbackError {
                     throw NSError(
                         domain: "CodexTokenBar",
                         code: 500,
                         userInfo: [
-                            NSLocalizedDescriptionKey: "同步失败，已自动回滚：\(error.localizedDescription)"
+                            NSLocalizedDescriptionKey: "同步失败，且自动回滚失败：\(operationError.localizedDescription)；回滚错误：\(rollbackError.localizedDescription)"
                         ]
                     )
                 }
+                throw NSError(
+                    domain: "CodexTokenBar",
+                    code: 500,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: "同步失败，已自动回滚：\(operationError.localizedDescription)"
+                    ]
+                )
             }
-
-            let verified = try makeReport(codexHome: codexHome, includeArchivedSessions: includeArchivedSessions, targetProviderOverride: targetProviderOverride)
-            let allSessionsMatch = verified.sessionProviders.keys.allSatisfy { $0 == verified.targetProvider }
-            let allSQLiteMatch = verified.sqliteProviders.allSatisfy { $0.provider == verified.targetProvider }
-            let verifiedStatus = allSessionsMatch
-                && allSQLiteMatch
-                && verified.sqliteRowsToRepair == 0
-                && verified.workspaceIssues.isEmpty
-                && verified.sqliteIntegrity == "ok"
-                ? "同步完成并已验证"
-                : "同步完成，但仍有历史或前端工作区状态未同步"
-            var next = snapshot(from: verified, status: dryRunOnly ? "Dry run 完成，已创建备份但未改历史" : verifiedStatus)
-            next.changedSessionFiles = changedSessionFiles
-            next.sqliteRowsChanged = sqliteRowsChanged
-            next.lastBackupPath = backupPath.path
-            return next
         }
     }
 
@@ -221,6 +237,7 @@ final class ProviderSyncEngine {
     }
 
     private func makeReport(codexHome: URL, includeArchivedSessions: Bool, targetProviderOverride: String?) throws -> ProviderSyncReport {
+        try reportWillBuild?()
         let sessionFiles = findSessionFiles(codexHome: codexHome, includeArchivedSessions: includeArchivedSessions)
         var sessionProviders: [String: Int] = [:]
         var invalidSessionFiles = 0
@@ -299,6 +316,55 @@ final class ProviderSyncEngine {
             status: report.codexRunning ? "\(status)，建议退出 Codex 后执行同步" : status,
             isWorking: false
         )
+    }
+
+    private func verificationIssues(
+        in report: ProviderSyncReport,
+        expectedSessionFileCount: Int? = nil,
+        expectedSQLiteRowCount: Int? = nil
+    ) -> [String] {
+        var issues: [String] = []
+        let checkedSessionCount = report.sessionProviders.values.reduce(0, +)
+        let checkedSQLiteRowCount = report.sqliteProviders.reduce(0) { $0 + $1.count }
+
+        if report.invalidSessionFiles > 0 {
+            issues.append("发现 \(report.invalidSessionFiles) 个无效会话文件")
+        }
+        if checkedSessionCount != report.sessionFiles.count {
+            issues.append("会话 Provider 校验不完整")
+        }
+        if let expectedSessionFileCount {
+            if expectedSessionFileCount > 0, checkedSessionCount == 0 {
+                issues.append("会话校验为空")
+            }
+            if report.sessionFiles.count != expectedSessionFileCount {
+                issues.append("会话文件数量从 \(expectedSessionFileCount) 变为 \(report.sessionFiles.count)")
+            }
+        }
+        if !report.sessionProviders.keys.allSatisfy({ $0 == report.targetProvider }) {
+            issues.append("会话 Provider 未全部同步为 \(report.targetProvider)")
+        }
+        if let expectedSQLiteRowCount {
+            if expectedSQLiteRowCount > 0, checkedSQLiteRowCount == 0 {
+                issues.append("SQLite Provider 校验为空")
+            }
+            if checkedSQLiteRowCount != expectedSQLiteRowCount {
+                issues.append("SQLite 行数从 \(expectedSQLiteRowCount) 变为 \(checkedSQLiteRowCount)")
+            }
+        }
+        if !report.sqliteProviders.allSatisfy({ $0.provider == report.targetProvider }) {
+            issues.append("SQLite Provider 未全部同步为 \(report.targetProvider)")
+        }
+        if report.sqliteRowsToRepair != 0 {
+            issues.append("仍有 \(report.sqliteRowsToRepair) 行 SQLite 数据待修复")
+        }
+        if report.sqliteIntegrity != "ok" {
+            issues.append("SQLite 完整性检查失败：\(report.sqliteIntegrity)")
+        }
+        if !report.workspaceIssues.isEmpty {
+            issues.append("仍有 \(report.workspaceIssues.count) 个工作区问题")
+        }
+        return issues
     }
 
     func modificationDate(of file: URL) -> Date? {
