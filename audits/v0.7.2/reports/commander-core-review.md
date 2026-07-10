@@ -292,6 +292,38 @@ A crash or concurrent write can make all acknowledged sessions appear unread aga
 
 Reuse the settings-style atomic persistence helper after that helper is fixed, keep a bounded corrupt-file backup/diagnostic, and test concurrent A/B Home acknowledgements plus a truncate fault.
 
+### [P2] The macOS Tauri debug surface exposes an unsupported Windows-updater error as raw header text
+
+**Runtime and source evidence**
+
+- The current Tauri dashboard capture at `/Users/huyiyang/AI agent/Codex/_keep/projects/codex-token-dashboard-worktrees/full-audit-v0.7.2/audits/v0.7.2/screenshots/01-tauri-dashboard-baseline.jpeg` shows `检查更新失败：None of the fallback platforms ...` inline between the update and export buttons.
+- `/Users/huyiyang/AI agent/Codex/_keep/projects/codex-token-dashboard-worktrees/full-audit-v0.7.2/tauri-app/src-tauri/tauri.conf.json:38` points the Tauri updater exclusively at `latest-windows.json`.
+- `/Users/huyiyang/AI agent/Codex/_keep/projects/codex-token-dashboard-worktrees/full-audit-v0.7.2/tauri-app/src/app/DashboardApp.tsx:225` prefixes and forwards the plugin's full error message, while `/Users/huyiyang/AI agent/Codex/_keep/projects/codex-token-dashboard-worktrees/full-audit-v0.7.2/tauri-app/src/components/DashboardHeader.tsx:137` places that unbounded message in the already dense source/action row.
+
+**Impact**
+
+The macOS comparison/debug build offers an update command that can never resolve a Darwin platform from the Windows-only metadata, then presents internal updater vocabulary as product copy. The header becomes crowded and visibly truncates both status and neighboring actions.
+
+**Required target**
+
+Make platform support explicit. If the Tauri updater remains Windows-only, hide/disable the update action on unsupported platforms and show no startup error. On supported platforms, map updater failures to bounded user-facing categories in a stable status slot, with raw detail available only through diagnostics.
+
+### [P2] Tauri exposes every heat-map day as a separate accessibility control
+
+**Runtime and source evidence**
+
+- The current accessibility snapshot presents one toggle for every daily cell, producing hundreds of sequential controls before the chart/ranking content.
+- `/Users/huyiyang/AI agent/Codex/_keep/projects/codex-token-dashboard-worktrees/full-audit-v0.7.2/tauri-app/src/components/tokenActivity/HeatmapGrid.tsx:27` maps every day to a `<button>` with `aria-pressed`.
+- Swift deliberately combines its heat map into one accessibility element at `/Users/huyiyang/AI agent/Codex/_keep/projects/codex-token-dashboard-worktrees/full-audit-v0.7.2/Sources/CodexTokenBar/TokenHeatmap.swift:165`.
+
+**Impact**
+
+Keyboard and screen-reader users must traverse roughly a year of cells to reach later analytics. The labels are individually descriptive, but the interaction model is not scalable.
+
+**Required target**
+
+Expose the heat map as one grouped chart with a concise summary and a deliberate keyboard point-selection mode, or implement a roving single tab stop. Preserve pointer range selection without making every cell a permanent tab stop.
+
 ## Scope Reviewed So Far
 
 - Tauri Codex Home command boundary, aggregate signature, persistent aggregate, trusted-summary scope, background refresh coordinator, compact usage hook, floating surface, and status-panel lifecycle.
