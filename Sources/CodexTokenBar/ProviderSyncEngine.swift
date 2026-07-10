@@ -90,19 +90,25 @@ final class ProviderSyncEngine {
     private let applicationRunningProbe: @Sendable () -> Bool
     private let mutationLeaseDidAcquire: (@Sendable () -> Void)?
     private let reportWillBuild: (() throws -> Void)?
+    let restoreWillApply: ((Int, URL) throws -> Void)?
+    let sessionTarWillRun: (() throws -> Void)?
 
     init(
         fileManager: FileManager = .default,
         backupRoot: URL? = nil,
         applicationRunningProbe: @escaping @Sendable () -> Bool = ProviderSyncEngine.defaultApplicationRunningProbe,
         mutationLeaseDidAcquire: (@Sendable () -> Void)? = nil,
-        reportWillBuild: (() throws -> Void)? = nil
+        reportWillBuild: (() throws -> Void)? = nil,
+        restoreWillApply: ((Int, URL) throws -> Void)? = nil,
+        sessionTarWillRun: (() throws -> Void)? = nil
     ) {
         self.fileManager = fileManager
         self.backupRootOverride = backupRoot
         self.applicationRunningProbe = applicationRunningProbe
         self.mutationLeaseDidAcquire = mutationLeaseDidAcquire
         self.reportWillBuild = reportWillBuild
+        self.restoreWillApply = restoreWillApply
+        self.sessionTarWillRun = sessionTarWillRun
     }
 
     func backupRootDirectory() -> URL {
@@ -192,7 +198,13 @@ final class ProviderSyncEngine {
                 return next
             } catch let operationError {
                 do {
-                    try restoreBackup(backupPath, codexHome: codexHome)
+                    _ = try restoreBackup(backupPath, codexHome: codexHome) {
+                        try makeReport(
+                            codexHome: codexHome,
+                            includeArchivedSessions: includeArchivedSessions,
+                            targetProviderOverride: nil
+                        )
+                    }
                 } catch let rollbackError {
                     throw NSError(
                         domain: "CodexTokenBar",
@@ -229,11 +241,16 @@ final class ProviderSyncEngine {
     }
 
     private func rollbackWithoutLease(codexHome: URL, backup: URL, status: String) throws -> ProviderSyncSnapshot {
-        try restoreBackup(backup, codexHome: codexHome)
-        let report = try makeReport(codexHome: codexHome, includeArchivedSessions: true, targetProviderOverride: nil)
-        var next = snapshot(from: report, status: status)
-        next.lastBackupPath = backup.path
-        return next
+        try restoreBackup(backup, codexHome: codexHome) {
+            let report = try makeReport(
+                codexHome: codexHome,
+                includeArchivedSessions: true,
+                targetProviderOverride: nil
+            )
+            var next = snapshot(from: report, status: status)
+            next.lastBackupPath = backup.path
+            return next
+        }
     }
 
     private func makeReport(codexHome: URL, includeArchivedSessions: Bool, targetProviderOverride: String?) throws -> ProviderSyncReport {

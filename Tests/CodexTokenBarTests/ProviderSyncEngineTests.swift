@@ -448,6 +448,355 @@ final class ProviderSyncEngineTests: XCTestCase {
         XCTAssertEqual(try readSQLiteProviders(at: fixture.codexHome), ["anthropic"])
     }
 
+    func testAppCreatedManifestPersistsExactSessionMembersAndDigests() throws {
+        let fixture = try makeFixture()
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+        let synced = try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: true,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )
+        let backupPath = try XCTUnwrap(synced.lastBackupPath)
+        let manifestURL = URL(fileURLWithPath: backupPath).appendingPathComponent("manifest.json")
+        let manifest = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any]
+        )
+        let members = try XCTUnwrap(manifest["session_members"] as? [[String: String]])
+
+        XCTAssertEqual(
+            members.compactMap { $0["path"] }.sorted(),
+            [
+                "archived_sessions/2026/thread-archived.jsonl",
+                "sessions/2026/07/06/thread-a.jsonl"
+            ]
+        )
+        XCTAssertTrue(members.allSatisfy { member in
+            member["sha256"]?.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil
+        })
+    }
+
+    func testRollbackRejectsArchiveSubsetThatDoesNotMatchManifestCount() throws {
+        let fixture = try makeFixture()
+        let backup = try makeLegacyBackup(
+            fixture: fixture,
+            entries: [
+                TestTarEntry(
+                    name: "sessions/2026/07/06/thread-a.jsonl",
+                    data: try Data(contentsOf: fixture.activeSession)
+                )
+            ],
+            declaredCount: 2
+        )
+        let before = try rollbackDestinationState(for: fixture)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backup.path)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("session_file_count"))
+        }
+        XCTAssertEqual(try rollbackDestinationState(for: fixture), before)
+    }
+
+    func testRollbackRejectsAmbiguousAndUnsafeArchiveMemberMatrixWithoutMutation() throws {
+        let fixture = try makeFixture()
+        let rawHomePrefix = String(fixture.codexHome.path.dropFirst())
+        let cases: [(String, [TestTarEntry])] = [
+            ("absolute", [TestTarEntry(name: "/sessions/absolute.jsonl")]),
+            ("dot-prefix", [TestTarEntry(name: "./sessions/dot.jsonl")]),
+            ("dot-component", [TestTarEntry(name: "sessions/./dot.jsonl")]),
+            ("dotdot-component", [TestTarEntry(name: "sessions/../escape.jsonl")]),
+            ("duplicate-archive", [
+                TestTarEntry(name: "sessions/duplicate.jsonl"),
+                TestTarEntry(name: "sessions/duplicate.jsonl")
+            ]),
+            ("duplicate-target", [
+                TestTarEntry(name: "sessions/duplicate-target.jsonl"),
+                TestTarEntry(name: "\(rawHomePrefix)/sessions/duplicate-target.jsonl")
+            ]),
+            ("backslash", [TestTarEntry(name: #"sessions/ambiguous\name.jsonl"#)]),
+            ("carriage-return", [TestTarEntry(name: "sessions/carriage\rreturn.jsonl")]),
+            ("line-feed", [TestTarEntry(name: "sessions/line\nfeed.jsonl")]),
+            ("tab-control", [TestTarEntry(name: "sessions/tab\tcontrol.jsonl")]),
+            ("symlink", [TestTarEntry(name: "sessions/link.jsonl", type: .symbolicLink, linkName: "target.jsonl")]),
+            ("hardlink", [
+                TestTarEntry(name: "sessions/source.jsonl"),
+                TestTarEntry(name: "sessions/hard.jsonl", type: .hardLink, linkName: "sessions/source.jsonl")
+            ]),
+            ("character-device", [TestTarEntry(name: "sessions/character.jsonl", type: .characterDevice)]),
+            ("block-device", [TestTarEntry(name: "sessions/block.jsonl", type: .blockDevice)]),
+            ("fifo", [TestTarEntry(name: "sessions/fifo.jsonl", type: .fifo)]),
+            ("directory", [TestTarEntry(name: "sessions/directory.jsonl", type: .directory)])
+        ]
+        let before = try rollbackDestinationState(for: fixture)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+
+        for (name, entries) in cases {
+            let backup = try makeLegacyBackup(
+                fixture: fixture,
+                entries: entries,
+                declaredCount: entries.count
+            )
+            XCTAssertThrowsError(
+                try engine.rollback(codexHome: fixture.codexHome, backupPath: backup.path),
+                "case: \(name)"
+            ) { error in
+                XCTAssertTrue(
+                    error.localizedDescription.contains("归档成员"),
+                    "case: \(name), error: \(error.localizedDescription)"
+                )
+            }
+            XCTAssertEqual(try rollbackDestinationState(for: fixture), before, "case: \(name)")
+        }
+    }
+
+    func testRollbackSupportsLegacyArchiveCreatedThroughCanonicalizingHomeAlias() throws {
+        let fixture = try makeFixture()
+        let alias = fixture.codexHome.deletingLastPathComponent()
+            .appendingPathComponent("legacy-codex-home-alias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fixture.codexHome)
+        let legacyMember = String(alias.path.dropFirst()) + "/sessions/2026/07/06/thread-a.jsonl"
+        let archivedData = try Data(contentsOf: fixture.activeSession)
+        let backup = try makeLegacyBackup(
+            fixture: fixture,
+            entries: [TestTarEntry(name: legacyMember, data: archivedData)],
+            declaredCount: 1,
+            rawCodexHome: alias.path
+        )
+        try writeSession(id: "thread-a", provider: "openai", to: fixture.activeSession)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+
+        _ = try engine.rollback(codexHome: fixture.codexHome, backupPath: backup.path)
+
+        XCTAssertEqual(try Data(contentsOf: fixture.activeSession), archivedData)
+    }
+
+    func testRollbackRejectsLegacyAliasThatCanonicalizesToDifferentHome() throws {
+        let fixture = try makeFixture()
+        let otherHome = fixture.codexHome.deletingLastPathComponent()
+            .appendingPathComponent("other-codex-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: otherHome, withIntermediateDirectories: true)
+        let alias = fixture.codexHome.deletingLastPathComponent()
+            .appendingPathComponent("mismatched-codex-home-alias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: otherHome)
+        let legacyMember = String(alias.path.dropFirst()) + "/sessions/thread.jsonl"
+        let backup = try makeLegacyBackup(
+            fixture: fixture,
+            entries: [TestTarEntry(name: legacyMember)],
+            declaredCount: 1,
+            rawCodexHome: alias.path
+        )
+        let before = try rollbackDestinationState(for: fixture)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backup.path)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("备份不属于当前 Codex Home"))
+        }
+        XCTAssertEqual(try rollbackDestinationState(for: fixture), before)
+    }
+
+    func testRollbackRejectsMissingAndEmptyArchiveAgainstManifestCount() throws {
+        let fixture = try makeFixture()
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+        let before = try rollbackDestinationState(for: fixture)
+        let missingArchiveBackup = fixture.backupRoot
+            .appendingPathComponent("missing-archive-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: missingArchiveBackup, withIntermediateDirectories: true)
+        try writeJSON(
+            [
+                "created_at": ISO8601DateFormatter().string(from: Date()),
+                "codex_home": fixture.codexHome.path,
+                "target_provider": "openai",
+                "session_file_count": 1
+            ],
+            to: missingArchiveBackup.appendingPathComponent("manifest.json")
+        )
+        let emptyArchiveBackup = try makeLegacyBackup(
+            fixture: fixture,
+            entries: [],
+            declaredCount: 1
+        )
+
+        XCTAssertThrowsError(try engine.rollback(
+            codexHome: fixture.codexHome,
+            backupPath: missingArchiveBackup.path
+        ))
+        XCTAssertThrowsError(try engine.rollback(
+            codexHome: fixture.codexHome,
+            backupPath: emptyArchiveBackup.path
+        ))
+        XCTAssertEqual(try rollbackDestinationState(for: fixture), before)
+    }
+
+    func testRollbackRejectsNewManifestMemberSetAndDigestMismatchWithoutMutation() throws {
+        for mismatch in ["path", "digest"] {
+            let fixture = try makeFixture()
+            let setupEngine = ProviderSyncEngine(
+                backupRoot: fixture.backupRoot,
+                applicationRunningProbe: { false }
+            )
+            let synced = try setupEngine.sync(
+                codexHome: fixture.codexHome,
+                includeArchivedSessions: true,
+                targetProviderOverride: "openai",
+                dryRunOnly: false
+            )
+            let backupPath = try XCTUnwrap(synced.lastBackupPath)
+            let backup = URL(fileURLWithPath: backupPath)
+            let manifestURL = backup.appendingPathComponent("manifest.json")
+            var manifest = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any]
+            )
+            var members = try XCTUnwrap(manifest["session_members"] as? [[String: Any]])
+            if mismatch == "path" {
+                members[0]["path"] = "sessions/manifest-only.jsonl"
+            } else {
+                members[0]["sha256"] = String(repeating: "0", count: 64)
+            }
+            manifest["session_members"] = members
+            try writeJSON(manifest, to: manifestURL)
+            let before = try rollbackDestinationState(for: fixture)
+
+            XCTAssertThrowsError(try setupEngine.rollback(
+                codexHome: fixture.codexHome,
+                backupPath: backup.path
+            ), "mismatch: \(mismatch)")
+            XCTAssertEqual(try rollbackDestinationState(for: fixture), before, "mismatch: \(mismatch)")
+        }
+    }
+
+    func testBackupCreationDrainsHighVolumeTarDiagnosticsBeforeWaiting() throws {
+        let fixture = try makeFixture()
+        let diagnosticRoot = fixture.codexHome
+            .appendingPathComponent("sessions/high-volume", isDirectory: true)
+        try FileManager.default.createDirectory(at: diagnosticRoot, withIntermediateDirectories: true)
+        let files = try (0..<1_500).map { index -> URL in
+            let file = diagnosticRoot.appendingPathComponent("missing-\(index).jsonl")
+            try Data("session \(index)\n".utf8).write(to: file)
+            return file
+        }
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            sessionTarWillRun: {
+                for file in files {
+                    try FileManager.default.removeItem(at: file)
+                }
+            }
+        )
+
+        XCTAssertThrowsError(try engine.createBackup(
+            codexHome: fixture.codexHome,
+            sessionFiles: files,
+            targetProvider: "openai"
+        )) { error in
+            XCTAssertFalse(error.localizedDescription.isEmpty)
+        }
+    }
+
+    func testBackupManifestDigestDescribesCompletedArchiveWhenSourceChangesDuringTarCreation() throws {
+        let fixture = try makeFixture()
+        let backupEngine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            sessionTarWillRun: {
+                try self.writeSession(
+                    id: "thread-a",
+                    provider: "changed-during-backup",
+                    to: fixture.activeSession
+                )
+            }
+        )
+        let backup = try backupEngine.createBackup(
+            codexHome: fixture.codexHome,
+            sessionFiles: [fixture.activeSession],
+            targetProvider: "openai"
+        )
+        try writeSession(id: "thread-a", provider: "current", to: fixture.activeSession)
+        let rollbackEngine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+
+        _ = try rollbackEngine.rollback(codexHome: fixture.codexHome, backupPath: backup.path)
+
+        XCTAssertEqual(try readSessionProvider(at: fixture.activeSession), "changed-during-backup")
+    }
+
+    func testRollbackPostRestoreReportFailurePreservesPreRollbackDestinationBytesAndAbsence() throws {
+        let fixture = try makeFixture()
+        let setupEngine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+        let synced = try setupEngine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: true,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )
+        let backupPath = try XCTUnwrap(synced.lastBackupPath)
+        try seedPreRollbackDestination(fixture)
+        let before = try rollbackDestinationState(for: fixture)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            reportWillBuild: {
+                throw NSError(
+                    domain: "ProviderSyncEngineTests",
+                    code: 902,
+                    userInfo: [NSLocalizedDescriptionKey: "injected post-restore report failure"]
+                )
+            }
+        )
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("injected post-restore report failure"))
+        }
+        XCTAssertEqual(try rollbackDestinationState(for: fixture), before)
+    }
+
+    func testRollbackFirstReplacementFailurePreservesPreRollbackDestinationBytesAndAbsence() throws {
+        try assertInjectedRestoreFailurePreservesDestination { index, _ in
+            if index == 0 {
+                throw NSError(
+                    domain: "ProviderSyncEngineTests",
+                    code: 905,
+                    userInfo: [NSLocalizedDescriptionKey: "injected first replacement failure"]
+                )
+            }
+        }
+    }
+
+    func testRollbackLaterReplacementFailureCompensatesAllAppliedSwaps() throws {
+        try assertInjectedRestoreFailurePreservesDestination { _, destination in
+            if destination.path.hasSuffix("/sessions/2026/07/06/thread-a.jsonl") {
+                throw NSError(
+                    domain: "ProviderSyncEngineTests",
+                    code: 906,
+                    userInfo: [NSLocalizedDescriptionKey: "injected later replacement failure"]
+                )
+            }
+        }
+    }
+
     private func makeFixture() throws -> ProviderSyncFixture {
         let root = try makeTemporaryDirectory(named: "ProviderSyncEngine")
         let codexHome = root.appendingPathComponent("codex-home", isDirectory: true)
@@ -499,6 +848,166 @@ final class ProviderSyncEngineTests: XCTestCase {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         temporaryRoots.append(url)
         return url
+    }
+
+    private func makeLegacyBackup(
+        fixture: ProviderSyncFixture,
+        entries: [TestTarEntry],
+        declaredCount: Int,
+        rawCodexHome: String? = nil
+    ) throws -> URL {
+        let backup = fixture.backupRoot
+            .appendingPathComponent("legacy-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        try writeJSON(
+            [
+                "created_at": ISO8601DateFormatter().string(from: Date()),
+                "codex_home": rawCodexHome ?? fixture.codexHome.path,
+                "target_provider": "openai",
+                "session_file_count": declaredCount
+            ],
+            to: backup.appendingPathComponent("manifest.json")
+        )
+        try writeUSTAR(entries: entries, to: backup.appendingPathComponent("session-jsonl.before.tar"))
+        return backup
+    }
+
+    private func seedPreRollbackDestination(_ fixture: ProviderSyncFixture) throws {
+        try "pre-rollback config\n".write(
+            to: fixture.codexHome.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "pre-rollback wal\n".write(
+            to: URL(fileURLWithPath: fixture.codexHome.appendingPathComponent("state_5.sqlite").path + "-wal"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "pre-rollback shm\n".write(
+            to: URL(fileURLWithPath: fixture.codexHome.appendingPathComponent("state_5.sqlite").path + "-shm"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.removeItem(at: fixture.sessionIndex)
+        try "pre-rollback global state\n".write(
+            to: fixture.codexHome.appendingPathComponent(".codex-global-state.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "pre-rollback global backup\n".write(
+            to: fixture.codexHome.appendingPathComponent(".codex-global-state.json.bak"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try writeSession(id: "thread-a", provider: "pre-rollback", to: fixture.activeSession)
+        try writeSession(id: "thread-archived", provider: "pre-rollback", to: fixture.archivedSession)
+    }
+
+    private func assertInjectedRestoreFailurePreservesDestination(
+        injector: @escaping (Int, URL) throws -> Void
+    ) throws {
+        let fixture = try makeFixture()
+        let setupEngine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+        let synced = try setupEngine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: true,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )
+        let backupPath = try XCTUnwrap(synced.lastBackupPath)
+        try seedPreRollbackDestination(fixture)
+        let before = try rollbackDestinationState(for: fixture)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            restoreWillApply: injector
+        )
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath))
+        XCTAssertEqual(try rollbackDestinationState(for: fixture), before)
+    }
+
+    private func rollbackDestinationState(for fixture: ProviderSyncFixture) throws -> [String: CapturedFileState] {
+        let relativePaths = [
+            "config.toml",
+            "state_5.sqlite",
+            "state_5.sqlite-wal",
+            "state_5.sqlite-shm",
+            "session_index.jsonl",
+            ".codex-global-state.json",
+            ".codex-global-state.json.bak",
+            "sessions/2026/07/06/thread-a.jsonl",
+            "archived_sessions/2026/thread-archived.jsonl"
+        ]
+        return try Dictionary(uniqueKeysWithValues: relativePaths.map { relativePath in
+            let url = fixture.codexHome.appendingPathComponent(relativePath)
+            if FileManager.default.fileExists(atPath: url.path) {
+                return (relativePath, .bytes(try Data(contentsOf: url)))
+            }
+            return (relativePath, .absent)
+        })
+    }
+
+    private func writeUSTAR(entries: [TestTarEntry], to archive: URL) throws {
+        var output = Data()
+        for entry in entries {
+            var header = Data(repeating: 0, count: 512)
+            let path = try splitUSTARPath(entry.name)
+            writeASCII(path.name, to: &header, offset: 0, length: 100)
+            writeOctal(0o644, to: &header, offset: 100, length: 8)
+            writeOctal(0, to: &header, offset: 108, length: 8)
+            writeOctal(0, to: &header, offset: 116, length: 8)
+            writeOctal(entry.type == .regular ? entry.data.count : 0, to: &header, offset: 124, length: 12)
+            writeOctal(0, to: &header, offset: 136, length: 12)
+            header.replaceSubrange(148..<156, with: Data(repeating: 0x20, count: 8))
+            header[156] = entry.type.rawValue
+            writeASCII(entry.linkName, to: &header, offset: 157, length: 100)
+            writeASCII("ustar", to: &header, offset: 257, length: 6)
+            writeASCII("00", to: &header, offset: 263, length: 2)
+            writeASCII(path.prefix, to: &header, offset: 345, length: 155)
+            let checksum = header.reduce(0) { $0 + Int($1) }
+            let checksumText = String(format: "%06o\0 ", checksum)
+            writeASCII(checksumText, to: &header, offset: 148, length: 8)
+            output.append(header)
+            if entry.type == .regular {
+                output.append(entry.data)
+                let padding = (512 - (entry.data.count % 512)) % 512
+                output.append(Data(repeating: 0, count: padding))
+            }
+        }
+        output.append(Data(repeating: 0, count: 1024))
+        try output.write(to: archive, options: .atomic)
+    }
+
+    private func splitUSTARPath(_ path: String) throws -> (name: String, prefix: String) {
+        guard path.utf8.count <= 255 else {
+            throw NSError(domain: "ProviderSyncEngineTests", code: 903)
+        }
+        if path.utf8.count <= 100 {
+            return (path, "")
+        }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        for splitIndex in stride(from: components.count - 1, through: 1, by: -1) {
+            let prefix = components[..<splitIndex].joined(separator: "/")
+            let name = components[splitIndex...].joined(separator: "/")
+            if prefix.utf8.count <= 155, name.utf8.count <= 100 {
+                return (name, prefix)
+            }
+        }
+        throw NSError(domain: "ProviderSyncEngineTests", code: 904)
+    }
+
+    private func writeASCII(_ string: String, to data: inout Data, offset: Int, length: Int) {
+        let bytes = Array(string.utf8.prefix(length))
+        data.replaceSubrange(offset..<(offset + bytes.count), with: bytes)
+    }
+
+    private func writeOctal(_ value: Int, to data: inout Data, offset: Int, length: Int) {
+        let text = String(format: "%0*o", length - 1, value) + "\0"
+        writeASCII(text, to: &data, offset: offset, length: length)
     }
 
     private func disposableState(for fixture: ProviderSyncFixture) throws -> ProviderSyncDisposableState {
@@ -673,4 +1182,38 @@ private struct ProviderSyncDisposableState: Equatable {
     let sqlite: Data
     let sessionIndex: Data
     let backupEntries: [String]
+}
+
+private enum CapturedFileState: Equatable {
+    case absent
+    case bytes(Data)
+}
+
+private struct TestTarEntry {
+    enum EntryType: UInt8 {
+        case regular = 48
+        case hardLink = 49
+        case symbolicLink = 50
+        case characterDevice = 51
+        case blockDevice = 52
+        case directory = 53
+        case fifo = 54
+    }
+
+    let name: String
+    let type: EntryType
+    let data: Data
+    let linkName: String
+
+    init(
+        name: String,
+        type: EntryType = .regular,
+        data: Data = Data("archived session\n".utf8),
+        linkName: String = ""
+    ) {
+        self.name = name
+        self.type = type
+        self.data = data
+        self.linkName = linkName
+    }
 }
