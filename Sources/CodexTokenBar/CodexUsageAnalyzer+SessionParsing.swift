@@ -2,29 +2,79 @@ import Foundation
 
 extension CodexUsageAnalyzer {
     private static let forkReplayExitGrace: TimeInterval = 2
+    private static let maximumSessionTraversalDepth = 64
+    private static let maximumSessionTraversalEntries = 200_000
 
     func usageJSONLFiles() -> [URL] {
+        guard let canonicalHome = canonicalSelectedHome() else {
+            return []
+        }
         var files: [URL] = []
         if fileManager.fileExists(atPath: dataSource.sessionsRoot.path) {
-            files.append(contentsOf: jsonlFiles(under: dataSource.sessionsRoot))
+            guard let sessionFiles = jsonlFiles(
+                under: dataSource.sessionsRoot,
+                canonicalHome: canonicalHome
+            ) else {
+                return []
+            }
+            files.append(contentsOf: sessionFiles)
         }
-        files.append(contentsOf: activeStateRolloutFiles())
+        files.append(contentsOf: activeStateRolloutFiles(canonicalHome: canonicalHome))
         return deduplicateJSONLFiles(files)
     }
 
-    func jsonlFiles(under root: URL) -> [URL] {
-        guard let enumerator = fileManager.enumerator(
-            at: root,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
+    private func jsonlFiles(under root: URL, canonicalHome: URL) -> [URL]? {
+        guard let rootValues = fileResourceValues(for: root),
+              rootValues.isSymbolicLink != true,
+              rootValues.isDirectory == true,
+              isContained(root.resolvingSymlinksInPath(), in: canonicalHome) else {
+            return nil
         }
 
-        return enumerator.compactMap { item in
-            guard let url = item as? URL, url.pathExtension == "jsonl" else { return nil }
-            return url
+        var files: [URL] = []
+        var pendingDirectories: [(url: URL, depth: Int)] = [(root, 0)]
+        var visitedEntries = 0
+
+        while let directory = pendingDirectories.popLast() {
+            guard let children = try? fileManager.contentsOfDirectory(
+                at: directory.url,
+                includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                return nil
+            }
+            var childDirectories: [URL] = []
+
+            for child in children.sorted(by: { $0.path < $1.path }) {
+                visitedEntries += 1
+                guard visitedEntries <= Self.maximumSessionTraversalEntries,
+                      let values = fileResourceValues(for: child) else {
+                    return nil
+                }
+                guard values.isSymbolicLink != true else {
+                    continue
+                }
+                if values.isDirectory == true {
+                    guard directory.depth < Self.maximumSessionTraversalDepth else {
+                        return nil
+                    }
+                    let resolvedDirectory = child.resolvingSymlinksInPath()
+                    guard isContained(resolvedDirectory, in: canonicalHome) else {
+                        continue
+                    }
+                    childDirectories.append(child)
+                } else if values.isRegularFile == true,
+                          let file = trustedJSONLFile(child, canonicalHome: canonicalHome) {
+                    files.append(file)
+                }
+            }
+
+            for childDirectory in childDirectories.reversed() {
+                pendingDirectories.append((childDirectory, directory.depth + 1))
+            }
         }
+
+        return files
     }
 
     func sessionID(from file: URL) -> String {
@@ -46,7 +96,7 @@ extension CodexUsageAnalyzer {
         )
     }
 
-    private func activeStateRolloutFiles() -> [URL] {
+    private func activeStateRolloutFiles(canonicalHome: URL) -> [URL] {
         guard fileManager.fileExists(atPath: dataSource.stateDatabase.path) else {
             return []
         }
@@ -72,12 +122,10 @@ extension CodexUsageAnalyzer {
                   !rawPath.isEmpty else {
                 return nil
             }
-            let file = normalizedRolloutPath(rawPath)
-            guard file.pathExtension == "jsonl",
-                  isRegularFile(file) else {
-                return nil
-            }
-            return file
+            return trustedJSONLFile(
+                normalizedRolloutPath(rawPath),
+                canonicalHome: canonicalHome
+            )
         }
     }
 
@@ -128,8 +176,42 @@ extension CodexUsageAnalyzer {
         file.resolvingSymlinksInPath().path
     }
 
-    private func isRegularFile(_ file: URL) -> Bool {
-        (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+    private func canonicalSelectedHome() -> URL? {
+        let home = dataSource.codexHome.standardizedFileURL.resolvingSymlinksInPath()
+        guard let values = fileResourceValues(for: home),
+              values.isSymbolicLink != true,
+              values.isDirectory == true else {
+            return nil
+        }
+        return home
+    }
+
+    private func trustedJSONLFile(_ file: URL, canonicalHome: URL) -> URL? {
+        guard file.pathExtension == "jsonl",
+              let values = fileResourceValues(for: file),
+              values.isSymbolicLink != true,
+              values.isRegularFile == true else {
+            return nil
+        }
+        let resolved = file.standardizedFileURL.resolvingSymlinksInPath()
+        guard isContained(resolved, in: canonicalHome),
+              let resolvedValues = fileResourceValues(for: resolved),
+              resolvedValues.isSymbolicLink != true,
+              resolvedValues.isRegularFile == true else {
+            return nil
+        }
+        return resolved
+    }
+
+    private func fileResourceValues(for file: URL) -> URLResourceValues? {
+        try? file.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey])
+    }
+
+    private func isContained(_ candidate: URL, in root: URL) -> Bool {
+        let rootComponents = root.standardizedFileURL.pathComponents
+        let candidateComponents = candidate.standardizedFileURL.pathComponents
+        return candidateComponents.count >= rootComponents.count
+            && candidateComponents.prefix(rootComponents.count).elementsEqual(rootComponents)
     }
 
     private func localDateString(for date: Date, timeZone: TimeZone) -> String {

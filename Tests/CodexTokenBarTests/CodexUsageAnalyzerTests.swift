@@ -172,11 +172,12 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertTrue(snapshot.hourlyUsage.isEmpty)
     }
 
-    func testPreciseJSONLScanIncludesActiveStateRolloutPaths() throws {
+    func testPreciseJSONLScanIncludesActiveStateRolloutPathsInsideSelectedHome() throws {
         let codexHome = try makeCodexHome()
-        let externalRoot = try makeTemporaryDirectory(named: "CodexExternalRollouts")
+        let rolloutRoot = codexHome.appendingPathComponent("active-rollouts", isDirectory: true)
+        try FileManager.default.createDirectory(at: rolloutRoot, withIntermediateDirectories: true)
         let sessionID = "019eaaaa-bbbb-cccc-dddd-activepath"
-        let rolloutFile = externalRoot.appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let rolloutFile = rolloutRoot.appendingPathComponent("2026-06-17-\(sessionID).jsonl")
         let now = Date()
         try [
             try tokenCountLine(
@@ -197,6 +198,145 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.stats.totalTokens, 240)
         XCTAssertEqual(snapshot.stats.totalCalls, 1)
         XCTAssertEqual(snapshot.cacheUsage.sessions.map(\.id), [sessionID])
+    }
+
+    func testPreciseJSONLScanRejectsAbsoluteActiveRolloutOutsideSelectedHome() throws {
+        let codexHome = try makeCodexHome()
+        let trustedFile = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-cccc-dddd-trustedrollout",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 10
+        )
+        let externalRoot = try makeTemporaryDirectory(named: "CodexExternalActiveRollout")
+        let externalFile = try writeTokenCountRollout(
+            in: externalRoot,
+            sessionID: "019eaaaa-bbbb-cccc-dddd-externalrollout",
+            timestamp: Date().addingTimeInterval(-30),
+            totalTokens: 700
+        )
+        try seedStateDatabase(
+            at: codexHome,
+            rolloutPaths: [externalFile.path],
+            archived: [0],
+            threadSources: ["user"]
+        )
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let files = analyzer.usageJSONLFiles()
+        let snapshot = try analyzer.load()
+
+        XCTAssertEqual(files.map { $0.resolvingSymlinksInPath().path }, [trustedFile.resolvingSymlinksInPath().path])
+        XCTAssertEqual(snapshot.stats.totalTokens, 10)
+        XCTAssertEqual(snapshot.stats.totalCalls, 1)
+    }
+
+    func testPreciseJSONLScanRejectsDirectorySymlinkCyclePromptly() throws {
+        let codexHome = try makeCodexHome()
+        let sessionsRoot = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        let trustedFile = try writeTokenCountRollout(
+            in: sessionsRoot,
+            sessionID: "019eaaaa-bbbb-cccc-dddd-trustedcycle",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 10
+        )
+        try FileManager.default.createSymbolicLink(
+            at: sessionsRoot.appendingPathComponent("cycle.jsonl"),
+            withDestinationURL: sessionsRoot
+        )
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let startedAt = Date()
+        let files = analyzer.usageJSONLFiles()
+        let elapsed = Date().timeIntervalSince(startedAt)
+        let snapshot = try analyzer.load()
+
+        XCTAssertLessThan(elapsed, 1)
+        XCTAssertEqual(files.map { $0.resolvingSymlinksInPath().path }, [trustedFile.resolvingSymlinksInPath().path])
+        XCTAssertEqual(snapshot.stats.totalTokens, 10)
+        XCTAssertEqual(snapshot.stats.totalCalls, 1)
+    }
+
+    func testPreciseJSONLScanRejectsDirectorySymlinkEscape() throws {
+        let codexHome = try makeCodexHome()
+        let sessionsRoot = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        let trustedFile = try writeTokenCountRollout(
+            in: sessionsRoot,
+            sessionID: "019eaaaa-bbbb-cccc-dddd-trusteddirlink",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 10
+        )
+        let externalRoot = try makeTemporaryDirectory(named: "CodexDirectorySymlinkEscape")
+        _ = try writeTokenCountRollout(
+            in: externalRoot,
+            sessionID: "019eaaaa-bbbb-cccc-dddd-externaldirlink",
+            timestamp: Date().addingTimeInterval(-30),
+            totalTokens: 700
+        )
+        try FileManager.default.createSymbolicLink(
+            at: sessionsRoot.appendingPathComponent("escaped-directory.jsonl"),
+            withDestinationURL: externalRoot
+        )
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let files = analyzer.usageJSONLFiles()
+        let snapshot = try analyzer.load()
+
+        XCTAssertEqual(files.map { $0.resolvingSymlinksInPath().path }, [trustedFile.resolvingSymlinksInPath().path])
+        XCTAssertEqual(snapshot.stats.totalTokens, 10)
+        XCTAssertEqual(snapshot.stats.totalCalls, 1)
+    }
+
+    func testPreciseJSONLScanRejectsFileSymlinkEscape() throws {
+        let codexHome = try makeCodexHome()
+        let sessionsRoot = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        let trustedFile = try writeTokenCountRollout(
+            in: sessionsRoot,
+            sessionID: "019eaaaa-bbbb-cccc-dddd-trustedfilelink",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 10
+        )
+        let externalRoot = try makeTemporaryDirectory(named: "CodexFileSymlinkEscape")
+        let externalFile = try writeTokenCountRollout(
+            in: externalRoot,
+            sessionID: "019eaaaa-bbbb-cccc-dddd-externalfilelink",
+            timestamp: Date().addingTimeInterval(-30),
+            totalTokens: 700
+        )
+        try FileManager.default.createSymbolicLink(
+            at: sessionsRoot.appendingPathComponent("linked-external.jsonl"),
+            withDestinationURL: externalFile
+        )
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let files = analyzer.usageJSONLFiles()
+        let snapshot = try analyzer.load()
+
+        XCTAssertEqual(files.map { $0.resolvingSymlinksInPath().path }, [trustedFile.resolvingSymlinksInPath().path])
+        XCTAssertEqual(snapshot.stats.totalTokens, 10)
+        XCTAssertEqual(snapshot.stats.totalCalls, 1)
+    }
+
+    func testPreciseJSONLScanIncludesOrdinaryNestedSessions() throws {
+        let codexHome = try makeCodexHome()
+        let nestedRoot = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026/07/11", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedRoot, withIntermediateDirectories: true)
+        let nestedFile = try writeTokenCountRollout(
+            in: nestedRoot,
+            sessionID: "019eaaaa-bbbb-cccc-dddd-nestedsession",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let files = analyzer.usageJSONLFiles()
+        let snapshot = try analyzer.load()
+
+        XCTAssertEqual(files.map { $0.resolvingSymlinksInPath().path }, [nestedFile.resolvingSymlinksInPath().path])
+        XCTAssertEqual(snapshot.stats.totalTokens, 120)
+        XCTAssertEqual(snapshot.stats.totalCalls, 1)
     }
 
     func testPreciseJSONLScanDeduplicatesStateRolloutPathsAlreadyUnderSessions() throws {
@@ -229,22 +369,23 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
     func testPreciseJSONLScanIncludesActiveUserAndSubagentStateRolloutPaths() throws {
         let codexHome = try makeCodexHome()
-        let externalRoot = try makeTemporaryDirectory(named: "CodexFilteredRollouts")
+        let rolloutRoot = codexHome.appendingPathComponent("filtered-rollouts", isDirectory: true)
+        try FileManager.default.createDirectory(at: rolloutRoot, withIntermediateDirectories: true)
         let now = Date()
         let activeFile = try writeTokenCountRollout(
-            in: externalRoot,
+            in: rolloutRoot,
             sessionID: "019eaaaa-bbbb-cccc-dddd-activeok",
             timestamp: now.addingTimeInterval(-60),
             totalTokens: 100
         )
         let archivedFile = try writeTokenCountRollout(
-            in: externalRoot,
+            in: rolloutRoot,
             sessionID: "019eaaaa-bbbb-cccc-dddd-archived",
             timestamp: now.addingTimeInterval(-50),
             totalTokens: 200
         )
         let subagentFile = try writeTokenCountRollout(
-            in: externalRoot,
+            in: rolloutRoot,
             sessionID: "019eaaaa-bbbb-cccc-dddd-subonly",
             timestamp: now.addingTimeInterval(-40),
             totalTokens: 300
