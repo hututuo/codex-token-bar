@@ -262,7 +262,7 @@ struct StatStripStatusLinePresentation: Equatable {
         cacheStatus: String
     ) {
         let trimmedStatus = cacheStatus.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedStatus.hasPrefix("读取失败") {
+        if trimmedStatus.hasPrefix("读取失败") || trimmedStatus.contains("用量已陈旧") {
             text = trimmedStatus
             showsProgress = false
             return

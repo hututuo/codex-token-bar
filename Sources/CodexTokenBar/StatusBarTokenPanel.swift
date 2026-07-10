@@ -137,7 +137,7 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
             "今天 \(snapshot.todayRequestsText) 次请求",
             snapshot.compactUsageStatus
         ]
-        if !snapshot.hasPreciseTokenUsage {
+        if snapshot.metadataOnlyStatusText == "仅会话元数据" {
             parts.append("当前仅显示会话元数据，精确 token 仍在读取")
         }
         if unreadThreadCount > 0 {

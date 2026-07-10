@@ -263,7 +263,7 @@ struct TokenDisplaySnapshot {
     }
 
     private var usageReadDiagnostic: String? {
-        if usageReadStatus.contains("当前显示已陈旧") {
+        if usageReadStatus.contains("当前显示已陈旧") || usageReadStatus.contains("用量已陈旧") {
             return "用量已陈旧"
         }
         if usageReadStatus.hasPrefix("读取失败") {

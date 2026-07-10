@@ -53,4 +53,43 @@ final class StatusBarTokenPanelTests: XCTestCase {
         XCTAssertEqual(presentation.todayTokens, snapshot.todayTokensText)
         XCTAssertEqual(presentation.todayRequests, snapshot.todayRequestsText)
     }
+
+    func testStatusBarAccessibilitySeparatesUsageFailureFromMetadataPending() throws {
+        let failedSnapshot = TokenDisplaySnapshot(
+            title: "全会话实时",
+            status: "等待输出",
+            rate: 0,
+            consumedTokens: 0,
+            todayTokens: 0,
+            todayRequests: 0,
+            usagePrecision: .metadataOnly,
+            usageReadStatus: "读取失败：会话目录遍历失败",
+            quota: .empty,
+            updatedAt: Date(timeIntervalSince1970: 2_000)
+        )
+        let pendingSnapshot = TokenDisplaySnapshot(
+            title: "全会话实时",
+            status: "等待输出",
+            rate: 0,
+            consumedTokens: 0,
+            todayTokens: 0,
+            todayRequests: 0,
+            usagePrecision: .metadataOnly,
+            quota: .empty,
+            updatedAt: Date(timeIntervalSince1970: 2_000)
+        )
+
+        XCTAssertEqual(failedSnapshot.compactUsageStatus, "用量读取失败")
+        XCTAssertEqual(failedSnapshot.metadataOnlyStatusText, "用量读取失败")
+        XCTAssertEqual(pendingSnapshot.metadataOnlyStatusText, "仅会话元数据")
+
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CodexTokenBar/StatusBarTokenPanel.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains(#"if snapshot.metadataOnlyStatusText == "仅会话元数据""#))
+        XCTAssertFalse(source.contains("if !snapshot.hasPreciseTokenUsage {"))
+    }
 }

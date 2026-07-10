@@ -177,8 +177,10 @@ final class CodexUsageStore: ObservableObject {
                     } else {
                         if !self.snapshot.hasPreciseTokenUsage {
                             self.publish(loaded, sourceID: sourceID)
+                            self.status = self.metadataOnlyStatus(origin: source.originLabel)
+                        } else {
+                            self.status = self.staleMetadataOnlyStatus(origin: source.originLabel)
                         }
-                        self.status = self.metadataOnlyStatus(origin: source.originLabel)
                         trace?.mark("preciseSnapshot.metadataOnly", metadata: [
                             "threads": String(loaded.stats.totalThreads)
                         ])
@@ -236,6 +238,10 @@ final class CodexUsageStore: ObservableObject {
 
     private func metadataOnlyStatus(origin: String) -> String {
         "\(origin) · state_5.sqlite · 仅显示会话元数据，精确 token 仍在读取..."
+    }
+
+    private func staleMetadataOnlyStatus(origin: String) -> String {
+        "\(origin) · 用量已陈旧 · 当前仅元数据，保留上次可信 token"
     }
 
     private func scheduleInitialPreciseRefresh() {

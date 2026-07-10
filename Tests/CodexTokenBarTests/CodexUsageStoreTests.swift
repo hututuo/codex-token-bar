@@ -310,6 +310,66 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertFalse(UsageCacheLifecycle.isCurrentCachePrepared)
     }
 
+    func testSameSourceMetadataOnlyRefreshRetainsPreciseValuesAndMarksThemStale() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/same-source-metadata/.codex"),
+            origin: .userSelected
+        )
+        let now = Date()
+        let preciseSnapshot = makeSnapshot(totalTokens: 12_345, dayTokens: 678, generatedAt: now)
+        let metadataOnlySnapshot = makeSnapshot(
+            totalTokens: 0,
+            dayTokens: 0,
+            usagePrecision: .metadataOnly,
+            generatedAt: now
+        )
+        let loader = SequentialDashboardSnapshotLoader(
+            fastResults: [.success(.empty)],
+            preciseResults: [.success(preciseSnapshot), .success(metadataOnlySnapshot)]
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("same-source precise snapshot") {
+            store.snapshot.stats.totalTokens == 12_345 && !store.isRefreshing
+        }
+        let sourceBeforeMetadataRefresh = store.currentDataSource
+
+        store.refresh()
+        await waitUntil("same-source metadata-only refresh") {
+            !store.isRefreshing
+        }
+
+        XCTAssertEqual(store.currentDataSource, sourceBeforeMetadataRefresh)
+        XCTAssertEqual(store.snapshot.stats.totalTokens, 12_345)
+        XCTAssertEqual(store.snapshot.dailyUsage.reduce(0) { $0 + $1.tokens }, 678)
+        XCTAssertTrue(store.snapshot.hasPreciseTokenUsage)
+        XCTAssertTrue(store.status.contains("用量已陈旧"), store.status)
+        XCTAssertTrue(store.status.contains("仅元数据"), store.status)
+
+        let display = TokenDisplaySnapshot.make(
+            store: store,
+            monitor: LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: false),
+            quota: AccountQuotaStore(observesUserDefaults: false)
+        )
+        XCTAssertEqual(display.consumedTokensText, 12_345.abbreviatedTokens)
+        XCTAssertEqual(display.todayTokensText, 678.abbreviatedTokens)
+        XCTAssertEqual(display.todayRequestsText, "3")
+        XCTAssertEqual(display.standaloneUsageStatus, "用量已陈旧")
+
+        let dashboardStatus = StatStripStatusLinePresentation(
+            hasPreciseTokenUsage: store.snapshot.hasPreciseTokenUsage,
+            isPreparingUsageCache: false,
+            cacheStatus: store.status
+        )
+        XCTAssertEqual(dashboardStatus?.text.contains("用量已陈旧"), true)
+        XCTAssertEqual(dashboardStatus?.showsProgress, false)
+    }
+
     func testMetadataOnlyTokenDisplayUsesPendingMetricLabels() {
         let snapshot = TokenDisplaySnapshot(
             title: "全会话实时",
@@ -459,9 +519,9 @@ final class CodexUsageStoreTests: XCTestCase {
     private func makeSnapshot(
         totalTokens: Int,
         dayTokens: Int,
-        usagePrecision: DashboardUsagePrecision = .precise
+        usagePrecision: DashboardUsagePrecision = .precise,
+        generatedAt: Date = Date(timeIntervalSince1970: 1_800)
     ) -> DashboardSnapshot {
-        let now = Date(timeIntervalSince1970: 1_800)
         return DashboardSnapshot(
             stats: DashboardStats(
                 totalTokens: totalTokens,
@@ -475,13 +535,13 @@ final class CodexUsageStoreTests: XCTestCase {
                 skillsExplored: 0,
                 totalSkillsUsed: 0
             ),
-            dailyUsage: [DayUsage(date: now, tokens: dayTokens, calls: 3)],
-            recentBins: [BinUsage(start: now, tokens: dayTokens, calls: 3)],
-            hourlyUsage: [BinUsage(start: now, tokens: dayTokens, calls: 3)],
+            dailyUsage: [DayUsage(date: generatedAt, tokens: dayTokens, calls: 3)],
+            recentBins: [BinUsage(start: generatedAt, tokens: dayTokens, calls: 3)],
+            hourlyUsage: [BinUsage(start: generatedAt, tokens: dayTokens, calls: 3)],
             pluginUsage: [],
             cacheUsage: .empty,
             usagePrecision: usagePrecision,
-            generatedAt: now
+            generatedAt: generatedAt
         )
     }
 
