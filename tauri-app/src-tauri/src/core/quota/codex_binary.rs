@@ -78,9 +78,20 @@ fn codex_binary_candidates(
 
     if platform == CodexBinaryPlatform::Macos {
         candidates.push(CodexBinaryCandidate::Explicit(PathBuf::from(
+            "/Applications/ChatGPT.app/Contents/Resources/codex",
+        )));
+        candidates.push(CodexBinaryCandidate::Explicit(PathBuf::from(
             "/Applications/Codex.app/Contents/Resources/codex",
         )));
         if let Some(home) = home {
+            candidates.push(CodexBinaryCandidate::Explicit(
+                Path::new(home)
+                    .join("Applications")
+                    .join("ChatGPT.app")
+                    .join("Contents")
+                    .join("Resources")
+                    .join("codex"),
+            ));
             candidates.push(CodexBinaryCandidate::Explicit(
                 Path::new(home)
                     .join("Applications")
@@ -300,7 +311,13 @@ mod tests {
             candidates,
             vec![
                 CodexBinaryCandidate::Explicit(PathBuf::from(
+                    "/Applications/ChatGPT.app/Contents/Resources/codex"
+                )),
+                CodexBinaryCandidate::Explicit(PathBuf::from(
                     "/Applications/Codex.app/Contents/Resources/codex"
+                )),
+                CodexBinaryCandidate::Explicit(PathBuf::from(
+                    "/Users/local/Applications/ChatGPT.app/Contents/Resources/codex"
                 )),
                 CodexBinaryCandidate::Explicit(PathBuf::from(
                     "/Users/local/Applications/Codex.app/Contents/Resources/codex"
@@ -309,6 +326,40 @@ mod tests {
                 CodexBinaryCandidate::Explicit(PathBuf::from("/usr/local/bin/codex")),
                 CodexBinaryCandidate::PathCommand("codex"),
             ]
+        );
+    }
+
+    #[test]
+    fn macos_codex_binary_resolution_finds_chatgpt_app_bundle_before_brew_fallbacks() {
+        let candidates = codex_binary_candidates(
+            Some(OsStr::new("/Users/local")),
+            None,
+            None,
+            None,
+            None,
+            CodexBinaryPlatform::Macos,
+        );
+        let expected = PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex");
+
+        let found = find_codex_binary_from(&candidates, None, |path| path == expected).unwrap();
+
+        assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn macos_codex_binary_candidates_keep_explicit_path_first() {
+        let candidates = codex_binary_candidates(
+            Some(OsStr::new("/Users/local")),
+            None,
+            None,
+            None,
+            Some(OsStr::new("/custom/codex")),
+            CodexBinaryPlatform::Macos,
+        );
+
+        assert_eq!(
+            candidates.first(),
+            Some(&CodexBinaryCandidate::Explicit(PathBuf::from("/custom/codex")))
         );
     }
 
