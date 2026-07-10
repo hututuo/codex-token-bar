@@ -1,6 +1,7 @@
 const PROVIDER_STATUS_POLL_MS = 500;
 const DEFAULT_MAX_STATUS_FAILURES = 3;
 const DEFAULT_MAX_NOT_STARTED_READS = 8;
+const DEFAULT_MAX_STATUS_READS = 120;
 
 export type ProviderOperationLifecycle = "notStarted" | "active" | "finished";
 export type ProviderRepairSafetyPhase =
@@ -44,6 +45,7 @@ export interface ProviderRepairSafetyLatch {
 interface ReconcileProviderRepairOperationOptions {
   maxNotStartedReads?: number;
   maxStatusFailures?: number;
+  maxStatusReads?: number;
   operationId: string;
   readStatus: (operationId: string) => Promise<ProviderOperationStatus>;
   signal: AbortSignal;
@@ -165,6 +167,7 @@ export async function bootstrapProviderRepairSafetyLatch({
 export async function reconcileProviderRepairOperation({
   maxNotStartedReads = DEFAULT_MAX_NOT_STARTED_READS,
   maxStatusFailures = DEFAULT_MAX_STATUS_FAILURES,
+  maxStatusReads = DEFAULT_MAX_STATUS_READS,
   operationId,
   readStatus,
   signal,
@@ -172,8 +175,14 @@ export async function reconcileProviderRepairOperation({
 }: ReconcileProviderRepairOperationOptions): Promise<ProviderOperationReconciliationOutcome> {
   let notStartedReads = 0;
   let statusFailures = 0;
+  let statusReads = 0;
 
   while (!signal.aborted) {
+    if (statusReads >= maxStatusReads) {
+      return "statusUnavailable";
+    }
+    statusReads += 1;
+
     let status: ProviderOperationStatus;
     try {
       status = await raceWithAbort(readStatus(operationId), signal);
@@ -185,7 +194,7 @@ export async function reconcileProviderRepairOperation({
         return "aborted";
       }
       statusFailures += 1;
-      if (statusFailures >= maxStatusFailures) {
+      if (statusFailures >= maxStatusFailures || statusReads >= maxStatusReads) {
         return "statusUnavailable";
       }
       if (!await waitForNextPollOrAbort(waitForNextPoll, signal)) {
@@ -204,6 +213,10 @@ export async function reconcileProviderRepairOperation({
       }
     } else {
       notStartedReads = 0;
+    }
+
+    if (statusReads >= maxStatusReads) {
+      return "statusUnavailable";
     }
 
     if (!await waitForNextPollOrAbort(waitForNextPoll, signal)) {

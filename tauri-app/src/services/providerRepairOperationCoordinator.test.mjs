@@ -74,6 +74,50 @@ test("status failures stop at the bounded budget and leave the latch fail-closed
   });
 });
 
+test("permanently active owner stops at the total read bound and remains fail-closed", async () => {
+  await withSsrModules(async (load) => {
+    const {
+      createProviderRepairSafetyLatch,
+      deriveProviderRepairInteractionState,
+      reconcileProviderRepairOperation,
+    } = await load("/src/services/providerRepairOperationCoordinator.ts");
+    const latch = createProviderRepairSafetyLatch();
+    latch.completeBootstrap(["operation-stuck-active"]);
+    const generation = latch.getSnapshot().generation;
+    let reads = 0;
+    let waits = 0;
+
+    const outcome = await reconcileProviderRepairOperation({
+      maxStatusReads: 4,
+      operationId: "operation-stuck-active",
+      readStatus: async () => {
+        reads += 1;
+        return { lifecycle: "active", operationId: "operation-stuck-active" };
+      },
+      signal: new AbortController().signal,
+      waitForNextPoll: async () => {
+        waits += 1;
+        if (waits >= 4) {
+          throw new Error("total status read budget was ignored");
+        }
+      },
+    });
+
+    assert.equal(outcome, "statusUnavailable");
+    assert.equal(reads, 4);
+    assert.equal(waits, 3);
+    assert.equal(latch.markStatusUnavailable(generation), true);
+    assert.equal(latch.getSnapshot().phase, "statusUnavailable");
+    assert.deepEqual(
+      deriveProviderRepairInteractionState(false, latch.getSnapshot().phase),
+      { closeBlocked: false, controlsDisabled: true },
+    );
+    await nextTurn();
+    assert.equal(reads, 4);
+    assert.equal(waits, 3);
+  });
+});
+
 test("owner-matching latch clear cannot erase a replacement operation", async () => {
   await withSsrModules(async (load) => {
     const { createProviderRepairSafetyLatch } = await load(
