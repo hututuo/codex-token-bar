@@ -1420,6 +1420,568 @@ final class ProviderSyncEngineTests: XCTestCase {
         XCTAssertTrue(message.contains(journal.path))
     }
 
+    func testReviewFix4BackupRootRetargetDoesNotPublishReplacementHomeBackup() throws {
+        let fixture = try makeFixture()
+        var retarget: ProviderSyncRootRetarget?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            backupWillReadHome: {
+                retarget = try self.retargetHomeRoot(fixture) { replacement, detached in
+                    try self.copyDirectoryContents(from: detached, to: replacement)
+                }
+            }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        ))
+        let changedTree = try XCTUnwrap(retarget)
+        XCTAssertEqual(try readSQLiteProviders(at: changedTree.replacementHome), ["anthropic"])
+        XCTAssertEqual(try String(contentsOf: changedTree.sentinel, encoding: .utf8), "replacement-sentinel-before\n")
+        XCTAssertTrue(try manifestFiles(in: fixture.backupRoot).isEmpty)
+    }
+
+    func testReviewFix4TimestampSQLiteRootRetargetDoesNotMutateReplacementDatabase() throws {
+        let fixture = try makeFixture()
+        let sessionParent = fixture.activeSession.deletingLastPathComponent()
+        let additionalIDs = ["thread-b", "thread-c", "thread-d"]
+        for id in additionalIDs {
+            try writeSession(
+                id: id,
+                provider: "anthropic",
+                to: sessionParent.appendingPathComponent("\(id).jsonl")
+            )
+        }
+        try seedTimestampCollisionRows(at: fixture.codexHome, ids: additionalIDs)
+        var retarget: ProviderSyncRootRetarget?
+        var replacementTimestampsBefore: [String: Int64] = [:]
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            sqliteTimestampWillOpen: {
+                retarget = try self.retargetHomeRoot(fixture) { replacement, _ in
+                    try self.seedStateDatabase(at: replacement)
+                    try self.seedTimestampCollisionRows(at: replacement, ids: additionalIDs)
+                    replacementTimestampsBefore = try self.readSQLiteTimestampMilliseconds(at: replacement)
+                }
+            }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        ))
+        let changedTree = try XCTUnwrap(retarget)
+        XCTAssertEqual(
+            try readSQLiteTimestampMilliseconds(at: changedTree.replacementHome),
+            replacementTimestampsBefore
+        )
+        XCTAssertEqual(try String(contentsOf: changedTree.sentinel, encoding: .utf8), "replacement-sentinel-before\n")
+    }
+
+    func testReviewFix4ProviderSQLiteRootRetargetDoesNotMutateReplacementDatabase() throws {
+        let fixture = try makeFixture()
+        var retarget: ProviderSyncRootRetarget?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            sqliteProviderWillOpen: {
+                retarget = try self.retargetHomeRoot(fixture) { replacement, _ in
+                    try self.seedStateDatabase(at: replacement)
+                }
+            }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        ))
+        let changedTree = try XCTUnwrap(retarget)
+        XCTAssertEqual(try readSQLiteProviders(at: changedTree.replacementHome), ["anthropic"])
+        XCTAssertEqual(try String(contentsOf: changedTree.sentinel, encoding: .utf8), "replacement-sentinel-before\n")
+    }
+
+    func testReviewFix4SessionIndexRootRetargetDoesNotMutateReplacementIndex() throws {
+        let fixture = try makeFixture()
+        let replacementIndexBefore = Data("replacement-index-before\n".utf8)
+        var retarget: ProviderSyncRootRetarget?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            sessionIndexWillReplace: { _ in
+                retarget = try self.retargetHomeRoot(fixture) { replacement, _ in
+                    try self.seedStateDatabase(at: replacement)
+                    try replacementIndexBefore.write(
+                        to: replacement.appendingPathComponent("session_index.jsonl")
+                    )
+                }
+            }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        ))
+        let changedTree = try XCTUnwrap(retarget)
+        XCTAssertEqual(
+            try Data(contentsOf: changedTree.replacementHome.appendingPathComponent("session_index.jsonl")),
+            replacementIndexBefore
+        )
+    }
+
+    func testReviewFix4GlobalStateRootRetargetDoesNotMutateReplacementState() throws {
+        let fixture = try makeFixture()
+        try writeGlobalStateFixture(
+            projectOrder: [],
+            savedRoots: ["/tmp/workspace"],
+            to: fixture.codexHome.appendingPathComponent(".codex-global-state.json")
+        )
+        let replacementState = fixture.codexHome.deletingLastPathComponent()
+            .appendingPathComponent("replacement-state.json")
+        try writeGlobalStateFixture(
+            projectOrder: ["/replacement-only"],
+            savedRoots: [],
+            to: replacementState
+        )
+        let replacementStateBefore = try Data(contentsOf: replacementState)
+        var retarget: ProviderSyncRootRetarget?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            globalStateWillReplace: { _ in
+                retarget = try self.retargetHomeRoot(fixture) { replacement, _ in
+                    try self.seedStateDatabase(at: replacement)
+                    try FileManager.default.copyItem(
+                        at: replacementState,
+                        to: replacement.appendingPathComponent(".codex-global-state.json")
+                    )
+                }
+            }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        ))
+        let changedTree = try XCTUnwrap(retarget)
+        XCTAssertEqual(
+            try Data(contentsOf: changedTree.replacementHome.appendingPathComponent(".codex-global-state.json")),
+            replacementStateBefore
+        )
+    }
+
+    func testReviewFix4ZeroSessionRootRetargetDoesNotMutateReplacementHome() throws {
+        let fixture = try makeFixture()
+        try FileManager.default.removeItem(at: fixture.activeSession)
+        var retarget: ProviderSyncRootRetarget?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            sessionMutationsWillBegin: {
+                retarget = try self.retargetHomeRoot(fixture) { replacement, _ in
+                    try self.seedStateDatabase(at: replacement)
+                }
+            }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        ))
+        let changedTree = try XCTUnwrap(retarget)
+        XCTAssertEqual(try readSQLiteProviders(at: changedTree.replacementHome), ["anthropic"])
+        XCTAssertEqual(try String(contentsOf: changedTree.sentinel, encoding: .utf8), "replacement-sentinel-before\n")
+    }
+
+    func testReviewFix4PostReportRootRetargetCannotCommit() throws {
+        let fixture = try makeFixture()
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        var retarget: ProviderSyncRootRetarget?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            reportWillBuild: {
+                guard retarget == nil else { return }
+                retarget = try self.retargetHomeRoot(fixture) { replacement, _ in
+                    try self.seedStateDatabase(at: replacement)
+                }
+            }
+        )
+        var message = ""
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath)) { error in
+            message = error.localizedDescription
+        }
+        let changedTree = try XCTUnwrap(retarget)
+        let journal = try XCTUnwrap(transactionRoots(in: changedTree.detachedHome).first)
+        XCTAssertTrue(message.contains(".provider-restore-transaction-"))
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: journal.path).isEmpty)
+        XCTAssertEqual(try String(contentsOf: changedTree.sentinel, encoding: .utf8), "replacement-sentinel-before\n")
+    }
+
+    func testReviewFix4PostReportAncestorRetargetCannotCommit() throws {
+        let fixture = try makeFixture()
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        try removePreRollbackGlobalStateFiles(fixture)
+        let outsideBefore = try sessionData(id: "thread-a", provider: "outside-post-report")
+        var retarget: ProviderSyncAncestorRetarget?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            reportWillBuild: {
+                guard retarget == nil else { return }
+                retarget = try self.retargetActiveSessionAncestor(
+                    fixture,
+                    outsideDestinationData: outsideBefore
+                )
+            }
+        )
+        var message = ""
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath)) { error in
+            message = error.localizedDescription
+        }
+        let changedTree = try XCTUnwrap(retarget)
+        XCTAssertEqual(try Data(contentsOf: changedTree.outsideDestination), outsideBefore)
+        let journal = try XCTUnwrap(transactionRoots(in: fixture.codexHome).first)
+        XCTAssertTrue(message.contains(journal.path))
+        XCTAssertFalse(try journalOriginalFiles(in: journal).isEmpty)
+    }
+
+    func testReviewFix4DestinationSwapBeforeJournalIsRevertedWithoutSuccess() throws {
+        let fixture = try makeFixture()
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        try removePreRollbackGlobalStateFiles(fixture)
+        let injectedData = try sessionData(id: "thread-a", provider: "destination-race")
+        var didSwap = false
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            restoreDestinationWillJournal: { _, destination in
+                guard !didSwap, self.isActiveSessionDestination(destination) else { return }
+                didSwap = true
+                try self.replaceSameNameEntry(at: destination, with: injectedData)
+            }
+        )
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath))
+        XCTAssertTrue(didSwap)
+        XCTAssertEqual(try Data(contentsOf: fixture.activeSession), injectedData)
+    }
+
+    func testReviewFix4JournalSwapBeforeOpenFailsBeforeDestinationMutation() throws {
+        let fixture = try makeFixture()
+        let backupSessionData = try Data(contentsOf: fixture.activeSession)
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        let preRollbackData = try Data(contentsOf: fixture.activeSession)
+        let injectedData = try sessionData(id: "thread-a", provider: "journal-preopen-race")
+        var activeIndex: Int?
+        var journalEntry: URL?
+        var swappedAside: URL?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            reportWillBuild: {
+                throw NSError(
+                    domain: "ProviderSyncEngineTests",
+                    code: 920,
+                    userInfo: [NSLocalizedDescriptionKey: "injected report failure for journal preopen race"]
+                )
+            },
+            restoreWillApply: { index, destination in
+                if self.isActiveSessionDestination(destination) {
+                    activeIndex = index
+                }
+            },
+            restoreJournalWillOpen: { index, journal in
+                guard index == activeIndex, swappedAside == nil else { return }
+                journalEntry = journal
+                swappedAside = try self.exchangeJournalEntry(journal, with: injectedData)
+            }
+        )
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath))
+        let journal = try XCTUnwrap(journalEntry)
+        let aside = try XCTUnwrap(swappedAside)
+        XCTAssertEqual(try Data(contentsOf: journal), injectedData)
+        XCTAssertEqual(try Data(contentsOf: aside), preRollbackData)
+        XCTAssertEqual(try Data(contentsOf: fixture.activeSession), backupSessionData)
+    }
+
+    func testReviewFix4JournalSwapAfterReadFailsBeforeDestinationMutation() throws {
+        let fixture = try makeFixture()
+        let backupSessionData = try Data(contentsOf: fixture.activeSession)
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        let preRollbackData = try Data(contentsOf: fixture.activeSession)
+        let injectedData = try sessionData(id: "thread-a", provider: "journal-postread-race")
+        var activeIndex: Int?
+        var journalEntry: URL?
+        var swappedAside: URL?
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            reportWillBuild: {
+                throw NSError(
+                    domain: "ProviderSyncEngineTests",
+                    code: 921,
+                    userInfo: [NSLocalizedDescriptionKey: "injected report failure for journal postread race"]
+                )
+            },
+            restoreWillApply: { index, destination in
+                if self.isActiveSessionDestination(destination) {
+                    activeIndex = index
+                }
+            },
+            restoreJournalDidRead: { index, journal in
+                guard index == activeIndex, swappedAside == nil else { return }
+                journalEntry = journal
+                swappedAside = try self.exchangeJournalEntry(journal, with: injectedData)
+            }
+        )
+
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath))
+        let journal = try XCTUnwrap(journalEntry)
+        let aside = try XCTUnwrap(swappedAside)
+        XCTAssertEqual(try Data(contentsOf: journal), injectedData)
+        XCTAssertEqual(try Data(contentsOf: aside), preRollbackData)
+        XCTAssertEqual(try Data(contentsOf: fixture.activeSession), backupSessionData)
+    }
+
+    func testReviewFix4SessionSwapBeforeReplacementIsRevertedWithoutMutation() throws {
+        let fixture = try makeFixture()
+        let injectedData = try sessionData(id: "thread-a", provider: "session-final-race")
+        var didSwap = false
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            sessionReplacementWillExchange: { destination in
+                guard !didSwap, self.isActiveSessionDestination(destination) else { return }
+                didSwap = true
+                try self.replaceSameNameEntry(at: destination, with: injectedData)
+            }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        ))
+        XCTAssertTrue(didSwap)
+        XCTAssertEqual(try Data(contentsOf: fixture.activeSession), injectedData)
+    }
+
+    func testReviewFix4CleanupFailureBeforeFirstUnlinkIsReportedAndRetained() throws {
+        let fixture = try makeFixture()
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        try removePreRollbackGlobalStateFiles(fixture)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            restoreCleanupWillBegin: { journal in
+                throw NSError(
+                    domain: "ProviderSyncEngineTests",
+                    code: 922,
+                    userInfo: [NSLocalizedDescriptionKey: "cleanup before first unlink: \(journal.path)"]
+                )
+            }
+        )
+
+        try assertCleanupFailureIsReportedAndRetained(
+            fixture: fixture,
+            backupPath: backupPath,
+            engine: engine,
+            expectsRetainedMaterial: true
+        )
+    }
+
+    func testReviewFix4CleanupFailureAfterPartialUnlinkIsReportedAndRetained() throws {
+        let fixture = try makeFixture()
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        try removePreRollbackGlobalStateFiles(fixture)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            restoreCleanupDidRemoveEntry: { journal in
+                throw NSError(
+                    domain: "ProviderSyncEngineTests",
+                    code: 923,
+                    userInfo: [NSLocalizedDescriptionKey: "cleanup after partial unlink: \(journal.path)"]
+                )
+            }
+        )
+
+        try assertCleanupFailureIsReportedAndRetained(
+            fixture: fixture,
+            backupPath: backupPath,
+            engine: engine,
+            expectsRetainedMaterial: true
+        )
+    }
+
+    func testReviewFix4CleanupFailureBeforeRootRemovalIsReportedAndRetained() throws {
+        let fixture = try makeFixture()
+        let backupPath = try createSyncedBackupAndSeedRollbackDestination(fixture)
+        try removePreRollbackGlobalStateFiles(fixture)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false },
+            restoreCleanupWillRemoveRoot: { journal in
+                throw NSError(
+                    domain: "ProviderSyncEngineTests",
+                    code: 924,
+                    userInfo: [NSLocalizedDescriptionKey: "cleanup before root removal: \(journal.path)"]
+                )
+            }
+        )
+
+        try assertCleanupFailureIsReportedAndRetained(
+            fixture: fixture,
+            backupPath: backupPath,
+            engine: engine,
+            expectsRetainedMaterial: false
+        )
+    }
+
+    private func retargetHomeRoot(
+        _ fixture: ProviderSyncFixture,
+        populateReplacement: (URL, URL) throws -> Void
+    ) throws -> ProviderSyncRootRetarget {
+        let detachedHome = fixture.codexHome.deletingLastPathComponent()
+            .appendingPathComponent("codex-home-detached-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.moveItem(at: fixture.codexHome, to: detachedHome)
+        try FileManager.default.createDirectory(at: fixture.codexHome, withIntermediateDirectories: false)
+        try populateReplacement(fixture.codexHome, detachedHome)
+        let sentinel = fixture.codexHome.appendingPathComponent("replacement-sentinel.txt")
+        try "replacement-sentinel-before\n".write(
+            to: sentinel,
+            atomically: true,
+            encoding: .utf8
+        )
+        return ProviderSyncRootRetarget(
+            detachedHome: detachedHome,
+            replacementHome: fixture.codexHome,
+            sentinel: sentinel
+        )
+    }
+
+    private func copyDirectoryContents(from source: URL, to destination: URL) throws {
+        for item in try FileManager.default.contentsOfDirectory(
+            at: source,
+            includingPropertiesForKeys: nil,
+            options: []
+        ) {
+            try FileManager.default.copyItem(
+                at: item,
+                to: destination.appendingPathComponent(item.lastPathComponent)
+            )
+        }
+    }
+
+    private func readSQLiteTimestampMilliseconds(at codexHome: URL) throws -> [String: Int64] {
+        let driver = SQLiteDatabaseDriver(
+            url: codexHome.appendingPathComponent("state_5.sqlite"),
+            readOnly: true
+        )
+        let rows = try driver.readRows(
+            "SELECT id, COALESCE(updated_at_ms, 0) FROM threads ORDER BY id ASC;"
+        ) { statement in
+            (statement.text(0) ?? "", statement.int64(1) ?? 0)
+        }
+        return Dictionary(uniqueKeysWithValues: rows)
+    }
+
+    private func writeGlobalStateFixture(
+        projectOrder: [String],
+        savedRoots: [String],
+        to file: URL
+    ) throws {
+        try writeJSON(
+            [
+                "project-order": projectOrder,
+                "electron-saved-workspace-roots": savedRoots,
+                "active-workspace-roots": savedRoots
+            ],
+            to: file
+        )
+    }
+
+    private func replaceSameNameEntry(at destination: URL, with data: Data) throws {
+        let replacement = destination.deletingLastPathComponent()
+            .appendingPathComponent("same-name-race-\(UUID().uuidString)")
+        try data.write(to: replacement)
+        guard Darwin.rename(replacement.path, destination.path) == 0 else {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(errno),
+                userInfo: [NSLocalizedDescriptionKey: "same-name race rename failed"]
+            )
+        }
+    }
+
+    private func exchangeJournalEntry(_ journal: URL, with data: Data) throws -> URL {
+        let aside = journal.deletingLastPathComponent()
+            .appendingPathComponent("journal-race-aside-\(UUID().uuidString)")
+        try data.write(to: aside)
+        guard renameatx_np(
+            AT_FDCWD,
+            journal.path,
+            AT_FDCWD,
+            aside.path,
+            UInt32(RENAME_SWAP)
+        ) == 0 else {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(errno),
+                userInfo: [NSLocalizedDescriptionKey: "journal race exchange failed"]
+            )
+        }
+        return aside
+    }
+
+    private func assertCleanupFailureIsReportedAndRetained(
+        fixture: ProviderSyncFixture,
+        backupPath: String,
+        engine: ProviderSyncEngine,
+        expectsRetainedMaterial: Bool
+    ) throws {
+        var message = ""
+        XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: backupPath)) { error in
+            message = error.localizedDescription
+        }
+        let journal = try XCTUnwrap(transactionRoots(in: fixture.codexHome).first)
+        XCTAssertTrue(message.contains(journal.path))
+        let contents = try FileManager.default.contentsOfDirectory(atPath: journal.path)
+        if expectsRetainedMaterial {
+            XCTAssertFalse(contents.isEmpty)
+        } else {
+            XCTAssertTrue(contents.isEmpty)
+        }
+    }
+
+    private func removePreRollbackGlobalStateFiles(_ fixture: ProviderSyncFixture) throws {
+        for name in [".codex-global-state.json", ".codex-global-state.json.bak"] {
+            let file = fixture.codexHome.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: file.path) {
+                try FileManager.default.removeItem(at: file)
+            }
+        }
+    }
+
     private func assertRetargetedRestorePreservesOutsideAndJournal(
         fixture: ProviderSyncFixture,
         backupPath: String,
@@ -1939,6 +2501,12 @@ private struct ProviderSyncAncestorRetarget {
     let detachedAncestor: URL
     let outsideDestination: URL
     let outsideSentinel: URL
+}
+
+private struct ProviderSyncRootRetarget {
+    let detachedHome: URL
+    let replacementHome: URL
+    let sentinel: URL
 }
 
 private struct ProviderSyncDisposableState: Equatable {

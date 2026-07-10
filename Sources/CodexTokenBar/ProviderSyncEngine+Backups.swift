@@ -3,8 +3,12 @@ import Foundation
 
 extension ProviderSyncEngine {
     func createBackup(codexHome: URL, sessionFiles: [URL], targetProvider: String) throws -> URL {
-        try createBackupForMutation(
-            codexHome: codexHome,
+        let canonicalHome = canonicalProviderHome(codexHome)
+        let homeDirectory = try ProviderSyncHomeDirectory(canonicalURL: canonicalHome)
+        defer { try? homeDirectory.close() }
+        return try createBackupForMutation(
+            codexHome: canonicalHome,
+            homeDirectory: homeDirectory,
             sessionFiles: sessionFiles,
             targetProvider: targetProvider
         ).url
@@ -12,6 +16,7 @@ extension ProviderSyncEngine {
 
     func createBackupForMutation(
         codexHome: URL,
+        homeDirectory: ProviderSyncHomeDirectory,
         sessionFiles: [URL],
         targetProvider: String
     ) throws -> ProviderSyncCreatedBackup {
@@ -24,20 +29,40 @@ extension ProviderSyncEngine {
         let backupName = "\(formatter.string(from: Date()))-\(UUID().uuidString.prefix(6))"
         let backup = root.appendingPathComponent(backupName, isDirectory: true)
         try fileManager.createDirectory(at: backup, withIntermediateDirectories: true)
+        try backupWillReadHome?()
+        try homeDirectory.verifyRootPathIdentity()
 
-        try copyIfExists(canonicalHome.appendingPathComponent("config.toml"), to: backup.appendingPathComponent("config.toml.before"))
+        try copyHomeFileIfExists(
+            homeDirectory: homeDirectory,
+            relativePath: "config.toml",
+            destination: backup.appendingPathComponent("config.toml.before")
+        )
         try backupSQLiteDatabase(
-            source: canonicalHome.appendingPathComponent("state_5.sqlite"),
+            homeDirectory: homeDirectory,
             destination: backup.appendingPathComponent("state_5.sqlite.before")
         )
-        try copyIfExists(canonicalHome.appendingPathComponent("session_index.jsonl"), to: backup.appendingPathComponent("session_index.jsonl.before"))
-        try copyIfExists(canonicalHome.appendingPathComponent(".codex-global-state.json"), to: backup.appendingPathComponent("codex-global-state.json.before"))
-        try copyIfExists(canonicalHome.appendingPathComponent(".codex-global-state.json.bak"), to: backup.appendingPathComponent("codex-global-state.json.bak.before"))
+        try copyHomeFileIfExists(
+            homeDirectory: homeDirectory,
+            relativePath: "session_index.jsonl",
+            destination: backup.appendingPathComponent("session_index.jsonl.before")
+        )
+        try copyHomeFileIfExists(
+            homeDirectory: homeDirectory,
+            relativePath: ".codex-global-state.json",
+            destination: backup.appendingPathComponent("codex-global-state.json.before")
+        )
+        try copyHomeFileIfExists(
+            homeDirectory: homeDirectory,
+            relativePath: ".codex-global-state.json.bak",
+            destination: backup.appendingPathComponent("codex-global-state.json.bak.before")
+        )
         let sessionBackup = try createSessionTar(
             files: sessionFiles,
             relativeTo: canonicalHome,
+            homeDirectory: homeDirectory,
             destination: backup.appendingPathComponent("session-jsonl.before.tar")
         )
+        try homeDirectory.verifyRootPathIdentity()
 
         let manifest: [String: Any] = [
             "created_at": ISO8601DateFormatter().string(from: Date()),
@@ -57,32 +82,44 @@ extension ProviderSyncEngine {
         )
     }
 
-    func copyIfExists(_ source: URL, to destination: URL) throws {
-        guard fileManager.fileExists(atPath: source.path) else { return }
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
+    func copyHomeFileIfExists(
+        homeDirectory: ProviderSyncHomeDirectory,
+        relativePath: String,
+        destination: URL
+    ) throws {
+        guard let snapshot = try homeDirectory.readOptionalRegularFile(
+            relativePath: relativePath,
+            requireSingleLink: true
+        ) else {
+            return
         }
-        try fileManager.copyItem(at: source, to: destination)
+        try snapshot.data.write(to: destination, options: [.atomic])
+        try homeDirectory.verifyRootPathIdentity()
     }
 
-    func backupSQLiteDatabase(source: URL, destination: URL) throws {
-        guard fileManager.fileExists(atPath: source.path) else { return }
+    func backupSQLiteDatabase(
+        homeDirectory: ProviderSyncHomeDirectory,
+        destination: URL
+    ) throws {
         if fileManager.fileExists(atPath: destination.path) {
             try fileManager.removeItem(at: destination)
         }
-        try withDatabase(path: source.path, readOnly: true) { database in
+        _ = try withBoundDatabase(homeDirectory: homeDirectory, readOnly: true) { database, bound in
+            try homeDirectory.verifyBoundFile(bound)
             try execute(database: database, sql: "PRAGMA busy_timeout = 3000;")
             _ = try executeBoundUpdate(
                 database: database,
                 sql: "VACUUM main INTO ?;",
                 values: [destination.path]
             )
+            try homeDirectory.verifyBoundFile(bound)
         }
     }
 
     private func createSessionTar(
         files: [URL],
         relativeTo codexHome: URL,
+        homeDirectory: ProviderSyncHomeDirectory,
         destination: URL
     ) throws -> ProviderSyncSessionBackupResult {
         let canonicalHome = canonicalBackupHome(codexHome)
@@ -90,21 +127,26 @@ extension ProviderSyncEngine {
         var seenPaths = Set<String>()
         let candidates = try files.map { file -> ProviderSyncArchiveSource in
             let source = file.standardizedFileURL
-            let identity = try regularFileIdentityNoFollow(source, requireSingleLink: true)
-            let resolvedFile = canonicalArchiveURL(source)
-            guard isURL(resolvedFile, containedBy: canonicalHome) else {
+            guard source.path.hasPrefix(canonicalHome.path + "/") else {
                 throw backupArchiveError("会话文件不在当前 Codex Home 内：\(file.path)")
             }
-            let relativePath = String(resolvedFile.path.dropFirst(canonicalHome.path.count + 1))
+            let relativePath = String(source.path.dropFirst(canonicalHome.path.count + 1))
             guard isScopedSessionPath(relativePath) else {
                 throw backupArchiveError("会话文件路径不在允许范围内：\(relativePath)")
             }
+            let pinned = try homeDirectory.pinFile(relativePath: relativePath, createParents: false)
+            guard let metadata = try homeDirectory.entryMetadata(pinned),
+                  (metadata.st_mode & S_IFMT) == S_IFREG,
+                  metadata.st_nlink == 1 else {
+                throw backupArchiveError("会话文件不是独立常规文件：\(relativePath)")
+            }
+            let identity = ProviderSyncFileIdentity(metadata)
             guard seenIdentities.insert(identity).inserted,
                   seenPaths.insert(relativePath).inserted else {
                 throw backupArchiveError("会话文件 canonical 身份或目标重复：\(relativePath)")
             }
             return ProviderSyncArchiveSource(
-                source: source,
+                pinned: pinned,
                 relativePath: relativePath,
                 identity: identity
             )
@@ -123,16 +165,16 @@ extension ProviderSyncEngine {
                 at: staged.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            try copyRegularFileNoFollow(
-                from: candidate.source,
-                to: staged,
+            let snapshot = try homeDirectory.readRegularFile(
+                candidate.pinned,
                 expectedIdentity: candidate.identity,
                 requireSingleLink: true
             )
+            try snapshot.data.write(to: staged, options: [.atomic])
             _ = try regularFileIdentityNoFollow(staged, requireSingleLink: true)
             sessionMembers.append(ProviderSyncManifestSessionMember(
                 path: candidate.relativePath,
-                sha256: try sha256Hex(of: staged)
+                sha256: providerSyncSHA256Hex(snapshot.data)
             ))
         }
 
@@ -272,8 +314,11 @@ extension ProviderSyncEngine {
             try transaction.apply()
             try transaction.verifyAppliedState()
             let result = try afterRestore()
-            transaction.commit()
+            try transaction.verifyAppliedState(invokeHooks: false)
+            try transaction.commit()
             return result
+        } catch let commitError as ProviderSyncRestoreCommitError {
+            throw commitError
         } catch let primaryError {
             do {
                 try transaction.compensate()
@@ -403,9 +448,15 @@ extension ProviderSyncEngine {
             homeDirectory: homeDirectory,
             specifications: specifications,
             willApply: restoreWillApply,
+            destinationWillJournal: restoreDestinationWillJournal,
             willVerifyApplied: restoreWillVerifyApplied,
             willCompensate: restoreWillCompensate,
-            willVerifyCompensated: restoreWillVerifyCompensated
+            willVerifyCompensated: restoreWillVerifyCompensated,
+            journalWillOpen: restoreJournalWillOpen,
+            journalDidRead: restoreJournalDidRead,
+            cleanupWillBegin: restoreCleanupWillBegin,
+            cleanupDidRemoveEntry: restoreCleanupDidRemoveEntry,
+            cleanupWillRemoveRoot: restoreCleanupWillRemoveRoot
         )
     }
 
@@ -810,7 +861,7 @@ private struct ProviderSyncSessionArchiveMember {
 }
 
 private struct ProviderSyncArchiveSource {
-    let source: URL
+    let pinned: ProviderSyncPinnedFile
     let relativePath: String
     let identity: ProviderSyncFileIdentity
 }
@@ -856,11 +907,17 @@ private struct ProviderSyncRestoreSpecification {
 
 private struct ProviderSyncRestoreOperation {
     let replacementName: String?
+    let replacementIdentity: ProviderSyncFileIdentity?
     let originalName: String
     let destination: ProviderSyncPinnedFile
     let expectedDigest: String?
     var destinationExisted = false
     var originalDigest: String?
+    var originalIdentity: ProviderSyncFileIdentity?
+    var appliedIdentity: ProviderSyncFileIdentity?
+    var compensatedIdentity: ProviderSyncFileIdentity?
+    var placeholderIdentity: ProviderSyncFileIdentity?
+    var placeholderCleanupName: String?
     var journaled = false
     var applied = false
     var compensated = false
@@ -869,6 +926,15 @@ private struct ProviderSyncRestoreOperation {
 private struct ProviderSyncDestinationIdentity: Hashable {
     let parent: ProviderSyncFileIdentity
     let name: String
+}
+
+private struct ProviderSyncRestoreCommitError: LocalizedError {
+    let journalPath: URL
+    let underlying: Error
+
+    var errorDescription: String? {
+        "restore 已验证，但 journal cleanup 未完成：\(underlying.localizedDescription)；保留 transaction：\(journalPath.path)"
+    }
 }
 
 private final class ProviderSyncRestoreTransaction {
@@ -881,17 +947,36 @@ private final class ProviderSyncRestoreTransaction {
     private let discarded: ProviderSyncOwnedFileDescriptor
     private let recovery: ProviderSyncOwnedFileDescriptor
     private let willApply: ((Int, URL) throws -> Void)?
+    private let destinationWillJournal: ((Int, URL) throws -> Void)?
     private let willVerifyApplied: ((Int, URL) throws -> Void)?
     private let willCompensate: ((Int, URL) throws -> Void)?
     private let willVerifyCompensated: ((Int, URL) throws -> Void)?
+    private let journalWillOpen: ((Int, URL) throws -> Void)?
+    private let journalDidRead: ((Int, URL) throws -> Void)?
+    private let cleanupWillBegin: ((URL) throws -> Void)?
+    private let cleanupDidRemoveEntry: ((URL) throws -> Void)?
+    private let cleanupWillRemoveRoot: ((URL) throws -> Void)?
+    private var lastKnownJournalPath: URL
     private var operations: [ProviderSyncRestoreOperation]
     private var journaledIndices: [Int] = []
     private var createdDirectories: [String] = []
     private var discardedNames: [String] = []
     private var recoveryNames: [String] = []
+    private var preservationFailures: [String] = []
+    private var cleanupDidBegin = false
+    private var cleanupDidReportPartialRemoval = false
+    private var cleanupContentsRemoved = false
+    private var cleanupDirectoriesRemoved = false
+    private var cleanupDescriptorsClosed = false
+    private var cleanupDidRequestRootRemoval = false
     private var finished = false
 
-    var journalPath: URL { transactionRootURL }
+    var journalPath: URL {
+        if let current = providerSyncDescriptorPath(transaction.rawValue) {
+            lastKnownJournalPath = current
+        }
+        return lastKnownJournalPath
+    }
 
     init(
         fileManager: FileManager,
@@ -899,9 +984,15 @@ private final class ProviderSyncRestoreTransaction {
         homeDirectory: ProviderSyncHomeDirectory,
         specifications: [ProviderSyncRestoreSpecification],
         willApply: ((Int, URL) throws -> Void)?,
+        destinationWillJournal: ((Int, URL) throws -> Void)?,
         willVerifyApplied: ((Int, URL) throws -> Void)?,
         willCompensate: ((Int, URL) throws -> Void)?,
-        willVerifyCompensated: ((Int, URL) throws -> Void)?
+        willVerifyCompensated: ((Int, URL) throws -> Void)?,
+        journalWillOpen: ((Int, URL) throws -> Void)?,
+        journalDidRead: ((Int, URL) throws -> Void)?,
+        cleanupWillBegin: ((URL) throws -> Void)?,
+        cleanupDidRemoveEntry: ((URL) throws -> Void)?,
+        cleanupWillRemoveRoot: ((URL) throws -> Void)?
     ) throws {
         _ = fileManager
         let transactionName = ".provider-restore-transaction-\(UUID().uuidString)"
@@ -960,6 +1051,7 @@ private final class ProviderSyncRestoreTransaction {
                 }
                 let entryName = String(index)
                 var replacementName: String?
+                var replacementIdentity: ProviderSyncFileIdentity?
                 var expectedDigest: String?
                 if let source = specification.source {
                     let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
@@ -977,10 +1069,15 @@ private final class ProviderSyncRestoreTransaction {
                         data: data
                     )
                     replacementName = entryName
+                    replacementIdentity = try providerSyncEntryMetadata(
+                        directory: replacementDirectory.rawValue,
+                        name: entryName
+                    ).map(ProviderSyncFileIdentity.init)
                     expectedDigest = providerSyncSHA256Hex(data)
                 }
                 prepared.append(ProviderSyncRestoreOperation(
                     replacementName: replacementName,
+                    replacementIdentity: replacementIdentity,
                     originalName: entryName,
                     destination: destination,
                     expectedDigest: expectedDigest
@@ -1030,9 +1127,16 @@ private final class ProviderSyncRestoreTransaction {
         self.discarded = openedDiscarded
         self.recovery = openedRecovery
         self.willApply = willApply
+        self.destinationWillJournal = destinationWillJournal
         self.willVerifyApplied = willVerifyApplied
         self.willCompensate = willCompensate
         self.willVerifyCompensated = willVerifyCompensated
+        self.journalWillOpen = journalWillOpen
+        self.journalDidRead = journalDidRead
+        self.cleanupWillBegin = cleanupWillBegin
+        self.cleanupDidRemoveEntry = cleanupDidRemoveEntry
+        self.cleanupWillRemoveRoot = cleanupWillRemoveRoot
+        self.lastKnownJournalPath = rootURL
         self.operations = prepared
         self.createdDirectories = Array(Set(createdDirectories))
     }
@@ -1054,7 +1158,11 @@ private final class ProviderSyncRestoreTransaction {
                             userInfo: [NSLocalizedDescriptionKey: "回滚目标不是常规文件：\(destination.displayURL.path)"]
                         )
                     }
-                    let original = try homeDirectory.readRegularFile(destination)
+                    let destinationIdentity = ProviderSyncFileIdentity(destinationMetadata)
+                    let original = try homeDirectory.readRegularFile(
+                        destination,
+                        expectedIdentity: destinationIdentity
+                    )
                     guard let currentMetadata = try homeDirectory.entryMetadata(destination),
                           ProviderSyncFileIdentity(currentMetadata) == original.identity else {
                         throw providerSyncDescriptorError(
@@ -1062,24 +1170,93 @@ private final class ProviderSyncRestoreTransaction {
                         )
                     }
                     operations[index].originalDigest = providerSyncSHA256Hex(original.data)
-                    try providerSyncRename(
-                        fromDirectory: destination.parent.rawValue,
-                        fromName: destination.name,
-                        toDirectory: originals.rawValue,
-                        toName: operations[index].originalName
+                    operations[index].originalIdentity = original.identity
+                    try providerSyncCreateRegularFile(
+                        directory: originals.rawValue,
+                        name: operations[index].originalName,
+                        data: Data()
                     )
+                    guard let placeholderMetadata = try providerSyncEntryMetadata(
+                        directory: originals.rawValue,
+                        name: operations[index].originalName
+                    ) else {
+                        throw providerSyncDescriptorError("restore journal placeholder 缺失")
+                    }
+                    let placeholderIdentity = ProviderSyncFileIdentity(placeholderMetadata)
+                    operations[index].placeholderIdentity = placeholderIdentity
+                    try destinationWillJournal?(index, destination.displayURL)
+                    try exchangeRequiringIdentities(
+                        firstDirectory: destination.parent.rawValue,
+                        firstName: destination.name,
+                        expectedFirst: original.identity,
+                        secondDirectory: originals.rawValue,
+                        secondName: operations[index].originalName,
+                        expectedSecond: placeholderIdentity,
+                        context: "destination journal exchange",
+                        recoveryPaths: [
+                            destination.displayURL.path,
+                            journalEntryURL(index: index).path
+                        ]
+                    )
+                } else {
+                    try destinationWillJournal?(index, destination.displayURL)
                 }
                 operations[index].journaled = true
                 journaledIndices.append(index)
                 try willApply?(index, destination.displayURL)
                 try homeDirectory.verifyParent(destination)
-                if let replacementName = operations[index].replacementName {
-                    try providerSyncRename(
-                        fromDirectory: replacements.rawValue,
-                        fromName: replacementName,
-                        toDirectory: destination.parent.rawValue,
-                        toName: destination.name
+                if let replacementName = operations[index].replacementName,
+                   let replacementIdentity = operations[index].replacementIdentity {
+                    if destinationExisted {
+                        guard let placeholderIdentity = operations[index].placeholderIdentity else {
+                            throw providerSyncDescriptorError("restore destination placeholder identity 缺失")
+                        }
+                        try exchangeRequiringIdentities(
+                            firstDirectory: replacements.rawValue,
+                            firstName: replacementName,
+                            expectedFirst: replacementIdentity,
+                            secondDirectory: destination.parent.rawValue,
+                            secondName: destination.name,
+                            expectedSecond: placeholderIdentity,
+                            context: "restore replacement exchange",
+                            recoveryPaths: [
+                                replacementEntryURL(name: replacementName).path,
+                                destination.displayURL.path
+                            ]
+                        )
+                    } else {
+                        try moveExclusiveRequiringIdentity(
+                            fromDirectory: replacements.rawValue,
+                            fromName: replacementName,
+                            toDirectory: destination.parent.rawValue,
+                            toName: destination.name,
+                            expectedIdentity: replacementIdentity,
+                            context: "restore replacement exclusive move",
+                            recoveryPaths: [
+                                replacementEntryURL(name: replacementName).path,
+                                destination.displayURL.path
+                            ]
+                        )
+                    }
+                    operations[index].appliedIdentity = replacementIdentity
+                } else if destinationExisted {
+                    guard let placeholderIdentity = operations[index].placeholderIdentity else {
+                        throw providerSyncDescriptorError("restore deletion placeholder identity 缺失")
+                    }
+                    let cleanupName = "placeholder-\(index)-\(UUID().uuidString)"
+                    try moveExclusiveRequiringIdentity(
+                        fromDirectory: destination.parent.rawValue,
+                        fromName: destination.name,
+                        toDirectory: replacements.rawValue,
+                        toName: cleanupName,
+                        expectedIdentity: placeholderIdentity,
+                        context: "restore deletion placeholder move",
+                        recoveryPaths: [
+                            destination.displayURL.path,
+                            replacementEntryURL(name: cleanupName).path
+                        ]
                     )
+                    operations[index].placeholderCleanupName = cleanupName
                 }
                 operations[index].applied = true
             } catch {
@@ -1097,16 +1274,22 @@ private final class ProviderSyncRestoreTransaction {
         }
     }
 
-    func verifyAppliedState() throws {
+    func verifyAppliedState(invokeHooks: Bool = true) throws {
+        try homeDirectory.verifyRootPathIdentity()
         for (index, operation) in operations.enumerated() where operation.applied {
-            try willVerifyApplied?(index, operation.destination.displayURL)
+            if invokeHooks {
+                try willVerifyApplied?(index, operation.destination.displayURL)
+            }
             try homeDirectory.verifyParent(operation.destination)
             if let expectedDigest = operation.expectedDigest {
-                guard let metadata = try homeDirectory.entryMetadata(operation.destination),
-                      (metadata.st_mode & S_IFMT) == S_IFREG,
-                      providerSyncSHA256Hex(
-                        try homeDirectory.readRegularFile(operation.destination).data
-                      ) == expectedDigest else {
+                guard let appliedIdentity = operation.appliedIdentity else {
+                    throw providerSyncDescriptorError("restore applied identity 缺失")
+                }
+                let applied = try homeDirectory.readRegularFile(
+                    operation.destination,
+                    expectedIdentity: appliedIdentity
+                )
+                guard providerSyncSHA256Hex(applied.data) == expectedDigest else {
                     throw NSError(
                         domain: "CodexTokenBar",
                         code: 500,
@@ -1120,11 +1303,33 @@ private final class ProviderSyncRestoreTransaction {
                     userInfo: [NSLocalizedDescriptionKey: "回滚目标应保持不存在：\(operation.destination.displayURL.path)"]
                 )
             }
+            if operation.destinationExisted {
+                guard let originalIdentity = operation.originalIdentity,
+                      let journalMetadata = try providerSyncEntryMetadata(
+                        directory: originals.rawValue,
+                        name: operation.originalName
+                      ),
+                      ProviderSyncFileIdentity(journalMetadata) == originalIdentity else {
+                    throw ProviderSyncIdentityConflictError(
+                        message: "restore journal identity 在 applied verification 前发生变化",
+                        recoveryPaths: [journalEntryURL(index: index).path]
+                    )
+                }
+            }
         }
     }
 
     func compensate() throws {
         guard !finished else { return }
+        guard preservationFailures.isEmpty else {
+            throw NSError(
+                domain: "CodexTokenBar",
+                code: 500,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "identity revert 未完成，已保留 journal：\(journalPath.path)；\(preservationFailures.joined(separator: "；"))"
+                ]
+            )
+        }
         var failures: [String] = []
         for index in journaledIndices.reversed() where !operations[index].compensated {
             do {
@@ -1149,50 +1354,82 @@ private final class ProviderSyncRestoreTransaction {
                 domain: "CodexTokenBar",
                 code: 500,
                 userInfo: [
-                    NSLocalizedDescriptionKey: "补偿未完整恢复，已保留 journal：\(transactionRootURL.path)；\(failures.joined(separator: "；"))"
+                    NSLocalizedDescriptionKey: "补偿未完整恢复，已保留 journal：\(journalPath.path)；\(failures.joined(separator: "；"))"
                 ]
             )
         }
-        finished = true
         try cleanupTransactionRoot()
+        finished = true
         removeCreatedDirectoriesIfEmpty()
     }
 
-    func commit() {
+    func commit() throws {
         guard !finished else { return }
-        finished = true
-        try? cleanupTransactionRoot()
+        do {
+            try cleanupTransactionRoot()
+            finished = true
+        } catch {
+            throw ProviderSyncRestoreCommitError(
+                journalPath: journalPath,
+                underlying: error
+            )
+        }
     }
 
     private func compensateOperation(_ index: Int) throws {
         let operation = operations[index]
         try willCompensate?(index, operation.destination.displayURL)
         try homeDirectory.verifyParent(operation.destination)
-        if try homeDirectory.entryMetadata(operation.destination) != nil {
+        let original: ProviderSyncRegularFileSnapshot?
+        if operation.destinationExisted {
+            guard let originalIdentity = operation.originalIdentity else {
+                throw providerSyncDescriptorError("journal original identity 缺失：\(operation.originalName)")
+            }
+            original = try providerSyncReadRegularFile(
+                directory: originals.rawValue,
+                name: operation.originalName,
+                expectedIdentity: originalIdentity,
+                willOpen: {
+                    try self.journalWillOpen?(index, self.journalEntryURL(index: index))
+                },
+                didRead: {
+                    try self.journalDidRead?(index, self.journalEntryURL(index: index))
+                }
+            )
+        } else {
+            original = nil
+        }
+
+        if let destinationMetadata = try homeDirectory.entryMetadata(operation.destination) {
+            let expectedCurrentIdentity = operation.appliedIdentity ?? operation.placeholderIdentity
+            guard let expectedCurrentIdentity else {
+                throw ProviderSyncIdentityConflictError(
+                    message: "compensation 发现未归属的 destination entry",
+                    recoveryPaths: [operation.destination.displayURL.path, journalPath.path]
+                )
+            }
             let discardedName = "\(index)-\(UUID().uuidString)"
-            try providerSyncRename(
+            guard ProviderSyncFileIdentity(destinationMetadata) == expectedCurrentIdentity else {
+                throw ProviderSyncIdentityConflictError(
+                    message: "compensation destination identity 发生变化",
+                    recoveryPaths: [operation.destination.displayURL.path, journalPath.path]
+                )
+            }
+            try moveExclusiveRequiringIdentity(
                 fromDirectory: operation.destination.parent.rawValue,
                 fromName: operation.destination.name,
                 toDirectory: discarded.rawValue,
-                toName: discardedName
+                toName: discardedName,
+                expectedIdentity: expectedCurrentIdentity,
+                context: "compensation discarded move",
+                recoveryPaths: [
+                    operation.destination.displayURL.path,
+                    journalPath.appendingPathComponent("discarded/\(discardedName)").path
+                ]
             )
             discardedNames.append(discardedName)
         }
-        if operation.destinationExisted {
-            guard try providerSyncEntryMetadata(
-                directory: originals.rawValue,
-                name: operation.originalName
-            ) != nil else {
-                throw NSError(
-                    domain: "CodexTokenBar",
-                    code: 500,
-                    userInfo: [NSLocalizedDescriptionKey: "journal 原始文件缺失：\(operation.originalName)"]
-                )
-            }
-            let original = try providerSyncReadRegularFile(
-                directory: originals.rawValue,
-                name: operation.originalName
-            )
+        if let original {
             let recoveryName = "\(index)-\(UUID().uuidString)"
             try providerSyncCreateRegularFile(
                 directory: recovery.rawValue,
@@ -1201,13 +1438,27 @@ private final class ProviderSyncRestoreTransaction {
                 metadata: original.metadata
             )
             recoveryNames.append(recoveryName)
+            guard let recoveryMetadata = try providerSyncEntryMetadata(
+                directory: recovery.rawValue,
+                name: recoveryName
+            ) else {
+                throw providerSyncDescriptorError("compensation recovery entry 缺失")
+            }
+            let recoveryIdentity = ProviderSyncFileIdentity(recoveryMetadata)
             try homeDirectory.verifyParent(operation.destination)
-            try providerSyncRename(
+            try moveExclusiveRequiringIdentity(
                 fromDirectory: recovery.rawValue,
                 fromName: recoveryName,
                 toDirectory: operation.destination.parent.rawValue,
-                toName: operation.destination.name
+                toName: operation.destination.name,
+                expectedIdentity: recoveryIdentity,
+                context: "compensation recovery placement",
+                recoveryPaths: [
+                    journalPath.appendingPathComponent("recovery/\(recoveryName)").path,
+                    operation.destination.displayURL.path
+                ]
             )
+            operations[index].compensatedIdentity = recoveryIdentity
         }
     }
 
@@ -1217,11 +1468,14 @@ private final class ProviderSyncRestoreTransaction {
         try homeDirectory.verifyParent(operation.destination)
         if operation.destinationExisted {
             guard let originalDigest = operation.originalDigest,
-                  let metadata = try homeDirectory.entryMetadata(operation.destination),
-                  (metadata.st_mode & S_IFMT) == S_IFREG,
-                  providerSyncSHA256Hex(
-                    try homeDirectory.readRegularFile(operation.destination).data
-                  ) == originalDigest else {
+                  let compensatedIdentity = operation.compensatedIdentity else {
+                throw providerSyncDescriptorError("compensated destination identity 缺失")
+            }
+            let compensated = try homeDirectory.readRegularFile(
+                operation.destination,
+                expectedIdentity: compensatedIdentity
+            )
+            guard providerSyncSHA256Hex(compensated.data) == originalDigest else {
                 throw NSError(
                     domain: "CodexTokenBar",
                     code: 500,
@@ -1237,39 +1491,200 @@ private final class ProviderSyncRestoreTransaction {
         }
     }
 
-    private func cleanupTransactionRoot() throws {
-        for operation in operations {
-            try providerSyncUnlinkIfExists(
-                directory: originals.rawValue,
-                name: operation.originalName
-            )
-            if let replacementName = operation.replacementName {
-                try providerSyncUnlinkIfExists(
-                    directory: replacements.rawValue,
-                    name: replacementName
+    private func journalEntryURL(index: Int) -> URL {
+        journalPath
+            .appendingPathComponent("originals", isDirectory: true)
+            .appendingPathComponent(operations[index].originalName)
+    }
+
+    private func replacementEntryURL(name: String) -> URL {
+        journalPath
+            .appendingPathComponent("replacements", isDirectory: true)
+            .appendingPathComponent(name)
+    }
+
+    private func entryIdentity(directory: Int32, name: String) throws -> ProviderSyncFileIdentity? {
+        try providerSyncEntryMetadata(directory: directory, name: name)
+            .map(ProviderSyncFileIdentity.init)
+    }
+
+    private func exchangeRequiringIdentities(
+        firstDirectory: Int32,
+        firstName: String,
+        expectedFirst: ProviderSyncFileIdentity,
+        secondDirectory: Int32,
+        secondName: String,
+        expectedSecond: ProviderSyncFileIdentity,
+        context: String,
+        recoveryPaths: [String]
+    ) throws {
+        try providerSyncExchange(
+            firstDirectory: firstDirectory,
+            firstName: firstName,
+            secondDirectory: secondDirectory,
+            secondName: secondName
+        )
+        let observedFirst = try entryIdentity(directory: firstDirectory, name: firstName)
+        let observedSecond = try entryIdentity(directory: secondDirectory, name: secondName)
+        guard observedFirst == expectedSecond, observedSecond == expectedFirst else {
+            do {
+                try providerSyncExchange(
+                    firstDirectory: firstDirectory,
+                    firstName: firstName,
+                    secondDirectory: secondDirectory,
+                    secondName: secondName
+                )
+                let revertedFirst = try entryIdentity(directory: firstDirectory, name: firstName)
+                let revertedSecond = try entryIdentity(directory: secondDirectory, name: secondName)
+                guard revertedFirst == observedSecond, revertedSecond == observedFirst else {
+                    preservationFailures.append("\(context) revert 后 identity 无法确认：\(recoveryPaths.joined(separator: "，"))")
+                    throw ProviderSyncIdentityConflictError(
+                        message: "\(context) identity mismatch 且 revert 无法确认",
+                        recoveryPaths: recoveryPaths
+                    )
+                }
+            } catch let conflict as ProviderSyncIdentityConflictError {
+                throw conflict
+            } catch {
+                preservationFailures.append("\(context) revert 失败：\(error.localizedDescription)")
+                throw ProviderSyncIdentityConflictError(
+                    message: "\(context) identity mismatch 且 revert 失败",
+                    recoveryPaths: recoveryPaths
                 )
             }
+            throw ProviderSyncIdentityConflictError(
+                message: "\(context) identity mismatch，已 atomic revert",
+                recoveryPaths: recoveryPaths
+            )
         }
-        for name in discardedNames {
-            try providerSyncUnlinkIfExists(directory: discarded.rawValue, name: name)
+    }
+
+    private func moveExclusiveRequiringIdentity(
+        fromDirectory: Int32,
+        fromName: String,
+        toDirectory: Int32,
+        toName: String,
+        expectedIdentity: ProviderSyncFileIdentity,
+        context: String,
+        recoveryPaths: [String]
+    ) throws {
+        try providerSyncRenameExclusive(
+            fromDirectory: fromDirectory,
+            fromName: fromName,
+            toDirectory: toDirectory,
+            toName: toName
+        )
+        let observed = try entryIdentity(directory: toDirectory, name: toName)
+        guard observed == expectedIdentity else {
+            do {
+                try providerSyncRenameExclusive(
+                    fromDirectory: toDirectory,
+                    fromName: toName,
+                    toDirectory: fromDirectory,
+                    toName: fromName
+                )
+                guard try entryIdentity(directory: fromDirectory, name: fromName) == observed else {
+                    preservationFailures.append("\(context) revert 后 identity 无法确认：\(recoveryPaths.joined(separator: "，"))")
+                    throw ProviderSyncIdentityConflictError(
+                        message: "\(context) moved identity mismatch 且 revert 无法确认",
+                        recoveryPaths: recoveryPaths
+                    )
+                }
+            } catch let conflict as ProviderSyncIdentityConflictError {
+                throw conflict
+            } catch {
+                preservationFailures.append("\(context) revert 失败：\(error.localizedDescription)")
+                throw ProviderSyncIdentityConflictError(
+                    message: "\(context) moved identity mismatch 且 revert 失败",
+                    recoveryPaths: recoveryPaths
+                )
+            }
+            throw ProviderSyncIdentityConflictError(
+                message: "\(context) moved identity mismatch，已 revert",
+                recoveryPaths: recoveryPaths
+            )
         }
-        for name in recoveryNames {
-            try providerSyncUnlinkIfExists(directory: recovery.rawValue, name: name)
+    }
+
+    private func cleanupTransactionRoot() throws {
+        if !cleanupDidBegin {
+            cleanupDidBegin = true
+            try cleanupWillBegin?(journalPath)
         }
-        try originals.close()
-        try replacements.close()
-        try discarded.close()
-        try recovery.close()
-        try providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "originals", flags: AT_REMOVEDIR)
-        try providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "replacements", flags: AT_REMOVEDIR)
-        try providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "discarded", flags: AT_REMOVEDIR)
-        try providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "recovery", flags: AT_REMOVEDIR)
+
+        if !cleanupContentsRemoved {
+            for operation in operations {
+                try providerSyncUnlinkIfExists(
+                    directory: originals.rawValue,
+                    name: operation.originalName
+                )
+                if !cleanupDidReportPartialRemoval {
+                    cleanupDidReportPartialRemoval = true
+                    try cleanupDidRemoveEntry?(journalPath)
+                }
+                if let replacementName = operation.replacementName {
+                    try providerSyncUnlinkIfExists(
+                        directory: replacements.rawValue,
+                        name: replacementName
+                    )
+                }
+                if let placeholderCleanupName = operation.placeholderCleanupName,
+                   placeholderCleanupName != operation.replacementName {
+                    try providerSyncUnlinkIfExists(
+                        directory: replacements.rawValue,
+                        name: placeholderCleanupName
+                    )
+                }
+            }
+            for name in discardedNames {
+                try providerSyncUnlinkIfExists(directory: discarded.rawValue, name: name)
+            }
+            for name in recoveryNames {
+                try providerSyncUnlinkIfExists(directory: recovery.rawValue, name: name)
+            }
+            for operation in operations {
+                guard try providerSyncEntryMetadata(
+                    directory: originals.rawValue,
+                    name: operation.originalName
+                ) == nil else {
+                    throw providerSyncDescriptorError("cleanup 后 journal original 仍存在：\(operation.originalName)")
+                }
+            }
+            cleanupContentsRemoved = true
+        }
+
+        if !cleanupDirectoriesRemoved {
+            try providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "originals", flags: AT_REMOVEDIR)
+            try providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "replacements", flags: AT_REMOVEDIR)
+            try providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "discarded", flags: AT_REMOVEDIR)
+            try providerSyncUnlinkIfExists(directory: transaction.rawValue, name: "recovery", flags: AT_REMOVEDIR)
+            cleanupDirectoriesRemoved = true
+        }
+
+        if !cleanupDescriptorsClosed {
+            try originals.close()
+            try replacements.close()
+            try discarded.close()
+            try recovery.close()
+            cleanupDescriptorsClosed = true
+        }
+
+        if !cleanupDidRequestRootRemoval {
+            cleanupDidRequestRootRemoval = true
+            try cleanupWillRemoveRoot?(journalPath)
+        }
         try transaction.close()
         try providerSyncUnlinkIfExists(
             directory: homeDirectory.descriptor,
             name: transactionName,
             flags: AT_REMOVEDIR
         )
+        guard try providerSyncEntryMetadata(
+            directory: homeDirectory.descriptor,
+            name: transactionName
+        ) == nil else {
+            throw providerSyncDescriptorError("transaction root cleanup 后仍存在：\(journalPath.path)")
+        }
     }
 
     private static func cleanupInitializationFailure(

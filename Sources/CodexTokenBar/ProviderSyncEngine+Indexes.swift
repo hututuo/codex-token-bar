@@ -1,20 +1,16 @@
 import Foundation
 
 extension ProviderSyncEngine {
-    func sqliteIntegrity(codexHome: URL) throws -> String {
-        let db = codexHome.appendingPathComponent("state_5.sqlite")
-        guard fileManager.fileExists(atPath: db.path) else { return "missing" }
-        return try withDatabase(path: db.path, readOnly: true) { database in
+    func sqliteIntegrity(homeDirectory: ProviderSyncHomeDirectory) throws -> String {
+        try withBoundDatabase(homeDirectory: homeDirectory, readOnly: true) { database, _ in
             try queryRows(database: database, sql: "PRAGMA integrity_check;") { statement in
                 sqliteText(statement, 0) ?? "unknown"
             }.first ?? "unknown"
-        }
+        } ?? "missing"
     }
 
-    func reconcileSessionIndex(codexHome: URL) throws -> Int {
-        let db = codexHome.appendingPathComponent("state_5.sqlite")
-        guard fileManager.fileExists(atPath: db.path) else { return 0 }
-        let rows = try withDatabase(path: db.path, readOnly: true) { database in
+    func reconcileSessionIndex(homeDirectory: ProviderSyncHomeDirectory) throws -> Int {
+        guard let rows = try withBoundDatabase(homeDirectory: homeDirectory, readOnly: true, body: { database, _ in
             guard let columns = try readThreadsTableColumns(database: database) else {
                 return [ProviderSyncThreadIndexRow]()
             }
@@ -35,10 +31,16 @@ extension ProviderSyncEngine {
                 )
             }
             return queriedRows.filter { !$0.id.isEmpty }
-        }
+        }) else { return 0 }
 
-        let index = codexHome.appendingPathComponent("session_index.jsonl")
-        let existing = try readSessionIndexLines(codexHome: codexHome)
+        let index = try homeDirectory.pinFile(
+            relativePath: "session_index.jsonl",
+            createParents: false
+        )
+        let existingSnapshot = try homeDirectory.entryMetadata(index) == nil
+            ? nil
+            : homeDirectory.readRegularFile(index, requireSingleLink: true)
+        let existing = try readSessionIndexLines(data: existingSnapshot?.data)
         var seenIDs = Set<String>()
         var lines: [String] = []
 
@@ -60,7 +62,26 @@ extension ProviderSyncEngine {
 
         var output = lines.joined(separator: "\n").data(using: .utf8) ?? Data()
         output.append(0x0A)
-        try output.write(to: index, options: [.atomic])
+        if let existingSnapshot {
+            let replacement = try homeDirectory.replaceRegularFile(
+                index,
+                expectedIdentity: existingSnapshot.identity,
+                data: output,
+                preserving: existingSnapshot.metadata,
+                beforeExchange: {
+                    try self.sessionIndexWillReplace?(index.displayURL)
+                }
+            )
+            try homeDirectory.commitRegularFileReplacement(replacement)
+        } else {
+            _ = try homeDirectory.createRegularFileAtomically(
+                index,
+                data: output,
+                beforePlacement: {
+                    try self.sessionIndexWillReplace?(index.displayURL)
+                }
+            )
+        }
         return missingRows.count
     }
 
@@ -85,17 +106,31 @@ extension ProviderSyncEngine {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
-    func readSessionIndexIDs(codexHome: URL) throws -> (ids: Set<String>, rows: Int) {
-        let result = try readSessionIndexLines(codexHome: codexHome)
+    func readSessionIndexIDs(
+        homeDirectory: ProviderSyncHomeDirectory
+    ) throws -> (ids: Set<String>, rows: Int) {
+        let result = try readSessionIndexLines(homeDirectory: homeDirectory)
         return (result.ids, result.rows)
     }
 
-    func readSessionIndexLines(codexHome: URL) throws -> ProviderSyncSessionIndexLines {
-        let index = codexHome.appendingPathComponent("session_index.jsonl")
-        guard fileManager.fileExists(atPath: index.path) else {
+    func readSessionIndexLines(
+        homeDirectory: ProviderSyncHomeDirectory
+    ) throws -> ProviderSyncSessionIndexLines {
+        try readSessionIndexLines(
+            data: homeDirectory.readOptionalRegularFile(
+                relativePath: "session_index.jsonl",
+                requireSingleLink: true
+            )?.data
+        )
+    }
+
+    private func readSessionIndexLines(data: Data?) throws -> ProviderSyncSessionIndexLines {
+        guard let data else {
             return ProviderSyncSessionIndexLines(lines: [], ids: [], rows: 0)
         }
-        let text = try String(contentsOf: index, encoding: .utf8)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw providerSyncDescriptorError("session_index.jsonl 不是 UTF-8")
+        }
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         var ids = Set<String>()
         var rows = 0
@@ -132,15 +167,19 @@ extension ProviderSyncEngine {
         return formatter.date(from: value).map { Int64($0.timeIntervalSince1970 * 1000) } ?? 0
     }
 
-    func readWorkspaceOrderIssues(codexHome: URL) throws -> [ProviderSyncWorkspaceIssue] {
-        let globalState = codexHome.appendingPathComponent(".codex-global-state.json")
-        guard fileManager.fileExists(atPath: globalState.path),
-              let object = try readGlobalStateObject(globalState),
+    func readWorkspaceOrderIssues(
+        homeDirectory: ProviderSyncHomeDirectory
+    ) throws -> [ProviderSyncWorkspaceIssue] {
+        guard let snapshot = try homeDirectory.readOptionalRegularFile(
+            relativePath: ".codex-global-state.json",
+            requireSingleLink: true
+        ),
+              let object = try readGlobalStateObject(data: snapshot.data),
               let projectOrder = object["project-order"] as? [String] else {
             return []
         }
 
-        let threadCounts = try readActiveThreadCountsByCwd(codexHome: codexHome)
+        let threadCounts = try readActiveThreadCountsByCwd(homeDirectory: homeDirectory)
         let labels = object["electron-workspace-root-labels"] as? [String: String] ?? [:]
         let candidates = workspaceRootCandidates(from: object)
         let ordered = Set(projectOrder)
@@ -155,18 +194,18 @@ extension ProviderSyncEngine {
         }
     }
 
-    func readVisibilitySummary(codexHome: URL) throws -> ProviderSyncVisibilitySummary {
-        let globalState = codexHome.appendingPathComponent(".codex-global-state.json")
-        let globalObject = (fileManager.fileExists(atPath: globalState.path) ? try readGlobalStateObject(globalState) : nil) ?? [:]
+    func readVisibilitySummary(
+        homeDirectory: ProviderSyncHomeDirectory
+    ) throws -> ProviderSyncVisibilitySummary {
+        let globalSnapshot = try homeDirectory.readOptionalRegularFile(
+            relativePath: ".codex-global-state.json",
+            requireSingleLink: true
+        )
+        let globalObject = try globalSnapshot.flatMap { try readGlobalStateObject(data: $0.data) } ?? [:]
         let activeWorkspacePath = (globalObject["active-workspace-roots"] as? [String])?.first
         let labels = globalObject["electron-workspace-root-labels"] as? [String: String] ?? [:]
 
-        let db = codexHome.appendingPathComponent("state_5.sqlite")
-        guard fileManager.fileExists(atPath: db.path) else {
-            return ProviderSyncVisibilitySummary(activeWorkspacePath: activeWorkspacePath)
-        }
-
-        return try withDatabase(path: db.path, readOnly: true) { database in
+        return try withBoundDatabase(homeDirectory: homeDirectory, readOnly: true) { database, _ in
             guard let columns = try readThreadsTableColumns(database: database) else {
                 return ProviderSyncVisibilitySummary(activeWorkspacePath: activeWorkspacePath)
             }
@@ -243,19 +282,24 @@ extension ProviderSyncEngine {
             var summary = totals
             summary.workspaces = workspaceRows
             return summary
-        }
+        } ?? ProviderSyncVisibilitySummary(activeWorkspacePath: activeWorkspacePath)
     }
 
-    func reconcileWorkspaceOrder(codexHome: URL) throws -> Int {
-        let globalState = codexHome.appendingPathComponent(".codex-global-state.json")
-        guard fileManager.fileExists(atPath: globalState.path),
-              var object = try readGlobalStateObject(globalState) else {
+    func reconcileWorkspaceOrder(homeDirectory: ProviderSyncHomeDirectory) throws -> Int {
+        let globalState = try homeDirectory.pinFile(
+            relativePath: ".codex-global-state.json",
+            createParents: false
+        )
+        guard let globalSnapshot = try homeDirectory.entryMetadata(globalState) == nil
+                ? nil
+                : homeDirectory.readRegularFile(globalState, requireSingleLink: true),
+              var object = try readGlobalStateObject(data: globalSnapshot.data) else {
             return 0
         }
 
         var projectOrder = object["project-order"] as? [String] ?? []
         let existing = Set(projectOrder)
-        let threadCounts = try readActiveThreadCountsByCwd(codexHome: codexHome)
+        let threadCounts = try readActiveThreadCountsByCwd(homeDirectory: homeDirectory)
         let missing = workspaceRootCandidates(from: object).filter { path in
             (threadCounts[path] ?? 0) > 0 && !existing.contains(path)
         }
@@ -263,23 +307,61 @@ extension ProviderSyncEngine {
 
         projectOrder.append(contentsOf: missing)
         object["project-order"] = projectOrder
-        try writeGlobalStateObject(object, to: globalState)
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        let companionBackup = try homeDirectory.pinFile(
+            relativePath: ".codex-global-state.json.bak",
+            createParents: false
+        )
+        let companionSnapshot = try homeDirectory.entryMetadata(companionBackup) == nil
+            ? nil
+            : homeDirectory.readRegularFile(companionBackup, requireSingleLink: true)
+        try globalStateWillReplace?(globalState.displayURL)
+        try homeDirectory.verifyParent(globalState)
+        try homeDirectory.verifyParent(companionBackup)
 
-        let companionBackup = codexHome.appendingPathComponent(".codex-global-state.json.bak")
-        if fileManager.fileExists(atPath: companionBackup.path) {
-            try writeGlobalStateObject(object, to: companionBackup)
+        var replacements: [ProviderSyncRegularFileReplacement] = []
+        do {
+            replacements.append(try homeDirectory.replaceRegularFile(
+                globalState,
+                expectedIdentity: globalSnapshot.identity,
+                data: data,
+                preserving: globalSnapshot.metadata
+            ))
+            if let companionSnapshot {
+                replacements.append(try homeDirectory.replaceRegularFile(
+                    companionBackup,
+                    expectedIdentity: companionSnapshot.identity,
+                    data: data,
+                    preserving: companionSnapshot.metadata
+                ))
+            }
+        } catch let replacementError {
+            var rollbackFailures: [String] = []
+            for replacement in replacements.reversed() {
+                do {
+                    try homeDirectory.rollbackRegularFileReplacement(replacement)
+                } catch {
+                    rollbackFailures.append(
+                        "\(replacement.file.displayURL.path)：\(error.localizedDescription)"
+                    )
+                }
+            }
+            guard rollbackFailures.isEmpty else {
+                throw ProviderSyncIdentityConflictError(
+                    message: "global-state replacement 失败且 rollback 不完整：\(replacementError.localizedDescription)",
+                    recoveryPaths: rollbackFailures
+                )
+            }
+            throw replacementError
+        }
+        for replacement in replacements {
+            try homeDirectory.commitRegularFileReplacement(replacement)
         }
         return missing.count
     }
 
-    func readGlobalStateObject(_ file: URL) throws -> [String: Any]? {
-        let data = try Data(contentsOf: file)
-        return try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
-    }
-
-    func writeGlobalStateObject(_ object: [String: Any], to file: URL) throws {
-        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
-        try data.write(to: file, options: [.atomic])
+    func readGlobalStateObject(data: Data) throws -> [String: Any]? {
+        try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
     }
 
     func workspaceRootCandidates(from object: [String: Any]) -> [String] {
@@ -297,12 +379,12 @@ extension ProviderSyncEngine {
         return result
     }
 
-    func readActiveThreadCountsByCwd(codexHome: URL) throws -> [String: Int] {
-        let db = codexHome.appendingPathComponent("state_5.sqlite")
-        guard fileManager.fileExists(atPath: db.path) else { return [:] }
-        return try withDatabase(path: db.path, readOnly: true) { database in
+    func readActiveThreadCountsByCwd(
+        homeDirectory: ProviderSyncHomeDirectory
+    ) throws -> [String: Int] {
+        guard let counts = try withBoundDatabase(homeDirectory: homeDirectory, readOnly: true, body: { database, _ in
             guard let columns = try readThreadsTableColumns(database: database) else {
-                return [:]
+                return [String: Int]()
             }
             let archivedPredicate = columns.archived ? "COALESCE(archived, 0) = 0" : "1 = 1"
             let previewPredicate = "\(threadListPreviewExpression(columns: columns)) <> ''"
@@ -320,7 +402,8 @@ extension ProviderSyncEngine {
                 (sqliteText(statement, 0) ?? "", Int(sqliteInt64(statement, 1)))
             }
             return Dictionary(uniqueKeysWithValues: rows.filter { !$0.0.isEmpty })
-        }
+        }) else { return [:] }
+        return counts
     }
 
     func readThreadsTableColumns(database: SQLiteDatabaseConnection) throws -> ProviderSyncSQLiteThreadColumns? {

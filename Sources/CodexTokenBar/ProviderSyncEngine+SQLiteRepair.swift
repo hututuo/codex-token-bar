@@ -1,10 +1,10 @@
 import Foundation
 
 extension ProviderSyncEngine {
-    func readSQLiteProviders(codexHome: URL) throws -> [ProviderSyncSQLiteProvider] {
-        let db = codexHome.appendingPathComponent("state_5.sqlite")
-        guard fileManager.fileExists(atPath: db.path) else { return [] }
-        return try withDatabase(path: db.path, readOnly: true) { database in
+    func readSQLiteProviders(
+        homeDirectory: ProviderSyncHomeDirectory
+    ) throws -> [ProviderSyncSQLiteProvider] {
+        try withBoundDatabase(homeDirectory: homeDirectory, readOnly: true) { database, _ in
             guard let columns = try readThreadsTableColumns(database: database),
                   columns.modelProvider else {
                 return []
@@ -25,13 +25,13 @@ extension ProviderSyncEngine {
                     count: Int(sqliteInt64(statement, 2))
                 )
             }
-        }
+        } ?? []
     }
 
-    func latestSQLiteProvider(codexHome: URL) throws -> (provider: String?, threadID: String?) {
-        let db = codexHome.appendingPathComponent("state_5.sqlite")
-        guard fileManager.fileExists(atPath: db.path) else { return (nil, nil) }
-        return try withDatabase(path: db.path, readOnly: true) { database in
+    func latestSQLiteProvider(
+        homeDirectory: ProviderSyncHomeDirectory
+    ) throws -> (provider: String?, threadID: String?) {
+        try withBoundDatabase(homeDirectory: homeDirectory, readOnly: true) { database, _ in
             guard let columns = try readThreadsTableColumns(database: database) else {
                 return (nil, nil)
             }
@@ -50,13 +50,18 @@ extension ProviderSyncEngine {
             ) { statement in
                 (sqliteText(statement, 0), sqliteText(statement, 1))
             }.first ?? (nil, nil)
-        }
+        } ?? (nil, nil)
     }
 
-    func updateSQLite(codexHome: URL, targetProvider: String) throws -> Int {
-        let db = codexHome.appendingPathComponent("state_5.sqlite")
-        guard fileManager.fileExists(atPath: db.path) else { return 0 }
-        return try withDatabase(path: db.path, readOnly: false) { database in
+    func updateSQLite(
+        homeDirectory: ProviderSyncHomeDirectory,
+        targetProvider: String
+    ) throws -> Int {
+        let changed = try withBoundDatabase(
+            homeDirectory: homeDirectory,
+            readOnly: false,
+            willOpen: sqliteProviderWillOpen
+        ) { database, bound in
             try execute(database: database, sql: "PRAGMA busy_timeout = 3000;")
             guard let columns = try readThreadsTableColumns(database: database),
                   let whereClause = threadsRepairWhereClause(columns: columns),
@@ -68,25 +73,31 @@ extension ProviderSyncEngine {
             try execute(database: database, sql: "BEGIN IMMEDIATE TRANSACTION;")
             let changed: Int
             do {
+                try homeDirectory.verifyBoundFile(bound)
                 changed = try executeBoundUpdate(
                     database: database,
                     sql: "UPDATE threads SET \(setClause) WHERE \(whereClause);",
                     values: values
                 )
+                try homeDirectory.verifyBoundFile(bound)
                 try execute(database: database, sql: "COMMIT;")
             } catch {
                 try? execute(database: database, sql: "ROLLBACK;")
                 throw error
             }
+            try homeDirectory.verifyBoundFile(bound)
             try execute(database: database, sql: "PRAGMA wal_checkpoint(FULL);")
+            try homeDirectory.verifyBoundFile(bound)
             return changed
         }
+        return changed ?? 0
     }
 
-    func countSQLiteRowsToRepair(codexHome: URL, targetProvider: String) throws -> Int {
-        let db = codexHome.appendingPathComponent("state_5.sqlite")
-        guard fileManager.fileExists(atPath: db.path) else { return 0 }
-        return try withDatabase(path: db.path, readOnly: true) { database in
+    func countSQLiteRowsToRepair(
+        homeDirectory: ProviderSyncHomeDirectory,
+        targetProvider: String
+    ) throws -> Int {
+        try withBoundDatabase(homeDirectory: homeDirectory, readOnly: true) { database, _ in
             guard let columns = try readThreadsTableColumns(database: database),
                   let whereClause = threadsRepairWhereClause(columns: columns) else {
                 return 0
@@ -99,11 +110,10 @@ extension ProviderSyncEngine {
             ) { statement in
                 Int(sqliteInt64(statement, 0))
             }.first ?? 0
-        }
+        } ?? 0
     }
 
     func repairSQLiteThreadTimestamps(
-        codexHome: URL,
         sessionMutations: [ProviderSyncPreparedSessionMutation],
         homeDirectory: ProviderSyncHomeDirectory
     ) throws -> Int {
@@ -137,9 +147,11 @@ extension ProviderSyncEngine {
         }
         guard !timestampsByID.isEmpty else { return 0 }
 
-        let db = codexHome.appendingPathComponent("state_5.sqlite")
-        guard fileManager.fileExists(atPath: db.path) else { return 0 }
-        return try withDatabase(path: db.path, readOnly: false) { database in
+        let changed = try withBoundDatabase(
+            homeDirectory: homeDirectory,
+            readOnly: false,
+            willOpen: sqliteTimestampWillOpen
+        ) { database, bound in
             try execute(database: database, sql: "PRAGMA busy_timeout = 3000;")
             guard let columns = try readThreadsTableColumns(database: database),
                   columns.updatedAt || columns.updatedAtMilliseconds else {
@@ -177,15 +189,19 @@ extension ProviderSyncEngine {
             try execute(database: database, sql: "BEGIN IMMEDIATE TRANSACTION;")
             var changed = 0
             do {
+                try homeDirectory.verifyBoundFile(bound)
                 for timestamp in repairTargets {
                     changed += try executeTimestampUpdate(database: database, columns: columns, timestamp: timestamp)
                 }
+                try homeDirectory.verifyBoundFile(bound)
                 try execute(database: database, sql: "COMMIT;")
             } catch {
                 try? execute(database: database, sql: "ROLLBACK;")
                 throw error
             }
+            try homeDirectory.verifyBoundFile(bound)
             try execute(database: database, sql: "PRAGMA wal_checkpoint(FULL);")
+            try homeDirectory.verifyBoundFile(bound)
             changed += try repairSessionFileModificationDates(
                 sessionTimestamps: Array(timestampsByID.values),
                 rowsByID: rowsByID,
@@ -195,5 +211,6 @@ extension ProviderSyncEngine {
             )
             return changed
         }
+        return changed ?? 0
     }
 }

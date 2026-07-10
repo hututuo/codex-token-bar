@@ -91,16 +91,28 @@ final class ProviderSyncEngine {
     private let mutationLeaseDidAcquire: (@Sendable () -> Void)?
     private let reportWillBuild: (() throws -> Void)?
     let restoreWillApply: ((Int, URL) throws -> Void)?
+    let restoreDestinationWillJournal: ((Int, URL) throws -> Void)?
     let restoreWillVerifyApplied: ((Int, URL) throws -> Void)?
     let restoreWillCompensate: ((Int, URL) throws -> Void)?
     let restoreWillVerifyCompensated: ((Int, URL) throws -> Void)?
+    let restoreJournalWillOpen: ((Int, URL) throws -> Void)?
+    let restoreJournalDidRead: ((Int, URL) throws -> Void)?
+    let restoreCleanupWillBegin: ((URL) throws -> Void)?
+    let restoreCleanupDidRemoveEntry: ((URL) throws -> Void)?
+    let restoreCleanupWillRemoveRoot: ((URL) throws -> Void)?
     let sessionArchiveDidList: (() throws -> Void)?
     let regularFileWillOpen: ((URL) throws -> Void)?
+    let backupWillReadHome: (() throws -> Void)?
     let sessionTarWillRun: (() throws -> Void)?
     let sessionTarStageWillRun: ((URL) throws -> Void)?
     let sessionTarDidRun: ((URL) throws -> Void)?
     let sessionMutationsWillBegin: (() throws -> Void)?
     let sessionMutationsDidApply: (() throws -> Void)?
+    let sessionReplacementWillExchange: ((URL) throws -> Void)?
+    let sqliteTimestampWillOpen: (() throws -> Void)?
+    let sqliteProviderWillOpen: (() throws -> Void)?
+    let sessionIndexWillReplace: ((URL) throws -> Void)?
+    let globalStateWillReplace: ((URL) throws -> Void)?
 
     init(
         fileManager: FileManager = .default,
@@ -109,16 +121,28 @@ final class ProviderSyncEngine {
         mutationLeaseDidAcquire: (@Sendable () -> Void)? = nil,
         reportWillBuild: (() throws -> Void)? = nil,
         restoreWillApply: ((Int, URL) throws -> Void)? = nil,
+        restoreDestinationWillJournal: ((Int, URL) throws -> Void)? = nil,
         restoreWillVerifyApplied: ((Int, URL) throws -> Void)? = nil,
         restoreWillCompensate: ((Int, URL) throws -> Void)? = nil,
         restoreWillVerifyCompensated: ((Int, URL) throws -> Void)? = nil,
+        restoreJournalWillOpen: ((Int, URL) throws -> Void)? = nil,
+        restoreJournalDidRead: ((Int, URL) throws -> Void)? = nil,
+        restoreCleanupWillBegin: ((URL) throws -> Void)? = nil,
+        restoreCleanupDidRemoveEntry: ((URL) throws -> Void)? = nil,
+        restoreCleanupWillRemoveRoot: ((URL) throws -> Void)? = nil,
         sessionArchiveDidList: (() throws -> Void)? = nil,
         regularFileWillOpen: ((URL) throws -> Void)? = nil,
+        backupWillReadHome: (() throws -> Void)? = nil,
         sessionTarWillRun: (() throws -> Void)? = nil,
         sessionTarStageWillRun: ((URL) throws -> Void)? = nil,
         sessionTarDidRun: ((URL) throws -> Void)? = nil,
         sessionMutationsWillBegin: (() throws -> Void)? = nil,
-        sessionMutationsDidApply: (() throws -> Void)? = nil
+        sessionMutationsDidApply: (() throws -> Void)? = nil,
+        sessionReplacementWillExchange: ((URL) throws -> Void)? = nil,
+        sqliteTimestampWillOpen: (() throws -> Void)? = nil,
+        sqliteProviderWillOpen: (() throws -> Void)? = nil,
+        sessionIndexWillReplace: ((URL) throws -> Void)? = nil,
+        globalStateWillReplace: ((URL) throws -> Void)? = nil
     ) {
         self.fileManager = fileManager
         self.backupRootOverride = backupRoot
@@ -126,16 +150,28 @@ final class ProviderSyncEngine {
         self.mutationLeaseDidAcquire = mutationLeaseDidAcquire
         self.reportWillBuild = reportWillBuild
         self.restoreWillApply = restoreWillApply
+        self.restoreDestinationWillJournal = restoreDestinationWillJournal
         self.restoreWillVerifyApplied = restoreWillVerifyApplied
         self.restoreWillCompensate = restoreWillCompensate
         self.restoreWillVerifyCompensated = restoreWillVerifyCompensated
+        self.restoreJournalWillOpen = restoreJournalWillOpen
+        self.restoreJournalDidRead = restoreJournalDidRead
+        self.restoreCleanupWillBegin = restoreCleanupWillBegin
+        self.restoreCleanupDidRemoveEntry = restoreCleanupDidRemoveEntry
+        self.restoreCleanupWillRemoveRoot = restoreCleanupWillRemoveRoot
         self.sessionArchiveDidList = sessionArchiveDidList
         self.regularFileWillOpen = regularFileWillOpen
+        self.backupWillReadHome = backupWillReadHome
         self.sessionTarWillRun = sessionTarWillRun
         self.sessionTarStageWillRun = sessionTarStageWillRun
         self.sessionTarDidRun = sessionTarDidRun
         self.sessionMutationsWillBegin = sessionMutationsWillBegin
         self.sessionMutationsDidApply = sessionMutationsDidApply
+        self.sessionReplacementWillExchange = sessionReplacementWillExchange
+        self.sqliteTimestampWillOpen = sqliteTimestampWillOpen
+        self.sqliteProviderWillOpen = sqliteProviderWillOpen
+        self.sessionIndexWillReplace = sessionIndexWillReplace
+        self.globalStateWillReplace = globalStateWillReplace
     }
 
     func backupRootDirectory() -> URL {
@@ -144,16 +180,30 @@ final class ProviderSyncEngine {
     }
 
     func scan(codexHome: URL, includeArchivedSessions: Bool) throws -> ProviderSyncSnapshot {
-        let report = try makeReport(codexHome: codexHome, includeArchivedSessions: includeArchivedSessions, targetProviderOverride: nil)
-        return snapshot(from: report, status: "扫描完成")
+        try withPinnedHome(codexHome: codexHome) { canonicalHome, homeDirectory in
+            let report = try makeReport(
+                codexHome: canonicalHome,
+                homeDirectory: homeDirectory,
+                includeArchivedSessions: includeArchivedSessions,
+                targetProviderOverride: nil
+            )
+            return snapshot(from: report, status: "扫描完成")
+        }
     }
 
     func verify(codexHome: URL, includeArchivedSessions: Bool, targetProviderOverride: String?) throws -> ProviderSyncSnapshot {
-        let report = try makeReport(codexHome: codexHome, includeArchivedSessions: includeArchivedSessions, targetProviderOverride: targetProviderOverride)
-        let status = verificationIssues(in: report).isEmpty
-            ? "验证通过"
-            : "验证完成：仍有历史或前端工作区状态未同步"
-        return snapshot(from: report, status: status)
+        try withPinnedHome(codexHome: codexHome) { canonicalHome, homeDirectory in
+            let report = try makeReport(
+                codexHome: canonicalHome,
+                homeDirectory: homeDirectory,
+                includeArchivedSessions: includeArchivedSessions,
+                targetProviderOverride: targetProviderOverride
+            )
+            let status = verificationIssues(in: report).isEmpty
+                ? "验证通过"
+                : "验证完成：仍有历史或前端工作区状态未同步"
+            return snapshot(from: report, status: status)
+        }
     }
 
     func sync(
@@ -165,6 +215,7 @@ final class ProviderSyncEngine {
         return try withMutationLease(codexHome: codexHome) { canonicalHome, homeDirectory in
             let initial = try makeReport(
                 codexHome: canonicalHome,
+                homeDirectory: homeDirectory,
                 includeArchivedSessions: includeArchivedSessions,
                 targetProviderOverride: targetProviderOverride
             )
@@ -174,6 +225,7 @@ final class ProviderSyncEngine {
 
             let createdBackup = try createBackupForMutation(
                 codexHome: canonicalHome,
+                homeDirectory: homeDirectory,
                 sessionFiles: initial.sessionFiles,
                 targetProvider: initial.targetProvider
             )
@@ -184,6 +236,7 @@ final class ProviderSyncEngine {
             if dryRunOnly {
                 let report = try makeReport(
                     codexHome: canonicalHome,
+                    homeDirectory: homeDirectory,
                     includeArchivedSessions: includeArchivedSessions,
                     targetProviderOverride: targetProviderOverride
                 )
@@ -193,6 +246,7 @@ final class ProviderSyncEngine {
             }
 
             try sessionMutationsWillBegin?()
+            try homeDirectory.verifyRootPathIdentity()
             let preparedSessionMutations = try prepareSessionMutations(
                 homeDirectory: homeDirectory,
                 bindings: createdBackup.sessionBindings,
@@ -208,18 +262,40 @@ final class ProviderSyncEngine {
                         changedSessionFiles += 1
                     }
                 }
+            } catch let sessionError {
+                do {
+                    try rollbackPreparedSessionMutations(
+                        preparedSessionMutations,
+                        homeDirectory: homeDirectory
+                    )
+                } catch let rollbackError {
+                    throw NSError(
+                        domain: "CodexTokenBar",
+                        code: 500,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "session mutation 失败且 descriptor rollback 不完整：\(sessionError.localizedDescription)；\(rollbackError.localizedDescription)"
+                        ]
+                    )
+                }
+                throw sessionError
+            }
+
+            do {
+                try commitPreparedSessionMutations(
+                    preparedSessionMutations,
+                    homeDirectory: homeDirectory
+                )
                 try sessionMutationsDidApply?()
                 sqliteRowsChanged = try repairSQLiteThreadTimestamps(
-                    codexHome: canonicalHome,
                     sessionMutations: preparedSessionMutations,
                     homeDirectory: homeDirectory
                 )
                 sqliteRowsChanged += try updateSQLite(
-                    codexHome: canonicalHome,
+                    homeDirectory: homeDirectory,
                     targetProvider: initial.targetProvider
                 )
-                _ = try reconcileSessionIndex(codexHome: canonicalHome)
-                _ = try reconcileWorkspaceOrder(codexHome: canonicalHome)
+                _ = try reconcileSessionIndex(homeDirectory: homeDirectory)
+                _ = try reconcileWorkspaceOrder(homeDirectory: homeDirectory)
                 try validatePreparedSessionMutations(
                     preparedSessionMutations,
                     homeDirectory: homeDirectory
@@ -227,6 +303,7 @@ final class ProviderSyncEngine {
 
                 let verified = try makeReport(
                     codexHome: canonicalHome,
+                    homeDirectory: homeDirectory,
                     includeArchivedSessions: includeArchivedSessions,
                     targetProviderOverride: targetProviderOverride
                 )
@@ -263,6 +340,7 @@ final class ProviderSyncEngine {
                     ) {
                         try makeReport(
                             codexHome: canonicalHome,
+                            homeDirectory: homeDirectory,
                             includeArchivedSessions: includeArchivedSessions,
                             targetProviderOverride: nil
                         )
@@ -321,6 +399,7 @@ final class ProviderSyncEngine {
         try restoreBackup(backup, codexHome: codexHome, homeDirectory: homeDirectory) {
             let report = try makeReport(
                 codexHome: codexHome,
+                homeDirectory: homeDirectory,
                 includeArchivedSessions: true,
                 targetProviderOverride: nil
             )
@@ -330,22 +409,32 @@ final class ProviderSyncEngine {
         }
     }
 
-    private func makeReport(codexHome: URL, includeArchivedSessions: Bool, targetProviderOverride: String?) throws -> ProviderSyncReport {
+    private func makeReport(
+        codexHome: URL,
+        homeDirectory: ProviderSyncHomeDirectory,
+        includeArchivedSessions: Bool,
+        targetProviderOverride: String?
+    ) throws -> ProviderSyncReport {
         try reportWillBuild?()
+        try homeDirectory.verifyRootPathIdentity()
         let sessionFiles = findSessionFiles(codexHome: codexHome, includeArchivedSessions: includeArchivedSessions)
+        try homeDirectory.verifyRootPathIdentity()
         var sessionProviders: [String: Int] = [:]
         var invalidSessionFiles = 0
         for file in sessionFiles {
-            guard let provider = try readSessionProvider(file: file) else {
+            guard let provider = try readSessionProvider(
+                file: file,
+                homeDirectory: homeDirectory
+            ) else {
                 invalidSessionFiles += 1
                 continue
             }
             sessionProviders[provider, default: 0] += 1
         }
 
-        let sqliteProviders = try readSQLiteProviders(codexHome: codexHome)
-        let latestSQLite = try latestSQLiteProvider(codexHome: codexHome)
-        let configProvider = try configProvider(codexHome: codexHome)
+        let sqliteProviders = try readSQLiteProviders(homeDirectory: homeDirectory)
+        let latestSQLite = try latestSQLiteProvider(homeDirectory: homeDirectory)
+        let configProvider = try configProvider(homeDirectory: homeDirectory)
         let targetProvider = targetProviderOverride
             ?? configProvider
             ?? "openai"
@@ -358,10 +447,15 @@ final class ProviderSyncEngine {
             providerSource = "默认 openai，config.toml 未设置"
         }
 
-        let indexIDs = try readSessionIndexIDs(codexHome: codexHome)
-        let sqliteRowsToRepair = try countSQLiteRowsToRepair(codexHome: codexHome, targetProvider: targetProvider)
-        let workspaceIssues = try readWorkspaceOrderIssues(codexHome: codexHome)
-        let visibilitySummary = try readVisibilitySummary(codexHome: codexHome)
+        let indexIDs = try readSessionIndexIDs(homeDirectory: homeDirectory)
+        let sqliteRowsToRepair = try countSQLiteRowsToRepair(
+            homeDirectory: homeDirectory,
+            targetProvider: targetProvider
+        )
+        let workspaceIssues = try readWorkspaceOrderIssues(homeDirectory: homeDirectory)
+        let visibilitySummary = try readVisibilitySummary(homeDirectory: homeDirectory)
+        let integrity = try sqliteIntegrity(homeDirectory: homeDirectory)
+        try homeDirectory.verifyRootPathIdentity()
         return ProviderSyncReport(
             codexHome: codexHome,
             targetProvider: targetProvider,
@@ -371,7 +465,7 @@ final class ProviderSyncEngine {
             invalidSessionFiles: invalidSessionFiles,
             sqliteProviders: sqliteProviders,
             sqliteRowsToRepair: sqliteRowsToRepair,
-            sqliteIntegrity: try sqliteIntegrity(codexHome: codexHome),
+            sqliteIntegrity: integrity,
             latestThreadID: latestSQLite.threadID,
             sessionIndexIDs: indexIDs.ids,
             sessionIndexRows: indexIDs.rows,
@@ -484,6 +578,16 @@ final class ProviderSyncEngine {
         }
     }
 
+    private func withPinnedHome<T>(
+        codexHome: URL,
+        body: (URL, ProviderSyncHomeDirectory) throws -> T
+    ) throws -> T {
+        let canonicalHome = canonicalProviderHome(codexHome)
+        let homeDirectory = try ProviderSyncHomeDirectory(canonicalURL: canonicalHome)
+        defer { try? homeDirectory.close() }
+        return try body(canonicalHome, homeDirectory)
+    }
+
     private func withMutationLease<T>(
         codexHome: URL,
         body: (URL, ProviderSyncHomeDirectory) throws -> T
@@ -511,14 +615,33 @@ final class ProviderSyncEngine {
         codexHome.standardizedFileURL.resolvingSymlinksInPath()
     }
 
-    func withDatabase<T>(path: String, readOnly: Bool, body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
+    func withBoundDatabase<T>(
+        homeDirectory: ProviderSyncHomeDirectory,
+        readOnly: Bool,
+        willOpen: (() throws -> Void)? = nil,
+        body: (SQLiteDatabaseConnection, ProviderSyncBoundRegularFile) throws -> T
+    ) throws -> T? {
+        guard let bound = try homeDirectory.bindRegularFile(
+            relativePath: "state_5.sqlite",
+            requireSingleLink: false
+        ) else {
+            return nil
+        }
+        defer { try? bound.close() }
+        try willOpen?()
+        try homeDirectory.verifyBoundFile(bound)
         let driver = SQLiteDatabaseDriver(
-            url: URL(fileURLWithPath: path),
+            url: bound.file.displayURL,
             readOnly: readOnly,
             busyTimeoutMilliseconds: 3_000,
             enableWAL: false
         )
-        return try driver.withConnection(body)
+        return try driver.withConnection { database in
+            try homeDirectory.verifyBoundFile(bound)
+            let result = try body(database, bound)
+            try homeDirectory.verifyBoundFile(bound)
+            return result
+        }
     }
 
     func queryRows<T>(database: SQLiteDatabaseConnection, sql: String, map: (SQLiteStatement) throws -> T) throws -> [T] {

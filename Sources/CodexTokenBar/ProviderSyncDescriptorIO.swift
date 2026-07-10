@@ -18,6 +18,23 @@ struct ProviderSyncRegularFileSnapshot {
     let metadata: stat
 }
 
+struct ProviderSyncIdentityConflictError: LocalizedError {
+    let message: String
+    let recoveryPaths: [String]
+
+    var errorDescription: String? {
+        guard !recoveryPaths.isEmpty else { return message }
+        return "\(message)；已保留 recovery path：\(recoveryPaths.joined(separator: "，"))"
+    }
+}
+
+struct ProviderSyncRegularFileReplacement {
+    let file: ProviderSyncPinnedFile
+    let retainedOriginalName: String
+    let originalIdentity: ProviderSyncFileIdentity
+    let replacementIdentity: ProviderSyncFileIdentity
+}
+
 final class ProviderSyncOwnedFileDescriptor {
     private(set) var rawValue: Int32
 
@@ -49,6 +66,29 @@ struct ProviderSyncPinnedFile {
     let parentIdentity: ProviderSyncFileIdentity
     let displayURL: URL
     let createdDirectories: [String]
+}
+
+final class ProviderSyncBoundRegularFile {
+    let file: ProviderSyncPinnedFile
+    let descriptor: ProviderSyncOwnedFileDescriptor
+    let identity: ProviderSyncFileIdentity
+    let metadata: stat
+
+    init(
+        file: ProviderSyncPinnedFile,
+        descriptor: ProviderSyncOwnedFileDescriptor,
+        identity: ProviderSyncFileIdentity,
+        metadata: stat
+    ) {
+        self.file = file
+        self.descriptor = descriptor
+        self.identity = identity
+        self.metadata = metadata
+    }
+
+    func close() throws {
+        try descriptor.close()
+    }
 }
 
 final class ProviderSyncHomeDirectory {
@@ -126,6 +166,77 @@ final class ProviderSyncHomeDirectory {
         throw providerSyncPOSIXError("读取相对目标元数据失败：\(file.displayURL.path)")
     }
 
+    func bindRegularFile(
+        relativePath: String,
+        requireSingleLink: Bool = false
+    ) throws -> ProviderSyncBoundRegularFile? {
+        let file = try pinFile(relativePath: relativePath, createParents: false)
+        try verifyParent(file)
+        guard let metadataBeforeOpen = try entryMetadata(file) else { return nil }
+        guard (metadataBeforeOpen.st_mode & S_IFMT) == S_IFREG else {
+            throw providerSyncDescriptorError("绑定目标不是常规文件：\(file.displayURL.path)")
+        }
+        if requireSingleLink, metadataBeforeOpen.st_nlink != 1 {
+            throw providerSyncDescriptorError("绑定目标存在 hardlink：\(file.displayURL.path)")
+        }
+        let identityBeforeOpen = ProviderSyncFileIdentity(metadataBeforeOpen)
+        let descriptor = Darwin.openat(
+            file.parent.rawValue,
+            file.name,
+            O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+        )
+        guard descriptor >= 0 else {
+            throw providerSyncPOSIXError("无法绑定相对常规文件：\(file.displayURL.path)")
+        }
+        let owned = ProviderSyncOwnedFileDescriptor(descriptor)
+        do {
+            let metadata = try providerSyncMetadata(descriptor: descriptor)
+            guard (metadata.st_mode & S_IFMT) == S_IFREG,
+                  ProviderSyncFileIdentity(metadata) == identityBeforeOpen else {
+                throw providerSyncDescriptorError("绑定文件在 fstatat/open 间发生变化：\(file.displayURL.path)")
+            }
+            if requireSingleLink, metadata.st_nlink != 1 {
+                throw providerSyncDescriptorError("打开后的绑定文件存在 hardlink：\(file.displayURL.path)")
+            }
+            guard let metadataAfterOpen = try entryMetadata(file),
+                  ProviderSyncFileIdentity(metadataAfterOpen) == identityBeforeOpen else {
+                throw providerSyncDescriptorError("绑定文件在 open 后发生变化：\(file.displayURL.path)")
+            }
+            try verifyParent(file)
+            return ProviderSyncBoundRegularFile(
+                file: file,
+                descriptor: owned,
+                identity: identityBeforeOpen,
+                metadata: metadata
+            )
+        } catch {
+            try? owned.close()
+            throw error
+        }
+    }
+
+    func verifyBoundFile(_ bound: ProviderSyncBoundRegularFile) throws {
+        try verifyParent(bound.file)
+        let openedMetadata = try providerSyncMetadata(descriptor: bound.descriptor.rawValue)
+        guard ProviderSyncFileIdentity(openedMetadata) == bound.identity,
+              let entry = try entryMetadata(bound.file),
+              ProviderSyncFileIdentity(entry) == bound.identity else {
+            throw providerSyncDescriptorError("绑定文件路径身份发生变化：\(bound.file.displayURL.path)")
+        }
+    }
+
+    func readOptionalRegularFile(
+        relativePath: String,
+        requireSingleLink: Bool = false
+    ) throws -> ProviderSyncRegularFileSnapshot? {
+        let file = try pinFile(relativePath: relativePath, createParents: false)
+        guard try entryMetadata(file) != nil else {
+            try verifyParent(file)
+            return nil
+        }
+        return try readRegularFile(file, requireSingleLink: requireSingleLink)
+    }
+
     func readRegularFile(
         _ file: ProviderSyncPinnedFile,
         expectedIdentity: ProviderSyncFileIdentity? = nil,
@@ -167,13 +278,13 @@ final class ProviderSyncHomeDirectory {
         )
     }
 
-    @discardableResult
     func replaceRegularFile(
         _ file: ProviderSyncPinnedFile,
         expectedIdentity: ProviderSyncFileIdentity,
         data: Data,
-        preserving metadata: stat
-    ) throws -> ProviderSyncFileIdentity {
+        preserving metadata: stat,
+        beforeExchange: (() throws -> Void)? = nil
+    ) throws -> ProviderSyncRegularFileReplacement {
         try verifyParent(file)
         guard let currentMetadata = try entryMetadata(file),
               (currentMetadata.st_mode & S_IFMT) == S_IFREG,
@@ -212,6 +323,9 @@ final class ProviderSyncHomeDirectory {
         guard fsync(temporaryDescriptor) == 0 else {
             throw providerSyncPOSIXError("同步 session replacement 失败：\(file.displayURL.path)")
         }
+        let replacementIdentity = ProviderSyncFileIdentity(
+            try providerSyncMetadata(descriptor: temporaryDescriptor)
+        )
         try temporary.close()
 
         try verifyParent(file)
@@ -220,20 +334,217 @@ final class ProviderSyncHomeDirectory {
               ProviderSyncFileIdentity(identityBeforeRename) == expectedIdentity else {
             throw providerSyncDescriptorError("原子替换前 session 身份发生变化：\(file.displayURL.path)")
         }
-        guard Darwin.renameat(
-            file.parent.rawValue,
-            temporaryName,
-            file.parent.rawValue,
-            file.name
-        ) == 0 else {
-            throw providerSyncPOSIXError("原子替换 session 失败：\(file.displayURL.path)")
+        try beforeExchange?()
+        try providerSyncExchange(
+            firstDirectory: file.parent.rawValue,
+            firstName: temporaryName,
+            secondDirectory: file.parent.rawValue,
+            secondName: file.name
+        )
+
+        let retainedMetadata = try providerSyncEntryMetadata(
+            directory: file.parent.rawValue,
+            name: temporaryName
+        )
+        let replacementMetadata = try entryMetadata(file)
+        guard let retainedMetadata,
+              let replacementMetadata,
+              ProviderSyncFileIdentity(retainedMetadata) == expectedIdentity,
+              ProviderSyncFileIdentity(replacementMetadata) == replacementIdentity else {
+            let retainedIdentity = retainedMetadata.map(ProviderSyncFileIdentity.init)
+            do {
+                try providerSyncExchange(
+                    firstDirectory: file.parent.rawValue,
+                    firstName: temporaryName,
+                    secondDirectory: file.parent.rawValue,
+                    secondName: file.name
+                )
+                guard let revertedDestination = try entryMetadata(file),
+                      let revertedTemporary = try providerSyncEntryMetadata(
+                        directory: file.parent.rawValue,
+                        name: temporaryName
+                      ),
+                      ProviderSyncFileIdentity(revertedTemporary) == replacementIdentity,
+                      retainedIdentity == nil
+                        || ProviderSyncFileIdentity(revertedDestination) == retainedIdentity else {
+                    temporaryExists = false
+                    throw ProviderSyncIdentityConflictError(
+                        message: "session identity mismatch，atomic revert 后身份无法确认",
+                        recoveryPaths: [
+                            file.displayURL.path,
+                            file.displayURL.deletingLastPathComponent()
+                                .appendingPathComponent(temporaryName).path
+                        ]
+                    )
+                }
+            } catch let conflict as ProviderSyncIdentityConflictError {
+                throw conflict
+            } catch {
+                temporaryExists = false
+                throw ProviderSyncIdentityConflictError(
+                    message: "session identity mismatch，atomic revert 失败：\(error.localizedDescription)",
+                    recoveryPaths: [
+                        file.displayURL.path,
+                        file.displayURL.deletingLastPathComponent()
+                            .appendingPathComponent(temporaryName).path
+                    ]
+                )
+            }
+            throw ProviderSyncIdentityConflictError(
+                message: "session destination 在最终检查与 exchange 之间发生身份变化",
+                recoveryPaths: [file.displayURL.path]
+            )
         }
-        temporaryExists = false
 
         try verifyParent(file)
-        let result = try readRegularFile(file, requireSingleLink: true)
+        let result = try readRegularFile(
+            file,
+            expectedIdentity: replacementIdentity,
+            requireSingleLink: true
+        )
         guard providerSyncSHA256Hex(result.data) == providerSyncSHA256Hex(data) else {
-            throw providerSyncDescriptorError("session replacement 写后摘要不一致：\(file.displayURL.path)")
+            temporaryExists = false
+            throw ProviderSyncIdentityConflictError(
+                message: "session replacement 写后摘要不一致",
+                recoveryPaths: [
+                    file.displayURL.path,
+                    file.displayURL.deletingLastPathComponent()
+                        .appendingPathComponent(temporaryName).path
+                ]
+            )
+        }
+        temporaryExists = false
+        return ProviderSyncRegularFileReplacement(
+            file: file,
+            retainedOriginalName: temporaryName,
+            originalIdentity: expectedIdentity,
+            replacementIdentity: result.identity
+        )
+    }
+
+    func commitRegularFileReplacement(_ replacement: ProviderSyncRegularFileReplacement) throws {
+        try verifyParent(replacement.file)
+        guard let current = try entryMetadata(replacement.file),
+              ProviderSyncFileIdentity(current) == replacement.replacementIdentity,
+              let retained = try providerSyncEntryMetadata(
+                directory: replacement.file.parent.rawValue,
+                name: replacement.retainedOriginalName
+              ),
+              ProviderSyncFileIdentity(retained) == replacement.originalIdentity else {
+            throw ProviderSyncIdentityConflictError(
+                message: "replacement commit 前 destination 或 retained original 身份发生变化",
+                recoveryPaths: [
+                    replacement.file.displayURL.path,
+                    replacement.file.displayURL.deletingLastPathComponent()
+                        .appendingPathComponent(replacement.retainedOriginalName).path
+                ]
+            )
+        }
+        try providerSyncUnlinkIfExists(
+            directory: replacement.file.parent.rawValue,
+            name: replacement.retainedOriginalName
+        )
+    }
+
+    func rollbackRegularFileReplacement(_ replacement: ProviderSyncRegularFileReplacement) throws {
+        try verifyParent(replacement.file)
+        guard let current = try entryMetadata(replacement.file),
+              let retained = try providerSyncEntryMetadata(
+                directory: replacement.file.parent.rawValue,
+                name: replacement.retainedOriginalName
+              ),
+              ProviderSyncFileIdentity(current) == replacement.replacementIdentity,
+              ProviderSyncFileIdentity(retained) == replacement.originalIdentity else {
+            throw ProviderSyncIdentityConflictError(
+                message: "session rollback 前 identity 不一致",
+                recoveryPaths: [
+                    replacement.file.displayURL.path,
+                    replacement.file.displayURL.deletingLastPathComponent()
+                        .appendingPathComponent(replacement.retainedOriginalName).path
+                ]
+            )
+        }
+        try providerSyncExchange(
+            firstDirectory: replacement.file.parent.rawValue,
+            firstName: replacement.retainedOriginalName,
+            secondDirectory: replacement.file.parent.rawValue,
+            secondName: replacement.file.name
+        )
+        guard let restored = try entryMetadata(replacement.file),
+              let discardedReplacement = try providerSyncEntryMetadata(
+                directory: replacement.file.parent.rawValue,
+                name: replacement.retainedOriginalName
+              ),
+              ProviderSyncFileIdentity(restored) == replacement.originalIdentity,
+              ProviderSyncFileIdentity(discardedReplacement) == replacement.replacementIdentity else {
+            throw ProviderSyncIdentityConflictError(
+                message: "session rollback exchange 后 identity 不一致",
+                recoveryPaths: [
+                    replacement.file.displayURL.path,
+                    replacement.file.displayURL.deletingLastPathComponent()
+                        .appendingPathComponent(replacement.retainedOriginalName).path
+                ]
+            )
+        }
+        try providerSyncUnlinkIfExists(
+            directory: replacement.file.parent.rawValue,
+            name: replacement.retainedOriginalName
+        )
+    }
+
+    @discardableResult
+    func createRegularFileAtomically(
+        _ file: ProviderSyncPinnedFile,
+        data: Data,
+        metadata: stat? = nil,
+        beforePlacement: (() throws -> Void)? = nil
+    ) throws -> ProviderSyncFileIdentity {
+        try verifyParent(file)
+        guard try entryMetadata(file) == nil else {
+            throw ProviderSyncIdentityConflictError(
+                message: "atomic create 前目标已存在",
+                recoveryPaths: [file.displayURL.path]
+            )
+        }
+        let temporaryName = ".provider-fixed-write-\(UUID().uuidString)"
+        try providerSyncCreateRegularFile(
+            directory: file.parent.rawValue,
+            name: temporaryName,
+            data: data,
+            metadata: metadata
+        )
+        var temporaryExists = true
+        defer {
+            if temporaryExists {
+                try? providerSyncUnlinkIfExists(
+                    directory: file.parent.rawValue,
+                    name: temporaryName
+                )
+            }
+        }
+        guard let temporaryMetadata = try providerSyncEntryMetadata(
+            directory: file.parent.rawValue,
+            name: temporaryName
+        ) else {
+            throw providerSyncDescriptorError("atomic create temporary 缺失")
+        }
+        let temporaryIdentity = ProviderSyncFileIdentity(temporaryMetadata)
+        try beforePlacement?()
+        try verifyParent(file)
+        try providerSyncRenameExclusive(
+            fromDirectory: file.parent.rawValue,
+            fromName: temporaryName,
+            toDirectory: file.parent.rawValue,
+            toName: file.name
+        )
+        temporaryExists = false
+        let result = try readRegularFile(
+            file,
+            expectedIdentity: temporaryIdentity,
+            requireSingleLink: true
+        )
+        guard providerSyncSHA256Hex(result.data) == providerSyncSHA256Hex(data) else {
+            throw providerSyncDescriptorError("atomic create 写后摘要不一致：\(file.displayURL.path)")
         }
         return result.identity
     }
@@ -298,7 +609,7 @@ final class ProviderSyncHomeDirectory {
         )
     }
 
-    private func verifyRootPathIdentity() throws {
+    func verifyRootPathIdentity() throws {
         let descriptor = Darwin.open(
             canonicalURL.path,
             O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
@@ -380,6 +691,15 @@ func providerSyncMetadata(descriptor: Int32) throws -> stat {
     return metadata
 }
 
+func providerSyncDescriptorPath(_ descriptor: Int32) -> URL? {
+    guard descriptor >= 0 else { return nil }
+    var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+    guard fcntl(descriptor, F_GETPATH, &buffer) == 0 else { return nil }
+    let end = buffer.firstIndex(of: 0) ?? buffer.endIndex
+    let bytes = buffer[..<end].map { UInt8(bitPattern: $0) }
+    return URL(fileURLWithPath: String(decoding: bytes, as: UTF8.self))
+}
+
 func providerSyncEntryMetadata(directory: Int32, name: String) throws -> stat? {
     var metadata = stat()
     if fstatat(directory, name, &metadata, AT_SYMLINK_NOFOLLOW) == 0 {
@@ -450,8 +770,20 @@ func providerSyncCreateRegularFile(
 
 func providerSyncReadRegularFile(
     directory: Int32,
-    name: String
+    name: String,
+    expectedIdentity: ProviderSyncFileIdentity? = nil,
+    willOpen: (() throws -> Void)? = nil,
+    didRead: (() throws -> Void)? = nil
 ) throws -> ProviderSyncRegularFileSnapshot {
+    guard let metadataBeforeOpen = try providerSyncEntryMetadata(directory: directory, name: name),
+          (metadataBeforeOpen.st_mode & S_IFMT) == S_IFREG else {
+        throw providerSyncDescriptorError("descriptor 相对 entry 不是常规文件：\(name)")
+    }
+    let identityBeforeOpen = ProviderSyncFileIdentity(metadataBeforeOpen)
+    if let expectedIdentity, identityBeforeOpen != expectedIdentity {
+        throw providerSyncDescriptorError("descriptor 相对 entry 身份发生变化：\(name)")
+    }
+    try willOpen?()
     let descriptor = Darwin.openat(
         directory,
         name,
@@ -466,11 +798,56 @@ func providerSyncReadRegularFile(
     guard (metadata.st_mode & S_IFMT) == S_IFREG else {
         throw providerSyncDescriptorError("descriptor 相对 entry 不是常规文件：\(name)")
     }
+    let openedIdentity = ProviderSyncFileIdentity(metadata)
+    guard openedIdentity == identityBeforeOpen,
+          expectedIdentity == nil || openedIdentity == expectedIdentity else {
+        throw providerSyncDescriptorError("descriptor 相对 entry 在 precheck/open 间发生变化：\(name)")
+    }
+    let data = try providerSyncReadAll(descriptor: descriptor)
+    try didRead?()
+    guard let metadataAfterRead = try providerSyncEntryMetadata(directory: directory, name: name),
+          ProviderSyncFileIdentity(metadataAfterRead) == openedIdentity else {
+        throw providerSyncDescriptorError("descriptor 相对 entry 在读取期间发生变化：\(name)")
+    }
     return ProviderSyncRegularFileSnapshot(
-        data: try providerSyncReadAll(descriptor: descriptor),
-        identity: ProviderSyncFileIdentity(metadata),
+        data: data,
+        identity: openedIdentity,
         metadata: metadata
     )
+}
+
+func providerSyncExchange(
+    firstDirectory: Int32,
+    firstName: String,
+    secondDirectory: Int32,
+    secondName: String
+) throws {
+    guard renameatx_np(
+        firstDirectory,
+        firstName,
+        secondDirectory,
+        secondName,
+        UInt32(RENAME_SWAP)
+    ) == 0 else {
+        throw providerSyncPOSIXError("descriptor 相对 atomic exchange 失败：\(firstName) <-> \(secondName)")
+    }
+}
+
+func providerSyncRenameExclusive(
+    fromDirectory: Int32,
+    fromName: String,
+    toDirectory: Int32,
+    toName: String
+) throws {
+    guard renameatx_np(
+        fromDirectory,
+        fromName,
+        toDirectory,
+        toName,
+        UInt32(RENAME_EXCL)
+    ) == 0 else {
+        throw providerSyncPOSIXError("descriptor 相对 exclusive rename 失败：\(fromName) -> \(toName)")
+    }
 }
 
 func providerSyncRename(

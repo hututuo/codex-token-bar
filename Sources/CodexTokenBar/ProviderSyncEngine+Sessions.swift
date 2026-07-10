@@ -6,6 +6,7 @@ final class ProviderSyncPreparedSessionMutation {
     let source: ProviderSyncRegularFileSnapshot
     let replacementData: Data?
     var currentIdentity: ProviderSyncFileIdentity
+    var replacement: ProviderSyncRegularFileReplacement?
 
     init(
         binding: ProviderSyncSessionMutationBinding,
@@ -18,6 +19,7 @@ final class ProviderSyncPreparedSessionMutation {
         self.source = source
         self.replacementData = replacementData
         currentIdentity = source.identity
+        replacement = nil
     }
 
     var expectedData: Data {
@@ -26,10 +28,14 @@ final class ProviderSyncPreparedSessionMutation {
 }
 
 extension ProviderSyncEngine {
-    func configProvider(codexHome: URL) throws -> String? {
-        let config = codexHome.appendingPathComponent("config.toml")
-        guard fileManager.fileExists(atPath: config.path) else { return nil }
-        let text = try String(contentsOf: config, encoding: .utf8)
+    func configProvider(homeDirectory: ProviderSyncHomeDirectory) throws -> String? {
+        guard let data = try homeDirectory.readOptionalRegularFile(
+            relativePath: "config.toml",
+            requireSingleLink: true
+        )?.data else { return nil }
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw providerSyncDescriptorError("config.toml 不是 UTF-8")
+        }
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = rawLine.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
             guard let range = line.range(of: #"^\s*model_provider\s*=\s*"([^"]+)""#, options: .regularExpression) else { continue }
@@ -61,21 +67,27 @@ extension ProviderSyncEngine {
         return files.sorted { $0.path < $1.path }
     }
 
-    func newestSessionProvider(in files: [URL]) throws -> (provider: String?, file: URL?) {
-        let sorted = files.sorted {
-            (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast >
-                ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
+    func readSessionProvider(
+        file: URL,
+        homeDirectory: ProviderSyncHomeDirectory
+    ) throws -> String? {
+        let canonicalHome = homeDirectory.canonicalURL.standardizedFileURL
+        let standardizedFile = file.standardizedFileURL
+        guard standardizedFile.path.hasPrefix(canonicalHome.path + "/") else {
+            throw providerSyncDescriptorError("session 文件不在 pinned Codex Home 内：\(file.path)")
         }
-        for file in sorted {
-            if let provider = try readSessionProvider(file: file) {
-                return (provider, file)
-            }
+        let relativePath = String(standardizedFile.path.dropFirst(canonicalHome.path.count + 1))
+        let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count >= 2,
+              components.first == "sessions" || components.first == "archived_sessions",
+              relativePath.hasSuffix(".jsonl") else {
+            throw providerSyncDescriptorError("session 文件路径不在允许范围内：\(relativePath)")
         }
-        return (nil, nil)
-    }
-
-    func readSessionProvider(file: URL) throws -> String? {
-        guard let object = try readFirstLineJSON(file: file),
+        let snapshot = try homeDirectory.readOptionalRegularFile(
+            relativePath: relativePath,
+            requireSingleLink: true
+        )
+        guard let object = try snapshot.flatMap({ try readFirstLineJSON(data: $0.data) }),
               object["type"] as? String == "session_meta",
               let payload = object["payload"] as? [String: Any] else {
             return nil
@@ -83,28 +95,16 @@ extension ProviderSyncEngine {
         return (payload["model_provider"] as? String) ?? "(missing)"
     }
 
-    func readFirstLineJSON(file: URL) throws -> [String: Any]? {
-        guard let firstLine = try readFirstLineData(file: file), !firstLine.isEmpty else { return nil }
+    func readFirstLineJSON(data: Data) throws -> [String: Any]? {
+        guard let firstLine = readFirstLineData(data: data), !firstLine.isEmpty else { return nil }
         let value = try JSONSerialization.jsonObject(with: firstLine, options: [])
         return value as? [String: Any]
     }
 
-    func readFirstLineData(file: URL) throws -> Data? {
-        let handle = try FileHandle(forReadingFrom: file)
-        defer { try? handle.close() }
-
-        var buffer = Data()
-        while true {
-            let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
-            guard !chunk.isEmpty else {
-                return buffer.isEmpty ? nil : buffer
-            }
-            if let newline = chunk.firstIndex(of: 0x0A) {
-                buffer.append(chunk[..<newline])
-                return buffer
-            }
-            buffer.append(chunk)
-        }
+    func readFirstLineData(data: Data) -> Data? {
+        guard !data.isEmpty else { return nil }
+        guard let newline = data.firstIndex(of: 0x0A) else { return data }
+        return Data(data[..<newline])
     }
 
     func prepareSessionMutations(
@@ -144,13 +144,52 @@ extension ProviderSyncEngine {
         homeDirectory: ProviderSyncHomeDirectory
     ) throws -> Bool {
         guard let replacementData = mutation.replacementData else { return false }
-        mutation.currentIdentity = try homeDirectory.replaceRegularFile(
+        let replacement = try homeDirectory.replaceRegularFile(
             mutation.file,
             expectedIdentity: mutation.currentIdentity,
             data: replacementData,
-            preserving: mutation.source.metadata
+            preserving: mutation.source.metadata,
+            beforeExchange: {
+                try self.sessionReplacementWillExchange?(mutation.file.displayURL)
+            }
         )
+        mutation.replacement = replacement
+        mutation.currentIdentity = replacement.replacementIdentity
         return true
+    }
+
+    func commitPreparedSessionMutations(
+        _ mutations: [ProviderSyncPreparedSessionMutation],
+        homeDirectory: ProviderSyncHomeDirectory
+    ) throws {
+        for mutation in mutations {
+            guard let replacement = mutation.replacement else { continue }
+            try homeDirectory.commitRegularFileReplacement(replacement)
+            mutation.replacement = nil
+        }
+    }
+
+    func rollbackPreparedSessionMutations(
+        _ mutations: [ProviderSyncPreparedSessionMutation],
+        homeDirectory: ProviderSyncHomeDirectory
+    ) throws {
+        var failures: [String] = []
+        for mutation in mutations.reversed() {
+            guard let replacement = mutation.replacement else { continue }
+            do {
+                try homeDirectory.rollbackRegularFileReplacement(replacement)
+                mutation.currentIdentity = replacement.originalIdentity
+                mutation.replacement = nil
+            } catch {
+                failures.append("\(mutation.file.displayURL.path)：\(error.localizedDescription)")
+            }
+        }
+        guard failures.isEmpty else {
+            throw ProviderSyncIdentityConflictError(
+                message: "session batch rollback 未完整恢复",
+                recoveryPaths: failures
+            )
+        }
     }
 
     func validatePreparedSessionMutations(
