@@ -522,7 +522,7 @@ EOF
     if [[ "$copy_status" -ne 0 || "$sign_status" -ne 0 ]]; then
       log "Install failed; restoring the backup created for this run..."
       restore_backup_files "$backup_dir" || true
-      fail "failed to install or re-sign Codex.app. Backup: $backup_dir"
+      fail "failed to install or re-sign the Codex app. Backup: $backup_dir"
     fi
 
     codesign --verify --deep --strict --verbose=2 "$APP_PATH" > "$backup_dir/codesign.verify.after.txt" 2>&1
