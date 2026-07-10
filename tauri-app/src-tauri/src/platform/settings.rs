@@ -16,6 +16,10 @@ use std::{
 
 const RECOVERY_DIAGNOSTIC_LIMIT: usize = 8;
 const RECOVERY_CANDIDATE_MAX_BYTES: u64 = 1024 * 1024;
+const RECOVERY_TOTAL_CANDIDATE_LIMIT: usize = 16;
+const RECOVERY_DIRECTORY_ENTRY_LIMIT: usize = 1024;
+const RECOVERY_TOTAL_BYTES_LIMIT: u64 = 2 * 1024 * 1024;
+const COMMIT_MARKER_MAX_BYTES: u64 = 4096;
 const TEMP_CREATE_ATTEMPT_LIMIT: usize = 16;
 static SETTINGS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -32,11 +36,19 @@ struct SettingsMutationOutcome {
     diagnostic: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct RecoveryCandidate {
     path: PathBuf,
     freshness: u128,
+    protocol: RecoveryCandidateProtocol,
+    size: u64,
     precheck: Option<RecoveryCandidatePrecheck>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecoveryCandidateProtocol {
+    LegacyV3,
+    TransactionalV4,
 }
 
 #[derive(Debug)]
@@ -44,12 +56,29 @@ enum RecoveryCandidateRead {
     Valid(AppSettingsSnapshot),
     ConclusivelyInvalid(String),
     Transient(String),
+    TotalLimitExceeded(String),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum RecoveryCandidatePrecheck {
     ConclusivelyInvalid(String),
     Transient(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SettingsCommitMarker {
+    Pending {
+        generation: u128,
+        candidate_name: String,
+    },
+    Committed {
+        generation: u128,
+    },
+}
+
+#[derive(Debug)]
+struct RecoveryReadBudget {
+    remaining_bytes: u64,
 }
 
 pub fn read_app_settings() -> Result<AppSettingsSnapshot, String> {
@@ -148,7 +177,7 @@ fn mutate_app_settings_at_with_hooks<AfterRead, BeforeReplace, SyncParent, Mutat
 where
     AfterRead: FnOnce(&AppSettingsSnapshot),
     BeforeReplace: FnOnce(&Path, &Path),
-    SyncParent: FnOnce(&Path) -> Result<(), String>,
+    SyncParent: FnMut(&Path) -> Result<(), String>,
     Mutation: FnOnce(&mut AppSettingsSnapshot),
 {
     mutate_app_settings_at_with_transaction_hooks(
@@ -179,7 +208,7 @@ where
     BeforeLock: FnOnce(),
     AfterRead: FnOnce(&AppSettingsSnapshot),
     BeforeReplace: FnOnce(&Path, &Path),
-    SyncParent: FnOnce(&Path) -> Result<(), String>,
+    SyncParent: FnMut(&Path) -> Result<(), String>,
     Mutation: FnOnce(&mut AppSettingsSnapshot),
 {
     before_lock();
@@ -197,15 +226,121 @@ where
     })
 }
 
+#[cfg(test)]
+fn mutate_app_settings_at_with_cleanup_hook<CleanupCandidate, Mutation>(
+    path: &Path,
+    cleanup_candidate: CleanupCandidate,
+    mutation: Mutation,
+) -> Result<SettingsMutationOutcome, String>
+where
+    CleanupCandidate: FnMut(&Path) -> Result<(), String>,
+    Mutation: FnOnce(&mut AppSettingsSnapshot),
+{
+    let _guard = settings_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut settings = read_app_settings_at(path)?;
+    mutation(&mut settings);
+    let saved = sanitize_app_settings(settings);
+    let diagnostic = write_app_settings_at_with_controls(
+        path,
+        &saved,
+        |_, _| {},
+        sync_parent_directory,
+        cleanup_candidate,
+    )?;
+    Ok(SettingsMutationOutcome {
+        settings: saved,
+        diagnostic,
+    })
+}
+
 fn settings_lock() -> &'static Mutex<()> {
     SETTINGS_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn write_app_settings_at(
+fn install_recovered_settings_at(
     path: &Path,
     settings: &AppSettingsSnapshot,
+    source_candidate: &Path,
 ) -> Result<Option<String>, String> {
-    write_app_settings_at_with_hooks(path, settings, |_, _| {}, sync_parent_directory)
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("设置文件缺少父目录：{}", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("创建设置目录失败：{}（{}）", parent.display(), error))?;
+    let bytes = serde_json::to_vec_pretty(settings).map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > RECOVERY_CANDIDATE_MAX_BYTES {
+        return Err(format!(
+            "恢复快照大小 {} 超过安装上限 {RECOVERY_CANDIDATE_MAX_BYTES} bytes",
+            bytes.len()
+        ));
+    }
+
+    let existing_candidates = interrupted_temp_candidates(path)?;
+    let marker = read_commit_marker(path)?;
+    let eligible =
+        eligible_recovery_candidates_for_marker(marker.clone(), existing_candidates.clone())?;
+    if !eligible
+        .iter()
+        .any(|candidate| candidate.path == source_candidate && candidate.precheck.is_none())
+    {
+        return Err(format!(
+            "恢复源候选在安装前已缺失或不再符合提交标记：{}",
+            source_candidate.display()
+        ));
+    }
+    let generation = next_ready_generation(&existing_candidates, marker.as_ref())?;
+    let (in_progress_path, _, mut temp_file) = create_unique_in_progress_file(path)?;
+    if let Err(error) = temp_file
+        .write_all(&bytes)
+        .and_then(|_| temp_file.flush())
+        .and_then(|_| temp_file.sync_all())
+    {
+        drop(temp_file);
+        let _ = std::fs::remove_file(&in_progress_path);
+        return Err(format!(
+            "写入恢复安装临时文件失败：{}（{}）",
+            in_progress_path.display(),
+            error
+        ));
+    }
+    drop(temp_file);
+
+    // The selected source candidate is already durable recovery state, so recovery can install
+    // the synced snapshot directly without temporarily exceeding the candidate inventory bound.
+    replace_settings_file(&in_progress_path, path).map_err(|error| {
+        format!(
+            "原子安装恢复设置失败：{} -> {}（{}）；原恢复候选仍保留：{}",
+            in_progress_path.display(),
+            path.display(),
+            error,
+            source_candidate.display()
+        )
+    })?;
+    if let Err(error) = sync_parent_directory(parent) {
+        return Ok(Some(format!(
+            "恢复设置已提交但持久性未确认：{}（目录同步失败：{}；原恢复候选仍保留：{}）",
+            path.display(),
+            error,
+            source_candidate.display()
+        )));
+    }
+
+    let committed_marker = SettingsCommitMarker::Committed { generation };
+    if let Err(error) = write_commit_marker(path, &committed_marker, &mut sync_parent_directory) {
+        return Ok(Some(format!(
+            "恢复设置已持久提交但完成标记持久性未确认：{}（{}；原恢复候选仍保留：{}）",
+            path.display(),
+            error,
+            source_candidate.display()
+        )));
+    }
+
+    Ok(cleanup_superseded_ready_candidates(
+        &existing_candidates,
+        &mut discard_recovery_candidate,
+    ))
 }
 
 fn write_app_settings_at_with_hooks<BeforeReplace, SyncParent>(
@@ -216,8 +351,31 @@ fn write_app_settings_at_with_hooks<BeforeReplace, SyncParent>(
 ) -> Result<Option<String>, String>
 where
     BeforeReplace: FnOnce(&Path, &Path),
-    SyncParent: FnOnce(&Path) -> Result<(), String>,
+    SyncParent: FnMut(&Path) -> Result<(), String>,
 {
+    write_app_settings_at_with_controls(
+        path,
+        settings,
+        before_replace,
+        sync_parent,
+        discard_recovery_candidate,
+    )
+}
+
+fn write_app_settings_at_with_controls<BeforeReplace, SyncParent, CleanupCandidate>(
+    path: &Path,
+    settings: &AppSettingsSnapshot,
+    before_replace: BeforeReplace,
+    sync_parent: SyncParent,
+    cleanup_candidate: CleanupCandidate,
+) -> Result<Option<String>, String>
+where
+    BeforeReplace: FnOnce(&Path, &Path),
+    SyncParent: FnMut(&Path) -> Result<(), String>,
+    CleanupCandidate: FnMut(&Path) -> Result<(), String>,
+{
+    let mut sync_parent = sync_parent;
+    let mut cleanup_candidate = cleanup_candidate;
     let parent = path
         .parent()
         .ok_or_else(|| format!("设置文件缺少父目录：{}", path.display()))?;
@@ -225,7 +383,14 @@ where
         .map_err(|error| format!("创建设置目录失败：{}（{}）", parent.display(), error))?;
 
     let bytes = serde_json::to_vec_pretty(settings).map_err(|error| error.to_string())?;
-    let (in_progress_path, sequence, mut temp_file) = create_unique_in_progress_file(path)?;
+    let existing_candidates = interrupted_temp_candidates(path)?;
+    ensure_new_ready_candidate_fits(&existing_candidates, bytes.len() as u64)?;
+    let (existing_marker, marker_repair_diagnostic) =
+        read_or_repair_commit_marker_for_write(path, &existing_candidates, &mut sync_parent)?;
+    let generation = next_ready_generation(&existing_candidates, existing_marker.as_ref())
+        .map_err(|error| attach_prior_diagnostic(error, &marker_repair_diagnostic))?;
+    let (in_progress_path, sequence, mut temp_file) = create_unique_in_progress_file(path)
+        .map_err(|error| attach_prior_diagnostic(error, &marker_repair_diagnostic))?;
     if let Err(error) = temp_file
         .write_all(&bytes)
         .and_then(|_| temp_file.flush())
@@ -233,40 +398,102 @@ where
     {
         drop(temp_file);
         let _ = std::fs::remove_file(&in_progress_path);
-        return Err(format!(
-            "写入设置进行中临时文件失败：{}（{}）",
-            in_progress_path.display(),
-            error
+        return Err(attach_prior_diagnostic(
+            format!(
+                "写入设置进行中临时文件失败：{}（{}）",
+                in_progress_path.display(),
+                error
+            ),
+            &marker_repair_diagnostic,
         ));
     }
     drop(temp_file);
 
-    let ready_path = ready_settings_temp_path(path, sequence)?;
-    std::fs::rename(&in_progress_path, &ready_path).map_err(|error| {
-        format!(
-            "发布设置恢复候选失败：{} -> {}（{}）；进行中文件保持不可恢复状态",
-            in_progress_path.display(),
-            ready_path.display(),
-            error
+    let ready_path = ready_settings_temp_path(path, generation, sequence)
+        .map_err(|error| attach_prior_diagnostic(error, &marker_repair_diagnostic))?;
+    replace_settings_file(&in_progress_path, &ready_path).map_err(|error| {
+        attach_prior_diagnostic(
+            format!(
+                "发布设置恢复候选失败：{} -> {}（{}）；进行中文件保持不可恢复状态",
+                in_progress_path.display(),
+                ready_path.display(),
+                error
+            ),
+            &marker_repair_diagnostic,
+        )
+    })?;
+    if let Err(error) = sync_parent(parent) {
+        return Err(attach_prior_diagnostic(
+            format!(
+                "设置恢复候选已发布但目录持久性未确认，未尝试替换主设置：{}（{}）",
+                ready_path.display(),
+                error
+            ),
+            &marker_repair_diagnostic,
+        ));
+    }
+
+    let candidate_name = ready_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("恢复候选文件名不是有效 UTF-8：{}", ready_path.display()))?
+        .to_owned();
+    let pending_marker = SettingsCommitMarker::Pending {
+        generation,
+        candidate_name,
+    };
+    write_commit_marker(path, &pending_marker, &mut sync_parent).map_err(|error| {
+        attach_prior_diagnostic(
+            format!(
+                "设置恢复候选已持久发布但待提交标记失败，未尝试替换主设置：{}（{}）",
+                ready_path.display(),
+                error
+            ),
+            &marker_repair_diagnostic,
         )
     })?;
 
+    // Crash order: durable ready -> durable pending marker -> primary -> durable committed marker.
+    // Pending permits only its exact ready path; committed rejects every leftover ready path.
     before_replace(&ready_path, path);
     replace_settings_file(&ready_path, path).map_err(|error| {
-        format!(
-            "原子替换设置文件失败：{} -> {}（{}）；已保留临时文件用于恢复",
-            ready_path.display(),
-            path.display(),
-            error
+        attach_prior_diagnostic(
+            format!(
+                "原子替换设置文件失败：{} -> {}（{}）；已保留临时文件用于恢复",
+                ready_path.display(),
+                path.display(),
+                error
+            ),
+            &marker_repair_diagnostic,
         )
     })?;
-    Ok(sync_parent(parent).err().map(|error| {
-        format!(
-            "设置文件已提交但持久性未确认：{}（目录同步失败：{}）",
-            path.display(),
-            error
-        )
-    }))
+    if let Err(error) = sync_parent(parent) {
+        return Ok(merge_diagnostics(
+            marker_repair_diagnostic,
+            Some(format!(
+                "设置文件已提交但持久性未确认：{}（目录同步失败：{}；待提交标记继续阻止旧候选回滚）",
+                path.display(),
+                error
+            )),
+        ));
+    }
+
+    let committed_marker = SettingsCommitMarker::Committed { generation };
+    if let Err(error) = write_commit_marker(path, &committed_marker, &mut sync_parent) {
+        return Ok(merge_diagnostics(
+            marker_repair_diagnostic,
+            Some(format!(
+                "设置文件已持久提交但完成标记持久性未确认：{}（{}；待提交标记继续阻止旧候选回滚）",
+                path.display(),
+                error
+            )),
+        ));
+    }
+
+    Ok(merge_diagnostics(
+        marker_repair_diagnostic,
+        cleanup_superseded_ready_candidates(&existing_candidates, &mut cleanup_candidate),
+    ))
 }
 
 fn create_unique_in_progress_file(path: &Path) -> Result<(PathBuf, u64, File), String> {
@@ -307,7 +534,11 @@ fn create_unique_in_progress_file(path: &Path) -> Result<(PathBuf, u64, File), S
     ))
 }
 
-fn ready_settings_temp_path(path: &Path, sequence: u64) -> Result<PathBuf, String> {
+fn ready_settings_temp_path(
+    path: &Path,
+    generation: u128,
+    sequence: u64,
+) -> Result<PathBuf, String> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -315,11 +546,456 @@ fn ready_settings_temp_path(path: &Path, sequence: u64) -> Result<PathBuf, Strin
     let parent = path
         .parent()
         .ok_or_else(|| format!("设置文件缺少父目录：{}", path.display()))?;
-    let published_at = system_time_key(SystemTime::now());
     Ok(parent.join(format!(
-        "{file_name}.tmp-ready-v3-{published_at:039}-{}-{sequence:020}",
+        "{file_name}.tmp-ready-v4-{generation:039}-{}-{sequence:020}",
         std::process::id(),
     )))
+}
+
+fn ensure_new_ready_candidate_fits(
+    existing: &[RecoveryCandidate],
+    new_bytes: u64,
+) -> Result<(), String> {
+    if new_bytes > RECOVERY_CANDIDATE_MAX_BYTES {
+        return Err(format!(
+            "不能发布新的设置恢复候选：单个候选大小 {new_bytes} 超过上限 {RECOVERY_CANDIDATE_MAX_BYTES} bytes"
+        ));
+    }
+    if existing.len() >= RECOVERY_TOTAL_CANDIDATE_LIMIT {
+        return Err(format!(
+            "不能发布新的设置恢复候选：现有候选数量 {} 已达到上限 {}",
+            existing.len(),
+            RECOVERY_TOTAL_CANDIDATE_LIMIT
+        ));
+    }
+    let existing_bytes = existing
+        .iter()
+        .try_fold(0u64, |total, candidate| total.checked_add(candidate.size));
+    let Some(total_bytes) = existing_bytes.and_then(|total| total.checked_add(new_bytes)) else {
+        return Err("不能发布新的设置恢复候选：候选累计大小溢出".into());
+    };
+    if total_bytes > RECOVERY_TOTAL_BYTES_LIMIT {
+        return Err(format!(
+            "不能发布新的设置恢复候选：累计大小 {total_bytes} 超过上限 {RECOVERY_TOTAL_BYTES_LIMIT} bytes"
+        ));
+    }
+    Ok(())
+}
+
+fn next_ready_generation(
+    candidates: &[RecoveryCandidate],
+    marker: Option<&SettingsCommitMarker>,
+) -> Result<u128, String> {
+    let marker_generation = marker.map_or(0, SettingsCommitMarker::generation);
+    let candidate_generation = candidates
+        .iter()
+        .map(|candidate| candidate.freshness)
+        .max()
+        .unwrap_or_default();
+    system_time_key(SystemTime::now())
+        .max(marker_generation)
+        .max(candidate_generation)
+        .checked_add(1)
+        .ok_or_else(|| "设置恢复代次已溢出".into())
+}
+
+impl SettingsCommitMarker {
+    fn generation(&self) -> u128 {
+        match self {
+            Self::Pending { generation, .. } | Self::Committed { generation } => *generation,
+        }
+    }
+
+    fn encode(&self) -> String {
+        match self {
+            Self::Pending {
+                generation,
+                candidate_name,
+            } => format!("v1 pending {generation} {candidate_name}\n"),
+            Self::Committed { generation } => format!("v1 committed {generation}\n"),
+        }
+    }
+}
+
+fn commit_marker_path(path: &Path) -> Result<PathBuf, String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("设置文件名不是有效 UTF-8：{}", path.display()))?;
+    Ok(path.with_file_name(format!("{file_name}.commit-v1")))
+}
+
+fn read_or_repair_commit_marker_for_write<SyncParent>(
+    settings_path: &Path,
+    candidates: &[RecoveryCandidate],
+    sync_parent: &mut SyncParent,
+) -> Result<(Option<SettingsCommitMarker>, Option<String>), String>
+where
+    SyncParent: FnMut(&Path) -> Result<(), String>,
+{
+    match read_commit_marker(settings_path) {
+        Ok(marker) => Ok((marker, None)),
+        Err(marker_error) => {
+            validate_authoritative_primary_for_marker_repair(settings_path).map_err(
+                |primary_error| {
+                    format!(
+                        "{marker_error}；主设置不能证明为有效安全普通文件，拒绝修复提交标记：{primary_error}"
+                    )
+                },
+            )?;
+            let quarantine_path = quarantine_bad_commit_marker(settings_path, sync_parent)?;
+            let repaired_generation = next_ready_generation(candidates, None)?;
+            let repaired_marker = SettingsCommitMarker::Committed {
+                generation: repaired_generation,
+            };
+            write_commit_marker(settings_path, &repaired_marker, sync_parent).map_err(|error| {
+                format!(
+                    "损坏设置提交标记已隔离至 {}，但根据有效主设置重建耐久完成标记失败：{}",
+                    quarantine_path.display(),
+                    error
+                )
+            })?;
+            Ok((
+                Some(repaired_marker),
+                Some(format!(
+                    "损坏设置提交标记已隔离至 {}，并根据有效主设置重建完成标记（原错误：{}）",
+                    quarantine_path.display(),
+                    marker_error
+                )),
+            ))
+        }
+    }
+}
+
+fn validate_authoritative_primary_for_marker_repair(path: &Path) -> Result<(), String> {
+    let entry_metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("检查主设置目录项失败：{}（{}）", path.display(), error))?;
+    if !entry_metadata.file_type().is_file()
+        || entry_metadata.file_type().is_symlink()
+        || metadata_is_reparse_point(&entry_metadata)
+    {
+        return Err(format!("主设置不是安全普通文件：{}", path.display()));
+    }
+
+    let mut options = OpenOptions::new();
+    options.read(true);
+    configure_recovery_open_no_follow(&mut options);
+    let mut file = options
+        .open(path)
+        .map_err(|error| format!("安全打开主设置失败：{}（{}）", path.display(), error))?;
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| format!("读取已打开主设置元数据失败：{}", error))?;
+    if !opened_metadata.file_type().is_file() || metadata_is_reparse_point(&opened_metadata) {
+        return Err(format!("已打开主设置不是安全普通文件：{}", path.display()));
+    }
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("读取主设置用于提交标记修复失败：{}", error))?;
+    parse_settings(path, &bytes).map(|_| ())
+}
+
+fn quarantine_bad_commit_marker<SyncParent>(
+    settings_path: &Path,
+    sync_parent: &mut SyncParent,
+) -> Result<PathBuf, String>
+where
+    SyncParent: FnMut(&Path) -> Result<(), String>,
+{
+    let marker_path = commit_marker_path(settings_path)?;
+    let parent = marker_path
+        .parent()
+        .ok_or_else(|| format!("设置提交标记缺少父目录：{}", marker_path.display()))?;
+    let marker_name = marker_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "设置提交标记文件名不是有效 UTF-8：{}",
+                marker_path.display()
+            )
+        })?;
+
+    for _ in 0..TEMP_CREATE_ATTEMPT_LIMIT {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let quarantined_at = system_time_key(SystemTime::now());
+        let quarantine_path = marker_path.with_file_name(format!(
+            "{marker_name}.corrupt-v1-{quarantined_at:039}-{}-{sequence:020}",
+            std::process::id()
+        ));
+        let reservation = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&quarantine_path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "创建损坏设置提交标记隔离保留位失败：{}（{}）",
+                    quarantine_path.display(),
+                    error
+                ));
+            }
+        };
+        drop(reservation);
+
+        if let Err(error) = replace_settings_file(&marker_path, &quarantine_path) {
+            let _ = std::fs::remove_file(&quarantine_path);
+            return Err(format!(
+                "隔离损坏设置提交标记失败：{} -> {}（{}）",
+                marker_path.display(),
+                quarantine_path.display(),
+                error
+            ));
+        }
+        sync_parent(parent).map_err(|error| {
+            format!(
+                "损坏设置提交标记已隔离至 {}，但父目录持久性未确认：{}",
+                quarantine_path.display(),
+                error
+            )
+        })?;
+        return Ok(quarantine_path);
+    }
+
+    Err(format!(
+        "创建唯一损坏设置提交标记隔离路径失败：连续 {TEMP_CREATE_ATTEMPT_LIMIT} 次命名冲突"
+    ))
+}
+
+fn read_commit_marker(path: &Path) -> Result<Option<SettingsCommitMarker>, String> {
+    let marker_path = commit_marker_path(path)?;
+    let entry_metadata = match std::fs::symlink_metadata(&marker_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "检查设置提交标记目录项失败：{}（{}）",
+                marker_path.display(),
+                error
+            ));
+        }
+    };
+    if !entry_metadata.file_type().is_file()
+        || entry_metadata.file_type().is_symlink()
+        || metadata_is_reparse_point(&entry_metadata)
+    {
+        return Err(format!(
+            "设置提交标记不是安全普通文件：{}",
+            marker_path.display()
+        ));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    configure_recovery_open_no_follow(&mut options);
+    let file = match options.open(&marker_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "安全打开设置提交标记失败：{}（{}）",
+                marker_path.display(),
+                error
+            ));
+        }
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("读取设置提交标记元数据失败：{}", error))?;
+    if !metadata.file_type().is_file() || metadata_is_reparse_point(&metadata) {
+        return Err(format!(
+            "设置提交标记不是安全普通文件：{}",
+            marker_path.display()
+        ));
+    }
+    if metadata.len() > COMMIT_MARKER_MAX_BYTES {
+        return Err(format!(
+            "设置提交标记超过大小上限：{} > {} bytes",
+            metadata.len(),
+            COMMIT_MARKER_MAX_BYTES
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(COMMIT_MARKER_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("读取设置提交标记失败：{}", error))?;
+    if bytes.len() as u64 > COMMIT_MARKER_MAX_BYTES {
+        return Err(format!(
+            "设置提交标记读取超过大小上限：{} > {} bytes",
+            bytes.len(),
+            COMMIT_MARKER_MAX_BYTES
+        ));
+    }
+    parse_commit_marker(path, &marker_path, &bytes).map(Some)
+}
+
+fn parse_commit_marker(
+    settings_path: &Path,
+    marker_path: &Path,
+    bytes: &[u8],
+) -> Result<SettingsCommitMarker, String> {
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        format!(
+            "设置提交标记不是 UTF-8：{}（{}）",
+            marker_path.display(),
+            error
+        )
+    })?;
+    let parts: Vec<&str> = text.split_whitespace().collect();
+    match parts.as_slice() {
+        ["v1", "pending", generation, candidate_name] => {
+            let generation = generation.parse().map_err(|error| {
+                format!(
+                    "设置提交标记代次无效：{}（{}）",
+                    marker_path.display(),
+                    error
+                )
+            })?;
+            let file_name = settings_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| format!("设置文件名不是有效 UTF-8：{}", settings_path.display()))?;
+            let expected_prefix = format!("{file_name}.tmp-ready-v4-");
+            if !candidate_name.starts_with(&expected_prefix) {
+                return Err(format!(
+                    "设置待提交标记引用了无效恢复候选：{}",
+                    candidate_name
+                ));
+            }
+            Ok(SettingsCommitMarker::Pending {
+                generation,
+                candidate_name: (*candidate_name).into(),
+            })
+        }
+        ["v1", "committed", generation] => {
+            let generation = generation.parse().map_err(|error| {
+                format!(
+                    "设置提交标记代次无效：{}（{}）",
+                    marker_path.display(),
+                    error
+                )
+            })?;
+            Ok(SettingsCommitMarker::Committed { generation })
+        }
+        _ => Err(format!("设置提交标记格式无效：{}", marker_path.display())),
+    }
+}
+
+fn write_commit_marker<SyncParent>(
+    settings_path: &Path,
+    marker: &SettingsCommitMarker,
+    sync_parent: &mut SyncParent,
+) -> Result<(), String>
+where
+    SyncParent: FnMut(&Path) -> Result<(), String>,
+{
+    let marker_path = commit_marker_path(settings_path)?;
+    let parent = marker_path
+        .parent()
+        .ok_or_else(|| format!("设置提交标记缺少父目录：{}", marker_path.display()))?;
+    let marker_name = marker_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "设置提交标记文件名不是有效 UTF-8：{}",
+                marker_path.display()
+            )
+        })?;
+    let mut created_temp = None;
+    for _ in 0..TEMP_CREATE_ATTEMPT_LIMIT {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let created_at = system_time_key(SystemTime::now());
+        let temp_path = marker_path.with_file_name(format!(
+            "{marker_name}.tmp-{created_at:039}-{}-{sequence:020}",
+            std::process::id()
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => {
+                created_temp = Some((temp_path, file));
+                break;
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "创建设置提交标记临时文件失败：{}（{}）",
+                    temp_path.display(),
+                    error
+                ));
+            }
+        }
+    }
+    let (temp_path, mut file) = created_temp.ok_or_else(|| {
+        format!("创建唯一设置提交标记临时文件失败：连续 {TEMP_CREATE_ATTEMPT_LIMIT} 次命名冲突")
+    })?;
+    let bytes = marker.encode().into_bytes();
+    if let Err(error) = file
+        .write_all(&bytes)
+        .and_then(|_| file.flush())
+        .and_then(|_| file.sync_all())
+    {
+        drop(file);
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!(
+            "写入设置提交标记临时文件失败：{}（{}）",
+            temp_path.display(),
+            error
+        ));
+    }
+    drop(file);
+    replace_settings_file(&temp_path, &marker_path).map_err(|error| {
+        format!(
+            "原子替换设置提交标记失败：{} -> {}（{}）",
+            temp_path.display(),
+            marker_path.display(),
+            error
+        )
+    })?;
+    sync_parent(parent).map_err(|error| {
+        format!(
+            "设置提交标记已替换但目录持久性未确认：{}（{}）",
+            marker_path.display(),
+            error
+        )
+    })
+}
+
+fn cleanup_superseded_ready_candidates<CleanupCandidate>(
+    candidates: &[RecoveryCandidate],
+    cleanup_candidate: &mut CleanupCandidate,
+) -> Option<String>
+where
+    CleanupCandidate: FnMut(&Path) -> Result<(), String>,
+{
+    let mut failures = Vec::new();
+    let mut omitted = 0usize;
+    for candidate in candidates {
+        if let Err(error) = cleanup_candidate(&candidate.path) {
+            record_recovery_diagnostic(&mut failures, &mut omitted, || {
+                format!("{}（{}）", candidate.path.display(), error)
+            });
+        }
+    }
+    if failures.is_empty() {
+        None
+    } else {
+        let omitted = if omitted > 0 {
+            format!("；另省略 {omitted} 个失败")
+        } else {
+            String::new()
+        };
+        Some(format!(
+            "设置已提交，但旧恢复候选清理失败：{}{}",
+            failures.join("；"),
+            omitted
+        ))
+    }
 }
 
 pub(super) fn read_app_settings_or_default() -> AppSettingsSnapshot {
@@ -345,7 +1021,7 @@ fn read_app_settings_at_with_diagnostics(path: &Path) -> Result<SettingsReadOutc
         },
         Err(error) if error.kind() == ErrorKind::NotFound => {
             let candidates = interrupted_temp_candidates(path)?;
-            if candidates.is_empty() {
+            if candidates.is_empty() && read_commit_marker(path)?.is_none() {
                 Ok(SettingsReadOutcome {
                     settings: AppSettingsSnapshot::default(),
                     diagnostic: None,
@@ -410,7 +1086,7 @@ fn recover_from_candidates_with_reader<ReadCandidate>(
     read_candidate: ReadCandidate,
 ) -> Result<SettingsReadOutcome, String>
 where
-    ReadCandidate: FnMut(&RecoveryCandidate) -> RecoveryCandidateRead,
+    ReadCandidate: FnMut(&RecoveryCandidate, &mut RecoveryReadBudget) -> RecoveryCandidateRead,
 {
     recover_from_candidates_with_controls(path, primary_error, candidates, |_| {}, read_candidate)
 }
@@ -424,11 +1100,16 @@ fn recover_from_candidates_with_controls<BeforeCandidateOpen, ReadCandidate>(
 ) -> Result<SettingsReadOutcome, String>
 where
     BeforeCandidateOpen: FnMut(&Path),
-    ReadCandidate: FnMut(&RecoveryCandidate) -> RecoveryCandidateRead,
+    ReadCandidate: FnMut(&RecoveryCandidate, &mut RecoveryReadBudget) -> RecoveryCandidateRead,
 {
+    validate_recovery_inventory(&candidates)?;
+    let candidates = eligible_recovery_candidates(path, candidates)?;
     let mut checked = 0usize;
     let mut candidate_diagnostics = Vec::new();
     let mut omitted_diagnostics = 0;
+    let mut read_budget = RecoveryReadBudget {
+        remaining_bytes: RECOVERY_TOTAL_BYTES_LIMIT,
+    };
 
     for candidate in candidates {
         checked += 1;
@@ -440,17 +1121,20 @@ where
             Some(RecoveryCandidatePrecheck::Transient(error)) => {
                 RecoveryCandidateRead::Transient(error.clone())
             }
-            None => read_candidate(&candidate),
+            None => read_candidate(&candidate, &mut read_budget),
         };
         match candidate_result {
             RecoveryCandidateRead::Valid(settings) => {
-                let write_diagnostic = write_app_settings_at(path, &settings).map_err(|error| {
-                    format!(
-                        "{primary_error}；恢复候选有效但安装失败：{}（{}）",
-                        candidate.path.display(),
-                        error
-                    )
-                })?;
+                let write_diagnostic =
+                    install_recovered_settings_at(path, &settings, &candidate.path).map_err(
+                        |error| {
+                            format!(
+                                "{primary_error}；恢复候选有效但安装失败：{}（{}）",
+                                candidate.path.display(),
+                                error
+                            )
+                        },
+                    )?;
                 let cleanup = discard_recovery_candidate(&candidate.path);
                 return Ok(SettingsReadOutcome {
                     settings,
@@ -491,6 +1175,9 @@ where
                     )
                 },
             ),
+            RecoveryCandidateRead::TotalLimitExceeded(error) => {
+                return Err(format!("{primary_error}；恢复失败：{error}"));
+            }
         }
     }
 
@@ -522,6 +1209,73 @@ fn record_recovery_diagnostic(
     }
 }
 
+fn validate_recovery_inventory(candidates: &[RecoveryCandidate]) -> Result<(), String> {
+    if candidates.len() > RECOVERY_TOTAL_CANDIDATE_LIMIT {
+        return Err(format!(
+            "恢复候选数量超过上限：{} > {}",
+            candidates.len(),
+            RECOVERY_TOTAL_CANDIDATE_LIMIT
+        ));
+    }
+    let total_bytes = candidates
+        .iter()
+        .try_fold(0u64, |total, candidate| total.checked_add(candidate.size));
+    let Some(total_bytes) = total_bytes else {
+        return Err("恢复候选累计大小溢出".into());
+    };
+    if total_bytes > RECOVERY_TOTAL_BYTES_LIMIT {
+        return Err(format!(
+            "恢复候选累计大小超过上限：{total_bytes} > {RECOVERY_TOTAL_BYTES_LIMIT} bytes"
+        ));
+    }
+    Ok(())
+}
+
+fn eligible_recovery_candidates(
+    path: &Path,
+    candidates: Vec<RecoveryCandidate>,
+) -> Result<Vec<RecoveryCandidate>, String> {
+    eligible_recovery_candidates_for_marker(read_commit_marker(path)?, candidates)
+}
+
+fn eligible_recovery_candidates_for_marker(
+    marker: Option<SettingsCommitMarker>,
+    candidates: Vec<RecoveryCandidate>,
+) -> Result<Vec<RecoveryCandidate>, String> {
+    match marker {
+        None => {
+            if candidates
+                .iter()
+                .any(|candidate| candidate.protocol == RecoveryCandidateProtocol::TransactionalV4)
+            {
+                return Err(
+                    "发现没有耐久待提交标记的 v4 恢复候选；为避免未确认发布或回滚已停止恢复".into(),
+                );
+            }
+            Ok(candidates)
+        }
+        Some(SettingsCommitMarker::Pending {
+            generation,
+            candidate_name,
+        }) => {
+            let candidate = candidates.into_iter().find(|candidate| {
+                candidate.protocol == RecoveryCandidateProtocol::TransactionalV4
+                    && candidate.freshness == generation
+                    && candidate.path.file_name().and_then(|name| name.to_str())
+                        == Some(candidate_name.as_str())
+            });
+            candidate.map(|candidate| vec![candidate]).ok_or_else(|| {
+                format!(
+                    "待提交设置恢复候选缺失或身份不匹配：{candidate_name}（代次 {generation}）；为避免回滚已停止恢复"
+                )
+            })
+        }
+        Some(SettingsCommitMarker::Committed { generation }) => Err(format!(
+            "设置恢复候选已被后续提交代次 {generation} 取代；主设置损坏时禁止回滚旧候选"
+        )),
+    }
+}
+
 fn interrupted_temp_candidates(path: &Path) -> Result<Vec<RecoveryCandidate>, String> {
     let parent = path
         .parent()
@@ -530,8 +1284,10 @@ fn interrupted_temp_candidates(path: &Path) -> Result<Vec<RecoveryCandidate>, St
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| format!("设置文件名不是有效 UTF-8：{}", path.display()))?;
-    let ready_prefix = format!("{file_name}.tmp-ready-v3-");
+    let legacy_prefix = format!("{file_name}.tmp-ready-v3-");
+    let transactional_prefix = format!("{file_name}.tmp-ready-v4-");
     let mut candidates = Vec::new();
+    let mut total_bytes = 0u64;
     let entries = match std::fs::read_dir(parent) {
         Ok(entries) => entries,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(candidates),
@@ -543,13 +1299,41 @@ fn interrupted_temp_candidates(path: &Path) -> Result<Vec<RecoveryCandidate>, St
             ));
         }
     };
-    for entry in entries.flatten() {
+    let mut scanned_entries = 0usize;
+    for entry in entries {
+        scanned_entries += 1;
+        if scanned_entries > RECOVERY_DIRECTORY_ENTRY_LIMIT {
+            return Err(format!(
+                "设置恢复目录项扫描数量超过上限：至少 {scanned_entries} 个，上限 {RECOVERY_DIRECTORY_ENTRY_LIMIT} 个；为避免未绑定元数据 I/O 已停止"
+            ));
+        }
+        let entry = entry.map_err(|error| {
+            format!(
+                "枚举设置恢复候选失败：{}（{}）；为避免部分恢复已停止",
+                parent.display(),
+                error
+            )
+        })?;
         let candidate = entry.path();
         let Some(candidate_name) = candidate.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if !candidate_name.starts_with(&ready_prefix) {
+        let (protocol, ready_prefix) = if candidate_name.starts_with(&transactional_prefix) {
+            (
+                RecoveryCandidateProtocol::TransactionalV4,
+                &transactional_prefix,
+            )
+        } else if candidate_name.starts_with(&legacy_prefix) {
+            (RecoveryCandidateProtocol::LegacyV3, &legacy_prefix)
+        } else {
             continue;
+        };
+        if candidates.len() >= RECOVERY_TOTAL_CANDIDATE_LIMIT {
+            return Err(format!(
+                "恢复候选数量超过上限：至少 {} 个，上限 {} 个；为避免任意子集恢复已停止",
+                candidates.len() + 1,
+                RECOVERY_TOTAL_CANDIDATE_LIMIT
+            ));
         }
         let metadata = match std::fs::symlink_metadata(&candidate) {
             Ok(metadata) => metadata,
@@ -557,6 +1341,8 @@ fn interrupted_temp_candidates(path: &Path) -> Result<Vec<RecoveryCandidate>, St
                 candidates.push(RecoveryCandidate {
                     path: candidate,
                     freshness: 0,
+                    protocol,
+                    size: 0,
                     precheck: Some(RecoveryCandidatePrecheck::Transient(format!(
                         "读取非跟随元数据出现瞬态失败：{error}"
                     ))),
@@ -565,7 +1351,20 @@ fn interrupted_temp_candidates(path: &Path) -> Result<Vec<RecoveryCandidate>, St
             }
         };
         let file_type = metadata.file_type();
-        let parsed_freshness = ready_candidate_freshness(candidate_name, &ready_prefix);
+        let size = if file_type.is_file() {
+            metadata.len()
+        } else {
+            0
+        };
+        total_bytes = total_bytes
+            .checked_add(size)
+            .ok_or_else(|| "恢复候选累计大小溢出".to_string())?;
+        if total_bytes > RECOVERY_TOTAL_BYTES_LIMIT {
+            return Err(format!(
+                "恢复候选累计大小超过上限：{total_bytes} > {RECOVERY_TOTAL_BYTES_LIMIT} bytes；为避免部分恢复已停止"
+            ));
+        }
+        let parsed_freshness = ready_candidate_freshness(candidate_name, ready_prefix);
         let precheck = if file_type.is_symlink() {
             Some(RecoveryCandidatePrecheck::ConclusivelyInvalid(
                 "恢复候选是符号链接".into(),
@@ -597,6 +1396,8 @@ fn interrupted_temp_candidates(path: &Path) -> Result<Vec<RecoveryCandidate>, St
         candidates.push(RecoveryCandidate {
             path: candidate,
             freshness,
+            protocol,
+            size,
             precheck,
         });
     }
@@ -627,11 +1428,14 @@ fn system_time_key(value: SystemTime) -> u128 {
         .as_nanos()
 }
 
-fn read_recovery_candidate(candidate: &RecoveryCandidate) -> RecoveryCandidateRead {
+fn read_recovery_candidate(
+    candidate: &RecoveryCandidate,
+    budget: &mut RecoveryReadBudget,
+) -> RecoveryCandidateRead {
     let mut options = OpenOptions::new();
     options.read(true);
     configure_recovery_open_no_follow(&mut options);
-    let file = match options.open(&candidate.path) {
+    let mut file = match options.open(&candidate.path) {
         Ok(file) => file,
         Err(error) => {
             return RecoveryCandidateRead::Transient(format!(
@@ -655,6 +1459,14 @@ fn read_recovery_candidate(candidate: &RecoveryCandidate) -> RecoveryCandidateRe
             "已打开恢复候选是 Windows reparse point".into(),
         );
     }
+    if metadata.len() > budget.remaining_bytes {
+        return RecoveryCandidateRead::TotalLimitExceeded(format!(
+            "恢复累计读取超过上限：候选 {} 需要 {} bytes，仅剩 {} bytes",
+            candidate.path.display(),
+            metadata.len(),
+            budget.remaining_bytes
+        ));
+    }
     if metadata.len() > RECOVERY_CANDIDATE_MAX_BYTES {
         return RecoveryCandidateRead::ConclusivelyInvalid(format!(
             "已打开恢复候选超过大小上限：{} > {} bytes",
@@ -663,18 +1475,52 @@ fn read_recovery_candidate(candidate: &RecoveryCandidate) -> RecoveryCandidateRe
         ));
     }
 
+    let available_before_read = budget.remaining_bytes;
     let mut bytes = Vec::new();
-    if let Err(error) = file
-        .take(RECOVERY_CANDIDATE_MAX_BYTES + 1)
-        .read_to_end(&mut bytes)
-    {
-        return RecoveryCandidateRead::Transient(format!("读取恢复候选出现瞬态失败：{error}"));
-    }
+    let read_limit = RECOVERY_CANDIDATE_MAX_BYTES.min(available_before_read);
+    let read_result = (&mut file).take(read_limit).read_to_end(&mut bytes);
     if bytes.len() as u64 > RECOVERY_CANDIDATE_MAX_BYTES {
         return RecoveryCandidateRead::ConclusivelyInvalid(format!(
             "读取恢复候选超过大小上限：{} > {} bytes",
             bytes.len(),
             RECOVERY_CANDIDATE_MAX_BYTES
+        ));
+    }
+    if bytes.len() as u64 > budget.remaining_bytes {
+        return RecoveryCandidateRead::TotalLimitExceeded(format!(
+            "恢复累计读取超过上限：候选 {} 实际读取 {} bytes，仅剩 {} bytes",
+            candidate.path.display(),
+            bytes.len(),
+            budget.remaining_bytes
+        ));
+    }
+    budget.remaining_bytes -= bytes.len() as u64;
+    if let Err(error) = read_result {
+        return RecoveryCandidateRead::Transient(format!(
+            "读取恢复候选出现瞬态失败：{error}；已读取 {} bytes 计入累计上限",
+            bytes.len()
+        ));
+    }
+    let post_read_size = match file.metadata() {
+        Ok(metadata) => metadata.len(),
+        Err(error) => {
+            return RecoveryCandidateRead::Transient(format!(
+                "读取候选后重新检查大小出现瞬态失败：{error}；已读取 {} bytes 计入累计上限",
+                bytes.len()
+            ));
+        }
+    };
+    if post_read_size > available_before_read {
+        return RecoveryCandidateRead::TotalLimitExceeded(format!(
+            "恢复累计读取超过上限：候选 {} 当前大小 {} bytes，读取前仅剩 {} bytes",
+            candidate.path.display(),
+            post_read_size,
+            available_before_read
+        ));
+    }
+    if post_read_size > RECOVERY_CANDIDATE_MAX_BYTES {
+        return RecoveryCandidateRead::ConclusivelyInvalid(format!(
+            "读取后恢复候选超过大小上限：{post_read_size} > {RECOVERY_CANDIDATE_MAX_BYTES} bytes"
         ));
     }
     match parse_settings(&candidate.path, &bytes) {
@@ -740,6 +1586,21 @@ fn cleanup_diagnostic(result: Result<(), String>) -> String {
 
 fn optional_diagnostic(diagnostic: Option<String>) -> String {
     diagnostic.map_or_else(String::new, |diagnostic| format!("；{diagnostic}"))
+}
+
+fn attach_prior_diagnostic(error: String, prior: &Option<String>) -> String {
+    match prior {
+        Some(prior) => format!("{error}；{prior}"),
+        None => error,
+    }
+}
+
+fn merge_diagnostics(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(format!("{first}；{second}")),
+        (Some(diagnostic), None) | (None, Some(diagnostic)) => Some(diagnostic),
+        (None, None) => None,
+    }
 }
 
 #[cfg(not(windows))]
@@ -939,6 +1800,7 @@ fn settings_path() -> Result<PathBuf, String> {
 mod tests {
     use super::*;
     use std::{
+        cell::Cell,
         fs::FileTimes,
         sync::{mpsc, TryLockError},
         thread,
@@ -1071,7 +1933,8 @@ mod tests {
 
     #[test]
     fn missing_settings_file_uses_first_launch_defaults() {
-        let path = unique_test_settings_path("missing");
+        let root = TestSettingsRoot::new("missing");
+        let path = root.settings_path();
         let settings = read_app_settings_at(&path).unwrap();
 
         assert!(settings.codex_home.is_none());
@@ -1084,13 +1947,13 @@ mod tests {
 
     #[test]
     fn corrupt_settings_file_returns_error() {
-        let path = unique_test_settings_path("corrupt");
+        let root = TestSettingsRoot::new("corrupt");
+        let path = root.settings_path();
         std::fs::write(&path, b"{not-json").unwrap();
 
         let error = read_app_settings_at(&path).unwrap_err();
 
         assert!(error.contains("设置文件不是有效 JSON"));
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -1207,7 +2070,7 @@ mod tests {
                 |_| {},
                 |ready_path, _| {
                     let ready_name = ready_path.file_name().unwrap().to_string_lossy();
-                    assert!(ready_name.starts_with("settings.json.tmp-ready-v3-"));
+                    assert!(ready_name.starts_with("settings.json.tmp-ready-v4-"));
                     assert!(!std::fs::read_dir(ready_path.parent().unwrap())
                         .unwrap()
                         .flatten()
@@ -1244,12 +2107,21 @@ mod tests {
         let root = TestSettingsRoot::new("directory-sync-diagnostic");
         let path = root.settings_path();
         write_fixture(&path, &AppSettingsSnapshot::default());
+        let sync_calls = Cell::new(0usize);
 
         let outcome = mutate_app_settings_at_with_hooks(
             &path,
             |_| {},
             |_, _| {},
-            |_| Err("injected directory sync failure".into()),
+            |parent| {
+                let call = sync_calls.get() + 1;
+                sync_calls.set(call);
+                if call == 3 {
+                    Err("injected directory sync failure".into())
+                } else {
+                    sync_parent_directory(parent)
+                }
+            },
             |settings| settings.custom_account_display_name = "committed".into(),
         )
         .unwrap();
@@ -1266,6 +2138,257 @@ mod tests {
                 .custom_account_display_name,
             "committed"
         );
+    }
+
+    #[test]
+    fn successful_commit_supersedes_ready_left_by_prior_replace_failure() {
+        let root = TestSettingsRoot::new("superseded-ready");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+        let stale_ready = leave_ready_candidate_after_replace_failure(&path, "stale-a");
+        assert!(stale_ready.exists());
+
+        let committed = mutate_app_settings_at(&path, |settings| {
+            settings.custom_account_display_name = "committed-b".into();
+        })
+        .unwrap();
+        assert_eq!(committed.custom_account_display_name, "committed-b");
+        std::fs::write(&path, b"{corrupt-after-b").unwrap();
+
+        let error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
+
+        assert!(error.contains("后续提交") || error.contains("已提交"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"{corrupt-after-b");
+    }
+
+    #[test]
+    fn successful_commit_supersedes_stale_ready_even_when_obsolete_cleanup_fails() {
+        let root = TestSettingsRoot::new("superseded-ready-cleanup-failure");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+        let stale_ready = leave_ready_candidate_after_replace_failure(&path, "stale-a");
+        assert!(stale_ready.exists());
+
+        let outcome = mutate_app_settings_at_with_cleanup_hook(
+            &path,
+            |candidate| {
+                if candidate == stale_ready {
+                    Err("injected obsolete cleanup failure".into())
+                } else {
+                    discard_recovery_candidate(candidate)
+                }
+            },
+            |settings| settings.custom_account_display_name = "committed-b".into(),
+        )
+        .unwrap();
+
+        assert_eq!(outcome.settings.custom_account_display_name, "committed-b");
+        assert!(outcome
+            .diagnostic
+            .as_deref()
+            .unwrap()
+            .contains("injected obsolete cleanup failure"));
+        assert!(stale_ready.exists());
+        std::fs::write(&path, b"{corrupt-after-b").unwrap();
+
+        let error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
+
+        assert!(error.contains("后续提交") || error.contains("已提交"));
+        assert!(stale_ready.exists());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{corrupt-after-b");
+    }
+
+    #[test]
+    fn ready_directory_sync_failure_stops_before_primary_replacement_and_reports_ready_path() {
+        let root = TestSettingsRoot::new("ready-sync-failure");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+        let replacement_reached = Cell::new(false);
+
+        let result = mutate_app_settings_at_with_hooks(
+            &path,
+            |_| {},
+            |_, _| replacement_reached.set(true),
+            |_| Err("injected ready directory sync failure".into()),
+            |settings| settings.custom_account_display_name = "must-not-commit".into(),
+        );
+        let error = result.unwrap_err();
+
+        assert!(!replacement_reached.get());
+        assert!(error.contains("tmp-ready-v4-"));
+        assert!(error.contains("injected ready directory sync failure"));
+        assert!(read_app_settings_at(&path)
+            .unwrap()
+            .custom_account_display_name
+            .is_empty());
+    }
+
+    #[test]
+    fn valid_primary_quarantines_malformed_commit_marker_and_continues_saving() {
+        let root = TestSettingsRoot::new("repair-malformed-marker");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+        let marker_path = commit_marker_path(&path).unwrap();
+        std::fs::write(&marker_path, b"not-a-marker").unwrap();
+        let sync_calls = Cell::new(0usize);
+
+        let outcome = mutate_app_settings_at_with_hooks(
+            &path,
+            |_| {},
+            |_, _| {},
+            |parent| {
+                sync_calls.set(sync_calls.get() + 1);
+                sync_parent_directory(parent)
+            },
+            |settings| settings.custom_account_display_name = "saved-after-repair".into(),
+        )
+        .unwrap();
+
+        let quarantines = commit_marker_quarantines(&path);
+        assert_eq!(quarantines.len(), 1);
+        assert_eq!(std::fs::read(&quarantines[0]).unwrap(), b"not-a-marker");
+        assert_eq!(sync_calls.get(), 6);
+        assert_eq!(
+            outcome.settings.custom_account_display_name,
+            "saved-after-repair"
+        );
+        assert!(outcome
+            .diagnostic
+            .as_deref()
+            .unwrap()
+            .contains(&quarantines[0].display().to_string()));
+        assert!(matches!(
+            read_commit_marker(&path).unwrap(),
+            Some(SettingsCommitMarker::Committed { .. })
+        ));
+    }
+
+    #[test]
+    fn valid_primary_quarantines_oversized_commit_marker_and_continues_saving() {
+        let root = TestSettingsRoot::new("repair-oversized-marker");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+        let marker_path = commit_marker_path(&path).unwrap();
+        File::create(&marker_path)
+            .unwrap()
+            .set_len(COMMIT_MARKER_MAX_BYTES + 1)
+            .unwrap();
+
+        let saved = mutate_app_settings_at(&path, |settings| {
+            settings.custom_account_display_name = "saved-after-oversized".into();
+        })
+        .unwrap();
+
+        assert_eq!(saved.custom_account_display_name, "saved-after-oversized");
+        let quarantines = commit_marker_quarantines(&path);
+        assert_eq!(quarantines.len(), 1);
+        assert_eq!(
+            std::fs::metadata(&quarantines[0]).unwrap().len(),
+            COMMIT_MARKER_MAX_BYTES + 1
+        );
+        assert!(matches!(
+            read_commit_marker(&path).unwrap(),
+            Some(SettingsCommitMarker::Committed { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn valid_primary_quarantines_symlink_commit_marker_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = TestSettingsRoot::new("repair-symlink-marker");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+        let marker_path = commit_marker_path(&path).unwrap();
+        let target = root.path.join("marker-target");
+        std::fs::write(&target, b"target-must-stay").unwrap();
+        symlink(&target, &marker_path).unwrap();
+
+        let saved = mutate_app_settings_at(&path, |settings| {
+            settings.custom_account_display_name = "saved-after-symlink".into();
+        })
+        .unwrap();
+
+        assert_eq!(saved.custom_account_display_name, "saved-after-symlink");
+        assert_eq!(std::fs::read(&target).unwrap(), b"target-must-stay");
+        let quarantines = commit_marker_quarantines(&path);
+        assert_eq!(quarantines.len(), 1);
+        assert!(std::fs::symlink_metadata(&quarantines[0])
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(matches!(
+            read_commit_marker(&path).unwrap(),
+            Some(SettingsCommitMarker::Committed { .. })
+        ));
+    }
+
+    #[test]
+    fn bad_commit_marker_quarantine_sync_failure_stops_before_primary_replacement() {
+        let root = TestSettingsRoot::new("marker-quarantine-sync-failure");
+        let path = root.settings_path();
+        write_fixture(
+            &path,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "authoritative-primary".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        let marker_path = commit_marker_path(&path).unwrap();
+        std::fs::write(&marker_path, b"not-a-marker").unwrap();
+        let replacement_reached = Cell::new(false);
+
+        let error = mutate_app_settings_at_with_hooks(
+            &path,
+            |_| {},
+            |_, _| replacement_reached.set(true),
+            |_| Err("injected marker quarantine sync failure".into()),
+            |settings| settings.custom_account_display_name = "must-not-save".into(),
+        )
+        .unwrap_err();
+
+        let quarantines = commit_marker_quarantines(&path);
+        assert_eq!(quarantines.len(), 1);
+        assert!(!replacement_reached.get());
+        assert!(error.contains(&quarantines[0].display().to_string()));
+        assert!(error.contains("injected marker quarantine sync failure"));
+        assert_eq!(
+            read_app_settings_at(&path)
+                .unwrap()
+                .custom_account_display_name,
+            "authoritative-primary"
+        );
+    }
+
+    #[test]
+    fn bad_commit_marker_stays_fail_closed_when_primary_is_missing_or_invalid() {
+        for (label, primary) in [
+            ("missing-primary", None),
+            ("invalid-primary", Some(b"{invalid-primary".as_slice())),
+        ] {
+            let root = TestSettingsRoot::new(label);
+            let path = root.settings_path();
+            if let Some(primary) = primary {
+                std::fs::write(&path, primary).unwrap();
+            }
+            let marker_path = commit_marker_path(&path).unwrap();
+            std::fs::write(&marker_path, b"not-a-marker").unwrap();
+
+            let error = mutate_app_settings_at(&path, |settings| {
+                settings.custom_account_display_name = "must-not-save".into();
+            })
+            .unwrap_err();
+
+            assert!(error.contains("设置提交标记"));
+            assert_eq!(std::fs::read(&marker_path).unwrap(), b"not-a-marker");
+            assert!(commit_marker_quarantines(&path).is_empty());
+            if primary.is_none() {
+                assert!(!path.exists());
+            } else {
+                assert_eq!(std::fs::read(&path).unwrap(), b"{invalid-primary");
+            }
+        }
     }
 
     #[test]
@@ -1469,36 +2592,52 @@ mod tests {
     }
 
     #[test]
-    fn recovery_scans_past_undeletable_ready_candidates_in_one_call_without_process_state() {
-        for run in 0..2 {
-            let root = TestSettingsRoot::new(&format!("ready-progress-{run}"));
-            let path = root.settings_path();
-            std::fs::write(&path, b"{corrupt-primary").unwrap();
-            let valid = ready_temp_path(&path, 100, 1, run);
-            write_fixture(
-                &valid,
-                &AppSettingsSnapshot {
-                    custom_account_display_name: format!("older-valid-{run}"),
-                    ..AppSettingsSnapshot::default()
-                },
-            );
-            set_modified_time(&valid, UNIX_EPOCH + Duration::from_secs(100));
-            let mut undeletable = Vec::new();
-            for index in 0..8 {
-                let candidate = ready_temp_path(&path, 200 + index, 9, index as u64);
-                std::fs::create_dir(&candidate).unwrap();
-                std::fs::write(candidate.join("keep"), b"prevents remove_dir").unwrap();
-                undeletable.push(candidate);
-            }
-
-            let recovered = read_app_settings_at_with_diagnostics(&path).unwrap();
-
-            assert_eq!(
-                recovered.settings.custom_account_display_name,
-                format!("older-valid-{run}")
-            );
-            assert!(undeletable.iter().all(|candidate| candidate.exists()));
+    fn within_total_limits_newer_failures_do_not_hide_older_valid_candidate() {
+        let root = TestSettingsRoot::new("ready-progress-within-limit");
+        let path = root.settings_path();
+        std::fs::write(&path, b"{corrupt-primary").unwrap();
+        let valid = ready_temp_path(&path, 100, 1, 1);
+        write_fixture(
+            &valid,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "older-valid".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        let mut undeletable = Vec::new();
+        for index in 0..8 {
+            let candidate = ready_temp_path(&path, 300 + index, 9, index as u64);
+            std::fs::create_dir(&candidate).unwrap();
+            std::fs::write(candidate.join("keep"), b"prevents remove_dir").unwrap();
+            undeletable.push(candidate);
         }
+        let mut transient = Vec::new();
+        for index in 0..7 {
+            let candidate = ready_temp_path(&path, 200 + index, 7, index as u64);
+            write_fixture(&candidate, &AppSettingsSnapshot::default());
+            transient.push(candidate);
+        }
+
+        let recovered = recover_from_candidates_with_reader(
+            &path,
+            "corrupt primary".into(),
+            interrupted_temp_candidates(&path).unwrap(),
+            |candidate, budget| {
+                if transient.contains(&candidate.path) {
+                    RecoveryCandidateRead::Transient("injected share failure".into())
+                } else {
+                    read_recovery_candidate(candidate, budget)
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            recovered.settings.custom_account_display_name,
+            "older-valid"
+        );
+        assert!(undeletable.iter().all(|candidate| candidate.exists()));
+        assert!(transient.iter().all(|candidate| !candidate.exists()));
     }
 
     #[test]
@@ -1576,7 +2715,7 @@ mod tests {
             &path,
             "corrupt primary".into(),
             interrupted_temp_candidates(&path).unwrap(),
-            |_| RecoveryCandidateRead::Transient("injected share failure".into()),
+            |_, _| RecoveryCandidateRead::Transient("injected share failure".into()),
         )
         .unwrap_err();
         assert!(first_error.contains("injected share failure"));
@@ -1595,9 +2734,9 @@ mod tests {
             &path,
             "corrupt primary".into(),
             interrupted_temp_candidates(&path).unwrap(),
-            |candidate| {
+            |candidate, budget| {
                 if candidate.path == newer || candidate.path == older {
-                    read_recovery_candidate(candidate)
+                    read_recovery_candidate(candidate, budget)
                 } else {
                     RecoveryCandidateRead::Transient("injected share failure".into())
                 }
@@ -1706,12 +2845,12 @@ mod tests {
             &path,
             "corrupt primary".into(),
             interrupted_temp_candidates(&path).unwrap(),
-            |candidate| {
+            |candidate, budget| {
                 assert_ne!(
                     candidate.path, oversized,
                     "oversized candidate must be rejected before reading"
                 );
-                read_recovery_candidate(candidate)
+                read_recovery_candidate(candidate, budget)
             },
         )
         .unwrap();
@@ -1723,32 +2862,87 @@ mod tests {
     }
 
     #[test]
-    fn recovery_scans_all_candidates_while_bounding_diagnostic_details() {
-        let root = TestSettingsRoot::new("bounded-diagnostics");
+    fn recovery_candidate_count_over_hard_limit_fails_closed() {
+        let root = TestSettingsRoot::new("candidate-count-overflow");
         let path = root.settings_path();
         std::fs::write(&path, b"{corrupt-primary").unwrap();
-        let mut transient = Vec::new();
-        for index in 0..20 {
+        for index in 0..17 {
             let candidate = ready_temp_path(&path, 100 + index, 3, index as u64);
-            write_fixture(&candidate, &AppSettingsSnapshot::default());
-            set_modified_time(
+            write_fixture(
                 &candidate,
-                UNIX_EPOCH + Duration::from_secs(100 + index as u64),
+                &AppSettingsSnapshot {
+                    custom_account_display_name: format!("candidate-{index}"),
+                    ..AppSettingsSnapshot::default()
+                },
             );
-            transient.push(candidate);
         }
 
-        let error = recover_from_candidates_with_reader(
+        let error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
+
+        assert!(error.contains("恢复候选数量超过上限"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"{corrupt-primary");
+    }
+
+    #[test]
+    fn recovery_directory_entry_scan_over_hard_limit_fails_closed() {
+        let root = TestSettingsRoot::new("directory-entry-overflow");
+        let path = root.settings_path();
+        std::fs::write(&path, b"{corrupt-primary").unwrap();
+        for index in 0..1025 {
+            std::fs::write(root.path.join(format!("unrelated-{index:04}")), b"ignored").unwrap();
+        }
+
+        let error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
+
+        assert!(error.contains("目录项扫描数量超过上限"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"{corrupt-primary");
+    }
+
+    #[test]
+    fn aggregate_candidate_bytes_over_hard_limit_fails_before_recovery_reads() {
+        let root = TestSettingsRoot::new("candidate-byte-overflow");
+        let path = root.settings_path();
+        for index in 0..3 {
+            let candidate = ready_temp_path(&path, 100 + index, 3, index as u64);
+            File::create(candidate)
+                .unwrap()
+                .set_len(768 * 1024)
+                .unwrap();
+        }
+
+        let error = interrupted_temp_candidates(&path).unwrap_err();
+
+        assert!(error.contains("恢复候选累计大小超过上限"));
+    }
+
+    #[test]
+    fn post_scan_candidate_growth_cannot_exceed_total_recovery_io_budget() {
+        let root = TestSettingsRoot::new("candidate-io-overflow");
+        let path = root.settings_path();
+        std::fs::write(&path, b"{corrupt-primary").unwrap();
+        for index in 0..3 {
+            let candidate = ready_temp_path(&path, 100 + index, 3, index as u64);
+            write_fixture(&candidate, &AppSettingsSnapshot::default());
+        }
+        let candidates = interrupted_temp_candidates(&path).unwrap();
+
+        let error = recover_from_candidates_with_hook(
             &path,
             "corrupt primary".into(),
-            interrupted_temp_candidates(&path).unwrap(),
-            |_| RecoveryCandidateRead::Transient("injected read failure".into()),
+            candidates,
+            |candidate| {
+                OpenOptions::new()
+                    .write(true)
+                    .open(candidate)
+                    .unwrap()
+                    .set_len(768 * 1024)
+                    .unwrap();
+            },
         )
         .unwrap_err();
 
-        assert!(error.contains("已检查 20 个候选"));
-        assert!(error.contains("仅展示前 8 个诊断"));
-        assert!(transient.iter().all(|candidate| candidate.exists()));
+        assert!(error.contains("恢复累计读取超过上限"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"{corrupt-primary");
     }
 
     #[test]
@@ -1797,6 +2991,34 @@ mod tests {
         }
     }
 
+    fn leave_ready_candidate_after_replace_failure(path: &Path, value: &str) -> PathBuf {
+        let result = mutate_app_settings_at_with_hooks(
+            path,
+            |_| {},
+            |_, destination| {
+                std::fs::remove_file(destination).unwrap();
+                std::fs::create_dir(destination).unwrap();
+            },
+            sync_parent_directory,
+            |settings| settings.custom_account_display_name = value.into(),
+        );
+        let error = result.unwrap_err();
+        assert!(error.contains("原子替换设置文件失败"));
+        let candidates = interrupted_temp_candidates(path).unwrap();
+        assert_eq!(candidates.len(), 1);
+        let ready = candidates[0].path.clone();
+        let mut budget = RecoveryReadBudget {
+            remaining_bytes: RECOVERY_TOTAL_BYTES_LIMIT,
+        };
+        assert!(matches!(
+            read_recovery_candidate(&candidates[0], &mut budget),
+            RecoveryCandidateRead::Valid(_)
+        ));
+        std::fs::remove_dir(path).unwrap();
+        write_fixture(path, &AppSettingsSnapshot::default());
+        ready
+    }
+
     fn write_fixture(path: &Path, settings: &AppSettingsSnapshot) {
         std::fs::write(path, serde_json::to_vec_pretty(settings).unwrap()).unwrap();
     }
@@ -1805,6 +3027,24 @@ mod tests {
         let file = OpenOptions::new().write(true).open(path).unwrap();
         file.set_times(FileTimes::new().set_modified(modified))
             .unwrap();
+    }
+
+    fn commit_marker_quarantines(settings_path: &Path) -> Vec<PathBuf> {
+        let marker_name = commit_marker_path(settings_path)
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let prefix = format!("{marker_name}.corrupt-v1-");
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(settings_path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            .map(|entry| entry.path())
+            .collect();
+        paths.sort();
+        paths
     }
 
     fn in_progress_temp_path(
