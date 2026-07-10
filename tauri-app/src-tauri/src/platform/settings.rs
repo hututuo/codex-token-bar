@@ -4,7 +4,6 @@ use crate::models::{
     FloatingWindowPositionSnapshot, FloatingWindowSettingsSnapshot,
 };
 use std::{
-    collections::HashMap,
     fs::{File, OpenOptions},
     io::{ErrorKind, Read, Write},
     path::{Path, PathBuf},
@@ -12,14 +11,13 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Mutex, OnceLock,
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-const RECOVERY_CANDIDATE_LIMIT: usize = 8;
-const RECOVERY_IN_FLIGHT_GRACE: Duration = Duration::from_secs(30);
+const RECOVERY_DIAGNOSTIC_LIMIT: usize = 8;
+const RECOVERY_CANDIDATE_MAX_BYTES: u64 = 1024 * 1024;
 const TEMP_CREATE_ATTEMPT_LIMIT: usize = 16;
 static SETTINGS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-static RECOVERY_CURSORS: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
@@ -38,7 +36,6 @@ struct SettingsMutationOutcome {
 struct RecoveryCandidate {
     path: PathBuf,
     freshness: u128,
-    stale: bool,
     precheck: Option<RecoveryCandidatePrecheck>,
 }
 
@@ -149,16 +146,48 @@ fn mutate_app_settings_at_with_hooks<AfterRead, BeforeReplace, SyncParent, Mutat
     mutation: Mutation,
 ) -> Result<SettingsMutationOutcome, String>
 where
-    AfterRead: FnOnce(&'static Mutex<()>),
+    AfterRead: FnOnce(&AppSettingsSnapshot),
     BeforeReplace: FnOnce(&Path, &Path),
     SyncParent: FnOnce(&Path) -> Result<(), String>,
     Mutation: FnOnce(&mut AppSettingsSnapshot),
 {
+    mutate_app_settings_at_with_transaction_hooks(
+        path,
+        || {},
+        after_read,
+        before_replace,
+        sync_parent,
+        mutation,
+    )
+}
+
+fn mutate_app_settings_at_with_transaction_hooks<
+    BeforeLock,
+    AfterRead,
+    BeforeReplace,
+    SyncParent,
+    Mutation,
+>(
+    path: &Path,
+    before_lock: BeforeLock,
+    after_read: AfterRead,
+    before_replace: BeforeReplace,
+    sync_parent: SyncParent,
+    mutation: Mutation,
+) -> Result<SettingsMutationOutcome, String>
+where
+    BeforeLock: FnOnce(),
+    AfterRead: FnOnce(&AppSettingsSnapshot),
+    BeforeReplace: FnOnce(&Path, &Path),
+    SyncParent: FnOnce(&Path) -> Result<(), String>,
+    Mutation: FnOnce(&mut AppSettingsSnapshot),
+{
+    before_lock();
     let _guard = settings_lock()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let mut settings = read_app_settings_at(path)?;
-    after_read(settings_lock());
+    after_read(&settings);
     mutation(&mut settings);
     let saved = sanitize_app_settings(settings);
     let diagnostic = write_app_settings_at_with_hooks(path, &saved, before_replace, sync_parent)?;
@@ -196,27 +225,37 @@ where
         .map_err(|error| format!("创建设置目录失败：{}（{}）", parent.display(), error))?;
 
     let bytes = serde_json::to_vec_pretty(settings).map_err(|error| error.to_string())?;
-    let (temp_path, mut temp_file) = create_unique_temp_file(path)?;
+    let (in_progress_path, sequence, mut temp_file) = create_unique_in_progress_file(path)?;
     if let Err(error) = temp_file
         .write_all(&bytes)
         .and_then(|_| temp_file.flush())
         .and_then(|_| temp_file.sync_all())
     {
         drop(temp_file);
-        let _ = std::fs::remove_file(&temp_path);
+        let _ = std::fs::remove_file(&in_progress_path);
         return Err(format!(
-            "写入设置临时文件失败：{}（{}）",
-            temp_path.display(),
+            "写入设置进行中临时文件失败：{}（{}）",
+            in_progress_path.display(),
             error
         ));
     }
     drop(temp_file);
 
-    before_replace(&temp_path, path);
-    replace_settings_file(&temp_path, path).map_err(|error| {
+    let ready_path = ready_settings_temp_path(path, sequence)?;
+    std::fs::rename(&in_progress_path, &ready_path).map_err(|error| {
+        format!(
+            "发布设置恢复候选失败：{} -> {}（{}）；进行中文件保持不可恢复状态",
+            in_progress_path.display(),
+            ready_path.display(),
+            error
+        )
+    })?;
+
+    before_replace(&ready_path, path);
+    replace_settings_file(&ready_path, path).map_err(|error| {
         format!(
             "原子替换设置文件失败：{} -> {}（{}）；已保留临时文件用于恢复",
-            temp_path.display(),
+            ready_path.display(),
             path.display(),
             error
         )
@@ -230,7 +269,7 @@ where
     }))
 }
 
-fn create_unique_temp_file(path: &Path) -> Result<(PathBuf, File), String> {
+fn create_unique_in_progress_file(path: &Path) -> Result<(PathBuf, u64, File), String> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -241,9 +280,9 @@ fn create_unique_temp_file(path: &Path) -> Result<(PathBuf, File), String> {
 
     for _ in 0..TEMP_CREATE_ATTEMPT_LIMIT {
         let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let freshness = system_time_key(SystemTime::now());
+        let created_at = system_time_key(SystemTime::now());
         let temp_path = parent.join(format!(
-            "{file_name}.tmp-v2-{freshness:039}-{}-{sequence:020}",
+            "{file_name}.tmp-in-progress-v3-{created_at:039}-{}-{sequence:020}",
             std::process::id(),
         ));
         match OpenOptions::new()
@@ -251,11 +290,11 @@ fn create_unique_temp_file(path: &Path) -> Result<(PathBuf, File), String> {
             .create_new(true)
             .open(&temp_path)
         {
-            Ok(file) => return Ok((temp_path, file)),
+            Ok(file) => return Ok((temp_path, sequence, file)),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
             Err(error) => {
                 return Err(format!(
-                    "创建设置临时文件失败：{}（{}）",
+                    "创建设置进行中临时文件失败：{}（{}）",
                     temp_path.display(),
                     error
                 ));
@@ -264,8 +303,23 @@ fn create_unique_temp_file(path: &Path) -> Result<(PathBuf, File), String> {
     }
 
     Err(format!(
-        "创建唯一设置临时文件失败：连续 {TEMP_CREATE_ATTEMPT_LIMIT} 次命名冲突"
+        "创建唯一设置进行中临时文件失败：连续 {TEMP_CREATE_ATTEMPT_LIMIT} 次命名冲突"
     ))
+}
+
+fn ready_settings_temp_path(path: &Path, sequence: u64) -> Result<PathBuf, String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("设置文件名不是有效 UTF-8：{}", path.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("设置文件缺少父目录：{}", path.display()))?;
+    let published_at = system_time_key(SystemTime::now());
+    Ok(parent.join(format!(
+        "{file_name}.tmp-ready-v3-{published_at:039}-{}-{sequence:020}",
+        std::process::id(),
+    )))
 }
 
 pub(super) fn read_app_settings_or_default() -> AppSettingsSnapshot {
@@ -283,19 +337,15 @@ fn read_app_settings_at(path: &Path) -> Result<AppSettingsSnapshot, String> {
 fn read_app_settings_at_with_diagnostics(path: &Path) -> Result<SettingsReadOutcome, String> {
     match std::fs::read(path) {
         Ok(bytes) => match parse_settings(path, &bytes) {
-            Ok(settings) => {
-                clear_recovery_cursor(path);
-                Ok(SettingsReadOutcome {
-                    settings,
-                    diagnostic: None,
-                })
-            }
+            Ok(settings) => Ok(SettingsReadOutcome {
+                settings,
+                diagnostic: None,
+            }),
             Err(primary_error) => recover_interrupted_settings(path, primary_error),
         },
         Err(error) if error.kind() == ErrorKind::NotFound => {
             let candidates = interrupted_temp_candidates(path)?;
             if candidates.is_empty() {
-                clear_recovery_cursor(path);
                 Ok(SettingsReadOutcome {
                     settings: AppSettingsSnapshot::default(),
                     diagnostic: None,
@@ -376,12 +426,12 @@ where
     BeforeCandidateOpen: FnMut(&Path),
     ReadCandidate: FnMut(&RecoveryCandidate) -> RecoveryCandidateRead,
 {
-    let total = candidates.len();
-    let (start, candidates) = take_recovery_batch(path, candidates);
-    let checked = candidates.len();
+    let mut checked = 0usize;
     let mut candidate_diagnostics = Vec::new();
+    let mut omitted_diagnostics = 0;
 
     for candidate in candidates {
+        checked += 1;
         before_candidate_open(&candidate.path);
         let candidate_result = match &candidate.precheck {
             Some(RecoveryCandidatePrecheck::ConclusivelyInvalid(error)) => {
@@ -402,7 +452,6 @@ where
                     )
                 })?;
                 let cleanup = discard_recovery_candidate(&candidate.path);
-                clear_recovery_cursor(path);
                 return Ok(SettingsReadOutcome {
                     settings,
                     diagnostic: Some(format!(
@@ -416,24 +465,37 @@ where
                 });
             }
             RecoveryCandidateRead::ConclusivelyInvalid(error) => {
-                candidate_diagnostics.push(format!(
-                    "{}（确定无效：{}{}）",
-                    candidate.path.display(),
-                    error,
-                    cleanup_diagnostic(discard_recovery_candidate(&candidate.path)),
-                ));
+                let cleanup = discard_recovery_candidate(&candidate.path);
+                record_recovery_diagnostic(
+                    &mut candidate_diagnostics,
+                    &mut omitted_diagnostics,
+                    || {
+                        format!(
+                            "{}（确定无效：{}{}）",
+                            candidate.path.display(),
+                            error,
+                            cleanup_diagnostic(cleanup),
+                        )
+                    },
+                );
             }
-            RecoveryCandidateRead::Transient(error) => candidate_diagnostics.push(format!(
-                "{}（{}{}）",
-                candidate.path.display(),
-                error,
-                "；瞬态候选已保留",
-            )),
+            RecoveryCandidateRead::Transient(error) => record_recovery_diagnostic(
+                &mut candidate_diagnostics,
+                &mut omitted_diagnostics,
+                || {
+                    format!(
+                        "{}（{}{}）",
+                        candidate.path.display(),
+                        error,
+                        "；瞬态候选已保留",
+                    )
+                },
+            ),
         }
     }
 
-    let bounded = if total > RECOVERY_CANDIDATE_LIMIT {
-        format!("；共有 {total} 个恢复候选，仅检查前 {RECOVERY_CANDIDATE_LIMIT} 个")
+    let bounded = if omitted_diagnostics > 0 {
+        format!("；仅展示前 {RECOVERY_DIAGNOSTIC_LIMIT} 个诊断，省略 {omitted_diagnostics} 个")
     } else {
         String::new()
     };
@@ -445,42 +507,18 @@ where
             candidate_diagnostics.join("；")
         )
     };
-    Err(format!(
-        "{primary_error}；恢复失败：批次起点 {start}，{details}{bounded}"
-    ))
+    Err(format!("{primary_error}；恢复失败：{details}{bounded}"))
 }
 
-fn take_recovery_batch(
-    path: &Path,
-    mut candidates: Vec<RecoveryCandidate>,
-) -> (usize, Vec<RecoveryCandidate>) {
-    let total = candidates.len();
-    if total == 0 {
-        return (0, candidates);
-    }
-    let checked = total.min(RECOVERY_CANDIDATE_LIMIT);
-    let mut cursors = recovery_cursors()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let start = cursors.get(path).copied().unwrap_or_default() % total;
-    cursors.insert(path.to_path_buf(), (start + checked) % total);
-    drop(cursors);
-
-    candidates.rotate_left(start);
-    candidates.truncate(checked);
-    (start, candidates)
-}
-
-fn recovery_cursors() -> &'static Mutex<HashMap<PathBuf, usize>> {
-    RECOVERY_CURSORS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn clear_recovery_cursor(path: &Path) {
-    if let Some(cursors) = RECOVERY_CURSORS.get() {
-        cursors
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(path);
+fn record_recovery_diagnostic(
+    diagnostics: &mut Vec<String>,
+    omitted: &mut usize,
+    detail: impl FnOnce() -> String,
+) {
+    if diagnostics.len() < RECOVERY_DIAGNOSTIC_LIMIT {
+        diagnostics.push(detail());
+    } else {
+        *omitted += 1;
     }
 }
 
@@ -492,7 +530,7 @@ fn interrupted_temp_candidates(path: &Path) -> Result<Vec<RecoveryCandidate>, St
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| format!("设置文件名不是有效 UTF-8：{}", path.display()))?;
-    let prefix = format!("{file_name}.tmp-");
+    let ready_prefix = format!("{file_name}.tmp-ready-v3-");
     let mut candidates = Vec::new();
     let entries = match std::fs::read_dir(parent) {
         Ok(entries) => entries,
@@ -510,7 +548,7 @@ fn interrupted_temp_candidates(path: &Path) -> Result<Vec<RecoveryCandidate>, St
         let Some(candidate_name) = candidate.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if !candidate_name.starts_with(&prefix) {
+        if !candidate_name.starts_with(&ready_prefix) {
             continue;
         }
         let metadata = match std::fs::symlink_metadata(&candidate) {
@@ -519,7 +557,6 @@ fn interrupted_temp_candidates(path: &Path) -> Result<Vec<RecoveryCandidate>, St
                 candidates.push(RecoveryCandidate {
                     path: candidate,
                     freshness: 0,
-                    stale: true,
                     precheck: Some(RecoveryCandidatePrecheck::Transient(format!(
                         "读取非跟随元数据出现瞬态失败：{error}"
                     ))),
@@ -528,6 +565,7 @@ fn interrupted_temp_candidates(path: &Path) -> Result<Vec<RecoveryCandidate>, St
             }
         };
         let file_type = metadata.file_type();
+        let parsed_freshness = ready_candidate_freshness(candidate_name, &ready_prefix);
         let precheck = if file_type.is_symlink() {
             Some(RecoveryCandidatePrecheck::ConclusivelyInvalid(
                 "恢复候选是符号链接".into(),
@@ -540,18 +578,25 @@ fn interrupted_temp_candidates(path: &Path) -> Result<Vec<RecoveryCandidate>, St
             Some(RecoveryCandidatePrecheck::ConclusivelyInvalid(
                 "恢复候选是 Windows reparse point".into(),
             ))
+        } else if parsed_freshness.is_none() {
+            Some(RecoveryCandidatePrecheck::ConclusivelyInvalid(
+                "恢复候选名称格式无效".into(),
+            ))
+        } else if metadata.len() > RECOVERY_CANDIDATE_MAX_BYTES {
+            Some(RecoveryCandidatePrecheck::ConclusivelyInvalid(format!(
+                "恢复候选超过大小上限：{} > {} bytes",
+                metadata.len(),
+                RECOVERY_CANDIDATE_MAX_BYTES
+            )))
         } else {
             None
         };
-        let freshness = embedded_candidate_freshness(candidate_name, &prefix)
+        let freshness = parsed_freshness
             .or_else(|| metadata.modified().ok().map(system_time_key))
             .unwrap_or_default();
-        let stale = system_time_key(SystemTime::now()).saturating_sub(freshness)
-            >= RECOVERY_IN_FLIGHT_GRACE.as_nanos();
         candidates.push(RecoveryCandidate {
             path: candidate,
             freshness,
-            stale,
             precheck,
         });
     }
@@ -564,14 +609,15 @@ fn interrupted_temp_candidates(path: &Path) -> Result<Vec<RecoveryCandidate>, St
     Ok(candidates)
 }
 
-fn embedded_candidate_freshness(file_name: &str, prefix: &str) -> Option<u128> {
-    file_name
-        .strip_prefix(prefix)?
-        .strip_prefix("v2-")?
-        .split('-')
-        .next()?
-        .parse()
-        .ok()
+fn ready_candidate_freshness(file_name: &str, prefix: &str) -> Option<u128> {
+    let mut parts = file_name.strip_prefix(prefix)?.split('-');
+    let freshness = parts.next()?.parse().ok()?;
+    parts.next()?.parse::<u32>().ok()?;
+    parts.next()?.parse::<u64>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(freshness)
 }
 
 fn system_time_key(value: SystemTime) -> u128 {
@@ -585,7 +631,7 @@ fn read_recovery_candidate(candidate: &RecoveryCandidate) -> RecoveryCandidateRe
     let mut options = OpenOptions::new();
     options.read(true);
     configure_recovery_open_no_follow(&mut options);
-    let mut file = match options.open(&candidate.path) {
+    let file = match options.open(&candidate.path) {
         Ok(file) => file,
         Err(error) => {
             return RecoveryCandidateRead::Transient(format!(
@@ -609,17 +655,31 @@ fn read_recovery_candidate(candidate: &RecoveryCandidate) -> RecoveryCandidateRe
             "已打开恢复候选是 Windows reparse point".into(),
         );
     }
+    if metadata.len() > RECOVERY_CANDIDATE_MAX_BYTES {
+        return RecoveryCandidateRead::ConclusivelyInvalid(format!(
+            "已打开恢复候选超过大小上限：{} > {} bytes",
+            metadata.len(),
+            RECOVERY_CANDIDATE_MAX_BYTES
+        ));
+    }
 
     let mut bytes = Vec::new();
-    if let Err(error) = file.read_to_end(&mut bytes) {
+    if let Err(error) = file
+        .take(RECOVERY_CANDIDATE_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+    {
         return RecoveryCandidateRead::Transient(format!("读取恢复候选出现瞬态失败：{error}"));
+    }
+    if bytes.len() as u64 > RECOVERY_CANDIDATE_MAX_BYTES {
+        return RecoveryCandidateRead::ConclusivelyInvalid(format!(
+            "读取恢复候选超过大小上限：{} > {} bytes",
+            bytes.len(),
+            RECOVERY_CANDIDATE_MAX_BYTES
+        ));
     }
     match parse_settings(&candidate.path, &bytes) {
         Ok(settings) => RecoveryCandidateRead::Valid(settings),
-        Err(error) if candidate.stale => RecoveryCandidateRead::ConclusivelyInvalid(error),
-        Err(error) => {
-            RecoveryCandidateRead::Transient(format!("恢复候选可能仍在写入（in-flight）：{error}"))
-        }
+        Err(error) => RecoveryCandidateRead::ConclusivelyInvalid(error),
     }
 }
 
@@ -1061,57 +1121,72 @@ mod tests {
     }
 
     #[test]
-    fn transaction_lock_remains_held_from_read_until_commit() {
+    fn competing_mutation_reads_first_commit_only_after_transaction_lock_handoff() {
         let root = TestSettingsRoot::new("concurrent-mutations");
         let path = root.settings_path();
         write_fixture(&path, &AppSettingsSnapshot::default());
         let (first_read_tx, first_read_rx) = mpsc::channel();
         let (release_first_tx, release_first_rx) = mpsc::channel();
+        let (second_attempt_tx, second_attempt_rx) = mpsc::channel();
+        let (second_read_tx, second_read_rx) = mpsc::channel();
 
-        let position_path = path.clone();
-        let position_writer = thread::spawn(move || {
-            mutate_app_settings_at_with_hooks(
-                &position_path,
-                |lock| {
-                    assert!(matches!(lock.try_lock(), Err(TryLockError::WouldBlock)));
+        let first_path = path.clone();
+        let first_writer = thread::spawn(move || {
+            mutate_app_settings_at_with_transaction_hooks(
+                &first_path,
+                || {},
+                |settings| {
+                    assert!(settings.custom_account_display_name.is_empty());
                     first_read_tx.send(()).unwrap();
                     release_first_rx.recv().unwrap();
                 },
                 |_, _| {},
                 sync_parent_directory,
                 |settings| {
-                    settings.floating_position = Some(FloatingWindowPositionSnapshot {
-                        x: 321.0,
-                        y: 654.0,
-                        saved_at: Some(77),
-                    });
+                    settings.custom_account_display_name = "first-committed".into();
                 },
             )
             .unwrap()
         });
         first_read_rx.recv().unwrap();
 
-        assert!(matches!(
-            settings_lock().try_lock(),
-            Err(TryLockError::WouldBlock)
-        ));
+        let second_path = path.clone();
+        let second_writer = thread::spawn(move || {
+            mutate_app_settings_at_with_transaction_hooks(
+                &second_path,
+                || {
+                    second_attempt_tx.send(()).unwrap();
+                    assert!(matches!(
+                        settings_lock().try_lock(),
+                        Err(TryLockError::WouldBlock)
+                    ));
+                },
+                |settings| {
+                    second_read_tx
+                        .send(settings.custom_account_display_name.clone())
+                        .unwrap();
+                },
+                |_, _| {},
+                sync_parent_directory,
+                |settings| {
+                    settings.display_surfaces = DisplaySurfaceSettingsSnapshot {
+                        floating_window_enabled: false,
+                        live_rate_enabled: true,
+                        status_tray_live_text_enabled: false,
+                    };
+                },
+            )
+            .unwrap()
+        });
+
+        second_attempt_rx.recv().unwrap();
         release_first_tx.send(()).unwrap();
-        position_writer.join().unwrap();
-        mutate_app_settings_at(&path, |settings| {
-            settings.display_surfaces = DisplaySurfaceSettingsSnapshot {
-                floating_window_enabled: false,
-                live_rate_enabled: true,
-                status_tray_live_text_enabled: false,
-            };
-        })
-        .unwrap();
+        first_writer.join().unwrap();
+        assert_eq!(second_read_rx.recv().unwrap(), "first-committed");
+        second_writer.join().unwrap();
 
         let saved = read_app_settings_at(&path).unwrap();
-        let position = saved.floating_position.unwrap();
-        assert_eq!(
-            (position.x, position.y, position.saved_at),
-            (321.0, 654.0, Some(77))
-        );
+        assert_eq!(saved.custom_account_display_name, "first-committed");
         assert!(!saved.display_surfaces.floating_window_enabled);
         assert!(saved.display_surfaces.live_rate_enabled);
         assert!(!saved.display_surfaces.status_tray_live_text_enabled);
@@ -1130,7 +1205,16 @@ mod tests {
             mutate_app_settings_at_with_hooks(
                 &writer_path,
                 |_| {},
-                |_, _| {
+                |ready_path, _| {
+                    let ready_name = ready_path.file_name().unwrap().to_string_lossy();
+                    assert!(ready_name.starts_with("settings.json.tmp-ready-v3-"));
+                    assert!(!std::fs::read_dir(ready_path.parent().unwrap())
+                        .unwrap()
+                        .flatten()
+                        .any(|entry| entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("settings.json.tmp-in-progress-v3-")));
                     ready_tx.send(()).unwrap();
                     release_rx.recv().unwrap();
                 },
@@ -1185,7 +1269,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_primary_ignores_an_interrupted_corrupt_temp_file() {
+    fn valid_primary_ignores_an_in_progress_partial_file() {
         let root = TestSettingsRoot::new("interrupted-temp");
         let path = root.settings_path();
         let settings = AppSettingsSnapshot {
@@ -1193,7 +1277,7 @@ mod tests {
             ..AppSettingsSnapshot::default()
         };
         write_fixture(&path, &settings);
-        std::fs::write(interrupted_temp_path(&path, "0001"), b"{partial").unwrap();
+        std::fs::write(in_progress_temp_path(&path, 1, 1, 1), b"{partial").unwrap();
 
         let outcome = read_app_settings_at_with_diagnostics(&path).unwrap();
 
@@ -1211,7 +1295,7 @@ mod tests {
             quota_refresh_interval_ms: 180_000,
             ..AppSettingsSnapshot::default()
         };
-        write_fixture(&interrupted_temp_path(&path, "9999"), &recovered);
+        write_fixture(&ready_temp_path(&path, 9999, 1, 1), &recovered);
 
         let outcome = read_app_settings_at_with_diagnostics(&path).unwrap();
 
@@ -1235,8 +1319,8 @@ mod tests {
         let root = TestSettingsRoot::new("cross-process-freshness");
         let path = root.settings_path();
         std::fs::write(&path, b"{corrupt-primary").unwrap();
-        let stale_path = interrupted_temp_path(&path, "99999-00000000000000000001");
-        let fresh_path = interrupted_temp_path(&path, "00001-00000000000000000001");
+        let stale_path = ready_temp_path(&path, 10, 99_999, 1);
+        let fresh_path = ready_temp_path(&path, 20, 1, 1);
         write_fixture(
             &stale_path,
             &AppSettingsSnapshot {
@@ -1278,7 +1362,7 @@ mod tests {
                 ..AppSettingsSnapshot::default()
             },
         );
-        let candidate = interrupted_temp_path(&path, "99999-00000000000000000001");
+        let candidate = ready_temp_path(&path, 20, 99_999, 1);
         symlink(&target, &candidate).unwrap();
 
         let error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
@@ -1292,11 +1376,51 @@ mod tests {
     }
 
     #[test]
+    fn reparse_classified_ready_candidate_fails_closed_and_does_not_hide_valid_candidate() {
+        let root = TestSettingsRoot::new("reparse-classified-ready");
+        let path = root.settings_path();
+        std::fs::write(&path, b"{corrupt-primary").unwrap();
+        let reparse = ready_temp_path(&path, 200, 2, 1);
+        write_fixture(
+            &reparse,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "must-not-install".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        let valid = ready_temp_path(&path, 100, 1, 1);
+        write_fixture(
+            &valid,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "after-reparse".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        let mut candidates = interrupted_temp_candidates(&path).unwrap();
+        let classified = candidates
+            .iter_mut()
+            .find(|candidate| candidate.path == reparse)
+            .unwrap();
+        classified.precheck = Some(RecoveryCandidatePrecheck::ConclusivelyInvalid(
+            "恢复候选是 Windows reparse point".into(),
+        ));
+
+        let recovered =
+            recover_from_candidates(&path, "corrupt primary".into(), candidates).unwrap();
+
+        assert_eq!(
+            recovered.settings.custom_account_display_name,
+            "after-reparse"
+        );
+        assert!(!reparse.exists());
+    }
+
+    #[test]
     fn recovery_rejects_and_removes_non_regular_candidate() {
         let root = TestSettingsRoot::new("directory-candidate");
         let path = root.settings_path();
         std::fs::write(&path, b"{corrupt-primary").unwrap();
-        let candidate = interrupted_temp_path(&path, "99999-00000000000000000001");
+        let candidate = ready_temp_path(&path, 20, 99_999, 1);
         std::fs::create_dir(&candidate).unwrap();
 
         let error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
@@ -1313,7 +1437,7 @@ mod tests {
         let root = TestSettingsRoot::new("candidate-toctou");
         let path = root.settings_path();
         std::fs::write(&path, b"{corrupt-primary").unwrap();
-        let candidate = interrupted_temp_path(&path, "99999-00000000000000000001");
+        let candidate = ready_temp_path(&path, 20, 99_999, 1);
         write_fixture(&candidate, &AppSettingsSnapshot::default());
         let target = root.path.join("valid-target.json");
         write_fixture(
@@ -1345,148 +1469,137 @@ mod tests {
     }
 
     #[test]
-    fn bounded_recovery_removes_invalid_candidates_then_reaches_older_valid_file() {
-        let root = TestSettingsRoot::new("bounded-recovery");
-        let path = root.settings_path();
-        std::fs::write(&path, b"{corrupt-primary").unwrap();
-        let valid = interrupted_temp_path(&path, "0001");
-        write_fixture(
-            &valid,
-            &AppSettingsSnapshot {
-                custom_account_display_name: "older-valid".into(),
-                ..AppSettingsSnapshot::default()
-            },
-        );
-        set_modified_time(&valid, UNIX_EPOCH + Duration::from_secs(1));
-        let mut invalid = Vec::new();
-        for index in 2..=RECOVERY_CANDIDATE_LIMIT + 1 {
-            let candidate = interrupted_temp_path(&path, &format!("{index:04}"));
-            std::fs::write(&candidate, b"{corrupt-temp").unwrap();
-            set_modified_time(&candidate, UNIX_EPOCH + Duration::from_secs(index as u64));
-            invalid.push(candidate);
+    fn recovery_scans_past_undeletable_ready_candidates_in_one_call_without_process_state() {
+        for run in 0..2 {
+            let root = TestSettingsRoot::new(&format!("ready-progress-{run}"));
+            let path = root.settings_path();
+            std::fs::write(&path, b"{corrupt-primary").unwrap();
+            let valid = ready_temp_path(&path, 100, 1, run);
+            write_fixture(
+                &valid,
+                &AppSettingsSnapshot {
+                    custom_account_display_name: format!("older-valid-{run}"),
+                    ..AppSettingsSnapshot::default()
+                },
+            );
+            set_modified_time(&valid, UNIX_EPOCH + Duration::from_secs(100));
+            let mut undeletable = Vec::new();
+            for index in 0..8 {
+                let candidate = ready_temp_path(&path, 200 + index, 9, index as u64);
+                std::fs::create_dir(&candidate).unwrap();
+                std::fs::write(candidate.join("keep"), b"prevents remove_dir").unwrap();
+                undeletable.push(candidate);
+            }
+
+            let recovered = read_app_settings_at_with_diagnostics(&path).unwrap();
+
+            assert_eq!(
+                recovered.settings.custom_account_display_name,
+                format!("older-valid-{run}")
+            );
+            assert!(undeletable.iter().all(|candidate| candidate.exists()));
         }
-
-        let first_error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
-        assert!(first_error.contains(&format!("仅检查前 {RECOVERY_CANDIDATE_LIMIT} 个")));
-        assert!(invalid.iter().all(|candidate| !candidate.exists()));
-
-        let recovered = read_app_settings_at_with_diagnostics(&path).unwrap();
-
-        assert_eq!(
-            recovered.settings.custom_account_display_name,
-            "older-valid"
-        );
     }
 
     #[test]
-    fn bounded_recovery_rotates_past_undeletable_invalid_candidates() {
-        let root = TestSettingsRoot::new("bounded-undeletable-recovery");
+    fn recovery_never_scans_or_touches_active_in_progress_file() {
+        let root = TestSettingsRoot::new("active-in-progress");
         let path = root.settings_path();
         std::fs::write(&path, b"{corrupt-primary").unwrap();
-        let valid = interrupted_v2_temp_path(&path, 100, 1, 1);
+        let in_progress = in_progress_temp_path(&path, 300, 7, 1);
+        let mut active_writer = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&in_progress)
+            .unwrap();
+        active_writer.write_all(b"{partial").unwrap();
+        active_writer.flush().unwrap();
+        active_writer
+            .set_times(FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(300)))
+            .unwrap();
+        let valid = ready_temp_path(&path, 100, 1, 1);
         write_fixture(
             &valid,
             &AppSettingsSnapshot {
-                custom_account_display_name: "reachable-after-rotation".into(),
+                custom_account_display_name: "ready-only".into(),
                 ..AppSettingsSnapshot::default()
             },
         );
-        let mut undeletable = Vec::new();
-        for index in 0..RECOVERY_CANDIDATE_LIMIT {
-            let candidate = interrupted_v2_temp_path(&path, 200 + index as u128, 9, index as u64);
-            std::fs::create_dir(&candidate).unwrap();
-            std::fs::write(candidate.join("keep"), b"prevents remove_dir").unwrap();
-            undeletable.push(candidate);
-        }
+        set_modified_time(&valid, UNIX_EPOCH + Duration::from_secs(100));
 
-        let first_error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
-        assert!(first_error.contains("候选清理失败"));
-        assert!(undeletable.iter().all(|candidate| candidate.exists()));
+        let candidates = interrupted_temp_candidates(&path).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].path, valid);
+        let mut opened = Vec::new();
+        let recovered = recover_from_candidates_with_hook(
+            &path,
+            "corrupt primary".into(),
+            candidates,
+            |candidate| opened.push(candidate.to_path_buf()),
+        )
+        .unwrap();
 
-        let recovered = read_app_settings_at_with_diagnostics(&path).unwrap();
-
+        active_writer.write_all(b"-still-owned").unwrap();
+        active_writer.flush().unwrap();
+        assert!(in_progress.exists());
         assert_eq!(
-            recovered.settings.custom_account_display_name,
-            "reachable-after-rotation"
+            std::fs::read(&in_progress).unwrap(),
+            b"{partial-still-owned"
         );
+        assert!(!opened.contains(&in_progress));
+        assert_eq!(recovered.settings.custom_account_display_name, "ready-only");
     }
 
     #[test]
-    fn visible_in_flight_partial_temp_is_preserved_then_recoverable() {
-        let root = TestSettingsRoot::new("in-flight-partial");
+    fn newer_ready_candidate_published_between_scans_wins_over_older_ready() {
+        let root = TestSettingsRoot::new("new-ready-between-scans");
         let path = root.settings_path();
         std::fs::write(&path, b"{corrupt-primary").unwrap();
-        let candidate = interrupted_v2_temp_path(&path, system_time_key(SystemTime::now()), 7, 1);
-        std::fs::write(&candidate, b"{partial").unwrap();
-
-        let first_error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
-
-        assert!(first_error.contains("仍在写入") || first_error.contains("in-flight"));
-        assert!(
-            candidate.exists(),
-            "an in-flight writer temp must not be unlinked"
-        );
-
-        write_fixture(
-            &candidate,
-            &AppSettingsSnapshot {
-                custom_account_display_name: "completed-in-flight".into(),
-                ..AppSettingsSnapshot::default()
-            },
-        );
-        let recovered = read_app_settings_at_with_diagnostics(&path).unwrap();
-
-        assert_eq!(
-            recovered.settings.custom_account_display_name,
-            "completed-in-flight"
-        );
-    }
-
-    #[test]
-    fn transient_open_failures_are_preserved_and_cursor_reaches_older_valid_candidate() {
-        let root = TestSettingsRoot::new("transient-open-recovery");
-        let path = root.settings_path();
-        std::fs::write(&path, b"{corrupt-primary").unwrap();
-        let valid = interrupted_v2_temp_path(&path, 100, 1, 1);
-        write_fixture(
-            &valid,
-            &AppSettingsSnapshot {
-                custom_account_display_name: "valid-after-transient".into(),
-                ..AppSettingsSnapshot::default()
-            },
-        );
-        let mut transient = Vec::new();
-        for index in 0..RECOVERY_CANDIDATE_LIMIT {
-            let candidate = interrupted_v2_temp_path(&path, 200 + index as u128, 4, index as u64);
-            write_fixture(&candidate, &AppSettingsSnapshot::default());
-            transient.push(candidate);
+        let mut initial = Vec::new();
+        for freshness in 100..=108 {
+            let candidate = ready_temp_path(&path, freshness, 4, freshness as u64);
+            write_fixture(
+                &candidate,
+                &AppSettingsSnapshot {
+                    custom_account_display_name: format!("candidate-{freshness}"),
+                    ..AppSettingsSnapshot::default()
+                },
+            );
+            set_modified_time(
+                &candidate,
+                UNIX_EPOCH + Duration::from_secs(freshness as u64),
+            );
+            initial.push(candidate);
         }
 
         let first_error = recover_from_candidates_with_reader(
             &path,
             "corrupt primary".into(),
             interrupted_temp_candidates(&path).unwrap(),
-            |candidate| {
-                if transient.contains(&candidate.path) {
-                    RecoveryCandidateRead::Transient("injected open/share failure".into())
-                } else {
-                    read_recovery_candidate(candidate)
-                }
-            },
+            |_| RecoveryCandidateRead::Transient("injected share failure".into()),
         )
         .unwrap_err();
-        assert!(first_error.contains("injected open/share failure"));
-        assert!(transient.iter().all(|candidate| candidate.exists()));
+        assert!(first_error.contains("injected share failure"));
 
+        let newer = ready_temp_path(&path, 200, 2, 1);
+        write_fixture(
+            &newer,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "newest-ready".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        set_modified_time(&newer, UNIX_EPOCH + Duration::from_secs(200));
+        let older = initial[0].clone();
         let recovered = recover_from_candidates_with_reader(
             &path,
             "corrupt primary".into(),
             interrupted_temp_candidates(&path).unwrap(),
             |candidate| {
-                if transient.contains(&candidate.path) {
-                    RecoveryCandidateRead::Transient("injected open/share failure".into())
-                } else {
+                if candidate.path == newer || candidate.path == older {
                     read_recovery_candidate(candidate)
+                } else {
+                    RecoveryCandidateRead::Transient("injected share failure".into())
                 }
             },
         )
@@ -1494,8 +1607,148 @@ mod tests {
 
         assert_eq!(
             recovered.settings.custom_account_display_name,
-            "valid-after-transient"
+            "newest-ready"
         );
+    }
+
+    #[test]
+    fn missing_ready_candidate_does_not_hide_an_older_valid_candidate() {
+        let root = TestSettingsRoot::new("missing-ready");
+        let path = root.settings_path();
+        std::fs::write(&path, b"{corrupt-primary").unwrap();
+        let missing = ready_temp_path(&path, 200, 2, 1);
+        write_fixture(&missing, &AppSettingsSnapshot::default());
+        set_modified_time(&missing, UNIX_EPOCH + Duration::from_secs(200));
+        let valid = ready_temp_path(&path, 100, 1, 1);
+        write_fixture(
+            &valid,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "after-missing".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        set_modified_time(&valid, UNIX_EPOCH + Duration::from_secs(100));
+        let candidates = interrupted_temp_candidates(&path).unwrap();
+
+        let recovered = recover_from_candidates_with_hook(
+            &path,
+            "corrupt primary".into(),
+            candidates,
+            |candidate| {
+                if candidate == missing {
+                    std::fs::remove_file(candidate).unwrap();
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            recovered.settings.custom_account_display_name,
+            "after-missing"
+        );
+    }
+
+    #[test]
+    fn malformed_ready_name_fails_closed_and_does_not_hide_valid_candidate() {
+        let root = TestSettingsRoot::new("malformed-ready");
+        let path = root.settings_path();
+        std::fs::write(&path, b"{corrupt-primary").unwrap();
+        let malformed = malformed_ready_temp_path(&path, "malformed");
+        write_fixture(
+            &malformed,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "must-not-install".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        set_modified_time(&malformed, UNIX_EPOCH + Duration::from_secs(200));
+        let valid = ready_temp_path(&path, 100, 1, 1);
+        write_fixture(
+            &valid,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "valid-ready".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        set_modified_time(&valid, UNIX_EPOCH + Duration::from_secs(100));
+
+        let recovered = read_app_settings_at_with_diagnostics(&path).unwrap();
+
+        assert_eq!(
+            recovered.settings.custom_account_display_name,
+            "valid-ready"
+        );
+        assert!(!malformed.exists());
+    }
+
+    #[test]
+    fn oversized_ready_candidate_is_rejected_before_reader_and_does_not_hide_valid_candidate() {
+        let root = TestSettingsRoot::new("oversized-ready");
+        let path = root.settings_path();
+        std::fs::write(&path, b"{corrupt-primary").unwrap();
+        let oversized = ready_temp_path(&path, 200, 2, 1);
+        let oversized_file = File::create(&oversized).unwrap();
+        oversized_file
+            .set_len(RECOVERY_CANDIDATE_MAX_BYTES + 1)
+            .unwrap();
+        set_modified_time(&oversized, UNIX_EPOCH + Duration::from_secs(200));
+        let valid = ready_temp_path(&path, 100, 1, 1);
+        write_fixture(
+            &valid,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "after-oversized".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        set_modified_time(&valid, UNIX_EPOCH + Duration::from_secs(100));
+
+        let recovered = recover_from_candidates_with_reader(
+            &path,
+            "corrupt primary".into(),
+            interrupted_temp_candidates(&path).unwrap(),
+            |candidate| {
+                assert_ne!(
+                    candidate.path, oversized,
+                    "oversized candidate must be rejected before reading"
+                );
+                read_recovery_candidate(candidate)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            recovered.settings.custom_account_display_name,
+            "after-oversized"
+        );
+    }
+
+    #[test]
+    fn recovery_scans_all_candidates_while_bounding_diagnostic_details() {
+        let root = TestSettingsRoot::new("bounded-diagnostics");
+        let path = root.settings_path();
+        std::fs::write(&path, b"{corrupt-primary").unwrap();
+        let mut transient = Vec::new();
+        for index in 0..20 {
+            let candidate = ready_temp_path(&path, 100 + index, 3, index as u64);
+            write_fixture(&candidate, &AppSettingsSnapshot::default());
+            set_modified_time(
+                &candidate,
+                UNIX_EPOCH + Duration::from_secs(100 + index as u64),
+            );
+            transient.push(candidate);
+        }
+
+        let error = recover_from_candidates_with_reader(
+            &path,
+            "corrupt primary".into(),
+            interrupted_temp_candidates(&path).unwrap(),
+            |_| RecoveryCandidateRead::Transient("injected read failure".into()),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("已检查 20 个候选"));
+        assert!(error.contains("仅展示前 8 个诊断"));
+        assert!(transient.iter().all(|candidate| candidate.exists()));
     }
 
     #[test]
@@ -1554,19 +1807,25 @@ mod tests {
             .unwrap();
     }
 
-    fn interrupted_temp_path(settings_path: &Path, suffix: &str) -> PathBuf {
-        settings_path.with_file_name(format!("settings.json.tmp-{suffix}"))
-    }
-
-    fn interrupted_v2_temp_path(
+    fn in_progress_temp_path(
         settings_path: &Path,
-        freshness: u128,
+        created_at: u128,
         pid: u32,
         sequence: u64,
     ) -> PathBuf {
         settings_path.with_file_name(format!(
-            "settings.json.tmp-v2-{freshness:039}-{pid}-{sequence:020}"
+            "settings.json.tmp-in-progress-v3-{created_at:039}-{pid}-{sequence:020}"
         ))
+    }
+
+    fn ready_temp_path(settings_path: &Path, freshness: u128, pid: u32, sequence: u64) -> PathBuf {
+        settings_path.with_file_name(format!(
+            "settings.json.tmp-ready-v3-{freshness:039}-{pid}-{sequence:020}"
+        ))
+    }
+
+    fn malformed_ready_temp_path(settings_path: &Path, suffix: &str) -> PathBuf {
+        settings_path.with_file_name(format!("settings.json.tmp-ready-v3-{suffix}"))
     }
 
     fn unique_test_settings_path(label: &str) -> PathBuf {
