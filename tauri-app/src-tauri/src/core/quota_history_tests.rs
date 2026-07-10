@@ -655,6 +655,176 @@ fn history_bundle_builds_all_axes_from_one_read() {
     let _ = std::fs::remove_file(path);
 }
 
+#[test]
+fn history_bundle_for_current_account_does_not_follow_a_concurrent_latest_account() {
+    let path = temp_db_path("current-account-filter");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let reset = now_unix() + 12.0 * 3_600.0;
+    let account_a = bundle("account-a", 0.20, reset as i64, 0.40, (reset + 500_000.0) as i64);
+    let account_b = bundle("account-b", 0.70, reset as i64, 0.80, (reset + 500_000.0) as i64);
+
+    database.record(&account_a).unwrap();
+    database.record(&account_b).unwrap();
+
+    let history_a = database
+        .history_bundle_for(&account_a, 365, RECENT_BIN_COUNT)
+        .unwrap();
+    let history_b = database
+        .history_bundle_for(&account_b, 365, RECENT_BIN_COUNT)
+        .unwrap();
+
+    assert_eq!(
+        history_a.recent_24h.last().unwrap().five_hour_remaining_percent,
+        Some(0.80)
+    );
+    assert_eq!(
+        history_b.recent_24h.last().unwrap().five_hour_remaining_percent,
+        Some(0.30)
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn concurrent_account_record_and_load_stays_on_each_account_filter() {
+    use std::sync::{Arc, Barrier};
+
+    let path = temp_db_path("concurrent-account-filter");
+    let reset = now_unix() + 12.0 * 3_600.0;
+    let barrier = Arc::new(Barrier::new(3));
+    let recorded = Arc::new(Barrier::new(3));
+    let cases = [
+        ("account-a", 0.20, 0.80),
+        ("account-b", 0.70, 0.30),
+    ];
+    let handles = cases
+        .into_iter()
+        .map(|(name, used, expected_remaining)| {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            let recorded = recorded.clone();
+            std::thread::spawn(move || {
+                let database = QuotaHistoryDatabase { path };
+                let account = bundle(
+                    name,
+                    used,
+                    reset as i64,
+                    used,
+                    (reset + 500_000.0) as i64,
+                );
+                barrier.wait();
+                database.record(&account).unwrap();
+                recorded.wait();
+                let history = database
+                    .history_bundle_for(&account, 365, RECENT_BIN_COUNT)
+                    .unwrap();
+                (
+                    history.recent_24h.last().unwrap().five_hour_remaining_percent,
+                    expected_remaining,
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+
+    barrier.wait();
+    recorded.wait();
+    for handle in handles {
+        let (actual, expected) = handle.join().unwrap();
+        assert_eq!(actual, Some(expected));
+    }
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn partial_window_rows_remain_missing_until_that_window_is_measured_again() {
+    let interval = 5 * 60;
+    let end = (now_unix() / interval as f64).floor() * interval as f64;
+    let start = end - 2.0 * interval as f64;
+
+    for unavailable_window in ["five", "seven"] {
+        let first = history_row(
+            start + 1.0,
+            "tester|Pro|codex",
+            "Pro",
+            Some("codex"),
+            10,
+            end + 3_600.0,
+            20,
+            end + 500_000.0,
+        );
+        let mut partial = first.clone();
+        partial.created_at = start + interval as f64 + 1.0;
+        partial.five_hour_used_percent = Some(30);
+        partial.seven_day_used_percent = Some(40);
+        let mut full = partial.clone();
+        full.created_at = end + 1.0;
+        full.five_hour_used_percent = Some(35);
+        full.seven_day_used_percent = Some(45);
+
+        match unavailable_window {
+            "five" => {
+                partial.five_hour_used_percent = None;
+                partial.five_hour_resets_at = None;
+            }
+            "seven" => {
+                partial.seven_day_used_percent = None;
+                partial.seven_day_resets_at = None;
+            }
+            _ => unreachable!(),
+        }
+
+        let sanitized = super::series::sanitized_rows(vec![
+            first.clone(),
+            partial.clone(),
+            full.clone(),
+        ]);
+        if unavailable_window == "five" {
+            assert_eq!(sanitized[1].five_hour_used_percent, None);
+            assert_eq!(sanitized[1].seven_day_used_percent, Some(40));
+        } else {
+            assert_eq!(sanitized[1].five_hour_used_percent, Some(30));
+            assert_eq!(sanitized[1].seven_day_used_percent, None);
+        }
+
+        let series = make_interval_history(vec![first, partial, full], 3, interval);
+        if unavailable_window == "five" {
+            assert_eq!(series[1].five_hour_remaining_percent, None);
+            assert_eq!(series[1].seven_day_remaining_percent, Some(0.60));
+            assert_eq!(series[2].five_hour_remaining_percent, Some(0.65));
+        } else {
+            assert_eq!(series[1].five_hour_remaining_percent, Some(0.70));
+            assert_eq!(series[1].seven_day_remaining_percent, None);
+            assert_eq!(series[2].seven_day_remaining_percent, Some(0.55));
+        }
+    }
+}
+
+#[test]
+fn unavailable_window_ignores_compatibility_zero_when_building_history_row() {
+    let reset = now_unix() as i64 + 3_600;
+    for unavailable_window in ["five", "seven"] {
+        let mut snapshot = bundle("tester", 0.20, reset, 0.40, reset + 500_000);
+        let limit = if unavailable_window == "five" {
+            &mut snapshot.quota.five_hour
+        } else {
+            &mut snapshot.quota.seven_day
+        };
+        limit.availability = crate::models::QuotaAvailability::Unavailable;
+        limit.remaining_percent = Some(0.0);
+        limit.used_percent = Some(1.0);
+
+        let row = QuotaHistoryRow::from_bundle(&snapshot, now_unix());
+        if unavailable_window == "five" {
+            assert_eq!(row.five_hour_used_percent, None);
+            assert_eq!(row.five_hour_resets_at, None);
+            assert_eq!(row.seven_day_used_percent, Some(40));
+        } else {
+            assert_eq!(row.five_hour_used_percent, Some(20));
+            assert_eq!(row.seven_day_used_percent, None);
+            assert_eq!(row.seven_day_resets_at, None);
+        }
+    }
+}
+
 fn bundle(
     name: &str,
     five_used: f64,

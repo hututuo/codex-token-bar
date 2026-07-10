@@ -3,7 +3,9 @@ use crate::models::{
     AccountInfo, AccountQuotaBundle, LocalDataWarning, QuotaDiagnostic, QuotaSnapshot,
     ResetCreditSummary,
 };
-use auth::{read_local_account_key, read_local_account_name};
+use auth::{read_local_account_name, read_local_auth_observation};
+#[cfg(test)]
+use auth::read_local_account_key;
 use codex_binary::find_codex_binary_with_report;
 #[cfg(test)]
 use rate_limits::parse_rate_limits;
@@ -46,10 +48,11 @@ static QUOTA_READ_CACHE: OnceLock<Mutex<HashMap<PathBuf, QuotaCacheEntry>>> = On
 static QUOTA_HISTORY_CACHE: OnceLock<Mutex<QuotaHistoryMemoryCache>> = OnceLock::new();
 static QUOTA_READ_GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct QuotaCacheScope {
     codex_home: PathBuf,
     account_key: Option<String>,
+    flight_fingerprint: [u8; 32],
 }
 
 impl QuotaCacheScope {
@@ -57,6 +60,12 @@ impl QuotaCacheScope {
         self.codex_home == current.codex_home
             && self.account_key.is_some()
             && self.account_key == current.account_key
+    }
+
+    fn allows_flight_reuse(&self, current: &Self) -> bool {
+        self.codex_home == current.codex_home
+            && self.account_key == current.account_key
+            && self.flight_fingerprint == current.flight_fingerprint
     }
 }
 
@@ -75,20 +84,43 @@ struct QuotaHistoryCacheEntry {
 
 #[derive(Default)]
 struct QuotaHistoryMemoryCache {
-    entry: Option<QuotaHistoryCacheEntry>,
+    entries: HashMap<QuotaCacheScope, QuotaHistoryCacheEntry>,
+    legacy_owners: HashMap<String, Option<QuotaCacheScope>>,
 }
 
 impl QuotaHistoryMemoryCache {
+    fn claim_legacy_scope(&mut self, scope: &QuotaCacheScope, legacy_key: &str) -> bool {
+        match self.legacy_owners.get(legacy_key) {
+            Some(Some(owner)) if owner == scope => true,
+            Some(Some(_)) => {
+                self.legacy_owners.insert(legacy_key.into(), None);
+                false
+            }
+            Some(None) => false,
+            None => {
+                self.legacy_owners
+                    .insert(legacy_key.into(), Some(scope.clone()));
+                true
+            }
+        }
+    }
+
     fn load_or_refresh<F>(
         &mut self,
+        scope: &QuotaCacheScope,
+        legacy_key: &str,
         force_refresh: bool,
         mut loader: F,
     ) -> Result<quota_history::QuotaHistoryBundle, String>
     where
         F: FnMut() -> Result<quota_history::QuotaHistoryBundle, String>,
     {
+        if !self.claim_legacy_scope(scope, legacy_key) {
+            return Ok(quota_history::QuotaHistoryBundle::default());
+        }
+
         if !force_refresh {
-            if let Some(entry) = &self.entry {
+            if let Some(entry) = self.entries.get(scope) {
                 if entry.cached_at.elapsed() <= HISTORY_CACHE_TTL {
                     return Ok(entry.bundle.clone());
                 }
@@ -96,10 +128,13 @@ impl QuotaHistoryMemoryCache {
         }
 
         let bundle = loader()?;
-        self.entry = Some(QuotaHistoryCacheEntry {
-            bundle: bundle.clone(),
-            cached_at: Instant::now(),
-        });
+        self.entries.insert(
+            scope.clone(),
+            QuotaHistoryCacheEntry {
+                bundle: bundle.clone(),
+                cached_at: Instant::now(),
+            },
+        );
         Ok(bundle)
     }
 }
@@ -123,14 +158,16 @@ fn read_account_quota_with_policy<F>(
 where
     F: FnOnce() -> u64,
 {
-    read_account_quota_with_policy_and_loader(
+    read_account_quota_with_policy_loader_and_finalizer(
         codex_home,
         force_refresh,
         cadence_loader,
-        read_account_quota_uncached,
+        read_account_quota_raw,
+        finalize_account_quota,
     )
 }
 
+#[cfg(test)]
 fn read_account_quota_with_policy_and_loader<F, L>(
     codex_home: &Path,
     force_refresh: bool,
@@ -141,18 +178,42 @@ where
     F: FnOnce() -> u64,
     L: FnOnce(&Path) -> Result<AccountQuotaBundle, String>,
 {
+    read_account_quota_with_policy_loader_and_finalizer(
+        codex_home,
+        force_refresh,
+        cadence_loader,
+        loader,
+        |_, bundle| Ok(bundle),
+    )
+}
+
+fn read_account_quota_with_policy_loader_and_finalizer<F, L, Finalize>(
+    codex_home: &Path,
+    force_refresh: bool,
+    cadence_loader: F,
+    loader: L,
+    finalizer: Finalize,
+) -> Result<AccountQuotaBundle, String>
+where
+    F: FnOnce() -> u64,
+    L: FnOnce(&Path) -> Result<AccountQuotaBundle, String>,
+    Finalize: FnOnce(&QuotaCacheScope, AccountQuotaBundle) -> Result<AccountQuotaBundle, String>,
+{
     let success_freshness = success_freshness_for_cadence_ms(cadence_loader());
-    let scope = quota_cache_scope(codex_home, read_local_account_key(codex_home));
-    if let Some(cached) = cached_quota_result(&scope, force_refresh, success_freshness)? {
+    let initial_scope = observed_quota_cache_scope(codex_home);
+    if let Some(cached) = cached_quota_result(&initial_scope, force_refresh, success_freshness)? {
         return resolve_cached_quota(cached);
     }
 
-    let gate = quota_read_gate(&scope.codex_home)?;
+    let gate = quota_read_gate(&initial_scope.codex_home)?;
     let _read_guard = match gate.try_lock() {
         Ok(guard) => guard,
         Err(TryLockError::WouldBlock) => {
             let guard = gate.lock().map_err(|error| error.to_string())?;
-            let joined_scope = quota_cache_scope(codex_home, read_local_account_key(codex_home));
+            let joined_scope = observed_quota_cache_scope(codex_home);
+            if !initial_scope.allows_flight_reuse(&joined_scope) {
+                return Ok(identity_changed_quota_bundle(codex_home));
+            }
             if let Some(cached) =
                 cached_quota_result_after_inflight(&joined_scope, force_refresh, success_freshness)?
             {
@@ -162,26 +223,31 @@ where
         }
         Err(TryLockError::Poisoned(error)) => return Err(error.to_string()),
     };
-    let scope = quota_cache_scope(codex_home, read_local_account_key(codex_home));
+    let scope = observed_quota_cache_scope(codex_home);
+    if !initial_scope.allows_flight_reuse(&scope) {
+        return Ok(identity_changed_quota_bundle(codex_home));
+    }
     if let Some(cached) = cached_quota_result(&scope, force_refresh, success_freshness)? {
         return resolve_cached_quota(cached);
     }
 
     let previous_success = cached_successful_quota(&scope)?;
     let loaded = loader(codex_home);
-    let completed_scope = quota_cache_scope(codex_home, read_local_account_key(codex_home));
-    let identity_stable = scope == completed_scope;
-    let result = loaded.map(|bundle| {
-        if account_quota_failed(&bundle) && identity_stable {
+    let completed_scope = observed_quota_cache_scope(codex_home);
+    if !scope.allows_flight_reuse(&completed_scope) {
+        return Ok(identity_changed_quota_bundle(codex_home));
+    }
+    let result = loaded.and_then(|bundle| {
+        if account_quota_failed(&bundle) {
             if let Some(previous) = previous_success {
-                return stale_quota_bundle(previous, bundle);
+                return Ok(stale_quota_bundle(previous, bundle));
             }
         }
-        bundle
+        if quota_available(&bundle.quota) {
+            return finalizer(&completed_scope, bundle);
+        }
+        Ok(bundle)
     });
-    if !identity_stable {
-        return result;
-    }
     let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = cache.lock().map_err(|error| error.to_string())?;
     guard.insert(
@@ -204,10 +270,22 @@ fn quota_read_gate(canonical_home: &Path) -> Result<Arc<Mutex<()>>, String> {
         .clone())
 }
 
+#[cfg(test)]
 fn quota_cache_scope(codex_home: &Path, account_key: Option<String>) -> QuotaCacheScope {
+    let observation = read_local_auth_observation(codex_home);
     QuotaCacheScope {
         codex_home: std::fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf()),
         account_key,
+        flight_fingerprint: observation.flight_fingerprint,
+    }
+}
+
+fn observed_quota_cache_scope(codex_home: &Path) -> QuotaCacheScope {
+    let observation = read_local_auth_observation(codex_home);
+    QuotaCacheScope {
+        codex_home: std::fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf()),
+        account_key: observation.stable_account_key,
+        flight_fingerprint: observation.flight_fingerprint,
     }
 }
 
@@ -257,7 +335,7 @@ fn cached_quota_result_with_policy(
     Ok(guard
         .get(&scope.codex_home)
         .filter(|entry| {
-            cache_scope_matches(entry, scope)
+            cache_scope_matches(entry, scope, after_inflight)
                 && reusable_cached_quota(entry, force_refresh, after_inflight, success_freshness)
         })
         .map(|entry| entry.result.clone()))
@@ -275,7 +353,14 @@ fn reusable_cached_quota(
     after_inflight && entry.cached_at.elapsed() <= FORCED_REFRESH_COALESCE_TTL
 }
 
-fn cache_scope_matches(entry: &QuotaCacheEntry, scope: &QuotaCacheScope) -> bool {
+fn cache_scope_matches(
+    entry: &QuotaCacheEntry,
+    scope: &QuotaCacheScope,
+    after_inflight: bool,
+) -> bool {
+    if after_inflight {
+        return entry.scope.allows_flight_reuse(scope);
+    }
     if cache_result_has_real_quota(&entry.result) {
         entry.scope.allows_success_reuse(scope)
     } else {
@@ -292,9 +377,7 @@ fn cache_result_has_real_quota(result: &Result<AccountQuotaBundle, String>) -> b
 fn resolve_cached_quota(cached: Result<AccountQuotaBundle, String>) -> Result<AccountQuotaBundle, String> {
     match cached {
         Ok(mut bundle) => {
-            if quota_available(&bundle.quota) && !bundle_has_stale_data(&bundle) {
-                refresh_quota_histories(&mut bundle, false);
-            } else if !quota_available(&bundle.quota) {
+            if !quota_available(&bundle.quota) {
                 bundle.quota_history_daily.clear();
                 bundle.quota_history_24h.clear();
                 bundle.quota_history_7d.clear();
@@ -337,7 +420,7 @@ fn bundle_has_stale_data(bundle: &AccountQuotaBundle) -> bool {
         .any(|diagnostic| diagnostic.stale_data_displayed)
 }
 
-fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, String> {
+fn read_account_quota_raw(codex_home: &Path) -> Result<AccountQuotaBundle, String> {
     let mut bundle = match read_rate_limits(codex_home) {
         Ok(ParsedRateLimits {
             mut quota,
@@ -355,7 +438,7 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
                     credits: Vec::new(),
                 }
             });
-            let mut bundle = AccountQuotaBundle {
+            AccountQuotaBundle {
                 account: account_info(codex_home, plan_label.as_deref()),
                 quota,
                 quota_history_daily: Vec::new(),
@@ -364,12 +447,7 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
                 quota_history_30d: Vec::new(),
                 warnings,
                 diagnostics,
-            };
-            if let Err(error) = quota_history::record_bundle(&bundle) {
-                bundle.warnings.push(quota_history::warning(error));
             }
-            refresh_quota_histories(&mut bundle, true);
-            bundle
         }
         Err(error) => quota_failure_bundle(codex_home, error),
     };
@@ -388,6 +466,55 @@ fn read_account_quota_uncached(codex_home: &Path) -> Result<AccountQuotaBundle, 
     }
 
     Ok(bundle)
+}
+
+fn finalize_account_quota(
+    scope: &QuotaCacheScope,
+    mut bundle: AccountQuotaBundle,
+) -> Result<AccountQuotaBundle, String> {
+    let legacy_key = quota_history::legacy_history_key(&bundle);
+    let cache = QUOTA_HISTORY_CACHE.get_or_init(|| Mutex::new(QuotaHistoryMemoryCache::default()));
+    let scope_is_safe = cache
+        .lock()
+        .map_err(|error| error.to_string())?
+        .claim_legacy_scope(scope, &legacy_key);
+    if !scope_is_safe {
+        return Ok(bundle);
+    }
+    if let Err(error) = quota_history::record_bundle(&bundle) {
+        bundle.warnings.push(quota_history::warning(error));
+        return Ok(bundle);
+    }
+    refresh_quota_histories(&mut bundle, scope, true);
+    Ok(bundle)
+}
+
+fn identity_changed_quota_bundle(codex_home: &Path) -> AccountQuotaBundle {
+    let mut quota = placeholder_quota();
+    quota.pace_label = "额度身份已变化".into();
+    let diagnostic = QuotaDiagnostic {
+        source: "account_quota".into(),
+        category: "identity_changed".into(),
+        severity: "warning".into(),
+        message: "额度读取期间登录身份发生变化，本次结果已丢弃，请重新刷新。".into(),
+        raw_cause: None,
+        underlying_category: None,
+        attempts: None,
+        http_status: None,
+        retryable: true,
+        occurred_at: diagnostic_timestamp(),
+        stale_data_displayed: false,
+    };
+    AccountQuotaBundle {
+        account: account_info(codex_home, None),
+        quota,
+        quota_history_daily: Vec::new(),
+        quota_history_24h: Vec::new(),
+        quota_history_7d: Vec::new(),
+        quota_history_30d: Vec::new(),
+        warnings: diagnostics_to_warnings(std::slice::from_ref(&diagnostic)),
+        diagnostics: vec![diagnostic],
+    }
 }
 
 fn quota_failure_bundle(codex_home: &Path, error: String) -> AccountQuotaBundle {
@@ -439,13 +566,21 @@ fn stale_quota_bundle(
     previous
 }
 
-fn refresh_quota_histories(bundle: &mut AccountQuotaBundle, force_refresh: bool) {
+fn refresh_quota_histories(
+    bundle: &mut AccountQuotaBundle,
+    scope: &QuotaCacheScope,
+    force_refresh: bool,
+) {
     let cache = QUOTA_HISTORY_CACHE.get_or_init(|| Mutex::new(QuotaHistoryMemoryCache::default()));
+    let legacy_key = quota_history::legacy_history_key(bundle);
+    let history_request = bundle.clone();
     let history = cache
         .lock()
         .map_err(|error| error.to_string())
         .and_then(|mut cache| {
-            cache.load_or_refresh(force_refresh, || quota_history::history_bundle(365))
+            cache.load_or_refresh(scope, &legacy_key, force_refresh, || {
+                quota_history::history_bundle_for(&history_request, 365)
+            })
         });
 
     match history {
@@ -979,6 +1114,60 @@ mod tests {
         assert_simultaneous_callers_join_one_inflight_loader(false);
     }
 
+    #[test]
+    fn callers_without_stable_account_ids_join_the_same_unchanged_auth_flight() {
+        for auth in [None, Some(r#"{"tokens":{"id_token":"header.eyJuYW1lIjoibG9jYWwifQ.signature"}}"#)] {
+            for forces in [[false, false], [true, true], [true, false]] {
+                assert_unstable_identity_callers_join_one_inflight_loader(auth, forces);
+            }
+        }
+    }
+
+    #[test]
+    fn auth_change_during_unkeyed_successful_flight_is_rejected() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-quota-unkeyed-transition-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("auth.json"),
+            r#"{"tokens":{"id_token":"header.eyJuYW1lIjoiYSJ9.signature"}}"#,
+        )
+        .unwrap();
+
+        let result = read_account_quota_with_policy_and_loader(
+            &root,
+            true,
+            || 30_000,
+            |home| {
+                std::fs::write(
+                    home.join("auth.json"),
+                    r#"{"tokens":{"id_token":"header.eyJuYW1lIjoiYiJ9.signature"}}"#,
+                )
+                .unwrap();
+                Ok(measured_quota_bundle("account-b"))
+            },
+        )
+        .unwrap();
+
+        assert!(!quota_available(&result.quota));
+        assert_eq!(result.account.display_name, "b");
+        assert!(result.quota_history_24h.is_empty());
+        assert!(!bundle_has_stale_data(&result));
+        assert!(QUOTA_READ_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .get(&quota_cache_scope(&root, None).codex_home)
+            .is_none());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn assert_simultaneous_callers_join_one_inflight_loader(force_refresh: bool) {
         use base64::Engine as _;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1041,6 +1230,62 @@ mod tests {
         }
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn assert_unstable_identity_callers_join_one_inflight_loader(
+        auth_json: Option<&str>,
+        force_refresh: [bool; 2],
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Barrier;
+
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-quota-unkeyed-inflight-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        if let Some(auth_json) = auth_json {
+            std::fs::write(root.join("auth.json"), auth_json).unwrap();
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(3));
+        let handles = force_refresh
+            .into_iter()
+            .map(|force_refresh| {
+                let home = root.clone();
+                let calls = calls.clone();
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    read_account_quota_with_policy_and_loader(
+                        &home,
+                        force_refresh,
+                        || 30_000,
+                        |_| {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(100));
+                            Ok(measured_quota_bundle("unkeyed"))
+                        },
+                    )
+                    .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        start.wait();
+        for handle in handles {
+            assert!(quota_available(&handle.join().unwrap().quota));
+        }
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "forces={force_refresh:?}");
+        QUOTA_READ_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .remove(&quota_cache_scope(&root, None).codex_home);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1127,10 +1372,102 @@ mod tests {
     }
 
     #[test]
+    fn successful_identity_change_is_not_published_or_cached() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-quota-success-identity-transition-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        write_test_auth_subject(&root, "account-a");
+        let scope_a = quota_cache_scope(&root, read_local_account_key(&root));
+        QUOTA_READ_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .remove(&scope_a.codex_home);
+
+        let result = read_account_quota_with_policy_and_loader(
+            &root,
+            true,
+            || 30_000,
+            |home| {
+                write_test_auth_subject(home, "account-b");
+                let mut bundle = measured_quota_bundle("account-b");
+                bundle.quota_history_24h.push(crate::models::QuotaHistoryPoint {
+                    label: "must-not-publish".into(),
+                    start_unix: 1,
+                    five_hour_remaining_percent: Some(0.8),
+                    seven_day_remaining_percent: Some(0.6),
+                });
+                Ok(bundle)
+            },
+        )
+        .unwrap();
+
+        assert!(!quota_available(&result.quota));
+        assert_eq!(result.account.display_name, "Codex Token Bar");
+        assert!(result.quota_history_daily.is_empty());
+        assert!(result.quota_history_24h.is_empty());
+        assert!(result.quota_history_7d.is_empty());
+        assert!(result.quota_history_30d.is_empty());
+        assert!(!bundle_has_stale_data(&result));
+        assert!(QUOTA_READ_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .get(&scope_a.codex_home)
+            .is_none());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn successful_identity_change_skips_history_finalization_side_effects() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-quota-finalize-identity-transition-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        write_test_auth_subject(&root, "account-a");
+        let record_calls = AtomicUsize::new(0);
+        let history_load_calls = AtomicUsize::new(0);
+
+        let result = read_account_quota_with_policy_loader_and_finalizer(
+            &root,
+            true,
+            || 30_000,
+            |home| {
+                write_test_auth_subject(home, "account-b");
+                Ok(measured_quota_bundle("account-b"))
+            },
+            |_, bundle| {
+                record_calls.fetch_add(1, Ordering::SeqCst);
+                history_load_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(bundle)
+            },
+        )
+        .unwrap();
+
+        assert!(!quota_available(&result.quota));
+        assert_eq!(record_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(history_load_calls.load(Ordering::SeqCst), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn quota_history_cache_reuses_recent_bundle_until_forced() {
         use std::cell::Cell;
 
         let mut cache = QuotaHistoryMemoryCache::default();
+        let scope = quota_cache_scope(Path::new("history-home"), Some("sub:history".into()));
         let load_count = Cell::new(0);
         let mut loader = || {
             let next_count = load_count.get() + 1;
@@ -1146,15 +1483,137 @@ mod tests {
             })
         };
 
-        let first = cache.load_or_refresh(false, &mut loader).unwrap();
-        let second = cache.load_or_refresh(false, &mut loader).unwrap();
+        let first = cache
+            .load_or_refresh(&scope, "history|Pro|codex", false, &mut loader)
+            .unwrap();
+        let second = cache
+            .load_or_refresh(&scope, "history|Pro|codex", false, &mut loader)
+            .unwrap();
         assert_eq!(load_count.get(), 1);
         assert_eq!(first.recent_24h[0].label, "load-1");
         assert_eq!(second.recent_24h[0].label, "load-1");
 
-        let forced = cache.load_or_refresh(true, &mut loader).unwrap();
+        let forced = cache
+            .load_or_refresh(&scope, "history|Pro|codex", true, &mut loader)
+            .unwrap();
         assert_eq!(load_count.get(), 2);
         assert_eq!(forced.recent_24h[0].label, "load-2");
+    }
+
+    #[test]
+    fn quota_history_memory_cache_is_scope_aware_and_fails_closed_for_legacy_name_collision() {
+        let mut cache = QuotaHistoryMemoryCache::default();
+        let scope_a = quota_cache_scope(Path::new("history-home-a"), Some("sub:a".into()));
+        let scope_b = quota_cache_scope(Path::new("history-home-b"), Some("sub:b".into()));
+
+        let a = cache
+            .load_or_refresh(&scope_a, "account-a|Pro|codex", true, || {
+                Ok(history_bundle_fixture("a"))
+            })
+            .unwrap();
+        let b = cache
+            .load_or_refresh(&scope_b, "account-b|Pro|codex", true, || {
+                Ok(history_bundle_fixture("b"))
+            })
+            .unwrap();
+        let cached_a = cache
+            .load_or_refresh(&scope_a, "account-a|Pro|codex", false, || {
+                panic!("same-scope cache hit must preserve trusted A history")
+            })
+            .unwrap();
+
+        assert_eq!(a.recent_24h[0].label, "a");
+        assert_eq!(b.recent_24h[0].label, "b");
+        assert_eq!(cached_a.recent_24h[0].label, "a");
+
+        let failed_refresh = cache.load_or_refresh(
+            &scope_a,
+            "account-a|Pro|codex",
+            true,
+            || Err("record failed".into()),
+        );
+        assert!(failed_refresh.is_err());
+        let preserved_a = cache
+            .load_or_refresh(&scope_a, "account-a|Pro|codex", false, || {
+                panic!("record failure must preserve trusted same-scope history")
+            })
+            .unwrap();
+        assert_eq!(preserved_a.recent_24h[0].label, "a");
+
+        let same_name_b = cache
+            .load_or_refresh(&scope_b, "shared-name|Pro|codex", true, || {
+                Ok(history_bundle_fixture("must-not-publish"))
+            })
+            .unwrap();
+        let same_name_a = cache
+            .load_or_refresh(&scope_a, "shared-name|Pro|codex", true, || {
+                Ok(history_bundle_fixture("a-shared"))
+            })
+            .unwrap();
+        assert!(same_name_b.recent_24h.is_empty() || same_name_a.recent_24h.is_empty());
+        assert!(!same_name_a
+            .recent_24h
+            .iter()
+            .any(|point| point.label == "must-not-publish"));
+    }
+
+    #[test]
+    fn legacy_history_scope_is_claimed_before_recording_and_invalidated_on_collision() {
+        let mut cache = QuotaHistoryMemoryCache::default();
+        let scope_a = quota_cache_scope(Path::new("claim-home-a"), Some("sub:a".into()));
+        let scope_b = quota_cache_scope(Path::new("claim-home-b"), Some("sub:b".into()));
+        let legacy_key = "shared-name|Pro|codex";
+
+        assert!(cache.claim_legacy_scope(&scope_a, legacy_key));
+        assert!(!cache.claim_legacy_scope(&scope_b, legacy_key));
+        let a_after_collision = cache
+            .load_or_refresh(&scope_a, legacy_key, true, || {
+                panic!("ambiguous legacy identity must not reach database load")
+            })
+            .unwrap();
+        assert!(a_after_collision.recent_24h.is_empty());
+    }
+
+    #[test]
+    fn concurrent_same_name_history_claims_publish_no_cross_scope_history() {
+        use std::sync::Barrier;
+
+        let cache = Arc::new(Mutex::new(QuotaHistoryMemoryCache::default()));
+        let barrier = Arc::new(Barrier::new(3));
+        let claims_done = Arc::new(Barrier::new(3));
+        let scopes = [
+            quota_cache_scope(Path::new("concurrent-history-a"), Some("sub:a".into())),
+            quota_cache_scope(Path::new("concurrent-history-b"), Some("sub:b".into())),
+        ];
+        let handles = scopes
+            .into_iter()
+            .map(|scope| {
+                let cache = cache.clone();
+                let barrier = barrier.clone();
+                let claims_done = claims_done.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    cache
+                        .lock()
+                        .unwrap()
+                        .claim_legacy_scope(&scope, "shared-name|Pro|codex");
+                    claims_done.wait();
+                    cache
+                        .lock()
+                        .unwrap()
+                        .load_or_refresh(&scope, "shared-name|Pro|codex", true, || {
+                            panic!("ambiguous concurrent identity must not load history")
+                        })
+                        .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        barrier.wait();
+        claims_done.wait();
+        for handle in handles {
+            assert!(handle.join().unwrap().recent_24h.is_empty());
+        }
     }
 
     #[test]
@@ -1692,5 +2151,44 @@ mod tests {
             warnings,
             diagnostics,
         }
+    }
+
+    fn measured_quota_bundle(name: &str) -> AccountQuotaBundle {
+        quota_bundle_fixture(
+            name,
+            parse_rate_limits(&json!({
+                "rateLimits": {
+                    "primary": { "usedPercent": 20, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 40, "resetsAt": 1782144492 }
+                }
+            }))
+            .unwrap(),
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    fn history_bundle_fixture(label: &str) -> quota_history::QuotaHistoryBundle {
+        quota_history::QuotaHistoryBundle {
+            recent_24h: vec![crate::models::QuotaHistoryPoint {
+                label: label.into(),
+                start_unix: 1,
+                five_hour_remaining_percent: Some(0.8),
+                seven_day_remaining_percent: Some(0.6),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn write_test_auth_subject(home: &Path, subject: &str) {
+        use base64::Engine as _;
+
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(format!(r#"{{"sub":"{subject}"}}"#));
+        std::fs::write(
+            home.join("auth.json"),
+            format!(r#"{{"tokens":{{"id_token":"header.{payload}.signature"}}}}"#),
+        )
+        .unwrap();
     }
 }

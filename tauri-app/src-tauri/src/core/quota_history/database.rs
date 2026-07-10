@@ -1,6 +1,8 @@
 use super::series::sanitized_rows;
 use super::{now_unix, QuotaHistoryRow, RETENTION_DAYS};
-use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
+use rusqlite::{params, Connection, Result as SqlResult};
+#[cfg(test)]
+use rusqlite::OptionalExtension;
 
 pub(super) fn ensure_schema(connection: &Connection) -> SqlResult<()> {
     connection.execute_batch(
@@ -67,6 +69,7 @@ pub(super) fn recent_rows(connection: &Connection) -> SqlResult<Vec<QuotaHistory
     rows_since(connection, 31.0 * 24.0 * 60.0 * 60.0)
 }
 
+#[cfg(test)]
 pub(super) fn rows_since(
     connection: &Connection,
     age_seconds: f64,
@@ -74,6 +77,16 @@ pub(super) fn rows_since(
     let Some(filter) = latest_account_filter(connection)? else {
         return Ok(Vec::new());
     };
+    let cutoff = now_unix() - age_seconds;
+    matching_rows(connection, &filter, Some(cutoff), "ASC")
+}
+
+pub(super) fn rows_since_for_row(
+    connection: &Connection,
+    age_seconds: f64,
+    row: &QuotaHistoryRow,
+) -> SqlResult<Vec<QuotaHistoryRow>> {
+    let filter = AccountHistoryFilter::from_row(row);
     let cutoff = now_unix() - age_seconds;
     matching_rows(connection, &filter, Some(cutoff), "ASC")
 }
@@ -231,6 +244,7 @@ impl AccountHistoryFilter {
     }
 }
 
+#[cfg(test)]
 fn latest_account_filter(connection: &Connection) -> SqlResult<Option<AccountHistoryFilter>> {
     connection
         .query_row(

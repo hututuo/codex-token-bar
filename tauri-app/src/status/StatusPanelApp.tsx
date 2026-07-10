@@ -11,6 +11,7 @@ import { desktopPlatform } from "../platform/desktop";
 import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS, sanitizeQuotaRefreshIntervalMs } from "../settings/quotaRefreshCadence";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
 import type { FloatingWindowSettings, UnreadSummary } from "../types/dashboard";
+import { StatusQuotaProjection } from "./StatusQuotaProjection";
 
 export function StatusPanelApp() {
   const [active, setActive] = useState(false);
@@ -19,7 +20,7 @@ export function StatusPanelApp() {
   const [acknowledgedUnreadSummary, setAcknowledgedUnreadSummary] = useState<UnreadSummary | null>(null);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const [codexHomeKey, setCodexHomeKey] = useState<string | null>(null);
-  const { snapshot, quotaLabels } = useCompactPanelData({
+  const { snapshot, quota } = useCompactPanelData({
     active,
     liveRateEnabled,
     quotaInitialDelayMs: 0,
@@ -201,10 +202,10 @@ export function StatusPanelApp() {
           </div>
         </dl>
 
-        <div className="status-panel-quota">
-          <span>{quotaLabels.fiveHour}</span>
-          <span>{quotaLabels.sevenDay}</span>
-        </div>
+        <StatusQuotaProjection
+          fiveHour={quota.quota.fiveHour}
+          sevenDay={quota.quota.sevenDay}
+        />
 
         <footer className="status-panel-actions">
           <button type="button" onClick={openDashboard}>打开主界面</button>

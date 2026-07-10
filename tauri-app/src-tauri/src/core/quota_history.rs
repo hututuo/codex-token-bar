@@ -1,7 +1,8 @@
 use crate::core::app_paths;
 use crate::core::sqlite;
 use crate::models::{
-    AccountQuotaBundle, LocalDataWarning, QuotaHistoryDailyPoint, QuotaHistoryPoint, QuotaSnapshot,
+    AccountQuotaBundle, LocalDataWarning, QuotaAvailability, QuotaHistoryDailyPoint,
+    QuotaHistoryPoint, QuotaLimit, QuotaSnapshot,
 };
 #[cfg(test)]
 use crate::models::RecentUsagePoint;
@@ -9,15 +10,16 @@ use rusqlite::{Connection, Result as SqlResult};
 #[cfg(test)]
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use time::OffsetDateTime;
 
 mod database;
 mod series;
 
-use database::{ensure_schema, insert_row, latest_trusted_row, prune, rows_since};
+use database::{ensure_schema, insert_row, latest_trusted_row, prune, rows_since_for_row};
 #[cfg(test)]
-use database::recent_rows;
+use database::{recent_rows, rows_since};
 use series::{make_daily_history, make_interval_history, make_recent_history};
 #[cfg(test)]
 use series::DailyQuotaHistory;
@@ -31,6 +33,7 @@ const HEARTBEAT_SECONDS: f64 = 60.0 * 60.0;
 const RETENTION_DAYS: i64 = 45;
 const RECENT_BIN_COUNT: usize = 289;
 const QUOTA_HISTORY_SOURCE: &str = "tauri";
+static QUOTA_HISTORY_DATABASE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Clone, Debug, Default)]
 pub struct QuotaHistoryBundle {
@@ -49,10 +52,17 @@ pub fn record_bundle(bundle: &AccountQuotaBundle) -> Result<(), String> {
         .map_err(|error| format!("写入额度历史失败：{error}"))
 }
 
-pub fn history_bundle(day_count: usize) -> Result<QuotaHistoryBundle, String> {
+pub fn history_bundle_for(
+    bundle: &AccountQuotaBundle,
+    day_count: usize,
+) -> Result<QuotaHistoryBundle, String> {
     QuotaHistoryDatabase::default()?
-        .history_bundle(day_count, RECENT_BIN_COUNT)
+        .history_bundle_for(bundle, day_count, RECENT_BIN_COUNT)
         .map_err(|error| format!("读取额度历史失败：{error}"))
+}
+
+pub fn legacy_history_key(bundle: &AccountQuotaBundle) -> String {
+    QuotaHistoryRow::from_bundle(bundle, 0.0).history_match_key()
 }
 
 #[cfg(test)]
@@ -94,6 +104,7 @@ impl QuotaHistoryDatabase {
     }
 
     fn record(&self, bundle: &AccountQuotaBundle) -> SqlResult<()> {
+        let _database_guard = quota_history_database_guard();
         let connection = self.open()?;
         let now = now_unix();
         ensure_schema(&connection)?;
@@ -135,6 +146,7 @@ impl QuotaHistoryDatabase {
         Ok(make_daily_history(rows))
     }
 
+    #[cfg(test)]
     fn history_bundle(
         &self,
         day_count: usize,
@@ -159,6 +171,24 @@ impl QuotaHistoryDatabase {
             recent_7d: make_interval_history(rows.clone(), 7 * 24, 60 * 60),
             recent_30d: make_interval_history(rows, 30 * 4, 6 * 60 * 60),
         })
+    }
+
+    fn history_bundle_for(
+        &self,
+        bundle: &AccountQuotaBundle,
+        day_count: usize,
+        recent_count: usize,
+    ) -> SqlResult<QuotaHistoryBundle> {
+        let _database_guard = quota_history_database_guard();
+        let connection = self.open()?;
+        ensure_schema(&connection)?;
+        let filter_row = QuotaHistoryRow::from_bundle(bundle, now_unix());
+        let rows = rows_since_for_row(
+            &connection,
+            day_count.max(31) as f64 * 24.0 * 60.0 * 60.0,
+            &filter_row,
+        )?;
+        Ok(history_bundle_from_rows(rows, recent_count))
     }
 
     fn open(&self) -> SqlResult<Connection> {
@@ -204,10 +234,10 @@ impl QuotaHistoryRow {
             limit_name,
             account_name,
             source: Some(QUOTA_HISTORY_SOURCE.into()),
-            five_hour_used_percent: percent_to_int(bundle.quota.five_hour.used_percent),
-            five_hour_resets_at: bundle.quota.five_hour.resets_at_unix.map(|value| value as f64),
-            seven_day_used_percent: percent_to_int(bundle.quota.seven_day.used_percent),
-            seven_day_resets_at: bundle.quota.seven_day.resets_at_unix.map(|value| value as f64),
+            five_hour_used_percent: measured_used_percent(&bundle.quota.five_hour),
+            five_hour_resets_at: measured_reset_timestamp(&bundle.quota.five_hour),
+            seven_day_used_percent: measured_used_percent(&bundle.quota.seven_day),
+            seven_day_resets_at: measured_reset_timestamp(&bundle.quota.seven_day),
             status: bundle.quota.pace_label.clone(),
         }
     }
@@ -269,7 +299,7 @@ fn normalized_used_percent(
     previous_reset: Option<f64>,
 ) -> Option<i32> {
     let Some(current_used) = current_used else {
-        return previous_used;
+        return None;
     };
     match (current_reset, previous_reset, previous_used) {
         (Some(current_reset), Some(previous_reset), Some(previous_used))
@@ -287,6 +317,25 @@ fn normalized_used_percent(
             Some(current_used.max(previous_used))
         }
         _ => Some(current_used),
+    }
+}
+
+fn history_bundle_from_rows(
+    rows: Vec<QuotaHistoryRow>,
+    recent_count: usize,
+) -> QuotaHistoryBundle {
+    QuotaHistoryBundle {
+        daily: make_daily_history(rows.clone())
+            .into_iter()
+            .map(|(date, history)| QuotaHistoryDailyPoint {
+                date,
+                five_hour_remaining_percent: history.five_hour_remaining_percent,
+                seven_day_remaining_percent: history.seven_day_remaining_percent,
+            })
+            .collect(),
+        recent_24h: make_recent_history(rows.clone(), recent_count.max(1)),
+        recent_7d: make_interval_history(rows.clone(), 7 * 24, 60 * 60),
+        recent_30d: make_interval_history(rows, 30 * 4, 6 * 60 * 60),
     }
 }
 
@@ -398,12 +447,32 @@ fn percent_to_int(value: Option<f64>) -> Option<i32> {
     Some((value * 100.0).round().clamp(0.0, 100.0) as i32)
 }
 
+fn measured_used_percent(limit: &QuotaLimit) -> Option<i32> {
+    (limit.availability == QuotaAvailability::Measured)
+        .then(|| percent_to_int(limit.used_percent))
+        .flatten()
+}
+
+fn measured_reset_timestamp(limit: &QuotaLimit) -> Option<f64> {
+    (limit.availability == QuotaAvailability::Measured)
+        .then_some(limit.resets_at_unix)
+        .flatten()
+        .map(|value| value as f64)
+}
+
 fn remaining_from_used(value: Option<i32>) -> Option<f64> {
     value.map(|used| (100 - used).clamp(0, 100) as f64 / 100.0)
 }
 
 fn now_unix() -> f64 {
     OffsetDateTime::now_utc().unix_timestamp() as f64
+}
+
+fn quota_history_database_guard() -> std::sync::MutexGuard<'static, ()> {
+    QUOTA_HISTORY_DATABASE_GATE
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn database_path() -> Option<PathBuf> {

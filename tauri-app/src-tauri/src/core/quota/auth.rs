@@ -1,7 +1,14 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct LocalAuthObservation {
+    pub stable_account_key: Option<String>,
+    pub flight_fingerprint: [u8; 32],
+}
 
 pub fn read_access_token(codex_home: &Path) -> Option<String> {
     let auth = read_auth_json(codex_home)?;
@@ -33,6 +40,7 @@ pub fn read_local_account_name(codex_home: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
+#[cfg(test)]
 pub fn read_local_account_key(codex_home: &Path) -> Option<String> {
     let auth = read_auth_json(codex_home)?;
     let token = auth
@@ -40,6 +48,36 @@ pub fn read_local_account_key(codex_home: &Path) -> Option<String> {
         .and_then(|tokens| tokens.get("id_token"))
         .and_then(Value::as_str)?;
     stable_account_key(&decode_jwt_payload(token)?)
+}
+
+pub fn read_local_auth_observation(codex_home: &Path) -> LocalAuthObservation {
+    let auth_bytes = std::fs::read(codex_home.join("auth.json"));
+    let mut hasher = Sha256::new();
+    let stable_account_key = match auth_bytes {
+        Ok(data) => {
+            hasher.update(b"auth-json-present\0");
+            hasher.update(&data);
+            serde_json::from_slice::<Value>(&data)
+                .ok()
+                .and_then(|auth| {
+                    auth.get("tokens")
+                        .and_then(|tokens| tokens.get("id_token"))
+                        .and_then(Value::as_str)
+                        .and_then(decode_jwt_payload)
+                })
+                .and_then(|payload| stable_account_key(&payload))
+        }
+        Err(error) => {
+            hasher.update(b"auth-json-unavailable\0");
+            hasher.update(format!("{:?}", error.kind()).as_bytes());
+            None
+        }
+    };
+
+    LocalAuthObservation {
+        stable_account_key,
+        flight_fingerprint: hasher.finalize().into(),
+    }
 }
 
 fn stable_account_key(payload: &BTreeMap<String, Value>) -> Option<String> {
@@ -104,5 +142,25 @@ mod tests {
             Some("account:account-fallback")
         );
         assert_eq!(stable_account_key(&BTreeMap::new()), None);
+    }
+
+    #[test]
+    fn auth_observation_changes_without_exposing_token_material() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-auth-observation-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("auth.json"), r#"{"tokens":{"access_token":"secret-a"}}"#)
+            .unwrap();
+        let first = read_local_auth_observation(&root);
+        std::fs::write(root.join("auth.json"), r#"{"tokens":{"access_token":"secret-b"}}"#)
+            .unwrap();
+        let second = read_local_auth_observation(&root);
+
+        assert_eq!(first.stable_account_key, None);
+        assert_ne!(first.flight_fingerprint, second.flight_fingerprint);
+        assert_eq!(first.flight_fingerprint.len(), 32);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

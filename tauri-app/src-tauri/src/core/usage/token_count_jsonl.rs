@@ -23,6 +23,8 @@ mod ranking;
 mod session_files;
 mod session_parser;
 #[cfg(test)]
+mod cache_version_tests;
+#[cfg(test)]
 mod tests;
 mod token_event_cache;
 
@@ -41,7 +43,7 @@ static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLo
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_SCAN_SIGNATURE_COUNT: AtomicUsize = AtomicUsize::new(0);
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 10;
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 11;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -499,15 +501,16 @@ fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSum
 fn load_persistent_dashboard_aggregate() -> Option<CachedDashboardAggregate> {
     let path = app_paths::token_aggregate_cache_path()?;
     let data = fs::read(path).ok()?;
-    serde_json::from_slice::<PersistentDashboardAggregateCache>(&data)
-        .ok()
-        .and_then(|cache| {
-            (cache.version == DASHBOARD_AGGREGATE_CACHE_VERSION).then_some(CachedDashboardAggregate {
-                signature: cache.signature,
-                snapshot: cache.snapshot,
-                summary: cache.summary,
-            })
-        })
+    decode_persistent_dashboard_aggregate(&data)
+}
+
+fn decode_persistent_dashboard_aggregate(data: &[u8]) -> Option<CachedDashboardAggregate> {
+    let cache = serde_json::from_slice::<PersistentDashboardAggregateCache>(data).ok()?;
+    (cache.version == DASHBOARD_AGGREGATE_CACHE_VERSION).then_some(CachedDashboardAggregate {
+        signature: cache.signature,
+        snapshot: cache.snapshot,
+        summary: cache.summary,
+    })
 }
 
 fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) {

@@ -30,8 +30,16 @@ function clampPercent(value: number): number {
   return Math.min(100, Math.max(0, value * 100));
 }
 
-function FloatingQuotaBar({ label, remainingPercent }: { label: string; remainingPercent: number | null }) {
-  if (typeof remainingPercent !== "number" || !Number.isFinite(remainingPercent)) {
+function FloatingQuotaBar({
+  availability,
+  label,
+  remainingPercent,
+}: {
+  availability: "measured" | "unavailable";
+  label: string;
+  remainingPercent: number | null;
+}) {
+  if (availability !== "measured" || typeof remainingPercent !== "number" || !Number.isFinite(remainingPercent)) {
     return (
       <span className="floating-quota-bar floating-quota-bar--unavailable" role="status" aria-label={`${label}，额度待读取`}>
         <span className="floating-quota-track" aria-hidden="true" />
@@ -224,8 +232,16 @@ function FloatingContentRow({
     case "quota":
       return (
         <div className="floating-row floating-quota" style={style}>
-          <FloatingQuotaBar label={snapshot.fiveHourLabel} remainingPercent={snapshot.fiveHourRemainingPercent} />
-          <FloatingQuotaBar label={snapshot.sevenDayLabel} remainingPercent={snapshot.sevenDayRemainingPercent} />
+          <FloatingQuotaBar
+            availability={snapshot.fiveHourAvailability}
+            label={snapshot.fiveHourLabel}
+            remainingPercent={snapshot.fiveHourRemainingPercent}
+          />
+          <FloatingQuotaBar
+            availability={snapshot.sevenDayAvailability}
+            label={snapshot.sevenDayLabel}
+            remainingPercent={snapshot.sevenDayRemainingPercent}
+          />
         </div>
       );
   }

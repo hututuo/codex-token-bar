@@ -94,6 +94,17 @@
 - [ ] Keep release/native checks as explicit source smoke when executable runtime automation cannot prove them; do not delete coverage merely to reduce brittleness.
 - [ ] Run the owning focused suites and build after each cluster; record remaining source-shape tests and why they remain.
 
+### Task 8: Bound Tauri Quota Process Caches And Gates
+
+**Files:**
+- Modify: `tauri-app/src-tauri/src/core/quota.rs` only after Tauri Quota Task 2 and the shared identity migration are independently accepted.
+- Modify focused quota cache/gate lifecycle tests.
+
+- [ ] Characterize active owner/waiter lifetime, forced coalescing, stable-account success reuse, unavailable failure TTL, same-scope trusted history, and ambiguous legacy-name behavior before cleanup.
+- [ ] Add bounded eviction for expired `QUOTA_READ_CACHE` entries, idle `QUOTA_READ_GATES`, and expired/unreachable `QUOTA_HISTORY_CACHE` entries including legacy ownership markers.
+- [ ] Never evict an active gate owner/waiter, never re-enable cross-account history, and do not introduce the Task 3 schema migration here.
+- [ ] Run focused quota/history concurrency tests, full Rust quota filter, `git diff --check`, and commit separately from correctness work.
+
 ## Review And Integration Gates
 
 - These tasks never preempt unaccepted P1/P2 correctness work.

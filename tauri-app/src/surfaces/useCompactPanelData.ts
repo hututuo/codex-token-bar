@@ -75,8 +75,10 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
         resetCreditRateBarLabel: rateBarSuffix,
         resetCreditStandaloneLabel: standaloneSuffix,
         fiveHourLabel: quotaLabels.fiveHour,
+        fiveHourAvailability: quota.quota.fiveHour.availability,
         fiveHourRemainingPercent: quota.quota.fiveHour.remainingPercent,
         sevenDayLabel: quotaLabels.sevenDay,
+        sevenDayAvailability: quota.quota.sevenDay.availability,
         sevenDayRemainingPercent: quota.quota.sevenDay.remainingPercent,
       };
     },
