@@ -681,15 +681,17 @@ fn bundle_with_plan(
         quota: QuotaSnapshot {
             five_hour: QuotaLimit {
                 label: "5h".into(),
-                remaining_percent: 1.0 - five_used,
-                used_percent: five_used,
+                availability: crate::models::QuotaAvailability::Measured,
+                remaining_percent: Some(1.0 - five_used),
+                used_percent: Some(five_used),
                 resets_at: "12:00".into(),
                 resets_at_unix: Some(five_reset),
             },
             seven_day: QuotaLimit {
                 label: "7d".into(),
-                remaining_percent: 1.0 - seven_used,
-                used_percent: seven_used,
+                availability: crate::models::QuotaAvailability::Measured,
+                remaining_percent: Some(1.0 - seven_used),
+                used_percent: Some(seven_used),
                 resets_at: "06/18".into(),
                 resets_at_unix: Some(seven_reset),
             },

@@ -274,15 +274,17 @@ mod tests {
         QuotaSnapshot {
             five_hour: QuotaLimit {
                 label: "5h".into(),
-                used_percent: 0.0,
-                remaining_percent: 0.0,
+                availability: crate::models::QuotaAvailability::Unavailable,
+                used_percent: None,
+                remaining_percent: None,
                 resets_at: "待读取".into(),
                 resets_at_unix: None,
             },
             seven_day: QuotaLimit {
                 label: "7d".into(),
-                used_percent: 0.0,
-                remaining_percent: 0.0,
+                availability: crate::models::QuotaAvailability::Unavailable,
+                used_percent: None,
+                remaining_percent: None,
                 resets_at: "待读取".into(),
                 resets_at_unix: None,
             },

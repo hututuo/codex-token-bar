@@ -37,9 +37,9 @@ export interface FloatingPanelSnapshot {
   todayTokensLabel: string;
   requestsLabel: string;
   fiveHourLabel: string;
-  fiveHourRemainingPercent: number;
+  fiveHourRemainingPercent: number | null;
   sevenDayLabel: string;
-  sevenDayRemainingPercent: number;
+  sevenDayRemainingPercent: number | null;
   unread: boolean;
   unreadSummary: UnreadSummary;
 }

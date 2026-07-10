@@ -8,6 +8,13 @@ import {
   compactResetCreditRateBarSuffix,
   compactResetCreditStandaloneSuffix,
 } from "./compactPanelLabels.ts";
+import { compactQuotaLabel } from "../utils/quota.ts";
+
+test("compact quota labels keep unavailable distinct from measured zero", () => {
+  const base = { label: "5h", usedPercent: null, resetsAt: "待读取", resetsAtUnix: null };
+  assert.equal(compactQuotaLabel({ ...base, availability: "unavailable", remainingPercent: null }), "5h 待读取");
+  assert.equal(compactQuotaLabel({ ...base, availability: "measured", remainingPercent: 0, usedPercent: 1 }), "5h 0% 待读取");
+});
 
 test("compactFloatingPaceLabel mirrors the Swift floating compact status", () => {
   assert.equal(compactFloatingPaceLabel("余量很足，使劲蹬（多 12%）"), "余量足(余量高12%)");

@@ -1,4 +1,4 @@
-use crate::models::{QuotaLimit, QuotaSnapshot, ResetCreditSummary};
+use crate::models::{QuotaAvailability, QuotaLimit, QuotaSnapshot, ResetCreditSummary};
 use serde_json::Value;
 use time::macros::format_description;
 use time::{OffsetDateTime, UtcOffset};
@@ -7,15 +7,17 @@ pub(super) fn placeholder_quota() -> QuotaSnapshot {
     QuotaSnapshot {
         five_hour: QuotaLimit {
             label: "5h".into(),
-            remaining_percent: 0.0,
-            used_percent: 0.0,
+            availability: QuotaAvailability::Unavailable,
+            remaining_percent: None,
+            used_percent: None,
             resets_at: "待读取".into(),
             resets_at_unix: None,
         },
         seven_day: QuotaLimit {
             label: "7d".into(),
-            remaining_percent: 0.0,
-            used_percent: 0.0,
+            availability: QuotaAvailability::Unavailable,
+            remaining_percent: None,
+            used_percent: None,
             resets_at: "待读取".into(),
             resets_at_unix: None,
         },
@@ -179,8 +181,9 @@ fn parse_window(value: Option<&Value>, label: &str) -> Option<QuotaLimit> {
         reset_at_unix.and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok());
     Some(QuotaLimit {
         label: label.into(),
-        remaining_percent: (1.0 - used).clamp(0.0, 1.0),
-        used_percent: used.clamp(0.0, 1.0),
+        availability: QuotaAvailability::Measured,
+        remaining_percent: Some((1.0 - used).clamp(0.0, 1.0)),
+        used_percent: Some(used.clamp(0.0, 1.0)),
         resets_at: reset_at
             .map(|date| compact_reset_text(date, label))
             .unwrap_or_else(|| "--:--".into()),
@@ -245,7 +248,10 @@ fn pace_label(seven_day: &QuotaLimit) -> String {
     let Some(expected) = expected else {
         return "额度已更新".into();
     };
-    let remaining = (seven_day.remaining_percent * 100.0).round() as i32;
+    let Some(remaining_percent) = seven_day.remaining_percent else {
+        return "额度待读取".into();
+    };
+    let remaining = (remaining_percent * 100.0).round() as i32;
     let delta = remaining - expected;
     let hours_left = hours_until(seven_day.resets_at_unix);
 
@@ -291,6 +297,39 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn placeholder_quota_is_explicitly_unavailable_without_zero_measurements() {
+        let quota = placeholder_quota();
+
+        assert_eq!(quota.five_hour.availability, QuotaAvailability::Unavailable);
+        assert_eq!(quota.five_hour.remaining_percent, None);
+        assert_eq!(quota.five_hour.used_percent, None);
+        assert_eq!(quota.seven_day.availability, QuotaAvailability::Unavailable);
+        assert_eq!(quota.seven_day.remaining_percent, None);
+        assert_eq!(quota.seven_day.used_percent, None);
+
+        let serialized = serde_json::to_value(quota).unwrap();
+        assert_eq!(serialized["fiveHour"]["availability"], "unavailable");
+        assert!(serialized["fiveHour"]["remainingPercent"].is_null());
+        assert!(serialized["fiveHour"]["usedPercent"].is_null());
+    }
+
+    #[test]
+    fn parsed_exhausted_quota_remains_a_real_zero_measurement() {
+        let quota = parse_rate_limits(&json!({
+            "rateLimits": {
+                "primary": { "usedPercent": 100, "resetsAt": 1781715600 },
+                "secondary": { "usedPercent": 0, "resetsAt": 1782144492 }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(quota.five_hour.availability, QuotaAvailability::Measured);
+        assert_eq!(quota.five_hour.remaining_percent, Some(0.0));
+        assert_eq!(quota.five_hour.used_percent, Some(1.0));
+        assert_eq!(quota.seven_day.remaining_percent, Some(1.0));
+    }
+
+    #[test]
     fn parses_rate_limits_by_limit_id() {
         let result = json!({
             "rateLimitsByLimitId": {
@@ -306,8 +345,8 @@ mod tests {
 
         let quota = parse_rate_limits(&result).unwrap();
         assert_eq!(quota.five_hour.label, "5h");
-        assert!((quota.five_hour.used_percent - 0.25).abs() < 0.001);
-        assert!((quota.seven_day.remaining_percent - 0.8).abs() < 0.001);
+        assert!((quota.five_hour.used_percent.unwrap() - 0.25).abs() < 0.001);
+        assert!((quota.seven_day.remaining_percent.unwrap() - 0.8).abs() < 0.001);
     }
 
     #[test]
@@ -379,8 +418,8 @@ mod tests {
         });
 
         let quota = parse_rate_limits(&result).unwrap();
-        assert!((quota.five_hour.used_percent - 0.25).abs() < 0.001);
-        assert!((quota.seven_day.used_percent - 0.20).abs() < 0.001);
+        assert!((quota.five_hour.used_percent.unwrap() - 0.25).abs() < 0.001);
+        assert!((quota.seven_day.used_percent.unwrap() - 0.20).abs() < 0.001);
     }
 
     #[test]
@@ -396,8 +435,8 @@ mod tests {
         });
 
         let quota = parse_rate_limits(&result).unwrap();
-        assert!((quota.five_hour.used_percent - 0.25).abs() < 0.001);
-        assert!((quota.seven_day.used_percent - 0.20).abs() < 0.001);
+        assert!((quota.five_hour.used_percent.unwrap() - 0.25).abs() < 0.001);
+        assert!((quota.seven_day.used_percent.unwrap() - 0.20).abs() < 0.001);
     }
 
     #[test]
@@ -413,9 +452,9 @@ mod tests {
         });
 
         let quota = parse_rate_limits(&result).unwrap();
-        assert!((quota.five_hour.used_percent - 0.01).abs() < 0.001);
-        assert!((quota.five_hour.remaining_percent - 0.99).abs() < 0.001);
-        assert!((quota.seven_day.used_percent - 0.50).abs() < 0.001);
+        assert!((quota.five_hour.used_percent.unwrap() - 0.01).abs() < 0.001);
+        assert!((quota.five_hour.remaining_percent.unwrap() - 0.99).abs() < 0.001);
+        assert!((quota.seven_day.used_percent.unwrap() - 0.50).abs() < 0.001);
     }
 
     #[test]
@@ -431,9 +470,9 @@ mod tests {
         });
 
         let quota = parse_rate_limits(&result).unwrap();
-        assert!((quota.five_hour.used_percent - 0.10).abs() < 0.001);
-        assert!((quota.seven_day.used_percent - 0.01).abs() < 0.001);
-        assert!((quota.seven_day.remaining_percent - 0.99).abs() < 0.001);
+        assert!((quota.five_hour.used_percent.unwrap() - 0.10).abs() < 0.001);
+        assert!((quota.seven_day.used_percent.unwrap() - 0.01).abs() < 0.001);
+        assert!((quota.seven_day.remaining_percent.unwrap() - 0.99).abs() < 0.001);
     }
 
     #[test]
@@ -449,17 +488,18 @@ mod tests {
         });
 
         let quota = parse_rate_limits(&result).unwrap();
-        assert!((quota.five_hour.used_percent - 1.0).abs() < 0.001);
-        assert!((quota.five_hour.remaining_percent - 0.0).abs() < 0.001);
-        assert!((quota.seven_day.used_percent - 0.20).abs() < 0.001);
+        assert!((quota.five_hour.used_percent.unwrap() - 1.0).abs() < 0.001);
+        assert!((quota.five_hour.remaining_percent.unwrap() - 0.0).abs() < 0.001);
+        assert!((quota.seven_day.used_percent.unwrap() - 0.20).abs() < 0.001);
     }
 
     #[test]
     fn pace_label_warns_when_seven_day_usage_is_too_fast() {
         let seven_day = QuotaLimit {
             label: "7d".into(),
-            remaining_percent: 0.70,
-            used_percent: 0.30,
+            availability: QuotaAvailability::Measured,
+            remaining_percent: Some(0.70),
+            used_percent: Some(0.30),
             resets_at: "7d".into(),
             resets_at_unix: Some(OffsetDateTime::now_utc().unix_timestamp() + 7 * 24 * 60 * 60),
         };
@@ -471,8 +511,9 @@ mod tests {
     fn pace_label_encourages_when_seven_day_has_extra_room() {
         let seven_day = QuotaLimit {
             label: "7d".into(),
-            remaining_percent: 1.0,
-            used_percent: 0.0,
+            availability: QuotaAvailability::Measured,
+            remaining_percent: Some(1.0),
+            used_percent: Some(0.0),
             resets_at: "7d".into(),
             resets_at_unix: Some(OffsetDateTime::now_utc().unix_timestamp() + 5 * 24 * 60 * 60),
         };
@@ -484,8 +525,9 @@ mod tests {
     fn pace_label_preserves_small_positive_room() {
         let seven_day = QuotaLimit {
             label: "7d".into(),
-            remaining_percent: 0.73,
-            used_percent: 0.27,
+            availability: QuotaAvailability::Measured,
+            remaining_percent: Some(0.73),
+            used_percent: Some(0.27),
             resets_at: "5d".into(),
             resets_at_unix: Some(OffsetDateTime::now_utc().unix_timestamp() + 5 * 24 * 60 * 60),
         };

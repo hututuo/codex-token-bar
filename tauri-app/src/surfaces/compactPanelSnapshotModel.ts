@@ -15,9 +15,9 @@ const baseFloatingPanelSnapshot: FloatingPanelSnapshot = {
   todayTokensLabel: "今 待读取",
   requestsLabel: "次 待读取",
   fiveHourLabel: "5h 待读取",
-  fiveHourRemainingPercent: 0,
+  fiveHourRemainingPercent: null,
   sevenDayLabel: "7d 待读取",
-  sevenDayRemainingPercent: 0,
+  sevenDayRemainingPercent: null,
   unread: false,
   unreadSummary: {
     active: false,

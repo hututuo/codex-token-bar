@@ -3,23 +3,25 @@ use crate::models::{
     AccountInfo, AccountQuotaBundle, LocalDataWarning, QuotaDiagnostic, QuotaSnapshot,
     ResetCreditSummary,
 };
-use auth::read_local_account_name;
+use auth::{read_local_account_key, read_local_account_name};
 use codex_binary::find_codex_binary_with_report;
 #[cfg(test)]
 use rate_limits::parse_rate_limits;
 use rate_limits::{parse_rate_limits_with_plan, placeholder_quota, ParsedRateLimits};
 use reset_credit::read_reset_credits;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Mutex, OnceLock, TryLockError};
+use std::sync::{mpsc, Arc, Mutex, OnceLock, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-const SUCCESS_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const DEFAULT_QUOTA_REFRESH_CADENCE_MS: u64 = 60_000;
+const MAX_SUCCESS_FRESHNESS: Duration = Duration::from_secs(30);
 const FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
 const HISTORY_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const FORCED_REFRESH_COALESCE_TTL: Duration = Duration::from_secs(5);
@@ -40,13 +42,27 @@ mod codex_binary;
 mod rate_limits;
 mod reset_credit;
 
-static QUOTA_READ_CACHE: OnceLock<Mutex<Option<QuotaCacheEntry>>> = OnceLock::new();
+static QUOTA_READ_CACHE: OnceLock<Mutex<HashMap<PathBuf, QuotaCacheEntry>>> = OnceLock::new();
 static QUOTA_HISTORY_CACHE: OnceLock<Mutex<QuotaHistoryMemoryCache>> = OnceLock::new();
-static QUOTA_READ_GATE: OnceLock<Mutex<()>> = OnceLock::new();
+static QUOTA_READ_GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct QuotaCacheScope {
+    codex_home: PathBuf,
+    account_key: Option<String>,
+}
+
+impl QuotaCacheScope {
+    fn allows_success_reuse(&self, current: &Self) -> bool {
+        self.codex_home == current.codex_home
+            && self.account_key.is_some()
+            && self.account_key == current.account_key
+    }
+}
 
 #[derive(Clone)]
 struct QuotaCacheEntry {
-    codex_home: std::path::PathBuf,
+    scope: QuotaCacheScope,
     result: Result<AccountQuotaBundle, String>,
     cached_at: Instant,
 }
@@ -88,83 +104,161 @@ impl QuotaHistoryMemoryCache {
     }
 }
 
-pub fn read_account_quota(codex_home: &Path, force_refresh: bool) -> Result<AccountQuotaBundle, String> {
-    if let Some(cached) = cached_quota_result(codex_home, force_refresh)? {
+pub fn read_account_quota(
+    codex_home: &Path,
+    force_refresh: bool,
+) -> Result<AccountQuotaBundle, String> {
+    read_account_quota_with_policy(codex_home, force_refresh, || {
+        crate::platform::read_app_settings()
+            .map(|settings| settings.quota_refresh_interval_ms)
+            .unwrap_or(DEFAULT_QUOTA_REFRESH_CADENCE_MS)
+    })
+}
+
+fn read_account_quota_with_policy<F>(
+    codex_home: &Path,
+    force_refresh: bool,
+    cadence_loader: F,
+) -> Result<AccountQuotaBundle, String>
+where
+    F: FnOnce() -> u64,
+{
+    read_account_quota_with_policy_and_loader(
+        codex_home,
+        force_refresh,
+        cadence_loader,
+        read_account_quota_uncached,
+    )
+}
+
+fn read_account_quota_with_policy_and_loader<F, L>(
+    codex_home: &Path,
+    force_refresh: bool,
+    cadence_loader: F,
+    loader: L,
+) -> Result<AccountQuotaBundle, String>
+where
+    F: FnOnce() -> u64,
+    L: FnOnce(&Path) -> Result<AccountQuotaBundle, String>,
+{
+    let success_freshness = success_freshness_for_cadence_ms(cadence_loader());
+    let scope = quota_cache_scope(codex_home, read_local_account_key(codex_home));
+    if let Some(cached) = cached_quota_result(&scope, force_refresh, success_freshness)? {
         return resolve_cached_quota(cached);
     }
 
-    let gate = QUOTA_READ_GATE.get_or_init(|| Mutex::new(()));
+    let gate = quota_read_gate(&scope.codex_home)?;
     let _read_guard = match gate.try_lock() {
         Ok(guard) => guard,
         Err(TryLockError::WouldBlock) => {
             let guard = gate.lock().map_err(|error| error.to_string())?;
-            if let Some(cached) = cached_quota_result_after_inflight(codex_home, force_refresh)? {
+            let joined_scope = quota_cache_scope(codex_home, read_local_account_key(codex_home));
+            if let Some(cached) =
+                cached_quota_result_after_inflight(&joined_scope, force_refresh, success_freshness)?
+            {
                 return resolve_cached_quota(cached);
             }
             guard
         }
         Err(TryLockError::Poisoned(error)) => return Err(error.to_string()),
     };
-    if let Some(cached) = cached_quota_result(codex_home, force_refresh)? {
+    let scope = quota_cache_scope(codex_home, read_local_account_key(codex_home));
+    if let Some(cached) = cached_quota_result(&scope, force_refresh, success_freshness)? {
         return resolve_cached_quota(cached);
     }
 
-    let previous_success = cached_successful_quota(codex_home)?;
-    let result = read_account_quota_uncached(codex_home).map(|bundle| {
-        if account_quota_failed(&bundle) {
+    let previous_success = cached_successful_quota(&scope)?;
+    let loaded = loader(codex_home);
+    let completed_scope = quota_cache_scope(codex_home, read_local_account_key(codex_home));
+    let identity_stable = scope == completed_scope;
+    let result = loaded.map(|bundle| {
+        if account_quota_failed(&bundle) && identity_stable {
             if let Some(previous) = previous_success {
                 return stale_quota_bundle(previous, bundle);
             }
         }
         bundle
     });
-    let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
+    if !identity_stable {
+        return result;
+    }
+    let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = cache.lock().map_err(|error| error.to_string())?;
-    *guard = Some(QuotaCacheEntry {
-        codex_home: codex_home.to_path_buf(),
-        cached_at: Instant::now(),
-        result: result.clone(),
-    });
+    guard.insert(
+        completed_scope.codex_home.clone(),
+        QuotaCacheEntry {
+            scope: completed_scope,
+            cached_at: Instant::now(),
+            result: result.clone(),
+        },
+    );
     result
 }
 
+fn quota_read_gate(canonical_home: &Path) -> Result<Arc<Mutex<()>>, String> {
+    let gates = QUOTA_READ_GATES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut gates = gates.lock().map_err(|error| error.to_string())?;
+    Ok(gates
+        .entry(canonical_home.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone())
+}
+
+fn quota_cache_scope(codex_home: &Path, account_key: Option<String>) -> QuotaCacheScope {
+    QuotaCacheScope {
+        codex_home: std::fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf()),
+        account_key,
+    }
+}
+
+fn success_freshness_for_cadence_ms(cadence_ms: u64) -> Duration {
+    let sanitized = match cadence_ms {
+        30_000 | 60_000 | 180_000 | 300_000 | 600_000 => cadence_ms,
+        _ => DEFAULT_QUOTA_REFRESH_CADENCE_MS,
+    };
+    Duration::from_millis(sanitized / 2).min(MAX_SUCCESS_FRESHNESS)
+}
+
 fn cached_quota_result(
-    codex_home: &Path,
+    scope: &QuotaCacheScope,
     force_refresh: bool,
+    success_freshness: Duration,
 ) -> Result<Option<Result<AccountQuotaBundle, String>>, String> {
-    cached_quota_result_with_policy(codex_home, force_refresh, false)
+    cached_quota_result_with_policy(scope, force_refresh, false, success_freshness)
 }
 
 fn cached_quota_result_after_inflight(
-    codex_home: &Path,
+    scope: &QuotaCacheScope,
     force_refresh: bool,
+    success_freshness: Duration,
 ) -> Result<Option<Result<AccountQuotaBundle, String>>, String> {
-    cached_quota_result_with_policy(codex_home, force_refresh, true)
+    cached_quota_result_with_policy(scope, force_refresh, true, success_freshness)
 }
 
-fn cached_successful_quota(codex_home: &Path) -> Result<Option<AccountQuotaBundle>, String> {
-    let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
+fn cached_successful_quota(scope: &QuotaCacheScope) -> Result<Option<AccountQuotaBundle>, String> {
+    let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let guard = cache.lock().map_err(|error| error.to_string())?;
     Ok(guard
-        .as_ref()
-        .filter(|entry| entry.codex_home == codex_home)
+        .get(&scope.codex_home)
+        .filter(|entry| entry.scope.allows_success_reuse(scope))
         .and_then(|entry| entry.result.as_ref().ok())
         .filter(|bundle| quota_available(&bundle.quota))
         .cloned())
 }
 
 fn cached_quota_result_with_policy(
-    codex_home: &Path,
+    scope: &QuotaCacheScope,
     force_refresh: bool,
     after_inflight: bool,
+    success_freshness: Duration,
 ) -> Result<Option<Result<AccountQuotaBundle, String>>, String> {
-    let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
+    let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let guard = cache.lock().map_err(|error| error.to_string())?;
     Ok(guard
-        .as_ref()
+        .get(&scope.codex_home)
         .filter(|entry| {
-            entry.codex_home == codex_home
-                && reusable_cached_quota(entry, force_refresh, after_inflight)
+            cache_scope_matches(entry, scope)
+                && reusable_cached_quota(entry, force_refresh, after_inflight, success_freshness)
         })
         .map(|entry| entry.result.clone()))
 }
@@ -173,14 +267,20 @@ fn reusable_cached_quota(
     entry: &QuotaCacheEntry,
     force_refresh: bool,
     after_inflight: bool,
+    success_freshness: Duration,
 ) -> bool {
     if !force_refresh {
-        return entry.cached_at.elapsed() <= cache_ttl(&entry.result);
+        return entry.cached_at.elapsed() <= cache_ttl(&entry.result, success_freshness);
     }
-    if entry.cached_at.elapsed() > FORCED_REFRESH_COALESCE_TTL {
-        return false;
+    after_inflight && entry.cached_at.elapsed() <= FORCED_REFRESH_COALESCE_TTL
+}
+
+fn cache_scope_matches(entry: &QuotaCacheEntry, scope: &QuotaCacheScope) -> bool {
+    if cache_result_has_real_quota(&entry.result) {
+        entry.scope.allows_success_reuse(scope)
+    } else {
+        entry.scope == *scope
     }
-    after_inflight || cache_result_has_real_quota(&entry.result)
 }
 
 fn cache_result_has_real_quota(result: &Result<AccountQuotaBundle, String>) -> bool {
@@ -192,26 +292,34 @@ fn cache_result_has_real_quota(result: &Result<AccountQuotaBundle, String>) -> b
 fn resolve_cached_quota(cached: Result<AccountQuotaBundle, String>) -> Result<AccountQuotaBundle, String> {
     match cached {
         Ok(mut bundle) => {
-            refresh_quota_histories(&mut bundle, false);
+            if quota_available(&bundle.quota) && !bundle_has_stale_data(&bundle) {
+                refresh_quota_histories(&mut bundle, false);
+            } else if !quota_available(&bundle.quota) {
+                bundle.quota_history_daily.clear();
+                bundle.quota_history_24h.clear();
+                bundle.quota_history_7d.clear();
+                bundle.quota_history_30d.clear();
+            }
             Ok(bundle)
         }
         Err(error) => Err(error),
     }
 }
 
-fn cache_ttl(result: &Result<AccountQuotaBundle, String>) -> Duration {
+fn cache_ttl(result: &Result<AccountQuotaBundle, String>, success_freshness: Duration) -> Duration {
     if result.as_ref().is_ok_and(bundle_has_stale_data) {
         return FAILURE_CACHE_TTL;
     }
     if cache_result_has_real_quota(result) {
-        SUCCESS_CACHE_TTL
+        success_freshness
     } else {
         FAILURE_CACHE_TTL
     }
 }
 
 fn quota_available(quota: &QuotaSnapshot) -> bool {
-    quota.five_hour.resets_at_unix.is_some() || quota.seven_day.resets_at_unix.is_some()
+    use crate::models::QuotaAvailability::Measured;
+    quota.five_hour.availability == Measured || quota.seven_day.availability == Measured
 }
 
 fn account_quota_failed(bundle: &AccountQuotaBundle) -> bool {
@@ -295,7 +403,7 @@ fn quota_failure_bundle(codex_home: &Path, error: String) -> AccountQuotaBundle 
         }
     });
 
-    let mut bundle = AccountQuotaBundle {
+    let bundle = AccountQuotaBundle {
         account: account_info(codex_home, None),
         quota,
         quota_history_daily: Vec::new(),
@@ -305,7 +413,6 @@ fn quota_failure_bundle(codex_home: &Path, error: String) -> AccountQuotaBundle 
         warnings: diagnostics_to_warnings(&diagnostics),
         diagnostics,
     };
-    refresh_quota_histories(&mut bundle, true);
     bundle
 }
 
@@ -314,11 +421,6 @@ fn stale_quota_bundle(
     failure: AccountQuotaBundle,
 ) -> AccountQuotaBundle {
     previous.quota.reset_credit = failure.quota.reset_credit;
-    previous.quota_history_daily = failure.quota_history_daily;
-    previous.quota_history_24h = failure.quota_history_24h;
-    previous.quota_history_7d = failure.quota_history_7d;
-    previous.quota_history_30d = failure.quota_history_30d;
-
     let raw_cause = failure
         .diagnostics
         .iter()
@@ -784,6 +886,247 @@ mod tests {
     use std::ffi::OsStr;
 
     #[test]
+    fn automatic_success_freshness_uses_half_cadence_capped_at_thirty_seconds() {
+        let cases = [
+            (30_000, Duration::from_secs(15)),
+            (60_000, Duration::from_secs(30)),
+            (180_000, Duration::from_secs(30)),
+            (300_000, Duration::from_secs(30)),
+            (600_000, Duration::from_secs(30)),
+        ];
+
+        for (cadence_ms, expected) in cases {
+            assert_eq!(success_freshness_for_cadence_ms(cadence_ms), expected);
+        }
+        assert_eq!(
+            success_freshness_for_cadence_ms(31_000),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn automatic_cache_reuse_obeys_each_supported_cadence_freshness() {
+        let bundle = quota_bundle_fixture(
+            "freshness",
+            parse_rate_limits(&json!({
+                "rateLimits": {
+                    "primary": { "usedPercent": 20, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 40, "resetsAt": 1782144492 }
+                }
+            }))
+            .unwrap(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        for cadence_ms in [30_000, 60_000, 180_000, 300_000, 600_000] {
+            let freshness = success_freshness_for_cadence_ms(cadence_ms);
+            let fresh = QuotaCacheEntry {
+                scope: quota_cache_scope(Path::new("freshness-home"), Some("sub:freshness".into())),
+                result: Ok(bundle.clone()),
+                cached_at: Instant::now()
+                    .checked_sub(freshness - Duration::from_millis(1))
+                    .unwrap(),
+            };
+            let expired = QuotaCacheEntry {
+                cached_at: Instant::now()
+                    .checked_sub(freshness + Duration::from_millis(1))
+                    .unwrap(),
+                ..fresh.clone()
+            };
+
+            assert!(reusable_cached_quota(&fresh, false, false, freshness));
+            assert!(!reusable_cached_quota(&expired, false, false, freshness));
+        }
+    }
+
+    #[test]
+    fn cache_scope_requires_canonical_home_and_established_matching_identity_for_success() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-quota-scope-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let real_home = root.join("home");
+        std::fs::create_dir_all(&real_home).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_home, root.join("alias")).unwrap();
+
+        let scope = quota_cache_scope(&real_home, Some("sub:account-a".into()));
+        #[cfg(unix)]
+        assert_eq!(
+            scope.codex_home,
+            quota_cache_scope(&root.join("alias"), Some("sub:account-a".into())).codex_home
+        );
+        assert!(scope
+            .allows_success_reuse(&quota_cache_scope(&real_home, Some("sub:account-a".into()))));
+        assert!(!scope
+            .allows_success_reuse(&quota_cache_scope(&real_home, Some("sub:account-b".into()))));
+        assert!(!scope.allows_success_reuse(&quota_cache_scope(&real_home, None)));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn simultaneous_forced_callers_join_one_inflight_loader() {
+        assert_simultaneous_callers_join_one_inflight_loader(true);
+    }
+
+    #[test]
+    fn independently_phased_automatic_callers_join_one_inflight_loader() {
+        assert_simultaneous_callers_join_one_inflight_loader(false);
+    }
+
+    fn assert_simultaneous_callers_join_one_inflight_loader(force_refresh: bool) {
+        use base64::Engine as _;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Barrier;
+
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-quota-inflight-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"sub":"inflight-account"}"#);
+        std::fs::write(
+            root.join("auth.json"),
+            format!(r#"{{"tokens":{{"id_token":"header.{payload}.signature"}}}}"#),
+        )
+        .unwrap();
+        let bundle = quota_bundle_fixture(
+            "inflight",
+            parse_rate_limits(&json!({
+                "rateLimits": {
+                    "primary": { "usedPercent": 20, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 40, "resetsAt": 1782144492 }
+                }
+            }))
+            .unwrap(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(3));
+        let handles = (0..2)
+            .map(|_| {
+                let home = root.clone();
+                let calls = calls.clone();
+                let start = start.clone();
+                let bundle = bundle.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    read_account_quota_with_policy_and_loader(
+                        &home,
+                        force_refresh,
+                        || 30_000,
+                        |_| {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(100));
+                            Ok(bundle)
+                        },
+                    )
+                    .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        start.wait();
+        for handle in handles {
+            assert!(quota_available(&handle.join().unwrap().quota));
+        }
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_new_source_keeps_all_history_empty() {
+        let codex_home = std::env::temp_dir().join(format!(
+            "codex-token-bar-quota-empty-history-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bundle = quota_failure_bundle(&codex_home, "auth missing".into());
+
+        assert!(bundle.quota_history_daily.is_empty());
+        assert!(bundle.quota_history_24h.is_empty());
+        assert!(bundle.quota_history_7d.is_empty());
+        assert!(bundle.quota_history_30d.is_empty());
+        assert!(!quota_available(&bundle.quota));
+    }
+
+    #[test]
+    fn identity_change_during_read_does_not_reuse_previous_success() {
+        use base64::Engine as _;
+
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-quota-identity-transition-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        write_test_auth_subject(&root, "account-a");
+        let scope_a = quota_cache_scope(&root, read_local_account_key(&root));
+        let previous = quota_bundle_fixture(
+            "account-a",
+            parse_rate_limits(&json!({
+                "rateLimits": {
+                    "primary": { "usedPercent": 20, "resetsAt": 1781715600 },
+                    "secondary": { "usedPercent": 40, "resetsAt": 1782144492 }
+                }
+            }))
+            .unwrap(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        cache.lock().unwrap().insert(
+            scope_a.codex_home.clone(),
+            QuotaCacheEntry {
+                scope: scope_a.clone(),
+                result: Ok(previous),
+                cached_at: Instant::now(),
+            },
+        );
+
+        let result = read_account_quota_with_policy_and_loader(
+            &root,
+            true,
+            || 30_000,
+            |home| {
+                write_test_auth_subject(home, "account-b");
+                Ok(quota_failure_bundle(home, "new account read failed".into()))
+            },
+        )
+        .unwrap();
+
+        assert!(!quota_available(&result.quota));
+        assert!(result.quota_history_24h.is_empty());
+        assert!(!bundle_has_stale_data(&result));
+        cache.lock().unwrap().remove(&scope_a.codex_home);
+        let _ = std::fs::remove_dir_all(root);
+
+        fn write_test_auth_subject(home: &Path, subject: &str) {
+            let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(format!(r#"{{"sub":"{subject}"}}"#));
+            std::fs::write(
+                home.join("auth.json"),
+                format!(r#"{{"tokens":{{"id_token":"header.{payload}.signature"}}}}"#),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
     fn quota_history_cache_reuses_recent_bundle_until_forced() {
         use std::cell::Cell;
 
@@ -859,7 +1202,10 @@ mod tests {
     #[test]
     fn quota_cache_uses_short_ttl_for_failures() {
         let failure = Err("network unavailable".to_string());
-        assert_eq!(cache_ttl(&failure), FAILURE_CACHE_TTL);
+        assert_eq!(
+            cache_ttl(&failure, Duration::from_secs(30)),
+            FAILURE_CACHE_TTL
+        );
 
         let quota = parse_rate_limits(&json!({
             "rateLimitsByLimitId": {
@@ -885,12 +1231,14 @@ mod tests {
             warnings: Vec::new(),
             diagnostics: Vec::new(),
         });
-        assert_eq!(cache_ttl(&success), SUCCESS_CACHE_TTL);
+        assert_eq!(
+            cache_ttl(&success, Duration::from_secs(15)),
+            Duration::from_secs(15)
+        );
     }
 
     #[test]
-    fn quota_success_cache_covers_dashboard_refresh_window() {
-        assert_eq!(SUCCESS_CACHE_TTL, Duration::from_secs(5 * 60));
+    fn quota_history_and_failure_cache_keep_their_bounded_windows() {
         assert_eq!(HISTORY_CACHE_TTL, Duration::from_secs(5 * 60));
         assert_eq!(FAILURE_CACHE_TTL, Duration::from_secs(15));
     }
@@ -1146,7 +1494,7 @@ mod tests {
 
     #[test]
     fn stale_quota_bundle_preserves_previous_success_after_timeout_failure() {
-        let previous = quota_bundle_fixture(
+        let mut previous = quota_bundle_fixture(
             "current",
             parse_rate_limits(&json!({
                 "rateLimitsByLimitId": {
@@ -1162,6 +1510,14 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
+        previous
+            .quota_history_24h
+            .push(crate::models::QuotaHistoryPoint {
+                label: "trusted".into(),
+                start_unix: 1,
+                five_hour_remaining_percent: Some(0.8),
+                seven_day_remaining_percent: Some(0.6),
+            });
         let mut failed_quota = placeholder_quota();
         failed_quota.pace_label = "额度读取失败".into();
         let timeout = classify_quota_error(
@@ -1180,6 +1536,7 @@ mod tests {
         assert_eq!(stale.quota.five_hour.resets_at_unix, previous.quota.five_hour.resets_at_unix);
         assert_eq!(stale.quota.seven_day.resets_at_unix, previous.quota.seven_day.resets_at_unix);
         assert_eq!(stale.quota.pace_label, previous.quota.pace_label);
+        assert_eq!(stale.quota_history_24h[0].label, "trusted");
         assert!(stale.diagnostics.iter().any(|diagnostic| {
             diagnostic.source == "account_quota"
                 && diagnostic.category == "timeout"
@@ -1228,32 +1585,50 @@ mod tests {
             warnings: Vec::new(),
             diagnostics: Vec::new(),
         };
-        let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
+        let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let scope = quota_cache_scope(&codex_home, Some("sub:test".into()));
 
         {
             let mut guard = cache.lock().unwrap();
-            *guard = Some(QuotaCacheEntry {
-                codex_home: codex_home.clone(),
-                result: Ok(bundle.clone()),
-                cached_at: Instant::now(),
-            });
+            guard.insert(
+                scope.codex_home.clone(),
+                QuotaCacheEntry {
+                    scope: scope.clone(),
+                    result: Ok(bundle.clone()),
+                    cached_at: Instant::now(),
+                },
+            );
         }
-        assert!(cached_quota_result(&codex_home, true).unwrap().is_some());
+        assert!(cached_quota_result(&scope, true, Duration::from_secs(30))
+            .unwrap()
+            .is_none());
+        assert!(
+            cached_quota_result_after_inflight(&scope, true, Duration::from_secs(30))
+                .unwrap()
+                .is_some()
+        );
 
         {
             let mut guard = cache.lock().unwrap();
-            *guard = Some(QuotaCacheEntry {
-                codex_home: codex_home.clone(),
-                result: Ok(bundle),
-                cached_at: Instant::now()
-                    .checked_sub(FORCED_REFRESH_COALESCE_TTL + Duration::from_millis(1))
-                    .unwrap(),
-            });
+            guard.insert(
+                scope.codex_home.clone(),
+                QuotaCacheEntry {
+                    scope: scope.clone(),
+                    result: Ok(bundle),
+                    cached_at: Instant::now()
+                        .checked_sub(FORCED_REFRESH_COALESCE_TTL + Duration::from_millis(1))
+                        .unwrap(),
+                },
+            );
         }
-        assert!(cached_quota_result(&codex_home, true).unwrap().is_none());
+        assert!(
+            cached_quota_result_after_inflight(&scope, true, Duration::from_secs(30))
+                .unwrap()
+                .is_none()
+        );
 
         let mut guard = cache.lock().unwrap();
-        *guard = None;
+        guard.remove(&scope.codex_home);
     }
 
     #[test]
@@ -1265,29 +1640,37 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(None));
+        let cache = QUOTA_READ_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let scope = quota_cache_scope(&codex_home, None);
         {
             let mut guard = cache.lock().unwrap();
-            *guard = Some(QuotaCacheEntry {
-                codex_home: codex_home.clone(),
-                result: Ok(quota_failure_bundle(
-                    &codex_home,
-                    "error sending request for url: dns error".to_string(),
-                )),
-                cached_at: Instant::now(),
-            });
+            guard.insert(
+                scope.codex_home.clone(),
+                QuotaCacheEntry {
+                    scope: scope.clone(),
+                    result: Ok(quota_failure_bundle(
+                        &codex_home,
+                        "error sending request for url: dns error".to_string(),
+                    )),
+                    cached_at: Instant::now(),
+                },
+            );
         }
 
-        assert!(cached_quota_result(&codex_home, false).unwrap().is_some());
-        assert!(cached_quota_result(&codex_home, true).unwrap().is_none());
+        assert!(cached_quota_result(&scope, false, Duration::from_secs(30))
+            .unwrap()
+            .is_some());
+        assert!(cached_quota_result(&scope, true, Duration::from_secs(30))
+            .unwrap()
+            .is_none());
         assert!(
-            cached_quota_result_after_inflight(&codex_home, true)
+            cached_quota_result_after_inflight(&scope, true, Duration::from_secs(30))
                 .unwrap()
                 .is_some()
         );
 
         let mut guard = cache.lock().unwrap();
-        *guard = None;
+        guard.remove(&scope.codex_home);
     }
 
     fn quota_bundle_fixture(

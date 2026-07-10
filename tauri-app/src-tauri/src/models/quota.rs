@@ -29,10 +29,18 @@ pub struct QuotaSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct QuotaLimit {
     pub label: String,
-    pub remaining_percent: f64,
-    pub used_percent: f64,
+    pub availability: QuotaAvailability,
+    pub remaining_percent: Option<f64>,
+    pub used_percent: Option<f64>,
     pub resets_at: String,
     pub resets_at_unix: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaAvailability {
+    Measured,
+    Unavailable,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

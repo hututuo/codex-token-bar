@@ -30,7 +30,15 @@ function clampPercent(value: number): number {
   return Math.min(100, Math.max(0, value * 100));
 }
 
-function FloatingQuotaBar({ label, remainingPercent }: { label: string; remainingPercent: number }) {
+function FloatingQuotaBar({ label, remainingPercent }: { label: string; remainingPercent: number | null }) {
+  if (typeof remainingPercent !== "number" || !Number.isFinite(remainingPercent)) {
+    return (
+      <span className="floating-quota-bar floating-quota-bar--unavailable" role="status" aria-label={`${label}，额度待读取`}>
+        <span className="floating-quota-track" aria-hidden="true" />
+        <span className="floating-quota-label">{label}</span>
+      </span>
+    );
+  }
   const fillPercent = clampPercent(remainingPercent);
 
   return (

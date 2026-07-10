@@ -5,15 +5,17 @@ export function emptyQuotaSnapshot(): QuotaSnapshot {
   return {
     fiveHour: {
       label: "5h",
-      remainingPercent: 0,
-      usedPercent: 0,
+      availability: "unavailable",
+      remainingPercent: null,
+      usedPercent: null,
       resetsAt: "待读取",
       resetsAtUnix: null,
     },
     sevenDay: {
       label: "7d",
-      remainingPercent: 0,
-      usedPercent: 0,
+      availability: "unavailable",
+      remainingPercent: null,
+      usedPercent: null,
       resetsAt: "待读取",
       resetsAtUnix: null,
     },

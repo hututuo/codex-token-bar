@@ -10,6 +10,7 @@ function quotaLimit({
 } = {}) {
   return {
     label,
+    availability: "measured",
     remainingPercent,
     usedPercent: 1 - remainingPercent,
     resetsAt,

@@ -20,8 +20,8 @@ pub use provider_repair::{
     ProviderRepairSnapshot, ProviderRepairStep,
 };
 pub use quota::{
-    AccountQuotaBundle, QuotaHistoryDailyPoint, QuotaHistoryPoint, QuotaLimit, QuotaSnapshot,
-    ResetCreditDetail, ResetCreditSummary,
+    AccountQuotaBundle, QuotaAvailability, QuotaHistoryDailyPoint, QuotaHistoryPoint, QuotaLimit,
+    QuotaSnapshot, ResetCreditDetail, ResetCreditSummary,
 };
 pub use settings::{
     AppSettingsSnapshot, DisplaySurfaceSettingsSnapshot, FloatingContentVisibilitySnapshot,

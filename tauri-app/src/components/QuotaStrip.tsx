@@ -29,13 +29,19 @@ interface QuotaStripProps {
 }
 
 function QuotaBar({ quota }: { quota: QuotaLimit }) {
+  const remainingPercent = typeof quota.remainingPercent === "number" ? quota.remainingPercent : null;
+  const measured = quota.availability === "measured" && remainingPercent !== null;
+  const measuredLabel = remainingPercent === null ? "" : formatPercent(remainingPercent);
   return (
-    <div className="quota-bar">
+    <div
+      aria-label={measured ? `${quota.label} 剩 ${measuredLabel}` : `${quota.label} 额度待读取`}
+      className={measured ? "quota-bar" : "quota-bar quota-bar--unavailable"}
+    >
       <span className="quota-label">{quota.label}</span>
-      <div className="quota-track">
-        <span style={{ width: `${Math.round(quota.remainingPercent * 100)}%` }} />
+      <div className="quota-track" aria-hidden="true">
+        {measured && remainingPercent !== null ? <span style={{ width: `${Math.round(remainingPercent * 100)}%` }} /> : null}
       </div>
-      <strong>剩 {formatPercent(quota.remainingPercent)}</strong>
+      <strong>{measured ? `剩 ${measuredLabel}` : "待读取"}</strong>
       <em>{quota.resetsAt}</em>
     </div>
   );

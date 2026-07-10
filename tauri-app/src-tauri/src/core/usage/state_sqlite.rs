@@ -122,15 +122,17 @@ fn placeholder_quota() -> QuotaSnapshot {
     QuotaSnapshot {
         five_hour: QuotaLimit {
             label: "5h".into(),
-            remaining_percent: 0.0,
-            used_percent: 0.0,
+            availability: crate::models::QuotaAvailability::Unavailable,
+            remaining_percent: None,
+            used_percent: None,
             resets_at: "待读取".into(),
             resets_at_unix: None,
         },
         seven_day: QuotaLimit {
             label: "7d".into(),
-            remaining_percent: 0.0,
-            used_percent: 0.0,
+            availability: crate::models::QuotaAvailability::Unavailable,
+            remaining_percent: None,
+            used_percent: None,
             resets_at: "待读取".into(),
             resets_at_unix: None,
         },

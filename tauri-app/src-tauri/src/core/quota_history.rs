@@ -78,7 +78,8 @@ pub fn warning(message: String) -> LocalDataWarning {
 }
 
 fn quota_available(quota: &QuotaSnapshot) -> bool {
-    quota.five_hour.resets_at_unix.is_some() || quota.seven_day.resets_at_unix.is_some()
+    use crate::models::QuotaAvailability::Measured;
+    quota.five_hour.availability == Measured || quota.seven_day.availability == Measured
 }
 
 struct QuotaHistoryDatabase {
@@ -389,7 +390,8 @@ fn is_codex_main_limit(limit_name: Option<&str>) -> bool {
         .is_none_or(|value| value.eq_ignore_ascii_case("codex"))
 }
 
-fn percent_to_int(value: f64) -> Option<i32> {
+fn percent_to_int(value: Option<f64>) -> Option<i32> {
+    let value = value?;
     if !value.is_finite() {
         return None;
     }

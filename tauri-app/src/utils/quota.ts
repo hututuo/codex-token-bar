@@ -3,6 +3,9 @@ import type { AccountQuotaBundle } from "../types/dashboard";
 const NEAR_RESET_WINDOW_MS = 24 * 60 * 60 * 1_000;
 
 export function compactQuotaLabel(limit: AccountQuotaBundle["quota"]["fiveHour"], now: Date = new Date()): string {
+  if (limit.availability !== "measured" || typeof limit.remainingPercent !== "number") {
+    return `${limit.label} 待读取`;
+  }
   const percent = Math.round(limit.remainingPercent * 100);
   return `${limit.label} ${percent}% ${compactQuotaResetText(limit, now)}`;
 }

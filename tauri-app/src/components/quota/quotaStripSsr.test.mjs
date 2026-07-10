@@ -8,12 +8,14 @@ import { withSsrModules } from "../../test/ssrHarness.mjs";
 const quotaSnapshot = {
   fiveHour: {
     label: "5h",
+    availability: "measured",
     remainingPercent: 0.62,
     usedPercent: 0.38,
     resetsAt: "2h",
   },
   sevenDay: {
     label: "7d",
+    availability: "measured",
     remainingPercent: 0.81,
     usedPercent: 0.19,
     resetsAt: "3天",
@@ -25,6 +27,64 @@ const quotaSnapshot = {
   },
   paceLabel: "稳定",
 };
+
+const unavailableQuotaSnapshot = {
+  ...quotaSnapshot,
+  fiveHour: {
+    label: "5h",
+    availability: "unavailable",
+    remainingPercent: null,
+    usedPercent: null,
+    resetsAt: "待读取",
+    resetsAtUnix: null,
+  },
+  sevenDay: {
+    label: "7d",
+    availability: "unavailable",
+    remainingPercent: null,
+    usedPercent: null,
+    resetsAt: "待读取",
+    resetsAtUnix: null,
+  },
+  paceLabel: "额度读取失败",
+};
+
+test("QuotaStrip renders unavailable quota as pending instead of exhausted zero", async () => {
+  await withSsrModules(async (load) => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    const html = renderComponent(QuotaStrip, {
+      snapshot: unavailableQuotaSnapshot,
+      diagnostics: [],
+      warnings: [],
+    });
+
+    assert.match(html, /5h.*待读取/s);
+    assert.match(html, /7d.*待读取/s);
+    assert.doesNotMatch(html, /剩 0%/);
+    assert.doesNotMatch(html, /width:0%/);
+  });
+});
+
+test("QuotaStrip preserves a measured exhausted zero", async () => {
+  await withSsrModules(async (load) => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    const html = renderComponent(QuotaStrip, {
+      snapshot: {
+        ...quotaSnapshot,
+        fiveHour: {
+          ...quotaSnapshot.fiveHour,
+          availability: "measured",
+          remainingPercent: 0,
+          usedPercent: 1,
+        },
+      },
+      diagnostics: [],
+      warnings: [],
+    });
+
+    assert.match(html, /剩 0%/);
+  });
+});
 
 const quotaWarnings = [
   { source: "account_quota", message: "账户额度读取失败" },
