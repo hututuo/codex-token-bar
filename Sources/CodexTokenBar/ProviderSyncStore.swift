@@ -109,9 +109,16 @@ final class ProviderSyncStore: ObservableObject {
     func setDataSource(_ dataSource: CodexDataSource?) -> Bool {
         let previousIdentity = currentDataSource?.stableIdentityKey
         let nextIdentity = dataSource?.stableIdentityKey
+        let previousPath = currentDataSource?.codexHome.standardizedFileURL.path
+        let nextPath = dataSource?.codexHome.standardizedFileURL.path
         hasBoundDataSource = true
         currentDataSource = dataSource
-        guard previousIdentity != nextIdentity else { return false }
+        guard previousIdentity != nextIdentity || previousPath != nextPath else { return false }
+
+        if previousIdentity == nextIdentity {
+            snapshot.codexHome = dataSource?.displayPath ?? "未选择 Codex Home"
+            return true
+        }
 
         operationGeneration += 1
         task?.cancel()
@@ -254,7 +261,10 @@ final class ProviderSyncStore: ObservableObject {
             await MainActor.run {
                 guard isCurrentOperation(generation: generation) else { return }
                 switch result {
-                case .success(let next):
+                case .success(var next):
+                    if hasBoundDataSource {
+                        next.codexHome = currentDataSource?.displayPath ?? "未选择 Codex Home"
+                    }
                     snapshot = next
                     activeOperationKind = nil
                     markCompleted(operationKind)

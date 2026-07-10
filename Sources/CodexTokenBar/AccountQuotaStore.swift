@@ -64,6 +64,10 @@ final class AccountQuotaStore: ObservableObject {
         currentDataSource?.stableIdentityKey
     }
 
+    var currentDataSourcePath: String? {
+        currentDataSource?.codexHome.standardizedFileURL.path
+    }
+
     init(
         quotaReader: any QuotaReading = LiveAccountQuotaReader(),
         automaticRefreshInterval: TimeInterval? = nil,

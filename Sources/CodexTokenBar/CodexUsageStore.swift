@@ -12,6 +12,7 @@ final class CodexUsageStore: ObservableObject {
     @Published private(set) var dataSourceLabel: String = "查找 Codex 目录..."
     @Published private(set) var dataSourceOrigin: String = "自动"
     @Published private(set) var dataSourceIdentity: String?
+    @Published private(set) var dataSourceBindingKey = "none"
     @Published var selectedMode: ActivityMode = .daily
 
     private let resolver: CodexDataSourceResolving
@@ -40,6 +41,7 @@ final class CodexUsageStore: ObservableObject {
         self.snapshotLoader = snapshotLoader
         dataSource = resolver.resolve()
         dataSourceIdentity = dataSource?.stableIdentityKey
+        dataSourceBindingKey = Self.bindingKey(for: dataSource)
         updateDataSourceLabels()
         if autoStart {
             refreshInitialSnapshot()
@@ -58,6 +60,7 @@ final class CodexUsageStore: ObservableObject {
         let nextIdentity = nextDataSource?.stableIdentityKey
         dataSource = nextDataSource
         dataSourceIdentity = nextIdentity
+        dataSourceBindingKey = Self.bindingKey(for: nextDataSource)
         updateDataSourceLabels()
 
         guard previousIdentity != nextIdentity else {
@@ -78,6 +81,11 @@ final class CodexUsageStore: ObservableObject {
         return true
     }
 
+    private static func bindingKey(for dataSource: CodexDataSource?) -> String {
+        guard let dataSource else { return "none" }
+        return "\(dataSource.stableIdentityKey)\u{0}\(dataSource.codexHome.standardizedFileURL.path)"
+    }
+
     private func refreshInitialSnapshot() {
         refresh(includePreciseScan: false)
     }
@@ -90,6 +98,12 @@ final class CodexUsageStore: ObservableObject {
             "alreadyRefreshing": isRefreshing ? "1" : "0",
             "source": resolvedDataSource?.displayPath ?? "nil"
         ])
+        if isRefreshing,
+           requestedSourceID == activeRefreshSourceID,
+           Self.bindingKey(for: resolvedDataSource) != dataSourceBindingKey {
+            setDataSource(resolvedDataSource)
+            trace?.mark("rebound-source-path")
+        }
         if isRefreshing, requestedSourceID == activeRefreshSourceID {
             trace?.end("skipped-refresh-in-flight")
             return

@@ -295,7 +295,7 @@ struct DashboardView: View {
         .onReceive(liveMonitor.$totalSnapshot) { snapshot in
             updateUsageRefreshCadence(liveSnapshot: snapshot)
         }
-        .onChange(of: store.dataSourceIdentity) {
+        .onChange(of: store.dataSourceBindingKey) {
             synchronizeSourceTransition()
         }
         .onChange(of: preciseTokenCountingEnabled) {

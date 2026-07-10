@@ -193,8 +193,139 @@ final class DashboardRefreshPlanTests: XCTestCase {
         let source = try String(contentsOf: dashboardView, encoding: .utf8)
 
         XCTAssertTrue(source.contains("sourceTransitionCoordinator.transition("))
-        XCTAssertTrue(source.contains(".onChange(of: store.dataSourceIdentity)"))
+        XCTAssertTrue(source.contains(".onChange(of: store.dataSourceBindingKey)"))
         XCTAssertFalse(source.contains(".onChange(of: store.dataSourceLabel)"))
+    }
+
+    @MainActor
+    func testSameIdentityPathRebindPropagatesWithoutResettingTrustedState() async throws {
+        let parent = try makeTemporaryDirectory(named: "DashboardPathRebind")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let oldHome = parent.appendingPathComponent("old-home", isDirectory: true)
+        let newHome = parent.appendingPathComponent("new-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: oldHome, withIntermediateDirectories: true)
+        let sourceAtOldPath = CodexDataSource(codexHome: oldHome, origin: .userSelected)
+        let preciseUsage = dashboardTransitionUsageSnapshot(totalTokens: 77_777)
+        let usageResolver = DashboardTransitionResolver(source: sourceAtOldPath)
+        let usageLoader = DashboardTransitionSnapshotLoader(snapshot: preciseUsage)
+        let usageStore = CodexUsageStore(
+            resolver: usageResolver,
+            snapshotLoader: usageLoader,
+            autoStart: false
+        )
+        let quotaReader = DashboardTransitionQuotaReader(results: [
+            .success(dashboardTransitionQuotaSnapshot()),
+            .success(dashboardTransitionQuotaSnapshot())
+        ])
+        let quotaStore = AccountQuotaStore(quotaReader: quotaReader, observesUserDefaults: false)
+        let liveMonitor = LiveRateMonitor(monitoringEnabled: false)
+        let taskMonitor = TaskCompletionMonitor(defaults: isolatedDefaults())
+        let providerStore = ProviderSyncStore()
+        let coordinator = DashboardSourceTransitionCoordinator()
+
+        usageStore.refresh()
+        await waitUntil("old-path precise usage") {
+            usageStore.snapshot.stats.totalTokens == 77_777 && !usageStore.isRefreshing
+        }
+        _ = coordinator.transition(
+            to: sourceAtOldPath,
+            usageStore: usageStore,
+            quotaStore: quotaStore,
+            liveMonitor: liveMonitor,
+            taskCompletionMonitor: taskMonitor,
+            providerSyncStore: providerStore
+        )
+        await waitUntil("old-path quota") {
+            quotaStore.snapshot.accountName == "source-a-account"
+        }
+        let oldRolloutPath = oldHome.appendingPathComponent("sessions/thread-a.jsonl").path
+        liveMonitor.testPrepareForLiveRateProcessing(
+            selectedThreadID: "thread-a",
+            threadOptions: [
+                LiveThreadOption(id: "thread-a", title: "A", updatedAtMS: 1, rolloutPath: oldRolloutPath)
+            ]
+        )
+        liveMonitor.testProcessPollInputs(
+            streamRows: [
+                LiveRateMonitor.LogRow(
+                    id: 1,
+                    threadID: "thread-a",
+                    ts: 1_000,
+                    tsNanos: 0,
+                    target: "codex_api::sse::responses",
+                    feedbackLogBody: #"SSE event: {"type":"response.output_text.delta","delta":"keep rate","item_id":"msg-keep","sequence_number":1}"#
+                )
+            ],
+            rolloutReads: [],
+            now: 1_000.2
+        )
+        taskMonitor.applyForTesting(result: nil, unreadThreadRead: .available(["thread-a"]))
+        let quotaBefore = quotaStore.snapshot
+        let liveBreakdownBefore = liveMonitor.snapshot.breakdown
+        let liveRateBefore = liveMonitor.snapshot.rollingTokensPerSecond
+        let liveGenerationBefore = liveMonitor.testSourceGeneration
+        let providerStatusBefore = providerStore.snapshot.status
+
+        try FileManager.default.moveItem(at: oldHome, to: newHome)
+        let sourceAtNewPath = CodexDataSource(codexHome: newHome, origin: .userSelected)
+        XCTAssertEqual(sourceAtNewPath.stableIdentityKey, sourceAtOldPath.stableIdentityKey)
+        usageResolver.setSource(sourceAtNewPath)
+
+        let rebind = coordinator.transition(
+            to: sourceAtNewPath,
+            usageStore: usageStore,
+            quotaStore: quotaStore,
+            liveMonitor: liveMonitor,
+            taskCompletionMonitor: taskMonitor,
+            providerSyncStore: providerStore
+        )
+
+        XCTAssertEqual(rebind, .pathRebind)
+        XCTAssertEqual(usageStore.currentDataSource?.codexHome.path, newHome.path)
+        XCTAssertEqual(usageStore.snapshot.stats.totalTokens, 77_777)
+        XCTAssertEqual(quotaStore.snapshot, quotaBefore)
+        XCTAssertEqual(quotaStore.currentDataSourcePath, newHome.path)
+        let readCountAfterRebind = await quotaReader.readCount()
+        XCTAssertEqual(readCountAfterRebind, 1)
+        XCTAssertEqual(liveMonitor.dataSource?.codexHome.path, newHome.path)
+        XCTAssertEqual(liveMonitor.selectedThreadID, "thread-a")
+        XCTAssertEqual(liveMonitor.snapshot.breakdown, liveBreakdownBefore)
+        XCTAssertEqual(liveMonitor.snapshot.rollingTokensPerSecond, liveRateBefore)
+        XCTAssertEqual(liveMonitor.testSourceGeneration, liveGenerationBefore)
+        XCTAssertEqual(taskMonitor.unreadThreadCount, 1)
+        XCTAssertEqual(taskMonitor.currentDataSourcePath, newHome.path)
+        XCTAssertEqual(providerStore.currentDataSource?.codexHome.path, newHome.path)
+        XCTAssertEqual(providerStore.snapshot.status, providerStatusBefore)
+        XCTAssertEqual(providerStore.snapshot.codexHome, sourceAtNewPath.displayPath)
+
+        let noChange = coordinator.transition(
+            to: sourceAtNewPath,
+            usageStore: usageStore,
+            quotaStore: quotaStore,
+            liveMonitor: liveMonitor,
+            taskCompletionMonitor: taskMonitor,
+            providerSyncStore: providerStore
+        )
+        XCTAssertEqual(noChange, .noChange)
+        let readCountAfterNoOp = await quotaReader.readCount()
+        XCTAssertEqual(readCountAfterNoOp, 1)
+
+        usageStore.refresh()
+        await waitUntil("new-path usage refresh") {
+            await usageLoader.requestedSourcePaths().count == 2 && !usageStore.isRefreshing
+        }
+        let usageSourcePaths = await usageLoader.requestedSourcePaths()
+        XCTAssertEqual(usageSourcePaths, [oldHome.path, newHome.path])
+
+        quotaStore.refresh(force: true)
+        await waitUntil("new-path quota refresh") {
+            await quotaReader.readCount() == 2
+        }
+        let requestedSourcePaths = await quotaReader.requestedSourcePaths()
+        XCTAssertEqual(
+            requestedSourcePaths,
+            [oldHome.path, newHome.path]
+        )
     }
 
     @MainActor
@@ -228,14 +359,14 @@ final class DashboardRefreshPlanTests: XCTestCase {
         let providerStore = ProviderSyncStore()
         let coordinator = DashboardSourceTransitionCoordinator()
 
-        XCTAssertTrue(coordinator.transition(
+        XCTAssertEqual(coordinator.transition(
             to: sourceA,
             usageStore: usageStore,
             quotaStore: quotaStore,
             liveMonitor: liveMonitor,
             taskCompletionMonitor: taskMonitor,
             providerSyncStore: providerStore
-        ))
+        ), .identityTransition)
         await waitUntil("source A quota projected") {
             quotaStore.snapshot.accountName == "source-a-account"
         }
@@ -243,27 +374,27 @@ final class DashboardRefreshPlanTests: XCTestCase {
         taskMonitor.applyForTesting(result: nil, unreadThreadRead: .available(["thread-a"]))
         XCTAssertEqual(taskMonitor.unreadThreadCount, 1)
 
-        XCTAssertFalse(coordinator.transition(
+        XCTAssertEqual(coordinator.transition(
             to: equivalentSourceA,
             usageStore: usageStore,
             quotaStore: quotaStore,
             liveMonitor: liveMonitor,
             taskCompletionMonitor: taskMonitor,
             providerSyncStore: providerStore
-        ))
+        ), .noChange)
         XCTAssertEqual(liveMonitor.selectedThreadID, "thread-a")
         XCTAssertEqual(taskMonitor.unreadThreadCount, 1)
         let sameSourceReadCount = await quotaReader.readCount()
         XCTAssertEqual(sameSourceReadCount, 1)
 
-        XCTAssertTrue(coordinator.transition(
+        XCTAssertEqual(coordinator.transition(
             to: nil,
             usageStore: usageStore,
             quotaStore: quotaStore,
             liveMonitor: liveMonitor,
             taskCompletionMonitor: taskMonitor,
             providerSyncStore: providerStore
-        ))
+        ), .identityTransition)
         XCTAssertNil(usageStore.dataSourceIdentity)
         XCTAssertNil(quotaStore.currentDataSourceIdentity)
         XCTAssertNil(liveMonitor.currentDataSourceIdentity)
@@ -277,14 +408,14 @@ final class DashboardRefreshPlanTests: XCTestCase {
             quotaStore.snapshot.status.hasPrefix("额度读取失败")
         }
 
-        XCTAssertTrue(coordinator.transition(
+        XCTAssertEqual(coordinator.transition(
             to: sourceB,
             usageStore: usageStore,
             quotaStore: quotaStore,
             liveMonitor: liveMonitor,
             taskCompletionMonitor: taskMonitor,
             providerSyncStore: providerStore
-        ))
+        ), .identityTransition)
         await waitUntil("source B quota failure") {
             await quotaReader.readCount() == 3 && quotaStore.snapshot.status.hasPrefix("额度读取失败")
         }
@@ -357,10 +488,34 @@ final class DashboardRefreshPlanTests: XCTestCase {
             updatedAt: Date(timeIntervalSince1970: 1_000)
         )
     }
+
+    private func dashboardTransitionUsageSnapshot(totalTokens: Int) -> DashboardSnapshot {
+        DashboardSnapshot(
+            stats: DashboardStats(
+                totalTokens: totalTokens,
+                peakDayTokens: totalTokens,
+                peakThreadTokens: totalTokens,
+                currentStreakDays: 1,
+                longestStreakDays: 1,
+                totalCalls: 1,
+                totalThreads: 1,
+                mostUsedReasoning: "中",
+                skillsExplored: 0,
+                totalSkillsUsed: 0
+            ),
+            dailyUsage: [DayUsage(date: Date(), tokens: totalTokens, calls: 1)],
+            recentBins: [],
+            hourlyUsage: [],
+            pluginUsage: [],
+            cacheUsage: .empty,
+            usagePrecision: .precise,
+            generatedAt: Date()
+        )
+    }
 }
 
 private final class DashboardTransitionResolver: CodexDataSourceResolving {
-    private let source: CodexDataSource?
+    private var source: CodexDataSource?
 
     init(source: CodexDataSource?) {
         self.source = source
@@ -373,21 +528,38 @@ private final class DashboardTransitionResolver: CodexDataSourceResolving {
     func saveSelectedDirectory(_ directory: URL) -> CodexDataSource? {
         source
     }
+
+    func setSource(_ source: CodexDataSource?) {
+        self.source = source
+    }
 }
 
-private struct DashboardTransitionSnapshotLoader: DashboardSnapshotLoading {
+private actor DashboardTransitionSnapshotLoader: DashboardSnapshotLoading {
+    let snapshot: DashboardSnapshot
+    private var sourcePaths: [String] = []
+
+    init(snapshot: DashboardSnapshot = .empty) {
+        self.snapshot = snapshot
+    }
+
     func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
         .empty
     }
 
     func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
-        .empty
+        sourcePaths.append(dataSource.codexHome.path)
+        return snapshot
+    }
+
+    func requestedSourcePaths() -> [String] {
+        sourcePaths
     }
 }
 
 private actor DashboardTransitionQuotaReader: QuotaReading {
     private var results: [Result<AccountQuotaSnapshot, Error>]
     private var count = 0
+    private var sourcePaths: [String?] = []
 
     init(results: [Result<AccountQuotaSnapshot, Error>]) {
         self.results = results
@@ -395,12 +567,17 @@ private actor DashboardTransitionQuotaReader: QuotaReading {
 
     func readQuota(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
         count += 1
+        sourcePaths.append(dataSource?.codexHome.path)
         guard !results.isEmpty else { return .failure(DashboardTransitionError()) }
         return results.removeFirst()
     }
 
     func readCount() -> Int {
         count
+    }
+
+    func requestedSourcePaths() -> [String?] {
+        sourcePaths
     }
 }
 

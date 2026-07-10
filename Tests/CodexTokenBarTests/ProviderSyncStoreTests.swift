@@ -71,6 +71,66 @@ final class ProviderSyncStoreTests: XCTestCase {
         )
     }
 
+    func testSameIdentityPathRebindPreservesProviderStateAndRejectsOldPathArgument() async throws {
+        let parent = try makeTemporaryDirectory(named: "ProviderPathRebind")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let oldHome = parent.appendingPathComponent("old-home", isDirectory: true)
+        let newHome = parent.appendingPathComponent("new-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: oldHome, withIntermediateDirectories: true)
+        let sourceAtOldPath = CodexDataSource(codexHome: oldHome, origin: .userSelected)
+        let runner = SuspendedProviderSyncRunner()
+        let store = ProviderSyncStore(runner: runner)
+        store.setDataSource(sourceAtOldPath)
+        store.scan(dataSource: sourceAtOldPath)
+        await waitUntil("old-path provider scan") {
+            await runner.hasPending(.scan, codexHome: oldHome)
+        }
+        await runner.complete(
+            .scan,
+            codexHome: oldHome,
+            with: providerSnapshot(status: "可信扫描结果", provider: "openai")
+        )
+        await waitUntil("trusted provider state") {
+            store.snapshot.status == "可信扫描结果"
+        }
+        store.verify(dataSource: sourceAtOldPath)
+        await waitUntil("old-path provider verify") {
+            await runner.hasPending(.verify, codexHome: oldHome)
+        }
+
+        try FileManager.default.moveItem(at: oldHome, to: newHome)
+        let sourceAtNewPath = CodexDataSource(codexHome: newHome, origin: .userSelected)
+        XCTAssertEqual(sourceAtNewPath.stableIdentityKey, sourceAtOldPath.stableIdentityKey)
+
+        XCTAssertTrue(store.setDataSource(sourceAtNewPath))
+        XCTAssertEqual(store.snapshot.status, "处理中...")
+        XCTAssertTrue(store.snapshot.isWorking)
+        XCTAssertEqual(store.snapshot.detectedProvider, "openai")
+        XCTAssertEqual(store.snapshot.codexHome, sourceAtNewPath.displayPath)
+
+        await runner.complete(
+            .verify,
+            codexHome: oldHome,
+            with: providerSnapshot(status: "同源操作完成", provider: "openai")
+        )
+        await waitUntil("same-source operation completion") {
+            store.snapshot.status == "同源操作完成"
+        }
+        XCTAssertEqual(store.snapshot.codexHome, sourceAtNewPath.displayPath)
+
+        store.scan(dataSource: sourceAtOldPath)
+        await waitUntil("rebound provider scan") {
+            await runner.hasPending(.scan, codexHome: newHome)
+        }
+        let hasOldPathRequest = await runner.hasPending(.scan, codexHome: oldHome)
+        XCTAssertFalse(hasOldPathRequest)
+        await runner.complete(
+            .scan,
+            codexHome: newHome,
+            with: providerSnapshot(status: "新路径扫描完成", provider: "openai")
+        )
+    }
+
     func testOlderNonDestructiveOperationCannotOverwriteNewerSnapshot() async throws {
         let source = CodexDataSource(
             codexHome: try makeTemporaryDirectory(named: "ProviderSyncRaceHome"),

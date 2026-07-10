@@ -248,6 +248,53 @@ final class LiveRateMonitor: ObservableObject {
         }
     }
 
+    func rebindSourcePaths(from previousSource: CodexDataSource?, to source: CodexDataSource?) {
+        let oldHome = previousSource?.codexHome.standardizedFileURL.path
+        let newHome = source?.codexHome.standardizedFileURL.path
+
+        if let source {
+            cachedLogsDatabasePath = source.logsDatabase.standardizedFileURL.path
+            cachedLogsDirectoryPath = source.codexHome.standardizedFileURL.path
+        } else {
+            cachedLogsDatabasePath = ""
+            cachedLogsDirectoryPath = ""
+        }
+
+        logsDirectorySource?.cancel()
+        logsDirectorySource = nil
+        watchedLogsDirectory = ""
+        logReader = nil
+
+        if let oldHome, let newHome {
+            threadOptions = threadOptions.map { option in
+                LiveThreadOption(
+                    id: option.id,
+                    title: option.title,
+                    updatedAtMS: option.updatedAtMS,
+                    rolloutPath: Self.rebasedPath(option.rolloutPath, from: oldHome, to: newHome)
+                )
+            }
+            var reboundOffsets: [String: UInt64] = [:]
+            for (path, offset) in rolloutOffsets {
+                let reboundPath = Self.rebasedPath(path, from: oldHome, to: newHome)
+                reboundOffsets[reboundPath] = max(reboundOffsets[reboundPath] ?? 0, offset)
+            }
+            rolloutOffsets = reboundOffsets
+        }
+
+        let sourceLabel = source.map { "\($0.displayPath)/logs_2.sqlite" } ?? ""
+        snapshot.sourceLabel = sourceLabel
+        totalSnapshot.sourceLabel = sourceLabel
+        if monitoringEnabled {
+            configureLogWatcher(logsDirectory: cachedLogsDirectoryPath)
+        }
+    }
+
+    private static func rebasedPath(_ path: String, from oldHome: String, to newHome: String) -> String {
+        guard path == oldHome || path.hasPrefix(oldHome + "/") else { return path }
+        return newHome + String(path.dropFirst(oldHome.count))
+    }
+
     private func monitoringDataSource() -> CodexDataSource? {
         if compositionDataSourceBound {
             return dataSource

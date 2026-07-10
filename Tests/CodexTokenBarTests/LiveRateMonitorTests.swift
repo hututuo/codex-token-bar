@@ -609,6 +609,67 @@ final class LiveRateMonitorTests: XCTestCase {
     }
 
     @MainActor
+    func testSameIdentityPathRebindUpdatesLivePathsWithoutResettingRateState() throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LiveRatePathRebind-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        temporaryDirectories.append(parent)
+        let oldHome = parent.appendingPathComponent("old-home", isDirectory: true)
+        let newHome = parent.appendingPathComponent("new-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: oldHome, withIntermediateDirectories: true)
+        let sourceAtOldPath = CodexDataSource(codexHome: oldHome, origin: .userSelected)
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.setDataSource(sourceAtOldPath)
+        monitor.testPrepareForLiveRateProcessing(
+            selectedThreadID: "thread-rebind",
+            threadOptions: [
+                LiveThreadOption(
+                    id: "thread-rebind",
+                    title: "Rebind",
+                    updatedAtMS: 1,
+                    rolloutPath: oldHome.appendingPathComponent("sessions/rebind.jsonl").path
+                )
+            ]
+        )
+        monitor.testProcessPollInputs(
+            streamRows: [
+                LiveRateMonitor.LogRow(
+                    id: 1,
+                    threadID: "thread-rebind",
+                    ts: 1_000,
+                    tsNanos: 0,
+                    target: "codex_api::sse::responses",
+                    feedbackLogBody: #"SSE event: {"type":"response.output_text.delta","delta":"keep this rate","item_id":"msg-rebind","sequence_number":1}"#
+                )
+            ],
+            rolloutReads: [],
+            now: 1_000.2
+        )
+        let generationBefore = monitor.testSourceGeneration
+        let breakdownBefore = monitor.snapshot.breakdown
+        let rateBefore = monitor.snapshot.rollingTokensPerSecond
+
+        try FileManager.default.moveItem(at: oldHome, to: newHome)
+        let sourceAtNewPath = CodexDataSource(codexHome: newHome, origin: .userSelected)
+        XCTAssertEqual(sourceAtNewPath.stableIdentityKey, sourceAtOldPath.stableIdentityKey)
+
+        XCTAssertTrue(monitor.setDataSource(sourceAtNewPath))
+
+        XCTAssertEqual(monitor.dataSource?.codexHome.path, newHome.path)
+        XCTAssertEqual(
+            monitor.cachedLogsDatabasePath,
+            newHome.appendingPathComponent("logs_2.sqlite").path
+        )
+        XCTAssertEqual(monitor.cachedLogsDirectoryPath, newHome.path)
+        XCTAssertEqual(monitor.snapshot.sourceLabel, "\(sourceAtNewPath.displayPath)/logs_2.sqlite")
+        XCTAssertEqual(monitor.selectedThreadID, "thread-rebind")
+        XCTAssertEqual(monitor.threadOptions.first?.rolloutPath, newHome.appendingPathComponent("sessions/rebind.jsonl").path)
+        XCTAssertEqual(monitor.snapshot.breakdown, breakdownBefore)
+        XCTAssertEqual(monitor.snapshot.rollingTokensPerSecond, rateBefore)
+        XCTAssertEqual(monitor.testSourceGeneration, generationBefore)
+    }
+
+    @MainActor
     func testNilSourceTransitionClearsLiveStateAndRejectsLateSourceACompletion() throws {
         let monitor = LiveRateMonitor(monitoringEnabled: false)
         let sourceA = try makeCodexDataSource(named: "late-live-source-a")

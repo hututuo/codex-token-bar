@@ -565,6 +565,46 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertFalse(store.status.contains(sourceA.displayPath))
     }
 
+    func testInFlightSameIdentityPathRebindUpdatesBindingWithoutStartingDuplicateRefresh() async throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("UsagePathRebind-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let oldHome = parent.appendingPathComponent("old-home", isDirectory: true)
+        let newHome = parent.appendingPathComponent("new-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: oldHome, withIntermediateDirectories: true)
+        let sourceAtOldPath = CodexDataSource(codexHome: oldHome, origin: .userSelected)
+        let resolver = MutableCodexDataSourceResolver(source: sourceAtOldPath)
+        let loader = SuspendedDashboardSnapshotLoader()
+        let store = CodexUsageStore(resolver: resolver, snapshotLoader: loader, autoStart: false)
+
+        store.refresh()
+        await waitUntil("old-path usage request") {
+            await loader.hasPendingPreciseRequest(for: sourceAtOldPath)
+        }
+        let oldBindingKey = store.dataSourceBindingKey
+
+        try FileManager.default.moveItem(at: oldHome, to: newHome)
+        let sourceAtNewPath = CodexDataSource(codexHome: newHome, origin: .userSelected)
+        XCTAssertEqual(sourceAtNewPath.stableIdentityKey, sourceAtOldPath.stableIdentityKey)
+        resolver.source = sourceAtNewPath
+
+        store.refresh()
+
+        XCTAssertEqual(store.currentDataSource?.codexHome.path, newHome.path)
+        XCTAssertNotEqual(store.dataSourceBindingKey, oldBindingKey)
+        XCTAssertTrue(store.isRefreshing)
+        let startedDuplicateRequest = await loader.hasPendingPreciseRequest(for: sourceAtNewPath)
+        XCTAssertFalse(startedDuplicateRequest)
+
+        await loader.completePreciseRequest(
+            for: sourceAtOldPath,
+            with: makeSnapshot(totalTokens: 11_000, dayTokens: 1_100)
+        )
+        await waitUntil("same-identity refresh completion") {
+            store.snapshot.stats.totalTokens == 11_000 && !store.isRefreshing
+        }
+    }
+
     private func makeSnapshot(
         totalTokens: Int,
         dayTokens: Int,

@@ -37,6 +37,10 @@ final class TaskCompletionMonitor: ObservableObject {
         dataSource?.stableIdentityKey
     }
 
+    var currentDataSourcePath: String? {
+        dataSource?.codexHome.standardizedFileURL.path
+    }
+
     func start(dataSource: CodexDataSource?) {
         let oldSourceIdentity = self.dataSource?.stableIdentityKey
         let newSourceIdentity = dataSource?.stableIdentityKey

@@ -14,11 +14,19 @@ extension LiveRateMonitor {
     }
 
     private func transitionDataSource(to source: CodexDataSource?) -> Bool {
+        let previousSource = dataSource
         let previousIdentity = dataSource?.stableIdentityKey
         let nextIdentity = source?.stableIdentityKey
+        let previousPath = dataSource?.codexHome.standardizedFileURL.path
+        let nextPath = source?.codexHome.standardizedFileURL.path
         dataSource = source
-        guard previousIdentity != nextIdentity else {
+        guard previousIdentity != nextIdentity || previousPath != nextPath else {
             return false
+        }
+
+        if previousIdentity == nextIdentity {
+            rebindSourcePaths(from: previousSource, to: source)
+            return true
         }
 
         sourceGeneration += 1
