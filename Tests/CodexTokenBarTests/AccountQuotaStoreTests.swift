@@ -365,6 +365,82 @@ final class AccountQuotaStoreTests: XCTestCase {
         XCTAssertEqual(store.sourceBindingGeneration, oldBindingGeneration + 1)
     }
 
+    func testSameIdentityPathRebindFailurePreservesQuotaAndHistoryIdentity() async throws {
+        let parent = try makeTemporaryDirectory(named: "QuotaHistoryPathRebind")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let oldHome = parent.appendingPathComponent("old-home", isDirectory: true)
+        let newHome = parent.appendingPathComponent("new-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: oldHome, withIntermediateDirectories: true)
+        let sourceAtOldPath = CodexDataSource(codexHome: oldHome, origin: .userSelected)
+        let historyIdentity = try XCTUnwrap(QuotaHistoryIdentity(
+            homeIdentity: sourceAtOldPath.stableIdentityKey,
+            stableAccountKey: "stable-account",
+            planType: "pro",
+            limitID: "codex"
+        ))
+        let trustedHistory = QuotaHistorySnapshot(
+            daily: [],
+            recentBins: [],
+            hourlyBins: [],
+            latest: Date(timeIntervalSince1970: 1_500)
+        )
+        let historyClient = RecordingQuotaHistoryClient(snapshot: trustedHistory)
+        let historyStore = QuotaHistoryStore(historyClient: historyClient)
+        let reader = SuspendedQuotaReader()
+        let store = AccountQuotaStore(quotaReader: reader, observesUserDefaults: false)
+        store.setHistoryStore(historyStore)
+
+        var trustedQuota = quotaSnapshot(usedPercent: 42, accountName: "trusted")
+        trustedQuota.historyIdentity = historyIdentity
+        store.setDataSource(sourceAtOldPath)
+        store.refresh()
+        await waitUntil("trusted quota request") {
+            await reader.hasPendingRequest(for: sourceAtOldPath)
+        }
+        await reader.completeRequest(for: sourceAtOldPath, with: trustedQuota)
+        await waitUntil("trusted quota and history") {
+            store.snapshot.accountName == "trusted" && historyStore.snapshot == trustedHistory
+        }
+
+        store.refresh()
+        await waitUntil("delayed old-path quota") {
+            await reader.hasPendingRequest(for: sourceAtOldPath)
+        }
+        try FileManager.default.moveItem(at: oldHome, to: newHome)
+        let sourceAtNewPath = CodexDataSource(codexHome: newHome, origin: .userSelected)
+        XCTAssertEqual(sourceAtNewPath.stableIdentityKey, sourceAtOldPath.stableIdentityKey)
+
+        XCTAssertTrue(store.setDataSource(sourceAtNewPath))
+        store.refresh()
+        await waitUntil("new-path quota request") {
+            await reader.hasPendingRequest(for: sourceAtNewPath)
+        }
+
+        var oldCompletion = quotaSnapshot(usedPercent: 99, accountName: "old-completion")
+        oldCompletion.historyIdentity = historyIdentity
+        await reader.completeRequest(for: sourceAtOldPath, with: oldCompletion)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertNotEqual(store.snapshot.accountName, "old-completion")
+
+        await reader.failRequest(for: sourceAtNewPath, error: QuotaTestError())
+        await waitUntil("new-path quota failure") {
+            store.snapshot.status.hasPrefix("额度读取失败")
+        }
+
+        XCTAssertEqual(store.snapshot.fiveHour?.usedPercent, 42)
+        XCTAssertEqual(store.snapshot.accountName, "trusted")
+        XCTAssertTrue(store.snapshot.staleDataDisplayed)
+        XCTAssertEqual(historyStore.snapshot, trustedHistory)
+
+        historyStore.reload()
+        await waitUntil("retained history identity reload") {
+            await historyClient.loadCount() == 1
+        }
+        let reloadedIdentities = await historyClient.loadedIdentities()
+        XCTAssertEqual(reloadedIdentities, [historyIdentity])
+        XCTAssertEqual(historyStore.snapshot, trustedHistory)
+    }
+
     func testInFlightQuotaRefreshFromOldSourceDoesNotOverwriteExplicitNilSourceSnapshot() async throws {
         let sourceA = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaOldToNilSource"), origin: .userSelected)
         let reader = SuspendedQuotaReader()
@@ -637,8 +713,44 @@ private actor SuspendedQuotaReader: QuotaReading {
         continuations.removeValue(forKey: dataSource.codexHome.path)?.resume(returning: .success(snapshot))
     }
 
+    func failRequest(for dataSource: CodexDataSource, error: Error) {
+        continuations.removeValue(forKey: dataSource.codexHome.path)?.resume(returning: .failure(error))
+    }
+
     func completeNilRequest(with snapshot: AccountQuotaSnapshot) {
         continuations.removeValue(forKey: "nil")?.resume(returning: .success(snapshot))
+    }
+}
+
+private actor RecordingQuotaHistoryClient: QuotaHistoryLoading {
+    private let snapshot: QuotaHistorySnapshot
+    private var loadIdentities: [QuotaHistoryIdentity] = []
+
+    init(snapshot: QuotaHistorySnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func loadSnapshot(for quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot {
+        if let identity = quota.historyIdentity {
+            loadIdentities.append(identity)
+        }
+        return snapshot
+    }
+
+    func recordAndLoadSnapshot(_ quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot {
+        snapshot
+    }
+
+    func normalizedSnapshot(_ quota: AccountQuotaSnapshot) async throws -> AccountQuotaSnapshot {
+        quota
+    }
+
+    func loadCount() -> Int {
+        loadIdentities.count
+    }
+
+    func loadedIdentities() -> [QuotaHistoryIdentity] {
+        loadIdentities
     }
 }
 

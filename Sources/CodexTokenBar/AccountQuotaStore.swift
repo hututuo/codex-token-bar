@@ -113,7 +113,6 @@ final class AccountQuotaStore: ObservableObject {
         let bindingChanged = oldPath != newPath
         currentDataSource = dataSource
         guard identityChanged || bindingChanged else { return false }
-        historyStore?.clearIdentity()
 
         refreshTask?.cancel()
         refreshTask = nil
@@ -123,6 +122,7 @@ final class AccountQuotaStore: ObservableObject {
         isRefreshing = false
         guard identityChanged else { return true }
 
+        historyStore?.clearIdentity()
         sourceIdentityGeneration += 1
         lastSuccessfulRefreshCompletedAt = nil
         snapshot = .empty
