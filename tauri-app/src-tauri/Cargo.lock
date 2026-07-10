@@ -354,6 +354,7 @@ dependencies = [
  "base64 0.22.1",
  "objc2-app-kit",
  "objc2-foundation",
+ "plist",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",

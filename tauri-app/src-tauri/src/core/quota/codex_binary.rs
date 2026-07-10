@@ -14,6 +14,7 @@ enum CodexBinaryPlatform {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CodexBinaryCandidate {
     Explicit(PathBuf),
+    AppBundle(PathBuf),
     ApplicationBundles { root: PathBuf },
     ChildCommand { parent: PathBuf, command: &'static str },
     DescendantCommand { root: PathBuf, command: &'static str },
@@ -84,9 +85,12 @@ fn codex_binary_candidates(
     }
 
     if platform == CodexBinaryPlatform::Macos {
-        candidates.extend(launch_service_app_bundles.iter().map(|bundle| {
-            CodexBinaryCandidate::Explicit(codex_resource_in_app_bundle(bundle))
-        }));
+        candidates.extend(
+            launch_service_app_bundles
+                .iter()
+                .cloned()
+                .map(CodexBinaryCandidate::AppBundle),
+        );
         candidates.push(CodexBinaryCandidate::ApplicationBundles {
             root: macos_system_applications.to_path_buf(),
         });
@@ -95,36 +99,22 @@ fn codex_binary_candidates(
                 root: Path::new(home).join("Applications"),
             });
         }
-        candidates.push(CodexBinaryCandidate::Explicit(PathBuf::from(
-            macos_system_applications
-                .join("ChatGPT.app")
-                .join("Contents")
-                .join("Resources")
-                .join("codex"),
-        )));
-        candidates.push(CodexBinaryCandidate::Explicit(PathBuf::from(
-            macos_system_applications
-                .join("Codex.app")
-                .join("Contents")
-                .join("Resources")
-                .join("codex"),
-        )));
+        candidates.push(CodexBinaryCandidate::AppBundle(
+            macos_system_applications.join("ChatGPT.app"),
+        ));
+        candidates.push(CodexBinaryCandidate::AppBundle(
+            macos_system_applications.join("Codex.app"),
+        ));
         if let Some(home) = home {
-            candidates.push(CodexBinaryCandidate::Explicit(
+            candidates.push(CodexBinaryCandidate::AppBundle(
                 Path::new(home)
                     .join("Applications")
-                    .join("ChatGPT.app")
-                    .join("Contents")
-                    .join("Resources")
-                    .join("codex"),
+                    .join("ChatGPT.app"),
             ));
-            candidates.push(CodexBinaryCandidate::Explicit(
+            candidates.push(CodexBinaryCandidate::AppBundle(
                 Path::new(home)
                     .join("Applications")
-                    .join("Codex.app")
-                    .join("Contents")
-                    .join("Resources")
-                    .join("codex"),
+                    .join("Codex.app"),
             ));
         }
         candidates.push(CodexBinaryCandidate::Explicit(PathBuf::from(
@@ -241,6 +231,9 @@ where
 {
     candidates.iter().find_map(|candidate| match candidate {
         CodexBinaryCandidate::Explicit(path) if file_exists(path) => Some(existing_path(path)),
+        CodexBinaryCandidate::AppBundle(bundle) => {
+            codex_command_in_app_bundle(bundle, &file_exists).map(|path| existing_path(&path))
+        }
         CodexBinaryCandidate::ApplicationBundles { root } => {
             application_bundle_command(root, &file_exists).map(|path| existing_path(&path))
         }
@@ -266,6 +259,9 @@ fn describe_candidates(candidates: &[CodexBinaryCandidate]) -> Vec<String> {
         .iter()
         .map(|candidate| match candidate {
             CodexBinaryCandidate::Explicit(path) => path.display().to_string(),
+            CodexBinaryCandidate::AppBundle(bundle) => {
+                codex_resource_in_app_bundle(bundle).display().to_string()
+            }
             CodexBinaryCandidate::ApplicationBundles { root } => format!(
                 "{}/*.app/Contents/Resources/codex",
                 root.display()
@@ -291,11 +287,40 @@ where
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "app"))
         .filter(|path| path.is_dir())
-        .map(|bundle| codex_resource_in_app_bundle(&bundle))
-        .filter(|path| file_exists(path))
+        .filter_map(|bundle| codex_command_in_app_bundle(&bundle, file_exists))
         .collect::<Vec<_>>();
     matches.sort();
     matches.into_iter().next()
+}
+
+fn codex_command_in_app_bundle<F>(bundle: &Path, file_exists: &F) -> Option<PathBuf>
+where
+    F: Fn(&Path) -> bool,
+{
+    if !is_codex_app_bundle(bundle) {
+        return None;
+    }
+    let command = codex_resource_in_app_bundle(bundle);
+    file_exists(&command).then_some(command)
+}
+
+#[cfg(target_os = "macos")]
+fn is_codex_app_bundle(bundle: &Path) -> bool {
+    plist::Value::from_file(bundle.join("Contents").join("Info.plist"))
+        .ok()
+        .and_then(|value| {
+            value
+                .as_dictionary()
+                .and_then(|dictionary| dictionary.get("CFBundleIdentifier"))
+                .and_then(plist::Value::as_string)
+                .map(str::to_owned)
+        })
+        .is_some_and(|bundle_identifier| bundle_identifier == CODEX_BUNDLE_IDENTIFIER)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_codex_app_bundle(_bundle: &Path) -> bool {
+    false
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -416,6 +441,51 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    fn write_bundle_identifier(app: &Path, bundle_identifier: Option<&str>) {
+        let contents = app.join("Contents");
+        std::fs::create_dir_all(&contents).unwrap();
+        let plist = match bundle_identifier {
+            Some(bundle_identifier) => format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>{bundle_identifier}</string></dict></plist>"
+            ),
+            None => "not a plist".to_string(),
+        };
+        std::fs::write(contents.join("Info.plist"), plist).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_application_scan_skips_wrong_missing_and_invalid_bundle_identifiers() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-bundle-identity-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let fake_app = root.join("A-Fake.app");
+        let missing_app = root.join("B-Missing.app");
+        let invalid_app = root.join("C-Invalid.app");
+        let target_app = root.join("D-Renamed.app");
+        for app in [&fake_app, &missing_app, &invalid_app, &target_app] {
+            write_executable(&codex_resource_in_app_bundle(app));
+        }
+        write_bundle_identifier(&fake_app, Some("example.fake"));
+        write_bundle_identifier(&invalid_app, None);
+        write_bundle_identifier(&target_app, Some(CODEX_BUNDLE_IDENTIFIER));
+        let candidates = vec![CodexBinaryCandidate::ApplicationBundles { root: root.clone() }];
+
+        let found = find_codex_binary_from(&candidates, None, is_executable_file);
+        let expected = codex_resource_in_app_bundle(&target_app)
+            .canonicalize()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(found, Some(expected));
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn macos_codex_binary_resolution_finds_renamed_user_application_bundle() {
         let root = std::env::temp_dir().join(format!(
@@ -426,12 +496,11 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let binary = root
+        let app = root
             .join("Applications")
-            .join("Renamed Desktop Client.app")
-            .join("Contents")
-            .join("Resources")
-            .join("codex");
+            .join("Renamed Desktop Client.app");
+        let binary = codex_resource_in_app_bundle(&app);
+        write_bundle_identifier(&app, Some(CODEX_BUNDLE_IDENTIFIER));
         write_executable(&binary);
         let candidates = codex_binary_candidates(
             Some(root.as_os_str()),
@@ -462,11 +531,9 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let binary = root
-            .join("Another Name.app")
-            .join("Contents")
-            .join("Resources")
-            .join("codex");
+        let app = root.join("Another Name.app");
+        let binary = codex_resource_in_app_bundle(&app);
+        write_bundle_identifier(&app, Some(CODEX_BUNDLE_IDENTIFIER));
         write_executable(&binary);
         let candidates = codex_binary_candidates(
             None,
@@ -489,8 +556,18 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_launch_services_candidate_supports_nonstandard_app_location() {
-        let app = PathBuf::from("/Volumes/Tools/Renamed OpenAI Client.app");
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-launch-services-app-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let app = root.join("Renamed OpenAI Client.app");
         let expected = codex_resource_in_app_bundle(&app);
+        write_bundle_identifier(&app, Some(CODEX_BUNDLE_IDENTIFIER));
+        write_executable(&expected);
         let candidates = codex_binary_candidates(
             None,
             None,
@@ -502,9 +579,81 @@ mod tests {
             Path::new("/Applications"),
         );
 
-        let found = find_codex_binary_from(&candidates, None, |path| path == expected).unwrap();
+        let found = find_codex_binary_from(&candidates, None, is_executable_file).unwrap();
+        let canonical_expected = expected.canonicalize().unwrap();
+        let _ = std::fs::remove_dir_all(&root);
 
-        assert_eq!(found, expected);
+        assert_eq!(found, canonical_expected);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_launch_services_candidate_rejects_wrong_bundle_identifier() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-launch-services-wrong-app-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let app = root.join("Fake.app");
+        let app_binary = codex_resource_in_app_bundle(&app);
+        write_bundle_identifier(&app, Some("example.fake"));
+        write_executable(&app_binary);
+        let fallback = PathBuf::from("/opt/homebrew/bin/codex");
+        let candidates = codex_binary_candidates(
+            None,
+            None,
+            None,
+            None,
+            None,
+            CodexBinaryPlatform::Macos,
+            &[app],
+            &root.join("EmptyApplications"),
+        );
+
+        let found = find_codex_binary_from(&candidates, None, |path| {
+            path == app_binary || path == fallback
+        });
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(found, Some(fallback));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_known_app_candidate_rejects_wrong_bundle_identifier() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-known-wrong-app-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let app = root.join("ChatGPT.app");
+        let app_binary = codex_resource_in_app_bundle(&app);
+        write_bundle_identifier(&app, Some("example.fake"));
+        write_executable(&app_binary);
+        let fallback = PathBuf::from("/opt/homebrew/bin/codex");
+        let candidates = codex_binary_candidates(
+            None,
+            None,
+            None,
+            None,
+            None,
+            CodexBinaryPlatform::Macos,
+            &[],
+            &root,
+        );
+
+        let found = find_codex_binary_from(&candidates, None, |path| {
+            path == app_binary || path == fallback
+        });
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(found, Some(fallback));
     }
 
     #[cfg(target_os = "macos")]
@@ -602,17 +751,15 @@ mod tests {
                 CodexBinaryCandidate::ApplicationBundles {
                     root: PathBuf::from("/Users/local/Applications"),
                 },
-                CodexBinaryCandidate::Explicit(PathBuf::from(
-                    "/Applications/ChatGPT.app/Contents/Resources/codex"
+                CodexBinaryCandidate::AppBundle(PathBuf::from(
+                    "/Applications/ChatGPT.app"
                 )),
-                CodexBinaryCandidate::Explicit(PathBuf::from(
-                    "/Applications/Codex.app/Contents/Resources/codex"
+                CodexBinaryCandidate::AppBundle(PathBuf::from("/Applications/Codex.app")),
+                CodexBinaryCandidate::AppBundle(PathBuf::from(
+                    "/Users/local/Applications/ChatGPT.app"
                 )),
-                CodexBinaryCandidate::Explicit(PathBuf::from(
-                    "/Users/local/Applications/ChatGPT.app/Contents/Resources/codex"
-                )),
-                CodexBinaryCandidate::Explicit(PathBuf::from(
-                    "/Users/local/Applications/Codex.app/Contents/Resources/codex"
+                CodexBinaryCandidate::AppBundle(PathBuf::from(
+                    "/Users/local/Applications/Codex.app"
                 )),
                 CodexBinaryCandidate::Explicit(PathBuf::from("/opt/homebrew/bin/codex")),
                 CodexBinaryCandidate::Explicit(PathBuf::from("/usr/local/bin/codex")),
@@ -623,21 +770,34 @@ mod tests {
 
     #[test]
     fn macos_codex_binary_resolution_finds_chatgpt_app_bundle_before_brew_fallbacks() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-known-app-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let app = root.join("ChatGPT.app");
+        let expected = codex_resource_in_app_bundle(&app);
+        write_bundle_identifier(&app, Some(CODEX_BUNDLE_IDENTIFIER));
+        write_executable(&expected);
         let candidates = codex_binary_candidates(
-            Some(OsStr::new("/Users/local")),
+            None,
             None,
             None,
             None,
             None,
             CodexBinaryPlatform::Macos,
             &[],
-            Path::new("/Applications"),
+            &root,
         );
-        let expected = PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex");
 
-        let found = find_codex_binary_from(&candidates, None, |path| path == expected).unwrap();
+        let found = find_codex_binary_from(&candidates, None, is_executable_file).unwrap();
+        let canonical_expected = expected.canonicalize().unwrap();
+        let _ = std::fs::remove_dir_all(&root);
 
-        assert_eq!(found, expected);
+        assert_eq!(found, canonical_expected);
     }
 
     #[test]
