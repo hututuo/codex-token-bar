@@ -84,6 +84,65 @@ struct AccountQuotaProcessOwnershipError: LocalizedError, AccountQuotaProcessOwn
     }
 }
 
+enum AccountQuotaProcessLaunchLeaseError: LocalizedError, Equatable, Sendable, AccountQuotaProcessOwnershipFailure {
+    case inFlight
+
+    var errorDescription: String? {
+        "A Codex quota app-server process is already owned by another refresh."
+    }
+}
+
+final class AccountQuotaProcessLaunchLeasePool: @unchecked Sendable {
+    static let shared = AccountQuotaProcessLaunchLeasePool()
+
+    private let lock = NSLock()
+    private var ownerID: UUID?
+
+    var isHeld: Bool { lock.withLock { ownerID != nil } }
+
+    func acquire() throws -> AccountQuotaProcessLaunchLease {
+        try lock.withLock {
+            guard ownerID == nil else {
+                throw AccountQuotaProcessLaunchLeaseError.inFlight
+            }
+            let id = UUID()
+            ownerID = id
+            return AccountQuotaProcessLaunchLease(pool: self, ownerID: id)
+        }
+    }
+
+    fileprivate func release(ownerID: UUID) {
+        lock.withLock {
+            guard self.ownerID == ownerID else { return }
+            self.ownerID = nil
+        }
+    }
+}
+
+final class AccountQuotaProcessLaunchLease: @unchecked Sendable {
+    private let lock = NSLock()
+    private let pool: AccountQuotaProcessLaunchLeasePool
+    private let ownerID: UUID
+    private var released = false
+
+    fileprivate init(pool: AccountQuotaProcessLaunchLeasePool, ownerID: UUID) {
+        self.pool = pool
+        self.ownerID = ownerID
+    }
+
+    // Release stays explicit so a dropped owner cannot reopen the lane while its child may still live.
+    func release() {
+        let shouldRelease = lock.withLock {
+            guard !released else { return false }
+            released = true
+            return true
+        }
+        if shouldRelease {
+            pool.release(ownerID: ownerID)
+        }
+    }
+}
+
 protocol AccountQuotaProcessSession: AnyObject, Sendable {
     func writeStdin(_ data: Data) throws
     func nextStdoutEvent(timeout: TimeInterval) throws -> AccountQuotaStdoutEvent
@@ -103,30 +162,187 @@ enum AccountQuotaProcessLifecycleError: LocalizedError, Equatable, Sendable {
     }
 }
 
+enum AccountQuotaStdinWriteError: LocalizedError, Equatable, Sendable {
+    case setupFailed(errno: Int32)
+    case timedOut
+    case writeFailed(errno: Int32)
+    case closed
+
+    var errorDescription: String? {
+        switch self {
+        case .setupFailed(let value):
+            return "Unable to configure nonblocking Codex app-server stdin (errno \(value))."
+        case .timedOut:
+            return "Timed out writing to Codex app-server stdin."
+        case .writeFailed(let value):
+            return "Unable to write Codex app-server stdin (errno \(value))."
+        case .closed:
+            return "Codex app-server stdin is already closed."
+        }
+    }
+}
+
+protocol AccountQuotaStdinWriting: AnyObject, Sendable {
+    func write(
+        _ data: Data,
+        cancellationRequested: @escaping @Sendable () -> Bool
+    ) throws
+    func close()
+}
+
+private final class AccountQuotaPOSIXStdinWriter: AccountQuotaStdinWriting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let handle: FileHandle
+    private let fileDescriptor: Int32
+    private let writeTimeout: TimeInterval
+    private let pollIntervalMilliseconds: Int32
+    private var closed = false
+
+    init(
+        handle: FileHandle,
+        writeTimeout: TimeInterval,
+        pollIntervalMilliseconds: Int32
+    ) throws {
+        self.handle = handle
+        fileDescriptor = handle.fileDescriptor
+        self.writeTimeout = max(0, writeTimeout)
+        self.pollIntervalMilliseconds = max(1, pollIntervalMilliseconds)
+
+        errno = 0
+        let flags = fcntl(fileDescriptor, F_GETFL)
+        guard flags != -1 else {
+            throw AccountQuotaStdinWriteError.setupFailed(errno: errno)
+        }
+        errno = 0
+        guard fcntl(fileDescriptor, F_SETFL, flags | O_NONBLOCK) != -1 else {
+            throw AccountQuotaStdinWriteError.setupFailed(errno: errno)
+        }
+        errno = 0
+        guard fcntl(fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
+            throw AccountQuotaStdinWriteError.setupFailed(errno: errno)
+        }
+    }
+
+    deinit {
+        close()
+    }
+
+    func write(
+        _ data: Data,
+        cancellationRequested: @escaping @Sendable () -> Bool
+    ) throws {
+        guard !data.isEmpty else { return }
+        guard lock.withLock({ !closed }) else {
+            throw AccountQuotaStdinWriteError.closed
+        }
+        let deadline = Date().addingTimeInterval(writeTimeout)
+
+        try data.withUnsafeBytes { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
+            var offset = 0
+            while offset < buffer.count {
+                if cancellationRequested() {
+                    throw CancellationError()
+                }
+                guard Date() < deadline else {
+                    throw AccountQuotaStdinWriteError.timedOut
+                }
+
+                errno = 0
+                let written = Darwin.write(
+                    fileDescriptor,
+                    baseAddress.advanced(by: offset),
+                    buffer.count - offset
+                )
+                if written > 0 {
+                    offset += written
+                    continue
+                }
+                if written == 0 {
+                    throw AccountQuotaStdinWriteError.writeFailed(errno: EIO)
+                }
+
+                let writeErrno = errno
+                if writeErrno == EINTR {
+                    continue
+                }
+                guard writeErrno == EAGAIN || writeErrno == EWOULDBLOCK else {
+                    throw AccountQuotaStdinWriteError.writeFailed(errno: writeErrno)
+                }
+                try waitUntilWritable(
+                    deadline: deadline,
+                    cancellationRequested: cancellationRequested
+                )
+            }
+        }
+    }
+
+    func close() {
+        let shouldClose = lock.withLock {
+            guard !closed else { return false }
+            closed = true
+            return true
+        }
+        if shouldClose {
+            try? handle.close()
+        }
+    }
+
+    private func waitUntilWritable(
+        deadline: Date,
+        cancellationRequested: @escaping @Sendable () -> Bool
+    ) throws {
+        while true {
+            if cancellationRequested() {
+                throw CancellationError()
+            }
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else {
+                throw AccountQuotaStdinWriteError.timedOut
+            }
+            let remainingMilliseconds = Int32(min(
+                Double(Int32.max),
+                ceil(remaining * 1_000)
+            ))
+            let timeout = max(1, min(pollIntervalMilliseconds, remainingMilliseconds))
+            var descriptor = pollfd(
+                fd: fileDescriptor,
+                events: Int16(POLLOUT | POLLERR | POLLHUP),
+                revents: 0
+            )
+
+            errno = 0
+            let result = Darwin.poll(&descriptor, 1, timeout)
+            if result > 0 {
+                return
+            }
+            if result == 0 || errno == EINTR {
+                continue
+            }
+            throw AccountQuotaStdinWriteError.writeFailed(errno: errno)
+        }
+    }
+}
+
 final class AccountQuotaProcessLifecycle: @unchecked Sendable {
     private enum State {
         case running
         case terminating
+        case closing
         case closed
     }
 
     private let condition = NSCondition()
-    private let writerQueue = DispatchQueue(label: "CodexTokenBar.AccountQuotaProcessLifecycle.writer")
-    private let writeAction: (Data) throws -> Void
-    private let closeInputAction: () -> Void
+    private let writer: any AccountQuotaStdinWriting
     private let requestGracefulTerminationAction: () -> Void
     private var state = State.running
-    private var pendingWrites: [Data] = []
-    private var writerScheduled = false
-    private var writeFailure: Error?
+    private var writeInProgress = false
 
     init(
-        write: @escaping (Data) throws -> Void,
-        closeInput: @escaping () -> Void,
+        writer: any AccountQuotaStdinWriting,
         requestGracefulTermination: @escaping () -> Void
     ) {
-        writeAction = write
-        closeInputAction = closeInput
+        self.writer = writer
         requestGracefulTerminationAction = requestGracefulTermination
     }
 
@@ -136,101 +352,71 @@ final class AccountQuotaProcessLifecycle: @unchecked Sendable {
 
     func write(_ data: Data) throws {
         condition.lock()
+        while writeInProgress && state == .running {
+            condition.wait()
+        }
         guard state == .running else {
             condition.unlock()
             throw AccountQuotaProcessLifecycleError.writeAfterTermination
         }
-        pendingWrites.append(data)
-        scheduleWriterLocked()
+        writeInProgress = true
         condition.unlock()
+
+        do {
+            try writer.write(data) { [weak self] in
+                self?.isTerminationRequested ?? true
+            }
+            finishWrite()
+        } catch {
+            finishWrite()
+            throw error
+        }
     }
 
     func requestTermination() {
         let shouldRequestTermination = condition.withLock {
             guard state == .running else { return false }
             state = .terminating
-            pendingWrites.removeAll()
-            scheduleWriterLocked()
             condition.broadcast()
             return true
         }
         if shouldRequestTermination {
             requestGracefulTerminationAction()
         }
+        closeInputAfterWriteOwnershipReturns()
     }
 
-    var currentWriteFailure: Error? {
-        condition.withLock { writeFailure }
+    private func finishWrite() {
+        condition.withLock {
+            writeInProgress = false
+            condition.broadcast()
+        }
     }
 
-    func waitUntilInputClosed(timeout: TimeInterval) -> Bool {
-        let deadline = Date().addingTimeInterval(max(0, timeout))
+    private func closeInputAfterWriteOwnershipReturns() {
+        var shouldClose = false
         condition.lock()
-        defer { condition.unlock() }
-        while state != .closed {
-            let remaining = deadline.timeIntervalSinceNow
-            if remaining <= 0 { return false }
-            condition.wait(until: Date().addingTimeInterval(remaining))
+        while writeInProgress {
+            condition.wait()
         }
-        return true
-    }
-
-    private func scheduleWriterLocked() {
-        guard !writerScheduled else { return }
-        writerScheduled = true
-        writerQueue.async { [self] in
-            drainWrites()
-        }
-    }
-
-    private func drainWrites() {
-        while true {
-            let nextWrite: Data?
-            condition.lock()
-            switch state {
-            case .running:
-                guard !pendingWrites.isEmpty else {
-                    writerScheduled = false
-                    condition.broadcast()
-                    condition.unlock()
-                    return
-                }
-                nextWrite = pendingWrites.removeFirst()
-                condition.unlock()
-            case .terminating:
-                pendingWrites.removeAll()
-                condition.unlock()
-                closeInputAction()
-                condition.withLock {
-                    state = .closed
-                    writerScheduled = false
-                    condition.broadcast()
-                }
-                return
-            case .closed:
-                writerScheduled = false
-                condition.broadcast()
-                condition.unlock()
-                return
+        switch state {
+        case .terminating:
+            state = .closing
+            shouldClose = true
+        case .closing:
+            while state == .closing {
+                condition.wait()
             }
+        case .running, .closed:
+            break
+        }
+        condition.unlock()
 
-            guard let nextWrite else { continue }
-            do {
-                try writeAction(nextWrite)
-            } catch {
-                let shouldRequestTermination = condition.withLock {
-                    if writeFailure == nil {
-                        writeFailure = error
-                    }
-                    guard state == .running else { return false }
-                    state = .terminating
-                    pendingWrites.removeAll()
-                    condition.broadcast()
-                    return true
-                }
-                if shouldRequestTermination {
-                    requestGracefulTerminationAction()
-                }
+        if shouldClose {
+            writer.close()
+            condition.withLock {
+                state = .closed
+                condition.broadcast()
             }
         }
     }
@@ -240,18 +426,28 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
     private let stderrTailLimit: Int
     private let gracefulShutdownTimeout: TimeInterval
     private let forcedShutdownTimeout: TimeInterval
+    private let launchLeasePool: AccountQuotaProcessLaunchLeasePool
+    private let stdinWriteTimeout: TimeInterval
+    private let stdinPollIntervalMilliseconds: Int32
 
     init(
         stderrTailLimit: Int = 16_384,
         gracefulShutdownTimeout: TimeInterval = 0.25,
-        forcedShutdownTimeout: TimeInterval = 1
+        forcedShutdownTimeout: TimeInterval = 1,
+        launchLeasePool: AccountQuotaProcessLaunchLeasePool = .shared,
+        stdinWriteTimeout: TimeInterval = 1,
+        stdinPollIntervalMilliseconds: Int32 = 10
     ) {
         self.stderrTailLimit = max(0, stderrTailLimit)
         self.gracefulShutdownTimeout = max(0, gracefulShutdownTimeout)
         self.forcedShutdownTimeout = max(0, forcedShutdownTimeout)
+        self.launchLeasePool = launchLeasePool
+        self.stdinWriteTimeout = max(0, stdinWriteTimeout)
+        self.stdinPollIntervalMilliseconds = max(1, stdinPollIntervalMilliseconds)
     }
 
     func start(codexPath: String, dataSource: CodexDataSource?) throws -> any AccountQuotaProcessSession {
+        let launchLease = try launchLeasePool.acquire()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: codexPath)
         process.arguments = ["app-server", "--listen", "stdio://"]
@@ -268,6 +464,18 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
         process.standardOutput = output
         process.standardError = errorPipe
 
+        let stdinWriter: AccountQuotaPOSIXStdinWriter
+        do {
+            stdinWriter = try AccountQuotaPOSIXStdinWriter(
+                handle: input.fileHandleForWriting,
+                writeTimeout: stdinWriteTimeout,
+                pollIntervalMilliseconds: stdinPollIntervalMilliseconds
+            )
+        } catch {
+            launchLease.release()
+            throw error
+        }
+
         let exitObserver = AccountQuotaProcessExitObserver()
         process.terminationHandler = { process in
             exitObserver.record(process: process)
@@ -283,19 +491,22 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
         } catch {
             output.fileHandleForReading.readabilityHandler = nil
             errorPipe.fileHandleForReading.readabilityHandler = nil
+            stdinWriter.close()
+            launchLease.release()
             throw error
         }
 
         return FoundationAccountQuotaProcessSession(
             process: process,
-            input: input.fileHandleForWriting,
+            stdinWriter: stdinWriter,
             output: output.fileHandleForReading,
             error: errorPipe.fileHandleForReading,
             stdoutReader: stdoutReader,
             stderrTail: stderrTail,
             exitObserver: exitObserver,
             gracefulShutdownTimeout: gracefulShutdownTimeout,
-            forcedShutdownTimeout: forcedShutdownTimeout
+            forcedShutdownTimeout: forcedShutdownTimeout,
+            launchLease: launchLease
         )
     }
 }
@@ -369,6 +580,7 @@ private final class AccountQuotaDurableProcessReaper: @unchecked Sendable {
     private struct Adoption {
         let process: Process
         let owner: AnyObject
+        let launchLease: AccountQuotaProcessLaunchLease
     }
 
     static let shared = AccountQuotaDurableProcessReaper()
@@ -383,15 +595,21 @@ private final class AccountQuotaDurableProcessReaper: @unchecked Sendable {
     func adopt(
         process: Process,
         owner: AnyObject,
-        exitObserver: AccountQuotaProcessExitObserver
+        exitObserver: AccountQuotaProcessExitObserver,
+        launchLease: AccountQuotaProcessLaunchLease
     ) {
         let id = UUID()
         lock.withLock {
-            adoptions[id] = Adoption(process: process, owner: owner)
+            adoptions[id] = Adoption(
+                process: process,
+                owner: owner,
+                launchLease: launchLease
+            )
         }
         queue.async { [self] in
             process.waitUntilExit()
             exitObserver.record(process: process)
+            launchLease.release()
             _ = lock.withLock {
                 adoptions.removeValue(forKey: id)
             }
@@ -644,17 +862,19 @@ private final class FoundationAccountQuotaProcessSession: AccountQuotaProcessSes
     private let gracefulShutdownTimeout: TimeInterval
     private let forcedShutdownTimeout: TimeInterval
     private let lifecycle: AccountQuotaProcessLifecycle
+    private let launchLease: AccountQuotaProcessLaunchLease
 
     init(
         process: Process,
-        input: FileHandle,
+        stdinWriter: any AccountQuotaStdinWriting,
         output: FileHandle,
         error: FileHandle,
         stdoutReader: AccountQuotaLineReader,
         stderrTail: AccountQuotaStderrTail,
         exitObserver: AccountQuotaProcessExitObserver,
         gracefulShutdownTimeout: TimeInterval,
-        forcedShutdownTimeout: TimeInterval
+        forcedShutdownTimeout: TimeInterval,
+        launchLease: AccountQuotaProcessLaunchLease
     ) {
         self.process = process
         self.output = output
@@ -664,9 +884,9 @@ private final class FoundationAccountQuotaProcessSession: AccountQuotaProcessSes
         self.exitObserver = exitObserver
         self.gracefulShutdownTimeout = gracefulShutdownTimeout
         self.forcedShutdownTimeout = forcedShutdownTimeout
+        self.launchLease = launchLease
         lifecycle = AccountQuotaProcessLifecycle(
-            write: { data in try input.write(contentsOf: data) },
-            closeInput: { try? input.close() },
+            writer: stdinWriter,
             requestGracefulTermination: {
                 if process.isRunning {
                     process.terminate()
@@ -685,9 +905,6 @@ private final class FoundationAccountQuotaProcessSession: AccountQuotaProcessSes
     }
 
     func nextStdoutEvent(timeout: TimeInterval) throws -> AccountQuotaStdoutEvent {
-        if let writeFailure = lifecycle.currentWriteFailure {
-            throw writeFailure
-        }
         return stdoutReader.next(timeout: timeout)
     }
 
@@ -712,7 +929,8 @@ private final class FoundationAccountQuotaProcessSession: AccountQuotaProcessSes
                 AccountQuotaDurableProcessReaper.shared.adopt(
                     process: process,
                     owner: self,
-                    exitObserver: exitObserver
+                    exitObserver: exitObserver,
+                    launchLease: launchLease
                 )
                 throw AccountQuotaProcessShutdownError.forceKillFailed(errno: errno)
             }
@@ -732,7 +950,7 @@ private final class FoundationAccountQuotaProcessSession: AccountQuotaProcessSes
     }
 
     private func finishShutdown(_ exit: AccountQuotaProcessExit) -> AccountQuotaProcessExit {
-        _ = lifecycle.waitUntilInputClosed(timeout: forcedShutdownTimeout)
+        launchLease.release()
         return exit
     }
 }

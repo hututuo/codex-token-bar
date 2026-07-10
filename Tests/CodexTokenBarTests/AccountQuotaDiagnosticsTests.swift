@@ -44,7 +44,8 @@ final class AccountQuotaDiagnosticsTests: XCTestCase {
     func testProcessShutdownFailureIsUnavailableAndNotRetryable() {
         let errors: [Error] = [
             AccountQuotaProcessShutdownError.forceKillFailed(errno: EPERM),
-            AccountQuotaProcessOwnershipError(underlyingError: QuotaDiagnosticTestError())
+            AccountQuotaProcessOwnershipError(underlyingError: QuotaDiagnosticTestError()),
+            AccountQuotaProcessLaunchLeaseError.inFlight
         ]
 
         for error in errors {
