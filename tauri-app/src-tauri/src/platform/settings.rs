@@ -5,12 +5,13 @@ use crate::models::{
 };
 use std::{
     fs::{File, OpenOptions},
-    io::{ErrorKind, Write},
+    io::{ErrorKind, Read, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Mutex, OnceLock,
     },
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const RECOVERY_CANDIDATE_LIMIT: usize = 8;
@@ -22,6 +23,19 @@ static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 struct SettingsReadOutcome {
     settings: AppSettingsSnapshot,
     diagnostic: Option<String>,
+}
+
+#[derive(Debug)]
+struct SettingsMutationOutcome {
+    settings: AppSettingsSnapshot,
+    diagnostic: Option<String>,
+}
+
+#[derive(Debug)]
+struct RecoveryCandidate {
+    path: PathBuf,
+    freshness: u128,
+    invalid_reason: Option<String>,
 }
 
 pub fn read_app_settings() -> Result<AppSettingsSnapshot, String> {
@@ -76,13 +90,6 @@ pub fn save_setup_guide_completed(completed: bool) -> Result<AppSettingsSnapshot
     })
 }
 
-pub(super) fn saved_codex_home() -> Option<PathBuf> {
-    read_app_settings_or_default()
-        .codex_home
-        .as_deref()
-        .map(normalize_user_path)
-}
-
 pub(super) fn normalize_user_path(path: &str) -> PathBuf {
     let trimmed = path.trim();
     if trimmed == "~" {
@@ -104,21 +111,62 @@ fn mutate_app_settings_at(
     path: &Path,
     mutation: impl FnOnce(&mut AppSettingsSnapshot),
 ) -> Result<AppSettingsSnapshot, String> {
+    let outcome =
+        mutate_app_settings_at_with_hooks(path, || {}, |_, _| {}, sync_parent_directory, mutation)?;
+    if let Some(diagnostic) = outcome.diagnostic {
+        eprintln!("{diagnostic}");
+    }
+    Ok(outcome.settings)
+}
+
+fn mutate_app_settings_at_with_hooks<AfterRead, BeforeReplace, SyncParent, Mutation>(
+    path: &Path,
+    after_read: AfterRead,
+    before_replace: BeforeReplace,
+    sync_parent: SyncParent,
+    mutation: Mutation,
+) -> Result<SettingsMutationOutcome, String>
+where
+    AfterRead: FnOnce(),
+    BeforeReplace: FnOnce(&Path, &Path),
+    SyncParent: FnOnce(&Path) -> Result<(), String>,
+    Mutation: FnOnce(&mut AppSettingsSnapshot),
+{
     let _guard = settings_lock()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let mut settings = read_app_settings_at(path)?;
+    after_read();
     mutation(&mut settings);
     let saved = sanitize_app_settings(settings);
-    write_app_settings_at(path, &saved)?;
-    Ok(saved)
+    let diagnostic = write_app_settings_at_with_hooks(path, &saved, before_replace, sync_parent)?;
+    Ok(SettingsMutationOutcome {
+        settings: saved,
+        diagnostic,
+    })
 }
 
 fn settings_lock() -> &'static Mutex<()> {
     SETTINGS_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn write_app_settings_at(path: &Path, settings: &AppSettingsSnapshot) -> Result<(), String> {
+fn write_app_settings_at(
+    path: &Path,
+    settings: &AppSettingsSnapshot,
+) -> Result<Option<String>, String> {
+    write_app_settings_at_with_hooks(path, settings, |_, _| {}, sync_parent_directory)
+}
+
+fn write_app_settings_at_with_hooks<BeforeReplace, SyncParent>(
+    path: &Path,
+    settings: &AppSettingsSnapshot,
+    before_replace: BeforeReplace,
+    sync_parent: SyncParent,
+) -> Result<Option<String>, String>
+where
+    BeforeReplace: FnOnce(&Path, &Path),
+    SyncParent: FnOnce(&Path) -> Result<(), String>,
+{
     let parent = path
         .parent()
         .ok_or_else(|| format!("设置文件缺少父目录：{}", path.display()))?;
@@ -142,6 +190,7 @@ fn write_app_settings_at(path: &Path, settings: &AppSettingsSnapshot) -> Result<
     }
     drop(temp_file);
 
+    before_replace(&temp_path, path);
     replace_settings_file(&temp_path, path).map_err(|error| {
         format!(
             "原子替换设置文件失败：{} -> {}（{}）；已保留临时文件用于恢复",
@@ -150,8 +199,13 @@ fn write_app_settings_at(path: &Path, settings: &AppSettingsSnapshot) -> Result<
             error
         )
     })?;
-    sync_parent_directory(parent)?;
-    Ok(())
+    Ok(sync_parent(parent).err().map(|error| {
+        format!(
+            "设置文件已提交但持久性未确认：{}（目录同步失败：{}）",
+            path.display(),
+            error
+        )
+    }))
 }
 
 fn create_unique_temp_file(path: &Path) -> Result<(PathBuf, File), String> {
@@ -165,9 +219,10 @@ fn create_unique_temp_file(path: &Path) -> Result<(PathBuf, File), String> {
 
     for _ in 0..TEMP_CREATE_ATTEMPT_LIMIT {
         let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let freshness = system_time_key(SystemTime::now());
         let temp_path = parent.join(format!(
-            "{file_name}.tmp-{}-{sequence:020}",
-            std::process::id()
+            "{file_name}.tmp-v2-{freshness:039}-{}-{sequence:020}",
+            std::process::id(),
         ));
         match OpenOptions::new()
             .write(true)
@@ -191,7 +246,7 @@ fn create_unique_temp_file(path: &Path) -> Result<(PathBuf, File), String> {
     ))
 }
 
-fn read_app_settings_or_default() -> AppSettingsSnapshot {
+pub(super) fn read_app_settings_or_default() -> AppSettingsSnapshot {
     read_app_settings().unwrap_or_default()
 }
 
@@ -248,41 +303,58 @@ fn recover_interrupted_settings(
 fn recover_from_candidates(
     path: &Path,
     primary_error: String,
-    candidates: Vec<PathBuf>,
+    candidates: Vec<RecoveryCandidate>,
 ) -> Result<SettingsReadOutcome, String> {
+    recover_from_candidates_with_hook(path, primary_error, candidates, |_| {})
+}
+
+fn recover_from_candidates_with_hook<BeforeCandidateOpen>(
+    path: &Path,
+    primary_error: String,
+    candidates: Vec<RecoveryCandidate>,
+    mut before_candidate_open: BeforeCandidateOpen,
+) -> Result<SettingsReadOutcome, String>
+where
+    BeforeCandidateOpen: FnMut(&Path),
+{
     let total = candidates.len();
     let checked = total.min(RECOVERY_CANDIDATE_LIMIT);
     let mut candidate_diagnostics = Vec::new();
 
     for candidate in candidates.into_iter().take(RECOVERY_CANDIDATE_LIMIT) {
-        match std::fs::read(&candidate)
-            .map_err(|error| format!("读取失败：{error}"))
-            .and_then(|bytes| parse_settings(&candidate, &bytes))
-        {
+        before_candidate_open(&candidate.path);
+        let candidate_result = candidate
+            .invalid_reason
+            .clone()
+            .map_or_else(|| read_recovery_candidate(&candidate.path), Err);
+        match candidate_result {
             Ok(settings) => {
-                replace_settings_file(&candidate, path).map_err(|error| {
+                let write_diagnostic = write_app_settings_at(path, &settings).map_err(|error| {
                     format!(
-                        "{primary_error}；恢复候选有效但替换失败：{}（{}）",
-                        candidate.display(),
+                        "{primary_error}；恢复候选有效但安装失败：{}（{}）",
+                        candidate.path.display(),
                         error
                     )
                 })?;
-                if let Some(parent) = path.parent() {
-                    sync_parent_directory(parent)?;
-                }
+                let cleanup = discard_recovery_candidate(&candidate.path);
                 return Ok(SettingsReadOutcome {
                     settings,
                     diagnostic: Some(format!(
-                        "设置文件已从中断写入恢复：{} -> {}；原始诊断：{}",
-                        candidate.display(),
+                        "设置文件已从中断写入恢复：{} -> {}；原始诊断：{}{}{}",
+                        candidate.path.display(),
                         path.display(),
-                        primary_error
+                        primary_error,
+                        cleanup_diagnostic(cleanup),
+                        optional_diagnostic(write_diagnostic),
                     )),
                 });
             }
-            Err(error) => {
-                candidate_diagnostics.push(format!("{}（{}）", candidate.display(), error))
-            }
+            Err(error) => candidate_diagnostics.push(format!(
+                "{}（{}{}）",
+                candidate.path.display(),
+                error,
+                cleanup_diagnostic(discard_recovery_candidate(&candidate.path)),
+            )),
         }
     }
 
@@ -302,7 +374,7 @@ fn recover_from_candidates(
     Err(format!("{primary_error}；恢复失败：{details}{bounded}"))
 }
 
-fn interrupted_temp_candidates(path: &Path) -> Result<Vec<PathBuf>, String> {
+fn interrupted_temp_candidates(path: &Path) -> Result<Vec<RecoveryCandidate>, String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("设置文件缺少父目录：{}", path.display()))?;
@@ -325,16 +397,148 @@ fn interrupted_temp_candidates(path: &Path) -> Result<Vec<PathBuf>, String> {
     };
     for entry in entries.flatten() {
         let candidate = entry.path();
-        let matches = candidate
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with(&prefix));
-        if matches && candidate.is_file() {
-            candidates.push(candidate);
+        let Some(candidate_name) = candidate.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !candidate_name.starts_with(&prefix) {
+            continue;
         }
+        let metadata = match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                candidates.push(RecoveryCandidate {
+                    path: candidate,
+                    freshness: 0,
+                    invalid_reason: Some(format!("读取非跟随元数据失败：{error}")),
+                });
+                continue;
+            }
+        };
+        let file_type = metadata.file_type();
+        let invalid_reason = if file_type.is_symlink() {
+            Some("恢复候选是符号链接".into())
+        } else if !file_type.is_file() {
+            Some("恢复候选是非普通文件".into())
+        } else if metadata_is_reparse_point(&metadata) {
+            Some("恢复候选是 Windows reparse point".into())
+        } else {
+            None
+        };
+        let freshness = embedded_candidate_freshness(candidate_name, &prefix)
+            .or_else(|| metadata.modified().ok().map(system_time_key))
+            .unwrap_or_default();
+        candidates.push(RecoveryCandidate {
+            path: candidate,
+            freshness,
+            invalid_reason,
+        });
     }
-    candidates.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+    candidates.sort_by(|left, right| {
+        right
+            .freshness
+            .cmp(&left.freshness)
+            .then_with(|| right.path.file_name().cmp(&left.path.file_name()))
+    });
     Ok(candidates)
+}
+
+fn embedded_candidate_freshness(file_name: &str, prefix: &str) -> Option<u128> {
+    file_name
+        .strip_prefix(prefix)?
+        .strip_prefix("v2-")?
+        .split('-')
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn system_time_key(value: SystemTime) -> u128 {
+    value
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+fn read_recovery_candidate(candidate: &Path) -> Result<AppSettingsSnapshot, String> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    configure_recovery_open_no_follow(&mut options);
+    let mut file = options
+        .open(candidate)
+        .map_err(|error| format!("安全打开恢复候选失败：{error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("读取已打开候选元数据失败：{error}"))?;
+    if !metadata.file_type().is_file() {
+        return Err("已打开恢复候选是非普通文件".into());
+    }
+    if metadata_is_reparse_point(&metadata) {
+        return Err("已打开恢复候选是 Windows reparse point".into());
+    }
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("读取恢复候选失败：{error}"))?;
+    parse_settings(candidate, &bytes)
+}
+
+#[cfg(unix)]
+fn configure_recovery_open_no_follow(options: &mut OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const O_NOFOLLOW: i32 = 0x0002_0000;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    const O_NOFOLLOW: i32 = 0x0000_0100;
+    options.custom_flags(O_NOFOLLOW);
+}
+
+#[cfg(windows)]
+fn configure_recovery_open_no_follow(options: &mut OpenOptions) {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn configure_recovery_open_no_follow(_options: &mut OpenOptions) {}
+
+#[cfg(windows)]
+fn metadata_is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn metadata_is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
+fn discard_recovery_candidate(candidate: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(candidate) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            std::fs::remove_dir(candidate).map_err(|error| format!("移除无效候选目录失败：{error}"))
+        }
+        Ok(_) => {
+            std::fs::remove_file(candidate).map_err(|error| format!("移除无效候选失败：{error}"))
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("检查无效候选失败：{error}")),
+    }
+}
+
+fn cleanup_diagnostic(result: Result<(), String>) -> String {
+    match result {
+        Ok(()) => "；候选已清理".into(),
+        Err(error) => format!("；候选清理失败：{error}"),
+    }
+}
+
+fn optional_diagnostic(diagnostic: Option<String>) -> String {
+    diagnostic.map_or_else(String::new, |diagnostic| format!("；{diagnostic}"))
 }
 
 #[cfg(not(windows))]
@@ -534,12 +738,10 @@ fn settings_path() -> Result<PathBuf, String> {
 mod tests {
     use super::*;
     use std::{
-        sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, Barrier,
-        },
+        fs::FileTimes,
+        sync::mpsc,
         thread,
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     #[test]
@@ -718,42 +920,63 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_position_and_surface_mutations_preserve_both_fields() {
+    fn locked_mutations_cannot_capture_the_same_old_snapshot() {
         let root = TestSettingsRoot::new("concurrent-mutations");
         let path = root.settings_path();
         write_fixture(&path, &AppSettingsSnapshot::default());
-        let barrier = Arc::new(Barrier::new(3));
+        let (first_read_tx, first_read_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
 
         let position_path = path.clone();
-        let position_barrier = Arc::clone(&barrier);
         let position_writer = thread::spawn(move || {
-            position_barrier.wait();
-            mutate_app_settings_at(&position_path, |settings| {
-                settings.floating_position = Some(FloatingWindowPositionSnapshot {
-                    x: 321.0,
-                    y: 654.0,
-                    saved_at: Some(77),
-                });
-            })
+            mutate_app_settings_at_with_hooks(
+                &position_path,
+                || {
+                    first_read_tx.send(()).unwrap();
+                    release_first_rx.recv().unwrap();
+                },
+                |_, _| {},
+                sync_parent_directory,
+                |settings| {
+                    settings.floating_position = Some(FloatingWindowPositionSnapshot {
+                        x: 321.0,
+                        y: 654.0,
+                        saved_at: Some(77),
+                    });
+                },
+            )
             .unwrap()
         });
+        first_read_rx.recv().unwrap();
 
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+        let (second_read_tx, second_read_rx) = mpsc::channel();
         let surfaces_path = path.clone();
-        let surfaces_barrier = Arc::clone(&barrier);
         let surfaces_writer = thread::spawn(move || {
-            surfaces_barrier.wait();
-            mutate_app_settings_at(&surfaces_path, |settings| {
-                settings.display_surfaces = DisplaySurfaceSettingsSnapshot {
-                    floating_window_enabled: false,
-                    live_rate_enabled: true,
-                    status_tray_live_text_enabled: false,
-                };
-            })
+            second_started_tx.send(()).unwrap();
+            mutate_app_settings_at_with_hooks(
+                &surfaces_path,
+                || second_read_tx.send(()).unwrap(),
+                |_, _| {},
+                sync_parent_directory,
+                |settings| {
+                    settings.display_surfaces = DisplaySurfaceSettingsSnapshot {
+                        floating_window_enabled: false,
+                        live_rate_enabled: true,
+                        status_tray_live_text_enabled: false,
+                    };
+                },
+            )
             .unwrap()
         });
 
-        barrier.wait();
+        second_started_rx.recv().unwrap();
+        assert!(second_read_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+        release_first_tx.send(()).unwrap();
         position_writer.join().unwrap();
+        second_read_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         surfaces_writer.join().unwrap();
 
         let saved = read_app_settings_at(&path).unwrap();
@@ -768,38 +991,70 @@ mod tests {
     }
 
     #[test]
-    fn readers_never_observe_partial_json_during_repeated_writes() {
+    fn raw_reader_observes_complete_old_json_while_writer_waits_before_replace() {
         let root = TestSettingsRoot::new("reader-during-write");
         let path = root.settings_path();
         write_fixture(&path, &AppSettingsSnapshot::default());
-        let start = Arc::new(Barrier::new(2));
-        let done = Arc::new(AtomicBool::new(false));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
 
         let writer_path = path.clone();
-        let writer_start = Arc::clone(&start);
-        let writer_done = Arc::clone(&done);
         let writer = thread::spawn(move || {
-            writer_start.wait();
-            for index in 0..32 {
-                mutate_app_settings_at(&writer_path, |settings| {
-                    settings.custom_account_display_name =
-                        format!("writer-{index}-{}", "x".repeat(256 * 1024));
-                })
-                .unwrap();
-            }
-            writer_done.store(true, Ordering::Release);
+            mutate_app_settings_at_with_hooks(
+                &writer_path,
+                || {},
+                |_, _| {
+                    ready_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                },
+                sync_parent_directory,
+                |settings| settings.custom_account_display_name = "replacement".into(),
+            )
+            .unwrap()
         });
 
-        start.wait();
-        let mut reads = 0;
-        while !done.load(Ordering::Acquire) {
-            let bytes = std::fs::read(&path).unwrap();
-            serde_json::from_slice::<AppSettingsSnapshot>(&bytes).unwrap();
-            reads += 1;
-        }
+        ready_rx.recv().unwrap();
+        let visible: AppSettingsSnapshot =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(visible.custom_account_display_name.is_empty());
+        release_tx.send(()).unwrap();
         writer.join().unwrap();
 
-        assert!(reads > 0, "reader must overlap the writer");
+        assert_eq!(
+            read_app_settings_at(&path)
+                .unwrap()
+                .custom_account_display_name,
+            "replacement"
+        );
+    }
+
+    #[test]
+    fn directory_sync_failure_returns_committed_snapshot_with_diagnostic() {
+        let root = TestSettingsRoot::new("directory-sync-diagnostic");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+
+        let outcome = mutate_app_settings_at_with_hooks(
+            &path,
+            || {},
+            |_, _| {},
+            |_| Err("injected directory sync failure".into()),
+            |settings| settings.custom_account_display_name = "committed".into(),
+        )
+        .unwrap();
+
+        assert_eq!(outcome.settings.custom_account_display_name, "committed");
+        assert!(outcome
+            .diagnostic
+            .as_deref()
+            .unwrap()
+            .contains("已提交但持久性未确认"));
+        assert_eq!(
+            read_app_settings_at(&path)
+                .unwrap()
+                .custom_account_display_name,
+            "committed"
+        );
     }
 
     #[test]
@@ -849,22 +1104,149 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_recovery_checks_only_a_bounded_number_of_temp_candidates() {
-        let root = TestSettingsRoot::new("bounded-recovery");
+    fn recovery_uses_cross_process_freshness_instead_of_pid_order() {
+        let root = TestSettingsRoot::new("cross-process-freshness");
         let path = root.settings_path();
         std::fs::write(&path, b"{corrupt-primary").unwrap();
-        for index in 1..=RECOVERY_CANDIDATE_LIMIT + 2 {
-            std::fs::write(
-                interrupted_temp_path(&path, &format!("{index:04}")),
-                b"{corrupt-temp",
-            )
-            .unwrap();
-        }
+        let stale_path = interrupted_temp_path(&path, "99999-00000000000000000001");
+        let fresh_path = interrupted_temp_path(&path, "00001-00000000000000000001");
+        write_fixture(
+            &stale_path,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "stale-high-pid".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        write_fixture(
+            &fresh_path,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "fresh-low-pid".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        set_modified_time(&stale_path, UNIX_EPOCH + Duration::from_secs(10));
+        set_modified_time(&fresh_path, UNIX_EPOCH + Duration::from_secs(20));
+
+        let recovered = read_app_settings_at_with_diagnostics(&path).unwrap();
+
+        assert_eq!(
+            recovered.settings.custom_account_display_name,
+            "fresh-low-pid"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_rejects_symlink_candidate_without_installing_it_as_primary() {
+        use std::os::unix::fs::symlink;
+
+        let root = TestSettingsRoot::new("symlink-candidate");
+        let path = root.settings_path();
+        std::fs::write(&path, b"{corrupt-primary").unwrap();
+        let target = root.path.join("valid-target.json");
+        write_fixture(
+            &target,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "must-not-follow".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        let candidate = interrupted_temp_path(&path, "99999-00000000000000000001");
+        symlink(&target, &candidate).unwrap();
 
         let error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
 
-        assert!(error.contains(&format!("仅检查前 {RECOVERY_CANDIDATE_LIMIT} 个")));
-        assert!(error.contains("设置文件不是有效 JSON"));
+        assert!(error.contains("符号链接") || error.contains("非普通文件"));
+        assert!(!std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(std::fs::symlink_metadata(&candidate).is_err());
+    }
+
+    #[test]
+    fn recovery_rejects_and_removes_non_regular_candidate() {
+        let root = TestSettingsRoot::new("directory-candidate");
+        let path = root.settings_path();
+        std::fs::write(&path, b"{corrupt-primary").unwrap();
+        let candidate = interrupted_temp_path(&path, "99999-00000000000000000001");
+        std::fs::create_dir(&candidate).unwrap();
+
+        let error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
+
+        assert!(error.contains("非普通文件"));
+        assert!(std::fs::symlink_metadata(&candidate).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_revalidates_candidate_after_scan_before_installing_snapshot() {
+        use std::os::unix::fs::symlink;
+
+        let root = TestSettingsRoot::new("candidate-toctou");
+        let path = root.settings_path();
+        std::fs::write(&path, b"{corrupt-primary").unwrap();
+        let candidate = interrupted_temp_path(&path, "99999-00000000000000000001");
+        write_fixture(&candidate, &AppSettingsSnapshot::default());
+        let target = root.path.join("valid-target.json");
+        write_fixture(
+            &target,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "must-not-install".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        let candidates = interrupted_temp_candidates(&path).unwrap();
+
+        let error = recover_from_candidates_with_hook(
+            &path,
+            "corrupt primary".into(),
+            candidates,
+            |candidate_path| {
+                std::fs::remove_file(candidate_path).unwrap();
+                symlink(&target, candidate_path).unwrap();
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("安全打开") || error.contains("符号链接"));
+        assert!(!std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{corrupt-primary");
+    }
+
+    #[test]
+    fn bounded_recovery_removes_invalid_candidates_then_reaches_older_valid_file() {
+        let root = TestSettingsRoot::new("bounded-recovery");
+        let path = root.settings_path();
+        std::fs::write(&path, b"{corrupt-primary").unwrap();
+        let valid = interrupted_temp_path(&path, "0001");
+        write_fixture(
+            &valid,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "older-valid".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        let mut invalid = Vec::new();
+        for index in 2..=RECOVERY_CANDIDATE_LIMIT + 1 {
+            let candidate = interrupted_temp_path(&path, &format!("{index:04}"));
+            std::fs::write(&candidate, b"{corrupt-temp").unwrap();
+            invalid.push(candidate);
+        }
+
+        let first_error = read_app_settings_at_with_diagnostics(&path).unwrap_err();
+        assert!(first_error.contains(&format!("仅检查前 {RECOVERY_CANDIDATE_LIMIT} 个")));
+        assert!(invalid.iter().all(|candidate| !candidate.exists()));
+
+        let recovered = read_app_settings_at_with_diagnostics(&path).unwrap();
+
+        assert_eq!(
+            recovered.settings.custom_account_display_name,
+            "older-valid"
+        );
     }
 
     #[test]
@@ -915,6 +1297,12 @@ mod tests {
 
     fn write_fixture(path: &Path, settings: &AppSettingsSnapshot) {
         std::fs::write(path, serde_json::to_vec_pretty(settings).unwrap()).unwrap();
+    }
+
+    fn set_modified_time(path: &Path, modified: SystemTime) {
+        let file = OpenOptions::new().write(true).open(path).unwrap();
+        file.set_times(FileTimes::new().set_modified(modified))
+            .unwrap();
     }
 
     fn interrupted_temp_path(settings_path: &Path, suffix: &str) -> PathBuf {

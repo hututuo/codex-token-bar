@@ -1,4 +1,4 @@
-use crate::models::{AutostartStatus, CodexHomeStatus};
+use crate::models::{AppSettingsSnapshot, AutostartStatus, CodexHomeStatus};
 use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 use tauri_plugin_autostart::ManagerExt;
@@ -54,7 +54,8 @@ fn automatic_codex_home() -> std::path::PathBuf {
 }
 
 pub fn default_codex_home() -> PathBuf {
-    settings::saved_codex_home().unwrap_or_else(automatic_codex_home)
+    let snapshot = settings::read_app_settings_or_default();
+    codex_home_selection_from_snapshot(&snapshot, automatic_codex_home).0
 }
 
 #[cfg(target_os = "windows")]
@@ -68,35 +69,44 @@ pub fn activate_existing_instance_and_exit() -> bool {
 }
 
 pub fn default_codex_home_status() -> CodexHomeStatus {
-    let path = default_codex_home();
+    let snapshot = settings::read_app_settings_or_default();
+    codex_home_status_from_snapshot(&snapshot, automatic_codex_home)
+}
+
+fn codex_home_status_from_snapshot(
+    snapshot: &AppSettingsSnapshot,
+    automatic: impl FnOnce() -> PathBuf,
+) -> CodexHomeStatus {
+    let (path, source) = codex_home_selection_from_snapshot(snapshot, automatic);
     CodexHomeStatus {
         exists: path.exists(),
         path: path.display().to_string(),
-        source: if settings::saved_codex_home().is_some() {
-            "manual"
-        } else {
-            "auto"
-        }
-        .into(),
+        source: source.into(),
+    }
+}
+
+fn codex_home_selection_from_snapshot(
+    snapshot: &AppSettingsSnapshot,
+    automatic: impl FnOnce() -> PathBuf,
+) -> (PathBuf, &'static str) {
+    match snapshot.codex_home.as_deref() {
+        Some(path) => (settings::normalize_user_path(path), "manual"),
+        None => (automatic(), "auto"),
     }
 }
 
 pub fn save_codex_home(path: &str) -> Result<CodexHomeStatus, String> {
     let path = validate_codex_home(path)?;
     let saved_path = path.display().to_string();
-    settings::mutate_app_settings(|settings| {
+    let saved = settings::mutate_app_settings(|settings| {
         settings.codex_home = Some(saved_path.clone());
     })?;
-    Ok(CodexHomeStatus {
-        exists: path.exists(),
-        path: saved_path,
-        source: "manual".into(),
-    })
+    Ok(codex_home_status_from_snapshot(&saved, automatic_codex_home))
 }
 
 pub fn reset_codex_home() -> Result<CodexHomeStatus, String> {
-    settings::mutate_app_settings(|settings| settings.codex_home = None)?;
-    Ok(default_codex_home_status())
+    let saved = settings::mutate_app_settings(|settings| settings.codex_home = None)?;
+    Ok(codex_home_status_from_snapshot(&saved, automatic_codex_home))
 }
 
 fn validate_codex_home(path: &str) -> Result<PathBuf, String> {
@@ -214,6 +224,7 @@ fn set_autostart_enabled_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::AppSettingsSnapshot;
     use std::{
         path::{Path, PathBuf},
         sync::{Mutex, MutexGuard},
@@ -221,6 +232,32 @@ mod tests {
     };
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn codex_home_status_derives_path_and_source_from_one_snapshot() {
+        let manual_path = unique_temp_path("manual-status");
+        std::fs::create_dir_all(&manual_path).unwrap();
+        let manual = AppSettingsSnapshot {
+            codex_home: Some(manual_path.display().to_string()),
+            ..AppSettingsSnapshot::default()
+        };
+
+        let manual_status = codex_home_status_from_snapshot(&manual, || {
+            panic!("manual snapshot must not consult automatic Codex Home")
+        });
+
+        assert_eq!(manual_status.path, manual_path.display().to_string());
+        assert_eq!(manual_status.source, "manual");
+
+        let automatic_path = unique_temp_path("automatic-status");
+        std::fs::create_dir_all(&automatic_path).unwrap();
+        let automatic = codex_home_status_from_snapshot(&AppSettingsSnapshot::default(), || {
+            automatic_path.clone()
+        });
+
+        assert_eq!(automatic.path, automatic_path.display().to_string());
+        assert_eq!(automatic.source, "auto");
+    }
 
     #[test]
     fn save_codex_home_rejects_blank_path() {
