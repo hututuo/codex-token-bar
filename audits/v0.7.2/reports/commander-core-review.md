@@ -529,6 +529,25 @@ The compact surface can hide a real stream failure. Replace the promise race wit
 
 Two operations in one second can reuse one recovery point. Add random/monotonic uniqueness and `create_new` semantics; this should be fixed as part of the larger Provider transaction batch.
 
+### [P2] Both lanes can report a historical streak as the current streak
+
+- Swift `CodexUsageAnalyzer.currentStreakDays` and Tauri `current_streak_days` both scan backward across unlimited trailing zero-use days until they encounter the most recent positive day.
+- Neither implementation has a focused test for the meaning of “current” when today and yesterday are both empty.
+
+**Impact**
+
+A streak that ended days or weeks ago can still be displayed as current. Use one shared target rule in both lanes: count through today when today is active; allow only the ordinary today-empty/yesterday-active grace; otherwise return zero. Add explicit today-active, today-empty/yesterday-active, two-trailing-empty, and historical-streak tests before changing production code.
+
+### [P2] Usage and unread file discovery do not consistently enforce the selected Codex Home boundary
+
+- Tauri usage and unread collectors recurse with `Path::is_dir()`, which follows directory symlinks, without a visited identity set, depth/entry bound, or canonical selected-Home containment.
+- Both Swift and Tauri accept absolute `state_5.sqlite.threads.rollout_path` values after checking only that the target is a JSONL file; a stale or retargeted row can therefore mix another Home or arbitrary external file into the selected source.
+- Swift's session enumerator and active-rollout dedupe canonicalize paths for identity but do not reject a resolved file outside the selected Home.
+
+**Impact**
+
+A symlink cycle can make Tauri scanning unbounded, and a stale/external rollout path can silently contaminate trusted totals, today/request metrics, unread visibility, and their caches. Define one per-lane bounded, non-following walker and require every resolved session/rollout file to remain under the canonical selected Codex Home. Preserve the valid case where an active rollout is outside `sessions/` but still inside that Home. Add symlink-cycle, symlink-escape, external absolute rollout, internal active-rollout, and normal nested-session fixtures before implementation.
+
 ## Scope Reviewed So Far
 
 - Tauri source/settings, usage/cache, quota/history, live-rate/rollout registry, unread, ProviderRepair, floating/status/tray, Windows replacement/single-instance source, updater/release scripts, and current macOS rendered dashboard evidence.
