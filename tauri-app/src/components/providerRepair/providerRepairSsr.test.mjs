@@ -8,21 +8,20 @@ function renderComponent(Component, props) {
   return renderToStaticMarkup(React.createElement(Component, props));
 }
 
-test("ProviderRepairActions keeps sync disabled until a real backup is selected", async () => {
+test("ProviderRepairActions allows sync without reusing a selected stale backup", async () => {
   await withSsrModules(async (load) => {
     const { buildProviderRepairActionModel } = await load("/src/components/providerRepair/actionModel.ts");
     const { ProviderRepairActions } = await load("/src/components/providerRepair/ProviderRepairActions.tsx");
 
-    const model = buildProviderRepairActionModel({ activeBackupId: null, busy: false });
-    assert.equal(model.sync.disabled, true);
-    assert.equal(model.sync.reason, "请先创建备份，再进行同步修复。");
+    const model = buildProviderRepairActionModel({ busy: false });
+    assert.equal(model.sync.disabled, false);
+    assert.equal(model.sync.reason, null);
     assert.equal(model.backup.disabled, false);
 
-    const html = renderComponent(ProviderRepairActions, actionProps({ activeBackupId: null }));
+    const html = renderComponent(ProviderRepairActions, actionProps());
     const syncButton = findButton(html, "3 同步修复");
-    assert.match(syncButton.attrs, /disabled=""/);
-    assert.match(syncButton.attrs, /title="请先创建备份，再进行同步修复。"/);
-    assert.match(html, /请先创建备份，再进行同步修复。/);
+    assert.doesNotMatch(syncButton.attrs, /disabled=""/);
+    assert.doesNotMatch(html, /请先创建备份/);
   });
 });
 
@@ -31,11 +30,11 @@ test("ProviderRepairActions disables conflicting actions while an operation is i
     const { buildProviderRepairActionModel } = await load("/src/components/providerRepair/actionModel.ts");
     const { ProviderRepairActions } = await load("/src/components/providerRepair/ProviderRepairActions.tsx");
 
-    const model = buildProviderRepairActionModel({ activeBackupId: "backup-1", busy: true });
+    const model = buildProviderRepairActionModel({ busy: true });
     assert.deepEqual(Object.values(model).map((action) => action.disabled), [true, true, true, true]);
     assert.equal(model.sync.reason, "正在执行修复操作，请等待当前步骤完成。");
 
-    const html = renderComponent(ProviderRepairActions, actionProps({ activeBackupId: "backup-1", busy: true }));
+    const html = renderComponent(ProviderRepairActions, actionProps({ busy: true }));
     for (const label of ["1 扫描", "2 创建备份", "3 同步修复", "4 验证"]) {
       assert.match(findButton(html, label).attrs, /disabled=""/);
     }
@@ -84,8 +83,7 @@ test("ProviderRepairCard SSR starts from safe non-destructive actions", async ()
 
     assert.match(html, /aria-label="会话消失修复"/);
     assert.match(html, /provider codex · 本地扫描 · 7 个会话文件/);
-    assert.match(html, /请先创建备份，再进行同步修复。/);
-    assert.match(findButton(html, "3 同步修复").attrs, /disabled=""/);
+    assert.doesNotMatch(html, /请先创建备份/);
     assert.doesNotMatch(html, /repair-rollback-button/);
   });
 });
@@ -101,7 +99,6 @@ function findButton(html, text) {
 
 function actionProps(overrides = {}) {
   return {
-    activeBackupId: "backup-1",
     busy: false,
     onBackup: () => {},
     onScan: () => {},

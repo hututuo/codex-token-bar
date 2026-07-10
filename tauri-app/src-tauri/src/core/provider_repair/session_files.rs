@@ -1,8 +1,14 @@
 use serde_json::Value;
-use std::collections::HashMap;
-use std::fs;
-use std::io::{BufRead, BufReader};
+use std::collections::{HashMap, HashSet};
+use std::fs::{self, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const MAX_SESSION_TRAVERSAL_DEPTH: usize = 64;
+const MAX_SESSION_TRAVERSAL_ENTRIES: usize = 200_000;
+const ATOMIC_TEMP_ATTEMPTS: usize = 64;
+static ATOMIC_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(super) struct SessionScan {
     pub(super) files_found: u32,
@@ -21,36 +27,93 @@ impl SessionScan {
     }
 }
 
-pub(super) fn find_session_files(codex_home: &Path, include_archived: bool) -> Vec<PathBuf> {
+pub(super) fn find_session_files(
+    codex_home: &Path,
+    include_archived: bool,
+) -> Result<Vec<PathBuf>, String> {
+    let canonical_home = codex_home
+        .canonicalize()
+        .map_err(|error| format!("无法确认 Codex Home {}：{error}", codex_home.display()))?;
     let mut roots = vec![codex_home.join("sessions")];
     if include_archived {
         roots.push(codex_home.join("archived_sessions"));
     }
     let mut files = Vec::new();
+    let mut visited = HashSet::new();
+    let mut entries_seen = 0_usize;
     for root in roots {
-        collect_jsonl_files(&root, &mut files);
+        collect_jsonl_files(
+            &canonical_home,
+            &root,
+            &mut files,
+            &mut visited,
+            &mut entries_seen,
+            0,
+        )?;
     }
     files.sort();
-    files
+    Ok(files)
 }
 
-pub(super) fn collect_jsonl_files(root: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(metadata) = fs::metadata(root) else {
-        return;
+pub(super) fn collect_jsonl_files(
+    canonical_root: &Path,
+    path: &Path,
+    files: &mut Vec<PathBuf>,
+    visited: &mut HashSet<PathBuf>,
+    entries_seen: &mut usize,
+    depth: usize,
+) -> Result<(), String> {
+    if depth > MAX_SESSION_TRAVERSAL_DEPTH {
+        return Err(format!("会话目录遍历超过最大深度：{}", path.display()));
+    }
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("读取会话路径失败 {}：{error}", path.display())),
     };
-    if metadata.is_file() {
-        if root.extension().is_some_and(|extension| extension == "jsonl") {
-            files.push(root.to_path_buf());
-        }
-        return;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
     }
 
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        collect_jsonl_files(&entry.path(), files);
+    let canonical_path = path
+        .canonicalize()
+        .map_err(|error| format!("无法确认会话路径 {}：{error}", path.display()))?;
+    if !canonical_path.starts_with(canonical_root) {
+        return Ok(());
     }
+    if metadata.is_file() {
+        if canonical_path
+            .extension()
+            .is_some_and(|extension| extension == "jsonl")
+        {
+            files.push(canonical_path);
+        }
+        return Ok(());
+    }
+    if !metadata.is_dir() || !visited.insert(canonical_path) {
+        return Ok(());
+    }
+
+    let entries = fs::read_dir(path)
+        .map_err(|error| format!("读取会话目录失败 {}：{error}", path.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("读取会话目录项失败：{error}"))?;
+        *entries_seen = entries_seen.saturating_add(1);
+        if *entries_seen > MAX_SESSION_TRAVERSAL_ENTRIES {
+            return Err(format!(
+                "会话目录遍历超过最大条目数 {MAX_SESSION_TRAVERSAL_ENTRIES}"
+            ));
+        }
+        collect_jsonl_files(
+            canonical_root,
+            &entry.path(),
+            files,
+            visited,
+            entries_seen,
+            depth + 1,
+        )?;
+    }
+    Ok(())
 }
 
 pub(super) fn scan_session_providers(files: &[PathBuf]) -> SessionScan {
@@ -63,7 +126,9 @@ pub(super) fn scan_session_providers(files: &[PathBuf]) -> SessionScan {
         match read_session_provider(file) {
             Ok(Some(provider)) => {
                 *provider_counts.entry(provider.clone()).or_insert(0) += 1;
-                let modified = fs::metadata(file).and_then(|metadata| metadata.modified()).ok();
+                let modified = fs::metadata(file)
+                    .and_then(|metadata| metadata.modified())
+                    .ok();
                 if newest_modified.is_none_or(|current| modified.is_some_and(|next| next > current))
                 {
                     newest_modified = modified;
@@ -83,29 +148,51 @@ pub(super) fn scan_session_providers(files: &[PathBuf]) -> SessionScan {
 }
 
 pub(super) fn rewrite_session_provider(
+    canonical_home: &Path,
     file: &Path,
     target_provider: &str,
 ) -> Result<bool, String> {
-    let text = fs::read_to_string(file).map_err(|error| error.to_string())?;
+    let canonical_home = canonical_home
+        .canonicalize()
+        .map_err(|error| format!("无法确认 Codex Home {}：{error}", canonical_home.display()))?;
+    let metadata = fs::symlink_metadata(file).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "拒绝改写符号链接或非普通会话文件：{}",
+            file.display()
+        ));
+    }
+    let canonical_file = file.canonicalize().map_err(|error| error.to_string())?;
+    if !canonical_file.starts_with(&canonical_home) {
+        return Err(format!(
+            "拒绝改写 Codex Home 外的会话文件：{}",
+            canonical_file.display()
+        ));
+    }
+
+    let text = fs::read_to_string(&canonical_file).map_err(|error| error.to_string())?;
     let (first_line, rest) = match text.find('\n') {
         Some(index) => (&text[..index], &text[index..]),
         None => (text.as_str(), ""),
     };
     let mut value: Value = serde_json::from_str(first_line.trim_end())
-        .map_err(|error| format!("{}: {error}", file.display()))?;
+        .map_err(|error| format!("{}: {error}", canonical_file.display()))?;
     if value.get("type").and_then(Value::as_str) != Some("session_meta") {
         return Ok(false);
     }
     let payload = value
         .get_mut("payload")
         .and_then(Value::as_object_mut)
-        .ok_or_else(|| format!("{} 缺少 session_meta.payload", file.display()))?;
+        .ok_or_else(|| format!("{} 缺少 session_meta.payload", canonical_file.display()))?;
     if payload.get("model_provider").and_then(Value::as_str) == Some(target_provider) {
         return Ok(false);
     }
-    payload.insert("model_provider".into(), Value::String(target_provider.into()));
+    payload.insert(
+        "model_provider".into(),
+        Value::String(target_provider.into()),
+    );
     let first_line = serde_json::to_string(&value).map_err(|error| error.to_string())?;
-    write_atomic(file, format!("{first_line}{rest}").as_bytes())?;
+    write_atomic(&canonical_file, format!("{first_line}{rest}").as_bytes())?;
     Ok(true)
 }
 
@@ -134,7 +221,87 @@ fn read_session_provider(file: &Path) -> Result<Option<String>, String> {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let temp = path.with_extension("tmp-codex-token-bar");
-    fs::write(&temp, bytes).map_err(|error| error.to_string())?;
-    fs::rename(&temp, path).map_err(|error| error.to_string())
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("目标文件缺少父目录：{}", path.display()))?;
+    let parent_metadata = fs::symlink_metadata(parent).map_err(|error| error.to_string())?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+        return Err(format!("目标父路径不是普通目录：{}", parent.display()));
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("目标文件名无效：{}", path.display()))?;
+
+    for _ in 0..ATOMIC_TEMP_ATTEMPTS {
+        let sequence = ATOMIC_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temp = parent.join(format!(
+            ".{file_name}.codex-token-bar-{}-{sequence:020}.tmp",
+            std::process::id()
+        ));
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        let write_result = file
+            .write_all(bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|error| error.to_string());
+        drop(file);
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&temp);
+            return Err(error);
+        }
+        if let Err(error) = replace_file_atomically(&temp, path) {
+            let _ = fs::remove_file(&temp);
+            return Err(error);
+        }
+        return Ok(());
+    }
+
+    Err(format!("无法为 {} 创建唯一临时文件", path.display()))
+}
+
+pub(super) fn replace_file_atomically(source: &Path, destination: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
+
+        if destination.exists() {
+            let replaced = destination
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>();
+            let replacement = source
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>();
+            // SAFETY: both UTF-16 buffers are NUL-terminated and live for the call;
+            // the optional backup/exclusion pointers are intentionally null.
+            let replaced_ok = unsafe {
+                ReplaceFileW(
+                    replaced.as_ptr(),
+                    replacement.as_ptr(),
+                    std::ptr::null(),
+                    REPLACEFILE_WRITE_THROUGH,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            };
+            if replaced_ok == 0 {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+            return Ok(());
+        }
+    }
+
+    fs::rename(source, destination).map_err(|error| error.to_string())
+}
+
+pub(super) fn write_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_atomic(path, bytes)
 }

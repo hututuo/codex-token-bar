@@ -1,12 +1,7 @@
-use crate::commands::local_source;
-use crate::core::{
-    dashboard::DashboardDataSource,
-    provider_repair as provider_repair_core,
-};
 use super::window_auth::require_window_label;
-use crate::models::{
-    ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
-};
+use crate::commands::local_source;
+use crate::core::{dashboard::DashboardDataSource, provider_repair as provider_repair_core};
+use crate::models::{ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot};
 use provider_repair_core::{
     ProviderOperationError, ProviderOperationOwnershipDiscovery, ProviderOperationStatus,
 };
@@ -40,12 +35,11 @@ pub fn create_provider_backup(
 #[tauri::command]
 pub fn sync_provider_history(
     window: tauri::WebviewWindow,
-    backup_id: String,
     operation_id: String,
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
     require_window_label(&window, "sync_provider_history")?;
     let source = local_source();
-    provider_repair_core::sync_provider_history(source.codex_home(), &backup_id, &operation_id)
+    provider_repair_core::sync_provider_history(source.codex_home(), &operation_id)
 }
 
 #[tauri::command]
@@ -54,7 +48,9 @@ pub fn verify_provider_repair(
 ) -> Result<ProviderRepairActionResult, String> {
     require_window_label(&window, "verify_provider_repair")?;
     let source = local_source();
-    Ok(provider_repair_core::verify_provider_repair(source.codex_home()))
+    Ok(provider_repair_core::verify_provider_repair(
+        source.codex_home(),
+    ))
 }
 
 #[tauri::command]
@@ -74,7 +70,9 @@ pub fn read_provider_operation_status(
     operation_id: String,
 ) -> Result<ProviderOperationStatus, ProviderOperationError> {
     require_window_label(&window, "read_provider_operation_status")?;
-    Ok(provider_repair_core::read_provider_operation_status(&operation_id))
+    Ok(provider_repair_core::read_provider_operation_status(
+        &operation_id,
+    ))
 }
 
 #[tauri::command]

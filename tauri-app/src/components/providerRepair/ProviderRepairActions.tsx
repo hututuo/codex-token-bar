@@ -1,7 +1,6 @@
 import { buildProviderRepairActionModel } from "./actionModel";
 
 interface ProviderRepairActionsProps {
-  activeBackupId: string | null;
   busy: boolean;
   onBackup: () => void;
   onScan: () => void;
@@ -10,17 +9,13 @@ interface ProviderRepairActionsProps {
 }
 
 export function ProviderRepairActions({
-  activeBackupId,
   busy,
   onBackup,
   onScan,
   onSync,
   onVerify,
 }: ProviderRepairActionsProps) {
-  const actions = buildProviderRepairActionModel({ activeBackupId, busy });
-  const missingBackupNote = !activeBackupId
-    ? buildProviderRepairActionModel({ activeBackupId, busy: false }).sync.reason
-    : null;
+  const actions = buildProviderRepairActionModel({ busy });
 
   return (
     <>
@@ -58,11 +53,6 @@ export function ProviderRepairActions({
           {actions.verify.label}
         </button>
       </div>
-      {missingBackupNote ? (
-        <p className="repair-action-note" role="status">
-          {missingBackupNote}
-        </p>
-      ) : null}
     </>
   );
 }

@@ -15,9 +15,10 @@ tauri-build = { version = "2.6.3", features = [] }
 [dependencies]
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-rusqlite = { version = "0.37.0", features = ["bundled"] }
+rusqlite = { version = "0.37.0", features = ["backup", "bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 tauri = { version = "2.11.3", features = ["macos-private-api", "tray-icon"] }
 time = { version = "0.3.49", features = ["formatting", "local-offset", "macros", "parsing"] }
 tokio = { version = "1.52.3", features = ["time"] }
@@ -34,4 +35,4 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 plist = "1.9.0"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

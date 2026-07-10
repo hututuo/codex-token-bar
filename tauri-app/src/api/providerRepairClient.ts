@@ -48,10 +48,9 @@ export function createProviderBackup(
 }
 
 export function syncProviderHistory(
-  backupId: string,
   onUncertain?: (operationId: string) => void,
 ): Promise<ProviderRepairActionResult> {
-  return callProviderMutation("sync_provider_history", { backupId }, onUncertain);
+  return callProviderMutation("sync_provider_history", undefined, onUncertain);
 }
 
 export function verifyProviderRepair(): Promise<ProviderRepairActionResult> {

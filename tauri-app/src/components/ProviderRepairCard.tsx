@@ -171,12 +171,7 @@ export function ProviderRepairCard({
   }
 
   async function runSync() {
-    const backupId = activeBackupId ?? backups[0]?.id;
-    if (!backupId) {
-      setMessage("请先创建备份，再进行修复。");
-      return;
-    }
-    await run("sync", () => syncProviderHistory(backupId, markOperationUncertain), applyResult);
+    await run("sync", () => syncProviderHistory(markOperationUncertain), applyResult);
   }
 
   async function runVerify() {
@@ -253,7 +248,6 @@ export function ProviderRepairCard({
       <ProviderRepairSteps steps={snapshot.steps} />
 
       <ProviderRepairActions
-        activeBackupId={activeBackupId}
         busy={busy}
         onBackup={runBackup}
         onScan={runScan}

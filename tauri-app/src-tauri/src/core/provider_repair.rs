@@ -13,13 +13,13 @@ mod target_provider;
 
 use backups::{
     backup_by_id, create_provider_backup_files, ensure_backup_matches_codex_home,
-    restore_provider_backup_files,
+    provider_backup_root, restore_provider_backup_files,
 };
 #[cfg(test)]
 use backups::{codex_home_fingerprint, codex_home_identity};
 use report::{action_result, error_snapshot, snapshot_from_report, ProviderRepairReport};
-use session_index::{latest_thread_index_missing, repair_session_index, scan_session_index};
 use session_files::{find_session_files, rewrite_session_provider, scan_session_providers};
+use session_index::{latest_thread_index_missing, repair_session_index, scan_session_index};
 use sqlite_state::{scan_sqlite, sync_sqlite_provider, SQLiteScan};
 use target_provider::detect_target_provider;
 
@@ -125,7 +125,10 @@ impl ProviderOperationRegistry {
             return;
         }
 
-        if self.active_by_home.get(&record.canonical_home).map(String::as_str)
+        if self
+            .active_by_home
+            .get(&record.canonical_home)
+            .map(String::as_str)
             == Some(operation_id)
         {
             self.active_by_home.remove(&record.canonical_home);
@@ -150,10 +153,12 @@ impl ProviderOperationRegistry {
         let mut active_operations = self
             .active_by_home
             .iter()
-            .map(|(canonical_home, operation_id)| ProviderOperationOwnership {
-                operation_id: operation_id.clone(),
-                canonical_home: canonical_home.clone(),
-            })
+            .map(
+                |(canonical_home, operation_id)| ProviderOperationOwnership {
+                    operation_id: operation_id.clone(),
+                    canonical_home: canonical_home.clone(),
+                },
+            )
             .collect::<Vec<_>>();
         active_operations.sort_by(|left, right| {
             left.canonical_home
@@ -168,7 +173,10 @@ impl ProviderOperationRegistry {
             let Some(operation_id) = self.finished_order.pop_front() else {
                 break;
             };
-            if self.operations.get(&operation_id).map(|record| record.lifecycle)
+            if self
+                .operations
+                .get(&operation_id)
+                .map(|record| record.lifecycle)
                 == Some(ProviderOperationLifecycle::Finished)
             {
                 self.operations.remove(&operation_id);
@@ -196,6 +204,7 @@ impl ProviderOperationRegistry {
 }
 
 struct ProviderOperationLease {
+    canonical_home: PathBuf,
     operation_id: String,
 }
 
@@ -235,11 +244,11 @@ pub fn create_provider_backup(
     codex_home: &Path,
     operation_id: &str,
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
-    run_provider_mutation(codex_home, operation_id, || {
-        let report = scan_provider_repair_result(codex_home)?;
-        let backup = create_provider_backup_files(codex_home, &report.target.provider)?;
+    run_provider_mutation(codex_home, operation_id, |canonical_home| {
+        let report = scan_provider_repair_result(canonical_home)?;
+        let backup = create_provider_backup_files(canonical_home, &report.target.provider)?;
         Ok(action_result(
-            scan_provider_repair(codex_home),
+            scan_provider_repair(canonical_home),
             format!("已创建备份：{}", backup.id),
             Some(backup),
         ))
@@ -248,33 +257,129 @@ pub fn create_provider_backup(
 
 pub fn sync_provider_history(
     codex_home: &Path,
-    backup_id: &str,
     operation_id: &str,
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
-    run_provider_mutation(codex_home, operation_id, || {
-        let backup = backup_by_id(backup_id)?;
-        ensure_backup_matches_codex_home(&backup, codex_home)?;
-        let report = scan_provider_repair_result(codex_home)?;
-        let target_provider = provider_for_mutation(&report.target.provider)?;
-        let mut rewritten_sessions = 0_u32;
-        for file in find_session_files(codex_home, true) {
-            if rewrite_session_provider(&file, &target_provider)? {
-                rewritten_sessions = rewritten_sessions.saturating_add(1);
-            }
-        }
-
-        let sqlite_rows = sync_sqlite_provider(codex_home, &target_provider)?;
-        let index_changed = repair_session_index(codex_home)?;
-        let snapshot = scan_provider_repair(codex_home);
-        let message = format!(
-            "已同步为 {}：JSONL {} 个，SQLite {} 行，session_index {}。",
-            target_provider,
-            rewritten_sessions,
-            sqlite_rows,
-            if index_changed { "已补齐" } else { "无需修改" }
-        );
-        Ok(action_result(snapshot, message, Some(backup)))
+    run_provider_mutation(codex_home, operation_id, |canonical_home| {
+        let backup_root = provider_backup_root()?;
+        let outcome = sync_provider_history_transaction_at(
+            canonical_home,
+            &backup_root,
+            scan_provider_repair_result,
+        )?;
+        Ok(action_result(
+            outcome.snapshot,
+            outcome.message,
+            Some(outcome.backup),
+        ))
     })
+}
+
+#[derive(Debug)]
+struct ProviderSyncTransactionOutcome {
+    backup: crate::models::ProviderRepairBackupInfo,
+    snapshot: ProviderRepairSnapshot,
+    message: String,
+}
+
+fn sync_provider_history_transaction_at(
+    codex_home: &Path,
+    backup_root: &Path,
+    verify: impl FnOnce(&Path) -> Result<ProviderRepairReport, String>,
+) -> Result<ProviderSyncTransactionOutcome, String> {
+    let canonical_home = codex_home
+        .canonicalize()
+        .map_err(|error| format!("无法确认 Codex Home {}：{error}", codex_home.display()))?;
+    let report = scan_provider_repair_result(&canonical_home)?;
+    let target_provider = provider_for_mutation(&report.target.provider)?;
+    let backup =
+        backups::create_provider_backup_files_at(backup_root, &canonical_home, &target_provider)?;
+
+    let transaction = perform_provider_sync(&canonical_home, &target_provider).and_then(
+        |(rewritten_sessions, sqlite_rows, index_changed)| {
+            let verified_report = verify(&canonical_home)?;
+            validate_provider_sync_report(&verified_report, &backup, &target_provider)?;
+            let snapshot = snapshot_from_report(verified_report);
+            let message = format!(
+                "已同步为 {}：JSONL {} 个，SQLite {} 行，session_index {}；恢复点 {}。",
+                target_provider,
+                rewritten_sessions,
+                sqlite_rows,
+                if index_changed {
+                    "已补齐"
+                } else {
+                    "无需修改"
+                },
+                backup.id
+            );
+            Ok((snapshot, message))
+        },
+    );
+
+    match transaction {
+        Ok((snapshot, message)) => Ok(ProviderSyncTransactionOutcome {
+            backup,
+            snapshot,
+            message,
+        }),
+        Err(original_error) => match backups::restore_provider_backup_files_at(
+            &canonical_home,
+            &backup,
+        ) {
+            Ok(()) => Err(format!(
+                "Provider 同步或验证失败：{original_error}；已自动恢复恢复点 {}。",
+                backup.id
+            )),
+            Err(restore_error) => Err(format!(
+                "Provider 同步或验证失败：{original_error}；自动恢复恢复点 {} 失败：{restore_error}；恢复点保留于 {}。",
+                backup.id,
+                backup.path
+            )),
+        },
+    }
+}
+
+fn perform_provider_sync(
+    canonical_home: &Path,
+    target_provider: &str,
+) -> Result<(u32, u32, bool), String> {
+    let mut rewritten_sessions = 0_u32;
+    for file in find_session_files(canonical_home, true)? {
+        if rewrite_session_provider(canonical_home, &file, target_provider)? {
+            rewritten_sessions = rewritten_sessions.saturating_add(1);
+        }
+    }
+    let sqlite_rows = sync_sqlite_provider(canonical_home, target_provider)?;
+    let index_changed = repair_session_index(canonical_home)?;
+    Ok((rewritten_sessions, sqlite_rows, index_changed))
+}
+
+fn validate_provider_sync_report(
+    report: &ProviderRepairReport,
+    backup: &crate::models::ProviderRepairBackupInfo,
+    expected_provider: &str,
+) -> Result<(), String> {
+    if report.target.provider != expected_provider {
+        return Err(format!(
+            "Provider 验证目标不匹配：预期 {expected_provider}，实际 {}。",
+            report.target.provider
+        ));
+    }
+    if report.inconsistent_count != 0 || report.session_scan.invalid_files != 0 {
+        return Err(format!(
+            "Provider 验证仍有 {} 条不一致，其中异常会话文件 {} 个。",
+            report.inconsistent_count, report.session_scan.invalid_files
+        ));
+    }
+    if backup.session_files > 0 && report.session_scan.files_found == 0 {
+        return Err("Provider 验证没有读取到预期会话文件。".into());
+    }
+    if backup.state_database && report.sqlite_scan.integrity != "ok" {
+        return Err(format!(
+            "Provider 验证 SQLite integrity_check: {}",
+            report.sqlite_scan.integrity
+        ));
+    }
+    Ok(())
 }
 
 pub fn verify_provider_repair(codex_home: &Path) -> ProviderRepairActionResult {
@@ -292,22 +397,20 @@ pub fn rollback_provider_backup(
     backup_id: &str,
     operation_id: &str,
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
-    run_provider_mutation(codex_home, operation_id, || {
+    run_provider_mutation(codex_home, operation_id, |canonical_home| {
         let backup = backup_by_id(backup_id)?;
-        ensure_backup_matches_codex_home(&backup, codex_home)?;
-        restore_provider_backup_files(codex_home, &backup)?;
+        ensure_backup_matches_codex_home(&backup, canonical_home)?;
+        restore_provider_backup_files(canonical_home, &backup)?;
 
         Ok(action_result(
-            scan_provider_repair(codex_home),
+            scan_provider_repair(canonical_home),
             format!("已回滚备份：{}", backup.id),
             Some(backup),
         ))
     })
 }
 
-pub fn read_provider_operation_status(
-    operation_id: &str,
-) -> ProviderOperationStatus {
+pub fn read_provider_operation_status(operation_id: &str) -> ProviderOperationStatus {
     let registry = provider_operation_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -331,10 +434,7 @@ fn canonical_codex_home(codex_home: &Path) -> Result<PathBuf, ProviderOperationE
     codex_home
         .canonicalize()
         .map_err(|error| ProviderOperationError::Failed {
-            message: format!(
-                "无法确认 Codex Home {}：{error}",
-                codex_home.display()
-            ),
+            message: format!("无法确认 Codex Home {}：{error}", codex_home.display()),
         })
 }
 
@@ -352,8 +452,9 @@ fn acquire_provider_operation_lease(
     let mut registry = provider_operation_registry()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    registry.acquire(canonical_home, operation_id)?;
+    registry.acquire(canonical_home.clone(), operation_id)?;
     Ok(ProviderOperationLease {
+        canonical_home,
         operation_id: operation_id.to_string(),
     })
 }
@@ -361,14 +462,14 @@ fn acquire_provider_operation_lease(
 fn run_provider_mutation<T>(
     codex_home: &Path,
     operation_id: &str,
-    mutation: impl FnOnce() -> Result<T, String>,
+    mutation: impl FnOnce(&Path) -> Result<T, String>,
 ) -> Result<T, ProviderOperationError> {
-    let _lease = acquire_provider_operation_lease(codex_home, operation_id)?;
-    mutation().map_err(|message| ProviderOperationError::Failed { message })
+    let lease = acquire_provider_operation_lease(codex_home, operation_id)?;
+    mutation(&lease.canonical_home).map_err(|message| ProviderOperationError::Failed { message })
 }
 
 fn scan_provider_repair_result(codex_home: &Path) -> Result<ProviderRepairReport, String> {
-    let session_files = find_session_files(codex_home, true);
+    let session_files = find_session_files(codex_home, true)?;
     let mut session_scan = scan_session_providers(&session_files);
     session_scan.newest_provider = session_scan
         .newest_provider
