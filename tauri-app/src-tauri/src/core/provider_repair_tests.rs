@@ -946,7 +946,10 @@ fn sqlite_backup_preserves_committed_wal_rows_and_integrity() {
             [],
         )
         .unwrap();
+    #[cfg(windows)]
+    drop(writer);
     backups::restore_provider_backup_files_at(&home, &backup).unwrap();
+    #[cfg(not(windows))]
     drop(writer);
 
     let restored = Connection::open(&database_path).unwrap();
@@ -1010,21 +1013,46 @@ fn later_restore_failure_with_active_wal_uses_verified_sqlite_compensation() {
         },
     )
     .unwrap_err();
-    drop(writer);
 
-    assert!(error.contains("已补偿"), "{error}");
-    assert_eq!(
-        sqlite_text_value(
-            &database_path,
-            "SELECT value FROM committed_rows WHERE id = 1"
-        ),
-        "live-before-restore"
-    );
-    assert_eq!(sqlite_integrity(&database_path), "ok");
-    assert_eq!(
-        fs::read_to_string(home.join("config.toml")).unwrap(),
-        "live-config"
-    );
+    #[cfg(windows)]
+    {
+        assert!(error.contains("state_5.sqlite-wal"), "{error}");
+        assert!(error.contains("恢复材料保留于"), "{error}");
+        assert_eq!(
+            writer
+                .query_row("SELECT value FROM committed_rows WHERE id = 1", [], |row| {
+                    row.get::<_, String>(0)
+                },)
+                .unwrap(),
+            "live-before-restore"
+        );
+        assert_eq!(
+            fs::read_to_string(home.join("config.toml")).unwrap(),
+            "live-config"
+        );
+        assert_eq!(
+            fs::read_to_string(home.join("session_index.jsonl")).unwrap(),
+            "live-index"
+        );
+        drop(writer);
+    }
+    #[cfg(not(windows))]
+    {
+        drop(writer);
+        assert!(error.contains("已补偿"), "{error}");
+        assert_eq!(
+            sqlite_text_value(
+                &database_path,
+                "SELECT value FROM committed_rows WHERE id = 1"
+            ),
+            "live-before-restore"
+        );
+        assert_eq!(sqlite_integrity(&database_path), "ok");
+        assert_eq!(
+            fs::read_to_string(home.join("config.toml")).unwrap(),
+            "live-config"
+        );
+    }
     fs::remove_dir_all(fixture).unwrap();
 }
 
@@ -1953,14 +1981,306 @@ fn session_rewrite_component_swap_cannot_replace_a_file_outside_the_pinned_home(
 }
 
 #[test]
-fn unsupported_windows_handle_relative_mutation_fails_closed_before_live_write() {
-    let error = safe_fs::provider_mutation_support_for_platform("windows").unwrap_err();
-    assert!(error.contains("Windows"), "{error}");
+fn windows_handle_relative_mutation_is_enabled() {
+    assert!(safe_fs::provider_mutation_support_for_platform("windows").is_ok());
+    assert!(safe_fs::provider_mutation_support_for_platform("unix").is_ok());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_disposable_home_backup_sync_rollback_roundtrip() {
+    let fixture = temp_root("provider-windows-roundtrip");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let session = home.join("sessions/thread.jsonl");
+    write_session(&session, "thread", "legacy-provider");
+    let original_session = fs::read(&session).unwrap();
+    create_state_database(&home, &[("thread", "legacy-provider", 0)]);
+
+    let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    let outcome =
+        sync_provider_history_transaction_at(&home, &backup_root, scan_provider_repair_result)
+            .unwrap();
+    assert_eq!(outcome.snapshot.inconsistent_count, 0);
+    assert!(fs::read_to_string(&session).unwrap().contains("openai"));
+
+    backups::restore_provider_backup_files_at(&home, &backup).unwrap();
+    assert_eq!(fs::read(&session).unwrap(), original_session);
+    let connection = Connection::open(home.join("state_5.sqlite")).unwrap();
+    let provider: String = connection
+        .query_row(
+            "SELECT model_provider FROM threads WHERE id = 'thread';",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(provider, "legacy-provider");
+
+    drop(connection);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_pinned_home_repeatedly_replaces_an_existing_destination() {
+    let root = temp_root("provider-windows-existing-destination");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("session.jsonl"), "version-0").unwrap();
+    let pinned_home = PinnedHome::open(&root).unwrap();
+
+    for version in 1..=3 {
+        let replacement = format!("version-{version}").into_bytes();
+        pinned_home
+            .install_atomically(
+                Path::new("session.jsonl"),
+                None,
+                None,
+                |target| {
+                    std::io::Write::write_all(target, &replacement)
+                        .map_err(|error| error.to_string())
+                },
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("session.jsonl")).unwrap(),
+            format!("version-{version}")
+        );
+    }
+
+    drop(pinned_home);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_root_reparse_swap_fails_closed_and_keeps_outside_untouched() {
+    let fixture = temp_root("provider-windows-root-reparse");
+    let home = fixture.join("home");
+    let held_home = fixture.join("held-home");
+    let outside = fixture.join("outside");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(home.join("config.toml"), "home-original").unwrap();
+    fs::write(outside.join("config.toml"), "outside-sentinel").unwrap();
+    let pinned_home = PinnedHome::open(&home).unwrap();
+    let mut swapped = false;
+
+    let error = pinned_home
+        .install_atomically(
+            Path::new("config.toml"),
+            None,
+            None,
+            |target| {
+                std::io::Write::write_all(target, b"replacement").map_err(|error| error.to_string())
+            },
+            |phase, _| {
+                if phase == safe_fs::AtomicInstallPhase::BeforeTempCreate && !swapped {
+                    fs::rename(&home, &held_home).unwrap();
+                    create_windows_junction(&home, &outside);
+                    swapped = true;
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+    assert!(swapped);
     assert!(
-        error.contains("重解析") || error.contains("handle"),
+        error.contains("Codex Home") || error.contains("重解析"),
         "{error}"
     );
-    assert!(safe_fs::provider_mutation_support_for_platform("unix").is_ok());
+    assert_eq!(
+        fs::read_to_string(held_home.join("config.toml")).unwrap(),
+        "home-original"
+    );
+    assert_eq!(
+        fs::read_to_string(outside.join("config.toml")).unwrap(),
+        "outside-sentinel"
+    );
+    drop(pinned_home);
+    remove_windows_junction(&home);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_intermediate_directory_replacement_fails_closed() {
+    let fixture = temp_root("provider-windows-intermediate-directory");
+    let home = fixture.join("home");
+    let sessions = home.join("sessions");
+    let held_sessions = fixture.join("held-sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(sessions.join("thread.jsonl"), "session-original").unwrap();
+    let pinned_home = PinnedHome::open(&home).unwrap();
+    let mut swapped = false;
+
+    let error = pinned_home
+        .install_atomically(
+            Path::new("sessions/thread.jsonl"),
+            None,
+            None,
+            |target| {
+                std::io::Write::write_all(target, b"replacement")
+                    .map_err(|error| error.to_string())
+            },
+            |phase, _| {
+                if phase == safe_fs::AtomicInstallPhase::BeforeTempCreate && !swapped {
+                    fs::rename(&sessions, &held_sessions).unwrap();
+                    fs::create_dir_all(&sessions).unwrap();
+                    fs::write(sessions.join("thread.jsonl"), "replacement-sentinel").unwrap();
+                    swapped = true;
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+    assert!(swapped);
+    assert!(error.contains("父目录") || error.contains("身份变化"), "{error}");
+    assert_eq!(
+        fs::read_to_string(held_sessions.join("thread.jsonl")).unwrap(),
+        "session-original"
+    );
+    assert_eq!(
+        fs::read_to_string(sessions.join("thread.jsonl")).unwrap(),
+        "replacement-sentinel"
+    );
+    drop(pinned_home);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_intermediate_reparse_swap_fails_closed_and_keeps_outside_untouched() {
+    let fixture = temp_root("provider-windows-intermediate-reparse");
+    let home = fixture.join("home");
+    let sessions = home.join("sessions");
+    let held_sessions = fixture.join("held-sessions");
+    let outside = fixture.join("outside");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(sessions.join("thread.jsonl"), "session-original").unwrap();
+    fs::write(outside.join("thread.jsonl"), "outside-sentinel").unwrap();
+    let pinned_home = PinnedHome::open(&home).unwrap();
+    let mut swapped = false;
+
+    let error = pinned_home
+        .install_atomically(
+            Path::new("sessions/thread.jsonl"),
+            None,
+            None,
+            |target| {
+                std::io::Write::write_all(target, b"replacement")
+                    .map_err(|error| error.to_string())
+            },
+            |phase, _| {
+                if phase == safe_fs::AtomicInstallPhase::BeforeTempCreate && !swapped {
+                    fs::rename(&sessions, &held_sessions).unwrap();
+                    create_windows_junction(&sessions, &outside);
+                    swapped = true;
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+    assert!(swapped);
+    assert!(error.contains("重解析") || error.contains("父目录"), "{error}");
+    assert_eq!(
+        fs::read_to_string(held_sessions.join("thread.jsonl")).unwrap(),
+        "session-original"
+    );
+    assert_eq!(
+        fs::read_to_string(outside.join("thread.jsonl")).unwrap(),
+        "outside-sentinel"
+    );
+    drop(pinned_home);
+    remove_windows_junction(&sessions);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_destination_reparse_swap_fails_closed_and_keeps_target_untouched() {
+    let fixture = temp_root("provider-windows-destination-reparse");
+    let home = fixture.join("home");
+    let outside = fixture.join("outside");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(home.join("config.toml"), "home-original").unwrap();
+    fs::write(outside.join("sentinel.txt"), "outside-sentinel").unwrap();
+    let pinned_home = PinnedHome::open(&home).unwrap();
+    let destination = home.join("config.toml");
+    let mut swapped = false;
+
+    let error = pinned_home
+        .install_atomically(
+            Path::new("config.toml"),
+            None,
+            None,
+            |target| {
+                std::io::Write::write_all(target, b"replacement").map_err(|error| error.to_string())
+            },
+            |phase, _| {
+                if phase == safe_fs::AtomicInstallPhase::BeforeReplace && !swapped {
+                    fs::remove_file(&destination).unwrap();
+                    create_windows_junction(&destination, &outside);
+                    swapped = true;
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+    assert!(swapped);
+    assert!(
+        error.contains("重解析") || error.contains("普通文件"),
+        "{error}"
+    );
+    assert_eq!(
+        fs::read_to_string(outside.join("sentinel.txt")).unwrap(),
+        "outside-sentinel"
+    );
+    remove_windows_junction(&destination);
+    drop(pinned_home);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_pinned_home_rejects_parent_and_absolute_targets() {
+    let fixture = temp_root("provider-windows-outside-target");
+    let home = fixture.join("home");
+    let outside = fixture.join("outside.txt");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(&outside, "outside-sentinel").unwrap();
+    let pinned_home = PinnedHome::open(&home).unwrap();
+
+    for invalid in [PathBuf::from("../outside.txt"), outside.clone()] {
+        let error = pinned_home
+            .install_atomically(
+                &invalid,
+                None,
+                None,
+                |target| {
+                    std::io::Write::write_all(target, b"replacement")
+                        .map_err(|error| error.to_string())
+                },
+                |_, _| Ok(()),
+            )
+            .unwrap_err();
+        assert!(
+            error.contains("相对路径") || error.contains("无效"),
+            "{error}"
+        );
+    }
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "outside-sentinel");
+
+    drop(pinned_home);
+    fs::remove_dir_all(fixture).unwrap();
 }
 
 fn temp_root(label: &str) -> PathBuf {
@@ -1972,6 +2292,27 @@ fn temp_root(label: &str) -> PathBuf {
             .unwrap()
             .as_nanos()
     ))
+}
+
+#[cfg(windows)]
+fn create_windows_junction(link: &Path, target: &Path) {
+    let output = std::process::Command::new("cmd.exe")
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "mklink failed: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(windows)]
+fn remove_windows_junction(path: &Path) {
+    fs::remove_dir(path).unwrap();
 }
 
 fn operation_id(root: &Path, suffix: &str) -> String {

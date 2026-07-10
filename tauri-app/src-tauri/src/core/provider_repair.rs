@@ -650,6 +650,7 @@ fn scan_provider_repair_result_for_home(
 ) -> Result<ProviderRepairReport, String> {
     pinned_home.ensure_canonical_path_identity()?;
     let mut report = scan_provider_repair_result(&pinned_home.access_path())?;
+    pinned_home.ensure_canonical_path_identity()?;
     report.codex_home = pinned_home.canonical_path().to_path_buf();
     Ok(report)
 }

@@ -15,6 +15,8 @@ use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{OffsetDateTime, UtcOffset};
 
+#[cfg(windows)]
+use super::safe_fs::windows_extended_length_path;
 use super::safe_fs::{AtomicInstallPhase, PinnedHome};
 use super::session_files::{find_session_files, write_file_atomically};
 
@@ -231,31 +233,38 @@ fn build_complete_backup(
     hook: &mut impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut members = Vec::new();
-    members.push(backup_regular_member(
-        pinned_home,
-        backup_path,
-        "config.toml",
-        "config.toml.before",
-        "fixed",
-    )?);
-    members.push(backup_sqlite_member(
-        pinned_home,
-        backup_path,
-        codex_stopped,
-    )?);
-    members.push(backup_regular_member(
-        pinned_home,
-        backup_path,
-        "session_index.jsonl",
-        "session_index.jsonl.before",
-        "fixed",
-    )?);
+    members.push(
+        backup_regular_member(
+            pinned_home,
+            backup_path,
+            "config.toml",
+            "config.toml.before",
+            "fixed",
+        )
+        .map_err(|error| format!("备份 config.toml 失败：{error}"))?,
+    );
+    members.push(
+        backup_sqlite_member(pinned_home, backup_path, codex_stopped)
+            .map_err(|error| format!("备份 state_5.sqlite 失败：{error}"))?,
+    );
+    members.push(
+        backup_regular_member(
+            pinned_home,
+            backup_path,
+            "session_index.jsonl",
+            "session_index.jsonl.before",
+            "fixed",
+        )
+        .map_err(|error| format!("备份 session_index.jsonl 失败：{error}"))?,
+    );
     members.push(absent_member("state_5.sqlite-wal", "sqliteSidecar"));
     members.push(absent_member("state_5.sqlite-shm", "sqliteSidecar"));
 
     let session_backup_root = backup_path.join("session-jsonl");
     pinned_home.ensure_canonical_path_identity()?;
-    for source in find_session_files(pinned_home.canonical_path(), true)? {
+    let session_files = find_session_files(pinned_home.canonical_path(), true)?;
+    pinned_home.ensure_canonical_path_identity()?;
+    for source in session_files {
         let relative = source
             .strip_prefix(pinned_home.canonical_path())
             .map_err(|_| format!("会话文件不在规范 Codex Home 内：{}", source.display()))?;
@@ -265,7 +274,8 @@ fn build_complete_backup(
         let source_file = pinned_home
             .open_file(relative)?
             .ok_or_else(|| format!("备份会话文件在打开前消失：{}", relative.display()))?;
-        let (size, checksum_sha256) = copy_open_file(source_file, &target)?;
+        let (size, checksum_sha256) = copy_open_file(source_file, &target)
+            .map_err(|error| format!("备份会话文件 {} 失败：{error}", relative.display()))?;
         members.push(BackupMember {
             kind: "session".into(),
             relative_path: path_to_manifest_string(relative)?,
@@ -275,6 +285,7 @@ fn build_complete_backup(
             checksum_sha256: Some(checksum_sha256),
         });
     }
+    pinned_home.ensure_canonical_path_identity()?;
     if !session_backup_root.exists() {
         fs::create_dir_all(&session_backup_root).map_err(|error| error.to_string())?;
     }
@@ -343,6 +354,7 @@ fn backup_sqlite_member(
     } else {
         pinned_home.ensure_canonical_path_identity()?;
         create_consistent_sqlite_snapshot(&source, &target)?;
+        pinned_home.ensure_canonical_path_identity()?;
     }
     let size = fs::metadata(&target)
         .map_err(|error| error.to_string())?
@@ -359,10 +371,13 @@ fn backup_sqlite_member(
 }
 
 fn create_consistent_sqlite_snapshot(source: &Path, target: &Path) -> Result<(), String> {
-    let source_connection = Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    let source_open_path = sqlite_open_path(source)?;
+    let target_open_path = sqlite_open_path(target)?;
+    let source_connection =
+        Connection::open_with_flags(&source_open_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("创建 SQLite 一致性快照失败：{error}"))?;
+    let mut target_connection = Connection::open(&target_open_path)
         .map_err(|error| format!("创建 SQLite 一致性快照失败：{error}"))?;
-    let mut target_connection =
-        Connection::open(target).map_err(|error| format!("创建 SQLite 一致性快照失败：{error}"))?;
     {
         let backup = Backup::new(&source_connection, &mut target_connection)
             .map_err(|error| format!("创建 SQLite 一致性快照失败：{error}"))?;
@@ -391,9 +406,30 @@ fn create_consistent_sqlite_snapshot(source: &Path, target: &Path) -> Result<(),
     remove_snapshot_sidecars(target)?;
     OpenOptions::new()
         .read(true)
+        .write(true)
         .open(target)
         .and_then(|file| file.sync_all())
-        .map_err(|error| error.to_string())
+        .map_err(|error| format!("同步 SQLite 一致性快照 {} 失败：{error}", target.display()))
+}
+
+#[cfg(not(windows))]
+fn sqlite_open_path(path: &Path) -> Result<PathBuf, String> {
+    Ok(path.to_path_buf())
+}
+
+#[cfg(windows)]
+fn sqlite_open_path(path: &Path) -> Result<PathBuf, String> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut wide = windows_extended_length_path(path)?;
+    let terminator = wide
+        .pop()
+        .ok_or_else(|| format!("Windows SQLite 路径为空：{}", path.display()))?;
+    if terminator != 0 {
+        return Err(format!("Windows SQLite 路径缺少终止符：{}", path.display()));
+    }
+    Ok(PathBuf::from(OsString::from_wide(&wide)))
 }
 
 fn create_consistent_sqlite_snapshot_from_pinned_closed(
@@ -875,7 +911,8 @@ fn apply_restore_members(
     for (index, member) in ordered_restore_members(members).into_iter().enumerate() {
         let relative = Path::new(&member.relative_path);
         hook(RestorePhase::Apply, index, relative)?;
-        install_logical_member(pinned_home, source_root, member, index, hook)?;
+        install_logical_member(pinned_home, source_root, member, index, hook)
+            .map_err(|error| format!("应用恢复成员 {} 失败：{error}", member.relative_path))?;
         if stop_after_first_change && member.kind != "sqliteSidecar" && member.present {
             return Ok(true);
         }
@@ -949,7 +986,8 @@ fn install_logical_member(
         .as_deref()
         .ok_or_else(|| format!("备份成员缺少 SHA-256 校验：{}", member.relative_path))?;
     let source = source_root.join(backup_relative);
-    reject_symlink_or_non_file(&source)?;
+    reject_symlink_or_non_file(&source)
+        .map_err(|error| format!("验证备份成员源文件 {} 失败：{error}", source.display()))?;
     pinned_home.install_atomically(
         &relative,
         Some(member.size),
@@ -958,7 +996,9 @@ fn install_logical_member(
             let mut source_file = OpenOptions::new()
                 .read(true)
                 .open(&source)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    format!("打开备份成员源文件 {} 失败：{error}", source.display())
+                })?;
             std::io::copy(&mut source_file, target)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
@@ -1007,7 +1047,8 @@ fn install_sqlite_unit(
         .as_deref()
         .ok_or_else(|| "SQLite 备份成员缺少 SHA-256 校验".to_string())?;
     let source = source_root.join(backup_relative);
-    reject_symlink_or_non_file(&source)?;
+    reject_symlink_or_non_file(&source)
+        .map_err(|error| format!("验证 SQLite 备份源文件 {} 失败：{error}", source.display()))?;
     pinned_home.install_atomically(
         relative,
         Some(member.size),
@@ -1016,7 +1057,9 @@ fn install_sqlite_unit(
             let mut source_file = OpenOptions::new()
                 .read(true)
                 .open(&source)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    format!("打开 SQLite 备份源文件 {} 失败：{error}", source.display())
+                })?;
             std::io::copy(&mut source_file, target)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
@@ -1089,8 +1132,10 @@ fn verify_pinned_sqlite_integrity(pinned_home: &PinnedHome) -> Result<(), String
             .open_file(Path::new("state_5.sqlite"))?
             .ok_or_else(|| "SQLite 恢复验证失败：主库不存在。".to_string())?;
         copy_open_file(source, &database)?;
-        let connection = Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|error| format!("重新打开恢复后的 SQLite 副本失败：{error}"))?;
+        let database_open_path = sqlite_open_path(&database)?;
+        let connection =
+            Connection::open_with_flags(&database_open_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|error| format!("重新打开恢复后的 SQLite 副本失败：{error}"))?;
         let integrity: String = connection
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))
             .map_err(|error| format!("恢复后的 SQLite integrity_check 失败：{error}"))?;
@@ -1887,23 +1932,21 @@ fn windows_directory_sync_contract() -> WindowsDirectorySyncContract {
     WindowsDirectorySyncContract {
         desired_access: 0x4000_0000,
         share_mode: 0x0000_0001 | 0x0000_0002 | 0x0000_0004,
-        flags_and_attributes: 0x0200_0000,
+        flags_and_attributes: 0x0200_0000 | 0x0020_0000,
     }
 }
 
 #[cfg(windows)]
 fn sync_directory(path: &Path) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::io::{FromRawHandle, RawHandle};
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FileAttributeTagInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, OPEN_EXISTING,
+    };
 
     let contract = windows_directory_sync_contract();
-    let wide = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
+    let wide = windows_extended_length_path(path)?;
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
@@ -1923,6 +1966,27 @@ fn sync_directory(path: &Path) -> Result<(), String> {
         ));
     }
     let directory = unsafe { fs::File::from_raw_handle(handle as RawHandle) };
+    let mut attributes = FILE_ATTRIBUTE_TAG_INFO::default();
+    let info_ok = unsafe {
+        GetFileInformationByHandleEx(
+            directory.as_raw_handle() as _,
+            FileAttributeTagInfo,
+            (&mut attributes as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+            u32::try_from(std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>()).unwrap_or(u32::MAX),
+        )
+    };
+    if info_ok == 0 {
+        return Err(format!(
+            "读取待同步目录属性失败 {}：{}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    if attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+    {
+        return Err(format!("拒绝同步重解析点或非目录：{}", path.display()));
+    }
     directory
         .sync_all()
         .map_err(|error| format!("同步目录 {} 失败：{error}", path.display()))
@@ -2132,5 +2196,6 @@ mod review_fix_2_tests {
         assert_ne!(contract.desired_access & 0x4000_0000, 0, "GENERIC_WRITE");
         assert_eq!(contract.share_mode & 0x0000_0007, 0x0000_0007);
         assert_ne!(contract.flags_and_attributes & 0x0200_0000, 0);
+        assert_ne!(contract.flags_and_attributes & 0x0020_0000, 0);
     }
 }

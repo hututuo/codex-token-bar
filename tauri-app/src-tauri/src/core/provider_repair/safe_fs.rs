@@ -10,6 +10,12 @@ use rustix::fd::AsRawFd;
 use rustix::fd::OwnedFd;
 #[cfg(unix)]
 use rustix::fs::{self as unix_fs, AtFlags, Mode, OFlags};
+#[cfg(windows)]
+use std::ffi::{OsStr, OsString};
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 
 const ATOMIC_TEMP_ATTEMPTS: usize = 64;
 static ATOMIC_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -23,27 +29,28 @@ pub(super) enum AtomicInstallPhase {
     BeforeParentSync,
 }
 
-#[cfg(any(test, not(unix)))]
+#[cfg(test)]
 pub(super) fn provider_mutation_support_for_platform(platform: &str) -> Result<(), String> {
-    if platform.eq_ignore_ascii_case("windows") {
-        Err(
-            "Windows Provider 写操作已安全拒绝：当前源码尚未实现重解析点感知的 handle-relative 替换与文件身份校验。"
-                .into(),
-        )
-    } else {
+    if platform.eq_ignore_ascii_case("windows") || platform.eq_ignore_ascii_case("unix") {
         Ok(())
+    } else {
+        Err(format!("Provider 写操作不支持平台：{platform}"))
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn unsupported_platform_error() -> String {
-    provider_mutation_support_for_platform("windows").unwrap_err()
+    "Provider 写操作不支持当前平台。".into()
 }
 
 pub(super) struct PinnedHome {
     canonical_path: PathBuf,
     #[cfg(unix)]
     root: OwnedFd,
+    #[cfg(windows)]
+    root: File,
+    #[cfg(windows)]
+    root_identity: WindowsFileIdentity,
 }
 
 impl PinnedHome {
@@ -78,7 +85,18 @@ impl PinnedHome {
             });
         }
 
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let root = open_windows_absolute_directory_without_following(&canonical_path)?;
+            let root_identity = windows_file_identity(&root)?;
+            return Ok(Self {
+                canonical_path,
+                root,
+                root_identity,
+            });
+        }
+
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = canonical_path;
             Err(unsupported_platform_error())
@@ -119,7 +137,25 @@ impl PinnedHome {
             }
             Ok(())
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let current = open_windows_absolute_directory_without_following(&self.canonical_path)
+                .map_err(|error| {
+                format!(
+                    "固定 Codex Home 的规范路径已变化，已拒绝路径读取 {}：{error}",
+                    self.canonical_path.display()
+                )
+            })?;
+            let actual = windows_file_identity(&current)?;
+            if actual != self.root_identity {
+                return Err(format!(
+                    "固定 Codex Home 的规范路径已指向不同目录，已在路径读取前拒绝：{}",
+                    self.canonical_path.display()
+                ));
+            }
+            Ok(())
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             Err(unsupported_platform_error())
         }
@@ -134,7 +170,11 @@ impl PinnedHome {
         {
             return self.canonical_path.clone();
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            self.canonical_path.clone()
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             self.canonical_path.clone()
         }
@@ -156,7 +196,17 @@ impl PinnedHome {
             let parent = self.open_parent(relative, false)?;
             return open_regular_file_at(&parent.fd, &parent.file_name, relative);
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let parent = self.open_parent(relative, false)?;
+            return windows_open_regular_file_at(
+                &parent.file,
+                &parent.file_name,
+                relative,
+                windows_read_file_access(),
+            );
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = relative;
             Err(unsupported_platform_error())
@@ -197,7 +247,20 @@ impl PinnedHome {
                 &mut event,
             )
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let parent = self.open_parent(relative, true)?;
+            windows_reject_existing_non_regular(&parent.file, &parent.file_name, relative)?;
+            self.install_atomically_in_parent(
+                relative,
+                &parent,
+                expected_size,
+                expected_checksum,
+                &mut populate,
+                &mut event,
+            )
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (
                 relative,
@@ -225,6 +288,7 @@ impl PinnedHome {
             source.read_to_end(&mut bytes).map_err(|error| {
                 format!("读取 Provider 文件 {} 失败：{error}", relative.display())
             })?;
+            drop(source);
             let Some(replacement) = transform(bytes)? else {
                 return Ok(false);
             };
@@ -242,7 +306,38 @@ impl PinnedHome {
             )?;
             Ok(true)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let parent = self.open_parent(relative, false)?;
+            let mut source = windows_open_regular_file_required_at(
+                &parent.file,
+                parent.file_name.as_os_str(),
+                relative,
+                windows_read_file_access(),
+            )?;
+            let mut bytes = Vec::new();
+            source.read_to_end(&mut bytes).map_err(|error| {
+                format!("读取 Provider 文件 {} 失败：{error}", relative.display())
+            })?;
+            drop(source);
+            let Some(replacement) = transform(bytes)? else {
+                return Ok(false);
+            };
+            self.install_atomically_in_parent(
+                relative,
+                &parent,
+                None,
+                None,
+                &mut |target| {
+                    target
+                        .write_all(&replacement)
+                        .map_err(|error| error.to_string())
+                },
+                &mut event,
+            )?;
+            Ok(true)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (relative, &mut transform, &mut event);
             Err(unsupported_platform_error())
@@ -270,7 +365,30 @@ impl PinnedHome {
             })?;
             Ok(true)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let parent = self.open_parent(relative, false)?;
+            let Some(file) = windows_open_regular_file_at(
+                &parent.file,
+                &parent.file_name,
+                relative,
+                windows_delete_file_access(),
+            )?
+            else {
+                return Ok(false);
+            };
+            self.verify_windows_parent(relative, &parent)?;
+            windows_delete_open_file(&file).map_err(|error| {
+                format!("移除 Provider 文件 {} 失败：{error}", relative.display())
+            })?;
+            drop(file);
+            before_parent_sync()?;
+            parent.file.sync_all().map_err(|error| {
+                format!("同步 Provider 父目录 {} 失败：{error}", relative.display())
+            })?;
+            Ok(true)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (relative, &mut before_parent_sync);
             Err(unsupported_platform_error())
@@ -448,6 +566,229 @@ impl PinnedHome {
             relative.display()
         ))
     }
+
+    #[cfg(windows)]
+    fn open_parent(&self, relative: &Path, create: bool) -> Result<PinnedParent, String> {
+        self.ensure_canonical_path_identity()?;
+        let components = normal_components(relative)?;
+        let (file_name, parents) = components
+            .split_last()
+            .ok_or_else(|| format!("Provider 相对路径为空：{}", relative.display()))?;
+        let mut current = self
+            .root
+            .try_clone()
+            .map_err(|error| format!("复制 Codex Home 目录句柄失败：{error}"))?;
+        let mut relative_parent = PathBuf::new();
+        for component in parents {
+            let next = match windows_open_directory_relative(&current, component) {
+                Ok(directory) => directory,
+                Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => {
+                    match windows_create_directory_relative(&current, component) {
+                        Ok(directory) => {
+                            current.sync_all().map_err(|sync_error| {
+                                format!(
+                                    "同步新建 Provider 父目录项 {} 失败：{sync_error}",
+                                    relative.display()
+                                )
+                            })?;
+                            directory
+                        }
+                        Err(create_error)
+                            if create_error.kind() == std::io::ErrorKind::AlreadyExists =>
+                        {
+                            windows_open_directory_relative(&current, component).map_err(
+                                |open_error| {
+                                    format!(
+                                        "打开并发新建 Provider 父目录 {} 失败，已拒绝重解析点：{open_error}",
+                                        relative.display()
+                                    )
+                                },
+                            )?
+                        }
+                        Err(create_error) => {
+                            return Err(format!(
+                                "创建 Provider 父目录 {} 失败：{create_error}",
+                                relative.display()
+                            ))
+                        }
+                    }
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "打开 Provider 父目录 {} 失败，已拒绝重解析点：{error}",
+                        relative.display()
+                    ))
+                }
+            };
+            current = next;
+            relative_parent.push(component);
+        }
+        Ok(PinnedParent {
+            file: current,
+            relative_parent,
+            file_name: file_name.clone(),
+        })
+    }
+
+    #[cfg(windows)]
+    fn verify_windows_parent(&self, relative: &Path, parent: &PinnedParent) -> Result<(), String> {
+        self.ensure_canonical_path_identity()?;
+        let mut current = self
+            .root
+            .try_clone()
+            .map_err(|error| format!("复制 Codex Home 目录句柄失败：{error}"))?;
+        if !parent.relative_parent.as_os_str().is_empty() {
+            for component in normal_components(&parent.relative_parent)? {
+                current =
+                    windows_open_directory_relative(&current, &component).map_err(|error| {
+                        format!(
+                            "Provider 父目录在操作期间被替换或重定向 {}：{error}",
+                            relative.display()
+                        )
+                    })?;
+            }
+        }
+        if windows_file_identity(&current)? != windows_file_identity(&parent.file)? {
+            return Err(format!(
+                "Provider 父目录在操作期间身份变化，已拒绝写入：{}",
+                relative.display()
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[allow(clippy::too_many_arguments)]
+    fn install_atomically_in_parent(
+        &self,
+        relative: &Path,
+        parent: &PinnedParent,
+        expected_size: Option<u64>,
+        expected_checksum: Option<&str>,
+        populate: &mut impl FnMut(&mut File) -> Result<(), String>,
+        event: &mut impl FnMut(AtomicInstallPhase, &Path) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let file_name = parent.file_name.to_string_lossy();
+        event(
+            AtomicInstallPhase::BeforeTempCreate,
+            &self.canonical_path.join(relative),
+        )?;
+        self.verify_windows_parent(relative, parent)?;
+
+        for _ in 0..ATOMIC_TEMP_ATTEMPTS {
+            let sequence = ATOMIC_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let temp_name = OsString::from(format!(
+                ".{file_name}.restore-{}-{sequence:020}.tmp",
+                std::process::id()
+            ));
+            let mut temp_file = match windows_create_file_relative(&parent.file, &temp_name) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "创建 Provider 临时文件 {} 失败：{error}",
+                        self.canonical_path
+                            .join(&parent.relative_parent)
+                            .join(&temp_name)
+                            .display()
+                    ))
+                }
+            };
+            let temp_display = self
+                .canonical_path
+                .join(&parent.relative_parent)
+                .join(&temp_name);
+            let mut renamed = false;
+
+            let result = (|| {
+                populate(&mut temp_file)?;
+                temp_file
+                    .sync_all()
+                    .map_err(|error| format!("同步 Provider 临时文件失败：{error}"))?;
+                event(AtomicInstallPhase::ValidateTemp, &temp_display)?;
+
+                let mut verify_file = temp_file
+                    .try_clone()
+                    .map_err(|error| format!("复制 Provider 临时文件句柄失败：{error}"))?;
+                let actual_size = verify_file
+                    .metadata()
+                    .map_err(|error| error.to_string())?
+                    .len();
+                let actual_checksum = sha256_file(&mut verify_file)?;
+                if expected_size.is_some_and(|expected| actual_size != expected)
+                    || expected_checksum.is_some_and(|expected| actual_checksum != expected)
+                {
+                    return Err(format!(
+                        "Provider 临时文件在替换前 SHA-256 或大小校验失败：{}",
+                        relative.display()
+                    ));
+                }
+
+                event(AtomicInstallPhase::BeforeReplace, &temp_display)?;
+                self.verify_windows_parent(relative, parent)?;
+                windows_reject_existing_non_regular(&parent.file, &parent.file_name, relative)?;
+                windows_verify_named_file_identity(
+                    &parent.file,
+                    &temp_name,
+                    &temp_file,
+                    &temp_display,
+                )?;
+                windows_rename_open_file(&temp_file, &parent.file, &parent.file_name, true)
+                    .map_err(|error| {
+                        format!(
+                            "原子替换 Provider 文件 {} 失败：{error}",
+                            relative.display()
+                        )
+                    })?;
+                renamed = true;
+
+                let destination = windows_open_regular_file_required_at(
+                    &parent.file,
+                    &parent.file_name,
+                    relative,
+                    windows_sync_file_access(),
+                )?;
+                if windows_file_identity(&destination)? != windows_file_identity(&temp_file)? {
+                    return Err(format!(
+                        "Provider 文件替换后身份不一致，已拒绝成功：{}",
+                        relative.display()
+                    ));
+                }
+                let destination_display = self.canonical_path.join(relative);
+                event(AtomicInstallPhase::BeforeFileSync, &destination_display)?;
+                destination.sync_all().map_err(|error| {
+                    format!("同步 Provider 文件 {} 失败：{error}", relative.display())
+                })?;
+                event(AtomicInstallPhase::BeforeParentSync, &destination_display)?;
+                parent.file.sync_all().map_err(|error| {
+                    format!("同步 Provider 父目录 {} 失败：{error}", relative.display())
+                })?;
+                Ok(())
+            })();
+
+            if let Err(error) = result {
+                if renamed {
+                    return Err(error);
+                }
+                return Err(
+                    match cleanup_windows_temp_file(
+                        temp_file,
+                        &parent.file,
+                        &temp_name,
+                        &temp_display,
+                    ) {
+                        Ok(()) => error,
+                        Err(cleanup_error) => format!("{error}；{cleanup_error}"),
+                    },
+                );
+            }
+            return Ok(());
+        }
+        Err(format!(
+            "无法为 Provider 目标创建唯一临时文件：{}",
+            relative.display()
+        ))
+    }
 }
 
 #[cfg(unix)]
@@ -455,6 +796,13 @@ struct PinnedParent {
     fd: OwnedFd,
     relative_parent: PathBuf,
     file_name: std::ffi::OsString,
+}
+
+#[cfg(windows)]
+struct PinnedParent {
+    file: File,
+    relative_parent: PathBuf,
+    file_name: OsString,
 }
 
 #[cfg(unix)]
@@ -488,7 +836,7 @@ fn open_absolute_directory_without_following(path: &Path) -> Result<OwnedFd, Str
     Ok(current)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn normal_components(path: &Path) -> Result<Vec<std::ffi::OsString>, String> {
     if path.as_os_str().is_empty() || path.is_absolute() {
         return Err(format!("Provider 相对路径无效：{}", path.display()));
@@ -499,6 +847,48 @@ fn normal_components(path: &Path) -> Result<Vec<std::ffi::OsString>, String> {
             _ => Err(format!("Provider 相对路径无效：{}", path.display())),
         })
         .collect()
+}
+
+#[cfg(windows)]
+pub(super) fn windows_extended_length_path(path: &Path) -> Result<Vec<u16>, String> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(format!(
+            "Windows 文件操作要求无点组件的绝对路径：{}",
+            path.display()
+        ));
+    }
+
+    let mut path_wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    if path_wide.is_empty() || path_wide.contains(&0) {
+        return Err(format!("Windows 文件操作路径无效：{}", path.display()));
+    }
+    for unit in &mut path_wide {
+        if *unit == u16::from(b'/') {
+            *unit = u16::from(b'\\');
+        }
+    }
+
+    let slash = u16::from(b'\\');
+    let question = u16::from(b'?');
+    let dot = u16::from(b'.');
+    let has_verbatim_prefix = path_wide.starts_with(&[slash, slash, question, slash]);
+    let has_device_prefix = path_wide.starts_with(&[slash, slash, dot, slash]);
+    let mut wide = if has_verbatim_prefix || has_device_prefix {
+        path_wide
+    } else if path_wide.starts_with(&[slash, slash]) {
+        "\\\\?\\UNC\\"
+            .encode_utf16()
+            .chain(path_wide.into_iter().skip(2))
+            .collect()
+    } else {
+        "\\\\?\\".encode_utf16().chain(path_wide).collect()
+    };
+    wide.push(0);
+    Ok(wide)
 }
 
 #[cfg(unix)]
@@ -550,6 +940,581 @@ fn reject_existing_non_regular(
 ) -> Result<(), String> {
     let _ = open_regular_file_at(parent, file_name, diagnostic)?;
     Ok(())
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WindowsFileIdentity {
+    volume_serial_number: u64,
+    file_id: [u8; 16],
+}
+
+#[cfg(windows)]
+fn windows_read_file_access() -> u32 {
+    use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+    FILE_GENERIC_READ
+}
+
+#[cfg(windows)]
+fn windows_delete_file_access() -> u32 {
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_READ};
+    FILE_GENERIC_READ | DELETE
+}
+
+#[cfg(windows)]
+fn windows_sync_file_access() -> u32 {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
+    FILE_GENERIC_READ | FILE_GENERIC_WRITE
+}
+
+#[cfg(windows)]
+fn windows_directory_read_access() -> u32 {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_TRAVERSE, SYNCHRONIZE,
+    };
+    FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE
+}
+
+#[cfg(windows)]
+fn windows_directory_mutation_access() -> u32 {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_DELETE_CHILD, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    };
+    FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_DELETE_CHILD
+}
+
+#[cfg(windows)]
+fn open_windows_absolute_directory_without_following(path: &Path) -> Result<File, String> {
+    let (drive, components) = windows_local_drive_components(path)?;
+    if components.is_empty() {
+        return Err(format!(
+            "Codex Home 不能是 Windows 卷根目录：{}",
+            path.display()
+        ));
+    }
+    let mut current = windows_open_drive_root(drive)?;
+    for (index, component) in components.iter().enumerate() {
+        let desired_access = if index + 1 == components.len() {
+            windows_directory_mutation_access()
+        } else {
+            windows_directory_read_access()
+        };
+        current = windows_nt_open_relative(
+            &current,
+            component,
+            desired_access,
+            windows_sys::Wdk::Storage::FileSystem::FILE_OPEN,
+            windows_sys::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE
+                | windows_sys::Wdk::Storage::FileSystem::FILE_OPEN_REPARSE_POINT
+                | windows_sys::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
+            windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
+        )
+        .map_err(|error| {
+            format!(
+                "固定 Codex Home 目录组件 {} 失败，已拒绝重解析点：{error}",
+                path.display()
+            )
+        })?;
+        windows_require_directory_without_reparse(&current, path)?;
+    }
+    Ok(current)
+}
+
+#[cfg(windows)]
+fn windows_local_drive_components(path: &Path) -> Result<(u8, Vec<OsString>), String> {
+    use std::path::Prefix;
+
+    let mut components = path.components();
+    let drive = match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => drive,
+            _ => {
+                return Err(format!(
+                    "Windows Provider 仅支持本地磁盘上的 Codex Home，已拒绝 UNC/设备路径：{}",
+                    path.display()
+                ))
+            }
+        },
+        _ => {
+            return Err(format!(
+                "Windows Codex Home 缺少本地磁盘前缀：{}",
+                path.display()
+            ))
+        }
+    };
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return Err(format!(
+            "Windows Codex Home 不是绝对路径：{}",
+            path.display()
+        ));
+    }
+    let remaining = components
+        .map(|component| match component {
+            Component::Normal(part) => Ok(part.to_os_string()),
+            _ => Err(format!("Windows Codex Home 路径无效：{}", path.display())),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((drive, remaining))
+}
+
+#[cfg(windows)]
+fn windows_open_drive_root(drive: u8) -> Result<File, String> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let path = OsString::from(format!(r"\\?\{}:\", char::from(drive)));
+    let wide = path
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            windows_directory_read_access(),
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(format!(
+            "打开 Windows 卷根目录 {} 失败：{}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    let file = unsafe { File::from_raw_handle(handle as RawHandle) };
+    windows_require_directory_without_reparse(&file, Path::new(&path))?;
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn windows_nt_open_relative(
+    parent: &File,
+    name: &OsStr,
+    desired_access: u32,
+    create_disposition: u32,
+    create_options: u32,
+    file_attributes: u32,
+) -> std::io::Result<File> {
+    use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+    use windows_sys::Wdk::Storage::FileSystem::NtCreateFile;
+    use windows_sys::Win32::Foundation::{
+        RtlNtStatusToDosError, HANDLE, OBJ_CASE_INSENSITIVE, UNICODE_STRING,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let mut wide = name.encode_wide().collect::<Vec<_>>();
+    if wide.is_empty() || wide.iter().any(|unit| *unit == 0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Windows Provider 成员名为空或包含 NUL",
+        ));
+    }
+    let byte_length = wide
+        .len()
+        .checked_mul(std::mem::size_of::<u16>())
+        .and_then(|length| u16::try_from(length).ok())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Windows Provider 成员名过长",
+            )
+        })?;
+    let name = UNICODE_STRING {
+        Length: byte_length,
+        MaximumLength: byte_length,
+        Buffer: wide.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: u32::try_from(std::mem::size_of::<OBJECT_ATTRIBUTES>()).unwrap_or(u32::MAX),
+        RootDirectory: parent.as_raw_handle() as HANDLE,
+        ObjectName: &name,
+        Attributes: OBJ_CASE_INSENSITIVE,
+        SecurityDescriptor: std::ptr::null(),
+        SecurityQualityOfService: std::ptr::null(),
+    };
+    let mut io_status = IO_STATUS_BLOCK::default();
+    let mut handle: HANDLE = std::ptr::null_mut();
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            desired_access,
+            &attributes,
+            &mut io_status,
+            std::ptr::null(),
+            file_attributes,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            create_disposition,
+            create_options,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if status < 0 {
+        let code = unsafe { RtlNtStatusToDosError(status) };
+        return Err(std::io::Error::from_raw_os_error(
+            i32::try_from(code).unwrap_or(i32::MAX),
+        ));
+    }
+    if handle.is_null() {
+        return Err(std::io::Error::other(
+            "NtCreateFile 成功但未返回 Windows 文件句柄",
+        ));
+    }
+    Ok(unsafe { File::from_raw_handle(handle as RawHandle) })
+}
+
+#[cfg(windows)]
+fn windows_open_directory_relative(parent: &File, name: &OsStr) -> std::io::Result<File> {
+    let directory = windows_nt_open_relative(
+        parent,
+        name,
+        windows_directory_mutation_access(),
+        windows_sys::Wdk::Storage::FileSystem::FILE_OPEN,
+        windows_sys::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE
+            | windows_sys::Wdk::Storage::FileSystem::FILE_OPEN_REPARSE_POINT
+            | windows_sys::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
+        windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
+    )?;
+    windows_require_directory_without_reparse(&directory, Path::new(name))
+        .map_err(std::io::Error::other)?;
+    Ok(directory)
+}
+
+#[cfg(windows)]
+fn windows_create_directory_relative(parent: &File, name: &OsStr) -> std::io::Result<File> {
+    let directory = windows_nt_open_relative(
+        parent,
+        name,
+        windows_directory_mutation_access(),
+        windows_sys::Wdk::Storage::FileSystem::FILE_CREATE,
+        windows_sys::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE
+            | windows_sys::Wdk::Storage::FileSystem::FILE_OPEN_REPARSE_POINT
+            | windows_sys::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT
+            | windows_sys::Wdk::Storage::FileSystem::FILE_WRITE_THROUGH,
+        windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY,
+    )?;
+    windows_require_directory_without_reparse(&directory, Path::new(name))
+        .map_err(std::io::Error::other)?;
+    Ok(directory)
+}
+
+#[cfg(windows)]
+fn windows_create_file_relative(parent: &File, name: &OsStr) -> std::io::Result<File> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, SYNCHRONIZE,
+    };
+
+    let file = windows_nt_open_relative(
+        parent,
+        name,
+        FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE | SYNCHRONIZE,
+        windows_sys::Wdk::Storage::FileSystem::FILE_CREATE,
+        windows_sys::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE
+            | windows_sys::Wdk::Storage::FileSystem::FILE_OPEN_REPARSE_POINT
+            | windows_sys::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT
+            | windows_sys::Wdk::Storage::FileSystem::FILE_WRITE_THROUGH,
+        FILE_ATTRIBUTE_NORMAL,
+    )?;
+    windows_require_regular_without_reparse(&file, Path::new(name))
+        .map_err(std::io::Error::other)?;
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn windows_open_regular_file_at(
+    parent: &File,
+    file_name: &OsStr,
+    diagnostic: &Path,
+    desired_access: u32,
+) -> Result<Option<File>, String> {
+    match windows_nt_open_relative(
+        parent,
+        file_name,
+        desired_access,
+        windows_sys::Wdk::Storage::FileSystem::FILE_OPEN,
+        windows_sys::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE
+            | windows_sys::Wdk::Storage::FileSystem::FILE_OPEN_REPARSE_POINT
+            | windows_sys::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
+        windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
+    ) {
+        Ok(file) => {
+            windows_require_regular_without_reparse(&file, diagnostic)?;
+            Ok(Some(file))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "打开 Provider 文件 {} 失败，已拒绝重解析点或非普通文件：{error}",
+            diagnostic.display()
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn windows_open_regular_file_required_at(
+    parent: &File,
+    file_name: &OsStr,
+    diagnostic: &Path,
+    desired_access: u32,
+) -> Result<File, String> {
+    windows_open_regular_file_at(parent, file_name, diagnostic, desired_access)?
+        .ok_or_else(|| format!("Provider 文件不存在：{}", diagnostic.display()))
+}
+
+#[cfg(windows)]
+fn windows_reject_existing_non_regular(
+    parent: &File,
+    file_name: &OsStr,
+    diagnostic: &Path,
+) -> Result<(), String> {
+    let _ =
+        windows_open_regular_file_at(parent, file_name, diagnostic, windows_read_file_access())?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_file_attributes(file: &File) -> Result<u32, String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileAttributeTagInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_TAG_INFO,
+    };
+
+    let mut info = FILE_ATTRIBUTE_TAG_INFO::default();
+    let succeeded = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as _,
+            FileAttributeTagInfo,
+            (&mut info as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+            u32::try_from(std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>()).unwrap_or(u32::MAX),
+        )
+    };
+    if succeeded == 0 {
+        return Err(format!(
+            "读取 Windows Provider 文件属性失败：{}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(info.FileAttributes)
+}
+
+#[cfg(windows)]
+fn windows_require_directory_without_reparse(file: &File, diagnostic: &Path) -> Result<(), String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+
+    let attributes = windows_file_attributes(file)?;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(format!(
+            "拒绝 Windows Provider 目录重解析点：{}",
+            diagnostic.display()
+        ));
+    }
+    if attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(format!(
+            "Windows Provider 成员不是目录：{}",
+            diagnostic.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_require_regular_without_reparse(file: &File, diagnostic: &Path) -> Result<(), String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+
+    let attributes = windows_file_attributes(file)?;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(format!(
+            "拒绝 Windows Provider 文件重解析点：{}",
+            diagnostic.display()
+        ));
+    }
+    if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        return Err(format!(
+            "Windows Provider 成员不是普通文件：{}",
+            diagnostic.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_file_identity(file: &File) -> Result<WindowsFileIdentity, String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO,
+    };
+
+    let mut info = FILE_ID_INFO::default();
+    let succeeded = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as _,
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            u32::try_from(std::mem::size_of::<FILE_ID_INFO>()).unwrap_or(u32::MAX),
+        )
+    };
+    if succeeded == 0 {
+        return Err(format!(
+            "读取 Windows Provider 文件身份失败：{}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(WindowsFileIdentity {
+        volume_serial_number: info.VolumeSerialNumber,
+        file_id: info.FileId.Identifier,
+    })
+}
+
+#[cfg(windows)]
+fn windows_verify_named_file_identity(
+    parent: &File,
+    name: &OsStr,
+    expected: &File,
+    diagnostic: &Path,
+) -> Result<(), String> {
+    let named = windows_open_regular_file_required_at(
+        parent,
+        name,
+        diagnostic,
+        windows_read_file_access(),
+    )?;
+    if windows_file_identity(&named)? != windows_file_identity(expected)? {
+        return Err(format!(
+            "Windows Provider 临时文件名已指向不同文件，残留路径可能为 {}",
+            diagnostic.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_rename_open_file(
+    file: &File,
+    destination_parent: &File,
+    destination_name: &OsStr,
+    replace_existing: bool,
+) -> std::io::Result<()> {
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FileRenameInformation, NtSetInformationFile, FILE_RENAME_INFORMATION,
+        FILE_RENAME_INFORMATION_0,
+    };
+    use windows_sys::Win32::Foundation::RtlNtStatusToDosError;
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let name = destination_name.encode_wide().collect::<Vec<_>>();
+    let name_bytes = name
+        .len()
+        .checked_mul(std::mem::size_of::<u16>())
+        .ok_or_else(|| std::io::Error::other("Windows Provider 目标文件名过长"))?;
+    let buffer_bytes = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName)
+        .checked_add(name_bytes)
+        .ok_or_else(|| std::io::Error::other("Windows Provider rename 缓冲区溢出"))?;
+    let words = buffer_bytes.div_ceil(std::mem::size_of::<usize>());
+    let mut buffer = vec![0_usize; words];
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    unsafe {
+        (*info).Anonymous = FILE_RENAME_INFORMATION_0 {
+            ReplaceIfExists: replace_existing,
+        };
+        (*info).RootDirectory = destination_parent.as_raw_handle() as _;
+        (*info).FileNameLength = u32::try_from(name_bytes)
+            .map_err(|_| std::io::Error::other("Windows Provider 目标文件名过长"))?;
+        std::ptr::copy_nonoverlapping(name.as_ptr(), (*info).FileName.as_mut_ptr(), name.len());
+    }
+    let mut io_status = IO_STATUS_BLOCK::default();
+    let status = unsafe {
+        NtSetInformationFile(
+            file.as_raw_handle() as _,
+            &mut io_status,
+            info.cast(),
+            u32::try_from(buffer_bytes)
+                .map_err(|_| std::io::Error::other("Windows Provider rename 缓冲区过长"))?,
+            FileRenameInformation,
+        )
+    };
+    if status < 0 {
+        let code = unsafe { RtlNtStatusToDosError(status) };
+        return Err(std::io::Error::from_raw_os_error(
+            i32::try_from(code).unwrap_or(i32::MAX),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_delete_open_file(file: &File) -> std::io::Result<()> {
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FileDispositionInformation, NtSetInformationFile, FILE_DISPOSITION_INFORMATION,
+    };
+    use windows_sys::Win32::Foundation::RtlNtStatusToDosError;
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let disposition = FILE_DISPOSITION_INFORMATION { DeleteFile: true };
+    let mut io_status = IO_STATUS_BLOCK::default();
+    let status = unsafe {
+        NtSetInformationFile(
+            file.as_raw_handle() as _,
+            &mut io_status,
+            (&disposition as *const FILE_DISPOSITION_INFORMATION).cast(),
+            u32::try_from(std::mem::size_of::<FILE_DISPOSITION_INFORMATION>()).unwrap_or(u32::MAX),
+            FileDispositionInformation,
+        )
+    };
+    if status < 0 {
+        let code = unsafe { RtlNtStatusToDosError(status) };
+        return Err(std::io::Error::from_raw_os_error(
+            i32::try_from(code).unwrap_or(i32::MAX),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn cleanup_windows_temp_file(
+    file: File,
+    parent: &File,
+    name: &OsStr,
+    diagnostic: &Path,
+) -> Result<(), String> {
+    windows_delete_open_file(&file).map_err(|error| {
+        format!(
+            "Provider 临时文件清理失败，残留路径为 {}：{error}",
+            diagnostic.display()
+        )
+    })?;
+    drop(file);
+    match windows_open_regular_file_at(parent, name, diagnostic, windows_read_file_access()) {
+        Ok(None) => {}
+        Ok(Some(_)) => {
+            return Err(format!(
+                "Provider 临时文件清理后仍存在，残留路径为 {}",
+                diagnostic.display()
+            ))
+        }
+        Err(error) => {
+            return Err(format!(
+                "Provider 临时文件清理状态无法确认，残留路径为 {}：{error}",
+                diagnostic.display()
+            ))
+        }
+    }
+    parent.sync_all().map_err(|error| {
+        format!(
+            "Provider 临时文件已删除但父目录同步失败，残留可能恢复于 {}：{error}",
+            diagnostic.display()
+        )
+    })
 }
 
 fn sha256_file(file: &mut File) -> Result<String, String> {
