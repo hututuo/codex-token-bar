@@ -83,11 +83,29 @@
 - [ ] Run focused aggregate tests, then `cargo test --manifest-path tauri-app/src-tauri/Cargo.toml token_count_jsonl -- --test-threads=1` and `git diff --check`.
 - [ ] Commit only the Tauri streak source/tests.
 
+### Task 5: Tauri Cache-Hit Normalization Parity
+
+**Files:**
+- Modify: `tauri-app/src-tauri/src/core/usage/token_count_jsonl/aggregates.rs`
+- Modify/add focused Rust token-count aggregate tests.
+- Modify: `tauri-app/src/components/recentUsageChart/model.ts`
+- Modify/add: `tauri-app/src/components/recentUsageChart/model.test.mjs`
+- Modify token-activity tests only if the backend-normalized fixture reaches their public model boundary.
+
+**Produces:** Cache-hit input/rates bounded to the physical invariant `0 <= cached input <= input`, matching Swift across activity, recent charts, tooltips, ranking, and range/cost summaries.
+
+- [ ] Add a red Rust event fixture where cached input exceeds input; daily and recent output must expose cached input no greater than input and a hit rate no greater than `1.0`.
+- [ ] Add red Node fixtures proving malformed external/mock points cannot display `>100%`, cannot produce a combined cached total above input, and do not change ordinary `0..1` behavior.
+- [ ] Observe the current daily/recent percentage or combined-summary assertion fail before production edits.
+- [ ] In Rust, clamp each event's cached input before accumulator addition and keep `cache_hit_rate` defensively bounded. In TypeScript, normalize only at the data-model boundary; do not hide a wrong backend value solely in CSS intensity.
+- [ ] Run focused Rust aggregate/token-count tests, recent-chart and token-activity Node tests, `npm run build`, and `git diff --check`.
+- [ ] Commit Tauri Rust/TypeScript cache normalization separately from streak and discovery.
+
 ## Review And Integration Gates
 
 - File-discovery tasks are high-risk core-total changes and use a high-reasoning implementer/reviewer. Streak tasks use GPT-5.6 medium.
 - Commander reads the actual diff and tests before dispatching one fresh independent reviewer per task; worker reports are not acceptance.
 - Reviewers verify that a rejected path cannot enter a cache signature, trusted aggregate, unread result, or later fallback under a different label.
-- After all four tasks are accepted, run the full Swift suite once and the full Rust suite once, serially within each lane, then compare one deterministic disposable-Home fixture across languages.
+- After all five tasks are accepted, run the full Swift suite once and the full Rust/Node suites once, serially within each lane, then compare one deterministic disposable-Home fixture across languages.
 - UI/runtime acceptance confirms totals remain visible after a normal scan and that streak labels match, but UI evidence does not replace source tests.
 - Do not merge stable/release branches or publish an update during this batch.

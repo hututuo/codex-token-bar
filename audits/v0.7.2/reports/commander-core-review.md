@@ -548,6 +548,16 @@ A streak that ended days or weeks ago can still be displayed as current. Use one
 
 A symlink cycle can make Tauri scanning unbounded, and a stale/external rollout path can silently contaminate trusted totals, today/request metrics, unread visibility, and their caches. Define one per-lane bounded, non-following walker and require every resolved session/rollout file to remain under the canonical selected Codex Home. Preserve the valid case where an active rollout is outside `sessions/` but still inside that Home. Add symlink-cycle, symlink-escape, external absolute rollout, internal active-rollout, and normal nested-session fixtures before implementation.
 
+### [P2] Tauri can publish cache-hit rates above 100%
+
+- Swift clamps each event's cached input to its input tokens before accumulating cache usage.
+- Tauri ranking output applies that clamp, but `TokenAccumulator::add`, daily activity, and recent usage preserve raw `cached_input_tokens`; `cache_hit_rate`, weighted range summaries, tooltip copy, and cost projections can therefore receive a ratio above `1.0`.
+- The current frontend clamps only heat-map color intensity, not the displayed percentage or combined input/cached totals.
+
+**Impact**
+
+A malformed, migrated, or future schema row can render `>100%` hit rate and distort recent-range/cost summaries even though the ranking surface looks correct. Normalize cached input per event at the Rust aggregate boundary, retain a defensive `[0, 1]` clamp in presentation math, and add oversized-cached-input fixtures for daily, recent, range summary, tooltip, and ranking parity. This is a Tauri catch-up to the accepted Swift invariant, not a reason to change Swift.
+
 ## Scope Reviewed So Far
 
 - Tauri source/settings, usage/cache, quota/history, live-rate/rollout registry, unread, ProviderRepair, floating/status/tray, Windows replacement/single-instance source, updater/release scripts, and current macOS rendered dashboard evidence.
