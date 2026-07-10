@@ -70,6 +70,7 @@ struct LiveProviderSyncRunner: ProviderSyncRunning {
 @MainActor
 final class ProviderSyncStore: ObservableObject {
     @Published private(set) var snapshot = ProviderSyncSnapshot()
+    @Published private(set) var currentDataSource: CodexDataSource?
     @Published var includeArchivedSessions = true
     @Published var dryRunOnly = false
     @Published var manualProvider = ""
@@ -82,6 +83,7 @@ final class ProviderSyncStore: ObservableObject {
     private var task: Task<Void, Never>?
     private var operationGeneration = 0
     private var activeOperationKind: OperationKind?
+    private var hasBoundDataSource = false
 
     init(runner: any ProviderSyncRunning = LiveProviderSyncRunner()) {
         self.runner = runner
@@ -101,6 +103,29 @@ final class ProviderSyncStore: ObservableObject {
 
     var canRollback: Bool {
         !snapshot.isWorking && !snapshot.codexRunning
+    }
+
+    @discardableResult
+    func setDataSource(_ dataSource: CodexDataSource?) -> Bool {
+        let previousIdentity = currentDataSource?.stableIdentityKey
+        let nextIdentity = dataSource?.stableIdentityKey
+        hasBoundDataSource = true
+        currentDataSource = dataSource
+        guard previousIdentity != nextIdentity else { return false }
+
+        operationGeneration += 1
+        task?.cancel()
+        task = nil
+        activeOperationKind = nil
+        snapshot = ProviderSyncSnapshot(
+            codexHome: dataSource?.displayPath ?? "未选择 Codex Home",
+            status: dataSource == nil ? "没有可用的 Codex Home" : "等待扫描当前 Codex Home"
+        )
+        hasScanned = false
+        hasBackedUp = false
+        hasRepaired = false
+        hasVerified = false
+        return true
     }
 
     func scan(dataSource: CodexDataSource?) {
@@ -188,6 +213,7 @@ final class ProviderSyncStore: ObservableObject {
         operationKind: OperationKind,
         operation: @escaping @Sendable (any ProviderSyncRunning, CodexDataSource) async throws -> ProviderSyncSnapshot
     ) {
+        let dataSource = hasBoundDataSource ? currentDataSource : dataSource
         if let activeOperationKind,
            activeOperationKind.isDestructive || operationKind.isDestructive {
             var blocked = snapshot

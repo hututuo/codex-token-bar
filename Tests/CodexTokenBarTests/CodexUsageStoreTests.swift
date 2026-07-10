@@ -470,9 +470,58 @@ final class CodexUsageStoreTests: XCTestCase {
         }
 
         XCTAssertEqual(store.currentDataSource, sourceB)
+        XCTAssertEqual(store.dataSourceIdentity, sourceB.stableIdentityKey)
         XCTAssertEqual(store.snapshot.stats.totalTokens, 0)
         XCTAssertFalse(store.snapshot.hasPreciseTokenUsage)
         XCTAssertFalse(store.status.contains("当前显示已陈旧"))
+    }
+
+    func testCoordinatorSourceTransitionClearsUsageBeforeNextLoadAndCompactProjection() async {
+        let sourceA = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/coordinator-source-a/.codex"),
+            origin: .userSelected
+        )
+        let sourceB = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/coordinator-source-b/.codex"),
+            origin: .userSelected
+        )
+        let loader = SequentialDashboardSnapshotLoader(
+            fastResults: [.success(.empty)],
+            preciseResults: [.success(makeSnapshot(totalTokens: 98_765, dayTokens: 4_321))]
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: sourceA),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("source A usage snapshot") {
+            store.snapshot.stats.totalTokens == 98_765 && !store.isRefreshing
+        }
+
+        XCTAssertTrue(store.setDataSource(sourceB))
+
+        XCTAssertEqual(store.currentDataSource, sourceB)
+        XCTAssertEqual(store.dataSourceIdentity, sourceB.stableIdentityKey)
+        XCTAssertEqual(store.dataSourceLabel, sourceB.displayPath)
+        XCTAssertEqual(store.snapshot.stats.totalTokens, 0)
+        XCTAssertFalse(store.snapshot.hasPreciseTokenUsage)
+        XCTAssertFalse(store.status.contains("98"))
+
+        let monitor = LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: false)
+        monitor.setDataSource(sourceB)
+        let display = TokenDisplaySnapshot.make(
+            store: store,
+            monitor: monitor,
+            quota: AccountQuotaStore(observesUserDefaults: false)
+        )
+        let floating = FloatingPanelPresentationModel(snapshot: display, visibility: .default)
+        let status = StatusBarUsageMetricsPresentation(snapshot: display)
+
+        XCTAssertEqual(display.consumedTokensText, "待读取")
+        XCTAssertEqual(status.totalTokens, "待读取")
+        XCTAssertFalse(floating.accessibilityValue.contains("98.8K"))
     }
 
     func testInFlightRefreshFromOldSourceDoesNotOverwriteNewSourceSnapshot() async {

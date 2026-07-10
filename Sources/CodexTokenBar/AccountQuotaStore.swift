@@ -58,6 +58,11 @@ final class AccountQuotaStore: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var refreshGeneration = 0
     private var activeRefreshSourceID: String?
+    private var snapshotSourceID: String?
+
+    var currentDataSourceIdentity: String? {
+        currentDataSource?.stableIdentityKey
+    }
 
     init(
         quotaReader: any QuotaReading = LiveAccountQuotaReader(),
@@ -99,12 +104,12 @@ final class AccountQuotaStore: ObservableObject {
         guard oldSourceID != newSourceID else { return }
 
         lastSuccessfulRefreshCompletedAt = nil
-        if isRefreshing {
-            refreshTask?.cancel()
-            refreshGeneration += 1
-            activeRefreshSourceID = nil
-            isRefreshing = false
-        }
+        refreshTask?.cancel()
+        refreshGeneration += 1
+        activeRefreshSourceID = nil
+        isRefreshing = false
+        snapshot = .empty
+        snapshotSourceID = nil
     }
 
     func setHistoryStore(_ historyStore: QuotaHistoryStore) {
@@ -166,7 +171,7 @@ final class AccountQuotaStore: ObservableObject {
         refreshGeneration += 1
         let generation = refreshGeneration
         activeRefreshSourceID = sourceID
-        var refreshing = snapshot
+        var refreshing = snapshotSourceID == sourceID ? snapshot : .empty
         refreshing.status = snapshot.isAvailable ? "正在更新额度" : "正在读取额度"
         snapshot = refreshing
 
@@ -186,7 +191,9 @@ final class AccountQuotaStore: ObservableObject {
             switch result {
             case .success(let quota):
                 trace?.mark("mainActor.previousSnapshot.begin")
-                let previousSnapshot = await MainActor.run { self.snapshot }
+                let previousSnapshot = await MainActor.run {
+                    self.snapshotSourceID == sourceID ? self.snapshot : .empty
+                }
                 trace?.mark("mainActor.previousSnapshot.end")
                 trace?.mark("mainActor.historyStore.begin")
                 let historyStore = await MainActor.run { self.historyStore }
@@ -208,6 +215,7 @@ final class AccountQuotaStore: ObservableObject {
                     self.activeRefreshSourceID = nil
                     self.lastSuccessfulRefreshCompletedAt = Date()
                     self.snapshot = adjustedQuota
+                    self.snapshotSourceID = sourceID
                     self.historyStore?.record(adjustedQuota)
                 }
                 trace?.mark("mainActor.publish.end")
@@ -217,7 +225,9 @@ final class AccountQuotaStore: ObservableObject {
                     guard self.isCurrentRefresh(generation: generation, sourceID: sourceID) else { return }
                     self.isRefreshing = false
                     self.activeRefreshSourceID = nil
-                    var failed = self.snapshot
+                    let retainsSameSourceSnapshot = self.snapshotSourceID == sourceID
+                        && self.snapshot.isAvailable
+                    var failed = retainsSameSourceSnapshot ? self.snapshot : .empty
                     let occurredAt = Date()
                     let diagnostic = AccountQuotaDiagnostic.classify(
                         source: .accountQuota,
@@ -225,7 +235,7 @@ final class AccountQuotaStore: ObservableObject {
                         occurredAt: occurredAt
                     )
                     var diagnostics = [diagnostic]
-                    if failed.isAvailable {
+                    if retainsSameSourceSnapshot {
                         diagnostics.append(
                             .staleCachedData(
                                 source: .accountQuota,
@@ -237,6 +247,9 @@ final class AccountQuotaStore: ObservableObject {
                     failed.diagnostics = diagnostics
                     failed.status = "额度读取失败：\(diagnostic.message)"
                     self.snapshot = failed
+                    if !retainsSameSourceSnapshot {
+                        self.snapshotSourceID = nil
+                    }
                 }
                 trace?.end("failed", metadata: ["error": error.localizedDescription])
             }
@@ -255,6 +268,6 @@ final class AccountQuotaStore: ObservableObject {
     }
 
     private func quotaSourceID(for dataSource: CodexDataSource?) -> String {
-        dataSource?.codexHome.resolvingSymlinksInPath().standardizedFileURL.path ?? "default"
+        dataSource?.stableIdentityKey ?? "automatic"
     }
 }

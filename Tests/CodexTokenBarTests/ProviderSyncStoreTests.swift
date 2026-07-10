@@ -4,6 +4,73 @@ import XCTest
 
 @MainActor
 final class ProviderSyncStoreTests: XCTestCase {
+    func testSourceTransitionRejectsLatePreviousSourceCompletion() async throws {
+        let sourceA = CodexDataSource(
+            codexHome: try makeTemporaryDirectory(named: "ProviderSourceA"),
+            origin: .userSelected
+        )
+        let sourceB = CodexDataSource(
+            codexHome: try makeTemporaryDirectory(named: "ProviderSourceB"),
+            origin: .userSelected
+        )
+        let runner = SuspendedProviderSyncRunner()
+        let store = ProviderSyncStore(runner: runner)
+
+        XCTAssertTrue(store.setDataSource(sourceA))
+        store.scan(dataSource: sourceA)
+        await waitUntil("source A provider scan pending") {
+            await runner.hasPending(.scan, codexHome: sourceA.codexHome)
+        }
+
+        XCTAssertTrue(store.setDataSource(sourceB))
+        XCTAssertEqual(store.currentDataSource?.stableIdentityKey, sourceB.stableIdentityKey)
+        XCTAssertEqual(store.snapshot.codexHome, sourceB.displayPath)
+
+        await runner.complete(
+            .scan,
+            codexHome: sourceA.codexHome,
+            with: providerSnapshot(status: "late source A", provider: "source-a-provider")
+        )
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertNotEqual(store.snapshot.status, "late source A")
+        XCTAssertNotEqual(store.snapshot.detectedProvider, "source-a-provider")
+        XCTAssertEqual(store.currentDataSource?.stableIdentityKey, sourceB.stableIdentityKey)
+    }
+
+    func testBoundProviderSourceOverridesStaleViewArgument() async throws {
+        let sourceA = CodexDataSource(
+            codexHome: try makeTemporaryDirectory(named: "ProviderStaleViewSourceA"),
+            origin: .userSelected
+        )
+        let sourceB = CodexDataSource(
+            codexHome: try makeTemporaryDirectory(named: "ProviderBoundSourceB"),
+            origin: .userSelected
+        )
+        let runner = SuspendedProviderSyncRunner()
+        let store = ProviderSyncStore(runner: runner)
+        store.setDataSource(sourceB)
+
+        store.scan(dataSource: sourceA)
+        await waitUntil("provider scan request") {
+            let hasSourceA = await runner.hasPending(.scan, codexHome: sourceA.codexHome)
+            let hasSourceB = await runner.hasPending(.scan, codexHome: sourceB.codexHome)
+            return hasSourceA || hasSourceB
+        }
+
+        let requestedSourceA = await runner.hasPending(.scan, codexHome: sourceA.codexHome)
+        let requestedSourceB = await runner.hasPending(.scan, codexHome: sourceB.codexHome)
+        XCTAssertFalse(requestedSourceA)
+        XCTAssertTrue(requestedSourceB)
+
+        let completedSource = requestedSourceB ? sourceB : sourceA
+        await runner.complete(
+            .scan,
+            codexHome: completedSource.codexHome,
+            with: providerSnapshot(status: "扫描完成", provider: "openai")
+        )
+    }
+
     func testOlderNonDestructiveOperationCannotOverwriteNewerSnapshot() async throws {
         let source = CodexDataSource(
             codexHome: try makeTemporaryDirectory(named: "ProviderSyncRaceHome"),

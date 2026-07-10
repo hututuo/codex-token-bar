@@ -11,6 +11,7 @@ final class CodexUsageStore: ObservableObject {
     @Published private(set) var isPreparingUsageCache = false
     @Published private(set) var dataSourceLabel: String = "查找 Codex 目录..."
     @Published private(set) var dataSourceOrigin: String = "自动"
+    @Published private(set) var dataSourceIdentity: String?
     @Published var selectedMode: ActivityMode = .daily
 
     private let resolver: CodexDataSourceResolving
@@ -38,6 +39,7 @@ final class CodexUsageStore: ObservableObject {
         self.resolver = resolver
         self.snapshotLoader = snapshotLoader
         dataSource = resolver.resolve()
+        dataSourceIdentity = dataSource?.stableIdentityKey
         updateDataSourceLabels()
         if autoStart {
             refreshInitialSnapshot()
@@ -48,6 +50,32 @@ final class CodexUsageStore: ObservableObject {
 
     func refresh() {
         refresh(includePreciseScan: true)
+    }
+
+    @discardableResult
+    func setDataSource(_ nextDataSource: CodexDataSource?) -> Bool {
+        let previousIdentity = dataSource?.stableIdentityKey
+        let nextIdentity = nextDataSource?.stableIdentityKey
+        dataSource = nextDataSource
+        dataSourceIdentity = nextIdentity
+        updateDataSourceLabels()
+
+        guard previousIdentity != nextIdentity else {
+            return false
+        }
+
+        refreshTask?.cancel()
+        refreshGeneration += 1
+        activeRefreshSourceID = nil
+        isRefreshing = false
+        isPreparingUsageCache = false
+        snapshot = .empty
+        snapshotSourceID = nil
+        didRunPreciseScan = false
+        status = nextDataSource == nil
+            ? "未找到本地 Codex 数据目录"
+            : "正在读取新数据源..."
+        return true
     }
 
     private func refreshInitialSnapshot() {
@@ -72,8 +100,7 @@ final class CodexUsageStore: ObservableObject {
             isRefreshing = false
             trace?.mark("cancelled-stale-refresh")
         }
-        dataSource = resolvedDataSource
-        updateDataSourceLabels()
+        setDataSource(resolvedDataSource)
 
         guard let dataSource else {
             refreshTask?.cancel()
@@ -271,9 +298,7 @@ final class CodexUsageStore: ObservableObject {
         panel.directoryURL = dataSource?.codexHome ?? FileManager.default.homeDirectoryForCurrentUser
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        dataSource = resolver.saveSelectedDirectory(url)
-        didRunPreciseScan = false
-        updateDataSourceLabels()
+        setDataSource(resolver.saveSelectedDirectory(url))
         refresh()
     }
 

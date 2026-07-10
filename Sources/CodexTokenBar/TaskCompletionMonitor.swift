@@ -33,12 +33,17 @@ final class TaskCompletionMonitor: ObservableObject {
         updateStatusText()
     }
 
+    var currentDataSourceIdentity: String? {
+        dataSource?.stableIdentityKey
+    }
+
     func start(dataSource: CodexDataSource?) {
-        let oldPath = self.dataSource?.codexHome.path
+        let oldSourceIdentity = self.dataSource?.stableIdentityKey
+        let newSourceIdentity = dataSource?.stableIdentityKey
         let newPath = dataSource?.codexHome.path
         self.dataSource = dataSource
 
-        if oldPath != newPath {
+        if oldSourceIdentity != newSourceIdentity {
             pollGeneration += 1
             pollTask?.cancel()
             pollTask = nil

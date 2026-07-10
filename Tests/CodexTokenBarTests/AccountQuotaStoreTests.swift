@@ -200,6 +200,75 @@ final class AccountQuotaStoreTests: XCTestCase {
         XCTAssertNil(sources[1])
     }
 
+    func testSourceBFailureDoesNotRelabelSourceAQuotaAsStale() async throws {
+        let sourceA = CodexDataSource(
+            codexHome: try makeTemporaryDirectory(named: "QuotaSourceAForFailure"),
+            origin: .userSelected
+        )
+        let sourceB = CodexDataSource(
+            codexHome: try makeTemporaryDirectory(named: "QuotaSourceBForFailure"),
+            origin: .userSelected
+        )
+        let reader = SequentialQuotaReader(results: [
+            .success(quotaSnapshot(usedPercent: 42, accountName: "source-a-account")),
+            .failure(QuotaTestError())
+        ])
+        let store = AccountQuotaStore(quotaReader: reader, observesUserDefaults: false)
+
+        store.setDataSource(sourceA)
+        store.refresh()
+        await waitUntil("source A quota") {
+            store.snapshot.accountName == "source-a-account"
+        }
+
+        store.setDataSource(sourceB)
+
+        XCTAssertEqual(store.currentDataSourceIdentity, sourceB.stableIdentityKey)
+        XCTAssertFalse(store.snapshot.isAvailable)
+        XCTAssertNotEqual(store.snapshot.accountName, "source-a-account")
+
+        store.refresh()
+        await waitUntil("source B quota failure") {
+            store.snapshot.status.hasPrefix("额度读取失败")
+        }
+
+        XCTAssertFalse(store.snapshot.isAvailable)
+        XCTAssertNotEqual(store.snapshot.accountName, "source-a-account")
+        XCTAssertFalse(store.snapshot.staleDataDisplayed)
+        XCTAssertFalse(store.snapshot.diagnostics.contains { $0.category == .staleCachedData })
+    }
+
+    func testAutomaticNilFailureDoesNotRetainPreviousExplicitSourceQuota() async throws {
+        let sourceA = CodexDataSource(
+            codexHome: try makeTemporaryDirectory(named: "QuotaExplicitToAutomatic"),
+            origin: .userSelected
+        )
+        let reader = SequentialQuotaReader(results: [
+            .success(quotaSnapshot(usedPercent: 31, accountName: "explicit-account")),
+            .failure(QuotaTestError())
+        ])
+        let store = AccountQuotaStore(quotaReader: reader, observesUserDefaults: false)
+
+        store.setDataSource(sourceA)
+        store.refresh()
+        await waitUntil("explicit source quota") {
+            store.snapshot.accountName == "explicit-account"
+        }
+
+        store.setDataSource(nil)
+        XCTAssertNil(store.currentDataSourceIdentity)
+        XCTAssertFalse(store.snapshot.isAvailable)
+
+        store.refresh()
+        await waitUntil("automatic quota failure") {
+            store.snapshot.status.hasPrefix("额度读取失败")
+        }
+
+        XCTAssertFalse(store.snapshot.isAvailable)
+        XCTAssertNotEqual(store.snapshot.accountName, "explicit-account")
+        XCTAssertFalse(store.snapshot.staleDataDisplayed)
+    }
+
     func testInFlightQuotaRefreshFromOldSourceDoesNotOverwriteNewSourceSnapshot() async throws {
         let sourceA = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaOldSource"), origin: .userSelected)
         let sourceB = CodexDataSource(codexHome: try makeTemporaryDirectory(named: "QuotaNewSource"), origin: .userSelected)

@@ -592,6 +592,60 @@ final class LiveRateMonitorTests: XCTestCase {
     }
 
     @MainActor
+    func testEquivalentStableSourceIdentityDoesNotResetLiveRateState() throws {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        let source = try makeCodexDataSource(named: "same-stable-source")
+        let equivalentSource = CodexDataSource(
+            codexHome: source.codexHome,
+            origin: .defaultHome,
+            expectedHomeIdentity: source.homeIdentity
+        )
+        monitor.setDataSource(source)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-stable")
+
+        XCTAssertFalse(monitor.setDataSource(equivalentSource))
+        XCTAssertEqual(monitor.selectedThreadID, "thread-stable")
+        XCTAssertEqual(monitor.currentDataSourceIdentity, source.stableIdentityKey)
+    }
+
+    @MainActor
+    func testNilSourceTransitionClearsLiveStateAndRejectsLateSourceACompletion() throws {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        let sourceA = try makeCodexDataSource(named: "late-live-source-a")
+        let sourceB = try makeCodexDataSource(named: "late-live-source-b")
+        monitor.setDataSource(sourceA)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-a")
+        let sourceAGeneration = monitor.testSourceGeneration
+
+        XCTAssertTrue(monitor.setDataSource(nil))
+        XCTAssertNil(monitor.currentDataSourceIdentity)
+        XCTAssertEqual(monitor.selectedThreadID, "")
+        XCTAssertEqual(monitor.snapshot.breakdown, LiveTokenBreakdown())
+
+        let accepted = monitor.testApplyPollCompletion(
+            streamRows: [
+                LiveRateMonitor.LogRow(
+                    id: 99,
+                    threadID: "thread-a",
+                    ts: 2_000,
+                    tsNanos: 0,
+                    target: "codex_api::sse::responses",
+                    feedbackLogBody: #"SSE event: {"type":"response.output_text.delta","delta":"late source A","item_id":"msg-late","sequence_number":1}"#
+                )
+            ],
+            rolloutReads: [],
+            sourceGeneration: sourceAGeneration,
+            now: 2_000.2
+        )
+
+        XCTAssertFalse(accepted)
+        XCTAssertEqual(monitor.snapshot.breakdown, LiveTokenBreakdown())
+        XCTAssertTrue(monitor.setDataSource(sourceB))
+        XCTAssertEqual(monitor.currentDataSourceIdentity, sourceB.stableIdentityKey)
+        XCTAssertEqual(monitor.selectedThreadID, "")
+    }
+
+    @MainActor
     func testDataSourceSwitchAllowsSameFingerprintFromNewSourceToCount() throws {
         let monitor = LiveRateMonitor(monitoringEnabled: false)
         let sourceA = try makeCodexDataSource(named: "fingerprint-source-a")

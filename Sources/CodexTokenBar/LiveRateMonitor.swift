@@ -24,6 +24,8 @@ final class LiveRateMonitor: ObservableObject {
     private let resolver = CodexDataSourceResolver()
     let logReaderFactory: LiveRateLogReaderMaking
     var dataSource: CodexDataSource?
+    var compositionDataSourceBound = false
+    var sourceGeneration = 0
     let windowSeconds: TimeInterval = 2.5
     private let fastPollInterval: TimeInterval = 0.25
     private let idlePollInterval: TimeInterval = 1.0
@@ -95,6 +97,10 @@ final class LiveRateMonitor: ObservableObject {
                 await warmTokenEncoder()
             }
         }
+    }
+
+    var currentDataSourceIdentity: String? {
+        dataSource?.stableIdentityKey
     }
 
     private static func defaultPreciseTokenCountingEnabled() -> Bool {
@@ -193,7 +199,7 @@ final class LiveRateMonitor: ObservableObject {
         }
     }
 
-    func resetSourceLocalState(for source: CodexDataSource) {
+    func resetSourceLocalState(for source: CodexDataSource?) {
         logsDirectorySource?.cancel()
         logsDirectorySource = nil
         watchedLogsDirectory = ""
@@ -218,24 +224,56 @@ final class LiveRateMonitor: ObservableObject {
         totalSmoothedTokensPerSecond = 0
         clearStreamState()
 
-        let sourceLabel = "\(source.displayPath)/logs_2.sqlite"
         let interfaceLabel = snapshot.interfaceLabel
-        snapshot = LiveRateSnapshot(
-            sourceLabel: sourceLabel,
-            status: "等待新数据源会话",
-            interfaceLabel: interfaceLabel
-        )
-        configureTotalSnapshot(source: source)
+        if let source {
+            let sourceLabel = "\(source.displayPath)/logs_2.sqlite"
+            snapshot = LiveRateSnapshot(
+                sourceLabel: sourceLabel,
+                status: "等待新数据源会话",
+                interfaceLabel: interfaceLabel
+            )
+            configureTotalSnapshot(source: source)
+        } else {
+            snapshot = LiveRateSnapshot(
+                status: "未找到 Codex 数据目录",
+                interfaceLabel: interfaceLabel
+            )
+            totalSnapshot = LiveRateSnapshot(
+                threadTitle: "全会话输出汇总",
+                status: "未找到 Codex 数据目录",
+                scopeLabel: "全会话",
+                interfaceLabel: totalSnapshot.interfaceLabel
+            )
+            updateTokenCountingLabel()
+        }
+    }
+
+    private func monitoringDataSource() -> CodexDataSource? {
+        if compositionDataSourceBound {
+            return dataSource
+        }
+        if let dataSource {
+            return dataSource
+        }
+        guard let resolved = resolver.resolve() else {
+            return nil
+        }
+        adoptResolvedDataSource(resolved)
+        return resolved
+    }
+
+    private func isCurrentSourceGeneration(_ generation: Int) -> Bool {
+        sourceGeneration == generation
     }
 
     private func resetToLatestThread() async {
         guard monitoringEnabled else { return }
         let resetStartedAt = Date().timeIntervalSince1970
-        guard let source = resolver.resolve() else {
+        guard let source = monitoringDataSource() else {
             snapshot.status = "未找到 Codex 数据目录"
             return
         }
-        setDataSource(source)
+        let generation = sourceGeneration
         configureLogWatcher(logsDirectory: cachedLogsDirectoryPath)
         lastLogsSignature = Self.logStoreSignature(logsDB: cachedLogsDatabasePath)
 
@@ -244,6 +282,7 @@ final class LiveRateMonitor: ObservableObject {
             let threads = try await Task.detached(priority: .utility) {
                 try Self.recentThreads(stateDB: stateDB)
             }.value
+            guard isCurrentSourceGeneration(generation) else { return }
             threadOptions = threads.map {
                 LiveThreadOption(id: $0.id, title: $0.title, updatedAtMS: $0.updatedAtMS, rolloutPath: $0.rolloutPath)
             }
@@ -255,6 +294,7 @@ final class LiveRateMonitor: ObservableObject {
             lastGlobalLogID = try await Task.detached(priority: .utility) {
                 try Self.maxGlobalLogID(logsDB: logsDB)
             }.value
+            guard isCurrentSourceGeneration(generation) else { return }
             lastLogsSignature = Self.logStoreSignature(logsDB: logsDB)
             totalRate.clear()
             totalSessionRates.removeAll()
@@ -266,18 +306,31 @@ final class LiveRateMonitor: ObservableObject {
             )
             configureTotalSnapshot(source: source)
             await switchToThread(thread.id)
-            await backfillStartupRows(source: source, logsDB: logsDB, since: resetStartedAt - startupBackfillSeconds)
+            guard isCurrentSourceGeneration(generation) else { return }
+            await backfillStartupRows(
+                source: source,
+                logsDB: logsDB,
+                since: resetStartedAt - startupBackfillSeconds,
+                sourceGeneration: generation
+            )
         } catch {
+            guard isCurrentSourceGeneration(generation) else { return }
             snapshot.status = "实时测速不可用：\(error.localizedDescription)"
         }
     }
 
-    private func backfillStartupRows(source: CodexDataSource, logsDB: String, since: TimeInterval) async {
+    private func backfillStartupRows(
+        source: CodexDataSource,
+        logsDB: String,
+        since: TimeInterval,
+        sourceGeneration generation: Int
+    ) async {
         do {
             let reader = logReader(for: logsDB)
             let rows = try await Task.detached(priority: .utility) {
                 try reader.globalLogRows(since: since)
             }.value
+            guard isCurrentSourceGeneration(generation) else { return }
             guard !rows.isEmpty else { return }
             for row in rows {
                 lastGlobalLogID = max(lastGlobalLogID, row.id)
@@ -287,19 +340,21 @@ final class LiveRateMonitor: ObservableObject {
             updateSnapshots(now: Date().timeIntervalSince1970)
             lastLogsSignature = Self.logStoreSignature(logsDB: logsDB)
         } catch {
+            guard isCurrentSourceGeneration(generation) else { return }
             snapshot.status = "启动回看日志失败：\(error.localizedDescription)"
         }
     }
 
     private func switchToThread(_ id: String) async {
-        guard let source = dataSource ?? resolver.resolve() else { return }
-        setDataSource(source)
+        guard let source = monitoringDataSource() else { return }
+        let generation = sourceGeneration
         configureLogWatcher(logsDirectory: cachedLogsDirectoryPath)
         do {
             let logsDB = cachedLogsDatabasePath
             lastLogID = try await Task.detached(priority: .utility) {
                 try Self.maxLogID(logsDB: logsDB, threadID: id)
             }.value
+            guard isCurrentSourceGeneration(generation) else { return }
             threadID = id
             selectedThreadID = id
             selectedRate.clear()
@@ -314,6 +369,7 @@ final class LiveRateMonitor: ObservableObject {
             snapshot.status = "监听选中 thread"
             snapshot.updatedAt = Date()
         } catch {
+            guard isCurrentSourceGeneration(generation) else { return }
             snapshot.status = "切换会话失败：\(error.localizedDescription)"
         }
     }
@@ -329,8 +385,8 @@ final class LiveRateMonitor: ObservableObject {
         }
 
         lastPollProcessedRows = false
-        guard let source = dataSource ?? resolver.resolve() else { return }
-        setDataSource(source)
+        guard monitoringDataSource() != nil else { return }
+        let generation = sourceGeneration
         configureLogWatcher(logsDirectory: cachedLogsDirectoryPath)
         if threadID.isEmpty {
             await resetToLatestThread()
@@ -371,37 +427,58 @@ final class LiveRateMonitor: ObservableObject {
             } else {
                 globalRows = []
             }
+            guard isCurrentSourceGeneration(generation) else { return }
 
-            let processedStreamEvents = processStreamRows(globalRows)
-            let processedRolloutEvents = readPlan.readRolloutUpdates
-                ? await readRolloutUpdates(now: Date().timeIntervalSince1970)
-                : false
-            let processedEvents = processedStreamEvents || processedRolloutEvents
-            if processedEvents {
-                lastPollProcessedRows = true
-                extendFastPolling(from: Date().timeIntervalSince1970)
+            let rolloutReads: [RolloutRead]
+            if readPlan.readRolloutUpdates {
+                do {
+                    rolloutReads = try await loadRolloutUpdates(now: Date().timeIntervalSince1970)
+                } catch {
+                    guard isCurrentSourceGeneration(generation) else { return }
+                    snapshot.status = "读取会话流失败：\(error.localizedDescription)"
+                    return
+                }
+            } else {
+                rolloutReads = []
             }
-            updateSnapshots(now: Date().timeIntervalSince1970)
+            _ = applyPollCompletion(
+                streamRows: globalRows,
+                rolloutReads: rolloutReads,
+                sourceGeneration: generation,
+                now: Date().timeIntervalSince1970
+            )
         } catch {
+            guard isCurrentSourceGeneration(generation) else { return }
             snapshot.status = "读取日志失败：\(error.localizedDescription)"
         }
     }
 
-    private func readRolloutUpdates(now: TimeInterval) async -> Bool {
-        guard !threadOptions.isEmpty else { return false }
+    private func loadRolloutUpdates(now: TimeInterval) async throws -> [RolloutRead] {
+        guard !threadOptions.isEmpty else { return [] }
         lastRolloutReadAt = now
         let options = threadOptions
         let offsets = rolloutOffsets
+        return try await Task.detached(priority: .utility) {
+            try Self.rolloutReads(options: options, offsets: offsets)
+        }.value
+    }
 
-        do {
-            let reads = try await Task.detached(priority: .utility) {
-                try Self.rolloutReads(options: options, offsets: offsets)
-            }.value
-            return processRolloutReads(reads, now: now)
-        } catch {
-            snapshot.status = "读取会话流失败：\(error.localizedDescription)"
-            return false
+    @discardableResult
+    private func applyPollCompletion(
+        streamRows: [LogRow],
+        rolloutReads: [RolloutRead],
+        sourceGeneration generation: Int,
+        now: TimeInterval
+    ) -> Bool {
+        guard isCurrentSourceGeneration(generation) else { return false }
+        let processedStreamEvents = processStreamRows(streamRows)
+        let processedRolloutEvents = processRolloutReads(rolloutReads, now: now)
+        if processedStreamEvents || processedRolloutEvents {
+            lastPollProcessedRows = true
+            extendFastPolling(from: now)
         }
+        updateSnapshots(now: now)
+        return true
     }
 
     private func processStreamRows(_ rows: [LogRow]) -> Bool {
@@ -816,6 +893,25 @@ extension LiveRateMonitor {
             extendFastPolling(from: now)
         }
         updateSnapshots(now: now)
+    }
+
+    var testSourceGeneration: Int {
+        sourceGeneration
+    }
+
+    @discardableResult
+    func testApplyPollCompletion(
+        streamRows: [LogRow],
+        rolloutReads: [RolloutRead],
+        sourceGeneration: Int,
+        now: TimeInterval
+    ) -> Bool {
+        applyPollCompletion(
+            streamRows: streamRows,
+            rolloutReads: rolloutReads,
+            sourceGeneration: sourceGeneration,
+            now: now
+        )
     }
 
     func testRefreshSnapshots(now: TimeInterval) {

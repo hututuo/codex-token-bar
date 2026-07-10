@@ -3,17 +3,33 @@ import Darwin
 
 extension LiveRateMonitor {
     @discardableResult
-    func setDataSource(_ source: CodexDataSource) -> Bool {
-        let sourceChanged = dataSource != source
-            || cachedLogsDatabasePath.isEmpty
-            || cachedLogsDirectoryPath.isEmpty
-        guard sourceChanged else {
+    func setDataSource(_ source: CodexDataSource?) -> Bool {
+        compositionDataSourceBound = true
+        return transitionDataSource(to: source)
+    }
+
+    @discardableResult
+    func adoptResolvedDataSource(_ source: CodexDataSource) -> Bool {
+        transitionDataSource(to: source)
+    }
+
+    private func transitionDataSource(to source: CodexDataSource?) -> Bool {
+        let previousIdentity = dataSource?.stableIdentityKey
+        let nextIdentity = source?.stableIdentityKey
+        dataSource = source
+        guard previousIdentity != nextIdentity else {
             return false
         }
-        dataSource = source
-        let homePath = source.codexHome.path as NSString
-        cachedLogsDatabasePath = homePath.appendingPathComponent("logs_2.sqlite")
-        cachedLogsDirectoryPath = (cachedLogsDatabasePath as NSString).deletingLastPathComponent
+
+        sourceGeneration += 1
+        if let source {
+            let homePath = source.codexHome.path as NSString
+            cachedLogsDatabasePath = homePath.appendingPathComponent("logs_2.sqlite")
+            cachedLogsDirectoryPath = (cachedLogsDatabasePath as NSString).deletingLastPathComponent
+        } else {
+            cachedLogsDatabasePath = ""
+            cachedLogsDirectoryPath = ""
+        }
         resetSourceLocalState(for: source)
         return true
     }

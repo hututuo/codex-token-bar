@@ -13,6 +13,7 @@ struct DashboardView: View {
     @StateObject private var providerSyncStore = ProviderSyncStore()
     @State private var taskCompletionMonitor = TaskCompletionMonitor()
     @State private var liveMonitor = LiveRateMonitor()
+    @State private var sourceTransitionCoordinator = DashboardSourceTransitionCoordinator()
     @AppStorage("floatingPanelEnabled") private var floatingPanelEnabled = true
     @AppStorage("statusBarPanelEnabled") private var statusBarPanelEnabled = false
     @AppStorage("liveRateMonitoringEnabled") private var liveRateMonitoringEnabled = true
@@ -245,9 +246,9 @@ struct DashboardView: View {
             liveMonitor.setPreciseTokenCountingEnabled(preciseTokenCountingEnabled)
             quotaStore.setHistoryStore(quotaHistoryStore)
             quotaHistoryStore.start()
+            synchronizeSourceTransition()
             quotaStore.start(dataSource: store.currentDataSource)
             radarStore.start()
-            taskCompletionMonitor.start(dataSource: store.currentDataSource)
             updateTokenDisplaySurface()
             updateUsageRefreshCadence()
             if !setupGuideCompleted {
@@ -294,10 +295,8 @@ struct DashboardView: View {
         .onReceive(liveMonitor.$totalSnapshot) { snapshot in
             updateUsageRefreshCadence(liveSnapshot: snapshot)
         }
-        .onChange(of: store.dataSourceLabel) {
-            taskCompletionMonitor.start(dataSource: store.currentDataSource)
-            quotaStore.setDataSource(store.currentDataSource)
-            quotaStore.refresh(force: true)
+        .onChange(of: store.dataSourceIdentity) {
+            synchronizeSourceTransition()
         }
         .onChange(of: preciseTokenCountingEnabled) {
             liveMonitor.setPreciseTokenCountingEnabled(preciseTokenCountingEnabled)
@@ -368,7 +367,7 @@ struct DashboardView: View {
         .sheet(isPresented: $showingProviderSync) {
             ProviderSyncPage(
                 store: providerSyncStore,
-                dataSource: store.currentDataSource
+                dataSource: providerSyncStore.currentDataSource
             )
         }
         .sheet(isPresented: $showingSetupGuide) {
@@ -379,7 +378,10 @@ struct DashboardView: View {
                     dataSourceOrigin: store.dataSourceOrigin,
                     loginItemStore: loginItemStore,
                     updateSettingsStore: updateSettingsStore,
-                    onChooseDirectory: store.chooseDataSourceDirectory,
+                    onChooseDirectory: {
+                        store.chooseDataSourceDirectory()
+                        synchronizeSourceTransition()
+                    },
                     onFinish: {
                         setupGuideCompleted = true
                         showingSetupGuide = false
@@ -429,10 +431,13 @@ struct DashboardView: View {
                     taskCompletionMonitor.markAllRead()
                     updateTokenDisplaySurface()
                 },
-                onChangeDirectory: store.chooseDataSourceDirectory,
+                onChangeDirectory: {
+                    store.chooseDataSourceDirectory()
+                    synchronizeSourceTransition()
+                },
                 onOpenProviderSync: {
                     showingProviderSync = true
-                    providerSyncStore.scan(dataSource: store.currentDataSource)
+                    providerSyncStore.scan(dataSource: providerSyncStore.currentDataSource)
                 },
                 showingInterfaceScaleMenu: $showingInterfaceScaleMenu,
                 interfaceScaleAutoEnabled: $interfaceScaleAutoEnabled,
@@ -532,16 +537,16 @@ struct DashboardView: View {
             switch action {
             case .refreshUsage:
                 store.refresh()
+                synchronizeSourceTransition()
                 trace?.mark("usageStore.refresh.called")
             case let .refreshQuota(force):
-                quotaStore.setDataSource(store.currentDataSource)
                 quotaStore.refresh(force: force)
                 trace?.mark("quotaStore.refresh.called")
             case .refreshRadar:
                 radarStore.refresh()
                 trace?.mark("radarStore.refresh.called")
             case .scanProviders:
-                providerSyncStore.scan(dataSource: store.currentDataSource)
+                providerSyncStore.scan(dataSource: providerSyncStore.currentDataSource)
                 trace?.mark("providerSync.scan.called")
             case .reloadQuotaHistoryTimeline:
                 quotaHistoryStore.reload()
@@ -662,6 +667,17 @@ struct DashboardView: View {
         } else {
             statusBarPanel.close()
         }
+    }
+
+    private func synchronizeSourceTransition() {
+        sourceTransitionCoordinator.transition(
+            to: store.currentDataSource,
+            usageStore: store,
+            quotaStore: quotaStore,
+            liveMonitor: liveMonitor,
+            taskCompletionMonitor: taskCompletionMonitor,
+            providerSyncStore: providerSyncStore
+        )
     }
 
     private func syncFloatingPanelRadarSnapshot() {
