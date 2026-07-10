@@ -87,6 +87,22 @@ final class ProviderSyncStore: ObservableObject {
         self.runner = runner
     }
 
+    var canScanOrVerify: Bool {
+        !snapshot.isWorking
+    }
+
+    var canCreateBackup: Bool {
+        !snapshot.isWorking
+    }
+
+    var canSync: Bool {
+        !snapshot.isWorking && (dryRunOnly || !snapshot.codexRunning)
+    }
+
+    var canRollback: Bool {
+        !snapshot.isWorking && !snapshot.codexRunning
+    }
+
     func scan(dataSource: CodexDataSource?) {
         let includeArchivedSessions = includeArchivedSessions
         run(dataSource: dataSource, operationKind: .scan) { runner, source in

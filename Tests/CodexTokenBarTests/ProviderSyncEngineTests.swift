@@ -48,7 +48,10 @@ final class ProviderSyncEngineTests: XCTestCase {
 
     func testSyncCreatesDisposableBackupAndOnlyMutatesIntendedFiles() throws {
         let fixture = try makeFixture()
-        let engine = ProviderSyncEngine(backupRoot: fixture.backupRoot)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
 
         let snapshot = try engine.sync(
             codexHome: fixture.codexHome,
@@ -73,9 +76,52 @@ final class ProviderSyncEngineTests: XCTestCase {
         )
     }
 
+    func testScanAndVerifyRemainAvailableWhileCodexIsRunning() throws {
+        let fixture = try makeFixture()
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { true }
+        )
+
+        let scan = try engine.scan(codexHome: fixture.codexHome, includeArchivedSessions: false)
+        XCTAssertTrue(scan.codexRunning)
+        XCTAssertTrue(scan.status.contains("建议退出 Codex"))
+
+        let verify = try engine.verify(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai"
+        )
+        XCTAssertTrue(verify.codexRunning)
+        XCTAssertTrue(verify.status.contains("建议退出 Codex"))
+    }
+
+    func testSyncRejectsMutationWhileCodexIsRunning() throws {
+        let fixture = try makeFixture()
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { true }
+        )
+
+        XCTAssertThrowsError(try engine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Codex 正在运行"))
+        }
+        XCTAssertEqual(try readSessionProvider(at: fixture.activeSession), "anthropic")
+        XCTAssertEqual(try readSQLiteProviders(at: fixture.codexHome), ["anthropic"])
+        XCTAssertTrue(engine.backupRecords(for: fixture.codexHome).isEmpty)
+    }
+
     func testRollbackRestoresSelectedBackupAndRejectsInvalidTargets() throws {
         let fixture = try makeFixture()
-        let engine = ProviderSyncEngine(backupRoot: fixture.backupRoot)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
 
         let synced = try engine.sync(
             codexHome: fixture.codexHome,
@@ -115,9 +161,100 @@ final class ProviderSyncEngineTests: XCTestCase {
         }
     }
 
+    func testRollbackRejectsMutationWhileCodexIsRunning() throws {
+        let fixture = try makeFixture()
+        let setupEngine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+        let synced = try setupEngine.sync(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )
+        let backupPath = try XCTUnwrap(synced.lastBackupPath)
+        let guardedEngine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { true }
+        )
+
+        XCTAssertThrowsError(try guardedEngine.rollback(codexHome: fixture.codexHome, backupPath: backupPath)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Codex 正在运行"))
+        }
+        XCTAssertThrowsError(try guardedEngine.rollbackLatest(codexHome: fixture.codexHome)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Codex 正在运行"))
+        }
+        XCTAssertEqual(try readSessionProvider(at: fixture.activeSession), "openai")
+        XCTAssertEqual(try readSQLiteProviders(at: fixture.codexHome), ["openai"])
+    }
+
+    func testConcurrentMutationsForSameCanonicalHomeRejectSecondOperation() throws {
+        let fixture = try makeFixture()
+        let firstStarted = DispatchSemaphore(value: 0)
+        let releaseFirst = DispatchSemaphore(value: 0)
+        let firstCompleted = expectation(description: "first mutation completes")
+        let firstQueue = DispatchQueue(label: "ProviderSyncEngineTests.firstMutation")
+        let firstResult = SynchronizedProviderSyncResult()
+
+        firstQueue.async {
+            let engine = ProviderSyncEngine(
+                backupRoot: fixture.backupRoot,
+                applicationRunningProbe: { false },
+                mutationLeaseDidAcquire: {
+                    firstStarted.signal()
+                    releaseFirst.wait()
+                }
+            )
+            firstResult.set(Result {
+                try engine.sync(
+                    codexHome: fixture.codexHome,
+                    includeArchivedSessions: false,
+                    targetProviderOverride: "openai",
+                    dryRunOnly: false
+                )
+            })
+            firstCompleted.fulfill()
+        }
+
+        XCTAssertEqual(firstStarted.wait(timeout: .now() + 2), .success)
+        let canonicalAlias = fixture.codexHome
+            .deletingLastPathComponent()
+            .appendingPathComponent("codex-home/../codex-home", isDirectory: true)
+        let secondEngine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+
+        XCTAssertThrowsError(try secondEngine.sync(
+            codexHome: canonicalAlias,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("已有 Provider 修复操作进行中"))
+        }
+
+        releaseFirst.signal()
+        wait(for: [firstCompleted], timeout: 3)
+        let completedResult = try XCTUnwrap(firstResult.get())
+        XCTAssertNoThrow(try completedResult.get())
+
+        let afterRelease = try secondEngine.sync(
+            codexHome: canonicalAlias,
+            includeArchivedSessions: false,
+            targetProviderOverride: "anthropic",
+            dryRunOnly: false
+        )
+        XCTAssertEqual(afterRelease.detectedProvider, "anthropic")
+    }
+
     func testVerifyReportsCoherentStatusAfterSyncAndRollback() throws {
         let fixture = try makeFixture()
-        let engine = ProviderSyncEngine(backupRoot: fixture.backupRoot)
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
 
         let initial = try engine.verify(
             codexHome: fixture.codexHome,
@@ -291,6 +428,23 @@ final class ProviderSyncEngineTests: XCTestCase {
     private func writeJSON(_ object: [String: Any], to file: URL) throws {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: file, options: [.atomic])
+    }
+}
+
+private final class SynchronizedProviderSyncResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Result<ProviderSyncSnapshot, Error>?
+
+    func set(_ result: Result<ProviderSyncSnapshot, Error>) {
+        lock.lock()
+        value = result
+        lock.unlock()
+    }
+
+    func get() -> Result<ProviderSyncSnapshot, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
     }
 }
 

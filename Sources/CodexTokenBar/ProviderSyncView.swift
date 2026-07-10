@@ -40,7 +40,7 @@ struct ProviderSyncPage: View {
                     VStack(alignment: .leading, spacing: 12) {
                         ProviderSyncView(store: store, dataSource: dataSource)
 
-                        Text("建议退出 Codex Desktop 后执行同步；运行中的 Codex 可能会重新写回历史索引。所有同步都会先创建完整备份，可在本页备份列表选择回滚。")
+                        Text("Codex Desktop 运行时仍可扫描、验证和创建备份；同步与回滚会被后端拒绝。请先退出 Codex，再执行会修改 Provider 数据的操作。")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
@@ -100,7 +100,7 @@ struct ProviderSyncView: View {
                     accent: AppTheme.accentCyan,
                     buttonTitle: "重新扫描",
                     systemImage: "magnifyingglass",
-                    disabled: store.snapshot.isWorking || dataSource == nil
+                    disabled: !store.canScanOrVerify || dataSource == nil
                 ) {
                     store.scan(dataSource: dataSource)
                 }
@@ -113,7 +113,7 @@ struct ProviderSyncView: View {
                     accent: AppTheme.accentBlue,
                     buttonTitle: "只创建备份",
                     systemImage: "externaldrive.badge.timemachine",
-                    disabled: store.snapshot.isWorking || dataSource == nil
+                    disabled: !store.canCreateBackup || dataSource == nil
                 ) {
                     store.backup(dataSource: dataSource)
                 }
@@ -127,7 +127,7 @@ struct ProviderSyncView: View {
                     buttonTitle: store.dryRunOnly ? "演练修复" : "修复历史",
                     systemImage: "arrow.triangle.2.circlepath",
                     isProminent: true,
-                    disabled: store.snapshot.isWorking || dataSource == nil
+                    disabled: !store.canSync || dataSource == nil
                 ) {
                     store.sync(dataSource: dataSource)
                 }
@@ -141,7 +141,7 @@ struct ProviderSyncView: View {
                     accent: AppTheme.accentCyan,
                     buttonTitle: "验证结果",
                     systemImage: "checkmark.seal",
-                    disabled: store.snapshot.isWorking || dataSource == nil
+                    disabled: !store.canScanOrVerify || dataSource == nil
                 ) {
                     store.verify(dataSource: dataSource)
                 }
@@ -149,7 +149,7 @@ struct ProviderSyncView: View {
 
             ProviderSyncBackupList(
                 backups: store.snapshot.backupRecords,
-                disabled: store.snapshot.isWorking || dataSource == nil,
+                disabled: !store.canRollback || dataSource == nil,
                 onRollback: { backup in
                     store.rollback(dataSource: dataSource, backup: backup)
                 }

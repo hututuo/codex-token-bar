@@ -72,12 +72,23 @@ enum CodexDesktopApplicationMatcher {
 }
 
 final class ProviderSyncEngine {
+    private static let mutationLeaseRegistry = ProviderSyncMutationLeaseRegistry()
+
     let fileManager: FileManager
     private let backupRootOverride: URL?
+    private let applicationRunningProbe: @Sendable () -> Bool
+    private let mutationLeaseDidAcquire: (@Sendable () -> Void)?
 
-    init(fileManager: FileManager = .default, backupRoot: URL? = nil) {
+    init(
+        fileManager: FileManager = .default,
+        backupRoot: URL? = nil,
+        applicationRunningProbe: @escaping @Sendable () -> Bool = ProviderSyncEngine.defaultApplicationRunningProbe,
+        mutationLeaseDidAcquire: (@Sendable () -> Void)? = nil
+    ) {
         self.fileManager = fileManager
         self.backupRootOverride = backupRoot
+        self.applicationRunningProbe = applicationRunningProbe
+        self.mutationLeaseDidAcquire = mutationLeaseDidAcquire
     }
 
     func backupRootDirectory() -> URL {
@@ -110,71 +121,87 @@ final class ProviderSyncEngine {
         targetProviderOverride: String?,
         dryRunOnly: Bool
     ) throws -> ProviderSyncSnapshot {
-        let initial = try makeReport(codexHome: codexHome, includeArchivedSessions: includeArchivedSessions, targetProviderOverride: targetProviderOverride)
-        let backupPath = try createBackup(codexHome: codexHome, sessionFiles: initial.sessionFiles, targetProvider: initial.targetProvider)
+        return try withMutationLease(codexHome: codexHome) {
+            let initial = try makeReport(
+                codexHome: codexHome,
+                includeArchivedSessions: includeArchivedSessions,
+                targetProviderOverride: targetProviderOverride
+            )
+            if !dryRunOnly {
+                try rejectMutationIfCodexIsRunning(operation: "同步")
+            }
 
-        var changedSessionFiles = 0
-        var sqliteRowsChanged = 0
-        if !dryRunOnly {
-            do {
-                for file in initial.sessionFiles {
-                    if try rewriteSessionMetaProvider(file: file, targetProvider: initial.targetProvider) {
-                        changedSessionFiles += 1
-                    }
-                }
-                sqliteRowsChanged = try updateSQLite(codexHome: codexHome, targetProvider: initial.targetProvider)
-                sqliteRowsChanged += try repairSQLiteThreadTimestamps(codexHome: codexHome, sessionFiles: initial.sessionFiles)
-                _ = try reconcileSessionIndex(codexHome: codexHome)
-                _ = try reconcileWorkspaceOrder(codexHome: codexHome)
-            } catch {
+            let backupPath = try createBackup(codexHome: codexHome, sessionFiles: initial.sessionFiles, targetProvider: initial.targetProvider)
+
+            var changedSessionFiles = 0
+            var sqliteRowsChanged = 0
+            if !dryRunOnly {
                 do {
-                    try restoreBackup(backupPath, codexHome: codexHome)
+                    for file in initial.sessionFiles {
+                        if try rewriteSessionMetaProvider(file: file, targetProvider: initial.targetProvider) {
+                            changedSessionFiles += 1
+                        }
+                    }
+                    sqliteRowsChanged = try updateSQLite(codexHome: codexHome, targetProvider: initial.targetProvider)
+                    sqliteRowsChanged += try repairSQLiteThreadTimestamps(codexHome: codexHome, sessionFiles: initial.sessionFiles)
+                    _ = try reconcileSessionIndex(codexHome: codexHome)
+                    _ = try reconcileWorkspaceOrder(codexHome: codexHome)
                 } catch {
+                    do {
+                        try restoreBackup(backupPath, codexHome: codexHome)
+                    } catch {
+                        throw NSError(
+                            domain: "CodexTokenBar",
+                            code: 500,
+                            userInfo: [
+                                NSLocalizedDescriptionKey: "同步失败，且自动回滚失败：\(error.localizedDescription)"
+                            ]
+                        )
+                    }
                     throw NSError(
                         domain: "CodexTokenBar",
                         code: 500,
                         userInfo: [
-                            NSLocalizedDescriptionKey: "同步失败，且自动回滚失败：\(error.localizedDescription)"
+                            NSLocalizedDescriptionKey: "同步失败，已自动回滚：\(error.localizedDescription)"
                         ]
                     )
                 }
-                throw NSError(
-                    domain: "CodexTokenBar",
-                    code: 500,
-                    userInfo: [
-                        NSLocalizedDescriptionKey: "同步失败，已自动回滚：\(error.localizedDescription)"
-                    ]
-                )
             }
-        }
 
-        let verified = try makeReport(codexHome: codexHome, includeArchivedSessions: includeArchivedSessions, targetProviderOverride: targetProviderOverride)
-        let allSessionsMatch = verified.sessionProviders.keys.allSatisfy { $0 == verified.targetProvider }
-        let allSQLiteMatch = verified.sqliteProviders.allSatisfy { $0.provider == verified.targetProvider }
-        let verifiedStatus = allSessionsMatch
-            && allSQLiteMatch
-            && verified.sqliteRowsToRepair == 0
-            && verified.workspaceIssues.isEmpty
-            && verified.sqliteIntegrity == "ok"
-            ? "同步完成并已验证"
-            : "同步完成，但仍有历史或前端工作区状态未同步"
-        var next = snapshot(from: verified, status: dryRunOnly ? "Dry run 完成，已创建备份但未改历史" : verifiedStatus)
-        next.changedSessionFiles = changedSessionFiles
-        next.sqliteRowsChanged = sqliteRowsChanged
-        next.lastBackupPath = backupPath.path
-        return next
+            let verified = try makeReport(codexHome: codexHome, includeArchivedSessions: includeArchivedSessions, targetProviderOverride: targetProviderOverride)
+            let allSessionsMatch = verified.sessionProviders.keys.allSatisfy { $0 == verified.targetProvider }
+            let allSQLiteMatch = verified.sqliteProviders.allSatisfy { $0.provider == verified.targetProvider }
+            let verifiedStatus = allSessionsMatch
+                && allSQLiteMatch
+                && verified.sqliteRowsToRepair == 0
+                && verified.workspaceIssues.isEmpty
+                && verified.sqliteIntegrity == "ok"
+                ? "同步完成并已验证"
+                : "同步完成，但仍有历史或前端工作区状态未同步"
+            var next = snapshot(from: verified, status: dryRunOnly ? "Dry run 完成，已创建备份但未改历史" : verifiedStatus)
+            next.changedSessionFiles = changedSessionFiles
+            next.sqliteRowsChanged = sqliteRowsChanged
+            next.lastBackupPath = backupPath.path
+            return next
+        }
     }
 
     func rollbackLatest(codexHome: URL) throws -> ProviderSyncSnapshot {
-        let backup = try latestBackupDirectory(for: codexHome)
-        return try rollback(codexHome: codexHome, backup: backup, status: "已从最近备份回滚")
+        try withMutationLease(codexHome: codexHome) {
+            try rejectMutationIfCodexIsRunning(operation: "回滚")
+            let backup = try latestBackupDirectory(for: codexHome)
+            return try rollbackWithoutLease(codexHome: codexHome, backup: backup, status: "已从最近备份回滚")
+        }
     }
 
     func rollback(codexHome: URL, backupPath: String) throws -> ProviderSyncSnapshot {
-        try rollback(codexHome: codexHome, backup: URL(fileURLWithPath: backupPath), status: "已从所选备份回滚")
+        try withMutationLease(codexHome: codexHome) {
+            try rejectMutationIfCodexIsRunning(operation: "回滚")
+            return try rollbackWithoutLease(codexHome: codexHome, backup: URL(fileURLWithPath: backupPath), status: "已从所选备份回滚")
+        }
     }
 
-    private func rollback(codexHome: URL, backup: URL, status: String) throws -> ProviderSyncSnapshot {
+    private func rollbackWithoutLease(codexHome: URL, backup: URL, status: String) throws -> ProviderSyncSnapshot {
         try restoreBackup(backup, codexHome: codexHome)
         let report = try makeReport(codexHome: codexHome, includeArchivedSessions: true, targetProviderOverride: nil)
         var next = snapshot(from: report, status: status)
@@ -273,12 +300,50 @@ final class ProviderSyncEngine {
     }
 
     func isCodexRunning() -> Bool {
+        applicationRunningProbe()
+    }
+
+    private static func defaultApplicationRunningProbe() -> Bool {
         NSWorkspace.shared.runningApplications.contains { app in
             CodexDesktopApplicationMatcher.matches(
                 bundleIdentifier: app.bundleIdentifier,
                 localizedName: app.localizedName
             )
         }
+    }
+
+    private func rejectMutationIfCodexIsRunning(operation: String) throws {
+        guard !isCodexRunning() else {
+            throw NSError(
+                domain: "CodexTokenBar",
+                code: 409,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "\(operation) 已拒绝：Codex 正在运行。请先退出 Codex Desktop，再重新执行 Provider 修复。"
+                ]
+            )
+        }
+    }
+
+    private func withMutationLease<T>(codexHome: URL, body: () throws -> T) throws -> T {
+        let canonicalHome = canonicalHomeKey(for: codexHome)
+        guard Self.mutationLeaseRegistry.acquire(canonicalHome) else {
+            throw NSError(
+                domain: "CodexTokenBar",
+                code: 409,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "已有 Provider 修复操作进行中，请等待完成后再重试"
+                ]
+            )
+        }
+        defer {
+            Self.mutationLeaseRegistry.release(canonicalHome)
+        }
+        mutationLeaseDidAcquire?()
+        return try body()
+    }
+
+    private func canonicalHomeKey(for codexHome: URL) -> String {
+        codexHome.standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     func withDatabase<T>(path: String, readOnly: Bool, body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
@@ -357,5 +422,26 @@ private extension Array where Element: Hashable {
     func uniqued() -> [Element] {
         var seen = Set<Element>()
         return filter { seen.insert($0).inserted }
+    }
+}
+
+private final class ProviderSyncMutationLeaseRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeHomes = Set<String>()
+
+    func acquire(_ home: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !activeHomes.contains(home) else {
+            return false
+        }
+        activeHomes.insert(home)
+        return true
+    }
+
+    func release(_ home: String) {
+        lock.lock()
+        activeHomes.remove(home)
+        lock.unlock()
     }
 }

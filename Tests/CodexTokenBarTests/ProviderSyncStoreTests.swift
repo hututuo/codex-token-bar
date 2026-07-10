@@ -108,6 +108,36 @@ final class ProviderSyncStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.detectedProvider, "new")
     }
 
+    func testRunningCodexOnlyDisablesProviderMutationsInUIModel() async throws {
+        let source = CodexDataSource(
+            codexHome: try makeTemporaryDirectory(named: "ProviderSyncRunningHome"),
+            origin: .userSelected
+        )
+        let runner = SuspendedProviderSyncRunner()
+        let store = ProviderSyncStore(runner: runner)
+
+        store.scan(dataSource: source)
+        await waitUntil("scan request pending") {
+            await runner.hasPending(.scan, codexHome: source.codexHome)
+        }
+        await runner.complete(
+            .scan,
+            codexHome: source.codexHome,
+            with: providerSnapshot(status: "扫描完成，建议退出 Codex 后执行同步", provider: "openai", codexRunning: true)
+        )
+        await waitUntil("running state published") {
+            store.snapshot.codexRunning && !store.snapshot.isWorking
+        }
+
+        XCTAssertTrue(store.canScanOrVerify)
+        XCTAssertTrue(store.canCreateBackup)
+        XCTAssertFalse(store.canSync)
+        XCTAssertFalse(store.canRollback)
+
+        store.dryRunOnly = true
+        XCTAssertTrue(store.canSync)
+    }
+
     private func waitUntil(
         _ label: String,
         timeout: TimeInterval = 2,
@@ -128,11 +158,16 @@ final class ProviderSyncStoreTests: XCTestCase {
         return url
     }
 
-    private func providerSnapshot(status: String, provider: String) -> ProviderSyncSnapshot {
+    private func providerSnapshot(
+        status: String,
+        provider: String,
+        codexRunning: Bool = false
+    ) -> ProviderSyncSnapshot {
         ProviderSyncSnapshot(
             codexHome: "~/.codex",
             detectedProvider: provider,
             providerSource: "测试",
+            codexRunning: codexRunning,
             status: status,
             isWorking: false
         )
