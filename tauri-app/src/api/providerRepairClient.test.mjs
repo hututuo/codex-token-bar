@@ -117,6 +117,22 @@ test("typed busy rejection survives command normalization and latches the real o
   });
 });
 
+test("legacy Provider backup compatibility remains explicit at the API boundary", async () => {
+  await withSsrModules(async (load) => {
+    const { isProviderBackupRollbackSupported } = await load("/src/api/providerRepairClient.ts");
+    const legacy = {
+      id: "legacy-backup-1",
+      path: "/tmp/provider-repair/legacy-backup-1",
+      restoreStatus: "legacyUnsupported",
+      restoreUnsupportedReason: "旧版 v1 清单缺少可验证的成员摘要。",
+    };
+
+    assert.equal(isProviderBackupRollbackSupported(legacy), false);
+    assert.equal(legacy.path, "/tmp/provider-repair/legacy-backup-1");
+    assert.match(legacy.restoreUnsupportedReason, /v1/);
+  });
+});
+
 function deferred() {
   let resolve;
   let reject;

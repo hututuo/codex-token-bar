@@ -25,31 +25,45 @@ export function ProviderRepairBackups({
         {backups.length === 0 ? (
           <p>创建备份后，会在这里显示可回滚的时间点。</p>
         ) : (
-          backups.map((backup, index) => (
-            <article
-              className={activeBackupId === backup.id ? "repair-backup repair-backup--active" : "repair-backup"}
-              key={backup.id}
-            >
-              <button onClick={() => onSelectBackup(backup.id)} type="button">
-                <strong>#{backups.length - index}</strong>
-                <span>{backup.createdAt}</span>
-                <em>{backup.targetProvider}</em>
-              </button>
-              <small>
-                JSONL {backup.sessionFiles} · SQLite {backup.stateDatabase ? "已备份" : "无"} · 索引{" "}
-                {backup.sessionIndex ? "已备份" : "无"}
-              </small>
-              <small title={backup.codexHome}>目录 {compactCodexHome(backup.codexHome)}</small>
-              <button
-                className="repair-rollback-button"
-                disabled={busy}
-                onClick={() => onRollback(backup.id)}
-                type="button"
+          backups.map((backup, index) => {
+            const legacyUnsupported = backup.restoreStatus !== "supported";
+            return (
+              <article
+                className={activeBackupId === backup.id ? "repair-backup repair-backup--active" : "repair-backup"}
+                key={backup.id}
               >
-                回滚
-              </button>
-            </article>
-          ))
+                <button
+                  disabled={legacyUnsupported}
+                  onClick={() => onSelectBackup(backup.id)}
+                  type="button"
+                >
+                  <strong>#{backups.length - index}</strong>
+                  <span>{backup.createdAt}</span>
+                  <em>{legacyUnsupported ? "旧版备份，仅供查看" : backup.targetProvider}</em>
+                </button>
+                <small>
+                  JSONL {backup.sessionFiles} · SQLite {backup.stateDatabase ? "已备份" : "无"} · 索引{" "}
+                  {backup.sessionIndex ? "已备份" : "无"}
+                </small>
+                <small title={backup.codexHome}>目录 {compactCodexHome(backup.codexHome)}</small>
+                {legacyUnsupported ? (
+                  <>
+                    <small className="repair-backup-path" title={backup.path}>备份路径 {backup.path}</small>
+                    <small>{backup.restoreUnsupportedReason}</small>
+                    <small>请创建新的 v2 恢复点后再回滚。</small>
+                  </>
+                ) : null}
+                <button
+                  className="repair-rollback-button"
+                  disabled={busy || legacyUnsupported}
+                  onClick={() => onRollback(backup.id)}
+                  type="button"
+                >
+                  {legacyUnsupported ? "不支持回滚" : "回滚"}
+                </button>
+              </article>
+            );
+          })
         )}
       </div>
     </div>

@@ -24,6 +24,8 @@ export interface ProviderRepairBackupInfo {
   sessionFiles: number;
   stateDatabase: boolean;
   sessionIndex: boolean;
+  restoreStatus: "supported" | "legacyUnsupported";
+  restoreUnsupportedReason: string | null;
 }
 
 export interface ProviderRepairActionResult {

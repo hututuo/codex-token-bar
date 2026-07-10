@@ -16,8 +16,8 @@ pub use platform::{
     AutostartStatus, CodexHomeStatus, PlatformCapabilities, PlatformFeatureCapability,
 };
 pub use provider_repair::{
-    ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot,
-    ProviderRepairStep,
+    ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairBackupRestoreStatus,
+    ProviderRepairSnapshot, ProviderRepairStep,
 };
 pub use quota::{
     AccountQuotaBundle, QuotaHistoryDailyPoint, QuotaHistoryPoint, QuotaLimit, QuotaSnapshot,

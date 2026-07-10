@@ -53,7 +53,7 @@ export function ProviderRepairPanel({
         />
 
         <footer className="repair-panel-foot">
-          <span>建议退出 Codex Desktop 后执行同步；运行中的 Codex 可能会重新写回历史索引。</span>
+          <span>Codex Desktop 运行时仍可扫描、验证和创建备份；同步与回滚会被后端拒绝。</span>
           <span>所有同步都会先创建完整备份，可从备份列表回滚。</span>
         </footer>
       </section>

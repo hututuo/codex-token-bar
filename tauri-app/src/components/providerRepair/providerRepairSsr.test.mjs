@@ -72,6 +72,28 @@ test("ProviderRepairBackups renders rollback only for real backups and disables 
   });
 });
 
+test("ProviderRepairBackups keeps v1 backups visible but disables unsupported rollback", async () => {
+  await withSsrModules(async (load) => {
+    const { ProviderRepairBackups } = await load("/src/components/providerRepair/ProviderRepairBackups.tsx");
+    const html = renderComponent(ProviderRepairBackups, backupsProps({
+      backups: [backupFixture({
+        id: "legacy-backup-1",
+        path: "/tmp/provider-repair/legacy-backup-1",
+        restoreStatus: "legacyUnsupported",
+        restoreUnsupportedReason: "旧版 v1 清单缺少可验证的成员摘要。",
+      })],
+    }));
+
+    assert.match(html, /旧版备份，仅供查看/);
+    assert.match(html, /\/tmp\/provider-repair\/legacy-backup-1/);
+    assert.match(html, /repair-backup-path/);
+    assert.match(html, /旧版 v1 清单缺少可验证的成员摘要。/);
+    assert.match(html, /请创建新的 v2 恢复点后再回滚。/);
+    const rollbackButton = findButton(html, "不支持回滚");
+    assert.match(rollbackButton.attrs, /disabled=""/);
+  });
+});
+
 test("ProviderRepairCard SSR starts from safe non-destructive actions", async () => {
   await withSsrModules(async (load) => {
     const { ProviderRepairCard } = await load("/src/components/ProviderRepairCard.tsx");
@@ -130,6 +152,8 @@ function backupFixture(overrides = {}) {
     sessionFiles: 7,
     stateDatabase: true,
     sessionIndex: true,
+    restoreStatus: "supported",
+    restoreUnsupportedReason: null,
     ...overrides,
   };
 }

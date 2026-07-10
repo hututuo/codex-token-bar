@@ -3902,6 +3902,11 @@ input[type="range"]::-moz-range-thumb {
   grid-column: 1 / 2;
 }
 
+.repair-backup-path {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .repair-rollback-button {
   grid-column: 2 / 3;
   grid-row: 1 / 3;

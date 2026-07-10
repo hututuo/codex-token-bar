@@ -22,6 +22,7 @@ const CODEX_HOME_MARKERS: &[&str] = &[
 ];
 
 mod capabilities;
+mod provider_app;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
@@ -30,6 +31,7 @@ mod settings;
 mod surfaces;
 
 pub use capabilities::platform_capabilities;
+pub(crate) use provider_app::codex_desktop_is_running;
 pub use settings::{
     read_app_settings, save_display_surfaces, save_floating_position, save_floating_settings,
     save_custom_account_display_name, save_quota_refresh_interval_ms, save_setup_guide_completed,

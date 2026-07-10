@@ -16,7 +16,7 @@ test("ProviderRepairPanel renders safe advanced repair flow when open", async ()
     assert.match(html, /role="dialog"/);
     assert.match(html, /aria-label="会话消失修复"/);
     assert.match(html, /先扫描并创建完整备份；同步修复只在你确认后执行。/);
-    assert.match(html, /建议退出 Codex Desktop 后执行同步；运行中的 Codex 可能会重新写回历史索引。/);
+    assert.match(html, /Codex Desktop 运行时仍可扫描、验证和创建备份；同步与回滚会被后端拒绝。/);
     assert.match(html, /所有同步都会先创建完整备份，可从备份列表回滚。/);
     assert.match(html, /会话修复尚未扫描。需要时点击扫描/);
     assert.match(findButton(html, "关闭").attrs, /title="关闭会话消失修复"/);

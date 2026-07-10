@@ -41,6 +41,12 @@ export function listProviderBackups(): Promise<ProviderRepairBackupInfo[]> {
   return callCommand("list_provider_backups", [], undefined, 20_000);
 }
 
+export function isProviderBackupRollbackSupported(
+  backup: Pick<ProviderRepairBackupInfo, "restoreStatus">,
+) {
+  return backup.restoreStatus === "supported";
+}
+
 export function createProviderBackup(
   onUncertain?: (operationId: string) => void,
 ): Promise<ProviderRepairActionResult> {

@@ -1,8 +1,9 @@
 use crate::core::app_paths;
-use crate::models::ProviderRepairBackupInfo;
+use crate::models::{ProviderRepairBackupInfo, ProviderRepairBackupRestoreStatus};
 use rusqlite::backup::Backup;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
@@ -17,12 +18,15 @@ use time::{OffsetDateTime, UtcOffset};
 use super::session_files::{find_session_files, replace_file_atomically, write_file_atomically};
 
 const BACKUP_MANIFEST_SCHEMA_VERSION: u32 = 2;
+const LEGACY_UNSUPPORTED_REASON: &str = "旧版 v1 清单缺少可验证的成员摘要。";
 const UNIQUE_DIRECTORY_ATTEMPTS: usize = 64;
 const UNIQUE_FILE_ATTEMPTS: usize = 64;
+const MAX_SYNC_DIRECTORIES: usize = 100_000;
 static RECOVERY_POINT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static RESTORE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct BackupManifest {
     schema_version: u32,
     complete: bool,
@@ -35,6 +39,7 @@ struct BackupManifest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct BackupMember {
     kind: String,
     relative_path: String,
@@ -46,8 +51,21 @@ struct BackupMember {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RestorePhase {
+    Capture,
+    PublishRecoveryManifest,
     Apply,
+    ValidateTemp,
+    Verify,
     Compensate,
+    Cleanup,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BackupPublicationPhase {
+    SyncMemberDirectories,
+    PublishManifest,
+    SyncBackupDirectory,
+    SyncBackupRoot,
 }
 
 pub fn list_provider_backups() -> Result<Vec<ProviderRepairBackupInfo>, String> {
@@ -58,7 +76,9 @@ pub(super) fn provider_backup_root() -> Result<PathBuf, String> {
     app_paths::provider_repair_backup_root()
 }
 
-fn list_provider_backups_at(root: &Path) -> Result<Vec<ProviderRepairBackupInfo>, String> {
+pub(super) fn list_provider_backups_at(
+    root: &Path,
+) -> Result<Vec<ProviderRepairBackupInfo>, String> {
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
@@ -89,13 +109,31 @@ pub(super) fn create_provider_backup_files_at(
     codex_home: &Path,
     target_provider: &str,
 ) -> Result<ProviderRepairBackupInfo, String> {
+    create_provider_backup_files_at_with_hook(backup_root, codex_home, target_provider, |_, _| {
+        Ok(())
+    })
+}
+
+pub(super) fn create_provider_backup_files_at_with_hook(
+    backup_root: &Path,
+    codex_home: &Path,
+    target_provider: &str,
+    mut hook: impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
+) -> Result<ProviderRepairBackupInfo, String> {
     let canonical_home = codex_home
         .canonicalize()
         .map_err(|error| format!("无法确认 Codex Home {}：{error}", codex_home.display()))?;
     fs::create_dir_all(backup_root).map_err(|error| error.to_string())?;
     let (id, backup_path) = create_unique_directory(backup_root, "")?;
 
-    let result = build_complete_backup(&id, &backup_path, &canonical_home, target_provider);
+    let result = build_complete_backup(
+        &id,
+        &backup_path,
+        backup_root,
+        &canonical_home,
+        target_provider,
+        &mut hook,
+    );
     if let Err(error) = result {
         let cleanup = cleanup_incomplete_backup(backup_root, &backup_path, &id);
         return Err(format!("{error}{cleanup}"));
@@ -106,8 +144,10 @@ pub(super) fn create_provider_backup_files_at(
 fn build_complete_backup(
     id: &str,
     backup_path: &Path,
+    backup_root: &Path,
     canonical_home: &Path,
     target_provider: &str,
+    hook: &mut impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut members = Vec::new();
     members.push(backup_regular_member(
@@ -160,8 +200,18 @@ fn build_complete_backup(
         target_provider: target_provider.to_string(),
         members,
     };
+    hook(BackupPublicationPhase::SyncMemberDirectories, backup_path)?;
+    sync_directory_tree(backup_path)?;
     let bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
+    hook(
+        BackupPublicationPhase::PublishManifest,
+        &backup_path.join("manifest.json"),
+    )?;
     write_file_atomically(&backup_path.join("manifest.json"), &bytes)?;
+    hook(BackupPublicationPhase::SyncBackupDirectory, backup_path)?;
+    sync_directory(backup_path)?;
+    hook(BackupPublicationPhase::SyncBackupRoot, backup_root)?;
+    sync_directory(backup_root)?;
     validate_backup_manifest(backup_path).map(|_| ())
 }
 
@@ -221,21 +271,55 @@ fn create_consistent_sqlite_snapshot(source: &Path, target: &Path) -> Result<(),
             .run_to_completion(128, Duration::from_millis(5), None)
             .map_err(|error| format!("创建 SQLite 一致性快照失败：{error}"))?;
     }
+    target_connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .map_err(|error| format!("固化 SQLite 一致性快照失败：{error}"))?;
+    let journal_mode: String = target_connection
+        .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
+        .map_err(|error| format!("固化 SQLite 一致性快照日志模式失败：{error}"))?;
+    if !journal_mode.eq_ignore_ascii_case("delete") {
+        return Err(format!(
+            "SQLite 一致性快照日志模式未固化为 delete：{journal_mode}"
+        ));
+    }
     let integrity: String = target_connection
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .map_err(|error| format!("验证 SQLite 一致性快照失败：{error}"))?;
     if integrity != "ok" {
         return Err(format!("SQLite 一致性快照 integrity_check: {integrity}"));
     }
-    target_connection
-        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-        .map_err(|error| format!("固化 SQLite 一致性快照失败：{error}"))?;
     drop(target_connection);
+    remove_snapshot_sidecars(target)?;
     OpenOptions::new()
         .read(true)
         .open(target)
         .and_then(|file| file.sync_all())
         .map_err(|error| error.to_string())
+}
+
+fn remove_snapshot_sidecars(database: &Path) -> Result<(), String> {
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = database.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        let sidecar = PathBuf::from(sidecar);
+        match fs::symlink_metadata(&sidecar) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                return Err(format!(
+                    "SQLite 一致性快照 sidecar 不是普通文件：{}",
+                    sidecar.display()
+                ))
+            }
+            Ok(_) => fs::remove_file(&sidecar).map_err(|error| {
+                format!(
+                    "移除 SQLite 一致性快照 sidecar {} 失败：{error}",
+                    sidecar.display()
+                )
+            })?,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(())
 }
 
 fn absent_member(relative_path: &str, kind: &str) -> BackupMember {
@@ -272,6 +356,16 @@ pub(super) fn ensure_backup_matches_codex_home(
     backup: &ProviderRepairBackupInfo,
     codex_home: &Path,
 ) -> Result<(), String> {
+    if backup.restore_status != ProviderRepairBackupRestoreStatus::Supported {
+        return Err(format!(
+            "{} 请创建新的 v2 恢复点后再回滚。旧版备份保留于 {}。",
+            backup
+                .restore_unsupported_reason
+                .as_deref()
+                .unwrap_or(LEGACY_UNSUPPORTED_REASON),
+            backup.path
+        ));
+    }
     let expected = codex_home_fingerprint(codex_home);
     if backup.codex_home_fingerprint.trim().is_empty() {
         return Err("这个备份缺少 Codex Home 绑定信息，请先为当前目录重新创建备份。".into());
@@ -286,24 +380,51 @@ pub(super) fn ensure_backup_matches_codex_home(
     Ok(())
 }
 
-pub(super) fn restore_provider_backup_files(
+pub(super) fn restore_provider_backup_files_with_verification(
     codex_home: &Path,
     backup: &ProviderRepairBackupInfo,
+    verify: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<(), String> {
-    restore_provider_backup_files_at(codex_home, backup)
+    restore_provider_backup_files_at_with_verification_and_hook(
+        codex_home,
+        backup,
+        |_, _, _| Ok(()),
+        verify,
+    )
 }
 
+#[cfg(test)]
 pub(super) fn restore_provider_backup_files_at(
     codex_home: &Path,
     backup: &ProviderRepairBackupInfo,
 ) -> Result<(), String> {
-    restore_provider_backup_files_at_with_hook(codex_home, backup, |_, _, _| Ok(()))
+    restore_provider_backup_files_at_with_verification_and_hook(
+        codex_home,
+        backup,
+        |_, _, _| Ok(()),
+        |_| Ok(()),
+    )
 }
 
+#[cfg(test)]
 pub(super) fn restore_provider_backup_files_at_with_hook(
     codex_home: &Path,
     backup: &ProviderRepairBackupInfo,
+    hook: impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
+) -> Result<(), String> {
+    restore_provider_backup_files_at_with_verification_and_hook(
+        codex_home,
+        backup,
+        hook,
+        |_| Ok(()),
+    )
+}
+
+pub(super) fn restore_provider_backup_files_at_with_verification_and_hook(
+    codex_home: &Path,
+    backup: &ProviderRepairBackupInfo,
     mut hook: impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
+    verify: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<(), String> {
     let canonical_home = codex_home
         .canonicalize()
@@ -319,52 +440,75 @@ pub(super) fn restore_provider_backup_files_at_with_hook(
     let backup_root = backup_path
         .parent()
         .ok_or_else(|| "备份目录缺少父目录".to_string())?;
-    let (_, recovery_path) = create_unique_directory(backup_root, ".restore-recovery-")?;
-    let recovery_members =
-        capture_live_members(&canonical_home, &recovery_path, &manifest.members)?;
-    let recovery_manifest =
-        serde_json::to_vec_pretty(&recovery_members).map_err(|error| error.to_string())?;
-    write_file_atomically(
-        &recovery_path.join("recovery-manifest.json"),
-        &recovery_manifest,
-    )?;
-
-    for (index, member) in manifest.members.iter().enumerate() {
-        if let Err(error) = hook(RestorePhase::Apply, index, Path::new(&member.relative_path))
-            .and_then(|_| install_member(&canonical_home, &backup_path, member))
-        {
-            let compensation_errors = compensate_restore(
-                &canonical_home,
+    let (recovery_id, recovery_path) = create_unique_directory(backup_root, ".restore-recovery-")?;
+    let recovery_members = match capture_and_publish_live_state(
+        &canonical_home,
+        &recovery_path,
+        &recovery_id,
+        &manifest,
+        &mut hook,
+    ) {
+        Ok(members) => members,
+        Err(error) => {
+            return Err(error_with_recovery_cleanup(
+                format!("恢复前状态暂存失败：{error}"),
+                backup_root,
                 &recovery_path,
-                &recovery_members,
                 &mut hook,
-            );
-            if compensation_errors.is_empty() {
-                let _ = fs::remove_dir_all(&recovery_path);
-                return Err(format!(
-                    "恢复失败：{error}；已补偿回恢复前状态，原恢复点仍保留。"
-                ));
-            }
-            return Err(format!(
-                "恢复失败：{error}；恢复补偿未完成：{}；恢复材料保留于 {}，原恢复点仍保留。",
-                compensation_errors.join("；"),
-                recovery_path.display()
+            ))
+        }
+    };
+
+    let restore_result =
+        apply_restore_members(&canonical_home, &backup_path, &manifest.members, &mut hook)
+            .and_then(|_| {
+                hook(RestorePhase::Verify, 0, &canonical_home)?;
+                verify(&canonical_home)
+                    .map_err(|error| format!("恢复后的 Provider 强验证失败：{error}"))
+            });
+
+    if let Err(error) = restore_result {
+        let compensation_errors = compensate_restore(
+            &canonical_home,
+            &recovery_path,
+            &recovery_members,
+            &mut hook,
+        );
+        if compensation_errors.is_empty() {
+            let message = format!("恢复失败：{error}；已补偿回恢复前状态，原恢复点仍保留。");
+            return Err(error_with_recovery_cleanup(
+                message,
+                backup_root,
+                &recovery_path,
+                &mut hook,
             ));
         }
+        return Err(format!(
+            "恢复失败：{error}；恢复补偿未完成：{}；恢复材料保留于 {}，原恢复点仍保留。",
+            compensation_errors.join("；"),
+            recovery_path.display()
+        ));
     }
 
-    let _ = fs::remove_dir_all(recovery_path);
-    Ok(())
+    cleanup_recovery_path(backup_root, &recovery_path, &mut hook)
+        .map_err(|error| format!("恢复已完成，但敏感恢复材料清理失败：{error}"))
 }
 
-fn capture_live_members(
+fn capture_and_publish_live_state(
     canonical_home: &Path,
     recovery_path: &Path,
-    members: &[BackupMember],
+    recovery_id: &str,
+    source_manifest: &BackupManifest,
+    hook: &mut impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
 ) -> Result<Vec<BackupMember>, String> {
-    let mut captured = Vec::with_capacity(members.len());
-    for member in members {
+    let mut captured = Vec::with_capacity(source_manifest.members.len());
+    for (index, member) in source_manifest.members.iter().enumerate() {
         let relative = Path::new(&member.relative_path);
+        hook(RestorePhase::Capture, index, relative)?;
+        if member.kind == "sqliteSidecar" {
+            captured.push(absent_member(&member.relative_path, &member.kind));
+            continue;
+        }
         let source = validated_destination(canonical_home, relative)?;
         if regular_file_metadata_if_exists(&source)?.is_none() {
             captured.push(absent_member(&member.relative_path, &member.kind));
@@ -372,7 +516,20 @@ fn capture_live_members(
         }
         let backup_relative = PathBuf::from("live").join(relative);
         let target = recovery_path.join(&backup_relative);
-        let (size, checksum_sha256) = copy_regular_file(&source, &target)?;
+        let (size, checksum_sha256) = if member.kind == "sqlite" {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            create_consistent_sqlite_snapshot(&source, &target)?;
+            (
+                fs::metadata(&target)
+                    .map_err(|error| error.to_string())?
+                    .len(),
+                file_sha256(&target)?,
+            )
+        } else {
+            copy_regular_file(&source, &target)?
+        };
         captured.push(BackupMember {
             kind: member.kind.clone(),
             relative_path: member.relative_path.clone(),
@@ -382,7 +539,43 @@ fn capture_live_members(
             checksum_sha256: Some(checksum_sha256),
         });
     }
+    let recovery_manifest = BackupManifest {
+        schema_version: BACKUP_MANIFEST_SCHEMA_VERSION,
+        complete: true,
+        id: recovery_id.to_string(),
+        created_at: format_now_rfc3339(),
+        codex_home: source_manifest.codex_home.clone(),
+        codex_home_fingerprint: source_manifest.codex_home_fingerprint.clone(),
+        target_provider: source_manifest.target_provider.clone(),
+        members: captured.clone(),
+    };
+    sync_directory_tree(recovery_path)?;
+    hook(
+        RestorePhase::PublishRecoveryManifest,
+        0,
+        &recovery_path.join("recovery-manifest.json"),
+    )?;
+    let bytes = serde_json::to_vec_pretty(&recovery_manifest).map_err(|error| error.to_string())?;
+    write_file_atomically(&recovery_path.join("recovery-manifest.json"), &bytes)?;
+    sync_directory(recovery_path)?;
     Ok(captured)
+}
+
+fn apply_restore_members(
+    canonical_home: &Path,
+    source_root: &Path,
+    members: &[BackupMember],
+    hook: &mut impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
+) -> Result<(), String> {
+    for (index, member) in ordered_restore_members(members).into_iter().enumerate() {
+        let relative = Path::new(&member.relative_path);
+        hook(RestorePhase::Apply, index, relative)?;
+        install_logical_member(canonical_home, source_root, member, |temp| {
+            hook(RestorePhase::ValidateTemp, index, relative)
+                .map_err(|error| format!("恢复临时文件验证失败 {}：{error}", temp.display()))
+        })?;
+    }
+    Ok(())
 }
 
 fn compensate_restore(
@@ -392,13 +585,14 @@ fn compensate_restore(
     hook: &mut impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    for (index, member) in recovery_members.iter().rev().enumerate() {
-        let result = hook(
-            RestorePhase::Compensate,
-            index,
-            Path::new(&member.relative_path),
-        )
-        .and_then(|_| install_member(canonical_home, recovery_path, member));
+    for (index, member) in ordered_restore_members(recovery_members)
+        .into_iter()
+        .enumerate()
+    {
+        let relative = Path::new(&member.relative_path);
+        let result = hook(RestorePhase::Compensate, index, relative).and_then(|_| {
+            install_logical_member(canonical_home, recovery_path, member, |_| Ok(()))
+        });
         if let Err(error) = result {
             errors.push(format!("{}：{error}", member.relative_path));
         }
@@ -406,11 +600,28 @@ fn compensate_restore(
     errors
 }
 
-fn install_member(
+fn ordered_restore_members(members: &[BackupMember]) -> Vec<&BackupMember> {
+    let mut ordered = Vec::with_capacity(members.len().saturating_sub(2));
+    if let Some(sqlite) = members.iter().find(|member| member.kind == "sqlite") {
+        ordered.push(sqlite);
+    }
+    ordered.extend(
+        members
+            .iter()
+            .filter(|member| member.kind != "sqlite" && member.kind != "sqliteSidecar"),
+    );
+    ordered
+}
+
+fn install_logical_member(
     canonical_home: &Path,
     source_root: &Path,
     member: &BackupMember,
+    mut validate_temp: impl FnMut(&Path) -> Result<(), String>,
 ) -> Result<(), String> {
+    if member.kind == "sqlite" {
+        return install_sqlite_unit(canonical_home, source_root, member, &mut validate_temp);
+    }
     validate_relative_member_path(Path::new(&member.relative_path), &member.kind)?;
     let destination = validated_destination(canonical_home, Path::new(&member.relative_path))?;
     if !member.present {
@@ -430,7 +641,138 @@ fn install_member(
         .ok_or_else(|| format!("备份成员缺少 SHA-256 校验：{}", member.relative_path))?;
     let source = source_root.join(backup_relative);
     ensure_safe_parent_directories(canonical_home, &destination)?;
-    copy_file_atomically(&source, &destination, member.size, expected_checksum)
+    copy_file_atomically(
+        &source,
+        &destination,
+        member.size,
+        expected_checksum,
+        &mut validate_temp,
+    )
+}
+
+fn install_sqlite_unit(
+    canonical_home: &Path,
+    source_root: &Path,
+    member: &BackupMember,
+    validate_temp: &mut impl FnMut(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let destination = validated_destination(canonical_home, Path::new("state_5.sqlite"))?;
+    remove_sqlite_sidecars(canonical_home)?;
+    if !member.present {
+        match fs::remove_file(&destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("移除 SQLite 主库失败：{error}")),
+        }
+        return verify_installed_sqlite(canonical_home, false);
+    }
+
+    let backup_relative = member
+        .backup_path
+        .as_deref()
+        .ok_or_else(|| "SQLite 备份成员缺少源文件".to_string())?;
+    let expected_checksum = member
+        .checksum_sha256
+        .as_deref()
+        .ok_or_else(|| "SQLite 备份成员缺少 SHA-256 校验".to_string())?;
+    copy_file_atomically(
+        &source_root.join(backup_relative),
+        &destination,
+        member.size,
+        expected_checksum,
+        validate_temp,
+    )?;
+    verify_installed_sqlite(canonical_home, true)
+}
+
+fn remove_sqlite_sidecars(canonical_home: &Path) -> Result<(), String> {
+    for relative in ["state_5.sqlite-wal", "state_5.sqlite-shm"] {
+        let path = validated_destination(canonical_home, Path::new(relative))?;
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "移除 SQLite sidecar {} 失败：{error}",
+                    path.display()
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_installed_sqlite(canonical_home: &Path, expected_present: bool) -> Result<(), String> {
+    let database = canonical_home.join("state_5.sqlite");
+    if !expected_present {
+        if regular_file_metadata_if_exists(&database)?.is_some() {
+            return Err("SQLite 恢复验证失败：主库本应不存在。".into());
+        }
+        return remove_sqlite_sidecars(canonical_home);
+    }
+    reject_symlink_or_non_file(&database)?;
+    let connection = Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("重新打开恢复后的 SQLite 失败：{error}"))?;
+    let integrity: String = connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .map_err(|error| format!("恢复后的 SQLite integrity_check 失败：{error}"))?;
+    if integrity != "ok" {
+        return Err(format!("恢复后的 SQLite integrity_check: {integrity}"));
+    }
+    Ok(())
+}
+
+fn error_with_recovery_cleanup(
+    message: String,
+    backup_root: &Path,
+    recovery_path: &Path,
+    hook: &mut impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
+) -> String {
+    match cleanup_recovery_path(backup_root, recovery_path, hook) {
+        Ok(()) => message,
+        Err(cleanup_error) => format!("{message}；{cleanup_error}"),
+    }
+}
+
+fn cleanup_recovery_path(
+    backup_root: &Path,
+    recovery_path: &Path,
+    hook: &mut impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let removal = hook(RestorePhase::Cleanup, 0, recovery_path).and_then(|_| {
+        fs::remove_dir_all(recovery_path)
+            .map_err(|error| format!("清理 {} 失败：{error}", recovery_path.display()))
+    });
+    match removal {
+        Ok(()) => Ok(()),
+        Err(error) => quarantine_recovery_path(backup_root, recovery_path, &error),
+    }
+}
+
+fn quarantine_recovery_path(root: &Path, path: &Path, cleanup_error: &str) -> Result<(), String> {
+    for _ in 0..UNIQUE_DIRECTORY_ATTEMPTS {
+        let quarantine = root.join(format!(".restore-quarantine-{}", collision_resistant_id()));
+        match fs::rename(path, &quarantine) {
+            Ok(()) => {
+                return Err(format!(
+                    "{cleanup_error}；恢复材料已隔离到 {}",
+                    quarantine.display()
+                ))
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(format!(
+                    "{cleanup_error}；隔离失败：{error}；恢复材料仍位于 {}",
+                    path.display()
+                ))
+            }
+        }
+    }
+    Err(format!(
+        "{cleanup_error}；无法创建唯一隔离路径；恢复材料仍位于 {}",
+        path.display()
+    ))
 }
 
 fn validated_destination(canonical_home: &Path, relative: &Path) -> Result<PathBuf, String> {
@@ -481,6 +823,12 @@ fn validate_backup_manifest(backup_path: &Path) -> Result<BackupManifest, String
     }
 
     let mut destinations = HashSet::new();
+    let mut backup_sources = HashSet::new();
+    let mut config_members = 0_usize;
+    let mut sqlite_members = 0_usize;
+    let mut index_members = 0_usize;
+    let mut wal_members = 0_usize;
+    let mut shm_members = 0_usize;
     for member in &manifest.members {
         let relative = Path::new(&member.relative_path);
         validate_relative_member_path(relative, &member.kind)?;
@@ -490,9 +838,41 @@ fn validate_backup_manifest(backup_path: &Path) -> Result<BackupManifest, String
                 member.relative_path
             ));
         }
+        match (member.kind.as_str(), member.relative_path.as_str()) {
+            ("fixed", "config.toml") => config_members += 1,
+            ("sqlite", "state_5.sqlite") => sqlite_members += 1,
+            ("fixed", "session_index.jsonl") => index_members += 1,
+            ("sqliteSidecar", "state_5.sqlite-wal") => wal_members += 1,
+            ("sqliteSidecar", "state_5.sqlite-shm") => shm_members += 1,
+            ("session", _) => {
+                if !member.present {
+                    return Err(format!(
+                        "备份 manifest 会话成员必须存在：{}",
+                        member.relative_path
+                    ));
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "备份 manifest 包含额外成员：{}",
+                    member.relative_path
+                ))
+            }
+        }
+
+        let expected_backup_path = expected_backup_path(member)?;
+        if member.backup_path.as_deref() != expected_backup_path.as_deref() {
+            return Err(format!(
+                "备份 manifest 成员源路径不符合 v2 映射：{}",
+                member.relative_path
+            ));
+        }
         match (member.present, member.backup_path.as_deref()) {
             (false, None) if member.size == 0 && member.checksum_sha256.is_none() => {}
             (true, Some(backup_relative)) => {
+                if !backup_sources.insert(backup_relative.to_string()) {
+                    return Err(format!("备份 manifest 包含重复源路径：{backup_relative}"));
+                }
                 let backup_relative = Path::new(backup_relative);
                 validate_normal_relative_path(backup_relative)?;
                 let source = backup_path.join(backup_relative);
@@ -521,7 +901,46 @@ fn validate_backup_manifest(backup_path: &Path) -> Result<BackupManifest, String
             _ => return Err(format!("备份成员状态不完整：{}", member.relative_path)),
         }
     }
+    if [
+        ("config.toml", config_members),
+        ("state_5.sqlite", sqlite_members),
+        ("session_index.jsonl", index_members),
+        ("state_5.sqlite-wal", wal_members),
+        ("state_5.sqlite-shm", shm_members),
+    ]
+    .iter()
+    .any(|(_, count)| *count != 1)
+    {
+        return Err(format!(
+            "备份 manifest v2 必需成员数量无效：config={config_members}, sqlite={sqlite_members}, index={index_members}, wal={wal_members}, shm={shm_members}"
+        ));
+    }
     Ok(manifest)
+}
+
+fn expected_backup_path(member: &BackupMember) -> Result<Option<String>, String> {
+    if !member.present {
+        return Ok(None);
+    }
+    let expected = match (member.kind.as_str(), member.relative_path.as_str()) {
+        ("fixed", "config.toml") => PathBuf::from("config.toml.before"),
+        ("sqlite", "state_5.sqlite") => PathBuf::from("state_5.sqlite.before"),
+        ("fixed", "session_index.jsonl") => PathBuf::from("session_index.jsonl.before"),
+        ("session", _) => PathBuf::from("session-jsonl").join(&member.relative_path),
+        ("sqliteSidecar", _) => {
+            return Err(format!(
+                "备份 manifest SQLite sidecar 必须是 tombstone：{}",
+                member.relative_path
+            ))
+        }
+        _ => {
+            return Err(format!(
+                "备份 manifest 成员类型无效：{}",
+                member.relative_path
+            ))
+        }
+    };
+    path_to_manifest_string(&expected).map(Some)
 }
 
 fn validate_relative_member_path(relative: &Path, kind: &str) -> Result<(), String> {
@@ -571,6 +990,15 @@ fn validate_normal_relative_path(path: &Path) -> Result<(), String> {
 }
 
 fn read_backup_info(path: &Path) -> Result<ProviderRepairBackupInfo, String> {
+    let manifest_path = path.join("manifest.json");
+    reject_symlink_or_non_file(&manifest_path)?;
+    let bytes = fs::read(&manifest_path).map_err(|error| error.to_string())?;
+    let value: Value =
+        serde_json::from_slice(&bytes).map_err(|error| format!("备份 manifest 无效：{error}"))?;
+    if value.get("schema_version").is_none() {
+        return read_legacy_backup_info(path, &value);
+    }
+
     let manifest = validate_backup_manifest(path)?;
     let session_files = manifest
         .members
@@ -593,6 +1021,67 @@ fn read_backup_info(path: &Path) -> Result<ProviderRepairBackupInfo, String> {
             .members
             .iter()
             .any(|member| member.relative_path == "session_index.jsonl" && member.present),
+        restore_status: ProviderRepairBackupRestoreStatus::Supported,
+        restore_unsupported_reason: None,
+    })
+}
+
+fn read_legacy_backup_info(path: &Path, value: &Value) -> Result<ProviderRepairBackupInfo, String> {
+    if value.get("members").is_some()
+        || value.get("complete").is_some()
+        || value
+            .get("target_provider")
+            .and_then(Value::as_str)
+            .is_none()
+    {
+        return Err("备份 manifest 既不是完整 v2，也不是可识别的 v1 清单。".into());
+    }
+    Ok(ProviderRepairBackupInfo {
+        id: value
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("unknown")
+            })
+            .into(),
+        created_at: value
+            .get("created_at")
+            .and_then(Value::as_str)
+            .unwrap_or("未知时间")
+            .into(),
+        path: path.display().to_string(),
+        codex_home: value
+            .get("codex_home")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .into(),
+        codex_home_fingerprint: value
+            .get("codex_home_fingerprint")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
+        target_provider: value
+            .get("target_provider")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .into(),
+        session_files: value
+            .get("session_files")
+            .and_then(Value::as_u64)
+            .and_then(|count| u32::try_from(count).ok())
+            .unwrap_or(0),
+        state_database: value
+            .get("state_database")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        session_index: value
+            .get("session_index")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        restore_status: ProviderRepairBackupRestoreStatus::LegacyUnsupported,
+        restore_unsupported_reason: Some(LEGACY_UNSUPPORTED_REASON.into()),
     })
 }
 
@@ -632,6 +1121,7 @@ fn copy_file_atomically(
     destination: &Path,
     expected_size: u64,
     expected_checksum: &str,
+    validate_temp: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> Result<(), String> {
     reject_symlink_or_non_file(source)?;
     let parent = destination
@@ -664,23 +1154,35 @@ fn copy_file_atomically(
             .map_err(|error| error.to_string());
         drop(target);
         if let Err(error) = copy_result {
-            let _ = fs::remove_file(&temp);
-            return Err(error);
+            return Err(cleanup_temp_after_error(&temp, error));
         }
-        let copied_size = fs::metadata(&temp)
-            .map_err(|error| error.to_string())?
-            .len();
-        let copied_checksum = file_sha256(&temp)?;
+        if let Err(error) = validate_temp(&temp) {
+            return Err(cleanup_temp_after_error(&temp, error));
+        }
+        let copied_size = match fs::metadata(&temp) {
+            Ok(metadata) => metadata.len(),
+            Err(error) => {
+                return Err(cleanup_temp_after_error(
+                    &temp,
+                    format!("读取恢复临时文件元数据失败：{error}"),
+                ))
+            }
+        };
+        let copied_checksum = match file_sha256(&temp) {
+            Ok(checksum) => checksum,
+            Err(error) => return Err(cleanup_temp_after_error(&temp, error)),
+        };
         if copied_size != expected_size || copied_checksum != expected_checksum {
-            let _ = fs::remove_file(&temp);
-            return Err(format!(
-                "备份成员在替换前 SHA-256 或大小校验失败：{}",
-                source.display()
+            return Err(cleanup_temp_after_error(
+                &temp,
+                format!(
+                    "备份成员在替换前 SHA-256 或大小校验失败：{}",
+                    source.display()
+                ),
             ));
         }
         if let Err(error) = replace_file_atomically(&temp, destination) {
-            let _ = fs::remove_file(&temp);
-            return Err(error);
+            return Err(cleanup_temp_after_error(&temp, error));
         }
         return Ok(());
     }
@@ -688,6 +1190,41 @@ fn copy_file_atomically(
         "无法为恢复目标创建唯一临时文件：{}",
         destination.display()
     ))
+}
+
+fn cleanup_temp_after_error(temp: &Path, error: String) -> String {
+    match fs::remove_file(temp) {
+        Ok(()) => error,
+        Err(remove_error) if remove_error.kind() == ErrorKind::NotFound => error,
+        Err(remove_error) => {
+            let parent = temp.parent().unwrap_or_else(|| Path::new("."));
+            for _ in 0..UNIQUE_FILE_ATTEMPTS {
+                let quarantine = parent.join(format!(
+                    ".restore-quarantine-temp-{}",
+                    collision_resistant_id()
+                ));
+                match fs::rename(temp, &quarantine) {
+                    Ok(()) => {
+                        return format!(
+                            "{error}；临时文件清理失败：{remove_error}；已隔离到 {}",
+                            quarantine.display()
+                        )
+                    }
+                    Err(rename_error) if rename_error.kind() == ErrorKind::AlreadyExists => continue,
+                    Err(rename_error) => {
+                        return format!(
+                            "{error}；临时文件清理失败：{remove_error}；隔离失败：{rename_error}；临时文件仍位于 {}",
+                            temp.display()
+                        )
+                    }
+                }
+            }
+            format!(
+                "{error}；临时文件清理失败：{remove_error}；临时文件仍位于 {}",
+                temp.display()
+            )
+        }
+    }
 }
 
 fn reject_symlink_or_non_file(path: &Path) -> Result<(), String> {
@@ -757,6 +1294,67 @@ fn file_sha256(path: &Path) -> Result<String, String> {
         hasher.update(&buffer[..read]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn sync_directory_tree(root: &Path) -> Result<(), String> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut directories = Vec::new();
+    while let Some(directory) = pending.pop() {
+        if directories.len() >= MAX_SYNC_DIRECTORIES {
+            return Err(format!(
+                "恢复点目录数量超过安全上限 {MAX_SYNC_DIRECTORIES}：{}",
+                root.display()
+            ));
+        }
+        let metadata = fs::symlink_metadata(&directory).map_err(|error| error.to_string())?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(format!("拒绝同步非普通目录：{}", directory.display()));
+        }
+        for entry in fs::read_dir(&directory).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let metadata = fs::symlink_metadata(entry.path()).map_err(|error| error.to_string())?;
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "恢复点目录包含符号链接：{}",
+                    entry.path().display()
+                ));
+            }
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            }
+        }
+        directories.push(directory);
+    }
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for directory in directories {
+        sync_directory(&directory)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn sync_directory(path: &Path) -> Result<(), String> {
+    OpenOptions::new()
+        .read(true)
+        .open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("同步目录 {} 失败：{error}", path.display()))
+}
+
+#[cfg(windows)]
+fn sync_directory(path: &Path) -> Result<(), String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("同步目录 {} 失败：{error}", path.display()))
 }
 
 fn create_unique_directory(root: &Path, prefix: &str) -> Result<(String, PathBuf), String> {

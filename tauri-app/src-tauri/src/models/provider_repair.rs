@@ -20,7 +20,14 @@ pub struct ProviderRepairStep {
     pub healthy: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderRepairBackupRestoreStatus {
+    Supported,
+    LegacyUnsupported,
+}
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderRepairBackupInfo {
     pub id: String,
@@ -32,6 +39,8 @@ pub struct ProviderRepairBackupInfo {
     pub session_files: u32,
     pub state_database: bool,
     pub session_index: bool,
+    pub restore_status: ProviderRepairBackupRestoreStatus,
+    pub restore_unsupported_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

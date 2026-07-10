@@ -13,7 +13,7 @@ mod target_provider;
 
 use backups::{
     backup_by_id, create_provider_backup_files, ensure_backup_matches_codex_home,
-    provider_backup_root, restore_provider_backup_files,
+    provider_backup_root, restore_provider_backup_files_with_verification,
 };
 #[cfg(test)]
 use backups::{codex_home_fingerprint, codex_home_identity};
@@ -259,19 +259,25 @@ pub fn sync_provider_history(
     codex_home: &Path,
     operation_id: &str,
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
-    run_provider_mutation(codex_home, operation_id, |canonical_home| {
-        let backup_root = provider_backup_root()?;
-        let outcome = sync_provider_history_transaction_at(
-            canonical_home,
-            &backup_root,
-            scan_provider_repair_result,
-        )?;
-        Ok(action_result(
-            outcome.snapshot,
-            outcome.message,
-            Some(outcome.backup),
-        ))
-    })
+    run_provider_mutation_with_running_probe(
+        codex_home,
+        operation_id,
+        "同步",
+        crate::platform::codex_desktop_is_running,
+        |canonical_home| {
+            let backup_root = provider_backup_root()?;
+            let outcome = sync_provider_history_transaction_at(
+                canonical_home,
+                &backup_root,
+                scan_provider_repair_result,
+            )?;
+            Ok(action_result(
+                outcome.snapshot,
+                outcome.message,
+                Some(outcome.backup),
+            ))
+        },
+    )
 }
 
 #[derive(Debug)]
@@ -286,13 +292,31 @@ fn sync_provider_history_transaction_at(
     backup_root: &Path,
     verify: impl FnOnce(&Path) -> Result<ProviderRepairReport, String>,
 ) -> Result<ProviderSyncTransactionOutcome, String> {
+    sync_provider_history_transaction_at_with_backup_hook(
+        codex_home,
+        backup_root,
+        verify,
+        |_, _| Ok(()),
+    )
+}
+
+fn sync_provider_history_transaction_at_with_backup_hook(
+    codex_home: &Path,
+    backup_root: &Path,
+    verify: impl FnOnce(&Path) -> Result<ProviderRepairReport, String>,
+    hook: impl FnMut(backups::BackupPublicationPhase, &Path) -> Result<(), String>,
+) -> Result<ProviderSyncTransactionOutcome, String> {
     let canonical_home = codex_home
         .canonicalize()
         .map_err(|error| format!("无法确认 Codex Home {}：{error}", codex_home.display()))?;
     let report = scan_provider_repair_result(&canonical_home)?;
     let target_provider = provider_for_mutation(&report.target.provider)?;
-    let backup =
-        backups::create_provider_backup_files_at(backup_root, &canonical_home, &target_provider)?;
+    let backup = backups::create_provider_backup_files_at_with_hook(
+        backup_root,
+        &canonical_home,
+        &target_provider,
+        hook,
+    )?;
 
     let transaction = perform_provider_sync(&canonical_home, &target_provider).and_then(
         |(rewritten_sessions, sqlite_rows, index_changed)| {
@@ -321,9 +345,10 @@ fn sync_provider_history_transaction_at(
             snapshot,
             message,
         }),
-        Err(original_error) => match backups::restore_provider_backup_files_at(
+        Err(original_error) => match restore_provider_backup_files_with_verification(
             &canonical_home,
             &backup,
+            |restored_home| verify_restored_provider_backup(restored_home, &backup).map(|_| ()),
         ) {
             Ok(()) => Err(format!(
                 "Provider 同步或验证失败：{original_error}；已自动恢复恢复点 {}。",
@@ -397,17 +422,61 @@ pub fn rollback_provider_backup(
     backup_id: &str,
     operation_id: &str,
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
-    run_provider_mutation(codex_home, operation_id, |canonical_home| {
-        let backup = backup_by_id(backup_id)?;
-        ensure_backup_matches_codex_home(&backup, canonical_home)?;
-        restore_provider_backup_files(canonical_home, &backup)?;
+    run_provider_mutation_with_running_probe(
+        codex_home,
+        operation_id,
+        "回滚",
+        crate::platform::codex_desktop_is_running,
+        |canonical_home| {
+            let backup = backup_by_id(backup_id)?;
+            ensure_backup_matches_codex_home(&backup, canonical_home)?;
+            let mut verified_report = None;
+            restore_provider_backup_files_with_verification(
+                canonical_home,
+                &backup,
+                |restored_home| {
+                    verified_report =
+                        Some(verify_restored_provider_backup(restored_home, &backup)?);
+                    Ok(())
+                },
+            )?;
+            let report = verified_report
+                .ok_or_else(|| "回滚后的 Provider 强验证未返回结果。".to_string())?;
 
-        Ok(action_result(
-            scan_provider_repair(canonical_home),
-            format!("已回滚备份：{}", backup.id),
-            Some(backup),
-        ))
-    })
+            Ok(action_result(
+                snapshot_from_report(report),
+                format!("已回滚备份：{}", backup.id),
+                Some(backup),
+            ))
+        },
+    )
+}
+
+fn verify_restored_provider_backup(
+    codex_home: &Path,
+    backup: &crate::models::ProviderRepairBackupInfo,
+) -> Result<ProviderRepairReport, String> {
+    let report = scan_provider_repair_result(codex_home)
+        .map_err(|error| format!("恢复后的 Provider 扫描失败：{error}"))?;
+    if report.target.provider != backup.target_provider {
+        return Err(format!(
+            "恢复后的 Provider 目标不匹配：预期 {}，实际 {}。",
+            backup.target_provider, report.target.provider
+        ));
+    }
+    if report.session_scan.files_found < backup.session_files {
+        return Err(format!(
+            "恢复后的 Provider 会话文件不足：预期至少 {}，实际 {}。",
+            backup.session_files, report.session_scan.files_found
+        ));
+    }
+    if backup.state_database && report.sqlite_scan.integrity != "ok" {
+        return Err(format!(
+            "恢复后的 SQLite integrity_check: {}",
+            report.sqlite_scan.integrity
+        ));
+    }
+    Ok(report)
 }
 
 pub fn read_provider_operation_status(operation_id: &str) -> ProviderOperationStatus {
@@ -465,6 +534,27 @@ fn run_provider_mutation<T>(
     mutation: impl FnOnce(&Path) -> Result<T, String>,
 ) -> Result<T, ProviderOperationError> {
     let lease = acquire_provider_operation_lease(codex_home, operation_id)?;
+    mutation(&lease.canonical_home).map_err(|message| ProviderOperationError::Failed { message })
+}
+
+fn run_provider_mutation_with_running_probe<T>(
+    codex_home: &Path,
+    operation_id: &str,
+    operation: &str,
+    probe: impl FnOnce() -> Result<bool, String>,
+    mutation: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, ProviderOperationError> {
+    let lease = acquire_provider_operation_lease(codex_home, operation_id)?;
+    let running = probe().map_err(|error| ProviderOperationError::Failed {
+        message: format!("{operation}前无法确认 Codex Desktop 运行状态：{error}"),
+    })?;
+    if running {
+        return Err(ProviderOperationError::Failed {
+            message: format!(
+                "{operation}已拒绝：Codex 正在运行。请先退出 Codex Desktop，再重新执行 Provider 修复。"
+            ),
+        });
+    }
     mutation(&lease.canonical_home).map_err(|message| ProviderOperationError::Failed { message })
 }
 
