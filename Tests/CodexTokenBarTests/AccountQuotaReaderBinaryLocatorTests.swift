@@ -16,7 +16,12 @@ final class AccountQuotaReaderBinaryLocatorTests: XCTestCase {
                 CodexBinaryLocator.overrideEnvironmentKey: override.path,
                 "PATH": pathBinary.deletingLastPathComponent().path
             ],
-            registeredApplicationURLs: [registeredApp]
+            registeredApplications: [
+                CodexApplicationCandidate(
+                    url: registeredApp,
+                    bundleIdentifier: CodexApplicationLocator.bundleIdentifier
+                )
+            ]
         )
 
         XCTAssertEqual(found, override.resolvingSymlinksInPath().path)
@@ -28,7 +33,12 @@ final class AccountQuotaReaderBinaryLocatorTests: XCTestCase {
 
         let found = try locate(
             fixture: fixture,
-            registeredApplicationURLs: [registeredApp]
+            registeredApplications: [
+                CodexApplicationCandidate(
+                    url: registeredApp,
+                    bundleIdentifier: CodexApplicationLocator.bundleIdentifier
+                )
+            ]
         )
 
         XCTAssertEqual(found, fixture.codexBinary(in: registeredApp).path)
@@ -60,6 +70,40 @@ final class AccountQuotaReaderBinaryLocatorTests: XCTestCase {
         let found = try locate(fixture: fixture)
 
         XCTAssertEqual(found, fixture.codexBinary(in: currentApp).path)
+    }
+
+    func testScanSkipsEarlierForeignBundleAndSelectsTargetBundle() throws {
+        let fixture = try makeFixture()
+        _ = try fixture.writeApp(
+            "Applications/A-Fake.app",
+            bundleIdentifier: "com.example.fake"
+        )
+        let targetApp = try fixture.writeApp("Applications/Z-Renamed.app")
+
+        let found = try locate(fixture: fixture)
+
+        XCTAssertEqual(found, fixture.codexBinary(in: targetApp).path)
+    }
+
+    func testRegisteredForeignBundleDoesNotOverrideTargetApplication() throws {
+        let fixture = try makeFixture()
+        let foreignApp = try fixture.writeApp(
+            "Elsewhere/ChatGPT.app",
+            bundleIdentifier: "com.example.other"
+        )
+        let targetApp = try fixture.writeApp("Applications/Renamed.app")
+
+        let found = try locate(
+            fixture: fixture,
+            registeredApplications: [
+                CodexApplicationCandidate(
+                    url: foreignApp,
+                    bundleIdentifier: "com.example.other"
+                )
+            ]
+        )
+
+        XCTAssertEqual(found, fixture.codexBinary(in: targetApp).path)
     }
 
     func testScanIsBoundedToDirectApplicationChildren() throws {
@@ -98,8 +142,14 @@ final class AccountQuotaReaderBinaryLocatorTests: XCTestCase {
                 CodexBinaryLocator.overrideEnvironmentKey: brokenLink.path,
                 "PATH": validLink.deletingLastPathComponent().path
             ],
-            registeredApplicationURLs: [
-                nonExecutableBinary.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            registeredApplications: [
+                CodexApplicationCandidate(
+                    url: nonExecutableBinary
+                        .deletingLastPathComponent()
+                        .deletingLastPathComponent()
+                        .deletingLastPathComponent(),
+                    bundleIdentifier: CodexApplicationLocator.bundleIdentifier
+                )
             ]
         )
 
@@ -119,7 +169,7 @@ final class AccountQuotaReaderBinaryLocatorTests: XCTestCase {
                     fixture.root.appendingPathComponent("second-bin").path
                 ].joined(separator: ":")
             ],
-            registeredApplicationURLs: [],
+            registeredApplications: [],
             applicationRoots: [],
             knownApplicationURLs: [],
             knownCLIPaths: [fixture.root.appendingPathComponent("known-bin/codex").path]
@@ -131,11 +181,11 @@ final class AccountQuotaReaderBinaryLocatorTests: XCTestCase {
     private func locate(
         fixture: Fixture,
         environment: [String: String] = [:],
-        registeredApplicationURLs: [URL] = []
+        registeredApplications: [CodexApplicationCandidate] = []
     ) throws -> String {
         try CodexBinaryLocator.findExecutable(
             environment: environment,
-            registeredApplicationURLs: registeredApplicationURLs,
+            registeredApplications: registeredApplications,
             applicationRoots: [
                 fixture.root.appendingPathComponent("Applications", isDirectory: true),
                 fixture.root.appendingPathComponent("UserApplications", isDirectory: true)
@@ -157,8 +207,23 @@ final class AccountQuotaReaderBinaryLocatorTests: XCTestCase {
 private struct Fixture {
     let root: URL
 
-    func writeApp(_ relativePath: String, executable: Bool = true) throws -> URL {
+    func writeApp(
+        _ relativePath: String,
+        bundleIdentifier: String = CodexApplicationLocator.bundleIdentifier,
+        executable: Bool = true
+    ) throws -> URL {
         let appURL = root.appendingPathComponent(relativePath, isDirectory: true)
+        let infoPlist = appURL.appendingPathComponent("Contents/Info.plist")
+        try FileManager.default.createDirectory(
+            at: infoPlist.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let plistData = try PropertyListSerialization.data(
+            fromPropertyList: ["CFBundleIdentifier": bundleIdentifier],
+            format: .xml,
+            options: 0
+        )
+        try plistData.write(to: infoPlist)
         _ = try createExecutable(
             appURL.appendingPathComponent("Contents/Resources/codex").path,
             executable: executable

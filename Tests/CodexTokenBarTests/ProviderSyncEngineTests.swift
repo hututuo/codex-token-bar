@@ -40,6 +40,10 @@ final class ProviderSyncEngineTests: XCTestCase {
             bundleIdentifier: nil,
             localizedName: nil
         ))
+        XCTAssertFalse(CodexDesktopApplicationMatcher.matches(
+            bundleIdentifier: "com.example.other",
+            localizedName: "ChatGPT"
+        ))
     }
 
     func testSyncCreatesDisposableBackupAndOnlyMutatesIntendedFiles() throws {

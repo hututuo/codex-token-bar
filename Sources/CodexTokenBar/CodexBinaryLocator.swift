@@ -1,28 +1,44 @@
 import AppKit
 import Foundation
 
+struct CodexApplicationCandidate {
+    let url: URL
+    let bundleIdentifier: String?
+}
+
 enum CodexApplicationLocator {
     static let bundleIdentifier = "com.openai.codex"
 
-    static func registeredApplicationURLs() -> [URL] {
-        var urls: [URL] = []
+    static func registeredApplications() -> [CodexApplicationCandidate] {
+        var candidates: [CodexApplicationCandidate] = []
         if let registered = NSWorkspace.shared.urlForApplication(
             withBundleIdentifier: bundleIdentifier
         ) {
-            urls.append(registered)
+            candidates.append(CodexApplicationCandidate(
+                url: registered,
+                bundleIdentifier: bundleIdentifier
+            ))
         }
 
-        let runningURLs = NSWorkspace.shared.runningApplications
+        let runningApplications = NSWorkspace.shared.runningApplications
             .filter { $0.bundleIdentifier == bundleIdentifier }
-            .compactMap(\.bundleURL)
-            .sorted { $0.path < $1.path }
-        urls.append(contentsOf: runningURLs)
-        return deduplicated(urls)
+            .compactMap { application -> CodexApplicationCandidate? in
+                guard let url = application.bundleURL else { return nil }
+                return CodexApplicationCandidate(
+                    url: url,
+                    bundleIdentifier: application.bundleIdentifier
+                )
+            }
+            .sorted { $0.url.path < $1.url.path }
+        candidates.append(contentsOf: runningApplications)
+        return deduplicated(candidates)
     }
 
-    private static func deduplicated(_ urls: [URL]) -> [URL] {
+    private static func deduplicated(
+        _ candidates: [CodexApplicationCandidate]
+    ) -> [CodexApplicationCandidate] {
         var seen = Set<String>()
-        return urls.filter { seen.insert($0.standardizedFileURL.path).inserted }
+        return candidates.filter { seen.insert($0.url.standardizedFileURL.path).inserted }
     }
 }
 
@@ -35,7 +51,7 @@ enum CodexBinaryLocator {
             .appendingPathComponent("Applications", isDirectory: true)
         return try findExecutable(
             environment: ProcessInfo.processInfo.environment,
-            registeredApplicationURLs: CodexApplicationLocator.registeredApplicationURLs(),
+            registeredApplications: CodexApplicationLocator.registeredApplications(),
             applicationRoots: [
                 URL(fileURLWithPath: "/Applications", isDirectory: true),
                 homeApplications
@@ -55,7 +71,7 @@ enum CodexBinaryLocator {
 
     static func findExecutable(
         environment: [String: String],
-        registeredApplicationURLs: [URL],
+        registeredApplications: [CodexApplicationCandidate],
         applicationRoots: [URL],
         knownApplicationURLs: [URL],
         knownCLIPaths: [String],
@@ -67,11 +83,18 @@ enum CodexBinaryLocator {
             candidates.append(URL(fileURLWithPath: (override as NSString).expandingTildeInPath))
         }
 
-        candidates.append(contentsOf: registeredApplicationURLs.map(codexBinaryURL(in:)))
+        candidates.append(contentsOf: registeredApplications
+            .filter { $0.bundleIdentifier == CodexApplicationLocator.bundleIdentifier }
+            .map { codexBinaryURL(in: $0.url) })
         for root in applicationRoots {
             candidates.append(contentsOf: scannedApplicationBinaryURLs(in: root, fileManager: fileManager))
         }
-        candidates.append(contentsOf: knownApplicationURLs.map(codexBinaryURL(in:)))
+        candidates.append(contentsOf: knownApplicationURLs
+            .filter {
+                applicationBundleIdentifier(at: $0, fileManager: fileManager)
+                    == CodexApplicationLocator.bundleIdentifier
+            }
+            .map(codexBinaryURL(in:)))
 
         if let path = environment["PATH"] {
             candidates.append(contentsOf: path
@@ -117,9 +140,29 @@ enum CodexBinaryLocator {
                     return false
                 }
                 return values.isDirectory == true
+                    && applicationBundleIdentifier(at: url, fileManager: fileManager)
+                        == CodexApplicationLocator.bundleIdentifier
             }
             .sorted { $0.path < $1.path }
             .map(codexBinaryURL(in:))
+    }
+
+    private static func applicationBundleIdentifier(
+        at applicationURL: URL,
+        fileManager: FileManager
+    ) -> String? {
+        let infoPlist = applicationURL.appendingPathComponent("Contents/Info.plist")
+        guard let data = fileManager.contents(atPath: infoPlist.path),
+              let propertyList = try? PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+              ),
+              let dictionary = propertyList as? [String: Any]
+        else {
+            return nil
+        }
+        return dictionary["CFBundleIdentifier"] as? String
     }
 
     private static func isRegularExecutable(_ url: URL, fileManager: FileManager) -> Bool {

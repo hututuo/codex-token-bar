@@ -64,8 +64,8 @@ struct ProviderSyncSQLiteThreadColumns {
 
 enum CodexDesktopApplicationMatcher {
     static func matches(bundleIdentifier: String?, localizedName: String?) -> Bool {
-        if bundleIdentifier == CodexApplicationLocator.bundleIdentifier {
-            return true
+        if let bundleIdentifier {
+            return bundleIdentifier == CodexApplicationLocator.bundleIdentifier
         }
         return localizedName == "Codex" || localizedName == "ChatGPT"
     }
