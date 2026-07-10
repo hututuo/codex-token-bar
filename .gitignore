@@ -19,6 +19,7 @@ dist/
 **/.DS_Store
 
 # Workspace-only notes and validation artifacts
+.superpowers/
 CONTEXT.md
 PROJECT_INDEX.md
 decisions.md
