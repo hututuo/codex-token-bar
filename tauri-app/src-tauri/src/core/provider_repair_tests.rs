@@ -2,6 +2,8 @@ use super::*;
 use rusqlite::{params, Connection};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -191,7 +193,84 @@ fn sqlite_sync_rejects_invalid_provider_before_mutation() {
         .unwrap();
     assert_eq!(provider, "openai");
 
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn canonical_home_lease_rejects_concurrent_mutation_until_owner_exits() {
+    let root = temp_root("provider-operation-lease");
+    fs::create_dir_all(&root).unwrap();
+    let owner_home = root.clone();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+
+    let owner = thread::spawn(move || {
+        run_provider_mutation(&owner_home, "operation-a", || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Ok(())
+        })
+    });
+
+    entered_rx.recv().unwrap();
+    let alias = root.join(".");
+    let second = run_provider_mutation(&alias, "operation-b", || Ok(()));
+    assert!(matches!(
+        second,
+        Err(ProviderOperationError::Busy {
+            active_operation_id,
+            ..
+        }) if active_operation_id == "operation-a"
+    ));
+    assert!(read_provider_operation_status(&alias, "operation-a")
+        .unwrap()
+        .active);
+    assert!(!read_provider_operation_status(&alias, "operation-b")
+        .unwrap()
+        .active);
+
+    release_tx.send(()).unwrap();
+    owner.join().unwrap().unwrap();
+    assert!(!read_provider_operation_status(&root, "operation-a")
+        .unwrap()
+        .active);
+    run_provider_mutation(&root, "operation-c", || Ok(())).unwrap();
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn provider_operation_lease_releases_after_mutation_error() {
+    let root = temp_root("provider-operation-error-release");
+    fs::create_dir_all(&root).unwrap();
+
+    let failure = run_provider_mutation::<()>(&root, "operation-error", || {
+        Err("fixture mutation failed".into())
+    });
+    assert!(matches!(
+        failure,
+        Err(ProviderOperationError::Failed { message }) if message == "fixture mutation failed"
+    ));
+    assert!(!read_provider_operation_status(&root, "operation-error")
+        .unwrap()
+        .active);
+    run_provider_mutation(&root, "operation-after-error", || Ok(())).unwrap();
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn provider_busy_error_serializes_as_typed_frontend_payload() {
+    let value = serde_json::to_value(ProviderOperationError::Busy {
+        active_operation_id: "operation-a".into(),
+        message: "busy".into(),
+    })
+    .unwrap();
+
+    assert_eq!(value["kind"], "busy");
+    assert_eq!(value["activeOperationId"], "operation-a");
+    assert_eq!(value["message"], "busy");
 }
 
 #[test]
@@ -313,4 +392,5 @@ fn create_state_database(root: &Path, rows: &[(&str, &str, i64)]) {
             )
             .unwrap();
     }
+    drop(connection);
 }

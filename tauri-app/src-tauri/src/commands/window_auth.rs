@@ -20,6 +20,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "sync_provider_history",
     "verify_provider_repair",
     "rollback_provider_backup",
+    "read_provider_operation_status",
     "read_codex_radar_full_snapshot",
 ];
 

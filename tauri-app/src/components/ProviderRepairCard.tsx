@@ -82,7 +82,7 @@ export function ProviderRepairCard({
   }
 
   async function runBackup() {
-    await run("backup", createProviderBackup, applyResult);
+    await run("backup", () => createProviderBackup(markOperationUncertain), applyResult);
   }
 
   async function runSync() {
@@ -91,7 +91,7 @@ export function ProviderRepairCard({
       setMessage("请先创建备份，再进行修复。");
       return;
     }
-    await run("sync", () => syncProviderHistory(backupId), applyResult);
+    await run("sync", () => syncProviderHistory(backupId, markOperationUncertain), applyResult);
   }
 
   async function runVerify() {
@@ -99,7 +99,11 @@ export function ProviderRepairCard({
   }
 
   async function runRollback(backupId: string) {
-    await run("rollback", () => rollbackProviderBackup(backupId), applyResult);
+    await run("rollback", () => rollbackProviderBackup(backupId, markOperationUncertain), applyResult);
+  }
+
+  function markOperationUncertain() {
+    setMessage("操作响应超时，正在等待后端确认写操作已结束。期间修复操作保持禁用。");
   }
 
   async function run<T>(

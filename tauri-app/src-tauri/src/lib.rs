@@ -54,6 +54,7 @@ pub fn run() {
             commands::provider_repair::sync_provider_history,
             commands::provider_repair::verify_provider_repair,
             commands::provider_repair::rollback_provider_backup,
+            commands::provider_repair::read_provider_operation_status,
             commands::codex_radar::read_codex_radar_full_snapshot,
             commands::live::read_floating_snapshot,
             commands::live::read_unread_summary,
