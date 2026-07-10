@@ -641,10 +641,15 @@ where
         }
     };
 
-    let cleanup_targets: Vec<&RecoveryCandidate> = existing
-        .iter()
-        .filter(|candidate| retained_pending.as_ref() != Some(&candidate.path))
-        .collect();
+    let marker_for_cleanup = marker_before
+        .as_ref()
+        .ok_or_else(|| "容量清理缺少提交标记，已停止保存".to_string())?;
+    let cleanup_targets = provably_superseded_ready_candidates(
+        path,
+        &existing,
+        marker_for_cleanup,
+        retained_pending.as_deref(),
+    )?;
     if cleanup_targets.is_empty() {
         return Err(format!(
             "{capacity_error}；唯一候选是必须保留的待提交恢复候选，无法安全腾出容量"
@@ -694,6 +699,14 @@ where
         return Err("设置恢复候选容量清理期间提交标记发生变化，已停止保存".into());
     }
     let refreshed = interrupted_temp_candidates(path)?;
+    provably_superseded_ready_candidates(
+        path,
+        &refreshed,
+        marker_after
+            .as_ref()
+            .ok_or_else(|| "容量清理后提交标记意外缺失，已停止保存".to_string())?,
+        retained_pending.as_deref(),
+    )?;
     if matches!(marker_after, Some(SettingsCommitMarker::Pending { .. })) {
         let eligible =
             eligible_recovery_candidates_for_marker(marker_after.clone(), refreshed.clone())?;
@@ -706,6 +719,72 @@ where
     }
     ensure_new_ready_candidate_fits(&refreshed, new_bytes)?;
     Ok(refreshed)
+}
+
+fn provably_superseded_ready_candidates<'a>(
+    settings_path: &Path,
+    candidates: &'a [RecoveryCandidate],
+    marker: &SettingsCommitMarker,
+    retained_pending: Option<&Path>,
+) -> Result<Vec<&'a RecoveryCandidate>, String> {
+    let marker_generation = marker.generation();
+    let mut cleanup = Vec::new();
+    let mut unproven = Vec::new();
+    let mut omitted = 0usize;
+
+    for candidate in candidates {
+        if retained_pending == Some(candidate.path.as_path()) {
+            continue;
+        }
+        if let Some(RecoveryCandidatePrecheck::Transient(error)) = candidate.precheck.as_ref() {
+            record_recovery_diagnostic(&mut unproven, &mut omitted, || {
+                format!(
+                    "{}（候选身份无法确认：{}）",
+                    candidate.path.display(),
+                    error
+                )
+            });
+            continue;
+        }
+        match ready_candidate_generation(settings_path, candidate) {
+            Some(generation) if generation < marker_generation => cleanup.push(candidate),
+            Some(generation) => {
+                record_recovery_diagnostic(&mut unproven, &mut omitted, || {
+                    format!(
+                        "{}（候选代次 {generation}，标记代次 {marker_generation}）",
+                        candidate.path.display()
+                    )
+                });
+            }
+            None => record_recovery_diagnostic(&mut unproven, &mut omitted, || {
+                format!("{}（候选代次或身份无法确认）", candidate.path.display())
+            }),
+        }
+    }
+
+    if !unproven.is_empty() {
+        let omitted = if omitted == 0 {
+            String::new()
+        } else {
+            format!("；另省略 {omitted} 项")
+        };
+        return Err(format!(
+            "发现未被当前提交标记证明已过时的恢复候选，拒绝容量清理并停止保存：{}{}",
+            unproven.join("；"),
+            omitted
+        ));
+    }
+    Ok(cleanup)
+}
+
+fn ready_candidate_generation(settings_path: &Path, candidate: &RecoveryCandidate) -> Option<u128> {
+    let settings_name = settings_path.file_name()?.to_str()?;
+    let candidate_name = candidate.path.file_name()?.to_str()?;
+    let prefix = match candidate.protocol {
+        RecoveryCandidateProtocol::LegacyV3 => format!("{settings_name}.tmp-ready-v3-"),
+        RecoveryCandidateProtocol::TransactionalV4 => format!("{settings_name}.tmp-ready-v4-"),
+    };
+    ready_candidate_freshness(candidate_name, &prefix)
 }
 
 fn format_capacity_cleanup_failure(
@@ -2136,9 +2215,73 @@ fn sync_parent_directory(parent: &Path) -> Result<(), String> {
         .map_err(|error| format!("同步设置目录失败：{}（{}）", parent.display(), error))
 }
 
-#[cfg(not(unix))]
-fn sync_parent_directory(_parent: &Path) -> Result<(), String> {
-    Ok(())
+#[cfg(any(test, windows))]
+fn sync_windows_parent_directory_with_controls<Directory, OpenDirectory, FlushDirectory>(
+    parent: &Path,
+    open_directory: OpenDirectory,
+    flush_directory: FlushDirectory,
+) -> Result<(), String>
+where
+    OpenDirectory: FnOnce(&Path) -> std::io::Result<Directory>,
+    FlushDirectory: FnOnce(&Directory) -> std::io::Result<()>,
+{
+    let directory = open_directory(parent)
+        .map_err(|error| format!("打开设置目录失败：{}（{}）", parent.display(), error))?;
+    flush_directory(&directory)
+        .map_err(|error| format!("同步设置目录失败：{}（{}）", parent.display(), error))
+}
+
+#[cfg(windows)]
+fn sync_parent_directory(parent: &Path) -> Result<(), String> {
+    sync_windows_parent_directory_with_controls(
+        parent,
+        open_windows_directory_for_sync,
+        flush_windows_directory,
+    )
+}
+
+#[cfg(windows)]
+fn open_windows_directory_for_sync(parent: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    options.open(parent)
+}
+
+#[cfg(windows)]
+fn flush_windows_directory(directory: &File) -> std::io::Result<()> {
+    use std::{ffi::c_void, os::windows::io::AsRawHandle};
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn FlushFileBuffers(file: *mut c_void) -> i32;
+    }
+
+    // SAFETY: The raw handle remains owned by `directory` and valid for the duration of the call.
+    let flushed = unsafe { FlushFileBuffers(directory.as_raw_handle().cast()) };
+    if flushed == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn sync_parent_directory(parent: &Path) -> Result<(), String> {
+    Err(format!(
+        "当前平台无法确认设置目录持久性，拒绝继续保存：{}",
+        parent.display()
+    ))
 }
 
 fn sanitize_app_settings(mut settings: AppSettingsSnapshot) -> AppSettingsSnapshot {
@@ -2626,6 +2769,52 @@ mod tests {
     }
 
     #[test]
+    fn windows_directory_sync_control_propagates_flush_failure() {
+        let root = TestSettingsRoot::new("windows-sync-control-failure");
+        let open_called = Cell::new(false);
+        let flush_called = Cell::new(false);
+
+        let error = sync_windows_parent_directory_with_controls(
+            &root.path,
+            |_| {
+                open_called.set(true);
+                Ok(())
+            },
+            |_| {
+                flush_called.set(true);
+                Err(std::io::Error::other("injected FlushFileBuffers failure"))
+            },
+        )
+        .unwrap_err();
+
+        assert!(open_called.get());
+        assert!(flush_called.get());
+        assert!(error.contains("同步设置目录失败"));
+        assert!(error.contains("injected FlushFileBuffers failure"));
+        assert!(error.contains(&root.path.display().to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_parent_directory_sync_flushes_real_directory_handle() {
+        let root = TestSettingsRoot::new("windows-real-directory-sync");
+
+        sync_parent_directory(&root.path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_parent_directory_sync_rejects_missing_directory() {
+        let root = TestSettingsRoot::new("windows-missing-directory-sync");
+        let missing = root.path.join("missing");
+
+        let error = sync_parent_directory(&missing).unwrap_err();
+
+        assert!(error.contains("打开设置目录失败"));
+        assert!(error.contains(&missing.display().to_string()));
+    }
+
+    #[test]
     fn successful_commit_supersedes_ready_left_by_prior_replace_failure() {
         let root = TestSettingsRoot::new("superseded-ready");
         let path = root.settings_path();
@@ -2741,6 +2930,125 @@ mod tests {
             read_commit_marker(&path).unwrap(),
             Some(SettingsCommitMarker::Committed { .. })
         ));
+    }
+
+    #[test]
+    fn newer_durable_ready_without_pending_marker_is_preserved_and_blocks_capacity_cleanup() {
+        let root = TestSettingsRoot::new("newer-cross-process-ready");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+        accumulate_ready_candidates_after_replace_failures(
+            &path,
+            RECOVERY_TOTAL_CANDIDATE_LIMIT - 1,
+        );
+        let marker_before = read_commit_marker(&path).unwrap().unwrap();
+        let SettingsCommitMarker::Pending { generation, .. } = marker_before.clone() else {
+            panic!("expected pending commit marker");
+        };
+        let newer_generation = generation.checked_add(1).unwrap();
+        let foreign_pid = std::process::id().wrapping_add(1);
+        let newer_ready =
+            transactional_ready_temp_path(&path, newer_generation, foreign_pid, u64::MAX - 1);
+        write_durable_ready_fixture(
+            &newer_ready,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "other-process-ready".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        assert_eq!(
+            interrupted_temp_candidates(&path).unwrap().len(),
+            RECOVERY_TOTAL_CANDIDATE_LIMIT
+        );
+        let replacement_reached = Cell::new(false);
+
+        let error = mutate_app_settings_at_with_hooks(
+            &path,
+            |_| {},
+            |_, _| replacement_reached.set(true),
+            sync_parent_directory,
+            |settings| settings.custom_account_display_name = "must-not-save".into(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("未被当前提交标记证明已过时"));
+        assert!(!replacement_reached.get());
+        assert!(newer_ready.exists());
+        assert_eq!(read_commit_marker(&path).unwrap(), Some(marker_before));
+        assert!(read_app_settings_at(&path)
+            .unwrap()
+            .custom_account_display_name
+            .is_empty());
+    }
+
+    #[test]
+    fn committed_marker_preserves_newer_unknown_ready_and_blocks_capacity_cleanup() {
+        let root = TestSettingsRoot::new("newer-ready-after-committed");
+        let path = root.settings_path();
+        write_fixture(&path, &AppSettingsSnapshot::default());
+        let committed_generation = 100u128;
+        write_commit_marker(
+            &path,
+            &SettingsCommitMarker::Committed {
+                generation: committed_generation,
+            },
+            &mut sync_parent_directory,
+        )
+        .unwrap();
+        for generation in 1..RECOVERY_TOTAL_CANDIDATE_LIMIT as u128 {
+            let candidate = ready_settings_temp_path(&path, generation, generation as u64).unwrap();
+            write_durable_ready_fixture(&candidate, &AppSettingsSnapshot::default());
+        }
+        let newer_ready =
+            ready_settings_temp_path(&path, committed_generation + 1, u64::MAX - 2).unwrap();
+        write_durable_ready_fixture(
+            &newer_ready,
+            &AppSettingsSnapshot {
+                custom_account_display_name: "newer-than-committed".into(),
+                ..AppSettingsSnapshot::default()
+            },
+        );
+        assert_eq!(
+            interrupted_temp_candidates(&path).unwrap().len(),
+            RECOVERY_TOTAL_CANDIDATE_LIMIT
+        );
+
+        let error = mutate_app_settings_at(&path, |settings| {
+            settings.custom_account_display_name = "must-not-save".into();
+        })
+        .unwrap_err();
+
+        assert!(error.contains("未被当前提交标记证明已过时"));
+        assert!(newer_ready.exists());
+        assert!(matches!(
+            read_commit_marker(&path).unwrap(),
+            Some(SettingsCommitMarker::Committed { generation: 100 })
+        ));
+    }
+
+    #[test]
+    fn marker_generation_does_not_supersede_identity_uncertain_candidate() {
+        let root = TestSettingsRoot::new("identity-uncertain-ready");
+        let path = root.settings_path();
+        let candidate = RecoveryCandidate {
+            path: ready_settings_temp_path(&path, 10, 1).unwrap(),
+            freshness: 0,
+            protocol: RecoveryCandidateProtocol::TransactionalV4,
+            size: 0,
+            precheck: Some(RecoveryCandidatePrecheck::Transient(
+                "injected metadata uncertainty".into(),
+            )),
+        };
+
+        let error = provably_superseded_ready_candidates(
+            &path,
+            &[candidate],
+            &SettingsCommitMarker::Committed { generation: 100 },
+            None,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("身份无法确认"));
     }
 
     #[test]
@@ -3763,6 +4071,20 @@ mod tests {
         std::fs::write(path, serde_json::to_vec_pretty(settings).unwrap()).unwrap();
     }
 
+    fn write_durable_ready_fixture(path: &Path, settings: &AppSettingsSnapshot) {
+        let bytes = serde_json::to_vec_pretty(settings).unwrap();
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .unwrap();
+        file.write_all(&bytes).unwrap();
+        file.flush().unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        sync_parent_directory(path.parent().unwrap()).unwrap();
+    }
+
     fn set_modified_time(path: &Path, modified: SystemTime) {
         let file = OpenOptions::new().write(true).open(path).unwrap();
         file.set_times(FileTimes::new().set_modified(modified))
@@ -3801,6 +4123,18 @@ mod tests {
     fn ready_temp_path(settings_path: &Path, freshness: u128, pid: u32, sequence: u64) -> PathBuf {
         settings_path.with_file_name(format!(
             "settings.json.tmp-ready-v3-{freshness:039}-{pid}-{sequence:020}"
+        ))
+    }
+
+    fn transactional_ready_temp_path(
+        settings_path: &Path,
+        generation: u128,
+        pid: u32,
+        sequence: u64,
+    ) -> PathBuf {
+        let file_name = settings_path.file_name().unwrap().to_string_lossy();
+        settings_path.with_file_name(format!(
+            "{file_name}.tmp-ready-v4-{generation:039}-{pid}-{sequence:020}"
         ))
     }
 
