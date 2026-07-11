@@ -5,11 +5,45 @@ enum DashboardMarkAllReadTone: Equatable {
     case idle
 }
 
+enum DashboardHeaderAction: Equatable {
+    case markAllRead
+    case refresh
+    case changeDirectory
+    case providerRepair
+}
+
+enum DashboardHeaderPresentationMode: Equatable {
+    case dashboard
+    case export
+
+    var showsActions: Bool { self == .dashboard }
+
+    func actions(unreadCount: Int) -> [DashboardHeaderAction] {
+        guard showsActions else { return [] }
+        return [.markAllRead, .refresh, .changeDirectory, .providerRepair]
+    }
+}
+
+struct DashboardMarkAllReadController: Equatable {
+    private(set) var isBusy = false
+
+    @discardableResult
+    mutating func trigger(_ action: () -> Void) -> Bool {
+        guard !isBusy else { return false }
+        isBusy = true
+        action()
+        return true
+    }
+
+    mutating func complete() {
+        isBusy = false
+    }
+}
+
 struct DashboardMarkAllReadPresentation: Equatable {
     let unreadCount: Int
     let isBusy: Bool
 
-    var isVisible: Bool { true }
     var tone: DashboardMarkAllReadTone { unreadCount > 0 ? .active : .idle }
     var isEnabled: Bool { !isBusy }
     var accessibilityLabel: String { "全部已读" }
@@ -73,6 +107,7 @@ struct HeaderView: View {
     let dataSourceOrigin: String
     let isRefreshing: Bool
     let unreadThreadCount: Int
+    let presentationMode: DashboardHeaderPresentationMode
     let onRefresh: () -> Void
     let onMarkAllRead: () -> Void
     let onChangeDirectory: () -> Void
@@ -85,7 +120,7 @@ struct HeaderView: View {
     @AppStorage("customAccountDisplayName") private var customAccountDisplayName = ""
     @State private var isEditingDisplayName = false
     @State private var displayNameDraft = ""
-    @State private var isMarkingAllRead = false
+    @State private var markAllReadController = DashboardMarkAllReadController()
     @FocusState private var displayNameFieldFocused: Bool
 
     private var accountDisplayName: String {
@@ -98,7 +133,11 @@ struct HeaderView: View {
     }
 
     private var markAllReadPresentation: DashboardMarkAllReadPresentation {
-        DashboardMarkAllReadPresentation(unreadCount: unreadThreadCount, isBusy: isMarkingAllRead)
+        DashboardMarkAllReadPresentation(unreadCount: unreadThreadCount, isBusy: markAllReadController.isBusy)
+    }
+
+    private var actions: [DashboardHeaderAction] {
+        presentationMode.actions(unreadCount: unreadThreadCount)
     }
 
     var body: some View {
@@ -135,7 +174,7 @@ struct HeaderView: View {
                             displayNameDraft = accountDisplayName
                             displayNameFieldFocused = true
                         }
-                } else {
+                } else if presentationMode.showsActions {
                     Button {
                         displayNameDraft = accountDisplayName
                         isEditingDisplayName = true
@@ -157,6 +196,13 @@ struct HeaderView: View {
                     }
                     .buttonStyle(.plain)
                     .help("点击修改顶部昵称；留空会恢复本地账户名")
+                } else {
+                    Text(accountDisplayName)
+                        .font(.system(size: 24, weight: .regular))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                        .frame(maxWidth: 360)
                 }
 
                 HStack(spacing: 9) {
@@ -165,11 +211,13 @@ struct HeaderView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(width: 132, alignment: .leading)
-                    InterfaceScaleMenuButton(
-                        isPresented: $showingInterfaceScaleMenu,
-                        autoEnabled: $interfaceScaleAutoEnabled,
-                        manualMultiplier: $interfaceScaleManualMultiplier
-                    )
+                    if presentationMode.showsActions {
+                        InterfaceScaleMenuButton(
+                            isPresented: $showingInterfaceScaleMenu,
+                            autoEnabled: $interfaceScaleAutoEnabled,
+                            manualMultiplier: $interfaceScaleManualMultiplier
+                        )
+                    }
                     Text("Local")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.secondary)
@@ -187,55 +235,64 @@ struct HeaderView: View {
 
                     Spacer(minLength: 8)
 
-                    Button(action: markAllRead) {
-                        Label("全部已读", systemImage: "checkmark.circle")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(
-                                markAllReadPresentation.tone == .active
-                                    ? AppTheme.accentBlue
-                                    : Color.secondary
-                            )
-                            .frame(minWidth: 76)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(
-                                markAllReadPresentation.tone == .active
-                                    ? AppTheme.selectedControlBackground
-                                    : AppTheme.solidControlBackground,
-                                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .stroke(AppTheme.borderStrong, lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!markAllReadPresentation.isEnabled)
-                    .accessibilityLabel(markAllReadPresentation.accessibilityLabel)
-                    .accessibilityValue(markAllReadPresentation.accessibilityValue)
-                    .accessibilityHint(markAllReadPresentation.accessibilityHint)
+                    if actions.contains(.markAllRead) {
+                        Button(action: markAllRead) {
+                            Label("全部已读", systemImage: "checkmark.circle")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(
+                                    markAllReadPresentation.tone == .active
+                                        ? AppTheme.accentBlue
+                                        : Color.secondary
+                                )
+                                .frame(minWidth: 76)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(
+                                    markAllReadPresentation.tone == .active
+                                        ? AppTheme.selectedControlBackground
+                                        : AppTheme.solidControlBackground,
+                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .stroke(AppTheme.borderStrong, lineWidth: 1)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!markAllReadPresentation.isEnabled)
+                        .accessibilityLabel(markAllReadPresentation.accessibilityLabel)
+                        .accessibilityValue(markAllReadPresentation.accessibilityValue)
+                        .accessibilityHint(markAllReadPresentation.accessibilityHint)
 
-                    Button(action: onRefresh) {
-                        Label(isRefreshing ? "刷新中" : "立即刷新", systemImage: "arrow.clockwise")
-                            .font(.system(size: 13, weight: .medium))
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(isRefreshing)
-                    .accessibilityLabel(isRefreshing ? "刷新中" : "立即刷新")
 
-                    Button(action: onChangeDirectory) {
-                        Label("更改目录", systemImage: "folder")
-                            .font(.system(size: 13, weight: .medium))
+                    if actions.contains(.refresh) {
+                        Button(action: onRefresh) {
+                            Label(isRefreshing ? "刷新中" : "立即刷新", systemImage: "arrow.clockwise")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isRefreshing)
+                        .accessibilityLabel(isRefreshing ? "刷新中" : "立即刷新")
                     }
-                    .buttonStyle(.bordered)
-                    .accessibilityLabel("更改目录")
 
-                    Button(action: onOpenProviderSync) {
-                        Label("会话消失修复", systemImage: "wrench.and.screwdriver")
-                            .font(.system(size: 13, weight: .medium))
+                    if actions.contains(.changeDirectory) {
+                        Button(action: onChangeDirectory) {
+                            Label("更改目录", systemImage: "folder")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("更改目录")
                     }
-                    .buttonStyle(.bordered)
-                    .accessibilityLabel("会话消失修复")
+
+                    if actions.contains(.providerRepair) {
+                        Button(action: onOpenProviderSync) {
+                            Label("会话消失修复", systemImage: "wrench.and.screwdriver")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("会话消失修复")
+                    }
                 }
                 .font(.system(size: 14))
                 .padding(.leading, 12)
@@ -263,11 +320,9 @@ struct HeaderView: View {
     }
 
     private func markAllRead() {
-        guard !isMarkingAllRead else { return }
-        isMarkingAllRead = true
-        onMarkAllRead()
+        guard markAllReadController.trigger(onMarkAllRead) else { return }
         DispatchQueue.main.async {
-            isMarkingAllRead = false
+            markAllReadController.complete()
         }
     }
 }

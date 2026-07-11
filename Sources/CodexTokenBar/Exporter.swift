@@ -60,6 +60,7 @@ struct ExportSnapshotView: View {
                     dataSourceOrigin: "导出",
                     isRefreshing: false,
                     unreadThreadCount: 0,
+                    presentationMode: .export,
                     onRefresh: {},
                     onMarkAllRead: {},
                     onChangeDirectory: {},

@@ -368,6 +368,7 @@ struct DashboardView: View {
                 dataSourceOrigin: store.dataSourceOrigin,
                 isRefreshing: store.isRefreshing,
                 unreadThreadCount: taskCompletionMonitor.unreadThreadCount,
+                presentationMode: .dashboard,
                 onRefresh: {
                     refreshAllData()
                 },
