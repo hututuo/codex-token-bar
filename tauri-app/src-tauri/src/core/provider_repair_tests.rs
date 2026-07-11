@@ -1475,6 +1475,144 @@ fn session_backup_rejects_concurrent_append_and_removes_incomplete_publication()
     fs::remove_dir_all(fixture).unwrap();
 }
 
+#[test]
+fn session_backup_rejects_atomic_live_path_replacement_with_same_len_and_mtime() {
+    let fixture = temp_root("provider-session-copy-atomic-replacement");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let session = home.join("sessions/thread.jsonl");
+    write_session(&session, "thread", "openai");
+    create_state_database(&home, &[("thread", "openai", 0)]);
+    let config_before = Sha256::digest(fs::read(home.join("config.toml")).unwrap());
+    let sqlite_before = Sha256::digest(fs::read(home.join("state_5.sqlite")).unwrap());
+    let files_before = relative_file_set(&home);
+    let original = fs::read(&session).unwrap();
+    let original_mtime = fs::metadata(&session).unwrap().modified().unwrap();
+    let mut replacement = original.clone();
+    replacement[0] ^= 1;
+
+    let barrier = Arc::new(Barrier::new(2));
+    let replace_barrier = Arc::clone(&barrier);
+    let replace_session = session.clone();
+    let replacer = thread::spawn(move || {
+        replace_barrier.wait();
+        let replacement_path = replace_session.with_extension("replacement");
+        fs::write(&replacement_path, replacement).unwrap();
+        fs::File::open(&replacement_path)
+            .unwrap()
+            .set_modified(original_mtime)
+            .unwrap();
+        fs::rename(replacement_path, replace_session).unwrap();
+        replace_barrier.wait();
+    });
+
+    let error = backups::create_provider_backup_files_at_with_copy_hook(
+        &backup_root,
+        &home,
+        "openai",
+        |relative| {
+            if relative == Path::new("sessions/thread.jsonl") {
+                barrier.wait();
+                barrier.wait();
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    replacer.join().unwrap();
+
+    assert!(error.contains("描述符复制期间发生变化"), "{error}");
+    assert_failed_session_backup_cleanup(
+        &home,
+        &backup_root,
+        config_before,
+        sqlite_before,
+        files_before,
+    );
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn session_backup_rejects_same_inode_same_len_overwrite_with_restored_mtime() {
+    let fixture = temp_root("provider-session-copy-same-inode-overwrite");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let session = home.join("sessions/thread.jsonl");
+    write_session(&session, "thread", "openai");
+    create_state_database(&home, &[("thread", "openai", 0)]);
+    let config_before = Sha256::digest(fs::read(home.join("config.toml")).unwrap());
+    let sqlite_before = Sha256::digest(fs::read(home.join("state_5.sqlite")).unwrap());
+    let files_before = relative_file_set(&home);
+    let mut overwritten = fs::read(&session).unwrap();
+    let original_mtime = fs::metadata(&session).unwrap().modified().unwrap();
+    overwritten[0] ^= 1;
+
+    let barrier = Arc::new(Barrier::new(2));
+    let overwrite_barrier = Arc::clone(&barrier);
+    let overwrite_session = session.clone();
+    let overwriter = thread::spawn(move || {
+        overwrite_barrier.wait();
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&overwrite_session)
+            .unwrap();
+        file.write_all(&overwritten).unwrap();
+        file.sync_all().unwrap();
+        file.set_modified(original_mtime).unwrap();
+        overwrite_barrier.wait();
+    });
+
+    let error = backups::create_provider_backup_files_at_with_copy_hook(
+        &backup_root,
+        &home,
+        "openai",
+        |relative| {
+            if relative == Path::new("sessions/thread.jsonl") {
+                barrier.wait();
+                barrier.wait();
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    overwriter.join().unwrap();
+
+    assert!(error.contains("描述符复制期间发生变化"), "{error}");
+    assert_failed_session_backup_cleanup(
+        &home,
+        &backup_root,
+        config_before,
+        sqlite_before,
+        files_before,
+    );
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+fn assert_failed_session_backup_cleanup(
+    home: &Path,
+    backup_root: &Path,
+    config_before: impl AsRef<[u8]>,
+    sqlite_before: impl AsRef<[u8]>,
+    files_before: BTreeSet<PathBuf>,
+) {
+    assert_eq!(completed_backup_count(backup_root), 0);
+    assert_eq!(fs::read_dir(backup_root).unwrap().count(), 0);
+    assert_eq!(
+        Sha256::digest(fs::read(home.join("config.toml")).unwrap()).as_slice(),
+        config_before.as_ref()
+    );
+    assert_eq!(
+        Sha256::digest(fs::read(home.join("state_5.sqlite")).unwrap()).as_slice(),
+        sqlite_before.as_ref()
+    );
+    assert_eq!(relative_file_set(home), files_before);
+}
+
 fn relative_file_set(root: &Path) -> BTreeSet<PathBuf> {
     fn collect(root: &Path, current: &Path, files: &mut BTreeSet<PathBuf>) {
         for entry in fs::read_dir(current).unwrap().flatten() {

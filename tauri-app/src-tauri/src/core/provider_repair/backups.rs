@@ -7,7 +7,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -17,7 +17,9 @@ use time::{OffsetDateTime, UtcOffset};
 
 #[cfg(windows)]
 use super::safe_fs::windows_extended_length_path;
-use super::safe_fs::{AtomicInstallPhase, HomeGenerationIdentity, PinnedHome};
+use super::safe_fs::{
+    physical_file_identity, AtomicInstallPhase, HomeGenerationIdentity, PinnedHome,
+};
 use super::session_files::{find_session_files, write_file_atomically};
 
 const BACKUP_MANIFEST_SCHEMA_VERSION: u32 = 2;
@@ -332,9 +334,12 @@ fn build_complete_backup(
         let source_file = pinned_home
             .open_file(relative)?
             .ok_or_else(|| format!("备份会话文件在打开前消失：{}", relative.display()))?;
-        let (size, checksum_sha256) = copy_open_file_with_hook(source_file, &target, || {
-            session_copy_hook(relative)
-        })
+        let (size, checksum_sha256) = copy_open_session_file_with_hook(
+            source_file,
+            &target,
+            || session_copy_hook(relative),
+            || pinned_home.open_file(relative),
+        )
             .map_err(|error| format!("备份会话文件 {} 失败：{error}", relative.display()))?;
         members.push(BackupMember {
             kind: "session".into(),
@@ -2146,17 +2151,8 @@ fn no_session_copy_hook(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn copy_open_file(source: fs::File, target: &Path) -> Result<(u64, String), String> {
-    copy_open_file_with_hook(source, target, || Ok(()))
-}
-
-fn copy_open_file_with_hook(
-    mut source: fs::File,
-    target: &Path,
-    after_descriptor_open: impl FnOnce() -> Result<(), String>,
-) -> Result<(u64, String), String> {
+fn copy_open_file(mut source: fs::File, target: &Path) -> Result<(u64, String), String> {
     let opened = source.metadata().map_err(|error| error.to_string())?;
-    after_descriptor_open()?;
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -2177,6 +2173,87 @@ fn copy_open_file_with_hook(
         return Err("源文件在描述符复制期间发生变化，拒绝发布不完整快照".into());
     }
     Ok((size, file_sha256(target)?))
+}
+
+fn copy_open_session_file_with_hook(
+    mut source: fs::File,
+    target: &Path,
+    after_descriptor_open: impl FnOnce() -> Result<(), String>,
+    reopen_live_path: impl FnOnce() -> Result<Option<fs::File>, String>,
+) -> Result<(u64, String), String> {
+    let opened = source.metadata().map_err(|error| error.to_string())?;
+    let opened_modified = opened.modified().map_err(|error| error.to_string())?;
+    let opened_identity = physical_file_identity(&source)?;
+    let opened_digest = file_sha256_from_open(&mut source)?;
+    source
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| error.to_string())?;
+    after_descriptor_open()?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut target_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .map_err(|error| error.to_string())?;
+    let copied = std::io::copy(&mut source, &mut target_file)
+        .map_err(|error| error.to_string())
+        .and_then(|size| {
+            target_file
+                .sync_all()
+                .map_err(|error| error.to_string())?;
+            Ok(size)
+        });
+    drop(target_file);
+    let size = match copied {
+        Ok(size) => size,
+        Err(error) => {
+            let _ = fs::remove_file(target);
+            return Err(error);
+        }
+    };
+    let verification = (|| {
+        let completed = source.metadata().map_err(|error| error.to_string())?;
+        let completed_modified = completed.modified().map_err(|error| error.to_string())?;
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| error.to_string())?;
+        let completed_source_digest = file_sha256_from_open(&mut source)?;
+        let destination_digest = file_sha256(target)?;
+        let mut live = reopen_live_path()?
+            .ok_or_else(|| "源文件在描述符复制期间消失".to_string())?;
+        let live_identity = physical_file_identity(&live)?;
+        let live_digest = file_sha256_from_open(&mut live)?;
+        if size != opened.len()
+            || completed.len() != opened.len()
+            || completed_modified != opened_modified
+            || live_identity != opened_identity
+            || destination_digest != opened_digest
+            || completed_source_digest != opened_digest
+            || live_digest != opened_digest
+        {
+            return Err("源文件在描述符复制期间发生变化，拒绝发布不完整快照".into());
+        }
+        Ok((size, destination_digest))
+    })();
+    if verification.is_err() {
+        let _ = fs::remove_file(target);
+    }
+    verification
+}
+
+fn file_sha256_from_open(file: &mut fs::File) -> Result<String, String> {
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn reject_symlink_or_non_file(path: &Path) -> Result<(), String> {

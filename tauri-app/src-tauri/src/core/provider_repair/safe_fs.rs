@@ -34,7 +34,7 @@ pub(super) enum AtomicInstallPhase {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum PhysicalFileIdentity {
+pub(super) enum PhysicalFileIdentity {
     #[cfg(unix)]
     Unix { device: u64, inode: u64 },
     #[cfg(windows)]
@@ -1096,7 +1096,7 @@ fn logical_member_key(path: &Path) -> Result<String, String> {
 }
 
 #[cfg(unix)]
-fn physical_file_identity(file: &File) -> Result<PhysicalFileIdentity, String> {
+pub(super) fn physical_file_identity(file: &File) -> Result<PhysicalFileIdentity, String> {
     use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata().map_err(|error| error.to_string())?;
     Ok(PhysicalFileIdentity::Unix {
@@ -1106,7 +1106,7 @@ fn physical_file_identity(file: &File) -> Result<PhysicalFileIdentity, String> {
 }
 
 #[cfg(windows)]
-fn physical_file_identity(file: &File) -> Result<PhysicalFileIdentity, String> {
+pub(super) fn physical_file_identity(file: &File) -> Result<PhysicalFileIdentity, String> {
     let identity = windows_file_identity(file)?;
     Ok(PhysicalFileIdentity::Windows {
         volume_serial_number: identity.volume_serial_number,
