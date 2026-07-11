@@ -164,29 +164,40 @@ pub(crate) fn capture_codex_home_source(
 
 pub(crate) fn detect_codex_home_source_transition(
 ) -> Result<Option<CodexHomeSourceEnvelope>, String> {
-    with_codex_home_transition_state(|transition| {
-        if transition.canonical_home_key.is_none() {
-            return Ok(None);
-        }
-        if let Some(envelope) = refresh_codex_home_source_identity(transition)? {
-            return Ok(Some(envelope));
-        }
-        if transition.pending_publication_generation.is_some() {
-            return current_codex_home_source_envelope(transition).map(Some);
-        }
-        Ok(None)
-    })
+    with_codex_home_transition_state(detect_codex_home_source_transition_in_state)
 }
 
 pub(crate) fn acknowledge_codex_home_source_transition_published(
     generation: u64,
 ) -> Result<(), String> {
     with_codex_home_transition_state(|transition| {
-        if transition.pending_publication_generation == Some(generation) {
-            transition.pending_publication_generation = None;
-        }
+        acknowledge_codex_home_source_transition_published_in_state(transition, generation);
         Ok(())
     })
+}
+
+fn detect_codex_home_source_transition_in_state(
+    transition: &mut CodexHomeTransitionState,
+) -> Result<Option<CodexHomeSourceEnvelope>, String> {
+    if transition.canonical_home_key.is_none() {
+        return Ok(None);
+    }
+    if let Some(envelope) = refresh_codex_home_source_identity(transition)? {
+        return Ok(Some(envelope));
+    }
+    if transition.pending_publication_generation.is_some() {
+        return current_codex_home_source_envelope(transition).map(Some);
+    }
+    Ok(None)
+}
+
+fn acknowledge_codex_home_source_transition_published_in_state(
+    transition: &mut CodexHomeTransitionState,
+    generation: u64,
+) {
+    if transition.pending_publication_generation == Some(generation) {
+        transition.pending_publication_generation = None;
+    }
 }
 
 pub(crate) fn validate_codex_home_source(
@@ -971,6 +982,44 @@ mod tests {
             source_a.transition_generation + 1
         );
         assert!(duplicate, "the same transition must not publish twice");
+
+        remove_source_test_directory(home);
+        remove_source_test_directory(displaced);
+    }
+
+    #[test]
+    fn detected_transition_retries_until_publish_ack_then_stops() {
+        let home = disposable_source_test_directory("background-publish-ack");
+        let displaced = home.with_extension("displaced");
+        let mut transition = CodexHomeTransitionState::default();
+        let source_a = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+
+        std::fs::rename(&home, &displaced).unwrap();
+        std::fs::create_dir(&home).unwrap();
+
+        let first = detect_codex_home_source_transition_in_state(&mut transition)
+            .unwrap()
+            .expect("first detection should publish");
+        let retry = detect_codex_home_source_transition_in_state(&mut transition)
+            .unwrap()
+            .expect("failed publish must remain pending");
+        assert_eq!(retry.transition_generation, first.transition_generation);
+        assert_eq!(retry.transition_generation, source_a.transition_generation + 1);
+
+        acknowledge_codex_home_source_transition_published_in_state(
+            &mut transition,
+            first.transition_generation,
+        );
+        assert!(
+            detect_codex_home_source_transition_in_state(&mut transition)
+                .unwrap()
+                .is_none(),
+            "successful publish acknowledgement must consume the event exactly once"
+        );
 
         remove_source_test_directory(home);
         remove_source_test_directory(displaced);

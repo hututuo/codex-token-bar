@@ -462,8 +462,19 @@ mod tests {
         let root = temp_root("ack-source-swap");
         let support = root.join("tauri-support");
         fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&support).unwrap();
         let _support_env = TauriSupportEnvGuard::new(&support);
         write_unread_state(&root, &["019eaaaa-0000-0000-0000-000000000099"]);
+        let acknowledgement_path = support.join("unread-acknowledgement.json");
+        let before = br#"{
+  "byCodexHome": {
+    "unrelated-source": {
+      "unreadThreadIds": ["019eaaaa-0000-0000-0000-000000000001"],
+      "completionMarkers": []
+    }
+  }
+}"#;
+        fs::write(&acknowledgement_path, before).unwrap();
 
         let result = acknowledge_current_unread_for_source(
             &root,
@@ -472,9 +483,10 @@ mod tests {
         );
 
         assert_eq!(result.unwrap_err(), "injected physical source replacement");
-        assert!(
-            !support.join("unread-acknowledgement.json").exists(),
-            "validation must run before any baseline write"
+        assert_eq!(
+            fs::read(&acknowledgement_path).unwrap(),
+            before,
+            "validation must run before any baseline replacement"
         );
         let _ = fs::remove_dir_all(root);
     }
