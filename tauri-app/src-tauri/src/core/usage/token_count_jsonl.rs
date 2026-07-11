@@ -72,8 +72,9 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     let mut warnings = Vec::new();
     let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings);
     let signature = dashboard_scan_signature(codex_home, &session_files);
-    if let Some(snapshot) = cached_dashboard_snapshot(&signature) {
+    if let Some(mut snapshot) = cached_dashboard_snapshot(&signature) {
         let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
+        merge_usage_cache_marker_warning(&mut snapshot);
         return Ok(snapshot_with_generated_at(snapshot));
     }
 
@@ -119,7 +120,16 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         snapshot.warnings.push(warning);
     }
     let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
+    merge_usage_cache_marker_warning(&mut snapshot);
     Ok(snapshot)
+}
+
+fn merge_usage_cache_marker_warning(snapshot: &mut DashboardSnapshot) {
+    if let Some(warning) = cache_lifecycle::usage_cache_persistence_warning() {
+        if !snapshot.warnings.iter().any(|existing| existing.source == warning.source) {
+            snapshot.warnings.push(warning);
+        }
+    }
 }
 
 fn activity_days_and_stats_at(
@@ -557,7 +567,7 @@ fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) -> 
     };
     let data = serde_json::to_vec(&payload)
         .map_err(|error| format!("serialize aggregate cache {}: {error}", path.display()))?;
-    crate::core::atomic_file::write_atomically(&path, &data)
+    crate::core::atomic_file::write_atomically(&path, &data).map_err(|error| error.to_string())
 }
 
 #[derive(Deserialize, Serialize)]

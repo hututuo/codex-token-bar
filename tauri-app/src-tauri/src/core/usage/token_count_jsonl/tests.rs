@@ -1180,6 +1180,36 @@ fn aggregate_persistence_failure_keeps_memory_snapshot_with_one_warning() {
 }
 
 #[test]
+fn marker_failure_warning_is_deduplicated_for_fresh_and_cached_snapshots() {
+    let root = temp_root();
+    let blocked_support = root.join("blocked-support");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(&blocked_support, b"not a directory").unwrap();
+    std::env::set_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", &blocked_support);
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let timestamp = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019emarker-warning-fresh-cached.jsonl"),
+        &[&format!(
+            r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"total_tokens":42}}}}}}}}"#
+        )],
+    );
+
+    let fresh = dashboard_snapshot(&root).unwrap();
+    let cached = dashboard_snapshot(&root).unwrap();
+    for snapshot in [fresh, cached] {
+        assert_eq!(
+            snapshot.warnings.iter().filter(|warning| warning.source == "usage-cache-marker-persistence").count(),
+            1
+        );
+    }
+    std::env::remove_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR");
+    cache_lifecycle::clear_usage_cache_persistence_warning_for_testing();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn usage_summary_snapshot_cache_miss_schedules_one_background_build() {
     let root = temp_root();
     let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));

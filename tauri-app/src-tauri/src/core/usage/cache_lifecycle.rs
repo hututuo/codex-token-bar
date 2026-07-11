@@ -1,9 +1,13 @@
 use crate::core::app_paths;
 use crate::core::atomic_file;
+use crate::models::LocalDataWarning;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use std::sync::{Mutex, OnceLock};
+
+static MARKER_FAILURE: OnceLock<Mutex<Option<LocalDataWarning>>> = OnceLock::new();
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,14 +33,37 @@ pub fn usage_cache_status() -> UsageCacheStatus {
             (state.usage_cache_namespace == namespace).then_some(state.initialized_at)
         });
 
+    let failed = usage_cache_persistence_warning().is_some();
     UsageCacheStatus {
         namespace,
-        initialized: initialized_at.is_some(),
-        initialized_at,
+        initialized: initialized_at.is_some() && !failed,
+        initialized_at: (!failed).then_some(initialized_at).flatten(),
     }
 }
 
 pub fn mark_usage_cache_initialized() -> Result<(), String> {
+    mark_usage_cache_initialized_with(|path, data| atomic_file::write_atomically(path, data))
+}
+
+fn mark_usage_cache_initialized_with(
+    writer: impl FnOnce(&std::path::Path, &[u8]) -> Result<(), atomic_file::AtomicWriteError>,
+) -> Result<(), String> {
+    let result = try_mark_usage_cache_initialized_with(writer);
+    match &result {
+        Ok(()) => {
+            if let Ok(mut failure) = MARKER_FAILURE.get_or_init(|| Mutex::new(None)).lock() { *failure = None; }
+        }
+        Err(error) => {
+            let warning = LocalDataWarning { source: "usage-cache-marker-persistence".into(), message: error.clone() };
+            if let Ok(mut failure) = MARKER_FAILURE.get_or_init(|| Mutex::new(None)).lock() { *failure = Some(warning); }
+        }
+    }
+    result
+}
+
+fn try_mark_usage_cache_initialized_with(
+    writer: impl FnOnce(&std::path::Path, &[u8]) -> Result<(), atomic_file::AtomicWriteError>,
+) -> Result<(), String> {
     let Some(path) = app_paths::tauri_cache_state_path() else {
         return Ok(());
     };
@@ -55,7 +82,16 @@ pub fn mark_usage_cache_initialized() -> Result<(), String> {
     };
     let data = serde_json::to_vec(&payload)
         .map_err(|error| format!("序列化 Tauri 统计缓存状态失败：{error}"))?;
-    atomic_file::write_atomically(&path, &data)
+    writer(&path, &data).map_err(|error| error.to_string())
+}
+
+pub fn usage_cache_persistence_warning() -> Option<LocalDataWarning> {
+    MARKER_FAILURE.get_or_init(|| Mutex::new(None)).lock().ok().and_then(|warning| warning.clone())
+}
+
+#[cfg(test)]
+pub(crate) fn clear_usage_cache_persistence_warning_for_testing() {
+    if let Ok(mut warning) = MARKER_FAILURE.get_or_init(|| Mutex::new(None)).lock() { *warning = None; }
 }
 
 pub fn mark_usage_cache_ready_after_success() -> Result<(), String> {
@@ -150,6 +186,29 @@ mod tests {
         fs::write(marker_parent, b"not a directory").unwrap();
         assert!(mark_usage_cache_initialized().is_err());
         assert!(!usage_cache_status().initialized);
+        assert!(usage_cache_persistence_warning().is_some());
+        MARKER_FAILURE.get().unwrap().lock().unwrap().take();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn committed_not_durable_marker_is_visible_but_not_ready_until_durable_retry() {
+        let root = temp_root("marker-parent-sync");
+        let _env = PathEnvGuard::new(&root);
+        let error = mark_usage_cache_initialized_with(|path, data| {
+            atomic_file::write_atomically_with_hook(path, data, |stage, _| {
+                if stage == atomic_file::AtomicWriteStage::ParentSync { Err("injected parent sync".into()) } else { Ok(()) }
+            })
+        })
+        .unwrap_err();
+        assert!(error.contains("CommittedNotDurable"));
+        assert!(app_paths::tauri_cache_state_path().unwrap().exists());
+        assert!(!usage_cache_status().initialized);
+        assert!(usage_cache_persistence_warning().is_some());
+
+        mark_usage_cache_initialized().unwrap();
+        assert!(usage_cache_status().initialized);
+        assert!(usage_cache_persistence_warning().is_none());
         let _ = fs::remove_dir_all(root);
     }
 

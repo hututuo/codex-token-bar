@@ -13,6 +13,22 @@ pub(crate) enum AtomicWriteStage {
     Replace,
     ParentSync,
     Cleanup,
+    CleanupAfterIdentity,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AtomicWriteError {
+    NotCommitted(String),
+    CommittedNotDurable(String),
+}
+
+impl std::fmt::Display for AtomicWriteError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotCommitted(message) => write!(formatter, "NotCommitted: {message}"),
+            Self::CommittedNotDurable(message) => write!(formatter, "CommittedNotDurable: {message}"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,7 +39,7 @@ enum FileIdentity {
     Windows { volume: u64, id: [u8; 16] },
 }
 
-pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), AtomicWriteError> {
     write_atomically_with_hook(path, bytes, |_, _| Ok(()))
 }
 
@@ -31,16 +47,16 @@ pub(crate) fn write_atomically_with_hook(
     path: &Path,
     bytes: &[u8],
     mut hook: impl FnMut(AtomicWriteStage, &Path) -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<(), AtomicWriteError> {
     let parent = path
         .parent()
-        .ok_or_else(|| diagnostic(AtomicWriteStage::Write, path, "missing parent directory"))?;
+        .ok_or_else(|| AtomicWriteError::NotCommitted(diagnostic(AtomicWriteStage::Write, path, "missing parent directory")))?;
     fs::create_dir_all(parent)
-        .map_err(|error| diagnostic(AtomicWriteStage::Write, parent, error))?;
+        .map_err(|error| AtomicWriteError::NotCommitted(diagnostic(AtomicWriteStage::Write, parent, error)))?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| diagnostic(AtomicWriteStage::Write, path, "invalid destination name"))?;
+        .ok_or_else(|| AtomicWriteError::NotCommitted(diagnostic(AtomicWriteStage::Write, path, "invalid destination name")))?;
 
     for _ in 0..TEMP_ATTEMPTS {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -51,11 +67,12 @@ pub(crate) fn write_atomically_with_hook(
         let mut file = match create_temp(&temp) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(diagnostic(AtomicWriteStage::Write, &temp, error)),
+            Err(error) => return Err(AtomicWriteError::NotCommitted(diagnostic(AtomicWriteStage::Write, &temp, error))),
         };
-        let identity = file_identity(&file)
-            .map_err(|error| cleanup_after_error(error, &temp, None, &mut hook))?;
-        let result = (|| {
+        let identity = file_identity(&file).map_err(|error| AtomicWriteError::NotCommitted(
+            cleanup_after_error(diagnostic(AtomicWriteStage::Cleanup, &temp, error), &temp, None, &mut hook)
+        ))?;
+        let precommit = (|| {
             hook(AtomicWriteStage::Write, &temp)
                 .map_err(|error| diagnostic(AtomicWriteStage::Write, &temp, error))?;
             file.write_all(bytes)
@@ -69,19 +86,21 @@ pub(crate) fn write_atomically_with_hook(
                 .map_err(|error| diagnostic(AtomicWriteStage::Replace, path, error))?;
             replace_destination(&temp, path)
                 .map_err(|error| diagnostic(AtomicWriteStage::Replace, path, error))?;
-            hook(AtomicWriteStage::ParentSync, parent)
-                .map_err(|error| diagnostic(AtomicWriteStage::ParentSync, parent, error))?;
-            sync_parent(parent)
-                .map_err(|error| diagnostic(AtomicWriteStage::ParentSync, parent, error))?;
             Ok(())
         })();
-        return result.map_err(|error| cleanup_after_error(error, &temp, Some(&identity), &mut hook));
+        if let Err(error) = precommit {
+            return Err(AtomicWriteError::NotCommitted(cleanup_after_error(error, &temp, Some(&identity), &mut hook)));
+        }
+        if let Err(error) = hook(AtomicWriteStage::ParentSync, parent).and_then(|_| sync_parent(parent).map_err(|error| error.to_string())) {
+            return Err(AtomicWriteError::CommittedNotDurable(diagnostic(AtomicWriteStage::ParentSync, parent, error)));
+        }
+        return Ok(());
     }
-    Err(diagnostic(
+    Err(AtomicWriteError::NotCommitted(diagnostic(
         AtomicWriteStage::Write,
         path,
         "exhausted unique temporary file attempts",
-    ))
+    )))
 }
 
 fn cleanup_after_error(
@@ -92,8 +111,8 @@ fn cleanup_after_error(
 ) -> String {
     let cleanup = hook(AtomicWriteStage::Cleanup, temp)
         .and_then(|_| match identity {
-            Some(identity) => cleanup_temp_if_same(temp, identity),
-            None => Ok(()),
+            Some(identity) => cleanup_temp_if_same(temp, identity, hook),
+            None => Err(format!("identity unavailable; exact residual path={}", temp.display())),
         });
     match cleanup {
         Ok(()) => original,
@@ -105,8 +124,19 @@ fn diagnostic(stage: AtomicWriteStage, path: &Path, error: impl std::fmt::Displa
     format!("atomic-cache stage={stage:?} path={} error={error}", path.display())
 }
 
+#[cfg(not(windows))]
 fn create_temp(path: &Path) -> std::io::Result<File> {
     OpenOptions::new().read(true).write(true).create_new(true).open(path)
+}
+
+#[cfg(windows)]
+fn create_temp(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
+    OpenOptions::new().read(true).write(true).create_new(true)
+        .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path)
 }
 
 #[cfg(unix)]
@@ -136,29 +166,39 @@ fn file_identity(file: &File) -> Result<FileIdentity, String> {
 }
 
 #[cfg(unix)]
-fn cleanup_temp_if_same(path: &Path, expected: &FileIdentity) -> Result<(), String> {
-    use rustix::fs::{openat, unlinkat, AtFlags, Mode, OFlags};
-    let parent = File::open(path.parent().ok_or("temporary path has no parent")?)
-        .map_err(|error| error.to_string())?;
+fn cleanup_temp_if_same(path: &Path, expected: &FileIdentity, hook: &mut impl FnMut(AtomicWriteStage, &Path) -> Result<(), String>) -> Result<(), String> {
+    use rustix::fs::{openat, renameat_with, unlinkat, AtFlags, Mode, OFlags, RenameFlags};
+    let parent_path = path.parent().ok_or("temporary path has no parent")?;
+    let parent = rustix::fs::open(parent_path, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())
+        .map_err(|error| format!("residual path={}: {error}", path.display()))?;
     let name = path.file_name().ok_or("temporary path has no name")?;
-    let fd = match openat(&parent, name, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()) {
+    let fd = match openat(&parent, name, OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()) {
         Ok(fd) => fd,
         Err(rustix::io::Errno::NOENT) => return Ok(()),
         Err(error) => return Err(error.to_string()),
     };
     let opened = File::from(fd);
-    if &file_identity(&opened)? != expected {
-        return Err("temporary path identity changed; preserved replacement".into());
-    }
-    unlinkat(&parent, name, AtFlags::empty()).map_err(|error| error.to_string())
+    validate_temp(&opened, expected, path)?;
+    hook(AtomicWriteStage::CleanupAfterIdentity, path)?;
+    let quarantine_name = format!(".codex-token-bar-cleanup-{}-{:020}.tmp", std::process::id(), TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed));
+    let quarantine = parent_path.join(&quarantine_name);
+    renameat_with(&parent, name, &parent, quarantine_name.as_str(), RenameFlags::NOREPLACE)
+        .map_err(|error| format!("quarantine failed residual path={}: {error}", path.display()))?;
+    let quarantined = File::from(openat(&parent, quarantine_name.as_str(), OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())
+        .map_err(|error| format!("quarantine reopen failed residual path={}: {error}", quarantine.display()))?);
+    validate_temp(&quarantined, expected, &quarantine)?;
+    unlinkat(&parent, quarantine_name.as_str(), AtFlags::empty())
+        .map_err(|error| format!("handle-safe unlink failed residual path={}: {error}", quarantine.display()))?;
+    rustix::fs::fsync(&parent).map_err(|error| format!("cleanup parent sync failed path={}: {error}", parent_path.display()))
 }
 
 #[cfg(windows)]
-fn cleanup_temp_if_same(path: &Path, expected: &FileIdentity) -> Result<(), String> {
+fn cleanup_temp_if_same(path: &Path, expected: &FileIdentity, hook: &mut impl FnMut(AtomicWriteStage, &Path) -> Result<(), String>) -> Result<(), String> {
     use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
     let file = match OpenOptions::new()
         .read(true)
+        .access_mode(FILE_GENERIC_READ | DELETE)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
@@ -167,10 +207,29 @@ fn cleanup_temp_if_same(path: &Path, expected: &FileIdentity) -> Result<(), Stri
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.to_string()),
     };
-    if &file_identity(&file)? != expected {
-        return Err("temporary path identity changed; preserved replacement".into());
+    validate_temp(&file, expected, path)?;
+    hook(AtomicWriteStage::CleanupAfterIdentity, path)?;
+    windows_delete_open_temp(&file).map_err(|error| format!("validated handle delete failed residual path={}: {error}", path.display()))
+}
+
+fn validate_temp(file: &File, expected: &FileIdentity, path: &Path) -> Result<(), String> {
+    let metadata = file.metadata().map_err(|error| format!("type read failed residual path={}: {error}", path.display()))?;
+    if !metadata.file_type().is_file() {
+        return Err(format!("not a regular file; residual path={}", path.display()));
     }
-    fs::remove_file(path).map_err(|error| error.to_string())
+    if &file_identity(file)? != expected {
+        return Err(format!("temporary path identity changed; preserved replacement; residual path={}", path.display()));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_delete_open_temp(file: &File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{SetFileInformationByHandle, FileDispositionInfo, FILE_DISPOSITION_INFO};
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+    let ok = unsafe { SetFileInformationByHandle(file.as_raw_handle() as _, FileDispositionInfo, (&disposition as *const FILE_DISPOSITION_INFO).cast(), std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32) };
+    if ok == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
 }
 
 #[cfg(not(windows))]
@@ -243,11 +302,20 @@ mod tests {
             let root = root("failure");
             fs::create_dir_all(&root).unwrap();
             let path = root.join("cache.json");
-            if failed == AtomicWriteStage::ParentSync { fs::write(&path, b"old").unwrap(); }
+            if matches!(failed, AtomicWriteStage::Replace | AtomicWriteStage::ParentSync) { fs::write(&path, b"old").unwrap(); }
             let error = write_atomically_with_hook(&path, b"new", |stage, _| {
                 if stage == failed { Err("injected".into()) } else { Ok(()) }
             }).unwrap_err();
-            assert!(error.contains(&format!("stage={failed:?}")));
+            assert!(error.to_string().contains(&format!("stage={failed:?}")));
+            if failed == AtomicWriteStage::ParentSync {
+                assert!(matches!(error, AtomicWriteError::CommittedNotDurable(_)));
+                assert_eq!(fs::read(&path).unwrap(), b"new");
+            } else {
+                assert!(matches!(error, AtomicWriteError::NotCommitted(_)));
+                if failed == AtomicWriteStage::Replace {
+                    assert_eq!(fs::read(&path).unwrap(), b"old");
+                }
+            }
             assert!(!fs::read_dir(&root).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().ends_with(".tmp")));
             fs::remove_dir_all(root).unwrap();
         }
@@ -270,11 +338,45 @@ mod tests {
             Ok(())
         })
         .unwrap_err();
-        assert!(error.contains("identity changed"));
+        assert!(error.to_string().contains("identity changed"));
         assert_eq!(fs::read(alias.unwrap()).unwrap(), b"new");
         assert!(fs::read_dir(&root).unwrap().flatten().any(|entry| {
             fs::read(entry.path()).ok().as_deref() == Some(b"unrelated replacement")
         }));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_rejects_fifo_and_identity_swap_without_blocking_or_deleting_aliases() {
+        use std::os::unix::ffi::OsStrExt;
+
+        for swap_after_identity in [false, true] {
+            let root = root("fifo-race");
+            fs::create_dir_all(&root).unwrap();
+            let path = root.join("cache.json");
+            let alias = root.join("original-alias.tmp");
+            let error = write_atomically_with_hook(&path, b"new", |stage, temp| {
+                if stage == AtomicWriteStage::Replace && !swap_after_identity {
+                    fs::rename(temp, &alias).unwrap();
+                    let bytes = std::ffi::CString::new(temp.as_os_str().as_bytes()).unwrap();
+                    unsafe extern "C" { fn mkfifo(path: *const std::ffi::c_char, mode: u32) -> i32; }
+                    assert_eq!(unsafe { mkfifo(bytes.as_ptr(), 0o600) }, 0);
+                    return Err("inject fifo".into());
+                }
+                if stage == AtomicWriteStage::Replace && swap_after_identity {
+                    return Err("defer swap".into());
+                }
+                if stage == AtomicWriteStage::CleanupAfterIdentity && swap_after_identity {
+                    fs::rename(temp, &alias).unwrap();
+                    fs::write(temp, b"replacement").unwrap();
+                }
+                Ok(())
+            }).unwrap_err();
+            assert!(matches!(error, AtomicWriteError::NotCommitted(_)));
+            assert!(alias.exists());
+            assert!(error.to_string().contains("residual path"));
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 }
