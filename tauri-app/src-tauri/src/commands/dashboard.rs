@@ -7,6 +7,7 @@ use crate::core::usage::token_count_jsonl::{self, TokenUsageSummary};
 use crate::models::{AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, PlatformCapabilities};
 use crate::platform;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,6 +19,9 @@ pub(crate) const CODEX_HOME_SOURCE_CHANGED_EVENT: &str = "codex-home-source-chan
 
 static CODEX_HOME_TRANSITION_STATE: OnceLock<Mutex<CodexHomeTransitionState>> = OnceLock::new();
 static PINNED_SOURCE_SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(unix)]
+static PINNED_DB_SNAPSHOT_CACHE: OnceLock<Mutex<HashMap<String, CachedPinnedDbSnapshot>>> =
+    OnceLock::new();
 #[cfg(test)]
 static PINNED_SOURCE_SESSION_FILES_COPIED: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
@@ -29,6 +33,12 @@ const PINNED_SESSION_FILE_LIMIT: usize = 64;
 const PINNED_SESSION_FIRST_LINE_LIMIT: u64 = 262_144;
 const PINNED_SESSION_TAIL_LIMIT: u64 = 4 * 1024 * 1024;
 const PINNED_SESSION_LOOKBACK_SECONDS: i64 = 30;
+
+#[cfg(unix)]
+struct CachedPinnedDbSnapshot {
+    signature: u64,
+    directory: PathBuf,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -313,21 +323,24 @@ pub(crate) fn pin_captured_codex_home_source(
     if physical_home_key != captured.source_token.physical_home_key {
         return Err("Codex Home physical identity changed before it could be pinned".into());
     }
-    let snapshot_path = snapshot_pinned_unread_source(&handle)?;
+    let source_scope_key = format!(
+        "{}|{}",
+        captured.source_token.canonical_home_key, captured.source_token.physical_home_key
+    );
+    let snapshot_path = snapshot_pinned_unread_source(&handle, &source_scope_key)?;
     Ok(PinnedCodexHomeSource {
         _handle: handle,
         read_path: snapshot_path.clone(),
         snapshot_path: Some(snapshot_path),
-        source_scope_key: format!(
-            "{}|{}",
-            captured.source_token.canonical_home_key,
-            captured.source_token.physical_home_key
-        ),
+        source_scope_key,
     })
 }
 
 #[cfg(unix)]
-fn snapshot_pinned_unread_source(root: &std::fs::File) -> Result<PathBuf, String> {
+fn snapshot_pinned_unread_source(
+    root: &std::fs::File,
+    source_scope_key: &str,
+) -> Result<PathBuf, String> {
     use rustix::fs::FileType;
 
     let sequence = PINNED_SOURCE_SNAPSHOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -348,11 +361,13 @@ fn snapshot_pinned_unread_source(root: &std::fs::File) -> Result<PathBuf, String
             ".codex-global-state.json",
             &snapshot.join(".codex-global-state.json"),
         )?;
-        if pinned_state_has_native_unread_ids(&snapshot)? {
-            for file_name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
-                copy_optional_pinned_file(root, file_name, &snapshot.join(file_name))?;
-            }
-            validate_pinned_state_database(&snapshot)?;
+        if let Some(state_fingerprint) = pinned_state_fingerprint(&snapshot)? {
+            materialize_cached_pinned_database(
+                root,
+                source_scope_key,
+                state_fingerprint,
+                &snapshot,
+            )?;
         }
         copy_recent_pinned_sessions(root, &snapshot.join("sessions"))?;
         Ok::<(), String>(())
@@ -372,11 +387,13 @@ fn snapshot_pinned_unread_source(root: &std::fs::File) -> Result<PathBuf, String
 }
 
 #[cfg(unix)]
-fn pinned_state_has_native_unread_ids(snapshot: &Path) -> Result<bool, String> {
+fn pinned_state_fingerprint(snapshot: &Path) -> Result<Option<u64>, String> {
+    use std::hash::{Hash, Hasher};
+
     let path = snapshot.join(".codex-global-state.json");
     let data = match std::fs::read(path) {
         Ok(data) => data,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("failed to read pinned native unread state: {error}")),
     };
     let value: serde_json::Value = serde_json::from_slice(&data)
@@ -385,27 +402,158 @@ fn pinned_state_has_native_unread_ids(snapshot: &Path) -> Result<bool, String> {
         .get("electron-persisted-atom-state")
         .and_then(|state| state.get("unread-thread-ids-by-host-v1"))
         .or_else(|| value.get("unread-thread-ids-by-host-v1"));
-    Ok(unread.is_some_and(value_contains_thread_id))
+    let mut ids = Vec::new();
+    if let Some(unread) = unread {
+        collect_thread_ids_for_fingerprint(unread, &mut ids);
+    }
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    ids.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    ids.hash(&mut hasher);
+    Ok(Some(hasher.finish()))
 }
 
 #[cfg(unix)]
-fn value_contains_thread_id(value: &serde_json::Value) -> bool {
+fn collect_thread_ids_for_fingerprint(value: &serde_json::Value, ids: &mut Vec<String>) {
     match value {
-        serde_json::Value::String(text) => text.len() >= 24 && text.contains('-'),
-        serde_json::Value::Array(items) => items.iter().any(value_contains_thread_id),
-        serde_json::Value::Object(map) => map.values().any(value_contains_thread_id),
-        _ => false,
+        serde_json::Value::String(text) if text.len() >= 24 && text.contains('-') => {
+            ids.push(text.clone())
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_thread_ids_for_fingerprint(item, ids);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values() {
+                collect_thread_ids_for_fingerprint(item, ids);
+            }
+        }
+        _ => {}
     }
+}
+
+#[cfg(unix)]
+fn materialize_cached_pinned_database(
+    root: &std::fs::File,
+    source_scope_key: &str,
+    state_fingerprint: u64,
+    snapshot: &Path,
+) -> Result<(), String> {
+    let signature_before = pinned_database_signature(root, state_fingerprint)?;
+    let cache = PINNED_DB_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache
+        .lock()
+        .map_err(|_| "pinned unread DB cache lock was poisoned".to_string())?;
+    let stale_keys = cache
+        .keys()
+        .filter(|key| key.as_str() != source_scope_key)
+        .cloned()
+        .collect::<Vec<_>>();
+    for key in stale_keys {
+        if let Some(stale) = cache.remove(&key) {
+            let _ = std::fs::remove_dir_all(stale.directory);
+        }
+    }
+    if let Some(cached) = cache.get(source_scope_key) {
+        if cached.signature == signature_before {
+            return link_cached_pinned_database(&cached.directory, snapshot);
+        }
+    }
+
+    let sequence = PINNED_SOURCE_SNAPSHOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "codex-token-bar-pinned-db-{}-{sequence}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&directory)
+        .map_err(|error| format!("failed to create pinned DB cache directory: {error}"))?;
+    let result = (|| {
+        for file_name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
+            copy_optional_pinned_file(root, file_name, &directory.join(file_name))?;
+        }
+        validate_pinned_state_database(&directory)?;
+        let signature_after = pinned_database_signature(root, state_fingerprint)?;
+        if signature_after != signature_before {
+            return Err("pinned unread SQLite changed while it was being copied".into());
+        }
+        Ok::<(), String>(())
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::remove_dir_all(&directory);
+        return Err(error);
+    }
+    if let Some(previous) = cache.insert(
+        source_scope_key.to_string(),
+        CachedPinnedDbSnapshot {
+            signature: signature_before,
+            directory: directory.clone(),
+        },
+    ) {
+        let _ = std::fs::remove_dir_all(previous.directory);
+    }
+    link_cached_pinned_database(&directory, snapshot)
+}
+
+#[cfg(unix)]
+fn pinned_database_signature(
+    root: &std::fs::File,
+    state_fingerprint: u64,
+) -> Result<u64, String> {
+    use rustix::fs::{statat, AtFlags};
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    state_fingerprint.hash(&mut hasher);
+    for file_name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
+        match statat(root, file_name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => {
+                file_name.hash(&mut hasher);
+                stat.st_ino.hash(&mut hasher);
+                stat.st_size.hash(&mut hasher);
+                stat.st_mtime.hash(&mut hasher);
+                stat.st_mtime_nsec.hash(&mut hasher);
+            }
+            Err(rustix::io::Errno::NOENT) if file_name != "state_5.sqlite" => {
+                file_name.hash(&mut hasher);
+            }
+            Err(rustix::io::Errno::NOENT) => {
+                return Err(
+                    "pinned unread observation requires state_5.sqlite when native unread state exists"
+                        .into(),
+                )
+            }
+            Err(error) => {
+                return Err(format!("failed to inspect pinned unread SQLite: {error}"))
+            }
+        }
+    }
+    Ok(hasher.finish())
+}
+
+#[cfg(unix)]
+fn link_cached_pinned_database(cache: &Path, snapshot: &Path) -> Result<(), String> {
+    for file_name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
+        let source = cache.join(file_name);
+        if source.exists() {
+            std::fs::hard_link(&source, snapshot.join(file_name)).map_err(|error| {
+                format!("failed to link cached pinned unread SQLite {file_name}: {error}")
+            })?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
 fn validate_pinned_state_database(snapshot: &Path) -> Result<(), String> {
     let state = snapshot.join(".codex-global-state.json");
-    if !state.exists() {
-        return Ok(());
-    }
     let database = snapshot.join("state_5.sqlite");
     if !database.exists() {
+        if !state.exists() {
+            return Ok(());
+        }
         return Err(
             "pinned unread observation requires state_5.sqlite when native unread state exists"
                 .into(),
@@ -1740,6 +1888,55 @@ mod tests {
         };
 
         assert!(error.contains("is a directory"), "{error}");
+        remove_source_test_directory(home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unchanged_native_state_and_db_reuse_verified_db_snapshot_until_signature_changes() {
+        let home = disposable_source_test_directory("db-signature-cache");
+        let thread_id = "019eaaaa-0000-0000-0000-0000000000aa";
+        std::fs::write(
+            home.join(".codex-global-state.json"),
+            format!(r#"{{"unread-thread-ids-by-host-v1":{{"localhost":["{thread_id}"]}}}}"#),
+        )
+        .unwrap();
+        let database_path = home.join("state_5.sqlite");
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE threads (id TEXT PRIMARY KEY, archived INTEGER, thread_source TEXT, source TEXT, preview TEXT);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO threads VALUES (?1, 0, 'user', 'user', 'visible')",
+                [thread_id],
+            )
+            .unwrap();
+        drop(connection);
+        let mut transition = CodexHomeTransitionState::default();
+        let source = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
+            .unwrap();
+        reset_pinned_source_copy_count_for_test();
+
+        drop(pin_captured_codex_home_source(&captured).unwrap());
+        drop(pin_captured_codex_home_source(&captured).unwrap());
+        assert_eq!(pinned_source_db_copy_count_for_test(), 1);
+
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        connection
+            .execute("UPDATE threads SET preview = 'changed' WHERE id = ?1", [thread_id])
+            .unwrap();
+        drop(connection);
+        drop(pin_captured_codex_home_source(&captured).unwrap());
+        assert_eq!(pinned_source_db_copy_count_for_test(), 2);
+
         remove_source_test_directory(home);
     }
 

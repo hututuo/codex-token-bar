@@ -40,6 +40,7 @@ struct CachedUnreadSummary {
     last_attempt: Instant,
     retry_after: Option<Instant>,
     failed_attempts: u32,
+    last_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -132,8 +133,19 @@ impl LiveRateMonitorRegistry {
             captured.source_token.canonical_home_key,
             captured.source_token.physical_home_key
         );
+        let requested_at = Instant::now();
+        let mut cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
+        if force_refresh {
+            if let Some(cached) = cache.get(&source_scope_key) {
+                if cached.last_attempt >= requested_at {
+                    return match cached.last_error.as_ref() {
+                        Some(error) => Err(error.clone()),
+                        None => Ok(cached.summary.clone()),
+                    };
+                }
+            }
+        }
         if !force_refresh {
-            let cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
             if let Some(cached) = cache.get(&source_scope_key) {
                 if cached.refreshed_at.elapsed() < UNREAD_OBSERVATION_CADENCE {
                     return Ok(cached.summary.clone());
@@ -153,18 +165,55 @@ impl LiveRateMonitorRegistry {
         let summary = match refresh() {
             Ok(summary) => summary,
             Err(error) if !force_refresh => {
-                let mut cache = self.unread_cache.lock().map_err(|lock| lock.to_string())?;
                 if let Some(cached) = cache.get_mut(&source_scope_key) {
                     cached.last_attempt = attempted_at;
                     cached.failed_attempts = cached.failed_attempts.saturating_add(1);
-                    cached.retry_after = Some(attempted_at + UNREAD_REFRESH_RETRY_BACKOFF);
+                    cached.retry_after = Some(
+                        attempted_at + unread_retry_backoff(cached.failed_attempts),
+                    );
+                    cached.last_error = Some(error.clone());
                     return Ok(stale_unread_summary(&cached.summary, &error));
+                }
+                let neutral = neutral_unread_summary(&error);
+                cache.retain(|key, _| key == &source_scope_key);
+                cache.insert(
+                    source_scope_key,
+                    CachedUnreadSummary {
+                        summary: neutral.clone(),
+                        refreshed_at: attempted_at - UNREAD_OBSERVATION_CADENCE,
+                        last_attempt: attempted_at,
+                        retry_after: Some(attempted_at + unread_retry_backoff(1)),
+                        failed_attempts: 1,
+                        last_error: Some(error),
+                    },
+                );
+                return Ok(neutral);
+            }
+            Err(error) => {
+                if let Some(cached) = cache.get_mut(&source_scope_key) {
+                    cached.last_attempt = attempted_at;
+                    cached.failed_attempts = cached.failed_attempts.saturating_add(1);
+                    cached.retry_after = Some(
+                        attempted_at + unread_retry_backoff(cached.failed_attempts),
+                    );
+                    cached.last_error = Some(error.clone());
+                } else {
+                    cache.retain(|key, _| key == &source_scope_key);
+                    cache.insert(
+                        source_scope_key,
+                        CachedUnreadSummary {
+                            summary: neutral_unread_summary(&error),
+                            refreshed_at: attempted_at - UNREAD_OBSERVATION_CADENCE,
+                            last_attempt: attempted_at,
+                            retry_after: Some(attempted_at + unread_retry_backoff(1)),
+                            failed_attempts: 1,
+                            last_error: Some(error.clone()),
+                        },
+                    );
                 }
                 return Err(error);
             }
-            Err(error) => return Err(error),
         };
-        let mut cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
         cache.retain(|key, _| key == &source_scope_key);
         cache.insert(
             source_scope_key,
@@ -174,6 +223,7 @@ impl LiveRateMonitorRegistry {
                 last_attempt: attempted_at,
                 retry_after: None,
                 failed_attempts: 0,
+                last_error: None,
             },
         );
         Ok(summary)
@@ -198,6 +248,7 @@ impl LiveRateMonitorRegistry {
                 last_attempt: Instant::now(),
                 retry_after: None,
                 failed_attempts: 0,
+                last_error: None,
             },
         );
         Ok(())
@@ -575,6 +626,23 @@ fn stale_unread_summary(summary: &UnreadSummary, error: &str) -> UnreadSummary {
     stale.detail = format!("{} · unread refresh failed; using cached value: {error}", stale.detail);
     stale.source = format!("{}_stale", stale.source.trim_end_matches("_stale"));
     stale
+}
+
+fn neutral_unread_summary(error: &str) -> UnreadSummary {
+    UnreadSummary {
+        active: false,
+        count: 0,
+        label: "Unread unavailable".into(),
+        detail: format!("Unread refresh failed; retry is scheduled: {error}"),
+        source: "unread_error_cached".into(),
+    }
+}
+
+fn unread_retry_backoff(failed_attempts: u32) -> Duration {
+    let multiplier = 1u64 << failed_attempts.saturating_sub(1).min(3);
+    Duration::from_secs(
+        (UNREAD_REFRESH_RETRY_BACKOFF.as_secs() * multiplier).min(30),
+    )
 }
 
 fn emit_detected_source_transition(app: &AppHandle) -> Result<bool, String> {
@@ -1170,6 +1238,7 @@ mod tests {
                 last_attempt: Instant::now() - UNREAD_OBSERVATION_CADENCE,
                 retry_after: None,
                 failed_attempts: 0,
+                last_error: None,
             },
         );
         let attempts = AtomicUsize::new(0);
@@ -1187,6 +1256,89 @@ mod tests {
 
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrent_unread_refreshes_are_single_flight_per_source_scope() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let registry = LiveRateMonitorRegistry::default();
+        let captured = CapturedCodexHomeSource {
+            source_token: CodexHomeSourceToken {
+                canonical_home_key: "single-flight".into(),
+                physical_home_key: "physical-single-flight".into(),
+                transition_generation: 1,
+            },
+            codex_home: PathBuf::from("single-flight"),
+            source_path: PathBuf::from("single-flight"),
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(3));
+        let handles = [(), ()].map(|_| {
+            let registry = registry.clone();
+            let captured = captured.clone();
+            let attempts = attempts.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                registry
+                    .unread_summary_for_source_with_refresh(&captured, false, || {
+                        attempts.fetch_add(1, Ordering::Relaxed);
+                        std::thread::sleep(Duration::from_millis(30));
+                        Ok(UnreadSummary {
+                            active: true,
+                            count: 1,
+                            label: "fresh".into(),
+                            detail: "fresh".into(),
+                            source: "test".into(),
+                        })
+                    })
+                    .unwrap()
+            })
+        });
+        barrier.wait();
+        for handle in handles {
+            assert_eq!(handle.join().unwrap().count, 1);
+        }
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn cold_refresh_failure_is_negative_cached_for_live_ticks() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let registry = LiveRateMonitorRegistry::default();
+        let captured = CapturedCodexHomeSource {
+            source_token: CodexHomeSourceToken {
+                canonical_home_key: "cold-failure".into(),
+                physical_home_key: "physical-cold-failure".into(),
+                transition_generation: 1,
+            },
+            codex_home: PathBuf::from("cold-failure"),
+            source_path: PathBuf::from("cold-failure"),
+        };
+        let attempts = AtomicUsize::new(0);
+
+        for _ in 0..3 {
+            let summary = registry
+                .unread_summary_for_source_with_refresh(&captured, false, || {
+                    attempts.fetch_add(1, Ordering::Relaxed);
+                    Err("cold injected failure".into())
+                })
+                .unwrap();
+            assert!(summary.source.starts_with("unread_error_cached"));
+        }
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn unread_refresh_backoff_is_bounded_exponential() {
+        assert_eq!(unread_retry_backoff(1), Duration::from_secs(5));
+        assert_eq!(unread_retry_backoff(2), Duration::from_secs(10));
+        assert_eq!(unread_retry_backoff(3), Duration::from_secs(20));
+        assert_eq!(unread_retry_backoff(4), Duration::from_secs(30));
+        assert_eq!(unread_retry_backoff(20), Duration::from_secs(30));
     }
 
     #[test]
