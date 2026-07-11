@@ -227,7 +227,7 @@ fn validate_temp(file: &File, expected: &FileIdentity, path: &Path) -> Result<()
 fn windows_delete_open_temp(file: &File) -> std::io::Result<()> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{SetFileInformationByHandle, FileDispositionInfo, FILE_DISPOSITION_INFO};
-    let disposition = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
     let ok = unsafe { SetFileInformationByHandle(file.as_raw_handle() as _, FileDispositionInfo, (&disposition as *const FILE_DISPOSITION_INFO).cast(), std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32) };
     if ok == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
 }
@@ -278,6 +278,17 @@ fn sync_parent(_parent: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_disposition_uses_windows_sys_boolean_field() {
+        let atomic_source = include_str!("atomic_file.rs");
+        let provider_source = include_str!("provider_repair/session_files.rs");
+        assert!(atomic_source.contains("FILE_DISPOSITION_INFO { DeleteFile: true }"));
+        assert!(provider_source.contains("FILE_DISPOSITION_INFO { DeleteFile: true }"));
+        let integer_field = ["FILE_DISPOSITION_INFO { DeleteFile: ", "1 }"].concat();
+        assert!(!atomic_source.contains(&integer_field));
+        assert!(!provider_source.contains(&integer_field));
+    }
     use std::path::PathBuf;
 
     fn root(label: &str) -> PathBuf {

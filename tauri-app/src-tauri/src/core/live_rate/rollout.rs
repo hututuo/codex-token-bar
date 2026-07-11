@@ -3,7 +3,7 @@ use super::stream::{LiveMetricEvent, LiveTokenCategory};
 use super::LiveRateSourceScope;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -665,11 +665,12 @@ fn file_size(path: &Path) -> Option<u64> {
 }
 
 fn file_signature(path: &Path) -> FileSignature {
-    fs::metadata(path)
-        .map(|metadata| FileSignature {
+    File::open(path)
+        .and_then(|file| file.metadata().map(|metadata| (file, metadata)))
+        .map(|(file, metadata)| FileSignature {
             exists: true,
             regular: metadata.is_file(),
-            identity: metadata_identity(&metadata),
+            identity: file_identity(&file),
             len: metadata.len(),
             modified_at: metadata.modified().ok(),
         })
@@ -683,24 +684,54 @@ fn file_signature(path: &Path) -> FileSignature {
 }
 
 #[cfg(unix)]
-fn metadata_identity(metadata: &fs::Metadata) -> Option<String> {
+fn file_identity(file: &File) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata().ok()?;
     Some(format!("{}:{}", metadata.dev(), metadata.ino()))
 }
 
 #[cfg(windows)]
-fn metadata_identity(metadata: &fs::Metadata) -> Option<String> {
-    use std::os::windows::fs::MetadataExt;
-    Some(format!(
-        "{}:{}",
-        metadata.volume_serial_number()?,
-        metadata.file_index()?
-    ))
+fn file_identity(file: &File) -> Option<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO,
+    };
+    let mut info = FILE_ID_INFO::default();
+    let succeeded = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as _,
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            u32::try_from(std::mem::size_of::<FILE_ID_INFO>()).unwrap_or(u32::MAX),
+        )
+    };
+    if succeeded == 0 {
+        return None;
+    }
+    let file_id = info
+        .FileId
+        .Identifier
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Some(format!("{}:{file_id}", info.VolumeSerialNumber))
 }
 
 #[cfg(not(any(unix, windows)))]
-fn metadata_identity(_metadata: &fs::Metadata) -> Option<String> {
+fn file_identity(_file: &File) -> Option<String> {
     None
+}
+
+#[cfg(test)]
+#[test]
+fn windows_file_identity_source_uses_stable_handle_api() {
+    let source = include_str!("rollout.rs");
+    assert!(source.contains("GetFileInformationByHandleEx"));
+    assert!(source.contains("FileIdInfo"));
+    assert!(source.contains("FILE_ID_INFO::default()"));
+    assert!(!source.contains(&["std::os::windows::fs::", "MetadataExt"].concat()));
+    assert!(!source.contains(&["volume_serial_", "number()"].concat()));
+    assert!(!source.contains(&["file_", "index()"].concat()));
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

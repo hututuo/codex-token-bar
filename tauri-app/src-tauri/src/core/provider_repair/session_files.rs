@@ -599,7 +599,7 @@ fn windows_delete_open_atomic_temp(file: &File) -> std::io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{
         SetFileInformationByHandle, FileDispositionInfo, FILE_DISPOSITION_INFO,
     };
-    let disposition = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
     let succeeded = unsafe {
         SetFileInformationByHandle(
             file.as_raw_handle() as _,
