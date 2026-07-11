@@ -48,14 +48,13 @@ export function HeatmapGrid({
     rangeStart,
   );
   const focusedCellWasRemoved = focusedDate !== null && !dates.includes(focusedDate);
-  const shouldRestoreRemovedFocus = focusedCellWasRemoved && gridHasFocusRef.current;
 
   useLayoutEffect(() => {
     if (focusedDate !== validFocusedDate) {
       setFocusedDate(validFocusedDate);
     }
     if (
-      !shouldRestoreRemovedFocus
+      !focusedCellWasRemoved
       || !gridHasFocusRef.current
       || validFocusedDate === null
     ) {
@@ -72,7 +71,7 @@ export function HeatmapGrid({
       return;
     }
     cellRefs.current.get(validFocusedDate)?.focus();
-  }, [focusedDate, shouldRestoreRemovedFocus, validFocusedDate]);
+  }, [focusedCellWasRemoved, focusedDate, validFocusedDate]);
 
   function handleGridBlur(event: FocusEvent<HTMLDivElement>) {
     const nextTarget = event.relatedTarget as Node | null;
