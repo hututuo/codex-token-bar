@@ -2,6 +2,7 @@ use super::*;
 use rusqlite::{params, Connection};
 use std::fs;
 use std::io::Write;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -183,6 +184,9 @@ fn read_snapshot_keeps_idle_state_with_warning_when_logs_database_is_missing() {
 
 #[test]
 fn read_snapshot_uses_safe_shell_before_precise_cache_exists() {
+    let _guard = precise_summary_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let root = temp_root("live-rate-precise-summary");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
@@ -202,6 +206,9 @@ fn read_snapshot_uses_safe_shell_before_precise_cache_exists() {
 
 #[test]
 fn live_rate_ticks_leave_precise_summary_rebuild_to_usage_refresh() {
+    let _guard = precise_summary_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let root = temp_root("live-rate-background-precise-summary");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
@@ -271,6 +278,9 @@ fn state_token_summary_is_not_used_for_live_totals() {
 
 #[test]
 fn floating_snapshot_uses_precise_token_summary_when_cached() {
+    let _guard = precise_summary_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let root = temp_root("live-rate-cached-precise-summary");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
@@ -292,6 +302,9 @@ fn floating_snapshot_uses_precise_token_summary_when_cached() {
 
 #[test]
 fn floating_snapshot_keeps_same_scope_precise_summary_without_live_tick_rescan() {
+    let _guard = precise_summary_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let root = temp_root("live-rate-stale-precise-summary");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
@@ -580,11 +593,115 @@ fn rollout_token_count_reasoning_does_not_drive_live_rate() {
     );
 
     let now = current_time_seconds();
-    let metrics = rollout::read_rollout_metrics(&root, now);
+    let metrics = rollout::read_rollout_metrics(
+        &root,
+        &LiveRateSourceScope::legacy(&root),
+        now,
+    )
+    .unwrap();
     let rollup = stream::rollup_metric_events(&metrics, now, None);
     assert!(rollup.breakdown.reasoning > 0);
     assert_eq!(rollup.tokens_per_second, 0.0);
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rollout_offsets_are_isolated_by_physical_source_scope() {
+    let path = PathBuf::from("/same/home/sessions/rollout.jsonl");
+    let scope_a = LiveRateSourceScope::new("/same/home", "physical-a");
+    let scope_b = LiveRateSourceScope::new("/same/home", "physical-b");
+
+    assert_ne!(
+        rollout::offset_key_for_test(&scope_a, &path),
+        rollout::offset_key_for_test(&scope_b, &path),
+    );
+}
+
+#[test]
+fn new_physical_scope_initializes_rollout_offset_from_eof() {
+    let root = temp_root("live-rate-rollout-physical-offset");
+    fs::create_dir_all(&root).unwrap();
+    let rollout_path = root.join("sessions/thread-a.jsonl");
+    create_state_database(&root, "thread-a", "A", 1);
+    set_thread_rollout_path(&root, "thread-a", &rollout_path);
+    fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+    fs::File::create(&rollout_path).unwrap();
+    let scope_a = LiveRateSourceScope::new(root.display().to_string(), "physical-a");
+    let scope_b = LiveRateSourceScope::new(root.display().to_string(), "physical-b");
+    let now = current_time_seconds();
+
+    assert!(rollout::read_rollout_metrics(&root, &scope_a, now)
+        .unwrap()
+        .is_empty());
+    append_rollout_line(
+        &rollout_path,
+        "event_msg",
+        r#"{"type":"agent_message","message":"new for A"}"#,
+    );
+    assert!(!rollout::read_rollout_metrics(&root, &scope_a, now)
+        .unwrap()
+        .is_empty());
+    assert!(
+        rollout::read_rollout_metrics(&root, &scope_b, now)
+            .unwrap()
+            .is_empty(),
+        "B must initialize at its own EOF instead of inheriting A's consumed offset"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn delayed_a_cache_publish_cannot_overwrite_b_scope() {
+    let scope_a = LiveRateSourceScope::new("/same/home", "physical-a-delayed");
+    let scope_b = LiveRateSourceScope::new("/same/home", "physical-b-current");
+
+    rollout::publish_scope_threads_for_test(&scope_b, "thread-b");
+    rollout::publish_scope_threads_for_test(&scope_a, "thread-a-late");
+
+    assert_eq!(
+        rollout::cached_scope_thread_ids_for_test(&scope_b),
+        vec!["thread-b"]
+    );
+}
+
+#[test]
+fn recent_rollout_threads_refresh_on_wal_change_and_ttl() {
+    let root = temp_root("live-rate-rollout-wal-cache");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "A", 1);
+    let rollout_a = root.join("sessions/thread-a.jsonl");
+    fs::create_dir_all(rollout_a.parent().unwrap()).unwrap();
+    fs::write(&rollout_a, "").unwrap();
+    set_thread_rollout_path(&root, "thread-a", &rollout_a);
+    let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
+    connection.pragma_update(None, "journal_mode", "WAL").unwrap();
+    connection.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    let scope = LiveRateSourceScope::new(root.display().to_string(), "physical-a");
+
+    let first = rollout::recent_thread_ids_for_test(&root, &scope).unwrap();
+    assert_eq!(first, vec!["thread-a"]);
+    assert_eq!(rollout::cache_load_count_for_test(&scope), 1);
+    let cached = rollout::recent_thread_ids_for_test(&root, &scope).unwrap();
+    assert_eq!(cached, first);
+    assert_eq!(rollout::cache_load_count_for_test(&scope), 1);
+
+    connection
+        .execute(
+            r#"INSERT INTO threads (id, title, rollout_path, updated_at, updated_at_ms, tokens_used)
+               VALUES ('thread-b', 'B', ?1, 9999999999, 9999999999000, 1)"#,
+            [root.join("sessions/thread-b.jsonl").to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    let changed = rollout::recent_thread_ids_for_test(&root, &scope).unwrap();
+    assert_eq!(changed[0], "thread-b");
+    assert_eq!(rollout::cache_load_count_for_test(&scope), 2);
+
+    rollout::expire_cache_for_test(&scope);
+    let _ = rollout::recent_thread_ids_for_test(&root, &scope).unwrap();
+    assert_eq!(rollout::cache_load_count_for_test(&scope), 3);
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -648,7 +765,12 @@ fn read_snapshot_excludes_large_rollout_tool_output_from_live_rate() {
         &format!(r#"{{"type":"function_call_output","call_id":"call-a","output":"{large_output}"}}"#),
     );
     let now = current_time_seconds();
-    let metrics = rollout::read_rollout_metrics(&root, now);
+    let metrics = rollout::read_rollout_metrics(
+        &root,
+        &LiveRateSourceScope::legacy(&root),
+        now,
+    )
+    .unwrap();
     let rollup = stream::rollup_metric_events(&metrics, now, None);
     assert!(rollup.breakdown.tool_output > 0);
     assert_eq!(rollup.tokens_per_second, 0.0);
@@ -1079,4 +1201,9 @@ fn exact_visible_metric_without_thread(
         distributed: false,
         dedupe_key: None,
     }
+}
+
+fn precise_summary_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }

@@ -1,5 +1,6 @@
 use super::{
-    read_floating_snapshot_from_live, read_snapshot_with_unread, rollout::rollout_file_signatures,
+    read_floating_snapshot_from_live, read_snapshot_with_unread_scoped,
+    rollout::rollout_file_signatures, LiveRateSourceScope,
 };
 #[cfg(test)]
 use crate::core::unread;
@@ -15,6 +16,7 @@ const ACTIVE_REFRESH_HOLD: Duration = Duration::from_secs(10);
 
 pub struct LiveRateMonitorService {
     codex_home: PathBuf,
+    source_scope: LiveRateSourceScope,
     inner: Mutex<LiveRateMonitorState>,
 }
 
@@ -54,14 +56,24 @@ struct RolloutSignatureEntry {
 
 impl LiveRateMonitorService {
     pub fn new(codex_home: PathBuf) -> Self {
+        let source_scope = LiveRateSourceScope::legacy(&codex_home);
+        Self::new_scoped(codex_home, source_scope)
+    }
+
+    pub fn new_scoped(codex_home: PathBuf, source_scope: LiveRateSourceScope) -> Self {
         Self {
             codex_home,
+            source_scope,
             inner: Mutex::new(LiveRateMonitorState::default()),
         }
     }
 
     pub fn codex_home(&self) -> &Path {
         &self.codex_home
+    }
+
+    pub fn source_scope(&self) -> &LiveRateSourceScope {
+        &self.source_scope
     }
 
     #[cfg(test)]
@@ -88,7 +100,7 @@ impl LiveRateMonitorService {
             snapshot.unread_summary = unread_summary;
             return snapshot;
         }
-        let signature = log_store_signature(&self.codex_home);
+        let signature = log_store_signature(&self.codex_home, &self.source_scope);
         state.signature_count += 1;
         let selected_matches = state
             .selected_snapshot
@@ -112,8 +124,12 @@ impl LiveRateMonitorService {
             }
         }
 
-        let snapshot =
-            read_snapshot_with_unread(&self.codex_home, selected_thread_id, unread_summary);
+        let snapshot = read_snapshot_with_unread_scoped(
+            &self.codex_home,
+            &self.source_scope,
+            selected_thread_id,
+            unread_summary,
+        );
         let all_snapshot = if selected_thread_id.is_some() {
             let mut all_snapshot = snapshot.clone();
             all_snapshot.selected_thread_id = None;
@@ -236,11 +252,11 @@ impl LiveRateMonitorState {
     }
 }
 
-fn log_store_signature(codex_home: &Path) -> LogStoreSignature {
+fn log_store_signature(codex_home: &Path, source_scope: &LiveRateSourceScope) -> LogStoreSignature {
     let database = file_signature(&codex_home.join("logs_2.sqlite"));
     let wal = file_signature(&codex_home.join("logs_2.sqlite-wal"));
     let state = file_signature(&codex_home.join("state_5.sqlite"));
-    let rollout_files = rollout_file_signatures(codex_home)
+    let rollout_files = rollout_file_signatures(codex_home, source_scope)
         .into_iter()
         .map(|signature| RolloutSignatureEntry {
             path: signature.path,

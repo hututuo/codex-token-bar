@@ -1,57 +1,86 @@
 use super::state::read_recent_rollout_threads;
 use super::stream::{LiveMetricEvent, LiveTokenCategory};
+use super::LiveRateSourceScope;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 const RECENT_ROLLOUT_LIMIT: usize = 20;
+const RECENT_ROLLOUT_TTL: Duration = Duration::from_secs(3);
+const ROLLOUT_SCOPE_LIMIT: usize = 64;
 
-static ROLLOUT_OFFSETS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
-static RECENT_ROLLOUT_THREADS: OnceLock<Mutex<Option<CachedRolloutThreads>>> = OnceLock::new();
+static ROLLOUT_STATE: OnceLock<Mutex<RolloutState>> = OnceLock::new();
+
+#[derive(Default)]
+struct RolloutState {
+    next_generation: u64,
+    scope_generations: HashMap<LiveRateSourceScope, u64>,
+    offsets: HashMap<(LiveRateSourceScope, PathBuf), u64>,
+    recent_threads: HashMap<LiveRateSourceScope, CachedRolloutThreads>,
+    #[cfg(test)]
+    load_counts: HashMap<LiveRateSourceScope, usize>,
+}
 
 #[derive(Clone)]
 struct CachedRolloutThreads {
-    codex_home: PathBuf,
     state_signature: StateDatabaseSignature,
     threads: Vec<super::state::RolloutThread>,
+    refreshed_at: Instant,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct StateDatabaseSignature {
-    len: u64,
-    modified_at: Option<SystemTime>,
+    main: FileSignature,
+    wal: FileSignature,
 }
 
-pub(super) fn read_rollout_metrics(codex_home: &Path, now: f64) -> Vec<LiveMetricEvent> {
-    let Ok(threads) = recent_rollout_threads(codex_home) else {
-        return Vec::new();
-    };
-    let offsets = ROLLOUT_OFFSETS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut offsets = offsets
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+pub(super) fn read_rollout_metrics(
+    codex_home: &Path,
+    source_scope: &LiveRateSourceScope,
+    now: f64,
+) -> rusqlite::Result<Vec<LiveMetricEvent>> {
+    let (threads, generation) = recent_rollout_threads(codex_home, source_scope)?;
     let mut metrics = Vec::new();
 
     for thread in threads {
         let path = thread.rollout_path;
         let Some(file_size) = file_size(&path) else {
-            offsets.remove(&path);
+            let mut state = rollout_state();
+            if state.scope_generations.get(source_scope) == Some(&generation) {
+                state.offsets.remove(&(source_scope.clone(), path));
+            }
             continue;
         };
-        let offset = offsets.entry(path.clone()).or_insert(file_size);
-        if *offset > file_size {
-            *offset = file_size;
+        let key = (source_scope.clone(), path.clone());
+        let offset = {
+            let mut state = rollout_state();
+            if state.scope_generations.get(source_scope) != Some(&generation) {
+                return Ok(Vec::new());
+            }
+            *state.offsets.entry(key.clone()).or_insert(file_size)
+        };
+        if offset > file_size {
+            let mut state = rollout_state();
+            if state.scope_generations.get(source_scope) == Some(&generation) {
+                state.offsets.insert(key, file_size);
+            }
             continue;
         }
 
-        let (new_offset, lines) = read_new_lines(&path, *offset).unwrap_or((*offset, Vec::new()));
-        *offset = new_offset;
+        let (new_offset, lines) = read_new_lines(&path, offset).unwrap_or((offset, Vec::new()));
+        {
+            let mut state = rollout_state();
+            if state.scope_generations.get(source_scope) != Some(&generation) {
+                return Ok(Vec::new());
+            }
+            state.offsets.insert(key, new_offset);
+        }
         let mut call_starts = HashMap::new();
         for (line_index, line) in lines.iter().enumerate() {
             metrics.extend(rollout_line_metrics(
@@ -65,28 +94,39 @@ pub(super) fn read_rollout_metrics(codex_home: &Path, now: f64) -> Vec<LiveMetri
         }
     }
 
-    metrics
+    Ok(metrics)
 }
 
-pub(super) fn sync_rollout_offsets_to_current(codex_home: &Path) {
-    let Ok(threads) = recent_rollout_threads(codex_home) else {
+pub(super) fn sync_rollout_offsets_to_current(
+    codex_home: &Path,
+    source_scope: &LiveRateSourceScope,
+) {
+    let Ok((threads, generation)) = recent_rollout_threads(codex_home, source_scope) else {
         return;
     };
-    let offsets = ROLLOUT_OFFSETS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut offsets = offsets
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    for thread in threads {
-        if let Some(size) = file_size(&thread.rollout_path) {
-            offsets.insert(thread.rollout_path, size);
+    let observed = threads
+        .into_iter()
+        .map(|thread| (thread.rollout_path.clone(), file_size(&thread.rollout_path)))
+        .collect::<Vec<_>>();
+    let mut state = rollout_state();
+    if state.scope_generations.get(source_scope) != Some(&generation) {
+        return;
+    }
+    for (path, size) in observed {
+        let key = (source_scope.clone(), path);
+        if let Some(size) = size {
+            state.offsets.insert(key, size);
         } else {
-            offsets.remove(&thread.rollout_path);
+            state.offsets.remove(&key);
         }
     }
 }
 
-pub(super) fn rollout_file_signatures(codex_home: &Path) -> Vec<RolloutFileSignature> {
-    let Ok(threads) = recent_rollout_threads(codex_home) else {
+pub(super) fn rollout_file_signatures(
+    codex_home: &Path,
+    source_scope: &LiveRateSourceScope,
+) -> Vec<RolloutFileSignature> {
+    let Ok((threads, _)) = recent_rollout_threads(codex_home, source_scope) else {
         return Vec::new();
     };
     threads
@@ -102,34 +142,144 @@ pub(super) fn rollout_file_signatures(codex_home: &Path) -> Vec<RolloutFileSigna
         .collect()
 }
 
-fn recent_rollout_threads(codex_home: &Path) -> rusqlite::Result<Vec<super::state::RolloutThread>> {
+fn recent_rollout_threads(
+    codex_home: &Path,
+    source_scope: &LiveRateSourceScope,
+) -> rusqlite::Result<(Vec<super::state::RolloutThread>, u64)> {
     let state_signature = state_database_signature(codex_home);
-    let cache = RECENT_ROLLOUT_THREADS.get_or_init(|| Mutex::new(None));
-    if let Ok(guard) = cache.lock() {
-        if let Some(cached) = guard.as_ref() {
-            if cached.codex_home == codex_home && cached.state_signature == state_signature {
-                return Ok(cached.threads.clone());
+    let generation = {
+        let mut state = rollout_state();
+        if !state.scope_generations.contains_key(source_scope) {
+            evict_oldest_scope_if_needed(&mut state);
+            state.next_generation = state.next_generation.saturating_add(1);
+            let generation = state.next_generation;
+            state.scope_generations.insert(source_scope.clone(), generation);
+        }
+        if let Some(cached) = state.recent_threads.get(source_scope) {
+            if cached.state_signature == state_signature
+                && cached.refreshed_at.elapsed() < RECENT_ROLLOUT_TTL
+            {
+                return Ok((
+                    cached.threads.clone(),
+                    *state.scope_generations.get(source_scope).expect("scope generation"),
+                ));
             }
         }
-    }
+        *state.scope_generations.get(source_scope).expect("scope generation")
+    };
 
     let threads = read_recent_rollout_threads(codex_home, RECENT_ROLLOUT_LIMIT)?;
-    if let Ok(mut guard) = cache.lock() {
-        *guard = Some(CachedRolloutThreads {
-            codex_home: codex_home.to_path_buf(),
-            state_signature,
+    let publish_signature = state_database_signature(codex_home);
+    let mut state = rollout_state();
+    if state.scope_generations.get(source_scope) == Some(&generation) {
+        #[cfg(test)]
+        {
+            *state.load_counts.entry(source_scope.clone()).or_default() += 1;
+        }
+        state.recent_threads.insert(source_scope.clone(), CachedRolloutThreads {
+            state_signature: publish_signature,
             threads: threads.clone(),
+            refreshed_at: Instant::now(),
         });
     }
-    Ok(threads)
+    Ok((threads, generation))
+}
+
+fn evict_oldest_scope_if_needed(state: &mut RolloutState) {
+    if state.scope_generations.len() < ROLLOUT_SCOPE_LIMIT {
+        return;
+    }
+    let Some(scope) = state
+        .recent_threads
+        .iter()
+        .min_by_key(|(_, cached)| cached.refreshed_at)
+        .map(|(scope, _)| scope.clone())
+        .or_else(|| state.scope_generations.keys().next().cloned())
+    else {
+        return;
+    };
+    state.scope_generations.remove(&scope);
+    state.recent_threads.remove(&scope);
+    state.offsets.retain(|(candidate, _), _| candidate != &scope);
 }
 
 fn state_database_signature(codex_home: &Path) -> StateDatabaseSignature {
-    let signature = file_signature(&codex_home.join("state_5.sqlite"));
     StateDatabaseSignature {
-        len: signature.len,
-        modified_at: signature.modified_at,
+        main: file_signature(&codex_home.join("state_5.sqlite")),
+        wal: file_signature(&codex_home.join("state_5.sqlite-wal")),
     }
+}
+
+fn rollout_state() -> std::sync::MutexGuard<'static, RolloutState> {
+    ROLLOUT_STATE
+        .get_or_init(|| Mutex::new(RolloutState::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+pub(super) fn offset_key_for_test(
+    scope: &LiveRateSourceScope,
+    path: &Path,
+) -> (LiveRateSourceScope, PathBuf) {
+    (scope.clone(), path.to_path_buf())
+}
+
+#[cfg(test)]
+pub(super) fn recent_thread_ids_for_test(
+    codex_home: &Path,
+    scope: &LiveRateSourceScope,
+) -> rusqlite::Result<Vec<String>> {
+    recent_rollout_threads(codex_home, scope)
+        .map(|(threads, _)| threads.into_iter().map(|thread| thread.id).collect())
+}
+
+#[cfg(test)]
+pub(super) fn cache_load_count_for_test(scope: &LiveRateSourceScope) -> usize {
+    rollout_state().load_counts.get(scope).copied().unwrap_or(0)
+}
+
+#[cfg(test)]
+pub(super) fn expire_cache_for_test(scope: &LiveRateSourceScope) {
+    if let Some(cached) = rollout_state().recent_threads.get_mut(scope) {
+        cached.refreshed_at = Instant::now() - RECENT_ROLLOUT_TTL;
+    }
+}
+
+#[cfg(test)]
+pub(super) fn publish_scope_threads_for_test(
+    scope: &LiveRateSourceScope,
+    thread_id: &str,
+) {
+    let mut state = rollout_state();
+    if !state.scope_generations.contains_key(scope) {
+        state.next_generation = state.next_generation.saturating_add(1);
+        let generation = state.next_generation;
+        state.scope_generations.insert(scope.clone(), generation);
+    }
+    state.recent_threads.insert(
+        scope.clone(),
+        CachedRolloutThreads {
+            state_signature: StateDatabaseSignature {
+                main: file_signature(Path::new("")),
+                wal: file_signature(Path::new("")),
+            },
+            threads: vec![super::state::RolloutThread {
+                id: thread_id.into(),
+                rollout_path: PathBuf::new(),
+            }],
+            refreshed_at: Instant::now(),
+        },
+    );
+}
+
+#[cfg(test)]
+pub(super) fn cached_scope_thread_ids_for_test(scope: &LiveRateSourceScope) -> Vec<String> {
+    rollout_state()
+        .recent_threads
+        .get(scope)
+        .map(|cached| cached.threads.iter().map(|thread| thread.id.clone()).collect())
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -456,22 +606,56 @@ fn parse_timestamp(text: Option<&str>) -> Option<f64> {
 }
 
 fn file_size(path: &Path) -> Option<u64> {
-    fs::metadata(path).ok().map(|metadata| metadata.len())
+    fs::metadata(path)
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
 }
 
 fn file_signature(path: &Path) -> FileSignature {
     fs::metadata(path)
         .map(|metadata| FileSignature {
+            exists: true,
+            regular: metadata.is_file(),
+            identity: metadata_identity(&metadata),
             len: metadata.len(),
             modified_at: metadata.modified().ok(),
         })
         .unwrap_or(FileSignature {
+            exists: false,
+            regular: false,
+            identity: None,
             len: 0,
             modified_at: None,
         })
 }
 
+#[cfg(unix)]
+fn metadata_identity(metadata: &fs::Metadata) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    Some(format!("{}:{}", metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn metadata_identity(metadata: &fs::Metadata) -> Option<String> {
+    use std::os::windows::fs::MetadataExt;
+    Some(format!(
+        "{}:{}",
+        metadata.volume_serial_number()?,
+        metadata.file_index()?
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn metadata_identity(_metadata: &fs::Metadata) -> Option<String> {
+    None
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct FileSignature {
+    exists: bool,
+    regular: bool,
+    identity: Option<String>,
     len: u64,
     modified_at: Option<SystemTime>,
 }

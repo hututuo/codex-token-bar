@@ -6,9 +6,9 @@ use crate::commands::dashboard::{
     with_valid_codex_home_source, CapturedCodexHomeSource, CodexHomeSourceToken,
     CODEX_HOME_SOURCE_CHANGED_EVENT,
 };
-use crate::commands::local_source;
 use crate::core::{
-    dashboard::DashboardDataSource, live_rate::LiveRateMonitorService, startup_trace, unread,
+    live_rate::{self, LiveRateMonitorService, LiveRateSourceScope},
+    startup_trace, unread,
 };
 use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, UnreadSummary};
 use serde::Serialize;
@@ -255,6 +255,7 @@ impl LiveRateMonitorRegistry {
     }
     fn snapshot_at_with_unread(
         &self,
+        source_token: CodexHomeSourceToken,
         codex_home: PathBuf,
         selected_thread_id: Option<&str>,
         unread_summary: UnreadSummary,
@@ -262,9 +263,15 @@ impl LiveRateMonitorRegistry {
         let mut monitor = self.monitor.lock().map_err(|error| error.to_string())?;
         if monitor
             .as_ref()
-            .is_none_or(|current| current.codex_home() != codex_home)
+            .is_none_or(|current| {
+                current.codex_home() != codex_home
+                    || current.source_scope() != &live_rate_source_scope(&source_token)
+            })
         {
-            *monitor = Some(LiveRateMonitorService::new(codex_home));
+            *monitor = Some(LiveRateMonitorService::new_scoped(
+                codex_home,
+                live_rate_source_scope(&source_token),
+            ));
         }
         Ok(monitor
             .as_ref()
@@ -274,15 +281,22 @@ impl LiveRateMonitorRegistry {
 
     fn floating_snapshot_with_unread(
         &self,
+        source_token: CodexHomeSourceToken,
         codex_home: PathBuf,
         unread_summary: UnreadSummary,
     ) -> Result<FloatingPanelSnapshot, String> {
         let mut monitor = self.monitor.lock().map_err(|error| error.to_string())?;
         if monitor
             .as_ref()
-            .is_none_or(|current| current.codex_home() != codex_home)
+            .is_none_or(|current| {
+                current.codex_home() != codex_home
+                    || current.source_scope() != &live_rate_source_scope(&source_token)
+            })
         {
-            *monitor = Some(LiveRateMonitorService::new(codex_home));
+            *monitor = Some(LiveRateMonitorService::new_scoped(
+                codex_home,
+                live_rate_source_scope(&source_token),
+            ));
         }
         Ok(monitor
             .as_ref()
@@ -499,6 +513,7 @@ impl LiveRateMonitorRegistry {
                     let unread_summary = snapshot_registry
                         .unread_summary_for_source(&captured, false)?;
                     snapshot_registry.snapshot_at_with_unread(
+                        captured.source_token.clone(),
                         captured.codex_home.clone(),
                         selected_for_snapshot.as_deref(),
                         unread_summary,
@@ -640,6 +655,15 @@ impl LiveRateMonitorRegistry {
     }
 
     #[cfg(test)]
+    fn test_monitor_physical_scope(&self) -> Option<String> {
+        self.monitor
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|monitor| monitor.source_scope().physical_home_key.clone())
+    }
+
+    #[cfg(test)]
     fn test_publish_stream_if_current(
         &self,
         loop_generation: u64,
@@ -647,6 +671,13 @@ impl LiveRateMonitorRegistry {
     ) -> Result<bool, String> {
         self.publish_stream_if_current(loop_generation, publish)
     }
+}
+
+fn live_rate_source_scope(source_token: &CodexHomeSourceToken) -> LiveRateSourceScope {
+    LiveRateSourceScope::new(
+        source_token.canonical_home_key.clone(),
+        source_token.physical_home_key.clone(),
+    )
 }
 
 fn stale_unread_summary(summary: &UnreadSummary, error: &str) -> UnreadSummary {
@@ -778,6 +809,7 @@ pub async fn read_live_rate_snapshot(
     let result = run_blocking_command(move || {
         let unread_summary = registry.unread_summary_for_source(&captured, false)?;
         registry.snapshot_at_with_unread(
+            captured.source_token.clone(),
             captured.codex_home.clone(),
             selected_thread_id.as_deref(),
             unread_summary,
@@ -800,11 +832,24 @@ pub async fn read_live_rate_snapshot(
 
 #[tauri::command]
 pub async fn read_live_thread_options(
+    app: AppHandle,
     window: tauri::WebviewWindow,
+    source_token: Option<CodexHomeSourceToken>,
 ) -> Result<Vec<LiveThreadOption>, String> {
     require_window_label(&window, "read_live_thread_options")?;
     let started = Instant::now();
-    let result = run_blocking_command(|| local_source().try_read_live_thread_options()).await;
+    emit_detected_source_transition(&app)?;
+    let captured = capture_codex_home_source(source_token.as_ref())?;
+    let completed_source_token = captured.source_token.clone();
+    let result = run_blocking_command(move || {
+        live_rate::try_read_thread_options(&captured.codex_home).map_err(|error| error.to_string())
+    })
+    .await
+    .and_then(|options| {
+        emit_detected_source_transition(&app)?;
+        validate_codex_home_source(&completed_source_token)?;
+        Ok(options)
+    });
     startup_trace::mark_performance(format!(
         "read_live_thread_options {}ms {}",
         started.elapsed().as_millis(),
@@ -929,7 +974,11 @@ pub async fn read_floating_snapshot(
     let completed_source_token = captured.source_token.clone();
     let result = run_blocking_command(move || {
         let unread_summary = registry.unread_summary_for_source(&captured, false)?;
-        registry.floating_snapshot_with_unread(captured.codex_home.clone(), unread_summary)
+        registry.floating_snapshot_with_unread(
+            captured.source_token.clone(),
+            captured.codex_home.clone(),
+            unread_summary,
+        )
     })
     .await
     .and_then(|snapshot| {
@@ -1108,6 +1157,36 @@ mod tests {
         assert!(registry
             .test_publish_stream_if_current(new.loop_generation, || Ok(()))
             .unwrap());
+    }
+
+    #[test]
+    fn same_path_physical_source_change_replaces_monitor_service() {
+        let registry = LiveRateMonitorRegistry::default();
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-monitor-source-scope-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let unread = neutral_unread_summary("test");
+        let source_a = live_source_for_test("physical-a", 1);
+        let source_b = live_source_for_test("physical-b", 2);
+
+        registry
+            .snapshot_at_with_unread(source_a.source_token, root.clone(), None, unread.clone())
+            .unwrap();
+        assert_eq!(
+            registry.test_monitor_physical_scope().as_deref(),
+            Some("physical:physical-a")
+        );
+        registry
+            .snapshot_at_with_unread(source_b.source_token, root.clone(), None, unread)
+            .unwrap();
+        assert_eq!(
+            registry.test_monitor_physical_scope().as_deref(),
+            Some("physical:physical-b")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1432,7 +1511,11 @@ mod tests {
         };
 
         registry
-            .floating_snapshot_with_unread(root.clone(), unread)
+            .floating_snapshot_with_unread(
+                live_source_for_test("floating-physical", 1).source_token,
+                root.clone(),
+                unread,
+            )
             .unwrap();
 
         assert_eq!(

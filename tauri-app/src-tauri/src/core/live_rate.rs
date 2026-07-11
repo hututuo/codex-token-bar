@@ -57,6 +57,26 @@ mod rollout;
 mod state;
 mod stream;
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct LiveRateSourceScope {
+    pub canonical_home_key: String,
+    pub physical_home_key: String,
+}
+
+impl LiveRateSourceScope {
+    pub fn new(canonical_home_key: impl Into<String>, physical_home_key: impl Into<String>) -> Self {
+        Self {
+            canonical_home_key: canonical_home_key.into(),
+            physical_home_key: physical_home_key.into(),
+        }
+    }
+
+    fn legacy(codex_home: &Path) -> Self {
+        let key = codex_home.to_string_lossy().into_owned();
+        Self::new(key.clone(), key)
+    }
+}
+
 #[cfg(test)]
 pub fn read_snapshot(codex_home: &Path, selected_thread_id: Option<&str>) -> LiveRateSnapshot {
     let unread_summary = read_unread_summary_cached(codex_home);
@@ -68,7 +88,21 @@ pub fn read_snapshot_with_unread(
     selected_thread_id: Option<&str>,
     unread_summary: UnreadSummary,
 ) -> LiveRateSnapshot {
-    match try_read_snapshot(codex_home, selected_thread_id) {
+    read_snapshot_with_unread_scoped(
+        codex_home,
+        &LiveRateSourceScope::legacy(codex_home),
+        selected_thread_id,
+        unread_summary,
+    )
+}
+
+pub(crate) fn read_snapshot_with_unread_scoped(
+    codex_home: &Path,
+    source_scope: &LiveRateSourceScope,
+    selected_thread_id: Option<&str>,
+    unread_summary: UnreadSummary,
+) -> LiveRateSnapshot {
+    match read_snapshot_result(codex_home, source_scope, selected_thread_id) {
         Ok(mut snapshot) => {
             snapshot.unread_summary = unread_summary;
             snapshot
@@ -88,7 +122,11 @@ pub fn try_read_snapshot(
     codex_home: &Path,
     selected_thread_id: Option<&str>,
 ) -> Result<LiveRateSnapshot> {
-    read_snapshot_result(codex_home, selected_thread_id)
+    read_snapshot_result(
+        codex_home,
+        &LiveRateSourceScope::legacy(codex_home),
+        selected_thread_id,
+    )
 }
 
 pub fn try_read_thread_options(codex_home: &Path) -> Result<Vec<LiveThreadOption>> {
@@ -124,6 +162,7 @@ fn idle_snapshot_with_warnings(
 
 fn read_snapshot_result(
     codex_home: &Path,
+    source_scope: &LiveRateSourceScope,
     selected_thread_id: Option<&str>,
 ) -> Result<LiveRateSnapshot> {
     let mut warnings = Vec::new();
@@ -140,14 +179,24 @@ fn read_snapshot_result(
         }
     };
     let (rollup, selected_rollup) = if rows.is_empty() {
-        let metrics = read_rollout_metrics(codex_home, now);
+        let metrics = match read_rollout_metrics(codex_home, source_scope, now) {
+            Ok(metrics) => metrics,
+            Err(error) => {
+                warnings.push(live_rate_warning(format!(
+                    "读取新版 rollout 会话索引失败：{}（{}）",
+                    codex_home.join("state_5.sqlite").display(),
+                    error
+                )));
+                Vec::new()
+            }
+        };
         let rollup = rollup_metric_events(&metrics, now, None);
         let selected_rollup = selected_thread_id
             .map(|thread_id| rollup_metric_events(&metrics, now, Some(thread_id)))
             .unwrap_or_default();
         (rollup, selected_rollup)
     } else {
-        sync_rollout_offsets_to_current(codex_home);
+        sync_rollout_offsets_to_current(codex_home, source_scope);
         let rollup = rollup_stream_rows(&rows, now, None);
         let selected_rollup = selected_thread_id
             .map(|thread_id| rollup_stream_rows(&rows, now, Some(thread_id)))
