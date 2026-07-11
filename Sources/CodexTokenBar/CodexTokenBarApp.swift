@@ -5,8 +5,8 @@ import SwiftUI
 struct CodexTokenBarApp: App {
     @StateObject private var loginItemStore = LoginItemStore()
     @StateObject private var updateSettingsStore: AppUpdateSettingsStore
-    @StateObject private var floatingPanel = FloatingTokenPanelController()
-    @StateObject private var statusBarPanel = StatusBarTokenController()
+    @StateObject private var floatingPanel: FloatingTokenPanelController
+    @StateObject private var statusBarPanel: StatusBarTokenController
     @StateObject private var dashboardRuntime: DashboardRuntime
     private let updaterController: SPUStandardUpdaterController
 
@@ -16,9 +16,16 @@ struct CodexTokenBarApp: App {
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
+        let floatingPanel = FloatingTokenPanelController()
+        let statusBarPanel = StatusBarTokenController()
         self.updaterController = updaterController
         _updateSettingsStore = StateObject(wrappedValue: AppUpdateSettingsStore(updater: updaterController.updater))
-        _dashboardRuntime = StateObject(wrappedValue: DashboardRuntime())
+        _floatingPanel = StateObject(wrappedValue: floatingPanel)
+        _statusBarPanel = StateObject(wrappedValue: statusBarPanel)
+        _dashboardRuntime = StateObject(wrappedValue: DashboardRuntime(
+            floatingPanel: floatingPanel,
+            statusBarPanel: statusBarPanel
+        ))
         StartupPresentation.configureInitialActivationPolicy()
     }
 
@@ -27,8 +34,6 @@ struct CodexTokenBarApp: App {
             DashboardView(
                 loginItemStore: loginItemStore,
                 updateSettingsStore: updateSettingsStore,
-                floatingPanel: floatingPanel,
-                statusBarPanel: statusBarPanel,
                 runtime: dashboardRuntime
             )
                 .frame(minWidth: 1080, minHeight: 760)

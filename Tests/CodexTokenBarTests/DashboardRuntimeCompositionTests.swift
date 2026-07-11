@@ -2,28 +2,6 @@ import XCTest
 @testable import CodexTokenBar
 
 final class DashboardRuntimeCompositionTests: XCTestCase {
-    func testDashboardSceneInjectsAppScopedRuntimeInsteadOfCreatingOwners() throws {
-        let projectRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let appSource = try String(
-            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexTokenBarApp.swift"),
-            encoding: .utf8
-        )
-        let dashboardSource = try String(
-            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift"),
-            encoding: .utf8
-        )
-
-        XCTAssertTrue(appSource.contains("@StateObject private var dashboardRuntime: DashboardRuntime"))
-        XCTAssertTrue(appSource.contains("runtime: dashboardRuntime"))
-        XCTAssertTrue(dashboardSource.contains("let composition = runtime.composition"))
-        XCTAssertFalse(dashboardSource.contains("@StateObject private var store"))
-        XCTAssertFalse(dashboardSource.contains("TaskCompletionMonitor()"))
-        XCTAssertFalse(dashboardSource.contains("LiveRateMonitor()"))
-    }
-
     @MainActor
     func testTwoDashboardCompositionsShareEveryLongLivedOwner() {
         let runtime = DashboardRuntime()
@@ -66,5 +44,76 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
         runtime.acquireConsumer(UUID())
         XCTAssertTrue(runtime.isStarted)
         XCTAssertEqual(starts, 1)
+    }
+
+    @MainActor
+    func testSideEffectsRunOnceAcrossConsumersAndStopAfterLastRelease() {
+        var starts = 0
+        var stops = 0
+        var wakes = 0
+        var binds = 0
+        var cadences = 0
+        let coordinator = DashboardRuntimeSideEffectCoordinator<Int>(
+            onStart: { starts += 1 },
+            onStop: { stops += 1 },
+            onWake: { wakes += 1 },
+            onSurfaceEvent: { binds += 1 },
+            onCadenceEvent: { cadences += 1 },
+            onConfiguration: { _ in binds += 1 }
+        )
+        let first = UUID()
+        let second = UUID()
+
+        coordinator.acquire(first)
+        coordinator.acquire(second)
+        XCTAssertEqual(starts, 1)
+        coordinator.reportConfiguration(7, for: first)
+        coordinator.reportConfiguration(7, for: first)
+        XCTAssertEqual(binds, 1)
+
+        coordinator.handleWake()
+        coordinator.handleSurfaceEvent()
+        coordinator.handleCadenceEvent()
+        XCTAssertEqual(wakes, 1)
+        XCTAssertEqual(binds, 2)
+        XCTAssertEqual(cadences, 1)
+
+        coordinator.release(first)
+        coordinator.handleWake()
+        XCTAssertEqual(wakes, 2)
+        XCTAssertEqual(stops, 0)
+
+        coordinator.release(second)
+        coordinator.handleWake()
+        coordinator.handleSurfaceEvent()
+        XCTAssertEqual(wakes, 2)
+        XCTAssertEqual(binds, 2)
+        XCTAssertEqual(stops, 1)
+    }
+
+    @MainActor
+    func testCompactAppOwnerKeepsSingleSideEffectSubscriptionWithoutWindows() {
+        var starts = 0
+        var stops = 0
+        var wakes = 0
+        let coordinator = DashboardRuntimeSideEffectCoordinator<Bool>(
+            onStart: { starts += 1 },
+            onStop: { stops += 1 },
+            onWake: { wakes += 1 },
+            onSurfaceEvent: {},
+            onCadenceEvent: {},
+            onConfiguration: { _ in },
+            keepsAppOwnerActive: { $0 }
+        )
+        let consumer = UUID()
+
+        coordinator.acquire(consumer)
+        coordinator.reportConfiguration(true, for: consumer)
+        coordinator.release(consumer)
+        coordinator.handleWake()
+
+        XCTAssertEqual(starts, 1)
+        XCTAssertEqual(stops, 0)
+        XCTAssertEqual(wakes, 1)
     }
 }
