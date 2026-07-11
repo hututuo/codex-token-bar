@@ -73,7 +73,7 @@ export function LiveRateSettingsPanel({
   const contentVisibility = sanitizeFloatingContentVisibility(floatingSettings.contentVisibility);
   const floatingAvailable = platform.floatingWindow.available;
   const floatingButtonLabel = floatingAvailable
-    ? `显示：${floatingEnabled ? "悬浮窗" : "关闭"}`
+    ? `悬浮窗：${floatingEnabled ? "开" : "关"}`
     : "悬浮窗待接入";
   const statusTrayLiveTextAvailable =
     platform.statusTray.available && platform.statusTrayLiveText.available;

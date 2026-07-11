@@ -148,6 +148,52 @@ test("Codex Radar detail overlay prefers full detail snapshot and falls back to 
   });
 });
 
+test("Codex Radar chart toggles expose enabled series with aria-pressed", async () => {
+  await withSsrModules(async (load) => {
+    const { CodexRadarDetailOverlay } = await load("/src/components/CodexRadarStrip.tsx");
+    const { normalizeCodexRadarSnapshot, primaryModelRow, secondaryModelRows } = await load("/src/domain/codexRadar/model.ts");
+    const raw = snapshotFixture();
+    raw.model_iq.comparisons = {
+      medium: comparisonFixture(raw.model_iq.latest, "GPT-5.5 medium", "medium"),
+      xhigh: comparisonFixture(raw.model_iq.latest, "GPT-5.4 xhigh", "xhigh", "gpt-5.4"),
+    };
+    const snapshot = normalizeCodexRadarSnapshot(raw);
+    const allModels = [primaryModelRow(snapshot.modelIq), ...secondaryModelRows(snapshot.modelIq)];
+    const html = renderComponent(CodexRadarDetailOverlay, {
+      allModels,
+      detailSnapshot: snapshot,
+      detailStatus: "详细信息已更新",
+      diagnostics: [],
+      isDetailRefreshing: false,
+      isRefreshing: false,
+      onClose: () => {},
+      onRefresh: () => {},
+      primary: primaryModelRow(snapshot.modelIq),
+      probability24h: snapshot.prediction.probability24H,
+      probability48h: snapshot.prediction.probability48H,
+      quotaRows: [],
+      snapshot,
+      status: "公开摘要已更新",
+    });
+    const toggles = [...html.matchAll(/<button(?<attrs>[^>]*codex-radar-chart-toggle[^>]*)>/g)];
+
+    assert.equal(toggles.length, 3);
+    assert.match(toggles[0].groups.attrs, /aria-pressed="true"/);
+    assert.match(toggles[1].groups.attrs, /aria-pressed="true"/);
+    assert.match(toggles[2].groups.attrs, /aria-pressed="false"/);
+  });
+});
+
+function comparisonFixture(latest, label, reasoningEffort, model = "gpt-5.5") {
+  return {
+    label,
+    model,
+    reasoning_effort: reasoningEffort,
+    latest: { ...latest, model, reasoning_effort: reasoningEffort },
+    recent_days: [],
+  };
+}
+
 
 function snapshotFixture(overrides = {}) {
   return {

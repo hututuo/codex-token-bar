@@ -10,6 +10,7 @@ export function ActivityModeSelector({ mode, onModeChange }: ActivityModeSelecto
     <div className="segmented segmented--activity" role="group" aria-label="Token 活动模式">
       {activityModes.map((item) => (
         <button
+          aria-pressed={item.id === mode}
           className={item.id === mode ? "active" : undefined}
           key={item.id}
           onClick={() => onModeChange(item.id)}

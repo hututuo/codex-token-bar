@@ -127,7 +127,7 @@ export function DashboardHeader({
         <span className={codexHome.exists ? "status-dot status-dot--ok" : "status-dot"} />
         <span>{sourceLabel}</span>
         <span className="path-pill">{codexHome.path}</span>
-        <span className="muted">Updated {updatedLabel}</span>
+        <span className="muted">更新于 {updatedLabel}</span>
         <button className="toolbar-button" disabled={refreshing} onClick={onRefresh} type="button">
           立即刷新
         </button>

@@ -70,7 +70,7 @@ fn floating_window_capability(
     match platform {
         DesktopPlatform::Macos => ready(
             "悬浮窗",
-            "macOS 调试实现已接通；Windows 会复用同一 UI，再补平台窗口行为。",
+            "macOS 调试窗口与 Windows 基础悬浮窗均已接入；透明、拖动等平台细节见独立能力状态。",
         ),
         DesktopPlatform::Windows => ready(
             "悬浮窗",
@@ -214,6 +214,15 @@ mod tests {
         assert_ready(&capabilities.autostart);
         assert_pending(&capabilities.floating_lock);
         assert_pending(&capabilities.notifications);
+        assert_eq!(
+            capabilities.floating_window.note,
+            "macOS 调试窗口与 Windows 基础悬浮窗均已接入；透明、拖动等平台细节见独立能力状态。"
+        );
+        assert!(!capabilities.floating_window.note.contains("会复用同一 UI"));
+        assert!(!capabilities
+            .floating_window
+            .note
+            .contains("再补平台窗口行为"));
     }
 
     #[test]
