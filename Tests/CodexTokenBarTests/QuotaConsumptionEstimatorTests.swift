@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import CodexTokenBar
 
@@ -430,6 +431,76 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
     }
 
+    func testScrollPresentationClampsOffsetsAndPreservesPartialEndpointMovement() {
+        struct Case {
+            let offset: CGFloat
+            let viewport: CGFloat
+            let content: CGFloat
+            let windows: Int
+            let expectedOffset: CGFloat
+            let expectedIndex: Int
+            let atOldest: Bool
+            let atLatest: Bool
+        }
+
+        let cases = [
+            Case(offset: 0, viewport: 100, content: 300, windows: 3, expectedOffset: 0, expectedIndex: 0, atOldest: true, atLatest: false),
+            Case(offset: -30, viewport: 100, content: 300, windows: 3, expectedOffset: 0, expectedIndex: 0, atOldest: true, atLatest: false),
+            Case(offset: 100, viewport: 100, content: 300, windows: 3, expectedOffset: 100, expectedIndex: 1, atOldest: false, atLatest: false),
+            Case(offset: 100.4, viewport: 100, content: 300, windows: 3, expectedOffset: 100.4, expectedIndex: 1, atOldest: false, atLatest: false),
+            Case(offset: 199.7, viewport: 100, content: 300, windows: 3, expectedOffset: 199.7, expectedIndex: 1, atOldest: false, atLatest: false),
+            Case(offset: 199.8, viewport: 100, content: 300, windows: 3, expectedOffset: 199.8, expectedIndex: 2, atOldest: false, atLatest: true),
+            Case(offset: 250, viewport: 100, content: 300, windows: 3, expectedOffset: 200, expectedIndex: 2, atOldest: false, atLatest: true),
+            Case(offset: 8, viewport: 0, content: 0, windows: 0, expectedOffset: 0, expectedIndex: 0, atOldest: true, atLatest: true)
+        ]
+
+        for item in cases {
+            let state = RecentChartScrollPresentation(
+                contentOffset: item.offset,
+                viewportWidth: item.viewport,
+                contentWidth: item.content,
+                windowCount: item.windows
+            )
+            XCTAssertEqual(state.contentOffset, item.expectedOffset, accuracy: 0.0001)
+            XCTAssertEqual(state.currentWindowIndex, item.expectedIndex)
+            XCTAssertEqual(state.isAtOldest, item.atOldest)
+            XCTAssertEqual(state.isAtLatest, item.atLatest)
+        }
+
+        let movedLeftFromLatest = RecentChartScrollPresentation(
+            contentOffset: 199.7,
+            viewportWidth: 100,
+            contentWidth: 300,
+            windowCount: 3
+        )
+        XCTAssertEqual(movedLeftFromLatest.edgeFadeState, .init(showsLeft: true, showsRight: true))
+        XCTAssertEqual(movedLeftFromLatest.targetWindowIndex(for: .forward), 2)
+
+        let movedRightFromOldest = RecentChartScrollPresentation(
+            contentOffset: 0.3,
+            viewportWidth: 100,
+            contentWidth: 300,
+            windowCount: 3
+        )
+        XCTAssertEqual(movedRightFromOldest.edgeFadeState, .init(showsLeft: true, showsRight: true))
+        XCTAssertEqual(movedRightFromOldest.targetWindowIndex(for: .backward), 0)
+    }
+
+    @MainActor
+    func testAppKitScrollOffsetObserverReportsGestureStyleBoundsChanges() {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        scrollView.documentView = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 40))
+        var reportedOffsets: [CGFloat] = []
+        let observer = RecentChartScrollOffsetObserver()
+        observer.onOffsetChange = { reportedOffsets.append($0) }
+        observer.attach(to: scrollView)
+
+        scrollView.contentView.scroll(to: NSPoint(x: 63.5, y: 0))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+
+        XCTAssertEqual(reportedOffsets.last ?? -1, 63.5, accuracy: 0.0001)
+    }
+
     func testTimeMarkerLabelsUseDatesForScrollableRanges() {
         let calendar = Calendar.current
         let date = calendar.date(from: DateComponents(year: 2026, month: 7, day: 6, hour: 13, minute: 45))!
@@ -437,21 +508,6 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(ChartTimeMarkerLabel.text(for: date, range: .twentyFourHours), "7月6日")
         XCTAssertEqual(ChartTimeMarkerLabel.text(for: date, range: .sevenDays), "7月6日")
         XCTAssertEqual(ChartTimeMarkerLabel.text(for: date, range: .thirtyDays), "7月6日")
-    }
-
-    func testRecentUsageChartExposesHorizontalScrollingForLongHistory() throws {
-        let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
-
-        XCTAssertTrue(source.contains("ScrollView(.horizontal"))
-        XCTAssertTrue(source.contains("RecentChartScrollMetrics.contentWidth"))
-        XCTAssertTrue(source.contains("recent-chart-trailing-edge"))
-        XCTAssertTrue(source.contains("RecentChartScrollButton"))
-        XCTAssertTrue(source.contains("chevron.left"))
-        XCTAssertTrue(source.contains("chevron.right"))
-        XCTAssertTrue(source.contains("scrollChart(by:"))
-        XCTAssertTrue(source.contains("RecentChartEdgeFadeOverlay"))
-        XCTAssertTrue(source.contains("chartViewportMask"))
-        XCTAssertTrue(source.contains("let viewportWidth = max(proxy.size.width, 1)"))
     }
 
     func testSelectionStatePreviewsOnHoverThenPinsEndOnSecondClick() {

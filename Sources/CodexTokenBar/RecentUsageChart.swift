@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 enum RecentChartRange: String, CaseIterable, Identifiable {
@@ -102,6 +103,149 @@ enum RecentChartScrollMetrics {
             return 7 * 24 * 60 * 60
         case .thirtyDays:
             return 30 * 24 * 60 * 60
+        }
+    }
+}
+
+struct RecentChartScrollPresentation: Equatable {
+    static let endpointEpsilon: CGFloat = 0.25
+
+    let contentOffset: CGFloat
+    let maxOffset: CGFloat
+    let viewportWidth: CGFloat
+    let currentWindowIndex: Int
+    let windowCount: Int
+    let isAtOldest: Bool
+    let isAtLatest: Bool
+
+    init(
+        contentOffset: CGFloat,
+        viewportWidth: CGFloat,
+        contentWidth: CGFloat,
+        windowCount: Int,
+        epsilon: CGFloat = endpointEpsilon
+    ) {
+        let safeViewportWidth = max(viewportWidth, 0)
+        let safeContentWidth = max(contentWidth, 0)
+        let safeWindowCount = max(windowCount, 1)
+        let maximum = max(safeContentWidth - safeViewportWidth, 0)
+        let clampedOffset = min(max(contentOffset, 0), maximum)
+        let safeEpsilon = max(epsilon, 0)
+        let upperWindowIndex = safeWindowCount - 1
+
+        self.contentOffset = clampedOffset
+        maxOffset = maximum
+        self.viewportWidth = safeViewportWidth
+        self.windowCount = safeWindowCount
+        isAtOldest = clampedOffset <= safeEpsilon
+        isAtLatest = maximum - clampedOffset <= safeEpsilon
+
+        if safeViewportWidth > 0 {
+            currentWindowIndex = min(
+                max(Int(floor((clampedOffset + safeEpsilon) / safeViewportWidth)), 0),
+                upperWindowIndex
+            )
+        } else {
+            currentWindowIndex = 0
+        }
+    }
+
+    func targetWindowIndex(for direction: RecentChartScrollDirection) -> Int {
+        guard windowCount > 1 else { return 0 }
+        switch direction {
+        case .backward:
+            return max(Int(ceil(contentOffset / max(viewportWidth, 1))) - 1, 0)
+        case .forward:
+            return min(currentWindowIndex + 1, windowCount - 1)
+        }
+    }
+
+    var edgeFadeState: RecentChartEdgeFadeState {
+        RecentChartEdgeFadeState(
+            showsLeft: windowCount > 1 && !isAtOldest,
+            showsRight: windowCount > 1 && !isAtLatest
+        )
+    }
+}
+
+@MainActor
+final class RecentChartScrollOffsetObserver: NSObject {
+    private var observation: NSObjectProtocol?
+    private(set) weak var scrollView: NSScrollView?
+    var onOffsetChange: ((CGFloat) -> Void)?
+
+    func attach(to scrollView: NSScrollView) {
+        guard self.scrollView !== scrollView else {
+            reportCurrentOffset()
+            return
+        }
+        detach()
+        self.scrollView = scrollView
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        observation = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reportCurrentOffset()
+            }
+        }
+        reportCurrentOffset()
+    }
+
+    func detach() {
+        if let observation {
+            NotificationCenter.default.removeObserver(observation)
+        }
+        observation = nil
+        scrollView = nil
+    }
+
+    func reportCurrentOffset() {
+        guard let scrollView else { return }
+        onOffsetChange?(scrollView.contentView.bounds.origin.x)
+    }
+}
+
+private struct RecentChartScrollOffsetReader: NSViewRepresentable {
+    let onOffsetChange: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> ObservationView {
+        let view = ObservationView()
+        view.observer.onOffsetChange = onOffsetChange
+        return view
+    }
+
+    func updateNSView(_ nsView: ObservationView, context: Context) {
+        nsView.observer.onOffsetChange = onOffsetChange
+        nsView.attachToEnclosingScrollView()
+    }
+
+    static func dismantleNSView(_ nsView: ObservationView, coordinator: Void) {
+        nsView.observer.detach()
+    }
+
+    final class ObservationView: NSView {
+        let observer = RecentChartScrollOffsetObserver()
+
+        override func viewDidMoveToSuperview() {
+            super.viewDidMoveToSuperview()
+            attachToEnclosingScrollView()
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            attachToEnclosingScrollView()
+        }
+
+        func attachToEnclosingScrollView() {
+            guard let enclosingScrollView else { return }
+            observer.attach(to: enclosingScrollView)
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
         }
     }
 }
@@ -252,7 +396,7 @@ struct RecentUsageChart: View {
     @AppStorage("recentChartQuotaEstimateModel") private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt55.rawValue
     @State private var hoveredIndex: Int?
     @State private var consumptionSelectionState = RecentChartConsumptionSelectionState()
-    @State private var scrollWindowIndex: Int?
+    @State private var scrollPresentation: RecentChartScrollPresentation?
     @State var preparedData: RecentChartPreparedData
 
     init(
@@ -354,7 +498,12 @@ struct RecentUsageChart: View {
                 bins: preparedData.bins,
                 bucketInterval: preparedData.bucketInterval
             )
-            let currentWindowIndex = min(scrollWindowIndex ?? max(windowCount - 1, 0), max(windowCount - 1, 0))
+            let presentation = scrollPresentation ?? RecentChartScrollPresentation(
+                contentOffset: max(contentWidth - viewportWidth, 0),
+                viewportWidth: viewportWidth,
+                contentWidth: contentWidth,
+                windowCount: windowCount
+            )
 
             ScrollViewReader { scrollProxy in
                 ZStack {
@@ -364,6 +513,16 @@ struct RecentUsageChart: View {
                                 ZStack(alignment: .topLeading) {
                                     chartPlotCanvas(width: contentWidth, height: proxy.size.height)
                                         .frame(width: contentWidth, height: proxy.size.height)
+
+                                    RecentChartScrollOffsetReader { contentOffset in
+                                        updateScrollPresentation(
+                                            contentOffset: contentOffset,
+                                            viewportWidth: viewportWidth,
+                                            contentWidth: contentWidth,
+                                            windowCount: windowCount
+                                        )
+                                    }
+                                    .frame(width: 1, height: 1)
 
                                     chartScrollAnchors(
                                         windowCount: windowCount,
@@ -385,10 +544,7 @@ struct RecentUsageChart: View {
                         .accessibilityValue(accessibilitySummary)
 
                         RecentChartEdgeFadeOverlay(
-                            state: RecentChartEdgeFadeState(
-                                currentWindowIndex: currentWindowIndex,
-                                windowCount: windowCount
-                            )
+                            state: presentation.edgeFadeState
                         )
                     }
                     .frame(width: viewportWidth, height: proxy.size.height)
@@ -396,9 +552,13 @@ struct RecentUsageChart: View {
                     HStack {
                         RecentChartScrollButton(
                             direction: .backward,
-                            isDisabled: windowCount <= 1 || currentWindowIndex <= 0,
+                            isDisabled: windowCount <= 1 || presentation.isAtOldest,
                             action: {
-                                scrollChart(by: .backward, windowCount: windowCount, proxy: scrollProxy)
+                                scrollChart(
+                                    by: .backward,
+                                    presentation: presentation,
+                                    proxy: scrollProxy
+                                )
                             }
                         )
                         .frame(width: buttonWidth, height: proxy.size.height)
@@ -408,9 +568,13 @@ struct RecentUsageChart: View {
 
                         RecentChartScrollButton(
                             direction: .forward,
-                            isDisabled: windowCount <= 1 || currentWindowIndex >= windowCount - 1,
+                            isDisabled: windowCount <= 1 || presentation.isAtLatest,
                             action: {
-                                scrollChart(by: .forward, windowCount: windowCount, proxy: scrollProxy)
+                                scrollChart(
+                                    by: .forward,
+                                    presentation: presentation,
+                                    proxy: scrollProxy
+                                )
                             }
                         )
                         .frame(width: buttonWidth, height: proxy.size.height)
@@ -423,7 +587,7 @@ struct RecentUsageChart: View {
                 .onChange(of: selectedRangeRaw) { _, _ in
                     scrollChartToLatestIfNeeded(scrollProxy, windowCount: windowCount)
                 }
-                .onChange(of: preparedData.bins.count) { _, _ in
+                .onChange(of: preparedData.bins) { _, _ in
                     scrollChartToLatestIfNeeded(scrollProxy, windowCount: windowCount)
                 }
             }
@@ -658,19 +822,16 @@ struct RecentUsageChart: View {
         .frame(width: width, height: height)
     }
 
-    private func scrollChart(by direction: RecentChartScrollDirection, windowCount: Int, proxy: ScrollViewProxy) {
-        guard windowCount > 1 else { return }
-        let current = min(scrollWindowIndex ?? windowCount - 1, windowCount - 1)
-        let target = RecentChartScrollMetrics.shiftedWindowIndex(
-            current: current,
-            direction: direction,
-            windowCount: windowCount
-        )
-        guard target != current else { return }
-        scrollWindowIndex = target
+    private func scrollChart(
+        by direction: RecentChartScrollDirection,
+        presentation: RecentChartScrollPresentation,
+        proxy: ScrollViewProxy
+    ) {
+        guard presentation.windowCount > 1 else { return }
+        let target = presentation.targetWindowIndex(for: direction)
         DispatchQueue.main.async {
             withAnimation(.easeOut(duration: 0.18)) {
-                if target >= windowCount - 1 {
+                if target >= presentation.windowCount - 1 {
                     proxy.scrollTo(RecentChartScrollMetrics.trailingAnchorID, anchor: .trailing)
                 } else {
                     proxy.scrollTo(RecentChartScrollMetrics.anchorID(for: target), anchor: .leading)
@@ -681,12 +842,28 @@ struct RecentUsageChart: View {
 
     private func scrollChartToLatestIfNeeded(_ proxy: ScrollViewProxy, windowCount: Int) {
         guard preparedData.bins.count > 1 else { return }
-        scrollWindowIndex = max(windowCount - 1, 0)
+        scrollPresentation = nil
         DispatchQueue.main.async {
             withAnimation(.easeOut(duration: 0.18)) {
                 proxy.scrollTo(RecentChartScrollMetrics.trailingAnchorID, anchor: .trailing)
             }
         }
+    }
+
+    private func updateScrollPresentation(
+        contentOffset: CGFloat,
+        viewportWidth: CGFloat,
+        contentWidth: CGFloat,
+        windowCount: Int
+    ) {
+        let updated = RecentChartScrollPresentation(
+            contentOffset: contentOffset,
+            viewportWidth: viewportWidth,
+            contentWidth: contentWidth,
+            windowCount: windowCount
+        )
+        guard scrollPresentation != updated else { return }
+        scrollPresentation = updated
     }
 
     var body: some View {
