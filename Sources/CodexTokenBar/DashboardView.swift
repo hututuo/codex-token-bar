@@ -6,14 +6,18 @@ struct DashboardView: View {
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
     private let floatingPanel: FloatingTokenPanelController
     private let statusBarPanel: StatusBarTokenController
-    @StateObject private var store = CodexUsageStore()
-    @StateObject private var quotaStore = AccountQuotaStore()
-    @StateObject private var quotaHistoryStore = QuotaHistoryStore()
-    @StateObject private var radarStore = CodexRadarStore()
-    @StateObject private var providerSyncStore = ProviderSyncStore()
-    @State private var taskCompletionMonitor = TaskCompletionMonitor()
-    @State private var liveMonitor = LiveRateMonitor()
-    @State private var sourceTransitionCoordinator = DashboardSourceTransitionCoordinator()
+    private let runtime: DashboardRuntime
+    @State private var runtimeConsumerID = UUID()
+    @ObservedObject private var store: CodexUsageStore
+    @ObservedObject private var quotaStore: AccountQuotaStore
+    @ObservedObject private var quotaHistoryStore: QuotaHistoryStore
+    @ObservedObject private var radarStore: CodexRadarStore
+    @ObservedObject private var providerSyncStore: ProviderSyncStore
+    @ObservedObject private var taskCompletionMonitor: TaskCompletionMonitor
+    @ObservedObject private var liveMonitor: LiveRateMonitor
+    private var sourceTransitionCoordinator: DashboardSourceTransitionCoordinator {
+        runtime.sourceTransitionCoordinator
+    }
     @AppStorage("floatingPanelEnabled") private var floatingPanelEnabled = true
     @AppStorage("statusBarPanelEnabled") private var statusBarPanelEnabled = false
     @AppStorage("liveRateMonitoringEnabled") private var liveRateMonitoringEnabled = true
@@ -50,12 +54,22 @@ struct DashboardView: View {
         loginItemStore: LoginItemStore,
         updateSettingsStore: AppUpdateSettingsStore,
         floatingPanel: FloatingTokenPanelController,
-        statusBarPanel: StatusBarTokenController
+        statusBarPanel: StatusBarTokenController,
+        runtime: DashboardRuntime
     ) {
         self.loginItemStore = loginItemStore
         self.updateSettingsStore = updateSettingsStore
         self.floatingPanel = floatingPanel
         self.statusBarPanel = statusBarPanel
+        self.runtime = runtime
+        let composition = runtime.composition
+        _store = ObservedObject(wrappedValue: composition.usageStore)
+        _quotaStore = ObservedObject(wrappedValue: composition.quotaStore)
+        _quotaHistoryStore = ObservedObject(wrappedValue: composition.quotaHistoryStore)
+        _radarStore = ObservedObject(wrappedValue: composition.radarStore)
+        _providerSyncStore = ObservedObject(wrappedValue: composition.providerSyncStore)
+        _taskCompletionMonitor = ObservedObject(wrappedValue: composition.taskCompletionMonitor)
+        _liveMonitor = ObservedObject(wrappedValue: composition.liveMonitor)
         DisplayModeMigration.repairStartup()
     }
 
@@ -243,12 +257,10 @@ struct DashboardView: View {
         }
         .onAppear {
             applyDisplaySurfaceDefaultsIfNeeded()
-            liveMonitor.setPreciseTokenCountingEnabled(preciseTokenCountingEnabled)
-            quotaStore.setHistoryStore(quotaHistoryStore)
-            quotaHistoryStore.start()
-            synchronizeSourceTransition()
-            quotaStore.start(dataSource: store.currentDataSource)
-            radarStore.start()
+            runtime.acquireConsumer(
+                runtimeConsumerID,
+                preciseTokenCountingEnabled: preciseTokenCountingEnabled
+            )
             updateTokenDisplaySurface()
             updateUsageRefreshCadence()
             if !setupGuideCompleted {
@@ -340,6 +352,7 @@ struct DashboardView: View {
             refreshAllData(trigger: .systemWake)
         }
         .onDisappear {
+            runtime.releaseConsumer(runtimeConsumerID)
             usageRefreshCadenceRecoveryTask?.cancel()
             usageRefreshCadenceRecoveryTask = nil
         }

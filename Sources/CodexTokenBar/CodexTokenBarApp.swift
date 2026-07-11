@@ -7,6 +7,7 @@ struct CodexTokenBarApp: App {
     @StateObject private var updateSettingsStore: AppUpdateSettingsStore
     @StateObject private var floatingPanel = FloatingTokenPanelController()
     @StateObject private var statusBarPanel = StatusBarTokenController()
+    @StateObject private var dashboardRuntime: DashboardRuntime
     private let updaterController: SPUStandardUpdaterController
 
     init() {
@@ -17,6 +18,7 @@ struct CodexTokenBarApp: App {
         )
         self.updaterController = updaterController
         _updateSettingsStore = StateObject(wrappedValue: AppUpdateSettingsStore(updater: updaterController.updater))
+        _dashboardRuntime = StateObject(wrappedValue: DashboardRuntime())
         StartupPresentation.configureInitialActivationPolicy()
     }
 
@@ -26,7 +28,8 @@ struct CodexTokenBarApp: App {
                 loginItemStore: loginItemStore,
                 updateSettingsStore: updateSettingsStore,
                 floatingPanel: floatingPanel,
-                statusBarPanel: statusBarPanel
+                statusBarPanel: statusBarPanel,
+                runtime: dashboardRuntime
             )
                 .frame(minWidth: 1080, minHeight: 760)
                 .task {
