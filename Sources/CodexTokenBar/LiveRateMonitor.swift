@@ -40,6 +40,7 @@ final class LiveRateMonitor: ObservableObject {
     nonisolated private static let selectedSessionDisplayRateCap: Double = 80
     nonisolated static let unattributedLiveRateSessionKey = "unattributed-stream"
     private var timer: Timer?
+    private var pollingActive = true
     var logsDirectorySource: DispatchSourceFileSystemObject?
     var watchedLogsDirectory = ""
     var cachedLogsDatabasePath = ""
@@ -152,17 +153,17 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     func start() {
-        guard monitoringEnabled else { return }
+        guard monitoringEnabled, pollingActive else { return }
         timer?.invalidate()
         scheduleNextPoll(after: 0.02)
     }
 
     func scheduleNextPoll(after interval: TimeInterval) {
-        guard monitoringEnabled else { return }
+        guard monitoringEnabled, pollingActive else { return }
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.monitoringEnabled else { return }
+                guard let self, self.monitoringEnabled, self.pollingActive else { return }
                 await self.poll()
                 self.scheduleNextPoll(after: self.nextPollInterval())
             }
@@ -230,6 +231,24 @@ final class LiveRateMonitor: ObservableObject {
             totalSmoothedTokensPerSecond = 0
             clearStreamState()
             disableMonitoringSnapshots()
+        }
+    }
+
+    func setPollingActive(_ active: Bool) {
+        guard pollingActive != active else { return }
+        pollingActive = active
+        if active {
+            guard monitoringEnabled else { return }
+            configureLogWatcher(logsDirectory: cachedLogsDirectoryPath)
+            scheduleNextPoll(after: 0.02)
+        } else {
+            timer?.invalidate()
+            timer = nil
+            logsDirectorySource?.cancel()
+            logsDirectorySource = nil
+            watchedLogsDirectory = ""
+            logChangePending = false
+            fastPollUntil = 0
         }
     }
 
@@ -327,7 +346,7 @@ final class LiveRateMonitor: ObservableObject {
         let sourceLabel = source.map { "\($0.displayPath)/logs_2.sqlite" } ?? ""
         snapshot.sourceLabel = sourceLabel
         totalSnapshot.sourceLabel = sourceLabel
-        if monitoringEnabled {
+        if monitoringEnabled && pollingActive {
             configureLogWatcher(logsDirectory: cachedLogsDirectoryPath)
             scheduleNextPoll(after: 0.02)
         }
@@ -361,7 +380,7 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     private func resetToLatestThread() async {
-        guard monitoringEnabled else { return }
+        guard monitoringEnabled, pollingActive else { return }
         let resetStartedAt = Date().timeIntervalSince1970
         guard let source = monitoringDataSource() else {
             snapshot.status = "未找到 Codex 数据目录"
@@ -471,7 +490,7 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     private func poll() async {
-        guard monitoringEnabled else { return }
+        guard monitoringEnabled, pollingActive else { return }
         guard !pollInProgress else {
             return
         }

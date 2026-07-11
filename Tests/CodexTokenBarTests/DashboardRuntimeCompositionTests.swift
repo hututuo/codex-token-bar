@@ -12,6 +12,69 @@ private final class TestAutomaticInterfaceScale {
 
 final class DashboardRuntimeCompositionTests: XCTestCase {
     @MainActor
+    func testSurfacePausePreservesTrustedLiveSnapshot() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        var trusted = LiveRateSnapshot()
+        trusted.rollingTokensPerSecond = 42.4
+        trusted.outputTokens = 123
+        trusted.status = "可信实时快照"
+        monitor.totalSnapshot = trusted
+
+        monitor.setPollingActive(false)
+        XCTAssertEqual(monitor.totalSnapshot, trusted)
+
+        monitor.setPollingActive(true)
+        XCTAssertEqual(monitor.totalSnapshot, trusted)
+    }
+
+    func testBackgroundOwnerActivityRequiresAtLeastOneVisibleSurface() {
+        XCTAssertFalse(DashboardBackgroundOwnerActivity.shouldRunExpensiveOwners(
+            dashboardVisible: false,
+            floatingPanelEnabled: false,
+            statusBarPanelEnabled: false
+        ))
+        XCTAssertTrue(DashboardBackgroundOwnerActivity.shouldRunExpensiveOwners(
+            dashboardVisible: true,
+            floatingPanelEnabled: false,
+            statusBarPanelEnabled: false
+        ))
+        XCTAssertTrue(DashboardBackgroundOwnerActivity.shouldRunExpensiveOwners(
+            dashboardVisible: false,
+            floatingPanelEnabled: true,
+            statusBarPanelEnabled: false
+        ))
+        XCTAssertTrue(DashboardBackgroundOwnerActivity.shouldRunExpensiveOwners(
+            dashboardVisible: false,
+            floatingPanelEnabled: false,
+            statusBarPanelEnabled: true
+        ))
+    }
+
+    @MainActor
+    func testAllOffPausesExpensiveOwnersAndSurfaceResumeRestartsThem() {
+        let suiteName = "DashboardRuntimeCompositionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(false, forKey: InterfaceScaleSettings.autoEnabledKey)
+        var activity: [Bool] = []
+        let runtime = DashboardRuntime(
+            settings: defaults,
+            automaticInterfaceScaleProvider: { 1.0 },
+            startupAction: {},
+            surfaceApplyAction: { _ in },
+            backgroundOwnerActivityAction: { activity.append($0) }
+        )
+        let consumer = UUID()
+
+        runtime.acquireConsumer(consumer)
+        runtime.reportConfiguration(Self.configuration(floating: false, status: false), for: consumer)
+        runtime.reportConfiguration(Self.configuration(floating: true, status: false), for: consumer)
+        runtime.reportConfiguration(Self.configuration(floating: true, status: false), for: consumer)
+
+        XCTAssertEqual(activity, [false, true])
+    }
+
+    @MainActor
     func testTwoDashboardCompositionsShareEveryLongLivedOwner() {
         let runtime = DashboardRuntime()
 

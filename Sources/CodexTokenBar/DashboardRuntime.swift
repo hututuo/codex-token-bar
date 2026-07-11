@@ -132,6 +132,16 @@ struct DashboardRuntimeConfiguration: Equatable {
     }
 }
 
+enum DashboardBackgroundOwnerActivity {
+    static func shouldRunExpensiveOwners(
+        dashboardVisible: Bool,
+        floatingPanelEnabled: Bool,
+        statusBarPanelEnabled: Bool
+    ) -> Bool {
+        dashboardVisible || floatingPanelEnabled || statusBarPanelEnabled
+    }
+}
+
 @MainActor
 struct DashboardRuntimeComposition {
     let usageStore: CodexUsageStore
@@ -164,9 +174,11 @@ final class DashboardRuntime: ObservableObject {
     private let surfaceApplyAction: ((DashboardRuntimeConfiguration) -> Void)?
     private let sideEffectStartAction: (() -> Void)?
     private let sideEffectStopAction: (() -> Void)?
+    private let backgroundOwnerActivityAction: ((Bool) -> Void)?
     private var cancellables: Set<AnyCancellable> = []
     private var cadenceRecoveryTask: Task<Void, Never>?
     private var isCorrectingFloatingPanelScale = false
+    private var expensiveOwnersActive: Bool?
     private(set) var configuration: DashboardRuntimeConfiguration?
     private(set) var isStarted = false
 
@@ -175,12 +187,16 @@ final class DashboardRuntime: ObservableObject {
         onStop: { [weak self] in self?.stopSideEffects() },
         onWake: { [weak self] in self?.refreshForSystemWake() },
         onSurfaceEvent: { [weak self] in self?.bindDisplaySurfaces() },
-        onCadenceEvent: { [weak self] in self?.updateUsageRefreshCadence() },
+        onCadenceEvent: { [weak self] in
+            self?.updateUsageRefreshCadence()
+            self?.updateBackgroundOwnerActivity()
+        },
         onConfiguration: { [weak self] configuration in
             self?.configuration = configuration
             self?.liveMonitor.setPreciseTokenCountingEnabled(configuration.preciseTokenCountingEnabled)
             self?.bindDisplaySurfaces()
             self?.updateUsageRefreshCadence()
+            self?.updateBackgroundOwnerActivity()
         },
         keepsAppOwnerActive: {
             $0.floatingPanelEnabled || $0.statusBarPanelEnabled
@@ -219,7 +235,8 @@ final class DashboardRuntime: ObservableObject {
         startupAction: (() -> Void)? = nil,
         surfaceApplyAction: ((DashboardRuntimeConfiguration) -> Void)? = nil,
         sideEffectStartAction: (() -> Void)? = nil,
-        sideEffectStopAction: (() -> Void)? = nil
+        sideEffectStopAction: (() -> Void)? = nil,
+        backgroundOwnerActivityAction: ((Bool) -> Void)? = nil
     ) {
         self.usageStore = usageStore
         self.quotaStore = quotaStore
@@ -242,6 +259,7 @@ final class DashboardRuntime: ObservableObject {
         self.surfaceApplyAction = surfaceApplyAction
         self.sideEffectStartAction = sideEffectStartAction
         self.sideEffectStopAction = sideEffectStopAction
+        self.backgroundOwnerActivityAction = backgroundOwnerActivityAction
     }
 
     func acquireConsumer(_ id: UUID, preciseTokenCountingEnabled: Bool = false) {
@@ -406,7 +424,37 @@ final class DashboardRuntime: ObservableObject {
         cancellables.removeAll()
         cadenceRecoveryTask?.cancel()
         cadenceRecoveryTask = nil
+        applyBackgroundOwnerActivity(false)
         sideEffectStopAction?()
+    }
+
+    private func updateBackgroundOwnerActivity() {
+        guard let configuration else { return }
+        applyBackgroundOwnerActivity(
+            DashboardBackgroundOwnerActivity.shouldRunExpensiveOwners(
+                dashboardVisible: hasVisibleDashboardWindow(),
+                floatingPanelEnabled: configuration.floatingPanelEnabled,
+                statusBarPanelEnabled: configuration.statusBarPanelEnabled
+            )
+        )
+    }
+
+    private func applyBackgroundOwnerActivity(_ active: Bool) {
+        guard expensiveOwnersActive != active else { return }
+        expensiveOwnersActive = active
+        if let backgroundOwnerActivityAction {
+            backgroundOwnerActivityAction(active)
+            return
+        }
+        usageStore.setBackgroundActivityEnabled(active)
+        liveMonitor.setPollingActive(active)
+        if active {
+            quotaStore.start(dataSource: usageStore.currentDataSource)
+            radarStore.start()
+        } else {
+            quotaStore.stop()
+            radarStore.stop()
+        }
     }
 
     private func bindDisplaySurfaces() {

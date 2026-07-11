@@ -29,6 +29,7 @@ final class CodexUsageStore: ObservableObject {
     private var refreshInterval: TimeInterval = 300
     private var didFinishInitialLoad = false
     private var didRunPreciseScan = false
+    private var backgroundActivityEnabled = true
 
     var currentDataSource: CodexDataSource? {
         dataSource
@@ -325,13 +326,13 @@ final class CodexUsageStore: ObservableObject {
         initialPreciseTask?.cancel()
         initialPreciseTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 2_500_000_000)
-            guard let self, !Task.isCancelled else { return }
+            guard let self, !Task.isCancelled, self.backgroundActivityEnabled else { return }
 
             while self.isRefreshing && !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 300_000_000)
             }
 
-            guard !Task.isCancelled, !self.didRunPreciseScan else { return }
+            guard !Task.isCancelled, self.backgroundActivityEnabled, !self.didRunPreciseScan else { return }
             self.refresh()
         }
     }
@@ -358,8 +359,32 @@ final class CodexUsageStore: ObservableObject {
         scheduleTimer()
     }
 
+    func setBackgroundActivityEnabled(_ enabled: Bool) {
+        guard backgroundActivityEnabled != enabled else { return }
+        backgroundActivityEnabled = enabled
+        if enabled {
+            scheduleTimer()
+            refresh()
+        } else {
+            timer?.invalidate()
+            timer = nil
+            initialPreciseTask?.cancel()
+            initialPreciseTask = nil
+            refreshTask?.cancel()
+            refreshTask = nil
+            refreshGeneration += 1
+            activeRefreshSourceID = nil
+            isRefreshing = false
+            isPreparingUsageCache = false
+        }
+    }
+
     private func scheduleTimer() {
         timer?.invalidate()
+        guard backgroundActivityEnabled else {
+            timer = nil
+            return
+        }
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refresh()
