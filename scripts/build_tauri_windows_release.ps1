@@ -2,19 +2,34 @@ param(
     [string]$Version = "0.7.2",
     [ValidateSet("x64", "arm64", "both")]
     [string]$Arch = "both",
-    [switch]$SkipNpmCi
+    [switch]$SkipNpmCi,
+    [string]$ProjectRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
 
-$RootDir = Resolve-Path (Join-Path $PSScriptRoot "..")
+if ($Arch -ne "both") {
+    throw "Windows release builds require both x64 and arm64 installers."
+}
+
+if ($ProjectRoot) {
+    $RootDir = Resolve-Path $ProjectRoot
+} else {
+    $RootDir = Resolve-Path (Join-Path $PSScriptRoot "..")
+}
 $TauriDir = Join-Path $RootDir "tauri-app"
-$ReleaseDir = Join-Path $RootDir ("dist\release\v{0}\windows" -f $Version)
+$TauriConfigPath = Join-Path $TauriDir "src-tauri\tauri.conf.json"
+$VersionDir = Join-Path $RootDir ("dist\release\v{0}" -f $Version)
+$BuildDir = Join-Path $VersionDir "windows-build"
+$RunId = [Guid]::NewGuid().ToString("N")
+$StagingDir = Join-Path $VersionDir (".windows-build.staging.{0}" -f $RunId)
+$ConfigPath = Join-Path $VersionDir (".windows-build.config.{0}.json" -f $RunId)
 $UserCargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
 if (Test-Path $UserCargoBin) {
     $env:PATH = "$UserCargoBin;$env:PATH"
 }
 $BuiltAssets = New-Object System.Collections.Generic.List[object]
+$Published = $false
 
 function Assert-Command {
     param([string]$Name)
@@ -58,34 +73,40 @@ function Build-Target {
     if (Test-Path $TargetRustlib) {
         Write-Host "Rust target already available: $RustTarget"
     } else {
-        rustup target add $RustTarget | Out-Host
+        Invoke-Checked "rustup target add $RustTarget" { rustup target add $RustTarget }
     }
+
+    $BundleDir = Join-Path $TauriDir ("src-tauri\target\{0}\release\bundle\nsis" -f $RustTarget)
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $BundleDir
+    $BuildStartedAt = [DateTime]::UtcNow
 
     Push-Location $TauriDir
     try {
-        $BuildConfig = '{"bundle":{"createUpdaterArtifacts":false}}'
         Invoke-Checked "tauri build $RustTarget" {
-            npm run tauri -- build --target $RustTarget --config $BuildConfig
+            npm run tauri -- build --target $RustTarget --config $ConfigPath
         }
     } finally {
         Pop-Location
     }
 
-    $BundleDir = Join-Path $TauriDir ("src-tauri\target\{0}\release\bundle\nsis" -f $RustTarget)
     if (-not (Test-Path $BundleDir)) {
         throw "NSIS output directory not found: $BundleDir"
     }
-
-    $Installers = Get-ChildItem -Path $BundleDir -Filter "*.exe" | Sort-Object LastWriteTime -Descending
-    if ($Installers.Count -lt 1) {
-        throw "No NSIS installer found in $BundleDir"
+    $Installers = @(Get-ChildItem -Path $BundleDir -File -Filter "*.exe")
+    if ($Installers.Count -ne 1) {
+        throw "Expected exactly one fresh NSIS installer in $BundleDir; found $($Installers.Count)."
+    }
+    $Installer = $Installers[0]
+    if ($Installer.LastWriteTimeUtc -lt $BuildStartedAt.AddSeconds(-2)) {
+        throw "NSIS installer predates this build: $($Installer.Name)"
+    }
+    if ($Installer.Name -notmatch [regex]::Escape($Version) -or $Installer.Name -notlike "*setup.exe") {
+        throw "NSIS installer name does not match version $Version: $($Installer.Name)"
     }
 
-    New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
     $OutputName = "CodexTokenBar-v$Version-windows-$Label-setup.exe"
-    $OutputPath = Join-Path $ReleaseDir $OutputName
-    Copy-Item -Force $Installers[0].FullName $OutputPath
-
+    $OutputPath = Join-Path $StagingDir $OutputName
+    Copy-Item $Installer.FullName $OutputPath
     $Size = (Get-Item $OutputPath).Length
     $Hash = (Get-FileHash -Algorithm SHA256 $OutputPath).Hash.ToLowerInvariant()
     $BuiltAssets.Add([pscustomobject]@{
@@ -96,51 +117,76 @@ function Build-Target {
         bytes = $Size
         sha256 = $Hash
     }) | Out-Null
-    Write-Host "Built $OutputName"
-    Write-Host "  size=$Size"
-    Write-Host "  sha256=$Hash"
+}
+
+if (Test-Path -LiteralPath $BuildDir) {
+    throw "Build output already exists: $BuildDir"
+}
+if (-not (Test-Path -LiteralPath $TauriConfigPath)) {
+    throw "Tracked tauri config not found: $TauriConfigPath"
 }
 
 Assert-Command "node"
 Assert-Command "npm"
+Assert-Command "rustc"
 Assert-Command "rustup"
 Assert-Command "cargo"
 
-Push-Location $TauriDir
+New-Item -ItemType Directory -Force -Path $VersionDir | Out-Null
+$TauriConfigHashBefore = (Get-FileHash -Algorithm SHA256 $TauriConfigPath).Hash
+
 try {
-    if (-not $SkipNpmCi) {
-        Invoke-Checked "npm ci" { npm ci }
+    New-Item -ItemType Directory -Path $StagingDir | Out-Null
+    Write-Utf8NoBom -Path $ConfigPath -Content ('{"bundle":{"createUpdaterArtifacts":false}}' + [Environment]::NewLine)
+
+    Push-Location $TauriDir
+    try {
+        if (-not $SkipNpmCi) {
+            Invoke-Checked "npm ci" { npm ci }
+        }
+        Invoke-Checked "npm run build" { npm run build }
+    } finally {
+        Pop-Location
     }
-    Invoke-Checked "npm run build" { npm run build }
+
+    Build-Target -Label "x64" -RustTarget "x86_64-pc-windows-msvc" -UpdaterPlatform "windows-x86_64"
+    Build-Target -Label "arm64" -RustTarget "aarch64-pc-windows-msvc" -UpdaterPlatform "windows-aarch64"
+
+    $ManifestPath = Join-Path $StagingDir "build-manifest.json"
+    $Manifest = [ordered]@{
+        version = $Version
+        assets = @($BuiltAssets | Sort-Object Platform)
+    }
+    Write-Utf8NoBom -Path $ManifestPath -Content (($Manifest | ConvertTo-Json -Depth 5) + [Environment]::NewLine)
+
+    $StagedFiles = @(Get-ChildItem -Path $StagingDir -File)
+    if ($BuiltAssets.Count -ne 2 -or $StagedFiles.Count -ne 3) {
+        throw "Unsigned build staging is incomplete."
+    }
+    if (Test-Path -LiteralPath $BuildDir) {
+        throw "Build output appeared during build: $BuildDir"
+    }
+    $TauriConfigHashBeforePublish = (Get-FileHash -Algorithm SHA256 $TauriConfigPath).Hash
+    if ($TauriConfigHashBeforePublish -ne $TauriConfigHashBefore) {
+        throw "Tracked tauri config changed before build publication: $TauriConfigPath"
+    }
+    Move-Item -LiteralPath $StagingDir -Destination $BuildDir
+    $Published = $true
 } finally {
-    Pop-Location
+    Remove-Item -Force -ErrorAction SilentlyContinue $ConfigPath
+    if (-not $Published) {
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $StagingDir
+    }
+    $TauriConfigHashAfter = if (Test-Path -LiteralPath $TauriConfigPath) {
+        (Get-FileHash -Algorithm SHA256 $TauriConfigPath).Hash
+    } else {
+        "missing"
+    }
+    if ($TauriConfigHashAfter -ne $TauriConfigHashBefore) {
+        throw "Tracked tauri config changed during release build: $TauriConfigPath"
+    }
 }
 
-$Targets = @()
-if ($Arch -eq "x64" -or $Arch -eq "both") {
-    $Targets += @{ Label = "x64"; RustTarget = "x86_64-pc-windows-msvc"; UpdaterPlatform = "windows-x86_64" }
-}
-if ($Arch -eq "arm64" -or $Arch -eq "both") {
-    $Targets += @{ Label = "arm64"; RustTarget = "aarch64-pc-windows-msvc"; UpdaterPlatform = "windows-aarch64" }
-}
-
-foreach ($Target in $Targets) {
-    Build-Target -Label $Target.Label -RustTarget $Target.RustTarget -UpdaterPlatform $Target.UpdaterPlatform
-}
-
-$ManifestPath = Join-Path $ReleaseDir "build-manifest.json"
-$Manifest = [ordered]@{
-    version = $Version
-    assets = @($BuiltAssets | Sort-Object Platform)
-}
-$ManifestTempPath = "$ManifestPath.tmp"
-try {
-    Write-Utf8NoBom -Path $ManifestTempPath -Content (($Manifest | ConvertTo-Json -Depth 5) + [Environment]::NewLine)
-    Move-Item -Force $ManifestTempPath $ManifestPath
-} finally {
-    Remove-Item -Force -ErrorAction SilentlyContinue $ManifestTempPath
-}
-
-Write-Host "==> Unsigned Windows installers ready"
-Write-Host "Directory: $ReleaseDir"
-Write-Host "Build manifest: $ManifestPath"
+Write-Host "==> Unsigned Windows build ready"
+Write-Host "Directory: $BuildDir"
+Write-Host "Build manifest: $(Join-Path $BuildDir 'build-manifest.json')"

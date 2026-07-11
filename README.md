@@ -184,10 +184,11 @@ Windows Tauri 发布包：
 .\scripts\build_tauri_windows_release.ps1 -Version 0.7.2 -Arch both
 ```
 
-Windows 脚本只生成 x64 / ARM64 NSIS 安装器和 `build-manifest.json`，不需要 updater 私钥。把产物传回 Mac 后签名并生成更新 metadata：
+Windows 脚本只生成 x64 / ARM64 NSIS 安装器和 `dist/release/v0.7.2/windows-build/build-manifest.json`，不需要 updater 私钥；如果 `windows-build` 已存在会直接失败。把完整 `windows-build` 目录传回 Mac 后，签名到一个尚不存在的发布目录：
 
 ```bash
 scripts/sign_tauri_windows_release.sh --version 0.7.2 --repo hututuo/codex-token-bar \
+  --build-dir dist/release/v0.7.2/windows-build \
   --release-dir dist/release/v0.7.2/windows \
   --key-path "$HOME/.config/codex-token-bar/tauri-updater.key"
 ```
@@ -369,10 +370,11 @@ Windows Tauri release assets:
 .\scripts\build_tauri_windows_release.ps1 -Version 0.7.2 -Arch both
 ```
 
-The Windows script produces only x64 / ARM64 NSIS installers and `build-manifest.json`; it does not need the updater private key. After transferring the assets back to the Mac, sign them and generate updater metadata:
+The Windows script produces only x64 / ARM64 NSIS installers and `dist/release/v0.7.2/windows-build/build-manifest.json`; it does not need the updater private key and fails if `windows-build` already exists. After transferring the complete `windows-build` directory back to the Mac, sign it into a release directory that does not yet exist:
 
 ```bash
 scripts/sign_tauri_windows_release.sh --version 0.7.2 --repo hututuo/codex-token-bar \
+  --build-dir dist/release/v0.7.2/windows-build \
   --release-dir dist/release/v0.7.2/windows \
   --key-path "$HOME/.config/codex-token-bar/tauri-updater.key"
 ```
