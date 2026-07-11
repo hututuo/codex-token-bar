@@ -314,13 +314,23 @@ fn toggle_status_panel_at_tray(app: &tauri::AppHandle, tray_bounds: PhysicalBoun
         .unwrap_or_else(|_| {
             StatusPanelReleaseAction::Toggle(status_panel_toggle_action(is_visible))
         });
-    let StatusPanelReleaseAction::Toggle(action) = release else {
-        return Ok(false);
-    };
-    if action == StatusPanelToggleAction::Hide {
-        return hide_status_panel_window(app);
+    perform_status_panel_release(
+        release,
+        || show_status_panel_at_tray(app, Some(tray_bounds)),
+        || hide_status_panel_window(app),
+    )
+}
+
+fn perform_status_panel_release(
+    release: StatusPanelReleaseAction,
+    show: impl FnOnce() -> Result<bool, String>,
+    hide: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    match release {
+        StatusPanelReleaseAction::Toggle(StatusPanelToggleAction::Show) => show(),
+        StatusPanelReleaseAction::Toggle(StatusPanelToggleAction::Hide) => hide(),
+        StatusPanelReleaseAction::Ignore => Ok(false),
     }
-    show_status_panel_at_tray(app, Some(tray_bounds))
 }
 
 fn status_panel_toggle_action(is_visible: bool) -> StatusPanelToggleAction {
@@ -1141,11 +1151,23 @@ mod tests {
 
         assert!(!hidden);
         assert_eq!(hide_calls, 1);
-        assert_eq!(
-            controller.finish_tray_press(false),
-            StatusPanelReleaseAction::Ignore,
-            "late Up after Leave must not reopen the panel"
-        );
+        let release = controller.finish_tray_press(false);
+        let mut show_calls = 0;
+        let mut late_hide_calls = 0;
+        perform_status_panel_release(
+            release,
+            || {
+                show_calls += 1;
+                Ok(true)
+            },
+            || {
+                late_hide_calls += 1;
+                Ok(false)
+            },
+        )
+        .unwrap();
+        assert_eq!(show_calls, 0, "late Up after Leave must not reopen the panel");
+        assert_eq!(late_hide_calls, 0, "ignored late Up must not hide twice");
         assert_eq!(controller.blur(), StatusPanelBlurAction::HideNow);
     }
 
@@ -1158,11 +1180,23 @@ mod tests {
             controller.cancel(Some(generation)),
             StatusPanelCancelAction::HideDeferredBlur
         );
-        assert_eq!(
-            controller.finish_tray_press(false),
-            StatusPanelReleaseAction::Ignore,
-            "late Up after timeout must not reopen the panel"
-        );
+        let release = controller.finish_tray_press(false);
+        let mut show_calls = 0;
+        let mut hide_calls = 0;
+        perform_status_panel_release(
+            release,
+            || {
+                show_calls += 1;
+                Ok(true)
+            },
+            || {
+                hide_calls += 1;
+                Ok(false)
+            },
+        )
+        .unwrap();
+        assert_eq!(show_calls, 0, "late Up after timeout must not reopen the panel");
+        assert_eq!(hide_calls, 0, "ignored late Up must not hide twice");
         assert_eq!(controller.blur(), StatusPanelBlurAction::HideNow);
     }
 
@@ -1182,15 +1216,28 @@ mod tests {
         let mut controller = StatusPanelInteractionController::default();
         let old_generation = controller.begin_tray_press(true);
         assert_eq!(controller.blur(), StatusPanelBlurAction::DeferToTrayRelease);
-        assert_eq!(
-            controller.cancel(Some(old_generation)),
-            StatusPanelCancelAction::HideDeferredBlur
-        );
         let new_generation = controller.begin_tray_press(false);
         assert_eq!(
-            controller.finish_tray_press(false),
-            StatusPanelReleaseAction::Toggle(StatusPanelToggleAction::Show)
+            controller.cancel(Some(old_generation)),
+            StatusPanelCancelAction::Nothing
         );
+        let release = controller.finish_tray_press(false);
+        let mut show_calls = 0;
+        let mut hide_calls = 0;
+        perform_status_panel_release(
+            release,
+            || {
+                show_calls += 1;
+                Ok(true)
+            },
+            || {
+                hide_calls += 1;
+                Ok(false)
+            },
+        )
+        .unwrap();
+        assert_eq!(show_calls, 1);
+        assert_eq!(hide_calls, 0);
         assert_ne!(old_generation, new_generation);
         assert_eq!(controller.blur(), StatusPanelBlurAction::HideNow);
     }
