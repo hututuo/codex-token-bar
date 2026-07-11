@@ -1,5 +1,26 @@
 import SwiftUI
 
+enum DashboardMarkAllReadTone: Equatable {
+    case active
+    case idle
+}
+
+struct DashboardMarkAllReadPresentation: Equatable {
+    let unreadCount: Int
+    let isBusy: Bool
+
+    var isVisible: Bool { true }
+    var tone: DashboardMarkAllReadTone { unreadCount > 0 ? .active : .idle }
+    var isEnabled: Bool { !isBusy }
+    var accessibilityLabel: String { "全部已读" }
+    var accessibilityValue: String {
+        unreadCount > 0 ? "\(unreadCount) 个未读会话" : "当前没有未读会话，可重新建立已读基线"
+    }
+    var accessibilityHint: String {
+        isBusy ? "正在更新已读基线" : "将当前会话状态标记为已读"
+    }
+}
+
 struct InitialLoadingOverlay: View {
     let status: String
 
@@ -64,6 +85,7 @@ struct HeaderView: View {
     @AppStorage("customAccountDisplayName") private var customAccountDisplayName = ""
     @State private var isEditingDisplayName = false
     @State private var displayNameDraft = ""
+    @State private var isMarkingAllRead = false
     @FocusState private var displayNameFieldFocused: Bool
 
     private var accountDisplayName: String {
@@ -73,6 +95,10 @@ struct HeaderView: View {
 
     private var planDisplayName: String {
         "Codex Token Bar"
+    }
+
+    private var markAllReadPresentation: DashboardMarkAllReadPresentation {
+        DashboardMarkAllReadPresentation(unreadCount: unreadThreadCount, isBusy: isMarkingAllRead)
     }
 
     var body: some View {
@@ -161,14 +187,33 @@ struct HeaderView: View {
 
                     Spacer(minLength: 8)
 
-                    if unreadThreadCount > 0 {
-                        Button(action: onMarkAllRead) {
-                            Label("全部已读", systemImage: "checkmark.circle")
-                                .font(.system(size: 13, weight: .medium))
-                        }
-                        .buttonStyle(.bordered)
-                        .accessibilityLabel("未读会话全部已读")
+                    Button(action: markAllRead) {
+                        Label("全部已读", systemImage: "checkmark.circle")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(
+                                markAllReadPresentation.tone == .active
+                                    ? AppTheme.accentBlue
+                                    : Color.secondary
+                            )
+                            .frame(minWidth: 76)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(
+                                markAllReadPresentation.tone == .active
+                                    ? AppTheme.selectedControlBackground
+                                    : AppTheme.solidControlBackground,
+                                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .stroke(AppTheme.borderStrong, lineWidth: 1)
+                            )
                     }
+                    .buttonStyle(.plain)
+                    .disabled(!markAllReadPresentation.isEnabled)
+                    .accessibilityLabel(markAllReadPresentation.accessibilityLabel)
+                    .accessibilityValue(markAllReadPresentation.accessibilityValue)
+                    .accessibilityHint(markAllReadPresentation.accessibilityHint)
 
                     Button(action: onRefresh) {
                         Label(isRefreshing ? "刷新中" : "立即刷新", systemImage: "arrow.clockwise")
@@ -215,6 +260,15 @@ struct HeaderView: View {
     private func saveDisplayNameDraft() {
         customAccountDisplayName = displayNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         isEditingDisplayName = false
+    }
+
+    private func markAllRead() {
+        guard !isMarkingAllRead else { return }
+        isMarkingAllRead = true
+        onMarkAllRead()
+        DispatchQueue.main.async {
+            isMarkingAllRead = false
+        }
     }
 }
 
