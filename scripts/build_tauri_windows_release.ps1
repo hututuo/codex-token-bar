@@ -19,6 +19,7 @@ if ($ProjectRoot) {
 }
 $TauriDir = Join-Path $RootDir "tauri-app"
 $TauriConfigPath = Join-Path $TauriDir "src-tauri\tauri.conf.json"
+$ReleaseHelper = Join-Path $PSScriptRoot "tauri_windows_release_helper.mjs"
 $VersionDir = Join-Path $RootDir ("dist\release\v{0}" -f $Version)
 $BuildDir = Join-Path $VersionDir "windows-build"
 $RunId = [Guid]::NewGuid().ToString("N")
@@ -58,6 +59,30 @@ function Write-Utf8NoBom {
 
     $Encoding = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $Content, $Encoding)
+}
+
+function Publish-NoClobber {
+    param([string]$Source, [string]$Destination, [string[]]$ExpectedNames)
+    $LockPath = "$Destination.publish.lock"
+    $Lock = $null
+    try {
+        $Lock = [IO.File]::Open($LockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        if ([IO.Directory]::Exists($Destination) -or [IO.File]::Exists($Destination)) {
+            throw "Build output appeared during build: $Destination"
+        }
+        $ActualNames = @([IO.Directory]::GetFileSystemEntries($Source) | ForEach-Object { [IO.Path]::GetFileName($_) } | Sort-Object)
+        if (($ActualNames -join "`n") -ne (($ExpectedNames | Sort-Object) -join "`n")) {
+            throw "Unsigned build staging is incomplete."
+        }
+        [IO.Directory]::Move($Source, $Destination)
+        $PublishedNames = @([IO.Directory]::GetFileSystemEntries($Destination) | ForEach-Object { [IO.Path]::GetFileName($_) } | Sort-Object)
+        if (($PublishedNames -join "`n") -ne (($ExpectedNames | Sort-Object) -join "`n")) {
+            throw "Published windows-build set is incomplete."
+        }
+    } finally {
+        if ($null -ne $Lock) { $Lock.Dispose() }
+        Remove-Item -Force -ErrorAction SilentlyContinue $LockPath
+    }
 }
 
 function Build-Target {
@@ -100,7 +125,8 @@ function Build-Target {
     if ($Installer.LastWriteTimeUtc -lt $BuildStartedAt.AddSeconds(-2)) {
         throw "NSIS installer predates this build: $($Installer.Name)"
     }
-    if ($Installer.Name -notmatch [regex]::Escape($Version) -or $Installer.Name -notlike "*setup.exe") {
+    $InstallerPattern = "^Codex Token Bar_" + [regex]::Escape($Version) + "_" + [regex]::Escape($Label) + "-setup\.exe$"
+    if ($Installer.Name -notmatch $InstallerPattern) {
         throw "NSIS installer name does not match version $Version: $($Installer.Name)"
     }
 
@@ -159,6 +185,15 @@ try {
     }
     Write-Utf8NoBom -Path $ManifestPath -Content (($Manifest | ConvertTo-Json -Depth 5) + [Environment]::NewLine)
 
+    $ValidationAssetList = Join-Path $VersionDir (".windows-build.assets.{0}.json" -f $RunId)
+    try {
+        Invoke-Checked "build manifest validation" {
+            node $ReleaseHelper validate-build $ManifestPath $StagingDir $Version $ValidationAssetList
+        }
+    } finally {
+        Remove-Item -Force -ErrorAction SilentlyContinue $ValidationAssetList
+    }
+
     $StagedFiles = @(Get-ChildItem -Path $StagingDir -File)
     if ($BuiltAssets.Count -ne 2 -or $StagedFiles.Count -ne 3) {
         throw "Unsigned build staging is incomplete."
@@ -170,7 +205,12 @@ try {
     if ($TauriConfigHashBeforePublish -ne $TauriConfigHashBefore) {
         throw "Tracked tauri config changed before build publication: $TauriConfigPath"
     }
-    Move-Item -LiteralPath $StagingDir -Destination $BuildDir
+    $ExpectedBuildNames = @(
+        "CodexTokenBar-v$Version-windows-x64-setup.exe",
+        "CodexTokenBar-v$Version-windows-arm64-setup.exe",
+        "build-manifest.json"
+    )
+    Publish-NoClobber -Source $StagingDir -Destination $BuildDir -ExpectedNames $ExpectedBuildNames
     $Published = $true
 } finally {
     Remove-Item -Force -ErrorAction SilentlyContinue $ConfigPath

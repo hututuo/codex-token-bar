@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 function fail(message) {
@@ -54,7 +54,22 @@ function loadAssets(assetList) {
   return assets;
 }
 
+function assertRegularFile(file, label) {
+  let info;
+  try { info = lstatSync(file); } catch { fail(`${label} not found`); }
+  if (info.isSymbolicLink() || !info.isFile()) fail(`${label} must be a regular file, not a symbolic link`);
+  return info;
+}
+
+function assertExactDirectory(directory, expectedNames, label) {
+  const actual = readdirSync(directory).sort();
+  const expected = [...expectedNames].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) fail(`${label} must contain exactly two installers and build-manifest.json`);
+  for (const name of actual) assertRegularFile(path.join(directory, name), `${label} entry ${name}`);
+}
+
 function validateBuild([manifestPath, buildDir, version, assetList]) {
+  assertRegularFile(manifestPath, "Build manifest");
   const manifest = readJson(manifestPath);
   if (manifest.version !== version || !Array.isArray(manifest.assets)) fail("Build manifest version or assets are invalid");
   const expected = new Map([
@@ -63,6 +78,7 @@ function validateBuild([manifestPath, buildDir, version, assetList]) {
   ]);
   if (manifest.assets.length !== expected.size) fail("Build manifest must contain exactly x64 and arm64 installers");
   const assets = [];
+  const expectedNames = ["build-manifest.json"];
   for (const asset of [...manifest.assets].sort((a, b) => a.platform.localeCompare(b.platform))) {
     const wanted = expected.get(asset.platform);
     if (!wanted || asset.version !== version || asset.arch !== wanted.arch || asset.filename !== wanted.filename ||
@@ -72,15 +88,59 @@ function validateBuild([manifestPath, buildDir, version, assetList]) {
     }
     expected.delete(asset.platform);
     const file = path.join(buildDir, asset.filename);
-    let info;
-    try { info = statSync(file); } catch { fail(`Installer not found: ${asset.filename}`); }
-    if (!info.isFile()) fail(`Installer not found: ${asset.filename}`);
+    const info = assertRegularFile(file, `Installer ${asset.filename}`);
     if (info.size !== asset.bytes) fail(`Size mismatch: ${asset.filename}`);
     if (hashFile(file) !== asset.sha256) fail(`SHA-256 mismatch: ${asset.filename}`);
     assets.push(asset);
+    expectedNames.push(asset.filename);
   }
   if (expected.size) fail("Build manifest must contain exactly x64 and arm64 installers");
+  assertExactDirectory(buildDir, expectedNames, "Unsigned build directory");
   writeFileSync(assetList, `${JSON.stringify(assets, null, 2)}\n`);
+}
+
+function validateStagedBuild([assetList, staging, version]) {
+  const assets = loadAssets(assetList);
+  const stagedManifest = readJson(path.join(staging, "build-manifest.json"));
+  const stagedAssets = Array.isArray(stagedManifest.assets)
+    ? [...stagedManifest.assets].sort((a, b) => a.platform.localeCompare(b.platform))
+    : null;
+  if (stagedManifest.version !== version || JSON.stringify(stagedAssets) !== JSON.stringify(assets)) {
+    fail("Staged build manifest does not match the validated manifest");
+  }
+  const expectedNames = [path.basename(assetList), "build-manifest.json", ...assets.map(asset => asset.filename)];
+  for (const asset of assets) {
+    const file = path.join(staging, asset.filename);
+    const info = assertRegularFile(file, `Staged installer ${asset.filename}`);
+    if (info.size !== asset.bytes) fail(`Staged size mismatch: ${asset.filename}`);
+    if (hashFile(file) !== asset.sha256) fail(`Staged SHA-256 mismatch: ${asset.filename}`);
+  }
+  assertExactDirectory(staging, expectedNames, "Staged unsigned build directory");
+}
+
+function publishNoReplace([staging, destination, ...expectedNames]) {
+  if (!expectedNames.length) fail("Expected publication set is missing");
+  const lock = `${destination}.publish.lock`;
+  let locked = false;
+  try {
+    mkdirSync(lock);
+    locked = true;
+    try { lstatSync(destination); fail(`Publication destination already exists: ${destination}`); } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const actual = readdirSync(staging).sort();
+    const expected = [...expectedNames].sort();
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) fail("Publication staging set is incomplete or unexpected");
+    for (const name of actual) assertRegularFile(path.join(staging, name), `Publication entry ${name}`);
+    renameSync(staging, destination);
+    const published = readdirSync(destination).sort();
+    if (JSON.stringify(published) !== JSON.stringify(expected)) fail("Published directory set is incomplete or unexpected");
+  } catch (error) {
+    if (error.code === "EEXIST") fail(`Publication lock or destination already exists: ${destination}`);
+    throw error;
+  } finally {
+    if (locked) rmSync(lock, { recursive: true, force: true });
+  }
 }
 
 function printAssets([assetList]) {
@@ -151,6 +211,8 @@ function validateRelease([assetList, staging, version]) {
 const [command, ...args] = process.argv.slice(2);
 const commands = {
   "validate-build": validateBuild,
+  "validate-staged-build": validateStagedBuild,
+  "publish-no-replace": publishNoReplace,
   "print-assets": printAssets,
   "validate-signatures": validateSignatures,
   "write-metadata": writeMetadata,

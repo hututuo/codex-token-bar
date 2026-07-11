@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -61,6 +61,14 @@ async function makeFixture(options = {}) {
     const { rm } = await import("node:fs/promises");
     await rm(path.join(buildDir, assets[0][2]));
   }
+  if (options.extraFile) await writeFile(path.join(buildDir, "unexpected.txt"), "unexpected");
+  if (options.symlinkInstaller) {
+    const { rm } = await import("node:fs/promises");
+    const target = path.join(root, "outside.exe");
+    await writeFile(target, "fixture-x64");
+    await rm(path.join(buildDir, installerNames[1]));
+    await symlink(target, path.join(buildDir, installerNames[1]));
+  }
 
   const key = path.join(root, "test.key");
   await writeFile(key, "TEST_PRIVATE_KEY_DO_NOT_LEAK");
@@ -70,6 +78,10 @@ import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 const file = process.argv.at(-1);
+if (${Boolean(options.finalConflict)} && file.includes("arm64")) {
+  const conflict = process.env.RELEASE_CONFLICT_DIR;
+  if (conflict) { const { mkdirSync, writeFileSync: writeConflict } = await import("node:fs"); mkdirSync(conflict); writeConflict(new URL("old.txt", "file://" + conflict + "/"), "OLD"); }
+}
 if (${Boolean(options.failSign)} && file.includes("arm64")) process.exit(42);
 const name = path.basename(file);
 const seed = createHash("sha256").update(name).digest();
@@ -99,7 +111,7 @@ writeFileSync(file + ".sig", envelope);
   await mkdir(binDir);
   await writeFile(
     path.join(binDir, "file"),
-    `#!/bin/sh\ncase "$2" in *arm64*) echo '${options.badArch ? "PE32+ executable x86-64" : "PE32+ executable Aarch64"}';; *) echo 'PE32+ executable x86-64';; esac\n`,
+    `#!/bin/sh\n${options.swapAfterValidate ? `case "$2" in *x64*) printf 'tampered-after-validation' > "$2";; esac` : ":"}\ncase "$2" in *arm64*) echo '${options.badArch ? "PE32+ executable x86-64" : "PE32+ executable Aarch64"}';; *) echo 'PE32+ executable x86-64';; esac\n`,
     { mode: 0o755 },
   );
   if (options.failMetadata || options.failChecksum) {
@@ -132,6 +144,7 @@ async function runSignerFixture(options = {}) {
     ...process.env,
     PATH: `${fixture.binDir}:${process.env.PATH}`,
     SOURCE_DATE_EPOCH: "1700000000",
+    RELEASE_CONFLICT_DIR: options.finalConflict ? fixture.releaseDir : "",
   };
   try {
     const result = await execFileAsync("bash", [
@@ -194,7 +207,7 @@ test("Mac signing refuses an existing output directory byte-for-byte", async () 
 });
 
 for (const [name, options, expectedError] of [
-  ["missing installer", { missingFile: true }, /Installer not found/],
+  ["missing installer", { missingFile: true }, /Installer .* not found/],
   ["hash mismatch", { badHash: true }, /SHA-256 mismatch/],
   ["missing architecture", { missingArch: true }, /exactly x64 and arm64/],
   ["PE architecture mismatch", { badArch: true }, /PE architecture mismatch/],
@@ -202,13 +215,21 @@ for (const [name, options, expectedError] of [
   ["single-byte signature corruption", { corruptSignature: true }, /Invalid Tauri signature envelope/],
   ["metadata generation failure", { failMetadata: true }, /Metadata generation failed/],
   ["checksum generation failure", { failChecksum: true }, /Checksum generation failed/],
+  ["source replacement after validation", { swapAfterValidate: true }, /staged.*mismatch|mismatch.*staged/i],
+  ["symlink installer", { symlinkInstaller: true }, /symbolic link|regular file/i],
+  ["extra build input", { extraFile: true }, /exactly two installers and build-manifest/i],
+  ["final publication conflict", { finalConflict: true }, /appeared|already exists|publish/i],
 ]) {
   test(`Mac signing rejects ${name} without creating the output directory`, async () => {
     const result = await runSignerFixture(options);
     assert.equal(result.ok, false);
     assert.match(result.stderr, expectedError);
-    await assert.rejects(access(result.releaseDir), { code: "ENOENT" });
+    if (options.finalConflict) {
+      assert.equal(await readFile(path.join(result.releaseDir, "old.txt"), "utf8"), "OLD");
+    } else {
+      await assert.rejects(access(result.releaseDir), { code: "ENOENT" });
+    }
     assert.equal((await readdir(result.root)).some(name => name.includes(".windows.staging.")), false);
-    assert.deepEqual(await snapshotDirectory(result.buildDir), result.buildSnapshot);
+    if (!options.swapAfterValidate) assert.deepEqual(await snapshotDirectory(result.buildDir), result.buildSnapshot);
   });
 }

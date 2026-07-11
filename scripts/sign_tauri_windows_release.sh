@@ -77,6 +77,8 @@ while IFS=$'\t' read -r platform arch filename sha256; do
   cp "$BUILD_DIR/$filename" "$STAGING/$filename"
 done < <(node "$HELPER" print-assets "$ASSET_LIST")
 
+node "$HELPER" validate-staged-build "$ASSET_LIST" "$STAGING" "$VERSION"
+
 while IFS=$'\t' read -r platform arch filename sha256; do
   if [[ -n "$SIGNER" ]]; then
     if ! "$SIGNER" -f "$KEY_PATH" "$STAGING/$filename"; then
@@ -102,13 +104,21 @@ if ! node "$HELPER" write-checksums "$ASSET_LIST" "$STAGING" "$VERSION"; then
   exit 1
 fi
 node "$HELPER" validate-release "$ASSET_LIST" "$STAGING" "$VERSION"
+EXPECTED_RELEASE_FILES=(
+  "build-manifest.json"
+  "latest-windows.json"
+  "SHA256SUMS-v$VERSION-windows.txt"
+)
+while IFS=$'\t' read -r platform arch filename sha256; do
+  EXPECTED_RELEASE_FILES+=("$filename" "$filename.sig")
+done < <(node "$HELPER" print-assets "$ASSET_LIST")
 rm -f "$ASSET_LIST"
 
 if [[ -e "$RELEASE_DIR" || -L "$RELEASE_DIR" ]]; then
   echo "Release output appeared during signing: $RELEASE_DIR" >&2
   exit 1
 fi
-mv "$STAGING" "$RELEASE_DIR"
+node "$HELPER" publish-no-replace "$STAGING" "$RELEASE_DIR" "${EXPECTED_RELEASE_FILES[@]}"
 STAGING=""
 
 echo "Signed Windows updater assets: $RELEASE_DIR"
