@@ -13,7 +13,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use tauri::{async_runtime, Emitter};
 
-const CODEX_HOME_SOURCE_CHANGED_EVENT: &str = "codex-home-source-changed";
+pub(crate) const CODEX_HOME_SOURCE_CHANGED_EVENT: &str = "codex-home-source-changed";
 
 static CODEX_HOME_TRANSITION_STATE: OnceLock<Mutex<CodexHomeTransitionState>> = OnceLock::new();
 
@@ -41,12 +41,27 @@ pub(crate) struct CapturedCodexHomeSource {
     source_path: PathBuf,
 }
 
+pub(crate) struct PinnedCodexHomeSource {
+    _handle: std::fs::File,
+    read_path: PathBuf,
+    pub source_scope_key: String,
+}
+
+impl PinnedCodexHomeSource {
+    pub(crate) fn read_path(&self) -> &Path {
+        &self.read_path
+    }
+}
+
 #[derive(Default)]
 struct CodexHomeTransitionState {
     canonical_home_key: Option<String>,
     physical_home_key: Option<String>,
     codex_home_path: Option<PathBuf>,
     source_path: Option<PathBuf>,
+    source_kind: Option<String>,
+    source_exists: bool,
+    pending_publication_generation: Option<u64>,
     transition_generation: u64,
 }
 
@@ -76,10 +91,10 @@ pub fn get_codex_home(window: tauri::WebviewWindow) -> Result<CodexHomeSourceEnv
     require_window_label(&window, "get_codex_home")?;
     startup_trace::mark("command get_codex_home start");
     let result = with_codex_home_transition_state(|transition| {
-        Ok(resolve_codex_home_source(
+        resolve_codex_home_source(
             transition,
             platform::default_codex_home_status(),
-        ))
+        )
     });
     startup_trace::mark("command get_codex_home end");
     result
@@ -132,7 +147,7 @@ pub(crate) fn capture_codex_home_source(
 ) -> Result<CapturedCodexHomeSource, String> {
     with_codex_home_transition_state(|transition| {
         if transition.canonical_home_key.is_none() {
-            resolve_codex_home_source(transition, platform::default_codex_home_status());
+            resolve_codex_home_source(transition, platform::default_codex_home_status())?;
         } else {
             refresh_codex_home_source_identity(transition)?;
         }
@@ -144,6 +159,33 @@ pub(crate) fn capture_codex_home_source(
             }
         };
         Ok(captured)
+    })
+}
+
+pub(crate) fn detect_codex_home_source_transition(
+) -> Result<Option<CodexHomeSourceEnvelope>, String> {
+    with_codex_home_transition_state(|transition| {
+        if transition.canonical_home_key.is_none() {
+            return Ok(None);
+        }
+        if let Some(envelope) = refresh_codex_home_source_identity(transition)? {
+            return Ok(Some(envelope));
+        }
+        if transition.pending_publication_generation.is_some() {
+            return current_codex_home_source_envelope(transition).map(Some);
+        }
+        Ok(None)
+    })
+}
+
+pub(crate) fn acknowledge_codex_home_source_transition_published(
+    generation: u64,
+) -> Result<(), String> {
+    with_codex_home_transition_state(|transition| {
+        if transition.pending_publication_generation == Some(generation) {
+            transition.pending_publication_generation = None;
+        }
+        Ok(())
     })
 }
 
@@ -163,7 +205,7 @@ pub(crate) fn validate_captured_codex_home_source(
     let resolved = canonical_home_path(&captured.source_path);
     let current = CodexHomeSourceToken {
         canonical_home_key: platform_path_key(&resolved),
-        physical_home_key: physical_home_key(&resolved),
+        physical_home_key: physical_home_key(&resolved)?,
         transition_generation: captured.source_token.transition_generation,
     };
     if current.canonical_home_key != captured.source_token.canonical_home_key
@@ -172,6 +214,84 @@ pub(crate) fn validate_captured_codex_home_source(
         return Err("Codex Home physical identity changed before source-bound work".into());
     }
     transition_validation
+}
+
+#[cfg(unix)]
+pub(crate) fn pin_captured_codex_home_source(
+    captured: &CapturedCodexHomeSource,
+) -> Result<PinnedCodexHomeSource, String> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    #[cfg(target_os = "macos")]
+    const DIRECTORY_NOFOLLOW_FLAGS: i32 = 0x0010_0000 | 0x0000_0100;
+    #[cfg(not(target_os = "macos"))]
+    const DIRECTORY_NOFOLLOW_FLAGS: i32 = 0x0001_0000 | 0x0002_0000;
+
+    let handle = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(DIRECTORY_NOFOLLOW_FLAGS)
+        .open(&captured.source_path)
+        .map_err(|error| format!("failed to pin Codex Home source: {error}"))?;
+    let metadata = handle
+        .metadata()
+        .map_err(|error| format!("failed to inspect pinned Codex Home source: {error}"))?;
+    let physical_home_key = format!("unix:{}:{}", metadata.dev(), metadata.ino());
+    if physical_home_key != captured.source_token.physical_home_key {
+        return Err("Codex Home physical identity changed before it could be pinned".into());
+    }
+    Ok(PinnedCodexHomeSource {
+        _handle: handle,
+        read_path: captured.codex_home.clone(),
+        source_scope_key: format!(
+            "{}|{}",
+            captured.source_token.canonical_home_key,
+            captured.source_token.physical_home_key
+        ),
+    })
+}
+
+#[cfg(windows)]
+pub(crate) fn pin_captured_codex_home_source(
+    captured: &CapturedCodexHomeSource,
+) -> Result<PinnedCodexHomeSource, String> {
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+    let handle = OpenOptions::new()
+        .read(true)
+        // Denying delete sharing keeps the configured path bound to this directory
+        // until the source-bound read and acknowledgement complete.
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&captured.source_path)
+        .map_err(|error| format!("failed to pin Codex Home source: {error}"))?;
+    let (volume, file_id) = windows_home_identity(&handle)
+        .map_err(|error| format!("failed to inspect pinned Codex Home source: {error}"))?;
+    let physical_home_key = format!("windows:{volume}:{file_id}");
+    if physical_home_key != captured.source_token.physical_home_key {
+        return Err("Codex Home physical identity changed before it could be pinned".into());
+    }
+    Ok(PinnedCodexHomeSource {
+        _handle: handle,
+        read_path: captured.codex_home.clone(),
+        source_scope_key: format!(
+            "{}|{}",
+            captured.source_token.canonical_home_key,
+            captured.source_token.physical_home_key
+        ),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn pin_captured_codex_home_source(
+    _captured: &CapturedCodexHomeSource,
+) -> Result<PinnedCodexHomeSource, String> {
+    Err("pinned Codex Home reads are unsupported on this platform".into())
 }
 
 pub(crate) fn with_valid_codex_home_source<T>(
@@ -194,7 +314,7 @@ where
     E: Display,
 {
     let codex_home = save()?;
-    let envelope = resolve_codex_home_source(transition, codex_home);
+    let envelope = resolve_codex_home_source(transition, codex_home)?;
     if let Err(error) = publish(&envelope) {
         startup_trace::mark_performance(format!(
             "codex home source event publish failed generation={} error={error}",
@@ -207,11 +327,11 @@ where
 fn resolve_codex_home_source(
     transition: &mut CodexHomeTransitionState,
     codex_home: CodexHomeStatus,
-) -> CodexHomeSourceEnvelope {
+) -> Result<CodexHomeSourceEnvelope, String> {
     let source_path = lexical_absolute_path(Path::new(&codex_home.path));
     let codex_home_path = canonical_home_path(&source_path);
     let canonical_home_key = platform_path_key(&codex_home_path);
-    let physical_home_key = physical_home_key(&codex_home_path);
+    let physical_home_key = physical_home_key(&codex_home_path)?;
     if transition.canonical_home_key.as_deref() != Some(&canonical_home_key)
         || transition.physical_home_key.as_deref() != Some(&physical_home_key)
     {
@@ -221,34 +341,78 @@ fn resolve_codex_home_source(
     }
     transition.codex_home_path = Some(codex_home_path);
     transition.source_path = Some(source_path);
+    transition.source_kind = Some(codex_home.source.clone());
+    transition.source_exists = codex_home.exists;
 
-    CodexHomeSourceEnvelope {
+    Ok(CodexHomeSourceEnvelope {
         codex_home,
         canonical_home_key,
         physical_home_key,
         transition_generation: transition.transition_generation,
-    }
+    })
 }
 
 fn refresh_codex_home_source_identity(
     transition: &mut CodexHomeTransitionState,
-) -> Result<(), String> {
+) -> Result<Option<CodexHomeSourceEnvelope>, String> {
     let source_path = transition
         .source_path
         .clone()
         .ok_or_else(|| "Codex Home source path is not initialized".to_string())?;
     let codex_home_path = canonical_home_path(&source_path);
     let canonical_home_key = platform_path_key(&codex_home_path);
-    let physical_home_key = physical_home_key(&codex_home_path);
-    if transition.canonical_home_key.as_deref() != Some(&canonical_home_key)
-        || transition.physical_home_key.as_deref() != Some(&physical_home_key)
-    {
+    let physical_home_key = physical_home_key(&codex_home_path)?;
+    let changed = transition.canonical_home_key.as_deref() != Some(&canonical_home_key)
+        || transition.physical_home_key.as_deref() != Some(&physical_home_key);
+    if changed {
         transition.transition_generation = transition.transition_generation.saturating_add(1);
-        transition.canonical_home_key = Some(canonical_home_key);
-        transition.physical_home_key = Some(physical_home_key);
+        transition.canonical_home_key = Some(canonical_home_key.clone());
+        transition.physical_home_key = Some(physical_home_key.clone());
+        transition.pending_publication_generation = Some(transition.transition_generation);
     }
     transition.codex_home_path = Some(codex_home_path);
-    Ok(())
+    if !changed {
+        return Ok(None);
+    }
+    Ok(Some(CodexHomeSourceEnvelope {
+        codex_home: CodexHomeStatus {
+            path: source_path.display().to_string(),
+            exists: transition.source_exists,
+            source: transition.source_kind.clone().unwrap_or_else(|| "auto".into()),
+        },
+        canonical_home_key,
+        physical_home_key,
+        transition_generation: transition.transition_generation,
+    }))
+}
+
+fn current_codex_home_source_envelope(
+    transition: &CodexHomeTransitionState,
+) -> Result<CodexHomeSourceEnvelope, String> {
+    Ok(CodexHomeSourceEnvelope {
+        codex_home: CodexHomeStatus {
+            path: transition
+                .source_path
+                .as_ref()
+                .ok_or_else(|| "Codex Home source path is not initialized".to_string())?
+                .display()
+                .to_string(),
+            exists: transition.source_exists,
+            source: transition
+                .source_kind
+                .clone()
+                .ok_or_else(|| "Codex Home source kind is not initialized".to_string())?,
+        },
+        canonical_home_key: transition
+            .canonical_home_key
+            .clone()
+            .ok_or_else(|| "Codex Home source is not initialized".to_string())?,
+        physical_home_key: transition
+            .physical_home_key
+            .clone()
+            .ok_or_else(|| "Codex Home physical identity is not initialized".to_string())?,
+        transition_generation: transition.transition_generation,
+    })
 }
 
 #[cfg(test)]
@@ -313,22 +477,17 @@ fn current_codex_home_source_token(
 }
 
 #[cfg(unix)]
-fn physical_home_key(path: &Path) -> String {
+fn physical_home_key(path: &Path) -> Result<String, String> {
     use std::os::unix::fs::MetadataExt;
 
-    match std::fs::metadata(path) {
-        Ok(metadata) => format!("unix:{}:{}", metadata.dev(), metadata.ino()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "missing".into(),
-        Err(error) => format!(
-            "unavailable:{:?}:{}",
-            error.kind(),
-            error.raw_os_error().unwrap_or_default()
-        ),
-    }
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        format!("Codex Home physical identity unavailable for {}: {error}", path.display())
+    })?;
+    Ok(format!("unix:{}:{}", metadata.dev(), metadata.ino()))
 }
 
 #[cfg(windows)]
-fn physical_home_key(path: &Path) -> String {
+fn physical_home_key(path: &Path) -> Result<String, String> {
     use std::fs::OpenOptions;
     use std::os::windows::fs::OpenOptionsExt;
 
@@ -342,15 +501,12 @@ fn physical_home_key(path: &Path) -> String {
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path);
-    match opened.and_then(|file| windows_home_identity(&file)) {
-        Ok((volume, file_id)) => format!("windows:{volume}:{file_id}"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "missing".into(),
-        Err(error) => format!(
-            "unavailable:{:?}:{}",
-            error.kind(),
-            error.raw_os_error().unwrap_or_default()
-        ),
-    }
+    let (volume, file_id) = opened
+        .and_then(|file| windows_home_identity(&file))
+        .map_err(|error| {
+            format!("Codex Home physical identity unavailable for {}: {error}", path.display())
+        })?;
+    Ok(format!("windows:{volume}:{file_id}"))
 }
 
 #[cfg(windows)]
@@ -397,12 +553,11 @@ fn windows_home_identity(file: &std::fs::File) -> std::io::Result<(u32, u64)> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn physical_home_key(path: &Path) -> String {
-    match std::fs::metadata(path) {
-        Ok(metadata) => format!("portable:{}:{:?}", metadata.len(), metadata.created().ok()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "missing".into(),
-        Err(error) => format!("unavailable:{:?}", error.kind()),
-    }
+fn physical_home_key(path: &Path) -> Result<String, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        format!("Codex Home physical identity unavailable for {}: {error}", path.display())
+    })?;
+    Ok(format!("portable:{}:{:?}", metadata.len(), metadata.created().ok()))
 }
 
 fn lexical_absolute_path(path: &Path) -> PathBuf {
@@ -666,27 +821,27 @@ mod tests {
         let a = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_a.clone(), "manual"),
-        );
+        ).unwrap();
         let a_duplicate = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_a.join("."), "manual"),
-        );
+        ).unwrap();
         let a_same_resolved_source = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_a.clone(), "auto"),
-        );
+        ).unwrap();
         let auto = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_auto.clone(), "auto"),
-        );
+        ).unwrap();
         let auto_duplicate = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_auto.join("."), "auto"),
-        );
+        ).unwrap();
         let b = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_b.clone(), "manual"),
-        );
+        ).unwrap();
 
         assert_eq!(a.transition_generation, 1);
         assert_eq!(a_duplicate.transition_generation, 1);
@@ -713,7 +868,7 @@ mod tests {
         let source_a = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_a.clone(), "manual"),
-        );
+        ).unwrap();
         let source_a_token = source_a.source_token();
         let captured = capture_codex_home_source_from_state(&transition, &source_a_token)
             .expect("A should be captured before the transition");
@@ -721,7 +876,7 @@ mod tests {
         resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home_b.clone(), "manual"),
-        );
+        ).unwrap();
 
         assert_eq!(captured.codex_home, canonical_home_path(&home_a));
         assert_eq!(captured.source_token, source_a_token);
@@ -740,7 +895,7 @@ mod tests {
         let source_a = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home.clone(), "manual"),
-        );
+        ).unwrap();
         let captured_a =
             capture_codex_home_source_from_state(&transition, &source_a.source_token())
                 .expect("capture physical home A");
@@ -749,7 +904,7 @@ mod tests {
         let source_b = resolve_codex_home_source(
             &mut transition,
             codex_home_status_for_test(home.clone(), "manual"),
-        );
+        ).unwrap();
 
         assert_eq!(source_a.canonical_home_key, source_b.canonical_home_key);
         assert_ne!(source_a.physical_home_key, source_b.physical_home_key);
@@ -761,6 +916,92 @@ mod tests {
             validate_codex_home_source_in_state(&transition, &source_a.source_token()).is_err()
         );
         assert!(validate_captured_codex_home_source(&captured_a).is_err());
+
+        remove_source_test_directory(home);
+        remove_source_test_directory(displaced);
+    }
+
+    #[test]
+    fn physical_identity_error_preserves_authoritative_source_state() {
+        let home = disposable_source_test_directory("physical-error");
+        let mut transition = CodexHomeTransitionState::default();
+        let source = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .expect("initial physical identity should resolve");
+        let authoritative = source.source_token();
+
+        remove_source_test_directory(home);
+        let error = refresh_codex_home_source_identity(&mut transition)
+            .expect_err("missing physical home must fail closed");
+
+        assert!(error.contains("physical identity"), "{error}");
+        assert_eq!(
+            current_codex_home_source_token(&transition).unwrap(),
+            authoritative
+        );
+    }
+
+    #[test]
+    fn background_physical_replacement_returns_exactly_one_transition_envelope() {
+        let home = disposable_source_test_directory("background-physical-change");
+        let displaced = home.with_extension("displaced");
+        let mut transition = CodexHomeTransitionState::default();
+        let source_a = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .expect("initialize source A");
+
+        std::fs::rename(&home, &displaced).expect("displace physical source A");
+        std::fs::create_dir(&home).expect("install physical source B");
+
+        let source_b = refresh_codex_home_source_identity(&mut transition)
+            .expect("refresh source B")
+            .expect("first detector must receive an envelope to publish");
+        let duplicate = refresh_codex_home_source_identity(&mut transition)
+            .expect("repeat refresh")
+            .is_none();
+
+        assert_eq!(source_b.canonical_home_key, source_a.canonical_home_key);
+        assert_ne!(source_b.physical_home_key, source_a.physical_home_key);
+        assert_eq!(
+            source_b.transition_generation,
+            source_a.transition_generation + 1
+        );
+        assert!(duplicate, "the same transition must not publish twice");
+
+        remove_source_test_directory(home);
+        remove_source_test_directory(displaced);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pinned_source_detects_swap_before_observation_can_be_committed() {
+        let home = disposable_source_test_directory("pinned-source-a");
+        let displaced = home.with_extension("displaced");
+        std::fs::write(home.join("observation"), "A").unwrap();
+        let mut transition = CodexHomeTransitionState::default();
+        let source_a = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+        let captured =
+            capture_codex_home_source_from_state(&transition, &source_a.source_token()).unwrap();
+        let pinned = pin_captured_codex_home_source(&captured).expect("pin physical A");
+
+        std::fs::rename(&home, &displaced).expect("replace after validator and pin");
+        std::fs::create_dir(&home).expect("install B at the same canonical path");
+        std::fs::write(home.join("observation"), "B").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(pinned.read_path().join("observation")).unwrap(),
+            "B"
+        );
+        assert!(validate_captured_codex_home_source(&captured).is_err());
+        assert!(pinned.source_scope_key.contains(&source_a.physical_home_key));
 
         remove_source_test_directory(home);
         remove_source_test_directory(displaced);

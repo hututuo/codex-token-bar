@@ -58,11 +58,25 @@ fn read_unread_summary_at(codex_home: &Path, now: f64) -> UnreadSummary {
 }
 
 pub fn acknowledge_current_unread(codex_home: &Path) -> Result<UnreadSummary, String> {
-    let mut acknowledgement = read_acknowledgement();
     let home_key = codex_home_key(codex_home);
-    let home_acknowledgement = acknowledgement.by_codex_home.entry(home_key).or_default();
-    let completion_markers = recent_completion::recent_completion_markers(codex_home);
-    match read_unread_thread_ids(codex_home) {
+    acknowledge_current_unread_for_source(codex_home, &home_key, || Ok(()))
+}
+
+pub fn acknowledge_current_unread_for_source(
+    observation_home: &Path,
+    source_scope_key: &str,
+    validate_before_write: impl FnOnce() -> Result<(), String>,
+) -> Result<UnreadSummary, String> {
+    let completion_markers = recent_completion::recent_completion_markers(observation_home);
+    let native_thread_ids = read_unread_thread_ids(observation_home);
+    validate_before_write()?;
+
+    let mut acknowledgement = read_acknowledgement();
+    let home_acknowledgement = acknowledgement
+        .by_codex_home
+        .entry(source_scope_key.to_string())
+        .or_default();
+    match native_thread_ids {
         Some(thread_ids) => {
             home_acknowledgement.unread_thread_ids.extend(thread_ids);
             home_acknowledgement
@@ -74,7 +88,7 @@ pub fn acknowledge_current_unread(codex_home: &Path) -> Result<UnreadSummary, St
             .extend(completion_markers),
     }
     write_acknowledgement(&acknowledgement)?;
-    Ok(read_unread_summary(codex_home))
+    Ok(unread_state_summary(0))
 }
 
 fn unread_state_summary(count: usize) -> UnreadSummary {
@@ -312,6 +326,28 @@ mod tests {
         assert!(summary.active);
         assert_eq!(summary.count, 1);
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn source_validation_failure_cannot_write_an_observed_baseline() {
+        let root = temp_root("ack-source-swap");
+        let support = root.join("tauri-support");
+        fs::create_dir_all(&root).unwrap();
+        let _support_env = TauriSupportEnvGuard::new(&support);
+        write_unread_state(&root, &["019eaaaa-0000-0000-0000-000000000099"]);
+
+        let result = acknowledge_current_unread_for_source(
+            &root,
+            "canonical-a|physical-a",
+            || Err("injected physical source replacement".into()),
+        );
+
+        assert_eq!(result.unwrap_err(), "injected physical source replacement");
+        assert!(
+            !support.join("unread-acknowledgement.json").exists(),
+            "validation must run before any baseline write"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

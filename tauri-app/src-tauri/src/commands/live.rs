@@ -1,7 +1,10 @@
 use super::window_auth::require_window_label;
 use crate::commands::dashboard::{
-    capture_codex_home_source, validate_captured_codex_home_source, validate_codex_home_source,
-    with_valid_codex_home_source, CodexHomeSourceToken,
+    acknowledge_codex_home_source_transition_published, capture_codex_home_source,
+    detect_codex_home_source_transition,
+    pin_captured_codex_home_source, validate_captured_codex_home_source,
+    validate_codex_home_source, with_valid_codex_home_source, CapturedCodexHomeSource,
+    CodexHomeSourceToken, CODEX_HOME_SOURCE_CHANGED_EVENT,
 };
 use crate::commands::local_source;
 use crate::core::{
@@ -286,6 +289,13 @@ impl LiveRateMonitorRegistry {
         async_runtime::spawn(async move {
             let mut last_active_at: Option<Instant> = None;
             loop {
+                if let Err(error) = emit_detected_source_transition(&app) {
+                    startup_trace::mark_performance(format!(
+                        "codex_home_source_detection_failed {error}"
+                    ));
+                    sleep_stream_interval(IDLE_STREAM_INTERVAL).await;
+                    continue;
+                }
                 let request = match registry.stream_snapshot_request(loop_generation) {
                     Ok(request) => request,
                     Err(_) => break,
@@ -428,6 +438,20 @@ impl LiveRateMonitorRegistry {
     }
 }
 
+fn emit_detected_source_transition(app: &AppHandle) -> Result<bool, String> {
+    let Some(envelope) = detect_codex_home_source_transition()? else {
+        return Ok(false);
+    };
+    let generation = envelope.transition_generation;
+    app.emit_str(
+        CODEX_HOME_SOURCE_CHANGED_EVENT,
+        serde_json::to_string(&envelope).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    acknowledge_codex_home_source_transition_published(generation)?;
+    Ok(true)
+}
+
 fn active_subscriptions(
     stream: &LiveRateStreamState,
 ) -> impl Iterator<Item = &LiveRateSubscription> {
@@ -478,6 +502,7 @@ where
         .map_err(|error| error.to_string())?
 }
 
+#[cfg(test)]
 fn run_source_bound_work<T>(
     mut validate_source: impl FnMut() -> Result<(), String>,
     work: impl FnOnce() -> Result<T, String>,
@@ -486,6 +511,19 @@ fn run_source_bound_work<T>(
     let result = work()?;
     validate_source()?;
     Ok(result)
+}
+
+fn acknowledge_pinned_unread(
+    captured: CapturedCodexHomeSource,
+    after_pin: impl FnOnce() -> Result<(), String>,
+) -> Result<UnreadSummary, String> {
+    let pinned = pin_captured_codex_home_source(&captured)?;
+    after_pin()?;
+    unread::acknowledge_current_unread_for_source(
+        pinned.read_path(),
+        &pinned.source_scope_key,
+        || validate_captured_codex_home_source(&captured),
+    )
 }
 
 #[tauri::command]
@@ -552,6 +590,7 @@ pub async fn start_live_rate_stream(
     require_live_rate_owner(window.label(), &subscriber_owner_token)?;
     startup_trace::mark_once("command start_live_rate_stream start");
     let started = Instant::now();
+    emit_detected_source_transition(&app)?;
     let captured = capture_codex_home_source(source_token.as_ref())?;
     let captured_source_token = captured.source_token.clone();
     let subscription_source = LiveRateSubscriptionSource {
@@ -642,7 +681,11 @@ pub async fn read_floating_snapshot(
 #[tauri::command]
 pub async fn read_unread_summary() -> Result<UnreadSummary, String> {
     let started = Instant::now();
-    let result = run_blocking_command(|| Ok(local_source().read_unread_summary())).await;
+    let result = run_blocking_command(|| {
+        let source = local_source();
+        unread::try_read_unread_summary(source.codex_home())
+    })
+    .await;
     startup_trace::mark_performance(format!(
         "read_unread_summary {}ms {}",
         started.elapsed().as_millis(),
@@ -653,20 +696,19 @@ pub async fn read_unread_summary() -> Result<UnreadSummary, String> {
 
 #[tauri::command]
 pub async fn acknowledge_current_unread(
+    app: AppHandle,
     source_token: Option<CodexHomeSourceToken>,
 ) -> Result<UnreadSummary, String> {
     let started = Instant::now();
+    emit_detected_source_transition(&app)?;
     let captured = capture_codex_home_source(source_token.as_ref())?;
     let completed_source_token = captured.source_token.clone();
-    let codex_home = captured.codex_home.clone();
     let result = run_blocking_command(move || {
-        run_source_bound_work(
-            || validate_captured_codex_home_source(&captured),
-            || unread::acknowledge_current_unread(&codex_home),
-        )
+        acknowledge_pinned_unread(captured, || Ok(()))
     })
     .await
     .and_then(|summary| {
+        emit_detected_source_transition(&app)?;
         validate_codex_home_source(&completed_source_token)?;
         Ok(summary)
     });
