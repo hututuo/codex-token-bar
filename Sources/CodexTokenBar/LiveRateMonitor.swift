@@ -760,6 +760,9 @@ final class LiveRateMonitor: ObservableObject {
         for read in reads {
             rolloutOffsets[read.path] = read.newOffset
             for event in read.events {
+                guard !countedRolloutFingerprints.contains(
+                    rolloutFingerprint(event, threadID: read.threadID)
+                ) else { continue }
                 if shouldPendRolloutCompletion(event) {
                     enqueuePendingRollout(event, threadID: read.threadID, now: now)
                 } else if publishRolloutEvent(event, threadID: read.threadID) {
@@ -814,6 +817,9 @@ final class LiveRateMonitor: ObservableObject {
                   )
             else { continue }
             _ = consumedVisibleAssemblyMatches.insertIfNew(assemblyIdentity)
+            _ = countedRolloutFingerprints.insertIfNew(
+                rolloutFingerprint(pending.event, threadID: pending.threadID)
+            )
             matchedPendingKeys.append(pendingKey)
         }
         let matchedSet = Set(matchedPendingKeys)
@@ -983,11 +989,19 @@ final class LiveRateMonitor: ObservableObject {
         if event.category == .visibleText, !event.text.isEmpty {
             if let assemblyIdentity = matchingUnconsumedAssemblyIdentity(event: event, threadID: threadID) {
                 _ = consumedVisibleAssemblyMatches.insertIfNew(assemblyIdentity)
+                _ = countedRolloutFingerprints.insertIfNew(rolloutFingerprint(event, threadID: threadID))
                 return false
             }
         }
+        guard countedRolloutFingerprints.insertIfNew(
+            rolloutFingerprint(event, threadID: threadID)
+        ) else { return false }
+        return true
+    }
+
+    private func rolloutFingerprint(_ event: RolloutMetricEvent, threadID: String) -> String {
         let timestampBucket = Int((event.timestamp * 1_000).rounded())
-        let fingerprint = [
+        return [
             threadID,
             event.category?.rawValue ?? "none",
             String(timestampBucket),
@@ -995,8 +1009,6 @@ final class LiveRateMonitor: ObservableObject {
             String(event.exactTokens ?? -1),
             String(event.exactOutputTokens ?? -1)
         ].joined(separator: ":")
-        guard countedRolloutFingerprints.insertIfNew(fingerprint) else { return false }
-        return true
     }
 
     private func updateTraceAttribution(from row: LogRow) {

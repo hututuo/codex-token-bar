@@ -295,7 +295,13 @@ struct RecentVisibleTextAssemblies {
         let key = VisibleMessageIdentity.key(threadID: threadID, turnID: turnID, itemID: itemID)
         if let turnID, !turnID.isEmpty {
             let fallbackKey = VisibleMessageIdentity.fallbackKey(threadID: threadID, itemID: itemID)
-            if key != fallbackKey, values[key] == nil, var fallback = values.removeValue(forKey: fallbackKey) {
+            let hasKnownTurnAssembly = values.values.contains {
+                $0.threadID == threadID && $0.itemID == itemID && $0.turnID?.isEmpty == false
+            }
+            if !hasKnownTurnAssembly,
+               key != fallbackKey,
+               values[key] == nil,
+               var fallback = values.removeValue(forKey: fallbackKey) {
                 fallback.turnID = turnID
                 values[key] = fallback
                 if let index = insertionOrder.firstIndex(of: fallbackKey) {
@@ -325,11 +331,23 @@ struct RecentVisibleTextAssemblies {
         itemID: String?
     ) -> [String] {
         let summary = VisibleTextSummary(text: text)
+        let hasKnownTurnAssembly: Bool
+        if let itemID, !itemID.isEmpty, let turnID, !turnID.isEmpty {
+            hasKnownTurnAssembly = values.values.contains {
+                $0.threadID == threadID && $0.itemID == itemID && $0.turnID?.isEmpty == false
+            }
+        } else {
+            hasKnownTurnAssembly = false
+        }
         return insertionOrder.filter { key in
             guard let entry = values[key], entry.threadID == threadID, entry.summary == summary else { return false }
             if let itemID, !itemID.isEmpty {
                 guard entry.itemID == itemID else { return false }
-                return turnID == nil || entry.turnID == turnID || entry.turnID == nil
+                if let turnID, !turnID.isEmpty {
+                    if entry.turnID == turnID { return true }
+                    return entry.turnID?.isEmpty != false && !hasKnownTurnAssembly
+                }
+                return true
             }
             guard let turnID else { return false }
             return entry.turnID == turnID

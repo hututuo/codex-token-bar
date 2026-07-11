@@ -923,6 +923,71 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.testVisibleAssemblyCount, 2)
     }
 
+    @MainActor
+    func testUnknownTurnFallbackDoesNotMigrateWhenKnownTurnAlreadyExists() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        let baseline = LiveRateMonitor(monitoringEnabled: false)
+        for subject in [monitor, baseline] {
+            subject.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        }
+        let rows = [
+            streamDeltaRowWithTopLevelTurn(id: 1, threadID: "thread-1", turnID: "turn-a", itemID: "shared", sequence: 1, text: "answer A"),
+            streamDeltaRowWithoutItemMetadata(id: 2, threadID: "thread-1", itemID: "shared", sequence: 2, text: "orphan "),
+            streamDeltaRowWithTopLevelTurn(id: 3, threadID: "thread-1", turnID: "turn-b", itemID: "shared", sequence: 3, text: "answer B")
+        ]
+        let pending = [
+            RolloutMetricEvent(timestamp: 1_003, key: "a", turnID: "turn-a", itemID: "shared", category: .visibleText, text: "answer A"),
+            RolloutMetricEvent(timestamp: 1_003, key: "b", turnID: "turn-b", itemID: "shared", category: .visibleText, text: "answer B")
+        ]
+
+        monitor.testProcessPollInputs(
+            streamRows: rows,
+            rolloutReads: [LiveRateMonitor.RolloutRead(threadID: "thread-1", path: "/tmp/r.jsonl", newOffset: 1, events: pending)],
+            now: 1_003
+        )
+        baseline.testProcessPollInputs(streamRows: rows, rolloutReads: [], now: 1_003)
+        monitor.testProcessPollInputs(streamRows: [], rolloutReads: [], now: 1_004)
+
+        XCTAssertEqual(monitor.testVisibleAssemblyCount, 3)
+        XCTAssertEqual(monitor.snapshot.breakdown, baseline.snapshot.breakdown)
+        XCTAssertEqual(monitor.totalSnapshot.breakdown, baseline.totalSnapshot.breakdown)
+        XCTAssertEqual(monitor.testSessionBreakdown(threadID: "thread-1"), baseline.testSessionBreakdown(threadID: "thread-1"))
+    }
+
+    @MainActor
+    func testMatchedRolloutReplayIsFingerprintSuppressedAfterTruncation() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        let baseline = LiveRateMonitor(monitoringEnabled: false)
+        for subject in [monitor, baseline] {
+            subject.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        }
+        let event = RolloutMetricEvent(timestamp: 1_000, key: "msg-1", turnID: "turn-1", itemID: "msg-1", category: .visibleText, text: "same answer")
+        let rows = [
+            streamDeltaRowWithTopLevelTurn(id: 1, threadID: "thread-1", turnID: "turn-1", itemID: "msg-1", sequence: 1, text: "same "),
+            streamDeltaRowWithTopLevelTurn(id: 2, threadID: "thread-1", turnID: "turn-1", itemID: "msg-1", sequence: 2, text: "answer")
+        ]
+        monitor.testProcessPollInputs(
+            streamRows: rows,
+            rolloutReads: [LiveRateMonitor.RolloutRead(threadID: "thread-1", path: "/tmp/r.jsonl", newOffset: 10, events: [event])],
+            now: 1_000
+        )
+        baseline.testProcessPollInputs(streamRows: rows, rolloutReads: [], now: 1_000)
+        XCTAssertEqual(monitor.testPendingRolloutCount, 0)
+
+        monitor.testProcessPollInputs(
+            streamRows: [],
+            rolloutReads: [LiveRateMonitor.RolloutRead(threadID: "thread-1", path: "/tmp/r.jsonl", newOffset: 5, events: [event])],
+            now: 1_000.5
+        )
+        XCTAssertEqual(monitor.testPendingRolloutCount, 0)
+        monitor.testProcessPollInputs(streamRows: [], rolloutReads: [], now: 1_001.5)
+
+        XCTAssertEqual(monitor.testPendingRolloutCount, 0)
+        XCTAssertEqual(monitor.snapshot.breakdown, baseline.snapshot.breakdown)
+        XCTAssertEqual(monitor.totalSnapshot.breakdown, baseline.totalSnapshot.breakdown)
+        XCTAssertEqual(monitor.testSessionBreakdown(threadID: "thread-1"), baseline.testSessionBreakdown(threadID: "thread-1"))
+    }
+
     func testStreamParserUsesTopLevelTurnIDWithoutOutputItem() throws {
         let row = LiveRateMonitor.LogRow(
             id: 1,
