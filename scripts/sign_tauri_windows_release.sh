@@ -39,10 +39,14 @@ fi
 [[ -f "$KEY_PATH" ]] || { echo "Signing key file not found" >&2; exit 1; }
 command -v node >/dev/null || { echo "Missing required command: node" >&2; exit 1; }
 command -v file >/dev/null || { echo "Missing required command: file" >&2; exit 1; }
+command -v cc >/dev/null || { echo "Missing required command: cc (install Xcode Command Line Tools)" >&2; exit 1; }
+[[ "$(uname -s)" == "Darwin" ]] || { echo "Darwin is required for atomic RENAME_EXCL publication" >&2; exit 1; }
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 HELPER="$SCRIPT_DIR/tauri_windows_release_helper.mjs"
+RENAME_HELPER_SOURCE="$SCRIPT_DIR/rename_no_replace_darwin.c"
+[[ -f "$RENAME_HELPER_SOURCE" ]] || { echo "Darwin RENAME_EXCL helper source not found" >&2; exit 1; }
 BUILD_DIR=$(cd "$BUILD_DIR" && pwd)
 RELEASE_PARENT=$(dirname "$RELEASE_DIR")
 RELEASE_NAME=$(basename "$RELEASE_DIR")
@@ -57,11 +61,15 @@ esac
 MANIFEST="$BUILD_DIR/build-manifest.json"
 [[ -f "$MANIFEST" ]] || { echo "Build manifest not found" >&2; exit 1; }
 STAGING=$(mktemp -d "$RELEASE_PARENT/.${RELEASE_NAME}.staging.XXXXXX")
+RENAME_HELPER=$(mktemp "$RELEASE_PARENT/.rename-excl.XXXXXX")
 ASSET_LIST="$STAGING/.assets.json"
 cleanup() {
   if [[ -n "${STAGING:-}" && -d "$STAGING" ]]; then rm -rf "$STAGING"; fi
+  if [[ -n "${RENAME_HELPER:-}" ]]; then rm -f "$RENAME_HELPER"; fi
 }
 trap cleanup EXIT INT TERM
+
+cc -std=c11 -Wall -Wextra -Werror "$RENAME_HELPER_SOURCE" -o "$RENAME_HELPER"
 
 node "$HELPER" validate-build "$MANIFEST" "$BUILD_DIR" "$VERSION" "$ASSET_LIST"
 cp "$MANIFEST" "$STAGING/build-manifest.json"
@@ -104,21 +112,13 @@ if ! node "$HELPER" write-checksums "$ASSET_LIST" "$STAGING" "$VERSION"; then
   exit 1
 fi
 node "$HELPER" validate-release "$ASSET_LIST" "$STAGING" "$VERSION"
-EXPECTED_RELEASE_FILES=(
-  "build-manifest.json"
-  "latest-windows.json"
-  "SHA256SUMS-v$VERSION-windows.txt"
-)
-while IFS=$'\t' read -r platform arch filename sha256; do
-  EXPECTED_RELEASE_FILES+=("$filename" "$filename.sig")
-done < <(node "$HELPER" print-assets "$ASSET_LIST")
 rm -f "$ASSET_LIST"
 
 if [[ -e "$RELEASE_DIR" || -L "$RELEASE_DIR" ]]; then
   echo "Release output appeared during signing: $RELEASE_DIR" >&2
   exit 1
 fi
-node "$HELPER" publish-no-replace "$STAGING" "$RELEASE_DIR" "${EXPECTED_RELEASE_FILES[@]}"
+"$RENAME_HELPER" "$STAGING" "$RELEASE_DIR"
 STAGING=""
 
 echo "Signed Windows updater assets: $RELEASE_DIR"

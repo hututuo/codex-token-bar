@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 function fail(message) {
@@ -118,31 +118,6 @@ function validateStagedBuild([assetList, staging, version]) {
   assertExactDirectory(staging, expectedNames, "Staged unsigned build directory");
 }
 
-function publishNoReplace([staging, destination, ...expectedNames]) {
-  if (!expectedNames.length) fail("Expected publication set is missing");
-  const lock = `${destination}.publish.lock`;
-  let locked = false;
-  try {
-    mkdirSync(lock);
-    locked = true;
-    try { lstatSync(destination); fail(`Publication destination already exists: ${destination}`); } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-    const actual = readdirSync(staging).sort();
-    const expected = [...expectedNames].sort();
-    if (JSON.stringify(actual) !== JSON.stringify(expected)) fail("Publication staging set is incomplete or unexpected");
-    for (const name of actual) assertRegularFile(path.join(staging, name), `Publication entry ${name}`);
-    renameSync(staging, destination);
-    const published = readdirSync(destination).sort();
-    if (JSON.stringify(published) !== JSON.stringify(expected)) fail("Published directory set is incomplete or unexpected");
-  } catch (error) {
-    if (error.code === "EEXIST") fail(`Publication lock or destination already exists: ${destination}`);
-    throw error;
-  } finally {
-    if (locked) rmSync(lock, { recursive: true, force: true });
-  }
-}
-
 function printAssets([assetList]) {
   for (const asset of loadAssets(assetList)) {
     process.stdout.write(`${asset.platform}\t${asset.arch}\t${asset.filename}\t${asset.sha256}\n`);
@@ -212,7 +187,6 @@ const [command, ...args] = process.argv.slice(2);
 const commands = {
   "validate-build": validateBuild,
   "validate-staged-build": validateStagedBuild,
-  "publish-no-replace": publishNoReplace,
   "print-assets": printAssets,
   "validate-signatures": validateSignatures,
   "write-metadata": writeMetadata,

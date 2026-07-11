@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const macScript = path.join(scriptsDir, "sign_tauri_windows_release.sh");
+const renameHelperSource = path.join(scriptsDir, "rename_no_replace_darwin.c");
 const version = "0.7.2";
 const installerNames = [
   `CodexTokenBar-v${version}-windows-arm64-setup.exe`,
@@ -145,7 +146,40 @@ async function runSignerFixture(options = {}) {
     PATH: `${fixture.binDir}:${process.env.PATH}`,
     SOURCE_DATE_EPOCH: "1700000000",
     RELEASE_CONFLICT_DIR: options.finalConflict ? fixture.releaseDir : "",
+    RENAME_EXCL_TEST_BARRIER: options.emptyDestinationRace ? path.join(fixture.root, "rename-race") : "",
   };
+  if (options.emptyDestinationRace) {
+    const child = spawn("bash", [
+      macScript,
+      "--version", version,
+      "--repo", "hututuo/codex-token-bar",
+      "--build-dir", fixture.buildDir,
+      "--release-dir", fixture.releaseDir,
+      "--key-path", fixture.key,
+      "--signer", fixture.signer,
+    ], { env });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", chunk => { stdout += chunk; });
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    const ready = `${env.RENAME_EXCL_TEST_BARRIER}.ready`;
+    for (let attempt = 0; attempt < 500; attempt += 1) {
+      try { await access(ready); break; } catch {
+        if (attempt === 499) throw new Error(`rename barrier was not reached: ${stderr}`);
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    }
+    await mkdir(fixture.releaseDir);
+    await writeFile(path.join(fixture.releaseDir, "marker.txt"), "NONCOOPERATIVE_OLD_BYTES");
+    await writeFile(`${env.RENAME_EXCL_TEST_BARRIER}.continue`, "continue");
+    const code = await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    return { ...fixture, ok: code === 0, code, stdout, stderr, buildSnapshot, outputSnapshot };
+  }
   try {
     const result = await execFileAsync("bash", [
       macScript,
@@ -203,6 +237,18 @@ test("Mac signing refuses an existing output directory byte-for-byte", async () 
   assert.equal(result.ok, false);
   assert.match(result.stderr, /Release output already exists/);
   assert.deepEqual(await snapshotDirectory(result.releaseDir), result.outputSnapshot);
+  assert.deepEqual(await snapshotDirectory(result.buildDir), result.buildSnapshot);
+});
+
+test("Mac rename helper uses Darwin RENAME_EXCL and preserves an empty destination created at the syscall boundary", async () => {
+  const source = await readFile(renameHelperSource, "utf8");
+  assert.match(source, /renamex_np\s*\([^;]+RENAME_EXCL/);
+  const result = await runSignerFixture({ emptyDestinationRace: true });
+  assert.equal(result.ok, false);
+  assert.match(result.stderr, /already exists|RENAME_EXCL|publish/i);
+  assert.equal(await readFile(path.join(result.releaseDir, "marker.txt"), "utf8"), "NONCOOPERATIVE_OLD_BYTES");
+  assert.deepEqual((await readdir(result.releaseDir)).sort(), ["marker.txt"]);
+  assert.equal((await readdir(result.root)).some(name => name.includes(".windows.staging.")), false);
   assert.deepEqual(await snapshotDirectory(result.buildDir), result.buildSnapshot);
 });
 
