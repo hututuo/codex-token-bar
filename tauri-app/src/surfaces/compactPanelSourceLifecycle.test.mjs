@@ -363,6 +363,81 @@ test("StrictMode source cleanup releases only its own late subscription", async 
   }
 });
 
+test("transient activation rejection recovers from source event or low-frequency retry and cleans up", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { useCompactPanelSource } = await load("/src/surfaces/useCompactPanelSource.ts");
+      let sourceListener = null;
+      let scheduled = null;
+      let readCalls = 0;
+      let cancelCalls = 0;
+      const dependencies = {
+        readCurrentSource() {
+          readCalls += 1;
+          return readCalls <= 2
+            ? Promise.reject(new Error("transient"))
+            : Promise.resolve(sourceEnvelope("physical-b", 2));
+        },
+        scheduleReconcile(refresh, intervalMs) {
+          scheduled = { refresh, intervalMs };
+          return () => {
+            cancelCalls += 1;
+            scheduled = null;
+          };
+        },
+        subscribe(handler) {
+          sourceListener = handler;
+          return Promise.resolve({ ok: true, unlisten: () => {} });
+        },
+      };
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+      function Probe({ active }) {
+        const result = useCompactPanelSource(active, dependencies);
+        return React.createElement("output", null, JSON.stringify({
+          physical: result.sourceToken?.physicalHomeKey ?? null,
+          ready: result.sourceReady,
+        }));
+      }
+      const output = () => JSON.parse(container.textContent);
+
+      try {
+        await React.act(async () => root.render(React.createElement(Probe, { active: true })));
+        await waitForAct(React, () => scheduled !== null && sourceListener !== null);
+        assert.equal(output().ready, false);
+        assert.equal(scheduled.intervalMs, 30_000);
+
+        await React.act(async () => sourceListener(sourceEnvelope("physical-b", 2)));
+        assert.deepEqual(output(), { physical: "physical-b", ready: true });
+
+        await React.act(async () => root.render(React.createElement(Probe, { active: false })));
+        assert.equal(scheduled, null);
+        assert.equal(cancelCalls, 1);
+
+        await React.act(async () => root.render(React.createElement(Probe, { active: true })));
+        await waitForAct(React, () => scheduled !== null && readCalls === 2);
+        assert.equal(output().ready, false);
+        await React.act(async () => scheduled.refresh());
+        await waitForAct(React, () => output().ready === true && readCalls === 3);
+        assert.deepEqual(output(), { physical: "physical-b", ready: true });
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreGlobals();
+    window.close();
+  }
+});
+
 function sourceEnvelope(physicalHomeKey, transitionGeneration) {
   return {
     codexHome: {

@@ -1,12 +1,13 @@
 import { useEffect, useRef } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
-import type { DashboardSnapshot, UsageCacheStatus } from "../types/dashboard";
+import type { CodexHomeSourceToken, DashboardSnapshot, UsageCacheStatus } from "../types/dashboard";
 
 interface PreciseDashboardLoadOptions {
   active: boolean;
   dashboardReady: boolean;
   loading: boolean;
   generation: number;
+  sourceToken: CodexHomeSourceToken | null;
   source: Pick<DashboardDataSource, "readPreciseDashboardSnapshot" | "readUsageCacheStatus">;
   onPreciseDashboard: (snapshot: DashboardSnapshot) => void;
   onUsageCacheInitialized?: () => void;
@@ -20,6 +21,7 @@ export function usePreciseDashboardLoad({
   dashboardReady,
   loading,
   generation,
+  sourceToken,
   source,
   onPreciseDashboard,
   onUsageCacheInitialized,
@@ -44,7 +46,10 @@ export function usePreciseDashboardLoad({
         if (!cancelled) {
           onUsageCacheStatus?.(cacheStatus);
         }
-        const precise = await source.readPreciseDashboardSnapshot();
+        if (sourceToken === null) {
+          return;
+        }
+        const precise = await source.readPreciseDashboardSnapshot(sourceToken);
         if (!cancelled && precise !== null) {
           onPreciseDashboard(precise);
           onUsageCacheInitialized?.();
@@ -70,5 +75,6 @@ export function usePreciseDashboardLoad({
     onUsageCacheInitialized,
     onUsageCacheStatus,
     source,
+    sourceToken,
   ]);
 }

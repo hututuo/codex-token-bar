@@ -11,6 +11,7 @@ import { readAppSettings, recordStartupEvent } from "../api/client";
 import { recordPerformanceEvent } from "../api/startupClient";
 import { dashboardDataSource, type DashboardDataSource } from "../data/dashboardDataSource";
 import { desktopPlatform } from "../platform/desktop";
+import type { EventSubscriptionResult } from "../platform/desktopBridge";
 import {
   DEFAULT_QUOTA_REFRESH_INTERVAL_MS,
   sanitizeQuotaRefreshIntervalMs,
@@ -62,6 +63,12 @@ import { useWakeRefresh } from "../utils/useWakeRefresh";
 
 const DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
 const DASHBOARD_BACKGROUND_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+export const MAIN_SOURCE_RECONCILE_INTERVAL_MS = 30_000;
+
+function scheduleMainSourceReconcile(refresh: () => void, intervalMs: number) {
+  const interval = window.setInterval(refresh, intervalMs);
+  return () => window.clearInterval(interval);
+}
 
 function dashboardIsVisible() {
   if (typeof document === "undefined") {
@@ -74,12 +81,19 @@ interface UseDashboardDataOptions {
   liveRateEnabled?: boolean;
   providerRepairVisible?: boolean;
   source?: DashboardDataSource;
+  subscribeToSourceChanges?: (
+    handler: (envelope: CodexHomeSourceEnvelope) => void,
+  ) => Promise<EventSubscriptionResult>;
+  scheduleSourceReconcile?: (refresh: () => void, intervalMs: number) => () => void;
 }
 
 export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const source = options.source ?? dashboardDataSource;
   const liveRateEnabled = options.liveRateEnabled ?? true;
   const providerRepairVisible = options.providerRepairVisible ?? false;
+  const subscribeToSourceChanges = options.subscribeToSourceChanges
+    ?? desktopPlatform.onCodexHomeSourceChanged;
+  const scheduleSourceReconcile = options.scheduleSourceReconcile ?? scheduleMainSourceReconcile;
   const [state, setState] = useState<DashboardAppState>(initialDashboardState);
   const [fastSnapshotLoaded, setFastSnapshotLoaded] = useState(false);
   const [loadGeneration, setLoadGeneration] = useState(0);
@@ -96,6 +110,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const [sourceLoadGeneration, setSourceLoadGeneration] = useState(0);
   const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
   const sourceTransitionRef = useRef(createDashboardSourceTransition());
+  const sourceReconcileRequestRef = useRef(0);
+  const sourceReconcileInFlightRef = useRef<Promise<CodexHomeSourceEnvelope | null> | null>(null);
   const lastLiveActivityAtMsRef = useRef(0);
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
 
@@ -165,6 +181,30 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       : current);
     setSourceLoadGeneration((current) => isSourceTokenCurrent(token) ? current + 1 : current);
   }, [isSourceTokenCurrent]);
+  const reconcileCodexHomeSource = useCallback(async () => {
+    if (sourceReconcileInFlightRef.current !== null) {
+      return sourceReconcileInFlightRef.current;
+    }
+    const request = sourceReconcileRequestRef.current;
+    let pending!: Promise<CodexHomeSourceEnvelope | null>;
+    pending = (async () => {
+      try {
+        const envelope = await source.getCodexHome();
+        if (request === sourceReconcileRequestRef.current && envelope !== null) {
+          acceptSourceEnvelope(envelope);
+        }
+        return request === sourceReconcileRequestRef.current ? envelope : null;
+      } catch {
+        return null;
+      } finally {
+        if (sourceReconcileInFlightRef.current === pending) {
+          sourceReconcileInFlightRef.current = null;
+        }
+      }
+    })();
+    sourceReconcileInFlightRef.current = pending;
+    return pending;
+  }, [acceptSourceEnvelope, source]);
 
   const {
     reloadAll,
@@ -287,13 +327,19 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
+    let cancelReconcile: (() => void) | null = null;
 
-    void desktopPlatform.onCodexHomeSourceChanged((envelope) => {
+    void subscribeToSourceChanges((envelope) => {
       if (!cancelled) {
         acceptSourceEnvelope(envelope);
       }
     }).then((subscription) => {
       if (!subscription.ok) {
+        cancelReconcile = scheduleSourceReconcile(() => {
+          if (!cancelled) {
+            void reconcileCodexHomeSource();
+          }
+        }, MAIN_SOURCE_RECONCILE_INTERVAL_MS);
         return;
       }
       if (cancelled) {
@@ -301,12 +347,45 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       } else {
         unlisten = subscription.unlisten;
       }
+    }).catch(() => {
+      if (!cancelled && cancelReconcile === null) {
+        cancelReconcile = scheduleSourceReconcile(() => {
+          if (!cancelled) {
+            void reconcileCodexHomeSource();
+          }
+        }, MAIN_SOURCE_RECONCILE_INTERVAL_MS);
+      }
     });
     return () => {
       cancelled = true;
+      sourceReconcileRequestRef.current += 1;
+      sourceReconcileInFlightRef.current = null;
       unlisten?.();
+      cancelReconcile?.();
     };
-  }, [acceptSourceEnvelope]);
+  }, [
+    acceptSourceEnvelope,
+    reconcileCodexHomeSource,
+    scheduleSourceReconcile,
+    subscribeToSourceChanges,
+  ]);
+
+  useEffect(() => {
+    const reconcile = () => {
+      void reconcileCodexHomeSource();
+    };
+    const reconcileWhenVisible = () => {
+      if (document.visibilityState !== "hidden") {
+        reconcile();
+      }
+    };
+    window.addEventListener("focus", reconcile);
+    document.addEventListener("visibilitychange", reconcileWhenVisible);
+    return () => {
+      window.removeEventListener("focus", reconcile);
+      document.removeEventListener("visibilitychange", reconcileWhenVisible);
+    };
+  }, [reconcileCodexHomeSource]);
 
   useEffect(() => {
     let cancelled = false;

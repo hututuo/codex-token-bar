@@ -1,5 +1,4 @@
 use super::window_auth::require_window_label;
-use crate::commands::local_source;
 use crate::core::dashboard::DashboardDataSource;
 use crate::core::startup_trace;
 use crate::core::usage::cache_lifecycle::{self, UsageCacheStatus};
@@ -1863,11 +1862,16 @@ pub fn read_platform_capabilities() -> Result<PlatformCapabilities, String> {
 #[tauri::command]
 pub async fn read_dashboard_snapshot(
     window: tauri::WebviewWindow,
+    app: AppHandle,
+    source_token: CodexHomeSourceToken,
 ) -> Result<DashboardSnapshot, String> {
     require_window_label(&window, "read_dashboard_snapshot")?;
     startup_trace::mark("command read_dashboard_snapshot start");
     let started = Instant::now();
-    let result = run_blocking_command(|| local_source().read_dashboard_snapshot()).await;
+    let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
+        crate::core::dashboard::LocalCodexDataSource::new(codex_home).read_dashboard_snapshot()
+    })
+    .await;
     startup_trace::mark_performance(format!(
         "read_dashboard_snapshot {}ms {}",
         started.elapsed().as_millis(),
@@ -1880,10 +1884,16 @@ pub async fn read_dashboard_snapshot(
 #[tauri::command]
 pub async fn read_precise_dashboard_snapshot(
     window: tauri::WebviewWindow,
+    app: AppHandle,
+    source_token: CodexHomeSourceToken,
 ) -> Result<DashboardSnapshot, String> {
     require_window_label(&window, "read_precise_dashboard_snapshot")?;
     let started = Instant::now();
-    let result = run_blocking_command(|| local_source().read_precise_dashboard_snapshot()).await;
+    let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
+        crate::core::dashboard::LocalCodexDataSource::new(codex_home)
+            .read_precise_dashboard_snapshot()
+    })
+    .await;
     startup_trace::mark_performance(format!(
         "read_precise_dashboard_snapshot {}ms {}",
         started.elapsed().as_millis(),

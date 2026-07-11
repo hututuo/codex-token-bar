@@ -43,6 +43,7 @@ export function useCompactPanelSource(
   const [sourceToken, setSourceToken] = useState<CodexHomeSourceToken | null>(null);
   const [activeSourceVerified, setActiveSourceVerified] = useState(false);
   const activeRef = useRef(active);
+  const cancelActivationRetryRef = useRef<(() => void) | null>(null);
   activeRef.current = active;
 
   const acceptEnvelope = useCallback((envelope: CodexHomeSourceEnvelope) => {
@@ -84,8 +85,10 @@ export function useCompactPanelSource(
 
     void (async () => {
       const subscription = await dependencies.subscribe((envelope) => {
-        if (!disposed) {
-          acceptEnvelope(envelope);
+        if (!disposed && acceptEnvelope(envelope) && activeRef.current) {
+          setActiveSourceVerified(true);
+          cancelActivationRetryRef.current?.();
+          cancelActivationRetryRef.current = null;
         }
       });
       if (disposed) {
@@ -119,21 +122,49 @@ export function useCompactPanelSource(
     }
 
     let cancelled = false;
+    let cancelRetry: (() => void) | null = null;
     setActiveSourceVerified(false);
-    void dependencies.readCurrentSource()
-      .then((envelope) => {
-        if (
-          !cancelled
-          && activeRef.current
-          && envelope !== null
-          && acceptEnvelope(envelope)
-        ) {
-          setActiveSourceVerified(true);
+    async function verifyActiveSource() {
+      try {
+        const envelope = await dependencies.readCurrentSource();
+        if (cancelled || !activeRef.current) {
+          return;
         }
-      })
-      .catch(() => {});
+        if (envelope !== null && acceptEnvelope(envelope)) {
+          setActiveSourceVerified(true);
+          cancelRetry?.();
+          cancelRetry = null;
+          cancelActivationRetryRef.current = null;
+          return;
+        }
+      } catch {
+        if (cancelled || !activeRef.current) {
+          return;
+        }
+      }
+      if (cancelRetry === null) {
+        const schedule = dependencies.scheduleReconcile ?? scheduleSourceReconcile;
+        const cancelScheduled = schedule(
+          verifyActiveSource,
+          COMPACT_SOURCE_RECONCILE_INTERVAL_MS,
+        );
+        let retryCancelled = false;
+        cancelRetry = () => {
+          if (!retryCancelled) {
+            retryCancelled = true;
+            cancelScheduled();
+          }
+        };
+        cancelActivationRetryRef.current = cancelRetry;
+      }
+    }
+    void verifyActiveSource();
     return () => {
       cancelled = true;
+      cancelRetry?.();
+      if (cancelActivationRetryRef.current === cancelRetry) {
+        cancelActivationRetryRef.current = null;
+      }
     };
   }, [acceptEnvelope, active, dependencies]);
 

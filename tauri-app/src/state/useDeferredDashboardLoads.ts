@@ -64,6 +64,7 @@ export function useDeferredDashboardLoads({
     onLoadEnd: onRefreshTaskEnd,
     onLoadStart: onRefreshTaskStart,
     source,
+    sourceToken,
   });
 
   useDeferredQuotaLoad({

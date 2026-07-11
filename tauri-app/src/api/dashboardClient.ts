@@ -29,12 +29,16 @@ export function readPlatformCapabilities(): Promise<PlatformCapabilities> {
   return callCommand("read_platform_capabilities", fallbackPlatformCapabilities);
 }
 
-export function readDashboardSnapshot(): Promise<DashboardSnapshot> {
-  return callCommand("read_dashboard_snapshot", emptyDashboardSnapshot());
+export function readDashboardSnapshot(
+  sourceToken: CodexHomeSourceToken,
+): Promise<DashboardSnapshot> {
+  return callCommand("read_dashboard_snapshot", emptyDashboardSnapshot(), { sourceToken });
 }
 
-export function readPreciseDashboardSnapshot(): Promise<DashboardSnapshot | null> {
-  return callCommandOptional("read_precise_dashboard_snapshot", undefined, 30_000);
+export function readPreciseDashboardSnapshot(
+  sourceToken: CodexHomeSourceToken,
+): Promise<DashboardSnapshot | null> {
+  return callCommandOptional("read_precise_dashboard_snapshot", { sourceToken }, 30_000);
 }
 
 export function readUsageSummarySnapshot(

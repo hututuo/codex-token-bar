@@ -33,7 +33,7 @@ export async function loadInitialDashboardState({
     }
   });
 
-  await source.readDashboardSnapshot().then((dashboard) => {
+  await source.readDashboardSnapshot(sourceToken).then((dashboard) => {
     if (!isCancelled() && isSourceCurrent(sourceToken)) {
       setState((current) => isSourceCurrent(sourceToken)
         ? {

@@ -29,8 +29,10 @@ export interface DashboardDataSource {
   setCodexHome: (path: string) => Promise<CodexHomeSourceEnvelope>;
   resetCodexHome: () => Promise<CodexHomeSourceEnvelope>;
   readPlatformCapabilities: () => Promise<PlatformCapabilities>;
-  readDashboardSnapshot: () => Promise<DashboardSnapshot>;
-  readPreciseDashboardSnapshot: () => Promise<DashboardSnapshot | null>;
+  readDashboardSnapshot: (sourceToken: CodexHomeSourceToken) => Promise<DashboardSnapshot>;
+  readPreciseDashboardSnapshot: (
+    sourceToken: CodexHomeSourceToken,
+  ) => Promise<DashboardSnapshot | null>;
   readUsageCacheStatus: () => Promise<UsageCacheStatus>;
   readAccountQuota: (
     sourceToken: CodexHomeSourceToken,
