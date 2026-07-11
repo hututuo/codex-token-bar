@@ -5,11 +5,40 @@ struct TaskCompletionPollRequest: Sendable {
     let previousStates: [String: TaskCompletionFileState]
     let seedMode: Bool
     let seedCutoff: Date
+    let suppressedOfficialThreadIDs: Set<String>
+    let pollStartedAt: Date
+
+    init(
+        dataSource: CodexDataSource,
+        previousStates: [String: TaskCompletionFileState],
+        seedMode: Bool,
+        seedCutoff: Date,
+        suppressedOfficialThreadIDs: Set<String> = [],
+        pollStartedAt: Date = Date()
+    ) {
+        self.dataSource = dataSource
+        self.previousStates = previousStates
+        self.seedMode = seedMode
+        self.seedCutoff = seedCutoff
+        self.suppressedOfficialThreadIDs = suppressedOfficialThreadIDs
+        self.pollStartedAt = pollStartedAt
+    }
 }
 
 struct TaskCompletionPollOutput: Sendable {
     let result: TaskCompletionScanResult?
     let unreadThreadRead: CodexUnreadThreadReadResult
+    let officialReadBoundary: Date?
+
+    init(
+        result: TaskCompletionScanResult?,
+        unreadThreadRead: CodexUnreadThreadReadResult,
+        officialReadBoundary: Date? = nil
+    ) {
+        self.result = result
+        self.unreadThreadRead = unreadThreadRead
+        self.officialReadBoundary = officialReadBoundary
+    }
 }
 
 protocol TaskCompletionPollLoading: Sendable {
@@ -62,8 +91,25 @@ struct LiveTaskCompletionPollLoader: TaskCompletionPollLoading {
             codexHome: request.dataSource.codexHome
         )
         switch unreadThreadRead {
-        case .available:
-            return TaskCompletionPollOutput(result: nil, unreadThreadRead: unreadThreadRead)
+        case let .available(threadIDs):
+            let reactivationThreadIDs = request.suppressedOfficialThreadIDs.intersection(threadIDs)
+            guard !reactivationThreadIDs.isEmpty else {
+                return TaskCompletionPollOutput(
+                    result: nil,
+                    unreadThreadRead: unreadThreadRead,
+                    officialReadBoundary: request.pollStartedAt
+                )
+            }
+            let result = await scanner.scan(request: request)
+            return TaskCompletionPollOutput(
+                result: TaskCompletionScanResult(
+                    states: result.states,
+                    events: result.events.filter { reactivationThreadIDs.contains($0.threadID) },
+                    fileCount: result.fileCount
+                ),
+                unreadThreadRead: unreadThreadRead,
+                officialReadBoundary: request.pollStartedAt
+            )
         case .unavailable:
             let result = await scanner.scan(request: request)
             return TaskCompletionPollOutput(result: result, unreadThreadRead: unreadThreadRead)
@@ -171,12 +217,15 @@ final class TaskCompletionMonitor: ObservableObject {
 
     func refreshUnreadThreadStatus() {
         guard dataSource != nil else { return }
+        let officialReadBoundary = now()
         if let codexHome = dataSource?.codexHome {
             applyCodexUnreadRead(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome))
         }
 
         if hasCodexUnreadState {
-            prepareFallbackForOfficialAvailability()
+            if suppressedOfficialThreadIDs.isEmpty {
+                prepareFallbackForOfficialAvailability(boundary: officialReadBoundary)
+            }
         } else {
             completedTaskThreadIDs.removeAll()
         }
@@ -194,12 +243,29 @@ final class TaskCompletionMonitor: ObservableObject {
         persistReadBaseline()
         unreadThreadState = CodexUnreadThreadState()
         completedTaskThreadIDs.removeAll()
+        resetFallbackReactivationTracking(boundary: now())
         recomputeUnreadThreadCount()
         updateStatusText(fileCount: fileStates.isEmpty ? nil : fileStates.count)
     }
 
-    func applyForTesting(result: TaskCompletionScanResult?, unreadThreadRead: CodexUnreadThreadReadResult) {
-        apply(result, unreadThreadRead: unreadThreadRead)
+    func applyForTesting(
+        result: TaskCompletionScanResult?,
+        unreadThreadRead: CodexUnreadThreadReadResult,
+        officialReadBoundary: Date? = nil
+    ) {
+        apply(
+            result,
+            unreadThreadRead: unreadThreadRead,
+            officialReadBoundary: officialReadBoundary
+        )
+    }
+
+    func applyForTesting(output: TaskCompletionPollOutput) {
+        apply(
+            output.result,
+            unreadThreadRead: output.unreadThreadRead,
+            officialReadBoundary: output.officialReadBoundary
+        )
     }
 
     private func configureTimer() {
@@ -237,17 +303,23 @@ final class TaskCompletionMonitor: ObservableObject {
                       self.sourceIdentityGeneration == identityGeneration,
                       self.sourceBindingGeneration == bindingGeneration else { return }
                 self.pollTask = nil
-                self.apply(output.result, unreadThreadRead: output.unreadThreadRead)
+                self.apply(
+                    output.result,
+                    unreadThreadRead: output.unreadThreadRead,
+                    officialReadBoundary: output.officialReadBoundary ?? request.pollStartedAt
+                )
             }
         }
     }
 
     private func makePollRequest(dataSource: CodexDataSource) -> TaskCompletionPollRequest {
-        TaskCompletionPollRequest(
+        return TaskCompletionPollRequest(
             dataSource: dataSource,
             previousStates: fileStates,
             seedMode: !seeded,
-            seedCutoff: fallbackSeedCutoff
+            seedCutoff: fallbackSeedCutoff,
+            suppressedOfficialThreadIDs: suppressedOfficialThreadIDs,
+            pollStartedAt: now()
         )
     }
 
@@ -255,11 +327,15 @@ final class TaskCompletionMonitor: ObservableObject {
         makePollRequest(dataSource: dataSource)
     }
 
-    private func apply(_ result: TaskCompletionScanResult?, unreadThreadRead: CodexUnreadThreadReadResult) {
+    private func apply(
+        _ result: TaskCompletionScanResult?,
+        unreadThreadRead: CodexUnreadThreadReadResult,
+        officialReadBoundary: Date?
+    ) {
         applyCodexUnreadRead(unreadThreadRead)
 
         if hasCodexUnreadState, result == nil {
-            prepareFallbackForOfficialAvailability()
+            prepareFallbackForOfficialAvailability(boundary: officialReadBoundary ?? now())
         }
 
         if hasCodexUnreadState {
@@ -326,11 +402,20 @@ final class TaskCompletionMonitor: ObservableObject {
         }
     }
 
-    private func prepareFallbackForOfficialAvailability() {
+    private func prepareFallbackForOfficialAvailability(boundary: Date) {
+        resetFallbackReactivationTracking(boundary: boundary)
+        completedTaskThreadIDs.removeAll()
+    }
+
+    private func resetFallbackReactivationTracking(boundary: Date) {
         fileStates.removeAll()
         seeded = false
-        fallbackSeedCutoff = now()
-        completedTaskThreadIDs.removeAll()
+        fallbackSeedCutoff = boundary
+    }
+
+    private var suppressedOfficialThreadIDs: Set<String> {
+        guard hasCodexUnreadState else { return [] }
+        return officialUnreadThreadIDs.subtracting(unreadThreadState.threadIDs)
     }
 
     private func refreshActiveOfficialUnreadState() {

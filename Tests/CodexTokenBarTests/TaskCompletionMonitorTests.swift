@@ -304,10 +304,12 @@ final class TaskCompletionMonitorTests: XCTestCase {
             dataSource: source,
             previousStates: [:],
             seedMode: true,
-            seedCutoff: Date(timeIntervalSince1970: 100)
+            seedCutoff: Date(timeIntervalSince1970: 100),
+            suppressedOfficialThreadIDs: ["suppressed-thread"]
         )
 
         let emptyOfficial = await loader.load(request: request)
+        let scannerCallsAfterOfficialEmpty = await scanner.callCount()
         let populatedOfficial = await loader.load(request: request)
         let unavailable = await loader.load(request: request)
 
@@ -315,9 +317,77 @@ final class TaskCompletionMonitorTests: XCTestCase {
             return XCTFail("Expected empty official state to remain available")
         }
         XCTAssertTrue(emptyIDs.isEmpty)
+        XCTAssertEqual(scannerCallsAfterOfficialEmpty, 0)
         XCTAssertNil(emptyOfficial.result)
         XCTAssertNil(populatedOfficial.result)
         XCTAssertEqual(unavailable.result?.fileCount, 7)
+        let scannerCallCount = await scanner.callCount()
+        XCTAssertEqual(scannerCallCount, 1)
+    }
+
+    func testLiveLoaderAndMonitorReactivateSuppressedOfficialThreadThenStopScanning() async throws {
+        let codexHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TaskCompletionReactivation-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: codexHome) }
+        let sessionsRoot = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+        let source = CodexDataSource(codexHome: codexHome, origin: .userSelected)
+        let sessionFile = sessionsRoot.appendingPathComponent("reactivation.jsonl")
+        let threadID = "019eaaaa-0000-0000-0000-0000000000ee"
+        try writeScannerSessionMeta(threadID: threadID, to: sessionFile)
+        try writeOfficialUnreadThreadIDs([threadID], codexHome: codexHome)
+        try appendScannerCompletion(
+            UnreadCorrectnessCompletion(
+                expectedCanonicalID: "\(threadID):pre-read-turn",
+                threadID: threadID,
+                turnID: "pre-read-turn",
+                completedAtOffsetSeconds: 0,
+                title: "Pre-read completion"
+            ),
+            completedAt: 109,
+            to: sessionFile
+        )
+
+        let clock = MutableTaskCompletionClock(now: Date(timeIntervalSince1970: 100))
+        let scanner = CountingForwardingTaskCompletionScanner()
+        let loader = LiveTaskCompletionPollLoader(scanner: scanner)
+        let monitor = TaskCompletionMonitor(defaults: isolatedDefaults(), now: { clock.now })
+
+        let initialOutput = await loader.load(
+            request: monitor.pollRequestForTesting(dataSource: source)
+        )
+        monitor.applyForTesting(output: initialOutput)
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+
+        clock.now = Date(timeIntervalSince1970: 110)
+        monitor.markAllRead()
+        XCTAssertEqual(monitor.unreadThreadCount, 0)
+        let suppressedRequest = monitor.pollRequestForTesting(dataSource: source)
+        XCTAssertEqual(suppressedRequest.suppressedOfficialThreadIDs, [threadID])
+        XCTAssertTrue(suppressedRequest.seedMode)
+        XCTAssertEqual(suppressedRequest.seedCutoff, Date(timeIntervalSince1970: 110))
+
+        try appendScannerCompletion(
+            UnreadCorrectnessCompletion(
+                expectedCanonicalID: "\(threadID):reactivated-turn",
+                threadID: threadID,
+                turnID: "reactivated-turn",
+                completedAtOffsetSeconds: 0,
+                title: "Reactivated completion"
+            ),
+            completedAt: 111,
+            to: sessionFile
+        )
+        let reactivationOutput = await loader.load(request: suppressedRequest)
+        XCTAssertEqual(reactivationOutput.result?.events.map(\.id), ["\(threadID):reactivated-turn"])
+        monitor.applyForTesting(output: reactivationOutput)
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+
+        let normalRequest = monitor.pollRequestForTesting(dataSource: source)
+        XCTAssertTrue(normalRequest.suppressedOfficialThreadIDs.isEmpty)
+        let normalOutput = await loader.load(request: normalRequest)
+        XCTAssertNil(normalOutput.result)
+        monitor.applyForTesting(output: normalOutput)
         let scannerCallCount = await scanner.callCount()
         XCTAssertEqual(scannerCallCount, 1)
     }
@@ -343,10 +413,6 @@ final class TaskCompletionMonitorTests: XCTestCase {
             to: sessionFile
         )
 
-        let clock = MutableTaskCompletionClock(now: Date(timeIntervalSince1970: 200))
-        let monitor = TaskCompletionMonitor(defaults: isolatedDefaults(), now: { clock.now })
-        monitor.applyForTesting(result: nil, unreadThreadRead: .available([]))
-
         try appendScannerCompletion(
             UnreadCorrectnessCompletion(
                 expectedCanonicalID: "\(threadID):new-turn",
@@ -357,6 +423,16 @@ final class TaskCompletionMonitorTests: XCTestCase {
             ),
             completedAt: 201,
             to: sessionFile
+        )
+
+        let clock = MutableTaskCompletionClock(now: Date(timeIntervalSince1970: 200))
+        let monitor = TaskCompletionMonitor(defaults: isolatedDefaults(), now: { clock.now })
+        let officialReadRequest = monitor.pollRequestForTesting(dataSource: source)
+        clock.now = Date(timeIntervalSince1970: 250)
+        monitor.applyForTesting(
+            result: nil,
+            unreadThreadRead: .available([]),
+            officialReadBoundary: officialReadRequest.pollStartedAt
         )
 
         let firstFallbackRequest = monitor.pollRequestForTesting(dataSource: source)
@@ -471,6 +547,17 @@ final class TaskCompletionMonitorTests: XCTestCase {
         try handle.write(contentsOf: Data([10]))
     }
 
+    private func writeOfficialUnreadThreadIDs(_ threadIDs: [String], codexHome: URL) throws {
+        let unreadState: [String: Any] = [
+            "electron-persisted-atom-state": [
+                "unread-thread-ids-by-host-v1": ["local": threadIDs]
+            ]
+        ]
+        try JSONSerialization.data(withJSONObject: unreadState).write(
+            to: codexHome.appendingPathComponent(".codex-global-state.json")
+        )
+    }
+
     private func waitUntil(
         _ label: String,
         timeout: TimeInterval = 2,
@@ -545,6 +632,19 @@ private actor RecordingTaskCompletionScanner: TaskCompletionScanning {
 
     func callCount() -> Int {
         requests.count
+    }
+}
+
+private actor CountingForwardingTaskCompletionScanner: TaskCompletionScanning {
+    private var count = 0
+
+    func scan(request: TaskCompletionPollRequest) async -> TaskCompletionScanResult {
+        count += 1
+        return await LiveTaskCompletionScanner().scan(request: request)
+    }
+
+    func callCount() -> Int {
+        count
     }
 }
 
