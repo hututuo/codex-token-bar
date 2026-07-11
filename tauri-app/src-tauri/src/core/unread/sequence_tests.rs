@@ -1,12 +1,16 @@
 use super::recent_completion::{
     current_time_seconds, lookback_seconds, recent_completion_markers,
 };
-use super::{acknowledge_current_unread, read_unread_summary, read_unread_summary_at};
+use super::{
+    acknowledge_current_unread, read_unread_summary, read_unread_summary_at,
+    try_read_unread_summary, try_read_unread_summary_at_with_writer,
+};
 use serde::Deserialize;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Barrier};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -69,21 +73,129 @@ fn completion_rearm_persists_after_lookback_until_next_acknowledgement() {
     write_session_meta(&session, thread_id);
     write_unread_state(&root, &[thread_id.to_string()]);
 
-    assert_eq!(read_unread_summary_at(&root, now).count, 1);
+    assert_eq!(read_unread_summary_at(&root, now).unwrap().count, 1);
     assert_eq!(acknowledge_current_unread(&root).unwrap().count, 0);
 
     append_task_complete(&session, now + 1.0, "turn-rearm");
-    assert_eq!(read_unread_summary_at(&root, now + 1.0).count, 1);
+    assert_eq!(
+        read_unread_summary_at(&root, now + 1.0).unwrap().count,
+        1
+    );
     let persisted = fs::read_to_string(support.join("unread-acknowledgement.json")).unwrap();
     assert!(!persisted.contains(thread_id));
 
     let after_lookback = now + lookback_seconds() + 5.0;
-    assert_eq!(read_unread_summary_at(&root, after_lookback).count, 1);
+    assert_eq!(
+        read_unread_summary_at(&root, after_lookback)
+            .unwrap()
+            .count,
+        1
+    );
 
     assert_eq!(acknowledge_current_unread(&root).unwrap().count, 0);
-    assert_eq!(read_unread_summary_at(&root, after_lookback).count, 0);
+    assert_eq!(
+        read_unread_summary_at(&root, after_lookback)
+            .unwrap()
+            .count,
+        0
+    );
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn rearm_write_failure_returns_error_and_preserves_previous_file() {
+    let root = temp_root();
+    let support = root.join("tauri-support");
+    let sessions = root.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let _support_env = TauriSupportEnvGuard::new(&support);
+    let session = sessions.join("write-failure.jsonl");
+    let thread_id = "019eaaaa-0000-0000-0000-0000000000ee";
+    let now = current_time_seconds();
+    write_session_meta(&session, thread_id);
+    write_unread_state(&root, &[thread_id.to_string()]);
+    assert_eq!(acknowledge_current_unread(&root).unwrap().count, 0);
+    let acknowledgement_path = support.join("unread-acknowledgement.json");
+    let before = fs::read(&acknowledgement_path).unwrap();
+
+    append_task_complete(&session, now + 1.0, "turn-write-failure");
+    let error = try_read_unread_summary_at_with_writer(
+        &root,
+        now + 1.0,
+        &|_, _| Err("injected unread write failure".into()),
+    )
+    .unwrap_err();
+
+    assert!(error.contains("injected unread write failure"));
+    assert_eq!(fs::read(&acknowledgement_path).unwrap(), before);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn corrupt_acknowledgement_is_reported_and_never_overwritten() {
+    let root = temp_root();
+    let support = root.join("tauri-support");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&support).unwrap();
+    let _support_env = TauriSupportEnvGuard::new(&support);
+    let path = support.join("unread-acknowledgement.json");
+    write_unread_state(
+        &root,
+        &["019eaaaa-0000-0000-0000-0000000000ff".to_string()],
+    );
+    assert_eq!(read_unread_summary(&root).count, 1);
+    let corrupt = b"{not-json";
+    fs::write(&path, corrupt).unwrap();
+
+    assert!(try_read_unread_summary(&root).unwrap_err().contains("JSON"));
+    assert!(acknowledge_current_unread(&root).unwrap_err().contains("JSON"));
+    let retained = read_unread_summary(&root);
+    assert_eq!(retained.count, 1);
+    assert!(retained.source.ends_with("_stale"));
+    assert!(retained.detail.contains("保留上次可信结果"));
+    assert_eq!(fs::read(&path).unwrap(), corrupt);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn concurrent_home_acknowledgements_preserve_both_records() {
+    let support = temp_root();
+    let home_a = temp_root();
+    let home_b = temp_root();
+    fs::create_dir_all(&home_a).unwrap();
+    fs::create_dir_all(&home_b).unwrap();
+    let _support_env = TauriSupportEnvGuard::new(&support);
+    write_unread_state(
+        &home_a,
+        &["019eaaaa-0000-0000-0000-000000000101".to_string()],
+    );
+    write_unread_state(
+        &home_b,
+        &["019eaaaa-0000-0000-0000-000000000102".to_string()],
+    );
+    let barrier = Arc::new(Barrier::new(3));
+
+    let handles = [home_a.clone(), home_b.clone()].map(|home| {
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            acknowledge_current_unread(&home).unwrap();
+        })
+    });
+    barrier.wait();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    let data = fs::read(support.join("unread-acknowledgement.json")).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&data).unwrap();
+    let records = value["byCodexHome"].as_object().unwrap();
+    assert_eq!(records.len(), 2);
+
+    let _ = fs::remove_dir_all(support);
+    let _ = fs::remove_dir_all(home_a);
+    let _ = fs::remove_dir_all(home_b);
 }
 
 #[derive(Deserialize)]

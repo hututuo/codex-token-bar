@@ -8,9 +8,8 @@ import type {
 import {
   emptyFloatingPanelSnapshot,
   emptyLiveRateSnapshot,
-  emptyUnreadSummary,
 } from "./fallback";
-import { callCommand, callCommandOptional } from "./command";
+import { callCommand, callCommandOptional, callCommandStrict } from "./command";
 
 export function readLiveRateSnapshot(selectedThreadId?: string | null): Promise<LiveRateSnapshot> {
   return callCommand(
@@ -30,7 +29,7 @@ export function readFloatingPanelSnapshot(): Promise<FloatingPanelSnapshot> {
 }
 
 export function readUnreadSummary(): Promise<UnreadSummary> {
-  return callCommand("read_unread_summary", emptyUnreadSummary, undefined, 1_500);
+  return callCommandStrict<UnreadSummary>("read_unread_summary", undefined, 1_500);
 }
 
 export function acknowledgeUnreadSummary(

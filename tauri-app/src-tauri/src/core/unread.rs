@@ -2,8 +2,12 @@ use crate::core::app_paths;
 use crate::models::UnreadSummary;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 mod recent_completion;
 #[cfg(test)]
@@ -13,50 +17,99 @@ mod state;
 
 use state::read_unread_thread_ids;
 
-pub fn read_unread_summary(codex_home: &Path) -> UnreadSummary {
-    read_unread_summary_at(codex_home, recent_completion::current_time_seconds())
-}
+static ACKNOWLEDGEMENT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static TRUSTED_SUMMARIES: OnceLock<Mutex<HashMap<String, UnreadSummary>>> = OnceLock::new();
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn read_unread_summary_at(codex_home: &Path, now: f64) -> UnreadSummary {
-    let native_thread_ids = read_unread_thread_ids(codex_home);
-    let mut acknowledgement = read_acknowledgement_for_home(
-        codex_home,
-        native_thread_ids.as_ref(),
-        &HashSet::new(),
-    );
-    match native_thread_ids {
-        Some(thread_ids) => {
-            let completion_thread_ids = recent_completion::recent_completion_thread_ids_at(
-                codex_home,
-                &acknowledgement.completion_markers,
-                now,
-            );
-            let reactivated_thread_ids: HashSet<String> = completion_thread_ids
-                .intersection(&thread_ids)
-                .cloned()
-                .collect();
-            if !reactivated_thread_ids.is_empty() {
-                acknowledgement = read_acknowledgement_for_home(
-                    codex_home,
-                    Some(&thread_ids),
-                    &reactivated_thread_ids,
-                );
-            }
-            let mut active_ids: HashSet<String> = thread_ids
-                .difference(&acknowledgement.unread_thread_ids)
-                .cloned()
-                .collect();
-            active_ids.extend(completion_thread_ids.intersection(&thread_ids).cloned());
-            unread_state_summary(active_ids.len())
-        }
-        None => recent_completion::recent_completion_summary_at(
-            codex_home,
-            &acknowledgement.completion_markers,
-            now,
-        ),
+pub fn read_unread_summary(codex_home: &Path) -> UnreadSummary {
+    let source_scope_key = codex_home_key(codex_home);
+    match try_read_unread_summary(codex_home) {
+        Ok(summary) => summary,
+        Err(error) => retained_or_failed_summary(&source_scope_key, &error),
     }
 }
 
+pub fn try_read_unread_summary(codex_home: &Path) -> Result<UnreadSummary, String> {
+    let source_scope_key = codex_home_key(codex_home);
+    let summary = try_read_unread_summary_for_source_at(
+        codex_home,
+        &source_scope_key,
+        recent_completion::current_time_seconds(),
+        &write_acknowledgement_at,
+    )?;
+    remember_trusted_summary(&source_scope_key, &summary);
+    Ok(summary)
+}
+
+#[cfg(test)]
+fn read_unread_summary_at(codex_home: &Path, now: f64) -> Result<UnreadSummary, String> {
+    try_read_unread_summary_at_with_writer(codex_home, now, &write_acknowledgement_at)
+}
+
+#[cfg(test)]
+fn try_read_unread_summary_at_with_writer<W>(
+    codex_home: &Path,
+    now: f64,
+    writer: &W,
+) -> Result<UnreadSummary, String>
+where
+    W: Fn(&Path, &UnreadAcknowledgement) -> Result<(), String> + ?Sized,
+{
+    let source_scope_key = codex_home_key(codex_home);
+    try_read_unread_summary_for_source_at(codex_home, &source_scope_key, now, writer)
+}
+
+fn try_read_unread_summary_for_source_at<W>(
+    codex_home: &Path,
+    source_scope_key: &str,
+    now: f64,
+    writer: &W,
+) -> Result<UnreadSummary, String>
+where
+    W: Fn(&Path, &UnreadAcknowledgement) -> Result<(), String> + ?Sized,
+{
+    let native_thread_ids = read_unread_thread_ids(codex_home);
+    acknowledgement_transaction(writer, || Ok(()), |acknowledgement| {
+        let home_acknowledgement = acknowledgement
+            .by_codex_home
+            .entry(source_scope_key.to_string())
+            .or_default();
+        let previous = home_acknowledgement.clone();
+        let summary = match native_thread_ids.as_ref() {
+            Some(thread_ids) => {
+                home_acknowledgement
+                    .unread_thread_ids
+                    .retain(|thread_id| thread_ids.contains(thread_id));
+                let completion_thread_ids = recent_completion::recent_completion_thread_ids_at(
+                    codex_home,
+                    &home_acknowledgement.completion_markers,
+                    now,
+                );
+                let reactivated_thread_ids: HashSet<String> = completion_thread_ids
+                    .intersection(thread_ids)
+                    .cloned()
+                    .collect();
+                home_acknowledgement
+                    .unread_thread_ids
+                    .retain(|thread_id| !reactivated_thread_ids.contains(thread_id));
+                let mut active_ids: HashSet<String> = thread_ids
+                    .difference(&home_acknowledgement.unread_thread_ids)
+                    .cloned()
+                    .collect();
+                active_ids.extend(completion_thread_ids.intersection(thread_ids).cloned());
+                unread_state_summary(active_ids.len())
+            }
+            None => recent_completion::recent_completion_summary_at(
+                codex_home,
+                &home_acknowledgement.completion_markers,
+                now,
+            ),
+        };
+        Ok((summary, *home_acknowledgement != previous))
+    })
+}
+
+#[cfg(test)]
 pub fn acknowledge_current_unread(codex_home: &Path) -> Result<UnreadSummary, String> {
     let home_key = codex_home_key(codex_home);
     acknowledge_current_unread_for_source(codex_home, &home_key, || Ok(()))
@@ -69,26 +122,36 @@ pub fn acknowledge_current_unread_for_source(
 ) -> Result<UnreadSummary, String> {
     let completion_markers = recent_completion::recent_completion_markers(observation_home);
     let native_thread_ids = read_unread_thread_ids(observation_home);
-    validate_before_write()?;
-
-    let mut acknowledgement = read_acknowledgement();
-    let home_acknowledgement = acknowledgement
-        .by_codex_home
-        .entry(source_scope_key.to_string())
-        .or_default();
-    match native_thread_ids {
-        Some(thread_ids) => {
-            home_acknowledgement.unread_thread_ids.extend(thread_ids);
-            home_acknowledgement
-                .completion_markers
-                .extend(completion_markers);
-        }
-        None => home_acknowledgement
-            .completion_markers
-            .extend(completion_markers),
-    }
-    write_acknowledgement(&acknowledgement)?;
-    Ok(unread_state_summary(0))
+    let summary = acknowledgement_transaction(
+        &write_acknowledgement_at,
+        validate_before_write,
+        |acknowledgement| {
+            let home_acknowledgement = acknowledgement
+                .by_codex_home
+                .entry(source_scope_key.to_string())
+                .or_default();
+            let previous = home_acknowledgement.clone();
+            match native_thread_ids.as_ref() {
+                Some(thread_ids) => {
+                    home_acknowledgement
+                        .unread_thread_ids
+                        .extend(thread_ids.iter().cloned());
+                    home_acknowledgement
+                        .completion_markers
+                        .extend(completion_markers.iter().cloned());
+                }
+                None => home_acknowledgement
+                    .completion_markers
+                    .extend(completion_markers.iter().cloned()),
+            }
+            Ok((
+                unread_state_summary(0),
+                *home_acknowledgement != previous,
+            ))
+        },
+    )?;
+    remember_trusted_summary(source_scope_key, &summary);
+    Ok(summary)
 }
 
 fn unread_state_summary(count: usize) -> UnreadSummary {
@@ -117,7 +180,7 @@ struct UnreadAcknowledgement {
     by_codex_home: HashMap<String, HomeUnreadAcknowledgement>,
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HomeUnreadAcknowledgement {
     #[serde(default)]
@@ -126,52 +189,117 @@ struct HomeUnreadAcknowledgement {
     completion_markers: HashSet<String>,
 }
 
-fn read_acknowledgement_for_home(
-    codex_home: &Path,
-    native_thread_ids: Option<&HashSet<String>>,
-    reactivated_thread_ids: &HashSet<String>,
-) -> HomeUnreadAcknowledgement {
-    let mut acknowledgement = read_acknowledgement();
-    let home_key = codex_home_key(codex_home);
-    let Some(home_acknowledgement) = acknowledgement.by_codex_home.get_mut(&home_key) else {
-        return HomeUnreadAcknowledgement::default();
-    };
-
-    let previous_unread_thread_ids = home_acknowledgement.unread_thread_ids.clone();
-    if let Some(native_thread_ids) = native_thread_ids {
-        home_acknowledgement
-            .unread_thread_ids
-            .retain(|thread_id| native_thread_ids.contains(thread_id));
-    }
-    home_acknowledgement
-        .unread_thread_ids
-        .retain(|thread_id| !reactivated_thread_ids.contains(thread_id));
-    let result = home_acknowledgement.clone();
-    if result.unread_thread_ids != previous_unread_thread_ids {
-        let _ = write_acknowledgement(&acknowledgement);
-    }
-    result
-}
-
-fn read_acknowledgement() -> UnreadAcknowledgement {
-    let Some(path) = app_paths::unread_acknowledgement_path() else {
-        return UnreadAcknowledgement::default();
-    };
-    let Ok(data) = fs::read(path) else {
-        return UnreadAcknowledgement::default();
-    };
-    serde_json::from_slice(&data).unwrap_or_default()
-}
-
-fn write_acknowledgement(acknowledgement: &UnreadAcknowledgement) -> Result<(), String> {
+fn acknowledgement_transaction<T, W, V, F>(
+    writer: &W,
+    validate_before_write: V,
+    operation: F,
+) -> Result<T, String>
+where
+    W: Fn(&Path, &UnreadAcknowledgement) -> Result<(), String> + ?Sized,
+    V: FnOnce() -> Result<(), String>,
+    F: FnOnce(&mut UnreadAcknowledgement) -> Result<(T, bool), String>,
+{
+    let lock = ACKNOWLEDGEMENT_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock
+        .lock()
+        .map_err(|_| "未读基线事务锁已损坏".to_string())?;
     let Some(path) = app_paths::unread_acknowledgement_path() else {
         return Err("无法定位 Tauri 应用支持目录，不能记录未读基线".into());
     };
+    let mut acknowledgement = read_acknowledgement_at(&path)?;
+    let (result, changed) = operation(&mut acknowledgement)?;
+    if changed {
+        validate_before_write()?;
+        writer(&path, &acknowledgement)?;
+    }
+    Ok(result)
+}
+
+fn read_acknowledgement_at(path: &Path) -> Result<UnreadAcknowledgement, String> {
+    let data = match fs::read(path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(UnreadAcknowledgement::default());
+        }
+        Err(error) => {
+            return Err(format!("读取未读基线失败：{error}"));
+        }
+    };
+    serde_json::from_slice(&data).map_err(|error| format!("未读基线 JSON 损坏：{error}"))
+}
+
+fn write_acknowledgement_at(
+    path: &Path,
+    acknowledgement: &UnreadAcknowledgement,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        fs::create_dir_all(parent).map_err(|error| format!("创建未读基线目录失败：{error}"))?;
     }
     let data = serde_json::to_vec_pretty(acknowledgement).map_err(|error| error.to_string())?;
-    fs::write(path, data).map_err(|error| error.to_string())
+    let parent = path
+        .parent()
+        .ok_or_else(|| "未读基线路径缺少父目录".to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("unread-acknowledgement.json");
+    let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let temp_path = parent.join(format!(
+        ".{file_name}.tmp-{}-{sequence}-{timestamp}",
+        std::process::id(),
+    ));
+
+    let write_result = (|| {
+        let mut temp_file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .map_err(|error| format!("创建未读基线临时文件失败：{error}"))?;
+        temp_file
+            .write_all(&data)
+            .map_err(|error| format!("写入未读基线临时文件失败：{error}"))?;
+        temp_file
+            .sync_all()
+            .map_err(|error| format!("同步未读基线临时文件失败：{error}"))?;
+        fs::rename(&temp_path, path).map_err(|error| format!("替换未读基线失败：{error}"))?;
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("同步未读基线目录失败：{error}"))
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    write_result
+}
+
+fn remember_trusted_summary(source_scope_key: &str, summary: &UnreadSummary) {
+    let cache = TRUSTED_SUMMARIES.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(source_scope_key.to_string(), summary.clone());
+    }
+}
+
+fn retained_or_failed_summary(source_scope_key: &str, error: &str) -> UnreadSummary {
+    let cache = TRUSTED_SUMMARIES.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(summary) = guard.get(source_scope_key) {
+            let mut retained = summary.clone();
+            retained.detail = format!("{} · 读取失败，保留上次可信结果：{error}", retained.detail);
+            retained.source = format!("{}_stale", retained.source);
+            return retained;
+        }
+    }
+    UnreadSummary {
+        active: false,
+        count: 0,
+        label: "未读状态读取失败".into(),
+        detail: error.into(),
+        source: "unread_error".into(),
+    }
 }
 
 fn codex_home_key(codex_home: &Path) -> String {
