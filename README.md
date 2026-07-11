@@ -184,7 +184,15 @@ Windows Tauri 发布包：
 .\scripts\build_tauri_windows_release.ps1 -Version 0.7.2 -Arch both
 ```
 
-发布脚本会分别生成 Windows x64 / ARM64 NSIS 安装器、对应 `.sig` 更新签名、`latest-windows.json` 和 `SHA256SUMS-v0.7.2-windows.txt`。Windows 安装器当前未使用商业代码签名证书；`.sig` 只用于 Tauri 自动更新校验。
+Windows 脚本只生成 x64 / ARM64 NSIS 安装器和 `build-manifest.json`，不需要 updater 私钥。把产物传回 Mac 后签名并生成更新 metadata：
+
+```bash
+scripts/sign_tauri_windows_release.sh --version 0.7.2 --repo hututuo/codex-token-bar \
+  --release-dir dist/release/v0.7.2/windows \
+  --key-path "$HOME/.config/codex-token-bar/tauri-updater.key"
+```
+
+Mac 脚本生成对应 `.sig`、`latest-windows.json` 和 `SHA256SUMS-v0.7.2-windows.txt`。Windows 安装器当前未使用商业代码签名证书；`.sig` 只用于 Tauri 自动更新校验。
 
 ## License
 
@@ -361,7 +369,15 @@ Windows Tauri release assets:
 .\scripts\build_tauri_windows_release.ps1 -Version 0.7.2 -Arch both
 ```
 
-The Windows release script produces separate x64 / ARM64 NSIS installers, matching `.sig` updater signatures, `latest-windows.json`, and `SHA256SUMS-v0.7.2-windows.txt`. Windows installers are currently not signed with a commercial code-signing certificate; `.sig` is for Tauri updater verification.
+The Windows script produces only x64 / ARM64 NSIS installers and `build-manifest.json`; it does not need the updater private key. After transferring the assets back to the Mac, sign them and generate updater metadata:
+
+```bash
+scripts/sign_tauri_windows_release.sh --version 0.7.2 --repo hututuo/codex-token-bar \
+  --release-dir dist/release/v0.7.2/windows \
+  --key-path "$HOME/.config/codex-token-bar/tauri-updater.key"
+```
+
+The Mac script produces matching `.sig` files, `latest-windows.json`, and `SHA256SUMS-v0.7.2-windows.txt`. Windows installers are currently not signed with a commercial code-signing certificate; `.sig` is for Tauri updater verification.
 
 ## License
 
