@@ -7,7 +7,6 @@ import type {
   CodexHomeSourceToken,
   LiveRateStreamLease,
 } from "../types/dashboard";
-import { publishFloatingWindowVisibility } from "./desktopEvents";
 
 export type SurfaceCommandResult = PlatformCommandResult<boolean>;
 export type LiveRateStreamCommandResult = PlatformCommandResult<LiveRateStreamLease | null>;
@@ -24,39 +23,29 @@ export interface LiveRateStreamStartOptions {
 export function claimLiveRateOwnerSession(
   subscriberOwnerToken: string,
   ownerSessionEpoch: number,
+  sourceToken: CodexHomeSourceToken,
 ): Promise<boolean> {
   return invokePlatformCommand("claim_live_rate_owner_session", false, {
     subscriberOwnerToken,
     ownerSessionEpoch,
+    sourceToken,
   });
 }
 
-export async function showFloatingWindow(): Promise<boolean> {
-  const visible = await invokePlatformCommand("show_floating_window", false);
-  await publishFloatingWindowVisibility(visible);
-  return visible;
+export function showFloatingWindow(): Promise<boolean> {
+  return invokePlatformCommand("show_floating_window", false);
 }
 
-export async function showFloatingWindowCommand(): Promise<SurfaceCommandResult> {
-  const result = await invokePlatformCommandResult("show_floating_window", false);
-  if (result.ok) {
-    await publishFloatingWindowVisibility(result.value);
-  }
-  return result;
+export function showFloatingWindowCommand(): Promise<SurfaceCommandResult> {
+  return invokePlatformCommandResult("show_floating_window", false);
 }
 
-export async function hideFloatingWindow(): Promise<boolean> {
-  const visible = await invokePlatformCommand("hide_floating_window", true);
-  await publishFloatingWindowVisibility(visible);
-  return visible;
+export function hideFloatingWindow(): Promise<boolean> {
+  return invokePlatformCommand("hide_floating_window", true);
 }
 
-export async function hideFloatingWindowCommand(): Promise<SurfaceCommandResult> {
-  const result = await invokePlatformCommandResult("hide_floating_window", true);
-  if (result.ok) {
-    await publishFloatingWindowVisibility(result.value);
-  }
-  return result;
+export function hideFloatingWindowCommand(): Promise<SurfaceCommandResult> {
+  return invokePlatformCommandResult("hide_floating_window", true);
 }
 
 export function showStatusPanelWindow(): Promise<boolean> {

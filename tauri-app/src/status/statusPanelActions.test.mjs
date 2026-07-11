@@ -6,6 +6,8 @@ test("Status panel can acknowledge the same unread baseline as the main dashboar
   const source = await readFile(new URL("./StatusPanelApp.tsx", import.meta.url), "utf8");
 
   assert.match(source, /acknowledgeUnreadSummary/);
+  assert.match(source, /acknowledgeUnreadSummary\(acknowledgedSourceToken\)/);
+  assert.match(source, /sameCodexHomeSourceToken\(sourceTokenRef\.current, acknowledgedSourceToken\)/);
   assert.match(source, /publishUnreadSummaryChanged/);
   assert.match(source, /onUnreadSummaryChanged/);
   assert.match(source, /标记已读/);

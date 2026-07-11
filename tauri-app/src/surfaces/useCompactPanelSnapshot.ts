@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { emptyFloatingPanelSnapshot } from "../api/fallback";
 import { readUsageSummarySnapshot } from "../api/dashboardClient";
 import { readLiveRateSnapshotStrict } from "../api/liveClient";
@@ -9,6 +9,7 @@ import {
   tryCreateLiveRateOwnerSession,
 } from "../state/liveRateLease";
 import type {
+  CodexHomeSourceToken,
   FloatingPanelSnapshot,
   LiveRateSnapshot,
   UnreadSummary,
@@ -21,25 +22,43 @@ import {
 } from "../utils/usageRefreshCadence";
 import {
   compactSnapshotForSurfaceActivity,
-  disabledFloatingLiveSnapshot,
   floatingSnapshotForLiveRate,
   liveRateStreamStartFailureSnapshot,
   mergeFloatingUsageSummary,
   preserveFloatingUsageSummary,
-  resetFloatingUsageSummary,
-  shouldResetCompactUsageSummarySource,
 } from "./compactPanelSnapshotModel";
 import {
   createCompactLiveRateAttemptRunner,
   type CompactLiveRateAttemptHandle,
 } from "./compactLiveRateAttempt";
+import { codexHomeSourceTokenKey } from "./useCompactPanelSource";
 
 interface CompactPanelSnapshotOptions {
   active: boolean;
   liveRateEnabled: boolean;
   liveRateOwnerToken: string;
-  sourceKey?: string | null;
+  sourceToken: CodexHomeSourceToken | null;
 }
+
+interface CompactPanelSnapshotDependencies {
+  platform: Pick<typeof desktopPlatform,
+    | "claimLiveRateOwnerSession"
+    | "onLiveRateSnapshot"
+    | "onUnreadSummaryChanged"
+    | "startLiveRateStreamCommand"
+    | "stopLiveRateStream"
+  >;
+  readInitialLiveRate: typeof readLiveRateSnapshotStrict;
+  readUsageSummary: (
+    sourceToken: CodexHomeSourceToken,
+  ) => Promise<UsageSummarySnapshot | null>;
+}
+
+const DEFAULT_SNAPSHOT_DEPENDENCIES: CompactPanelSnapshotDependencies = {
+  platform: desktopPlatform,
+  readInitialLiveRate: readLiveRateSnapshotStrict,
+  readUsageSummary: () => readUsageSummarySnapshot(),
+};
 
 const COMPACT_USAGE_SUMMARY_REFRESH_INTERVAL_MS = 60_000;
 
@@ -47,13 +66,16 @@ export function useCompactPanelSnapshot({
   active,
   liveRateEnabled,
   liveRateOwnerToken,
-  sourceKey = null,
-}: CompactPanelSnapshotOptions): FloatingPanelSnapshot {
+  sourceToken,
+}: CompactPanelSnapshotOptions,
+dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
+): FloatingPanelSnapshot {
+  const sourceKey = codexHomeSourceTokenKey(sourceToken);
   const [rawSnapshot, setRawSnapshot] = useState<FloatingPanelSnapshot>(emptyFloatingPanelSnapshot);
   const [lastLiveActivityAtMs, setLastLiveActivityAtMs] = useState(0);
   const lastLiveActivityAtMsRef = useRef(0);
   const usageSummaryRef = useRef<UsageSummarySnapshot | null>(null);
-  const usageSummarySourceKeyRef = useRef<string | null>(sourceKey);
+  const sourceKeyRef = useRef<string | null>(sourceKey);
   const leaseControllerRef = useRef<LiveRateLeaseController | null | undefined>(undefined);
   const liveRateAttemptRunnerRef = useRef(createCompactLiveRateAttemptRunner());
   let leaseController = leaseControllerRef.current;
@@ -62,7 +84,7 @@ export function useCompactPanelSnapshot({
     leaseController = ownerSession === null
       ? null
       : createLiveRateLeaseController((leaseId) => {
-          void desktopPlatform.stopLiveRateStream(leaseId);
+          void dependencies.platform.stopLiveRateStream(leaseId);
         }, ownerSession);
     leaseControllerRef.current = leaseController;
   }
@@ -82,38 +104,34 @@ export function useCompactPanelSnapshot({
     });
   }, []);
 
-  useEffect(() => {
-    if (!active) {
-      return;
-    }
-    if (shouldResetCompactUsageSummarySource(
-      usageSummarySourceKeyRef.current,
-      sourceKey,
-      usageSummaryRef.current !== null,
-    )) {
+  useLayoutEffect(() => {
+    if (sourceKeyRef.current !== sourceKey) {
+      sourceKeyRef.current = sourceKey;
       usageSummaryRef.current = null;
-      setRawSnapshot(resetFloatingUsageSummary);
+      lastLiveActivityAtMsRef.current = 0;
+      setLastLiveActivityAtMs(0);
+      setRawSnapshot(emptyFloatingPanelSnapshot);
     }
-    usageSummarySourceKeyRef.current = sourceKey;
-  }, [active, sourceKey]);
+  }, [sourceKey]);
 
   useEffect(() => {
-    if (!active) {
+    if (!active || sourceToken === null || sourceKey === null) {
       lastLiveActivityAtMsRef.current = 0;
       setLastLiveActivityAtMs(0);
       return;
     }
 
     let cancelled = false;
+    const requestSourceKey = sourceKey;
+    const requestSourceToken = sourceToken;
     const refreshUsageSummary = async () => {
-      const summary = await readUsageSummarySnapshot();
-      if (cancelled) {
+      const summary = await dependencies.readUsageSummary(requestSourceToken);
+      if (cancelled || sourceKeyRef.current !== requestSourceKey) {
         return;
       }
 
       if (summary) {
         usageSummaryRef.current = summary;
-        usageSummarySourceKeyRef.current = sourceKey;
         setRawSnapshot((current) => mergeFloatingUsageSummary(current, summary));
         return;
       }
@@ -132,7 +150,7 @@ export function useCompactPanelSnapshot({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [active, lastLiveActivityAtMs, sourceKey]);
+  }, [active, dependencies, lastLiveActivityAtMs, sourceKey, sourceToken]);
 
   useEffect(() => {
     if (lastLiveActivityAtMs <= 0) {
@@ -159,7 +177,7 @@ export function useCompactPanelSnapshot({
   }, [lastLiveActivityAtMs]);
 
   useEffect(() => {
-    if (!active) {
+    if (!active || sourceToken === null || sourceKey === null) {
       lastLiveActivityAtMsRef.current = 0;
       setLastLiveActivityAtMs(0);
       setRawSnapshot((current) => compactSnapshotForSurfaceActivity(
@@ -182,6 +200,10 @@ export function useCompactPanelSnapshot({
 
     let cancelled = false;
     let unlisten: (() => void) | null = null;
+    const requestSourceKey = sourceKey;
+    const sourceIsCurrent = () => (
+      !cancelled && sourceKeyRef.current === requestSourceKey
+    );
 
     if (leaseController === null) {
       setRawSnapshot(floatingSnapshotForLiveRate(
@@ -193,8 +215,8 @@ export function useCompactPanelSnapshot({
     let leaseRequest: ReturnType<LiveRateLeaseController["begin"]> | null = null;
     let attempt: CompactLiveRateAttemptHandle | null = null;
 
-    void desktopPlatform.onLiveRateSnapshot((liveRate) => {
-      if (!cancelled) {
+    void dependencies.platform.onLiveRateSnapshot((liveRate) => {
+      if (sourceIsCurrent()) {
         attempt?.noteExternalSuccess();
         markLiveUsageActivity(liveRate);
         setRawSnapshot(floatingSnapshotForLiveRate(liveRate, usageSummaryRef.current));
@@ -210,20 +232,21 @@ export function useCompactPanelSnapshot({
     attempt = liveRateAttemptRunnerRef.current.start({
       async start() {
         leaseRequest = leaseController.begin();
-        const claimed = await desktopPlatform.claimLiveRateOwnerSession(
+        const claimed = await dependencies.platform.claimLiveRateOwnerSession(
           leaseRequest.ownerToken,
           leaseRequest.ownerSessionEpoch,
+          sourceToken,
         );
-        if (!claimed) {
+        if (!claimed || !sourceIsCurrent()) {
           return { ok: false, accepted: false, error: "实时速率流暂不可用" };
         }
-        const result = await desktopPlatform.startLiveRateStreamCommand({
+        const result = await dependencies.platform.startLiveRateStreamCommand({
           selectedThreadId: null,
           controlsSelectedThread: false,
           subscriberOwnerToken: leaseRequest.ownerToken,
           ownerSessionEpoch: leaseRequest.ownerSessionEpoch,
           ownerGeneration: leaseRequest.ownerGeneration,
-          sourceToken: null,
+          sourceToken,
         });
         if (!result.ok || result.value === null) {
           return {
@@ -238,12 +261,18 @@ export function useCompactPanelSnapshot({
         leaseRequest?.cancel();
         leaseRequest = null;
       },
-      readInitial: () => readLiveRateSnapshotStrict(null),
+      readInitial: () => dependencies.readInitialLiveRate(null, sourceToken),
       publishSnapshot(liveRate) {
+        if (!sourceIsCurrent()) {
+          return;
+        }
         markLiveUsageActivity(liveRate);
         setRawSnapshot(floatingSnapshotForLiveRate(liveRate, usageSummaryRef.current));
       },
       publishFailure(message) {
+        if (!sourceIsCurrent()) {
+          return;
+        }
         setRawSnapshot(floatingSnapshotForLiveRate(
           liveRateStreamStartFailureSnapshot(message),
           usageSummaryRef.current,
@@ -256,15 +285,24 @@ export function useCompactPanelSnapshot({
       unlisten?.();
       attempt?.cancel();
     };
-  }, [active, liveRateEnabled, liveRateOwnerToken, markLiveUsageActivity, sourceKey]);
+  }, [
+    active,
+    dependencies,
+    liveRateEnabled,
+    liveRateOwnerToken,
+    markLiveUsageActivity,
+    sourceKey,
+    sourceToken,
+  ]);
 
   useEffect(() => {
-    if (!active || !liveRateEnabled) {
+    if (!active || !liveRateEnabled || sourceKey === null) {
       return;
     }
 
     let cancelled = false;
     let unlisten: (() => void) | null = null;
+    const requestSourceKey = sourceKey;
     const applyUnreadSummary = (summary: UnreadSummary) => {
       setRawSnapshot((current) => ({
         ...current,
@@ -273,8 +311,8 @@ export function useCompactPanelSnapshot({
       }));
     };
 
-    void desktopPlatform.onUnreadSummaryChanged((summary) => {
-      if (!cancelled) {
+    void dependencies.platform.onUnreadSummaryChanged((summary) => {
+      if (!cancelled && sourceKeyRef.current === requestSourceKey) {
         applyUnreadSummary(summary);
       }
     }).then((listener) => {
@@ -289,7 +327,7 @@ export function useCompactPanelSnapshot({
       cancelled = true;
       unlisten?.();
     };
-  }, [active, liveRateEnabled]);
+  }, [active, dependencies, liveRateEnabled, sourceKey]);
 
   return rawSnapshot;
 }

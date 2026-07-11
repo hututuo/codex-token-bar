@@ -8,7 +8,6 @@ import {
   liveRateStreamStartFailureSnapshot,
   preserveFloatingUsageSummary,
   compactSnapshotForSurfaceActivity,
-  shouldResetCompactUsageSummarySource,
 } from "./compactPanelSnapshotModel.ts";
 
 test("compact panel keeps usage summary raw state when live rate is disabled", () => {
@@ -139,14 +138,6 @@ test("initial compact panel still waits when no trusted summary exists", () => {
   assert.equal(snapshot.totalTokensLabel, "总 待读取");
   assert.equal(snapshot.todayTokensLabel, "今 待读取");
   assert.equal(snapshot.requestsLabel, "次 待读取");
-});
-
-test("compact panel resets trusted usage summary when Codex Home source changes", () => {
-  assert.equal(shouldResetCompactUsageSummarySource("/Users/a/.codex", "/Users/a/.codex", true), false);
-  assert.equal(shouldResetCompactUsageSummarySource("/Users/a/.codex", "/Users/b/.codex", true), true);
-  assert.equal(shouldResetCompactUsageSummarySource(null, "/Users/b/.codex", true), true);
-  assert.equal(shouldResetCompactUsageSummarySource(null, "/Users/b/.codex", false), false);
-  assert.equal(shouldResetCompactUsageSummarySource("/Users/a/.codex", null, true), false);
 });
 
 test("compact panel keeps failure marker separate from untrusted live-rate totals", () => {

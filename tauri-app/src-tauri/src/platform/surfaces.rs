@@ -8,7 +8,7 @@ use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     webview::PageLoadEvent,
-    Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
@@ -18,6 +18,7 @@ const FLOATING_WINDOW_MIN_HEIGHT: f64 = 88.0;
 const FLOATING_WINDOW_DEFAULT_HEIGHT: f64 = 112.0;
 const FLOATING_WINDOW_MIN_SCALE: f64 = 0.9;
 const FLOATING_WINDOW_MAX_SCALE: f64 = 1.38;
+const FLOATING_WINDOW_VISIBILITY_CHANGED_EVENT: &str = "floating-window-visibility-changed";
 const DASHBOARD_WINDOW_WIDTH: f64 = 1180.0;
 const DASHBOARD_WINDOW_HEIGHT: f64 = 860.0;
 const DASHBOARD_WINDOW_MIN_WIDTH: f64 = 960.0;
@@ -109,24 +110,47 @@ pub fn show_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {
     let window = app
         .get_webview_window("floating")
         .ok_or_else(|| "floating window is not available".to_string())?;
-    window.show().map_err(|error| {
+    let show_result = window.show().map_err(|error| {
         let message = error.to_string();
         startup_trace::mark(&format!("floating window show failed: {message}"));
         message
+    });
+    let visible = finish_floating_visibility_change(show_result, true, |visible| {
+        publish_floating_window_visibility(app, visible);
     })?;
     if let Err(error) = window.set_always_on_top(true) {
         startup_trace::mark(&format!("floating window always-on-top skipped: {error}"));
     }
     startup_trace::mark("floating window show end");
-    Ok(true)
+    Ok(visible)
 }
 
 pub fn hide_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {
     let Some(window) = app.get_webview_window("floating") else {
         return Ok(false);
     };
-    window.hide().map_err(|error| error.to_string())?;
-    Ok(false)
+    let hide_result = window.hide().map_err(|error| error.to_string());
+    finish_floating_visibility_change(hide_result, false, |visible| {
+        publish_floating_window_visibility(app, visible);
+    })
+}
+
+fn finish_floating_visibility_change(
+    operation: Result<(), String>,
+    visible: bool,
+    publish: impl FnOnce(bool),
+) -> Result<bool, String> {
+    operation?;
+    publish(visible);
+    Ok(visible)
+}
+
+fn publish_floating_window_visibility(app: &tauri::AppHandle, visible: bool) {
+    if let Err(error) = app.emit(FLOATING_WINDOW_VISIBILITY_CHANGED_EVENT, visible) {
+        startup_trace::mark(&format!(
+            "floating window visibility event skipped: {error}"
+        ));
+    }
 }
 
 pub fn show_dashboard_window(app: &tauri::AppHandle) -> Result<bool, String> {
@@ -630,5 +654,25 @@ mod tests {
         assert_eq!(FLOATING_WINDOW_MIN_HEIGHT, 88.0);
         assert_eq!(FLOATING_WINDOW_DEFAULT_HEIGHT, 112.0);
         assert!(FLOATING_WINDOW_DEFAULT_HEIGHT * FLOATING_WINDOW_MAX_SCALE >= 112.0 * 1.38);
+    }
+
+    #[test]
+    fn native_visibility_only_publishes_after_successful_window_operation() {
+        let mut published = Vec::new();
+        let visible = finish_floating_visibility_change(Ok(()), true, |value| {
+            published.push(value);
+        })
+        .expect("successful show");
+        assert!(visible);
+        assert_eq!(published, vec![true]);
+
+        let error = finish_floating_visibility_change(
+            Err("hide failed".to_string()),
+            false,
+            |value| published.push(value),
+        )
+        .expect_err("failed hide");
+        assert_eq!(error, "hide failed");
+        assert_eq!(published, vec![true]);
     }
 }

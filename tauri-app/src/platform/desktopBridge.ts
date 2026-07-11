@@ -5,6 +5,10 @@ import { isTauriRuntimeAvailable, withTimeout } from "./runtime";
 
 export type Unlisten = () => void;
 
+export type EventSubscriptionResult =
+  | { ok: true; unlisten: Unlisten }
+  | { ok: false; error: string };
+
 const PLATFORM_COMMAND_TIMEOUT_MS = 2_000;
 
 export type PlatformCommandResult<T> =
@@ -78,17 +82,25 @@ export async function listenToEvent<T = void>(
   eventName: string,
   handler: (payload: T) => void,
 ): Promise<Unlisten> {
+  const result = await listenToEventResult(eventName, handler);
+  return result.ok ? result.unlisten : () => {};
+}
+
+export async function listenToEventResult<T = void>(
+  eventName: string,
+  handler: (payload: T) => void,
+): Promise<EventSubscriptionResult> {
   if (!isTauriRuntimeAvailable()) {
-    return () => {};
+    return { ok: false, error: "Tauri runtime is not available" };
   }
 
   try {
     const unlisten = await listen<T>(eventName, ({ payload }) => handler(payload));
     clearPlatformFailure(`listen:${eventName}`);
-    return unlisten;
+    return { ok: true, unlisten };
   } catch (error) {
     warnPlatformFailure(`listen:${eventName}`, error);
-    return () => {};
+    return { ok: false, error: platformErrorMessage(error) };
   }
 }
 

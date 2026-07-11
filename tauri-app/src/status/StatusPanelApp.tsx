@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { acknowledgeUnreadSummary, readAppSettings } from "../api/client";
 import { formatLiveRateValue, rateFillStyle } from "../components/liveRate/rateDisplay";
@@ -10,8 +10,16 @@ import { floatingStandaloneStatusText } from "../floating/floatingPanelLabels";
 import { desktopPlatform } from "../platform/desktop";
 import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS, sanitizeQuotaRefreshIntervalMs } from "../settings/quotaRefreshCadence";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
+import {
+  sameCodexHomeSourceToken,
+  useCompactPanelSource,
+} from "../surfaces/useCompactPanelSource";
 import { statusPanelIsActive } from "../surfaces/surfaceLifecycle";
-import type { FloatingWindowSettings, UnreadSummary } from "../types/dashboard";
+import type {
+  CodexHomeSourceToken,
+  FloatingWindowSettings,
+  UnreadSummary,
+} from "../types/dashboard";
 import { StatusQuotaProjection } from "./StatusQuotaProjection";
 
 export function StatusPanelApp() {
@@ -20,15 +28,21 @@ export function StatusPanelApp() {
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   const [acknowledgedUnreadSummary, setAcknowledgedUnreadSummary] = useState<UnreadSummary | null>(null);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
-  const [codexHomeKey, setCodexHomeKey] = useState<string | null>(null);
+  const sourceToken = useCompactPanelSource();
+  const sourceTokenRef = useRef<CodexHomeSourceToken | null>(sourceToken);
   const { snapshot, quota } = useCompactPanelData({
     active,
     liveRateEnabled,
     liveRateOwnerToken: "status-live-rate",
     quotaInitialDelayMs: 0,
     quotaIntervalMs: quotaRefreshIntervalMs,
-    sourceKey: codexHomeKey,
+    sourceToken,
   });
+
+  useLayoutEffect(() => {
+    sourceTokenRef.current = sourceToken;
+    setAcknowledgedUnreadSummary(null);
+  }, [sourceToken]);
 
   useEffect(() => {
     document.documentElement.classList.add("status-document");
@@ -46,7 +60,6 @@ export function StatusPanelApp() {
     let unsubscribe: (() => void) | null = null;
     let unsubscribeDisplay: (() => void) | null = null;
     let unsubscribeAppSettings: (() => void) | null = null;
-    let unsubscribeUnreadSummary: (() => void) | null = null;
 
     void desktopPlatform.onFloatingSettingsChanged((payload) => {
       setSettings(sanitizeFloatingSettings(payload));
@@ -70,23 +83,12 @@ export function StatusPanelApp() {
 
     void desktopPlatform.onAppSettingsChanged((payload) => {
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(payload.quotaRefreshIntervalMs));
-      setCodexHomeKey(payload.codexHome);
     }).then((handler) => {
       if (disposed) {
         handler();
         return;
       }
       unsubscribeAppSettings = handler;
-    });
-
-    void desktopPlatform.onUnreadSummaryChanged((payload) => {
-      setAcknowledgedUnreadSummary(payload);
-    }).then((handler) => {
-      if (disposed) {
-        handler();
-        return;
-      }
-      unsubscribeUnreadSummary = handler;
     });
 
     void readAppSettings().then((snapshot) => {
@@ -97,7 +99,6 @@ export function StatusPanelApp() {
         setLiveRateEnabled(snapshot.displaySurfaces.liveRateEnabled);
       }
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(snapshot?.quotaRefreshIntervalMs));
-      setCodexHomeKey(snapshot?.codexHome ?? null);
     });
 
     return () => {
@@ -105,9 +106,34 @@ export function StatusPanelApp() {
       unsubscribe?.();
       unsubscribeDisplay?.();
       unsubscribeAppSettings?.();
-      unsubscribeUnreadSummary?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (sourceToken === null) {
+      return;
+    }
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    const listenerSourceToken = sourceToken;
+
+    void desktopPlatform.onUnreadSummaryChanged((payload) => {
+      if (!disposed && sameCodexHomeSourceToken(sourceTokenRef.current, listenerSourceToken)) {
+        setAcknowledgedUnreadSummary(payload);
+      }
+    }).then((handler) => {
+      if (disposed) {
+        handler();
+      } else {
+        unlisten = handler;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [sourceToken]);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -153,8 +179,15 @@ export function StatusPanelApp() {
   }
 
   function acknowledgeUnread() {
-    void acknowledgeUnreadSummary().then((summary) => {
-      if (summary === null) {
+    const acknowledgedSourceToken = sourceTokenRef.current;
+    if (acknowledgedSourceToken === null) {
+      return;
+    }
+    void acknowledgeUnreadSummary(acknowledgedSourceToken).then((summary) => {
+      if (
+        summary === null
+        || !sameCodexHomeSourceToken(sourceTokenRef.current, acknowledgedSourceToken)
+      ) {
         return;
       }
       setAcknowledgedUnreadSummary(summary);

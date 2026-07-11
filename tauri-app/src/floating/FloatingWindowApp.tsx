@@ -9,6 +9,7 @@ import {
   reduceFloatingSurfaceLifecycle,
 } from "../surfaces/surfaceLifecycle";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
+import { useCompactPanelSource } from "../surfaces/useCompactPanelSource";
 import { floatingContentHeight } from "./floatingContent";
 import {
   FLOATING_BASE_WIDTH,
@@ -27,14 +28,14 @@ export function FloatingWindowApp() {
   );
   const [liveRateEnabled, setLiveRateEnabled] = useState(true);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
-  const [codexHomeKey, setCodexHomeKey] = useState<string | null>(null);
+  const sourceToken = useCompactPanelSource();
   const { snapshot } = useCompactPanelData({
     active: surfaceLifecycle.active,
     liveRateEnabled,
     liveRateOwnerToken: "floating-live-rate",
     quotaInitialDelayMs: 0,
     quotaIntervalMs: quotaRefreshIntervalMs,
-    sourceKey: codexHomeKey,
+    sourceToken,
   });
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   const radarSnapshot = useFloatingRadar(surfaceLifecycle.active);
@@ -119,7 +120,6 @@ export function FloatingWindowApp() {
 
     void desktopPlatform.onAppSettingsChanged((payload) => {
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(payload.quotaRefreshIntervalMs));
-      setCodexHomeKey(payload.codexHome);
       dispatchSurfaceLifecycle({
         type: "enabled",
         value: payload.displaySurfaces.floatingWindowEnabled,
@@ -152,7 +152,6 @@ export function FloatingWindowApp() {
           value: settings.displaySurfaces.floatingWindowEnabled,
         });
         setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
-        setCodexHomeKey(settings.codexHome);
       }
     });
 
@@ -181,7 +180,6 @@ export function FloatingWindowApp() {
 
   function closeFloatingWindow() {
     void desktopPlatform.hideFloatingWindow().then((visible) => {
-      dispatchSurfaceLifecycle({ type: "visible", value: Boolean(visible) });
       if (!visible) {
         void desktopPlatform.notifyFloatingWindowHidden();
       }

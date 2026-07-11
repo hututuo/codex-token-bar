@@ -1,40 +1,54 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { readAccountQuota } from "../api/client";
 import { emptyAccountQuotaBundle } from "../api/fallback";
-import type { AccountQuotaBundle } from "../types/dashboard";
+import type { AccountQuotaBundle, CodexHomeSourceToken } from "../types/dashboard";
 import { nextQuotaResetRefreshDelayMs } from "../utils/quotaRefresh";
 import { useWakeRefresh } from "../utils/useWakeRefresh";
+import { codexHomeSourceTokenKey } from "./useCompactPanelSource";
 
 interface CompactPanelQuotaOptions {
   active: boolean;
   enabled: boolean;
   initialDelayMs: number;
   intervalMs: number;
+  sourceToken: CodexHomeSourceToken | null;
 }
 
-type QuotaReader = typeof readAccountQuota;
+type QuotaReader = (
+  forceRefresh: boolean,
+  sourceToken: CodexHomeSourceToken,
+) => ReturnType<typeof readAccountQuota>;
+
+const defaultQuotaReader: QuotaReader = (forceRefresh) => readAccountQuota(forceRefresh);
 
 export function useCompactPanelQuota({
   active,
   enabled,
   initialDelayMs,
   intervalMs,
-}: CompactPanelQuotaOptions, readQuota: QuotaReader = readAccountQuota): AccountQuotaBundle {
+  sourceToken,
+}: CompactPanelQuotaOptions, readQuota: QuotaReader = defaultQuotaReader): AccountQuotaBundle {
+  const sourceKey = codexHomeSourceTokenKey(sourceToken);
   const [quota, setQuota] = useState<AccountQuotaBundle>(() => emptyAccountQuotaBundle());
   const inFlightGeneration = useRef<number | null>(null);
-  const lifecycleRef = useRef({ active, enabled, generation: 0 });
+  const lifecycleRef = useRef({ active, enabled, generation: 0, sourceKey });
   const mounted = useRef(true);
 
   useLayoutEffect(() => {
     const current = lifecycleRef.current;
+    const sourceChanged = current.sourceKey !== sourceKey;
     lifecycleRef.current = {
       active,
       enabled,
-      generation: current.active === active && current.enabled === enabled
+      generation: current.active === active && current.enabled === enabled && !sourceChanged
         ? current.generation
         : current.generation + 1,
+      sourceKey,
     };
-  }, [active, enabled]);
+    if (sourceChanged) {
+      setQuota(emptyAccountQuotaBundle());
+    }
+  }, [active, enabled, sourceKey]);
 
   useEffect(() => {
     mounted.current = true;
@@ -48,23 +62,27 @@ export function useCompactPanelQuota({
     if (
       !active
       || !enabled
+      || sourceToken === null
       || !lifecycle.active
       || !lifecycle.enabled
+      || lifecycle.sourceKey === null
       || inFlightGeneration.current === lifecycle.generation
     ) {
       return;
     }
 
     const requestGeneration = lifecycle.generation;
+    const requestSourceKey = lifecycle.sourceKey;
     inFlightGeneration.current = requestGeneration;
     try {
-      const next = await readQuota(forceRefresh);
+      const next = await readQuota(forceRefresh, sourceToken);
       const current = lifecycleRef.current;
       if (
         mounted.current
         && current.active
         && current.enabled
         && current.generation === requestGeneration
+        && current.sourceKey === requestSourceKey
         && next !== null
       ) {
         setQuota(next);
@@ -74,7 +92,7 @@ export function useCompactPanelQuota({
         inFlightGeneration.current = null;
       }
     }
-  }, [active, enabled, readQuota]);
+  }, [active, enabled, readQuota, sourceToken]);
 
   useEffect(() => {
     if (!active || !enabled) {

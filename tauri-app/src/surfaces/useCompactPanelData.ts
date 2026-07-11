@@ -1,5 +1,9 @@
 import { useMemo } from "react";
-import type { AccountQuotaBundle, FloatingPanelSnapshot } from "../types/dashboard";
+import type {
+  AccountQuotaBundle,
+  CodexHomeSourceToken,
+  FloatingPanelSnapshot,
+} from "../types/dashboard";
 import { compactQuotaLabel } from "../utils/quota";
 import {
   compactFloatingPaceLabel,
@@ -16,7 +20,7 @@ interface CompactPanelDataOptions {
   quotaEnabled?: boolean;
   quotaInitialDelayMs?: number;
   quotaIntervalMs?: number;
-  sourceKey?: string | null;
+  sourceToken?: CodexHomeSourceToken | null;
 }
 
 export interface CompactPanelData {
@@ -39,19 +43,21 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
   const quotaEnabled = options.quotaEnabled ?? true;
   const quotaInitialDelayMs = options.quotaInitialDelayMs ?? DEFAULT_QUOTA_INITIAL_DELAY_MS;
   const quotaIntervalMs = options.quotaIntervalMs ?? DEFAULT_QUOTA_INTERVAL_MS;
-  const sourceKey = options.sourceKey ?? null;
+  const sourceToken = options.sourceToken ?? null;
+  const sourceActive = active && sourceToken !== null;
 
   const rawSnapshot = useCompactPanelSnapshot({
-    active,
+    active: sourceActive,
     liveRateEnabled,
     liveRateOwnerToken,
-    sourceKey,
+    sourceToken,
   });
   const quota = useCompactPanelQuota({
-    active,
+    active: sourceActive,
     enabled: quotaEnabled,
     initialDelayMs: quotaInitialDelayMs,
     intervalMs: quotaIntervalMs,
+    sourceToken,
   });
 
   const quotaLabels = useMemo(

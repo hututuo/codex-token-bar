@@ -52,6 +52,28 @@ test("floating toggle follows saved preference instead of transient visibility",
   assert.equal(model.includes("return result.ok ? result.value : currentVisible"), true);
 });
 
+test("native floating visibility is published by Rust instead of TS command guesses", async () => {
+  const surfaceCommands = await readFile(new URL("../platform/surfaceCommands.ts", import.meta.url), "utf8");
+  const rustSurfaces = await readFile(
+    new URL("../../src-tauri/src/platform/surfaces.rs", import.meta.url),
+    "utf8",
+  );
+
+  assert.equal(surfaceCommands.includes("publishFloatingWindowVisibility"), false);
+  assert.equal(rustSurfaces.includes('"floating-window-visibility-changed"'), true);
+  assert.equal(rustSurfaces.includes("finish_floating_visibility_change"), true);
+});
+
+test("Codex Home transition envelopes are broadcast to every mounted surface", async () => {
+  const dashboardCommands = await readFile(
+    new URL("../../src-tauri/src/commands/dashboard.rs", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(dashboardCommands, /app\s*\.emit_str\(/);
+  assert.doesNotMatch(dashboardCommands, /window\s*\.emit_str\(/);
+});
+
 test("floating hidden event also turns off saved preference", async () => {
   const hook = await readFile(new URL("./useFloatingWindowSurface.ts", import.meta.url), "utf8");
   const hiddenHandler = hook.slice(
@@ -289,7 +311,8 @@ test("live rate switch stops the shared stream and preserves other refreshes", a
   assert.equal(dashboardClient.includes("read_usage_summary_snapshot"), true);
   assert.equal(liveFeed.includes("stopLiveRateStream"), true);
   assert.equal(liveFeed.includes("resetLiveRateMonitor"), true);
-  assert.equal(compactData.includes("active,"), true);
+  assert.equal(compactData.includes("active: sourceActive"), true);
+  assert.equal(compactData.includes("sourceToken,"), true);
   assert.equal(compactData.includes("liveRateEnabled,"), true);
   assert.equal(compactData.includes("active: active && liveRateEnabled"), false);
   assert.equal(compactSnapshot.includes("readUsageSummarySnapshot"), true);

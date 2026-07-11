@@ -148,25 +148,29 @@ pub fn get_codex_home(window: tauri::WebviewWindow) -> Result<CodexHomeSourceEnv
 #[tauri::command]
 pub fn set_codex_home(
     window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
     path: String,
 ) -> Result<CodexHomeSourceEnvelope, String> {
     require_window_label(&window, "set_codex_home")?;
-    persist_codex_home_transition(window, || platform::save_codex_home(&path))
+    persist_codex_home_transition(app, || platform::save_codex_home(&path))
 }
 
 #[tauri::command]
-pub fn reset_codex_home(window: tauri::WebviewWindow) -> Result<CodexHomeSourceEnvelope, String> {
+pub fn reset_codex_home(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<CodexHomeSourceEnvelope, String> {
     require_window_label(&window, "reset_codex_home")?;
-    persist_codex_home_transition(window, platform::reset_codex_home)
+    persist_codex_home_transition(app, platform::reset_codex_home)
 }
 
 fn persist_codex_home_transition(
-    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
     save: impl FnOnce() -> Result<CodexHomeStatus, String>,
 ) -> Result<CodexHomeSourceEnvelope, String> {
     with_codex_home_transition_state(|transition| {
         commit_codex_home_transition(transition, save, |envelope| {
-            window
+            app
                 .emit_str(
                     CODEX_HOME_SOURCE_CHANGED_EVENT,
                     serde_json::to_string(envelope).map_err(|error| error.to_string())?,

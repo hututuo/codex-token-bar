@@ -120,25 +120,6 @@ export function preserveFloatingUsageSummary(
   return snapshot;
 }
 
-export function resetFloatingUsageSummary(
-  snapshot: FloatingPanelSnapshot,
-): FloatingPanelSnapshot {
-  return {
-    ...snapshot,
-    totalTokensLabel: baseFloatingPanelSnapshot.totalTokensLabel,
-    todayTokensLabel: baseFloatingPanelSnapshot.todayTokensLabel,
-    requestsLabel: baseFloatingPanelSnapshot.requestsLabel,
-  };
-}
-
-export function shouldResetCompactUsageSummarySource(
-  previousSourceKey: string | null,
-  nextSourceKey: string | null,
-  hasTrustedSummary: boolean,
-): boolean {
-  return Boolean(hasTrustedSummary && nextSourceKey && previousSourceKey !== nextSourceKey);
-}
-
 export function compactTokens(value: number): string {
   if (value >= 100_000_000) {
     return `${(value / 100_000_000).toFixed(1)}亿`;

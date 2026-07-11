@@ -100,6 +100,7 @@ export function useLiveRateFeed({
     void desktopPlatform.claimLiveRateOwnerSession(
       leaseRequest.ownerToken,
       leaseRequest.ownerSessionEpoch,
+      sourceToken,
     ).then(async (claimed) => {
       if (cancelled || !claimed) {
         return null;

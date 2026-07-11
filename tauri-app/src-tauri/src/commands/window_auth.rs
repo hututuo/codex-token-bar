@@ -1,5 +1,4 @@
 pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
-    "get_codex_home",
     "set_codex_home",
     "reset_codex_home",
     "read_dashboard_snapshot",
@@ -26,6 +25,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
 ];
 
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
+    "get_codex_home",
     "read_app_settings",
     "record_startup_event",
     "record_performance_event",
@@ -124,5 +124,17 @@ mod tests {
         assert!(allows_window_label("read_codex_radar_full_snapshot", "main"));
         assert!(!allows_window_label("read_codex_radar_full_snapshot", "floating"));
         assert!(!allows_window_label("read_codex_radar_full_snapshot", "status"));
+    }
+
+    #[test]
+    fn codex_home_source_read_is_surface_safe_but_mutation_stays_main_only() {
+        for label in ["main", "floating", "status"] {
+            assert!(allows_window_label("get_codex_home", label), "{label}");
+        }
+        for command in ["set_codex_home", "reset_codex_home"] {
+            assert!(allows_window_label(command, "main"), "{command}");
+            assert!(!allows_window_label(command, "floating"), "{command}");
+            assert!(!allows_window_label(command, "status"), "{command}");
+        }
     }
 }

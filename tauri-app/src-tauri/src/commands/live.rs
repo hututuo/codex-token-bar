@@ -862,17 +862,27 @@ pub async fn read_live_thread_options(
 
 #[tauri::command]
 pub async fn claim_live_rate_owner_session(
+    app: AppHandle,
     window: tauri::WebviewWindow,
     state: State<'_, LiveRateMonitorRegistry>,
     subscriber_owner_token: String,
     owner_session_epoch: u64,
+    source_token: CodexHomeSourceToken,
 ) -> Result<bool, String> {
     require_live_rate_owner(window.label(), &subscriber_owner_token)?;
+    emit_detected_source_transition(&app)?;
+    let captured = capture_codex_home_source(Some(&source_token))?;
+    let completed_source_token = captured.source_token;
     let registry = state.inner().clone();
     run_blocking_command(move || {
         registry.claim_owner_session(&subscriber_owner_token, owner_session_epoch)
     })
     .await
+    .and_then(|claimed| {
+        emit_detected_source_transition(&app)?;
+        validate_codex_home_source(&completed_source_token)?;
+        Ok(claimed)
+    })
 }
 
 #[tauri::command]
