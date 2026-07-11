@@ -298,6 +298,31 @@ final class DashboardRefreshPlanTests: XCTestCase {
         await waitUntil("new-path task poll") {
             await taskPollLoader.hasPendingRequest(at: newHome)
         }
+        await taskPollLoader.completeRequest(
+            at: oldHome,
+            output: TaskCompletionPollOutput(
+                result: nil,
+                unreadThreadRead: .available([])
+            )
+        )
+        await waitUntil("old-path task poll returned") {
+            await taskPollLoader.hasReturnedRequest(at: oldHome)
+        }
+        XCTAssertEqual(taskMonitor.unreadThreadCount, 1)
+        XCTAssertEqual(taskMonitor.currentDataSourcePath, newHome.path)
+        XCTAssertEqual(taskMonitor.sourceIdentityGeneration, taskIdentityGenerationBefore)
+        XCTAssertEqual(taskMonitor.sourceBindingGeneration, taskBindingGenerationBefore + 1)
+
+        await taskPollLoader.completeRequest(
+            at: newHome,
+            output: TaskCompletionPollOutput(
+                result: nil,
+                unreadThreadRead: .available(["thread-a", "thread-b"])
+            )
+        )
+        await waitUntil("new-path task poll accepted") {
+            taskMonitor.unreadThreadCount == 2
+        }
         await waitUntil("single new-path owner reads") {
             let usageReadCount = await usageLoader.requestedSourcePaths().count
             let quotaReadCount = await quotaReader.readCount()
@@ -319,7 +344,7 @@ final class DashboardRefreshPlanTests: XCTestCase {
         XCTAssertEqual(liveMonitor.snapshot.rollingTokensPerSecond, liveRateBefore)
         XCTAssertEqual(liveMonitor.testSourceGeneration, liveGenerationBefore)
         XCTAssertEqual(liveMonitor.testSourceBindingGeneration, liveBindingGenerationBefore + 1)
-        XCTAssertEqual(taskMonitor.unreadThreadCount, 1)
+        XCTAssertEqual(taskMonitor.unreadThreadCount, 2)
         XCTAssertEqual(taskMonitor.currentDataSourcePath, newHome.path)
         XCTAssertEqual(taskMonitor.sourceIdentityGeneration, taskIdentityGenerationBefore)
         XCTAssertEqual(taskMonitor.sourceBindingGeneration, taskBindingGenerationBefore + 1)
@@ -347,6 +372,10 @@ final class DashboardRefreshPlanTests: XCTestCase {
             requestedSourcePaths,
             [oldHome.path, newHome.path]
         )
+        let oldTaskPollPending = await taskPollLoader.hasPendingRequest(at: oldHome)
+        let newTaskPollPending = await taskPollLoader.hasPendingRequest(at: newHome)
+        XCTAssertFalse(oldTaskPollPending)
+        XCTAssertFalse(newTaskPollPending)
     }
 
     @MainActor
@@ -604,15 +633,31 @@ private actor DashboardTransitionQuotaReader: QuotaReading {
 
 private actor DashboardTransitionSuspendedTaskPollLoader: TaskCompletionPollLoading {
     private var continuations: [String: CheckedContinuation<TaskCompletionPollOutput, Never>] = [:]
+    private var returnedPaths: Set<String> = []
 
     func load(request: TaskCompletionPollRequest) async -> TaskCompletionPollOutput {
-        await withCheckedContinuation { continuation in
-            continuations[request.dataSource.codexHome.path] = continuation
+        let path = canonicalPath(request.dataSource.codexHome)
+        let output = await withCheckedContinuation { continuation in
+            continuations[path] = continuation
         }
+        returnedPaths.insert(path)
+        return output
     }
 
     func hasPendingRequest(at codexHome: URL) -> Bool {
-        continuations[codexHome.path] != nil
+        continuations[canonicalPath(codexHome)] != nil
+    }
+
+    func completeRequest(at codexHome: URL, output: TaskCompletionPollOutput) {
+        continuations.removeValue(forKey: canonicalPath(codexHome))?.resume(returning: output)
+    }
+
+    func hasReturnedRequest(at codexHome: URL) -> Bool {
+        returnedPaths.contains(canonicalPath(codexHome))
+    }
+
+    private func canonicalPath(_ codexHome: URL) -> String {
+        codexHome.standardizedFileURL.path
     }
 }
 
