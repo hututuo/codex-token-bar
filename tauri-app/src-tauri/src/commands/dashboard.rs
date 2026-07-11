@@ -504,31 +504,180 @@ fn clean_stale_pinned_db_snapshots() -> Result<(), String> {
 
 #[cfg(unix)]
 fn clean_stale_pinned_db_snapshots_in(directory: &Path) -> Result<(), String> {
-    const PREFIX: &str = "codex-token-bar-pinned-db-";
-    let entries = std::fs::read_dir(directory)
+    clean_stale_pinned_db_snapshots_in_with_hook(directory, |_| {})
+}
+
+#[cfg(unix)]
+fn clean_stale_pinned_db_snapshots_in_with_hook(
+    directory: &Path,
+    mut after_lock: impl FnMut(&str),
+) -> Result<(), String> {
+    use rustix::fs::{
+        fstat, openat, statat, unlinkat, AtFlags, Dir, FileType, Mode, OFlags,
+    };
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    const PREFIX: &[u8] = b"codex-token-bar-pinned-db-";
+    let canonical_root = std::fs::canonicalize(directory)
+        .map_err(|error| format!("failed to resolve pinned DB cache root: {error}"))?;
+    let root = open_cache_root_without_following(&canonical_root)?;
+    let mut entries = Dir::read_from(&root)
         .map_err(|error| format!("failed to inspect pinned DB cache directory: {error}"))?;
-    for entry in entries
-        .flatten()
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with(PREFIX))
-    {
-        let lock_path = entry.path().join(".owner.lock");
-        let Ok(lock) = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(lock_path)
+    while let Some(entry) = entries.read() {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let name_bytes = entry.file_name().to_bytes();
+        if !name_bytes.starts_with(PREFIX) {
+            continue;
+        }
+        let name = OsStr::from_bytes(name_bytes);
+        let Ok(path_stat) = statat(&root, name, AtFlags::SYMLINK_NOFOLLOW) else {
+            continue;
+        };
+        if FileType::from_raw_mode(path_stat.st_mode) != FileType::Directory {
+            continue;
+        }
+        let Ok(candidate) = openat(
+            &root,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) else {
+            continue;
+        };
+        let Ok(candidate_stat) = fstat(&candidate) else {
+            continue;
+        };
+        if !same_unix_file_identity(&path_stat, &candidate_stat) {
+            continue;
+        }
+        let Ok(lock_path_stat) = statat(&candidate, ".owner.lock", AtFlags::SYMLINK_NOFOLLOW)
         else {
             continue;
         };
-        if rustix::fs::flock(
-            &lock,
-            rustix::fs::FlockOperation::NonBlockingLockExclusive,
-        )
-        .is_ok()
-        {
-            let _ = std::fs::remove_dir_all(entry.path());
+        if FileType::from_raw_mode(lock_path_stat.st_mode) != FileType::RegularFile {
+            continue;
         }
+        let Ok(lock_fd) = openat(
+            &candidate,
+            ".owner.lock",
+            OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) else {
+            continue;
+        };
+        let lock = std::fs::File::from(lock_fd);
+        let Ok(lock_stat) = fstat(&lock) else {
+            continue;
+        };
+        if !same_unix_file_identity(&lock_path_stat, &lock_stat)
+            || rustix::fs::flock(
+                &lock,
+                rustix::fs::FlockOperation::NonBlockingLockExclusive,
+            )
+            .is_err()
+        {
+            continue;
+        }
+
+        after_lock(&name.to_string_lossy());
+        let Ok(current_candidate_stat) = statat(&root, name, AtFlags::SYMLINK_NOFOLLOW) else {
+            continue;
+        };
+        let Ok(current_lock_stat) = statat(&candidate, ".owner.lock", AtFlags::SYMLINK_NOFOLLOW)
+        else {
+            continue;
+        };
+        if !same_unix_file_identity(&candidate_stat, &current_candidate_stat)
+            || FileType::from_raw_mode(current_candidate_stat.st_mode) != FileType::Directory
+            || !same_unix_file_identity(&lock_stat, &current_lock_stat)
+            || FileType::from_raw_mode(current_lock_stat.st_mode) != FileType::RegularFile
+        {
+            continue;
+        }
+
+        let mut children = match Dir::read_from(&candidate) {
+            Ok(children) => children,
+            Err(_) => continue,
+        };
+        let mut removable = Vec::new();
+        let mut valid = true;
+        while let Some(child) = children.read() {
+            let Ok(child) = child else {
+                valid = false;
+                break;
+            };
+            let child_bytes = child.file_name().to_bytes();
+            if child_bytes == b"." || child_bytes == b".." {
+                continue;
+            }
+            let child_name = OsStr::from_bytes(child_bytes);
+            let Ok(child_stat) = statat(&candidate, child_name, AtFlags::SYMLINK_NOFOLLOW) else {
+                valid = false;
+                break;
+            };
+            if FileType::from_raw_mode(child_stat.st_mode) != FileType::RegularFile {
+                valid = false;
+                break;
+            }
+            removable.push(child_name.to_os_string());
+        }
+        if !valid {
+            continue;
+        }
+        for child in removable {
+            if unlinkat(&candidate, &child, AtFlags::empty()).is_err() {
+                valid = false;
+                break;
+            }
+        }
+        if !valid {
+            continue;
+        }
+        let Ok(final_candidate_stat) = statat(&root, name, AtFlags::SYMLINK_NOFOLLOW) else {
+            continue;
+        };
+        if !same_unix_file_identity(&candidate_stat, &final_candidate_stat) {
+            continue;
+        }
+        let _ = unlinkat(&root, name, AtFlags::REMOVEDIR);
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn same_unix_file_identity(left: &rustix::fs::Stat, right: &rustix::fs::Stat) -> bool {
+    left.st_dev == right.st_dev && left.st_ino == right.st_ino
+}
+
+#[cfg(unix)]
+fn open_cache_root_without_following(path: &Path) -> Result<rustix::fd::OwnedFd, String> {
+    use rustix::fs::{open, openat, Mode, OFlags};
+
+    let mut current = open(
+        "/",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| format!("failed to open pinned DB filesystem root: {error}"))?;
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                current = openat(
+                    &current,
+                    name,
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(|error| format!("failed to pin DB cache root: {error}"))?;
+            }
+            _ => return Err("pinned DB cache root is not an absolute canonical path".into()),
+        }
+    }
+    Ok(current)
 }
 
 #[cfg(unix)]
@@ -547,37 +696,109 @@ fn process_session_identity() -> &'static str {
 fn create_owned_pinned_db_directory(
     parent: &Path,
 ) -> Result<(PathBuf, std::fs::File), String> {
+    create_owned_pinned_db_directory_with_hook(parent, |_, _, _| {})
+}
+
+#[cfg(unix)]
+fn create_owned_pinned_db_directory_with_hook(
+    parent: &Path,
+    mut publication_hook: impl FnMut(&Path, &Path, bool),
+) -> Result<(PathBuf, std::fs::File), String> {
+    use rustix::fs::{mkdirat, openat, unlinkat, AtFlags, Mode, OFlags};
+
+    let canonical_root = std::fs::canonicalize(parent)
+        .map_err(|error| format!("failed to resolve pinned DB cache root: {error}"))?;
+    let root = open_cache_root_without_following(&canonical_root)?;
     for _ in 0..16 {
         let sequence = PINNED_SOURCE_SNAPSHOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let directory = parent.join(format!(
+        let staging_name = format!(
+            ".codex-token-bar-pinned-db-staging-{}-{sequence}",
+            process_session_identity()
+        );
+        let final_name = format!(
             "codex-token-bar-pinned-db-{}-{sequence}",
             process_session_identity()
-        ));
-        match std::fs::create_dir(&directory) {
-            Ok(()) => {
-                let result = (|| {
-                    let lock = std::fs::OpenOptions::new()
-                        .create_new(true)
-                        .read(true)
-                        .write(true)
-                        .open(directory.join(".owner.lock"))
-                        .map_err(|error| format!("failed to create pinned DB owner lock: {error}"))?;
-                    rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
-                        .map_err(|error| format!("failed to lock pinned DB cache owner: {error}"))?;
-                    Ok::<_, String>((directory.clone(), lock))
-                })();
-                if result.is_err() {
-                    let _ = std::fs::remove_dir_all(&directory);
-                }
-                return result;
+        );
+        if let Err(error) = mkdirat(&root, staging_name.as_str(), Mode::from_raw_mode(0o700)) {
+            if error == rustix::io::Errno::EXIST {
+                continue;
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(format!("failed to create pinned DB cache directory: {error}"))
+            return Err(format!("failed to create pinned DB staging directory: {error}"));
+        }
+        let result = (|| {
+            let staging = openat(
+                &root,
+                staging_name.as_str(),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|error| format!("failed to open pinned DB staging directory: {error}"))?;
+            let lock_fd = openat(
+                &staging,
+                ".owner.lock",
+                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::from_raw_mode(0o600),
+            )
+            .map_err(|error| format!("failed to create pinned DB owner lock: {error}"))?;
+            let lock = std::fs::File::from(lock_fd);
+            rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
+                .map_err(|error| format!("failed to lock pinned DB cache owner: {error}"))?;
+            let staging_path = canonical_root.join(&staging_name);
+            let final_path = canonical_root.join(&final_name);
+            publication_hook(&staging_path, &final_path, false);
+            publish_pinned_db_cache_directory(&root, &staging_name, &final_name)?;
+            publication_hook(&staging_path, &final_path, true);
+            Ok::<_, String>((final_path, lock))
+        })();
+        if result.is_err() {
+            if let Ok(staging) = openat(
+                &root,
+                staging_name.as_str(),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            ) {
+                let _ = unlinkat(&staging, ".owner.lock", AtFlags::empty());
             }
+            let _ = unlinkat(&root, staging_name.as_str(), AtFlags::REMOVEDIR);
+        }
+        match result {
+            Ok(created) => return Ok(created),
+            Err(error) if error.starts_with("pinned DB cache publication collided:") => continue,
+            Err(error) => return Err(error),
         }
     }
     Err("failed to allocate a unique pinned DB cache directory".into())
+}
+
+#[cfg(all(unix, any(target_vendor = "apple", target_os = "linux", target_os = "redox")))]
+fn publish_pinned_db_cache_directory(
+    root: &impl std::os::fd::AsFd,
+    staging_name: &str,
+    final_name: &str,
+) -> Result<(), String> {
+    rustix::fs::renameat_with(
+        root,
+        staging_name,
+        root,
+        final_name,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(|error| {
+        if error == rustix::io::Errno::EXIST {
+            format!("pinned DB cache publication collided: {error}")
+        } else {
+            format!("failed to publish pinned DB cache directory: {error}")
+        }
+    })
+}
+
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "linux", target_os = "redox"))))]
+fn publish_pinned_db_cache_directory(
+    _root: &impl std::os::fd::AsFd,
+    _staging_name: &str,
+    _final_name: &str,
+) -> Result<(), String> {
+    Err("atomic no-replace pinned DB cache publication is unsupported on this platform".into())
 }
 
 #[cfg(unix)]
@@ -2085,6 +2306,99 @@ mod tests {
         drop(created_lock);
         std::fs::remove_dir_all(created).unwrap();
         drop(active_lock);
+        remove_source_test_directory(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_cache_directory_is_published_only_after_its_lock_is_held() {
+        let root = disposable_source_test_directory("cache-publish-lock");
+        let mut phases = Vec::new();
+        let (published, owner_lock) = create_owned_pinned_db_directory_with_hook(
+            &root,
+            |staging, final_path, published| {
+                clean_stale_pinned_db_snapshots_in(&root).unwrap();
+                phases.push(published);
+                if published {
+                    assert!(final_path.exists());
+                } else {
+                    assert!(staging.exists());
+                    assert!(!final_path.exists());
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(phases, vec![false, true]);
+        assert!(published.exists());
+        clean_stale_pinned_db_snapshots_in(&root).unwrap();
+        assert!(published.exists());
+        drop(owner_lock);
+        clean_stale_pinned_db_snapshots_in(&root).unwrap();
+        assert!(!published.exists());
+        remove_source_test_directory(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_cleanup_never_follows_candidate_or_owner_lock_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = disposable_source_test_directory("cache-cleanup-symlink");
+        let outside = disposable_source_test_directory("cache-cleanup-outside");
+        std::fs::write(outside.join("sentinel"), b"keep").unwrap();
+        let candidate_link = root.join("codex-token-bar-pinned-db-linked-epoch-1");
+        symlink(&outside, &candidate_link).unwrap();
+
+        let lock_link_dir = root.join("codex-token-bar-pinned-db-lock-link-epoch-1");
+        std::fs::create_dir(&lock_link_dir).unwrap();
+        let outside_lock = outside.join("outside.lock");
+        std::fs::write(&outside_lock, b"keep").unwrap();
+        symlink(&outside_lock, lock_link_dir.join(".owner.lock")).unwrap();
+
+        clean_stale_pinned_db_snapshots_in(&root).unwrap();
+
+        assert!(candidate_link.symlink_metadata().is_ok());
+        assert!(lock_link_dir.exists());
+        assert_eq!(std::fs::read(outside.join("sentinel")).unwrap(), b"keep");
+        assert_eq!(std::fs::read(outside_lock).unwrap(), b"keep");
+        std::fs::remove_file(candidate_link).unwrap();
+        remove_source_test_directory(root);
+        remove_source_test_directory(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_cleanup_revalidates_lock_and_directory_identity_after_locking() {
+        let root = disposable_source_test_directory("cache-cleanup-revalidate");
+        let lock_swapped = root.join("codex-token-bar-pinned-db-lock-swap-1");
+        std::fs::create_dir(&lock_swapped).unwrap();
+        std::fs::write(lock_swapped.join(".owner.lock"), b"old").unwrap();
+        let directory_swapped = root.join("codex-token-bar-pinned-db-dir-swap-1");
+        std::fs::create_dir(&directory_swapped).unwrap();
+        std::fs::write(directory_swapped.join(".owner.lock"), b"old").unwrap();
+        let moved_directory = root.join("moved-original");
+
+        clean_stale_pinned_db_snapshots_in_with_hook(&root, |name| {
+            if name == "codex-token-bar-pinned-db-lock-swap-1" {
+                std::fs::rename(
+                    lock_swapped.join(".owner.lock"),
+                    lock_swapped.join("old.lock"),
+                )
+                .unwrap();
+                std::fs::write(lock_swapped.join(".owner.lock"), b"new").unwrap();
+            } else if name == "codex-token-bar-pinned-db-dir-swap-1" {
+                std::fs::rename(&directory_swapped, &moved_directory).unwrap();
+                std::fs::create_dir(&directory_swapped).unwrap();
+                std::fs::write(directory_swapped.join(".owner.lock"), b"new").unwrap();
+            }
+        })
+        .unwrap();
+
+        assert!(lock_swapped.exists());
+        assert!(lock_swapped.join(".owner.lock").exists());
+        assert!(directory_swapped.exists());
+        assert!(moved_directory.exists());
         remove_source_test_directory(root);
     }
 
