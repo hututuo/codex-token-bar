@@ -1499,10 +1499,10 @@ fn session_backup_rejects_atomic_live_path_replacement_with_same_len_and_mtime()
     let barrier = Arc::new(Barrier::new(2));
     let replace_barrier = Arc::clone(&barrier);
     let replace_session = session.clone();
+    let replacement_path = fixture.join("replacement.jsonl");
     let replacer = thread::spawn(move || {
         replace_barrier.wait();
         let replacement_result = (|| -> Result<(), String> {
-            let replacement_path = replace_session.with_extension("replacement");
             fs::write(&replacement_path, replacement).map_err(|error| error.to_string())?;
             fs::File::open(&replacement_path)
                 .and_then(|file| file.set_modified(original_mtime))
@@ -1525,17 +1525,59 @@ fn session_backup_rejects_atomic_live_path_replacement_with_same_len_and_mtime()
             Ok(())
         },
     );
-    replacer.join().unwrap().unwrap();
-    let error = backup_result.unwrap_err();
+    let replacement_result = replacer.join().unwrap();
 
-    assert!(error.contains("描述符复制期间发生变化"), "{error}");
-    assert_failed_session_backup_cleanup(
-        &home,
-        &backup_root,
-        config_before,
-        sqlite_before,
-        files_before,
-    );
+    #[cfg(not(windows))]
+    {
+        replacement_result.unwrap();
+        let error = backup_result.unwrap_err();
+        assert!(error.contains("描述符复制期间发生变化"), "{error}");
+        assert_failed_session_backup_cleanup(
+            &home,
+            &backup_root,
+            config_before,
+            sqlite_before,
+            files_before,
+        );
+    }
+
+    #[cfg(windows)]
+    match replacement_result {
+        Ok(()) => {
+            let error = backup_result.unwrap_err();
+            assert!(error.contains("描述符复制期间发生变化"), "{error}");
+            assert_failed_session_backup_cleanup(
+                &home,
+                &backup_root,
+                config_before,
+                sqlite_before,
+                files_before,
+            );
+        }
+        Err(replacement_error) => {
+            assert!(
+                replacement_error.contains("os error 5")
+                    || replacement_error.contains("os error 32"),
+                "unexpected Windows replacement failure: {replacement_error}"
+            );
+            let backup = backup_result.unwrap();
+            let backed_up_session = PathBuf::from(&backup.path)
+                .join("session-jsonl")
+                .join("sessions/thread.jsonl");
+            assert_eq!(fs::read(&backed_up_session).unwrap(), original);
+            assert_eq!(fs::read(&session).unwrap(), original);
+            assert_eq!(completed_backup_count(&backup_root), 1);
+            assert_eq!(
+                Sha256::digest(fs::read(home.join("config.toml")).unwrap()),
+                config_before
+            );
+            assert_eq!(
+                Sha256::digest(fs::read(home.join("state_5.sqlite")).unwrap()),
+                sqlite_before
+            );
+            assert_eq!(relative_file_set(&home), files_before);
+        }
+    }
     fs::remove_dir_all(fixture).unwrap();
 }
 
