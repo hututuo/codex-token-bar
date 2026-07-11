@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::AtomicBool,
     OnceLock,
 };
 
@@ -118,7 +118,7 @@ pub fn start_instance_activation_listener(app: tauri::AppHandle) {
     };
     super::startup::start_activation_listener_once(&ACTIVATION_LISTENER_STARTED, || {
         std::thread::spawn(move || {
-            super::startup::consume_activation_signals(
+            super::startup::supervise_activation_signals(
                 || unsafe {
                     match WaitForSingleObject(event as _, INFINITE) {
                         WAIT_OBJECT_0 => Ok(true),
@@ -141,8 +141,8 @@ pub fn start_instance_activation_listener(app: tauri::AppHandle) {
                         .map_err(|error| format!("调度主实例激活失败：{error}"))
                 },
                 report_activation_error,
+                std::thread::sleep,
             );
-            ACTIVATION_LISTENER_STARTED.store(false, Ordering::Release);
         });
     });
 }

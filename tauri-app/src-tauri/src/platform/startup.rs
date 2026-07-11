@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartupLaunchMode {
@@ -20,6 +21,8 @@ impl StartupLaunchMode {
 }
 
 pub(crate) const SECONDARY_SIGNAL_ATTEMPT_LIMIT: usize = 3;
+const ACTIVATION_WAIT_RETRY_BASE: Duration = Duration::from_millis(100);
+const ACTIVATION_WAIT_RETRY_MAX: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SingleInstanceLaunchOutcome {
@@ -69,14 +72,17 @@ pub(crate) fn start_activation_listener_once(
 }
 
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-pub(crate) fn consume_activation_signals(
+pub(crate) fn supervise_activation_signals(
     mut wait_for_signal: impl FnMut() -> Result<bool, String>,
     mut activate_dashboard: impl FnMut() -> Result<(), String>,
     mut report_error: impl FnMut(&str),
+    mut sleep: impl FnMut(Duration),
 ) {
+    let mut consecutive_wait_failures = 0_u32;
     loop {
         match wait_for_signal() {
             Ok(true) => {
+                consecutive_wait_failures = 0;
                 if let Err(error) = activate_dashboard() {
                     report_error(&error);
                 }
@@ -84,10 +90,16 @@ pub(crate) fn consume_activation_signals(
             Ok(false) => return,
             Err(error) => {
                 report_error(&error);
-                return;
+                consecutive_wait_failures = consecutive_wait_failures.saturating_add(1);
+                sleep(activation_wait_retry_delay(consecutive_wait_failures));
             }
         }
     }
+}
+
+fn activation_wait_retry_delay(consecutive_failures: u32) -> Duration {
+    let exponent = consecutive_failures.saturating_sub(1).min(5);
+    (ACTIVATION_WAIT_RETRY_BASE * 2_u32.pow(exponent)).min(ACTIVATION_WAIT_RETRY_MAX)
 }
 
 pub(crate) fn perform_dashboard_activation(
@@ -146,12 +158,13 @@ mod tests {
     fn pre_listener_auto_reset_signal_is_consumed_once_with_binary_semantics() {
         let mut pending = VecDeque::from([Ok(true), Ok(false)]);
         let mut activations = 0;
-        consume_activation_signals(
+        supervise_activation_signals(
             || pending.pop_front().unwrap_or(Ok(false)),
             || {
                 activations += 1;
                 Ok(())
             },
+            |_| {},
             |_| {},
         );
         assert_eq!(activations, 1);
@@ -191,7 +204,7 @@ mod tests {
         let mut waits = VecDeque::from([Ok(true), Ok(true), Err("wait failed".to_string())]);
         let mut activations = 0;
         let mut errors = Vec::new();
-        consume_activation_signals(
+        supervise_activation_signals(
             || waits.pop_front().unwrap_or(Ok(false)),
             || {
                 activations += 1;
@@ -202,9 +215,73 @@ mod tests {
                 }
             },
             |error| errors.push(error.to_string()),
+            |_| {},
         );
         assert_eq!(activations, 2);
         assert_eq!(errors, vec!["dispatch failed", "wait failed"]);
+    }
+
+    #[test]
+    fn wait_failure_backs_off_then_later_signal_is_activated() {
+        let mut waits = VecDeque::from([
+            Err("wait failed".to_string()),
+            Err("wait failed again".to_string()),
+            Ok(true),
+            Err("wait failed after signal".to_string()),
+            Ok(false),
+        ]);
+        let mut errors = Vec::new();
+        let mut sleeps = Vec::new();
+        let mut activations = 0;
+        supervise_activation_signals(
+            || waits.pop_front().unwrap_or(Ok(false)),
+            || {
+                activations += 1;
+                Ok(())
+            },
+            |error| errors.push(error.to_string()),
+            |delay| sleeps.push(delay),
+        );
+        assert_eq!(
+            errors,
+            vec![
+                "wait failed",
+                "wait failed again",
+                "wait failed after signal",
+            ]
+        );
+        assert_eq!(
+            sleeps,
+            vec![
+                ACTIVATION_WAIT_RETRY_BASE,
+                ACTIVATION_WAIT_RETRY_BASE * 2,
+                ACTIVATION_WAIT_RETRY_BASE,
+            ]
+        );
+        assert_eq!(activations, 1);
+    }
+
+    #[test]
+    fn persistent_wait_failures_use_bounded_backoff_without_busy_loop() {
+        let failure_count = 8;
+        let mut remaining = failure_count;
+        let mut sleeps = Vec::new();
+        supervise_activation_signals(
+            || {
+                if remaining == 0 {
+                    Ok(false)
+                } else {
+                    remaining -= 1;
+                    Err("wait failed".into())
+                }
+            },
+            || panic!("no activation is available"),
+            |_| {},
+            |delay| sleeps.push(delay),
+        );
+        assert_eq!(sleeps.len(), failure_count);
+        assert!(sleeps.iter().all(|delay| *delay >= ACTIVATION_WAIT_RETRY_BASE));
+        assert_eq!(sleeps.last().copied(), Some(ACTIVATION_WAIT_RETRY_MAX));
     }
 
     #[test]
