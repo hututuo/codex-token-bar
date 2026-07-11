@@ -1,10 +1,10 @@
 use super::window_auth::require_window_label;
 use crate::commands::dashboard::{
-    acknowledge_codex_home_source_transition_published, capture_codex_home_source,
-    detect_codex_home_source_transition,
-    pin_captured_codex_home_source, validate_captured_codex_home_source,
-    validate_codex_home_source, with_valid_codex_home_source, CapturedCodexHomeSource,
-    CodexHomeSourceToken, CODEX_HOME_SOURCE_CHANGED_EVENT,
+    capture_codex_home_source, claim_codex_home_source_transition,
+    finish_codex_home_source_transition_claim, pin_captured_codex_home_source,
+    validate_captured_codex_home_source, validate_codex_home_source,
+    with_valid_codex_home_source, CapturedCodexHomeSource, CodexHomeSourceToken,
+    CODEX_HOME_SOURCE_CHANGED_EVENT,
 };
 use crate::commands::local_source;
 use crate::core::{
@@ -456,17 +456,17 @@ impl LiveRateMonitorRegistry {
 }
 
 fn emit_detected_source_transition(app: &AppHandle) -> Result<bool, String> {
-    let Some(envelope) = detect_codex_home_source_transition()? else {
+    let Some(claim) = claim_codex_home_source_transition()? else {
         return Ok(false);
     };
-    let generation = envelope.transition_generation;
-    app.emit_str(
-        CODEX_HOME_SOURCE_CHANGED_EVENT,
-        serde_json::to_string(&envelope).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    acknowledge_codex_home_source_transition_published(generation)?;
-    Ok(true)
+    let publish_result = serde_json::to_string(&claim.envelope)
+        .map_err(|error| error.to_string())
+        .and_then(|payload| {
+            app.emit_str(CODEX_HOME_SOURCE_CHANGED_EVENT, payload)
+                .map_err(|error| error.to_string())
+        });
+    finish_codex_home_source_transition_claim(&claim, publish_result.is_ok())?;
+    publish_result.map(|_| true)
 }
 
 fn active_subscriptions(
@@ -533,13 +533,14 @@ fn run_source_bound_work<T>(
 fn acknowledge_pinned_unread(
     captured: CapturedCodexHomeSource,
     after_pin: impl FnOnce() -> Result<(), String>,
+    validate_before_write: impl FnOnce() -> Result<(), String>,
 ) -> Result<UnreadSummary, String> {
     let pinned = pin_captured_codex_home_source(&captured)?;
     after_pin()?;
     unread::acknowledge_current_unread_for_source(
         pinned.read_path(),
         &pinned.source_scope_key,
-        || validate_captured_codex_home_source(&captured),
+        validate_before_write,
     )
 }
 
@@ -780,7 +781,11 @@ pub async fn acknowledge_current_unread(
     let captured = capture_codex_home_source(source_token.as_ref())?;
     let completed_source_token = captured.source_token.clone();
     let result = run_blocking_command(move || {
-        acknowledge_pinned_unread(captured, || Ok(()))
+        acknowledge_pinned_unread(
+            captured.clone(),
+            || Ok(()),
+            || validate_captured_codex_home_source(&captured),
+        )
     })
     .await
     .and_then(|summary| {
@@ -980,6 +985,37 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_live_ticks_do_not_create_pinned_unread_snapshots() {
+        super::super::dashboard::reset_pinned_source_copy_count_for_test();
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-live-no-pinned-copy-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let registry = LiveRateMonitorRegistry::default();
+        let unread = UnreadSummary {
+            active: false,
+            count: 0,
+            label: "none".into(),
+            detail: "none".into(),
+            source: "test".into(),
+        };
+
+        registry
+            .snapshot_at_with_unread(root.clone(), None, unread.clone())
+            .unwrap();
+        registry
+            .snapshot_at_with_unread(root.clone(), None, unread)
+            .unwrap();
+
+        assert_eq!(
+            super::super::dashboard::pinned_source_copy_count_for_test(),
+            0
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn stale_physical_source_guard_stops_unread_work_before_write() {
         let wrote = std::cell::Cell::new(false);
         let result = run_source_bound_work(
@@ -992,6 +1028,78 @@ mod tests {
 
         assert_eq!(result.unwrap_err(), "physical Home replaced");
         assert!(!wrote.get());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_to_b_to_a_swap_acknowledges_only_the_pinned_a_observation() {
+        use std::os::unix::fs::MetadataExt;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-pinned-ack-{}-{sequence}",
+            std::process::id()
+        ));
+        let home = root.join("home");
+        let displaced = root.join("home-a");
+        let support = root.join("support");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&support).unwrap();
+        let thread_a = "019eaaaa-0000-0000-0000-0000000000a1";
+        let thread_b = "019eaaaa-0000-0000-0000-0000000000b1";
+        write_unread_state_for_source_test(&home, thread_a);
+        std::env::set_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", &support);
+        let metadata = std::fs::metadata(&home).unwrap();
+        let physical_home_key = format!("unix:{}:{}", metadata.dev(), metadata.ino());
+        let captured = CapturedCodexHomeSource {
+            source_token: CodexHomeSourceToken {
+                canonical_home_key: home.display().to_string(),
+                physical_home_key,
+                transition_generation: 1,
+            },
+            codex_home: home.clone(),
+            source_path: home.clone(),
+        };
+
+        let expected_physical_key = captured.source_token.physical_home_key.clone();
+        let result = acknowledge_pinned_unread(captured, || {
+            std::fs::rename(&home, &displaced).unwrap();
+            std::fs::create_dir(&home).unwrap();
+            write_unread_state_for_source_test(&home, thread_b);
+            std::fs::remove_dir_all(&home).unwrap();
+            std::fs::rename(&displaced, &home).unwrap();
+            Ok(())
+        }, || {
+            let metadata = std::fs::metadata(&home).map_err(|error| error.to_string())?;
+            let actual = format!("unix:{}:{}", metadata.dev(), metadata.ino());
+            if actual == expected_physical_key {
+                Ok(())
+            } else {
+                Err("physical source changed".into())
+            }
+        });
+
+        assert_eq!(result.unwrap().count, 0);
+        let baseline =
+            std::fs::read_to_string(support.join("unread-acknowledgement.json")).unwrap();
+        assert!(baseline.contains(thread_a));
+        assert!(!baseline.contains(thread_b));
+
+        std::env::remove_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    fn write_unread_state_for_source_test(home: &std::path::Path, thread_id: &str) {
+        std::fs::write(
+            home.join(".codex-global-state.json"),
+            format!(
+                r#"{{"electron-persisted-atom-state":{{"unread-thread-ids-by-host-v1":{{"localhost":["{thread_id}"]}}}}}}"#
+            ),
+        )
+        .unwrap();
     }
 
     fn live_source_for_test(

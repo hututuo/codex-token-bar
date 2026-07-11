@@ -9,6 +9,7 @@ use crate::platform;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use tauri::{async_runtime, Emitter};
@@ -16,6 +17,15 @@ use tauri::{async_runtime, Emitter};
 pub(crate) const CODEX_HOME_SOURCE_CHANGED_EVENT: &str = "codex-home-source-changed";
 
 static CODEX_HOME_TRANSITION_STATE: OnceLock<Mutex<CodexHomeTransitionState>> = OnceLock::new();
+static PINNED_SOURCE_SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static PINNED_SOURCE_SESSION_FILES_COPIED: AtomicU64 = AtomicU64::new(0);
+
+const PINNED_SESSION_FILE_LIMIT: usize = 64;
+const PINNED_SESSION_ENTRY_LIMIT: usize = 1_024;
+const PINNED_SESSION_FIRST_LINE_LIMIT: u64 = 262_144;
+const PINNED_SESSION_TAIL_LIMIT: u64 = 4 * 1024 * 1024;
+const PINNED_SESSION_LOOKBACK_SECONDS: i64 = 30;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +34,12 @@ pub struct CodexHomeSourceEnvelope {
     pub canonical_home_key: String,
     pub physical_home_key: String,
     pub transition_generation: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct CodexHomeSourceTransitionClaim {
+    pub envelope: CodexHomeSourceEnvelope,
+    pub claim_nonce: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -38,18 +54,27 @@ pub struct CodexHomeSourceToken {
 pub(crate) struct CapturedCodexHomeSource {
     pub source_token: CodexHomeSourceToken,
     pub codex_home: PathBuf,
-    source_path: PathBuf,
+    pub(crate) source_path: PathBuf,
 }
 
 pub(crate) struct PinnedCodexHomeSource {
     _handle: std::fs::File,
     read_path: PathBuf,
+    snapshot_path: Option<PathBuf>,
     pub source_scope_key: String,
 }
 
 impl PinnedCodexHomeSource {
     pub(crate) fn read_path(&self) -> &Path {
         &self.read_path
+    }
+}
+
+impl Drop for PinnedCodexHomeSource {
+    fn drop(&mut self) {
+        if let Some(path) = self.snapshot_path.take() {
+            let _ = std::fs::remove_dir_all(path);
+        }
     }
 }
 
@@ -62,6 +87,8 @@ struct CodexHomeTransitionState {
     source_kind: Option<String>,
     source_exists: bool,
     pending_publication_generation: Option<u64>,
+    in_flight_publication: Option<(u64, u64)>,
+    next_claim_nonce: u64,
     transition_generation: u64,
 }
 
@@ -134,8 +161,18 @@ fn persist_codex_home_transition(
 fn with_codex_home_transition_state<T>(
     operation: impl FnOnce(&mut CodexHomeTransitionState) -> Result<T, String>,
 ) -> Result<T, String> {
-    let state =
-        CODEX_HOME_TRANSITION_STATE.get_or_init(|| Mutex::new(CodexHomeTransitionState::default()));
+    let state = codex_home_transition_state();
+    with_locked_codex_home_transition_state(state, operation)
+}
+
+fn codex_home_transition_state() -> &'static Mutex<CodexHomeTransitionState> {
+    CODEX_HOME_TRANSITION_STATE.get_or_init(|| Mutex::new(CodexHomeTransitionState::default()))
+}
+
+fn with_locked_codex_home_transition_state<T>(
+    state: &Mutex<CodexHomeTransitionState>,
+    operation: impl FnOnce(&mut CodexHomeTransitionState) -> Result<T, String>,
+) -> Result<T, String> {
     let mut state = state
         .lock()
         .map_err(|_| "Codex Home source transition lock was poisoned".to_string())?;
@@ -162,40 +199,63 @@ pub(crate) fn capture_codex_home_source(
     })
 }
 
-pub(crate) fn detect_codex_home_source_transition(
-) -> Result<Option<CodexHomeSourceEnvelope>, String> {
-    with_codex_home_transition_state(detect_codex_home_source_transition_in_state)
+pub(crate) fn claim_codex_home_source_transition(
+) -> Result<Option<CodexHomeSourceTransitionClaim>, String> {
+    claim_codex_home_source_transition_from(codex_home_transition_state())
 }
 
-pub(crate) fn acknowledge_codex_home_source_transition_published(
-    generation: u64,
+fn claim_codex_home_source_transition_from(
+    state: &Mutex<CodexHomeTransitionState>,
+) -> Result<Option<CodexHomeSourceTransitionClaim>, String> {
+    with_locked_codex_home_transition_state(state, claim_codex_home_source_transition_in_state)
+}
+
+pub(crate) fn finish_codex_home_source_transition_claim(
+    claim: &CodexHomeSourceTransitionClaim,
+    published: bool,
 ) -> Result<(), String> {
     with_codex_home_transition_state(|transition| {
-        acknowledge_codex_home_source_transition_published_in_state(transition, generation);
+        finish_codex_home_source_transition_claim_in_state(transition, claim, published);
         Ok(())
     })
 }
 
-fn detect_codex_home_source_transition_in_state(
+fn claim_codex_home_source_transition_in_state(
     transition: &mut CodexHomeTransitionState,
-) -> Result<Option<CodexHomeSourceEnvelope>, String> {
+) -> Result<Option<CodexHomeSourceTransitionClaim>, String> {
     if transition.canonical_home_key.is_none() {
         return Ok(None);
     }
-    if let Some(envelope) = refresh_codex_home_source_identity(transition)? {
-        return Ok(Some(envelope));
+    refresh_codex_home_source_identity(transition)?;
+    let Some(generation) = transition.pending_publication_generation else {
+        return Ok(None);
+    };
+    if transition.in_flight_publication.is_some() {
+        return Ok(None);
     }
-    if transition.pending_publication_generation.is_some() {
-        return current_codex_home_source_envelope(transition).map(Some);
-    }
-    Ok(None)
+    transition.next_claim_nonce = transition
+        .next_claim_nonce
+        .checked_add(1)
+        .ok_or_else(|| "Codex Home source event claim nonce overflow".to_string())?;
+    let claim_nonce = transition.next_claim_nonce;
+    transition.in_flight_publication = Some((generation, claim_nonce));
+    Ok(Some(CodexHomeSourceTransitionClaim {
+        envelope: current_codex_home_source_envelope(transition)?,
+        claim_nonce,
+    }))
 }
 
-fn acknowledge_codex_home_source_transition_published_in_state(
+fn finish_codex_home_source_transition_claim_in_state(
     transition: &mut CodexHomeTransitionState,
-    generation: u64,
+    claim: &CodexHomeSourceTransitionClaim,
+    published: bool,
 ) {
-    if transition.pending_publication_generation == Some(generation) {
+    let generation = claim.envelope.transition_generation;
+    if transition.in_flight_publication != Some((generation, claim.claim_nonce)) {
+        return;
+    }
+    transition.in_flight_publication = None;
+    if published && transition.pending_publication_generation == Some(generation) {
         transition.pending_publication_generation = None;
     }
 }
@@ -241,7 +301,7 @@ pub(crate) fn pin_captured_codex_home_source(
     let handle = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(DIRECTORY_NOFOLLOW_FLAGS)
-        .open(&captured.source_path)
+        .open(&captured.codex_home)
         .map_err(|error| format!("failed to pin Codex Home source: {error}"))?;
     let metadata = handle
         .metadata()
@@ -250,15 +310,285 @@ pub(crate) fn pin_captured_codex_home_source(
     if physical_home_key != captured.source_token.physical_home_key {
         return Err("Codex Home physical identity changed before it could be pinned".into());
     }
+    let snapshot_path = snapshot_pinned_unread_source(&handle)?;
     Ok(PinnedCodexHomeSource {
         _handle: handle,
-        read_path: captured.codex_home.clone(),
+        read_path: snapshot_path.clone(),
+        snapshot_path: Some(snapshot_path),
         source_scope_key: format!(
             "{}|{}",
             captured.source_token.canonical_home_key,
             captured.source_token.physical_home_key
         ),
     })
+}
+
+#[cfg(unix)]
+fn snapshot_pinned_unread_source(root: &std::fs::File) -> Result<PathBuf, String> {
+    use rustix::fs::FileType;
+
+    let sequence = PINNED_SOURCE_SNAPSHOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let snapshot = std::env::temp_dir().join(format!(
+        "codex-token-bar-pinned-unread-{}-{sequence}",
+        std::process::id()
+    ));
+    use std::os::unix::fs::DirBuilderExt;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder.create(&snapshot)
+        .map_err(|error| format!("failed to create pinned Codex Home snapshot: {error}"))?;
+    let result = (|| {
+        for file_name in [
+            ".codex-global-state.json",
+            "state_5.sqlite",
+            "state_5.sqlite-wal",
+            "state_5.sqlite-shm",
+        ] {
+            copy_optional_pinned_entry(root, file_name, &snapshot.join(file_name))?;
+        }
+        copy_recent_pinned_sessions(root, &snapshot.join("sessions"))?;
+        Ok::<(), String>(())
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::remove_dir_all(&snapshot);
+        return Err(error);
+    }
+    // Confirm the descriptor still names a directory after the full snapshot.
+    let stat = rustix::fs::fstat(root)
+        .map_err(|error| format!("failed to revalidate pinned Codex Home: {error}"))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
+        let _ = std::fs::remove_dir_all(&snapshot);
+        return Err("pinned Codex Home stopped being a directory".into());
+    }
+    Ok(snapshot)
+}
+
+#[cfg(unix)]
+fn copy_recent_pinned_sessions(
+    root: &std::fs::File,
+    destination: &Path,
+) -> Result<(), String> {
+    use rustix::fs::{openat, Mode, OFlags};
+
+    let sessions = match openat(
+        root,
+        "sessions",
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::DIRECTORY,
+        Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(rustix::io::Errno::NOENT) => return Ok(()),
+        Err(error) => return Err(format!("failed to open pinned sessions: {error}")),
+    };
+    let cutoff = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64 - PINNED_SESSION_LOOKBACK_SECONDS)
+        .unwrap_or(i64::MAX);
+    let mut copied = 0usize;
+    let mut inspected = 0usize;
+    copy_recent_pinned_session_tree(
+        &sessions,
+        destination,
+        cutoff,
+        &mut inspected,
+        &mut copied,
+    )
+}
+
+#[cfg(unix)]
+fn copy_recent_pinned_session_tree<Fd: std::os::fd::AsFd>(
+    parent: Fd,
+    destination: &Path,
+    cutoff: i64,
+    inspected: &mut usize,
+    copied: &mut usize,
+) -> Result<(), String> {
+    use rustix::fs::{openat, statat, AtFlags, Dir, FileType, Mode, OFlags};
+    use std::ffi::OsStr;
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut directory = Dir::read_from(&parent)
+        .map_err(|error| format!("failed to enumerate pinned sessions: {error}"))?;
+    while let Some(entry) = directory.read() {
+        let entry = entry.map_err(|error| format!("failed to enumerate pinned sessions: {error}"))?;
+        let bytes = entry.file_name().to_bytes();
+        if bytes == b"." || bytes == b".." {
+            continue;
+        }
+        *inspected += 1;
+        if *inspected > PINNED_SESSION_ENTRY_LIMIT {
+            return Err(format!(
+                "pinned session observation exceeded {PINNED_SESSION_ENTRY_LIMIT} entries"
+            ));
+        }
+        let child_name = OsStr::from_bytes(bytes);
+        let child_name_text = child_name.to_string_lossy();
+        let stat = statat(&parent, child_name_text.as_ref(), AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|error| format!("failed to inspect pinned session entry: {error}"))?;
+        match FileType::from_raw_mode(stat.st_mode) {
+            FileType::Directory => {
+                let fd = openat(
+                    &parent,
+                    child_name_text.as_ref(),
+                    OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::DIRECTORY,
+                    Mode::empty(),
+                )
+                .map_err(|error| format!("failed to open pinned session directory: {error}"))?;
+                copy_recent_pinned_session_tree(
+                    &fd,
+                    &destination.join(child_name),
+                    cutoff,
+                    inspected,
+                    copied,
+                )?;
+            }
+            FileType::RegularFile => {
+                if *copied >= PINNED_SESSION_FILE_LIMIT
+                    || !child_name
+                        .to_string_lossy()
+                        .to_ascii_lowercase()
+                        .ends_with(".jsonl")
+                    || stat.st_mtime < cutoff
+                {
+                    continue;
+                }
+                let fd = openat(
+                    &parent,
+                    child_name_text.as_ref(),
+                    OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                    Mode::empty(),
+                )
+                .map_err(|error| format!("failed to open recent pinned session: {error}"))?;
+                let mut source = std::fs::File::from(fd);
+                let size = source
+                    .metadata()
+                    .map_err(|error| format!("failed to inspect recent pinned session: {error}"))?
+                    .len();
+                std::fs::create_dir_all(destination).map_err(|error| {
+                    format!("failed to create pinned session snapshot directory: {error}")
+                })?;
+                let mut target = std::fs::File::create(destination.join(child_name)).map_err(
+                    |error| format!("failed to create pinned session snapshot: {error}"),
+                )?;
+                if size <= PINNED_SESSION_FIRST_LINE_LIMIT + PINNED_SESSION_TAIL_LIMIT {
+                    std::io::copy(&mut source, &mut target).map_err(|error| {
+                        format!("failed to copy recent pinned session: {error}")
+                    })?;
+                } else {
+                    let mut first = vec![0; PINNED_SESSION_FIRST_LINE_LIMIT as usize];
+                    let first_len = source
+                        .read(&mut first)
+                        .map_err(|error| format!("failed to read pinned session head: {error}"))?;
+                    let first_line_end = first[..first_len]
+                        .iter()
+                        .position(|byte| *byte == b'\n')
+                        .map(|index| index + 1)
+                        .unwrap_or(first_len);
+                    target.write_all(&first[..first_line_end]).map_err(|error| {
+                        format!("failed to write pinned session head: {error}")
+                    })?;
+                    source
+                        .seek(SeekFrom::Start(size - PINNED_SESSION_TAIL_LIMIT))
+                        .map_err(|error| format!("failed to seek pinned session tail: {error}"))?;
+                    std::io::copy(&mut source.take(PINNED_SESSION_TAIL_LIMIT), &mut target)
+                        .map_err(|error| format!("failed to copy pinned session tail: {error}"))?;
+                }
+                *copied += 1;
+                #[cfg(test)]
+                PINNED_SOURCE_SESSION_FILES_COPIED.fetch_add(1, Ordering::Relaxed);
+            }
+            FileType::Symlink => {
+                return Err("pinned session entry is a symlink and was rejected".into())
+            }
+            _ => return Err("pinned session entry has an unsupported type".into()),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_pinned_source_copy_count_for_test() {
+    PINNED_SOURCE_SESSION_FILES_COPIED.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn pinned_source_copy_count_for_test() -> u64 {
+    PINNED_SOURCE_SESSION_FILES_COPIED.load(Ordering::Relaxed)
+}
+
+#[cfg(unix)]
+fn copy_optional_pinned_entry<Fd: std::os::fd::AsFd>(
+    parent: Fd,
+    name: &str,
+    destination: &Path,
+) -> Result<(), String> {
+    use rustix::fs::{openat, statat, AtFlags, Dir, FileType, Mode, OFlags};
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let stat = match statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => stat,
+        Err(rustix::io::Errno::NOENT) => return Ok(()),
+        Err(error) => {
+            return Err(format!("failed to inspect pinned unread entry {name}: {error}"))
+        }
+    };
+    match FileType::from_raw_mode(stat.st_mode) {
+        FileType::RegularFile => {
+            let fd = openat(
+                &parent,
+                name,
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::empty(),
+            )
+            .map_err(|error| format!("failed to open pinned unread file {name}: {error}"))?;
+            let mut source = std::fs::File::from(fd);
+            let mut target = std::fs::File::create(destination).map_err(|error| {
+                format!("failed to create pinned unread snapshot file {name}: {error}")
+            })?;
+            std::io::copy(&mut source, &mut target)
+                .map_err(|error| format!("failed to copy pinned unread file {name}: {error}"))?;
+            Ok(())
+        }
+        FileType::Directory => {
+            std::fs::create_dir(destination).map_err(|error| {
+                format!("failed to create pinned unread snapshot directory {name}: {error}")
+            })?;
+            let fd = openat(
+                &parent,
+                name,
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::DIRECTORY,
+                Mode::empty(),
+            )
+            .map_err(|error| format!("failed to open pinned unread directory {name}: {error}"))?;
+            let mut directory = Dir::read_from(&fd)
+                .map_err(|error| format!("failed to enumerate pinned unread directory {name}: {error}"))?;
+            while let Some(entry) = directory.read() {
+                let entry = entry.map_err(|error| {
+                    format!("failed to enumerate pinned unread directory {name}: {error}")
+                })?;
+                let bytes = entry.file_name().to_bytes();
+                if bytes == b"." || bytes == b".." {
+                    continue;
+                }
+                let child_name = OsStr::from_bytes(bytes);
+                let child_name_text = child_name.to_string_lossy();
+                copy_optional_pinned_entry(
+                    &fd,
+                    child_name_text.as_ref(),
+                    &destination.join(child_name),
+                )?;
+            }
+            Ok(())
+        }
+        FileType::Symlink => Err(format!(
+            "pinned unread entry {name} is a symlink and was rejected"
+        )),
+        other => Err(format!(
+            "pinned unread entry {name} has unsupported type {other:?}"
+        )),
+    }
 }
 
 #[cfg(windows)]
@@ -271,15 +601,15 @@ pub(crate) fn pin_captured_codex_home_source(
     const FILE_SHARE_READ: u32 = 0x0000_0001;
     const FILE_SHARE_WRITE: u32 = 0x0000_0002;
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
 
     let handle = OpenOptions::new()
         .read(true)
         // Denying delete sharing keeps the configured path bound to this directory
         // until the source-bound read and acknowledgement complete.
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(&captured.source_path)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(&captured.codex_home)
         .map_err(|error| format!("failed to pin Codex Home source: {error}"))?;
     let (volume, file_id) = windows_home_identity(&handle)
         .map_err(|error| format!("failed to inspect pinned Codex Home source: {error}"))?;
@@ -287,9 +617,20 @@ pub(crate) fn pin_captured_codex_home_source(
     if physical_home_key != captured.source_token.physical_home_key {
         return Err("Codex Home physical identity changed before it could be pinned".into());
     }
+    use std::os::windows::fs::MetadataExt;
+    if handle
+        .metadata()
+        .map_err(|error| format!("failed to inspect pinned Codex Home attributes: {error}"))?
+        .file_attributes()
+        & FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+    {
+        return Err("canonical Codex Home target is a reparse point".into());
+    }
     Ok(PinnedCodexHomeSource {
         _handle: handle,
         read_path: captured.codex_home.clone(),
+        snapshot_path: None,
         source_scope_key: format!(
             "{}|{}",
             captured.source_token.canonical_home_key,
@@ -380,6 +721,7 @@ fn refresh_codex_home_source_identity(
         transition.canonical_home_key = Some(canonical_home_key.clone());
         transition.physical_home_key = Some(physical_home_key.clone());
         transition.pending_publication_generation = Some(transition.transition_generation);
+        transition.in_flight_publication = None;
     }
     transition.codex_home_path = Some(codex_home_path);
     if !changed {
@@ -988,7 +1330,7 @@ mod tests {
     }
 
     #[test]
-    fn detected_transition_retries_until_publish_ack_then_stops() {
+    fn concurrent_detectors_issue_one_claim_and_failure_requeues_it() {
         let home = disposable_source_test_directory("background-publish-ack");
         let displaced = home.with_extension("displaced");
         let mut transition = CodexHomeTransitionState::default();
@@ -1001,21 +1343,27 @@ mod tests {
         std::fs::rename(&home, &displaced).unwrap();
         std::fs::create_dir(&home).unwrap();
 
-        let first = detect_codex_home_source_transition_in_state(&mut transition)
+        let first = claim_codex_home_source_transition_in_state(&mut transition)
             .unwrap()
             .expect("first detection should publish");
-        let retry = detect_codex_home_source_transition_in_state(&mut transition)
+        assert!(claim_codex_home_source_transition_in_state(&mut transition)
             .unwrap()
-            .expect("failed publish must remain pending");
-        assert_eq!(retry.transition_generation, first.transition_generation);
-        assert_eq!(retry.transition_generation, source_a.transition_generation + 1);
-
-        acknowledge_codex_home_source_transition_published_in_state(
-            &mut transition,
-            first.transition_generation,
+            .is_none());
+        assert_eq!(
+            first.envelope.transition_generation,
+            source_a.transition_generation + 1
         );
+
+        finish_codex_home_source_transition_claim_in_state(&mut transition, &first, false);
+        let retry = claim_codex_home_source_transition_in_state(&mut transition)
+            .unwrap()
+            .expect("failed emit must requeue the generation");
+        assert_eq!(retry.envelope.transition_generation, first.envelope.transition_generation);
+        assert_ne!(retry.claim_nonce, first.claim_nonce);
+
+        finish_codex_home_source_transition_claim_in_state(&mut transition, &retry, true);
         assert!(
-            detect_codex_home_source_transition_in_state(&mut transition)
+            claim_codex_home_source_transition_in_state(&mut transition)
                 .unwrap()
                 .is_none(),
             "successful publish acknowledgement must consume the event exactly once"
@@ -1025,12 +1373,81 @@ mod tests {
         remove_source_test_directory(displaced);
     }
 
+    #[test]
+    fn public_detector_lock_allows_one_in_flight_claim_across_threads() {
+        use std::sync::{Arc, Barrier};
+
+        let home = disposable_source_test_directory("threaded-detector");
+        let displaced = home.with_extension("displaced");
+        let mut initial = CodexHomeTransitionState::default();
+        resolve_codex_home_source(
+            &mut initial,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+        std::fs::rename(&home, &displaced).unwrap();
+        std::fs::create_dir(&home).unwrap();
+        let state = Arc::new(Mutex::new(initial));
+        let barrier = Arc::new(Barrier::new(3));
+        let handles = [(), ()].map(|_| {
+            let state = state.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                claim_codex_home_source_transition_from(&state).unwrap()
+            })
+        });
+        barrier.wait();
+        let claims = handles
+            .into_iter()
+            .filter_map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(claims.len(), 1);
+
+        remove_source_test_directory(home);
+        remove_source_test_directory(displaced);
+    }
+
+    #[test]
+    fn stale_claim_cannot_clear_a_newer_generation() {
+        let home = disposable_source_test_directory("stale-claim-a");
+        let displaced_a = home.with_extension("displaced-a");
+        let displaced_b = home.with_extension("displaced-b");
+        let mut transition = CodexHomeTransitionState::default();
+        resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+
+        std::fs::rename(&home, &displaced_a).unwrap();
+        std::fs::create_dir(&home).unwrap();
+        let stale = claim_codex_home_source_transition_in_state(&mut transition)
+            .unwrap()
+            .unwrap();
+
+        std::fs::rename(&home, &displaced_b).unwrap();
+        std::fs::create_dir(&home).unwrap();
+        refresh_codex_home_source_identity(&mut transition).unwrap();
+        finish_codex_home_source_transition_claim_in_state(&mut transition, &stale, true);
+
+        let current = claim_codex_home_source_transition_in_state(&mut transition)
+            .unwrap()
+            .expect("stale acknowledgement must not clear the newer generation");
+        assert!(current.envelope.transition_generation > stale.envelope.transition_generation);
+
+        remove_source_test_directory(home);
+        remove_source_test_directory(displaced_a);
+        remove_source_test_directory(displaced_b);
+    }
+
     #[cfg(unix)]
     #[test]
-    fn pinned_source_detects_swap_before_observation_can_be_committed() {
+    fn pinned_source_observation_survives_a_to_b_to_a_swap() {
         let home = disposable_source_test_directory("pinned-source-a");
         let displaced = home.with_extension("displaced");
-        std::fs::write(home.join("observation"), "A").unwrap();
+        std::fs::write(home.join(".codex-global-state.json"), "A").unwrap();
         let mut transition = CodexHomeTransitionState::default();
         let source_a = resolve_codex_home_source(
             &mut transition,
@@ -1041,19 +1458,90 @@ mod tests {
             capture_codex_home_source_from_state(&transition, &source_a.source_token()).unwrap();
         let pinned = pin_captured_codex_home_source(&captured).expect("pin physical A");
 
-        std::fs::rename(&home, &displaced).expect("replace after validator and pin");
+        std::fs::rename(&home, &displaced).expect("replace A with B after pin");
         std::fs::create_dir(&home).expect("install B at the same canonical path");
-        std::fs::write(home.join("observation"), "B").unwrap();
+        std::fs::write(home.join(".codex-global-state.json"), "B").unwrap();
+        std::fs::remove_dir_all(&home).unwrap();
+        std::fs::rename(&displaced, &home).expect("restore A before validation");
 
         assert_eq!(
-            std::fs::read_to_string(pinned.read_path().join("observation")).unwrap(),
-            "B"
+            std::fs::read_to_string(pinned.read_path().join(".codex-global-state.json")).unwrap(),
+            "A"
         );
-        assert!(validate_captured_codex_home_source(&captured).is_err());
         assert!(pinned.source_scope_key.contains(&source_a.physical_home_key));
 
         remove_source_test_directory(home);
-        remove_source_test_directory(displaced);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pinned_source_accepts_a_legal_canonical_target() {
+        use std::os::unix::fs::symlink;
+
+        let target = disposable_source_test_directory("canonical-target");
+        let link = target.with_extension("link");
+        symlink(&target, &link).unwrap();
+        std::fs::write(target.join(".codex-global-state.json"), "target").unwrap();
+        let mut transition = CodexHomeTransitionState::default();
+        let source = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(link.clone(), "manual"),
+        )
+        .unwrap();
+        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
+            .unwrap();
+
+        let pinned = pin_captured_codex_home_source(&captured).expect("pin canonical target");
+        assert_eq!(
+            std::fs::read_to_string(pinned.read_path().join(".codex-global-state.json")).unwrap(),
+            "target"
+        );
+
+        std::fs::remove_file(link).unwrap();
+        remove_source_test_directory(target);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pinned_source_copies_only_bounded_recent_session_candidates() {
+        let home = disposable_source_test_directory("bounded-pinned-sessions");
+        let sessions = home.join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        let old_time = std::fs::FileTimes::new()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1));
+        for index in 0..200 {
+            let path = sessions.join(format!("old-{index}.jsonl"));
+            std::fs::write(&path, "old").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(old_time.clone())
+                .unwrap();
+        }
+        for index in 0..2 {
+            std::fs::write(sessions.join(format!("recent-{index}.jsonl")), "recent").unwrap();
+        }
+        let mut transition = CodexHomeTransitionState::default();
+        let source = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
+            .unwrap();
+        reset_pinned_source_copy_count_for_test();
+
+        let pinned = pin_captured_codex_home_source(&captured).unwrap();
+
+        assert_eq!(pinned_source_copy_count_for_test(), 2);
+        assert_eq!(
+            std::fs::read_dir(pinned.read_path().join("sessions"))
+                .unwrap()
+                .count(),
+            2
+        );
+        remove_source_test_directory(home);
     }
 
     #[test]
