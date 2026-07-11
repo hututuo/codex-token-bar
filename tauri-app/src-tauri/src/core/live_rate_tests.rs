@@ -553,6 +553,74 @@ fn cold_concurrent_monitor_refresh_is_single_flight() {
 }
 
 #[test]
+fn panic_after_refresh_claim_releases_cold_waiter() {
+    let root = temp_root("live-rate-monitor-panic-claim");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "A", 1);
+    create_logs_database(&root, |_connection, _now| {});
+    let monitor = Arc::new(LiveRateMonitorService::new(root.clone()));
+
+    let panicking_monitor = Arc::clone(&monitor);
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        panicking_monitor.test_snapshot_after_claim(None, || panic!("injected refresh panic"));
+    }));
+    assert!(panic_result.is_err());
+
+    let (done_tx, done_rx) = mpsc::channel();
+    let next_monitor = Arc::clone(&monitor);
+    std::thread::spawn(move || {
+        let _ = next_monitor.snapshot(None);
+        done_tx.send(()).unwrap();
+    });
+    done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("panic claim must not strand the next cold snapshot");
+    assert_eq!(monitor.test_refresh_count(), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn old_panic_guard_cannot_clear_reset_replacement_claim() {
+    let root = temp_root("live-rate-monitor-panic-reset-race");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "A", 1);
+    create_logs_database(&root, |_connection, _now| {});
+    let monitor = Arc::new(LiveRateMonitorService::new(root.clone()));
+    let (old_started_tx, old_started_rx) = mpsc::channel();
+    let (panic_tx, panic_rx) = mpsc::channel();
+    let old_monitor = Arc::clone(&monitor);
+    let old = std::thread::spawn(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            old_monitor.test_snapshot_after_claim(None, || {
+                old_started_tx.send(()).unwrap();
+                panic_rx.recv().unwrap();
+                panic!("old claim panic");
+            });
+        }))
+    });
+    old_started_rx.recv().unwrap();
+    monitor.reset();
+
+    let (new_started_tx, new_started_rx) = mpsc::channel();
+    let (release_new_tx, release_new_rx) = mpsc::channel();
+    let new_monitor = Arc::clone(&monitor);
+    let new = std::thread::spawn(move || {
+        new_monitor.test_snapshot_after_claim(None, || {
+            new_started_tx.send(()).unwrap();
+            release_new_rx.recv().unwrap();
+        })
+    });
+    new_started_rx.recv().unwrap();
+    panic_tx.send(()).unwrap();
+    assert!(old.join().unwrap().is_err());
+    release_new_tx.send(()).unwrap();
+    let _ = new.join().unwrap();
+
+    assert_eq!(monitor.test_refresh_count(), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn read_snapshot_falls_back_to_rollout_assistant_message_when_logs_have_no_new_rows() {
     let root = temp_root("live-rate-rollout-fallback");
     fs::create_dir_all(&root).unwrap();

@@ -58,6 +58,45 @@ struct RolloutSignatureEntry {
     modified_at: Option<SystemTime>,
 }
 
+struct RefreshClaimGuard<'a> {
+    service: &'a LiveRateMonitorService,
+    nonce: u64,
+    reset_generation: u64,
+    armed: bool,
+}
+
+impl RefreshClaimGuard<'_> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RefreshClaimGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let cleared = {
+            let mut state = self
+                .service
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.refresh_in_flight == Some(self.nonce)
+                && state.reset_generation == self.reset_generation
+            {
+                state.refresh_in_flight = None;
+                true
+            } else {
+                false
+            }
+        };
+        if cleared {
+            self.service.refresh_ready.notify_all();
+        }
+    }
+}
+
 impl LiveRateMonitorService {
     pub fn new(codex_home: PathBuf) -> Self {
         let source_scope = LiveRateSourceScope::legacy(&codex_home);
@@ -132,6 +171,12 @@ impl LiveRateMonitorService {
             state.refresh_in_flight = Some(nonce);
             break (nonce, state.reset_generation);
         };
+        let mut claim_guard = RefreshClaimGuard {
+            service: self,
+            nonce: refresh_nonce,
+            reset_generation,
+            armed: true,
+        };
 
         after_claim();
         let signature = log_store_signature(&self.codex_home, &self.source_scope);
@@ -142,6 +187,7 @@ impl LiveRateMonitorService {
             {
                 self.refresh_ready.notify_all();
                 drop(state);
+                claim_guard.disarm();
                 return read_snapshot_with_unread_scoped(
                     &self.codex_home,
                     &self.source_scope,
@@ -161,6 +207,7 @@ impl LiveRateMonitorService {
                 snapshot.unread_summary = unread_summary;
                 state.refresh_in_flight = None;
                 self.refresh_ready.notify_all();
+                claim_guard.disarm();
                 return snapshot;
             }
         }
@@ -199,6 +246,7 @@ impl LiveRateMonitorService {
             state.refresh_in_flight = None;
         }
         self.refresh_ready.notify_all();
+        claim_guard.disarm();
         snapshot
     }
 
