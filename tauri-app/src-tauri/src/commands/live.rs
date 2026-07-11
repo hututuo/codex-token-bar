@@ -32,7 +32,6 @@ pub struct LiveRateMonitorRegistry {
     monitor: Arc<Mutex<Option<Arc<LiveRateMonitorService>>>>,
     stream: Arc<Mutex<LiveRateStreamState>>,
     unread_cache: Arc<Mutex<HashMap<String, CachedUnreadSummary>>>,
-    native_tray_writer: Arc<Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -59,6 +58,7 @@ struct LiveRateStreamState {
     native_tray_last_readout: Option<(String, String)>,
     native_tray_settings_key: Option<(bool, bool)>,
     native_tray_revision: u64,
+    native_tray_desired_readout: Option<(String, String)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -130,7 +130,7 @@ impl LiveRateMonitorRegistry {
         &self,
         display: &DisplaySurfaceSettingsSnapshot,
         supported: bool,
-        writer: impl FnOnce(String, String) -> Result<bool, String>,
+        mut writer: impl FnMut(String, String) -> Result<bool, String>,
     ) -> Result<Option<u64>, String> {
         let settings_key = (
             supported && display.status_tray_live_text_enabled,
@@ -153,18 +153,10 @@ impl LiveRateMonitorRegistry {
                 stream.running = false;
             }
             stream.native_tray_settings_key = None;
+            stream.native_tray_desired_readout = Some(readout.clone());
             stream.native_tray_revision
         };
-        let _writer_guard = self.native_tray_writer.lock().map_err(|error| error.to_string())?;
-        {
-            let stream = self.stream.lock().map_err(|error| error.to_string())?;
-            if stream.native_tray_revision != revision {
-                return Ok(None);
-            }
-        }
-        if !writer(readout.0, readout.1)? {
-            return Err("status tray is not available".into());
-        }
+        self.write_native_presentation_revisioned(revision, readout, &mut writer)?;
         let mut stream = self.stream.lock().map_err(|error| error.to_string())?;
         if stream.native_tray_revision != revision {
             return Ok(None);
@@ -175,6 +167,28 @@ impl LiveRateMonitorRegistry {
         stream.native_tray_settings_key = Some(settings_key);
         let should_spawn = configure_native_tray_stream(&mut stream, stream_enabled);
         Ok(should_spawn.then_some(stream.loop_generation))
+    }
+
+    fn write_native_presentation_revisioned(
+        &self,
+        mut revision: u64,
+        mut readout: (String, String),
+        writer: &mut impl FnMut(String, String) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        loop {
+            if !writer(readout.0, readout.1)? {
+                return Err("status tray is not available".into());
+            }
+            let stream = self.stream.lock().map_err(|error| error.to_string())?;
+            if stream.native_tray_revision == revision {
+                return Ok(());
+            }
+            revision = stream.native_tray_revision;
+            readout = stream
+                .native_tray_desired_readout
+                .clone()
+                .ok_or_else(|| "native tray desired readout is unavailable".to_string())?;
+        }
     }
 
     fn unread_summary_for_source(
@@ -572,9 +586,8 @@ impl LiveRateMonitorRegistry {
         loop_generation: u64,
         source: &CodexHomeSourceToken,
         raw_rate: f64,
-        writer: impl FnOnce(String, String) -> Result<bool, String>,
+        mut writer: impl FnMut(String, String) -> Result<bool, String>,
     ) -> Result<(), String> {
-        let _writer_guard = self.native_tray_writer.lock().map_err(|error| error.to_string())?;
         let mut stream = self.stream.lock().map_err(|error| error.to_string())?;
         if !stream.running || stream.loop_generation != loop_generation {
             return Ok(());
@@ -582,11 +595,11 @@ impl LiveRateMonitorRegistry {
         let Some(readout) = apply_native_tray_rate(&mut stream, source, raw_rate) else {
             return Ok(());
         };
+        stream.native_tray_revision = stream.native_tray_revision.saturating_add(1);
+        let revision = stream.native_tray_revision;
+        stream.native_tray_desired_readout = Some(readout.clone());
         drop(stream);
-        if !writer(readout.0, readout.1)? {
-            return Err("status tray is not available".into());
-        }
-        Ok(())
+        self.write_native_presentation_revisioned(revision, readout, &mut writer)
     }
 
     fn publish_stream_if_current(
@@ -1312,6 +1325,9 @@ mod tests {
         assert!(registry
             .apply_status_tray_settings_with_writer(&display, true, |_, _| Ok(false))
             .is_err());
+        assert!(registry
+            .apply_status_tray_settings_with_writer(&display, true, |_, _| Err("setter failed".into()))
+            .is_err());
         {
             let stream = registry.stream.lock().unwrap();
             assert!(!stream.native_tray_enabled);
@@ -1327,47 +1343,63 @@ mod tests {
 
     #[test]
     fn revisioned_writer_makes_disable_ctb_win_over_old_tick_in_both_orders() {
+        use std::sync::mpsc;
+        use std::thread;
+
         let source = live_source_for_test("source-a", 1).source_token;
         let enabled = DisplaySurfaceSettingsSnapshot::default();
         let mut disabled = enabled.clone();
         disabled.status_tray_live_text_enabled = false;
+        let registry = LiveRateMonitorRegistry::default();
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let generation = registry
+            .apply_status_tray_settings_with_writer(&enabled, true, |title, _| {
+                writes.lock().unwrap().push(title);
+                Ok(true)
+            })
+            .unwrap()
+            .unwrap();
+        registry.stream.lock().unwrap().native_tray_source = Some(source.clone());
 
-        for tick_first in [false, true] {
-            let registry = LiveRateMonitorRegistry::default();
-            let mut writes = Vec::new();
-            let generation = registry
-                .apply_status_tray_settings_with_writer(&enabled, true, |title, _| {
-                    writes.push(title);
-                    Ok(true)
-                })
-                .unwrap()
-                .unwrap();
-            registry.stream.lock().unwrap().native_tray_source = Some(source.clone());
-            if tick_first {
-                registry
-                    .publish_native_tray_with_writer(generation, &source, 12.0, |title, _| {
-                        writes.push(title);
-                        Ok(true)
-                    })
-                    .unwrap();
-            }
-            registry
-                .apply_status_tray_settings_with_writer(&disabled, true, |title, _| {
-                    writes.push(title);
+        let (tick_ready_tx, tick_ready_rx) = mpsc::channel();
+        let (release_tick_tx, release_tick_rx) = mpsc::channel();
+        let tick_registry = registry.clone();
+        let tick_source = source.clone();
+        let tick_writes = writes.clone();
+        let tick = thread::spawn(move || {
+            let mut first_write = true;
+            tick_registry
+                .publish_native_tray_with_writer(generation, &tick_source, 12.0, |title, _| {
+                    if first_write {
+                        first_write = false;
+                        tick_ready_tx.send(()).unwrap();
+                        release_tick_rx.recv().unwrap();
+                    }
+                    tick_writes.lock().unwrap().push(title);
                     Ok(true)
                 })
                 .unwrap();
-            if !tick_first {
-                registry
-                    .publish_native_tray_with_writer(generation, &source, 12.0, |title, _| {
-                        writes.push(title);
-                        Ok(true)
-                    })
-                    .unwrap();
-            }
-            assert_eq!(writes.last().map(String::as_str), Some("CTB"));
-            assert_eq!(writes.iter().filter(|title| title.as_str() == "12.0/s").count(), usize::from(tick_first));
-        }
+        });
+        tick_ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        registry
+            .apply_status_tray_settings_with_writer(&disabled, true, |title, _| {
+                writes.lock().unwrap().push(title);
+                Ok(true)
+            })
+            .unwrap();
+        release_tick_tx.send(()).unwrap();
+        tick.join().unwrap();
+        assert_eq!(writes.lock().unwrap().last().map(String::as_str), Some("CTB"));
+
+        let registry = LiveRateMonitorRegistry::default();
+        let mut ordered = Vec::new();
+        let generation = registry
+            .apply_status_tray_settings_with_writer(&enabled, true, |title, _| { ordered.push(title); Ok(true) })
+            .unwrap().unwrap();
+        registry.stream.lock().unwrap().native_tray_source = Some(source.clone());
+        registry.publish_native_tray_with_writer(generation, &source, 12.0, |title, _| { ordered.push(title); Ok(true) }).unwrap();
+        registry.apply_status_tray_settings_with_writer(&disabled, true, |title, _| { ordered.push(title); Ok(true) }).unwrap();
+        assert_eq!(ordered.last().map(String::as_str), Some("CTB"));
     }
 
     #[test]
