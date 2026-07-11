@@ -540,6 +540,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         runMainLoopBriefly()
 
         let resizedScrollView = try XCTUnwrap(firstScrollView(in: hostingView))
+        XCTAssertTrue(resizedScrollView === scrollView)
         callbacks.removeAll()
         resizedScrollView.contentView.scroll(to: NSPoint(x: 84.25, y: 0))
         resizedScrollView.reflectScrolledClipView(resizedScrollView.contentView)
@@ -557,9 +558,11 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
         hostingView.layoutSubtreeIfNeeded()
         runMainLoopBriefly()
+        let revisionThreeScrollView = try XCTUnwrap(firstScrollView(in: hostingView))
+        XCTAssertTrue(revisionThreeScrollView === resizedScrollView)
         callbacks.removeAll()
-        resizedScrollView.contentView.scroll(to: NSPoint(x: 91.5, y: 0))
-        resizedScrollView.reflectScrolledClipView(resizedScrollView.contentView)
+        revisionThreeScrollView.contentView.scroll(to: NSPoint(x: 91.5, y: 0))
+        revisionThreeScrollView.reflectScrolledClipView(revisionThreeScrollView.contentView)
         XCTAssertEqual(callbacks.filter { abs($0.offset - 91.5) < 0.0001 }.count, 1)
         XCTAssertEqual(callbacks.last?.revision, 3)
 
@@ -572,9 +575,11 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
         hostingView.layoutSubtreeIfNeeded()
         runMainLoopBriefly()
+        let activeScrollViewWithoutReader = try XCTUnwrap(firstScrollView(in: hostingView))
+        XCTAssertTrue(activeScrollViewWithoutReader === resizedScrollView)
         callbacks.removeAll()
-        resizedScrollView.contentView.scroll(to: NSPoint(x: 110, y: 0))
-        resizedScrollView.reflectScrolledClipView(resizedScrollView.contentView)
+        activeScrollViewWithoutReader.contentView.scroll(to: NSPoint(x: 110, y: 0))
+        activeScrollViewWithoutReader.reflectScrolledClipView(activeScrollViewWithoutReader.contentView)
         XCTAssertTrue(callbacks.isEmpty)
     }
 
