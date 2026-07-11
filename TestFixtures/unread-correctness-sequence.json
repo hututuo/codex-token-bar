@@ -26,9 +26,10 @@
       "nativeThreadIDs": ["019eaaaa-0000-0000-0000-0000000000aa"],
       "appendCompletions": [
         {
-          "eventID": "019eaaaa-0000-0000-0000-0000000000aa:turn-1",
+          "expectedCanonicalID": "019eaaaa-0000-0000-0000-0000000000aa:turn-1",
           "threadID": "019eaaaa-0000-0000-0000-0000000000aa",
           "turnID": "turn-1",
+          "completedAtOffsetSeconds": 1,
           "title": "First completion"
         }
       ],
@@ -56,15 +57,17 @@
       "nativeThreadIDs": ["019eaaaa-0000-0000-0000-0000000000aa"],
       "appendCompletions": [
         {
-          "eventID": "019eaaaa-0000-0000-0000-0000000000aa:turn-2",
+          "expectedCanonicalID": "019eaaaa-0000-0000-0000-0000000000aa:turn-2",
           "threadID": "019eaaaa-0000-0000-0000-0000000000aa",
           "turnID": "turn-2",
+          "completedAtOffsetSeconds": 2,
           "title": "Second completion"
         },
         {
-          "eventID": "019eaaaa-0000-0000-0000-0000000000aa:turn-3",
+          "expectedCanonicalID": "019eaaaa-0000-0000-0000-0000000000aa:turn-3",
           "threadID": "019eaaaa-0000-0000-0000-0000000000aa",
           "turnID": "turn-3",
+          "completedAtOffsetSeconds": 3,
           "title": "Latest completion"
         }
       ],

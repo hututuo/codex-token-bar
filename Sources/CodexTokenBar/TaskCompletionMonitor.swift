@@ -236,7 +236,7 @@ final class TaskCompletionMonitor: ObservableObject {
 
         var didAddUnread = false
         for event in result.events {
-            guard rememberCompletedEventID(event.id) else { continue }
+            guard rememberCompletedEvent(event) else { continue }
             guard !hasCodexUnreadState || officialUnreadThreadIDs.contains(event.threadID) else { continue }
             setLastCompletedTitle(event.title)
             completedTaskThreadIDs[event.id] = event.threadID
@@ -354,7 +354,18 @@ final class TaskCompletionMonitor: ObservableObject {
         completedEventIDs = Set(ordered)
     }
 
-    private func rememberCompletedEventID(_ id: String) -> Bool {
+    private func rememberCompletedEvent(_ event: TaskCompletionEvent) -> Bool {
+        guard !completedEventIDs.contains(event.id) else {
+            return false
+        }
+        if !completedEventIDs.isDisjoint(with: event.legacyIDs) {
+            _ = persistCompletedEventID(event.id)
+            return false
+        }
+        return persistCompletedEventID(event.id)
+    }
+
+    private func persistCompletedEventID(_ id: String) -> Bool {
         guard !id.isEmpty, completedEventIDs.insert(id).inserted else {
             return false
         }

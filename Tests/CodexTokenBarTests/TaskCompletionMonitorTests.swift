@@ -156,18 +156,36 @@ final class TaskCompletionMonitorTests: XCTestCase {
     func testSharedUnreadCorrectnessSequence() throws {
         let sequence = try unreadCorrectnessSequence()
         let monitor = TaskCompletionMonitor(defaults: isolatedDefaults())
+        let sessionsRoot = try makeScannerSessionsRoot(named: "SharedUnreadSequence")
+        defer { try? FileManager.default.removeItem(at: sessionsRoot) }
+        let sessionFile = sessionsRoot.appendingPathComponent("sequence.jsonl")
+        let threadID = try XCTUnwrap(sequence.steps.first?.nativeThreadIDs.first)
+        try writeScannerSessionMeta(threadID: threadID, to: sessionFile)
+        var states: [String: TaskCompletionFileState] = [:]
+        let baseCompletedAt = 1_782_306_000.0
 
         for step in sequence.steps {
-            let events = step.appendCompletions.map {
-                TaskCompletionEvent(
-                    id: $0.eventID,
-                    threadID: $0.threadID,
-                    title: $0.title,
-                    body: "Done"
+            for completion in step.appendCompletions {
+                try appendScannerCompletion(
+                    completion,
+                    completedAt: baseCompletedAt + completion.completedAtOffsetSeconds,
+                    to: sessionFile
                 )
             }
+            let scan = TaskCompletionScanner.scan(
+                sessionsRoot: sessionsRoot,
+                previousStates: states,
+                seedMode: false,
+                seedCutoff: .distantPast
+            )
+            states = scan.states
+            XCTAssertEqual(
+                scan.events.map(\.id),
+                step.appendCompletions.map(\.expectedCanonicalID),
+                step.name
+            )
             monitor.applyForTesting(
-                result: scanResult(events: events),
+                result: scan,
                 unreadThreadRead: .available(Set(step.nativeThreadIDs))
             )
             if step.action == "markAllRead" {
@@ -179,6 +197,42 @@ final class TaskCompletionMonitorTests: XCTestCase {
                 XCTAssertEqual(monitor.lastCompletedTitle, expectedLatestTitle, step.name)
             }
         }
+    }
+
+    func testLegacyPersistedScannerEventIDSuppressesCanonicalEventAfterUpgrade() throws {
+        let defaults = isolatedDefaults()
+        let sessionsRoot = try makeScannerSessionsRoot(named: "LegacyUnreadEventID")
+        defer { try? FileManager.default.removeItem(at: sessionsRoot) }
+        let sessionFile = sessionsRoot.appendingPathComponent("legacy.jsonl")
+        let threadID = "019eaaaa-0000-0000-0000-0000000000cc"
+        let turnID = "turn-legacy"
+        let completedAt = 1_782_306_004.0
+        let completion = UnreadCorrectnessCompletion(
+            expectedCanonicalID: "\(threadID):\(turnID)",
+            threadID: threadID,
+            turnID: turnID,
+            completedAtOffsetSeconds: 4,
+            title: "Legacy completion"
+        )
+        try writeScannerSessionMeta(threadID: threadID, to: sessionFile)
+        try appendScannerCompletion(completion, completedAt: completedAt, to: sessionFile)
+        defaults.set(
+            ["\(threadID)-\(turnID)-\(Int(completedAt))"],
+            forKey: "TaskCompletionMonitor.completedEventIDs.v1"
+        )
+
+        let scan = TaskCompletionScanner.scan(
+            sessionsRoot: sessionsRoot,
+            previousStates: [:],
+            seedMode: false,
+            seedCutoff: .distantPast
+        )
+        XCTAssertEqual(scan.events.map(\.id), [completion.expectedCanonicalID])
+
+        let monitor = TaskCompletionMonitor(defaults: defaults)
+        monitor.applyForTesting(result: scan, unreadThreadRead: .unavailable)
+        XCTAssertEqual(monitor.unreadThreadCount, 0)
+        XCTAssertTrue(monitor.lastCompletedTitle.isEmpty)
     }
 
     func testLiveLoaderScansCompletionsWhileOfficialUnreadIsAvailable() async throws {
@@ -247,6 +301,68 @@ final class TaskCompletionMonitorTests: XCTestCase {
         return try JSONDecoder().decode(UnreadCorrectnessSequence.self, from: Data(contentsOf: fixture))
     }
 
+    private func makeScannerSessionsRoot(named name: String) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func writeScannerSessionMeta(threadID: String, to file: URL) throws {
+        try appendJSONLine([
+            "type": "session_meta",
+            "payload": [
+                "id": threadID,
+                "cwd": "/tmp/unread-sequence",
+                "thread_source": "user",
+                "source": "desktop"
+            ]
+        ], to: file)
+    }
+
+    private func appendScannerCompletion(
+        _ completion: UnreadCorrectnessCompletion,
+        completedAt: TimeInterval,
+        to file: URL
+    ) throws {
+        try appendJSONLine([
+            "type": "event_msg",
+            "payload": [
+                "type": "task_started",
+                "turn_id": completion.turnID,
+                "started_at": completedAt - 1
+            ]
+        ], to: file)
+        try appendJSONLine([
+            "type": "event_msg",
+            "payload": ["type": "user_message", "message": completion.title]
+        ], to: file)
+        try appendJSONLine([
+            "type": "event_msg",
+            "payload": [
+                "type": "task_complete",
+                "turn_id": completion.turnID,
+                "completed_at": completedAt,
+                "duration_ms": 1_000
+            ]
+        ], to: file)
+    }
+
+    private func appendJSONLine(_ object: [String: Any], to file: URL) throws {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let handle: FileHandle
+        if FileManager.default.fileExists(atPath: file.path) {
+            handle = try FileHandle(forWritingTo: file)
+            try handle.seekToEnd()
+        } else {
+            _ = FileManager.default.createFile(atPath: file.path, contents: nil)
+            handle = try FileHandle(forWritingTo: file)
+        }
+        defer { try? handle.close() }
+        try handle.write(contentsOf: data)
+        try handle.write(contentsOf: Data([10]))
+    }
+
     private func waitUntil(
         _ label: String,
         timeout: TimeInterval = 2,
@@ -275,9 +391,10 @@ private struct UnreadCorrectnessStep: Decodable {
 }
 
 private struct UnreadCorrectnessCompletion: Decodable {
-    let eventID: String
+    let expectedCanonicalID: String
     let threadID: String
     let turnID: String
+    let completedAtOffsetSeconds: TimeInterval
     let title: String
 }
 

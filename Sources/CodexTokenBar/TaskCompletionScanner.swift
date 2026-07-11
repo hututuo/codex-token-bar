@@ -213,10 +213,11 @@ enum TaskCompletionScanner {
 
                 events.append(
                     TaskCompletionEvent(
-                        id: "\(state.sessionID)-\(turnID)-\(Int(completedAt))",
+                        id: "\(state.sessionID):\(turnID)",
                         threadID: state.sessionID,
                         title: notificationTitle(state: state, turn: turnState),
-                        body: notificationBody(duration: duration, payload: payload)
+                        body: notificationBody(duration: duration, payload: payload),
+                        legacyIDs: ["\(state.sessionID)-\(turnID)-\(Int(completedAt))"]
                     )
                 )
             default:

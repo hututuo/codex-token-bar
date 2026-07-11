@@ -19,6 +19,21 @@ struct TaskCompletionEvent: Sendable {
     let threadID: String
     let title: String
     let body: String
+    let legacyIDs: Set<String>
+
+    init(
+        id: String,
+        threadID: String,
+        title: String,
+        body: String,
+        legacyIDs: Set<String> = []
+    ) {
+        self.id = id
+        self.threadID = threadID
+        self.title = title
+        self.body = body
+        self.legacyIDs = legacyIDs
+    }
 }
 
 struct TaskCompletionScanResult: Sendable {
