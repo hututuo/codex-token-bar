@@ -76,6 +76,60 @@ test("prepareRecentChartData weights headline cache rate by input tokens", () =>
   assert.equal(data.cacheHitRate, 0.9);
 });
 
+test("recent chart normalizes malformed cache inputs at the model boundary", () => {
+  const malformed = [
+    point(0, { calls: 1, inputTokens: 100, cachedInputTokens: 250, cacheHitRate: 2 }),
+    point(300, { calls: 1, inputTokens: -10, cachedInputTokens: 5, cacheHitRate: -1 }),
+    point(600, {
+      calls: 1,
+      inputTokens: Number.NaN,
+      cachedInputTokens: Number.POSITIVE_INFINITY,
+      cacheHitRate: Number.NaN,
+    }),
+  ];
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: malformed,
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+  const selection = quotaConsumptionSelection(data, 0, 2, "gpt55");
+
+  assert.deepEqual(
+    data.points.map(({ inputTokens, cachedInputTokens, cacheHitRate }) => ({
+      inputTokens,
+      cachedInputTokens,
+      cacheHitRate,
+    })),
+    [
+      { inputTokens: 100, cachedInputTokens: 100, cacheHitRate: 1 },
+      { inputTokens: 0, cachedInputTokens: 0, cacheHitRate: 0 },
+      { inputTokens: 0, cachedInputTokens: 0, cacheHitRate: null },
+    ],
+  );
+  assert.ok(data.cacheHitRate >= 0 && data.cacheHitRate <= 1);
+  assert.ok(selection.cachedInputTokens <= selection.inputTokens);
+  assert.ok(selection.cacheHitRate >= 0 && selection.cacheHitRate <= 1);
+});
+
+test("recent chart cache normalization preserves valid points exactly", () => {
+  const valid = point(0, {
+    tokens: 175,
+    calls: 2,
+    inputTokens: 100,
+    cachedInputTokens: 40,
+    outputTokens: 75,
+    cacheHitRate: 0.4,
+  });
+  const data = prepareRecentChartData("7d", {
+    recentUsage24h: [],
+    recentUsage7d: [valid],
+    recentUsage30d: [],
+  });
+
+  assert.deepEqual(data.points, [valid]);
+  assert.equal(data.cacheHitRate, 0.4);
+});
+
 test("smoothPath uses cubic commands and optionalSmoothPath breaks at missing quota points", () => {
   const path = smoothPath([
     { x: 0, y: 10 },

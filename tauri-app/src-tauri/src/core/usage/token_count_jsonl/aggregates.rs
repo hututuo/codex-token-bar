@@ -27,7 +27,7 @@ impl TokenAccumulator {
         self.input_tokens = self.input_tokens.saturating_add(event.input_tokens);
         self.cached_input_tokens = self
             .cached_input_tokens
-            .saturating_add(event.cached_input_tokens);
+            .saturating_add(event.cached_input_tokens.min(event.input_tokens));
         self.output_tokens = self.output_tokens.saturating_add(event.output_tokens);
     }
 
@@ -35,7 +35,7 @@ impl TokenAccumulator {
         if self.input_tokens == 0 {
             0.0
         } else {
-            self.cached_input_tokens as f64 / self.input_tokens as f64
+            (self.cached_input_tokens as f64 / self.input_tokens as f64).clamp(0.0, 1.0)
         }
     }
 }
@@ -302,5 +302,48 @@ mod current_streak_tests {
         assert_eq!(days.last().unwrap().date, "2026-07-11");
         assert_eq!(days.last().unwrap().tokens, 7);
         assert_eq!(stats.current_streak_days, 1);
+    }
+}
+
+#[cfg(test)]
+mod cache_hit_normalization_tests {
+    use super::*;
+
+    fn event(timestamp: OffsetDateTime, input_tokens: u64, cached_input_tokens: u64) -> TokenEvent {
+        TokenEvent {
+            timestamp,
+            session_id: "cache-normalization".into(),
+            tokens: input_tokens,
+            input_tokens,
+            cached_input_tokens,
+            output_tokens: 0,
+            user_prompt: String::new(),
+            assistant_response: String::new(),
+        }
+    }
+
+    #[test]
+    fn malformed_cached_input_is_clamped_per_event_across_daily_and_recent_aggregates() {
+        let now = OffsetDateTime::now_utc();
+        let events = vec![event(now, 100, 250), event(now, 50, 80)];
+        let offset = UtcOffset::UTC;
+
+        let mut accumulated = TokenAccumulator::default();
+        for event in &events {
+            accumulated.add(event);
+        }
+        assert_eq!(accumulated.input_tokens, 150);
+        assert_eq!(accumulated.cached_input_tokens, 150);
+        assert_eq!(accumulated.cache_hit_rate(), 1.0);
+
+        let days = activity_days_at(&events, now, offset);
+        let today = days.last().unwrap();
+        assert_eq!(today.cache_hit_rate, 1.0);
+
+        let recent = recent_usage(&events, offset);
+        let point = recent.iter().find(|point| point.calls == 2).unwrap();
+        assert_eq!(point.input_tokens, 150);
+        assert_eq!(point.cached_input_tokens, 150);
+        assert_eq!(point.cache_hit_rate, Some(1.0));
     }
 }

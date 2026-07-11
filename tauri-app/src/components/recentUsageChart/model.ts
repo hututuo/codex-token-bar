@@ -456,14 +456,37 @@ export function quotaConsumptionSelection(
 }
 
 function pointsForRange(range: RecentChartRange, series: RecentUsageChartSeries): RecentUsagePoint[] {
+  let points: RecentUsagePoint[];
   switch (range) {
     case "24h":
-      return series.recentUsage24h;
+      points = series.recentUsage24h;
+      break;
     case "7d":
-      return series.recentUsage7d;
+      points = series.recentUsage7d;
+      break;
     case "30d":
-      return series.recentUsage30d;
+      points = series.recentUsage30d;
+      break;
   }
+  return points.map(normalizeRecentUsagePoint);
+}
+
+function normalizeRecentUsagePoint(point: RecentUsagePoint): RecentUsagePoint {
+  const inputTokens = finiteNonnegative(point.inputTokens);
+  const cachedInputTokens = Math.min(finiteNonnegative(point.cachedInputTokens), inputTokens);
+  const cacheHitRate = point.cacheHitRate === null || !Number.isFinite(point.cacheHitRate)
+    ? null
+    : clamp(point.cacheHitRate, 0, 1);
+  return {
+    ...point,
+    inputTokens,
+    cachedInputTokens,
+    cacheHitRate,
+  };
+}
+
+function finiteNonnegative(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, value) : 0;
 }
 
 function optionalQuotaPoints(
