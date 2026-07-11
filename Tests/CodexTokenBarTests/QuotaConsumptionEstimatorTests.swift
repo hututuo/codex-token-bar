@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import CodexTokenBar
 
@@ -441,17 +442,20 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             let expectedIndex: Int
             let atOldest: Bool
             let atLatest: Bool
+            let backwardTarget: Int
+            let forwardTarget: Int
         }
 
         let cases = [
-            Case(offset: 0, viewport: 100, content: 300, windows: 3, expectedOffset: 0, expectedIndex: 0, atOldest: true, atLatest: false),
-            Case(offset: -30, viewport: 100, content: 300, windows: 3, expectedOffset: 0, expectedIndex: 0, atOldest: true, atLatest: false),
-            Case(offset: 100, viewport: 100, content: 300, windows: 3, expectedOffset: 100, expectedIndex: 1, atOldest: false, atLatest: false),
-            Case(offset: 100.4, viewport: 100, content: 300, windows: 3, expectedOffset: 100.4, expectedIndex: 1, atOldest: false, atLatest: false),
-            Case(offset: 199.7, viewport: 100, content: 300, windows: 3, expectedOffset: 199.7, expectedIndex: 1, atOldest: false, atLatest: false),
-            Case(offset: 199.8, viewport: 100, content: 300, windows: 3, expectedOffset: 199.8, expectedIndex: 2, atOldest: false, atLatest: true),
-            Case(offset: 250, viewport: 100, content: 300, windows: 3, expectedOffset: 200, expectedIndex: 2, atOldest: false, atLatest: true),
-            Case(offset: 8, viewport: 0, content: 0, windows: 0, expectedOffset: 0, expectedIndex: 0, atOldest: true, atLatest: true)
+            Case(offset: 0, viewport: 100, content: 300, windows: 3, expectedOffset: 0, expectedIndex: 0, atOldest: true, atLatest: false, backwardTarget: 0, forwardTarget: 1),
+            Case(offset: -30, viewport: 100, content: 300, windows: 3, expectedOffset: 0, expectedIndex: 0, atOldest: true, atLatest: false, backwardTarget: 0, forwardTarget: 1),
+            Case(offset: 0.3, viewport: 100, content: 300, windows: 3, expectedOffset: 0.3, expectedIndex: 0, atOldest: false, atLatest: false, backwardTarget: 0, forwardTarget: 1),
+            Case(offset: 100, viewport: 100, content: 300, windows: 3, expectedOffset: 100, expectedIndex: 1, atOldest: false, atLatest: false, backwardTarget: 0, forwardTarget: 2),
+            Case(offset: 100.4, viewport: 100, content: 300, windows: 3, expectedOffset: 100.4, expectedIndex: 1, atOldest: false, atLatest: false, backwardTarget: 0, forwardTarget: 2),
+            Case(offset: 199.7, viewport: 100, content: 300, windows: 3, expectedOffset: 199.7, expectedIndex: 1, atOldest: false, atLatest: false, backwardTarget: 0, forwardTarget: 2),
+            Case(offset: 199.8, viewport: 100, content: 300, windows: 3, expectedOffset: 199.8, expectedIndex: 2, atOldest: false, atLatest: true, backwardTarget: 1, forwardTarget: 2),
+            Case(offset: 250, viewport: 100, content: 300, windows: 3, expectedOffset: 200, expectedIndex: 2, atOldest: false, atLatest: true, backwardTarget: 1, forwardTarget: 2),
+            Case(offset: 8, viewport: 0, content: 0, windows: 0, expectedOffset: 0, expectedIndex: 0, atOldest: true, atLatest: true, backwardTarget: 0, forwardTarget: 0)
         ]
 
         for item in cases {
@@ -465,6 +469,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             XCTAssertEqual(state.currentWindowIndex, item.expectedIndex)
             XCTAssertEqual(state.isAtOldest, item.atOldest)
             XCTAssertEqual(state.isAtLatest, item.atLatest)
+            XCTAssertEqual(state.targetWindowIndex(for: .backward), item.backwardTarget)
+            XCTAssertEqual(state.targetWindowIndex(for: .forward), item.forwardTarget)
         }
 
         let movedLeftFromLatest = RecentChartScrollPresentation(
@@ -487,18 +493,89 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     @MainActor
-    func testAppKitScrollOffsetObserverReportsGestureStyleBoundsChanges() {
-        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
-        scrollView.documentView = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 40))
-        var reportedOffsets: [CGFloat] = []
-        let observer = RecentChartScrollOffsetObserver()
-        observer.onOffsetChange = { reportedOffsets.append($0) }
-        observer.attach(to: scrollView)
+    func testHostedScrollOffsetReaderTracksBridgeUpdatesAndDetachesCleanly() throws {
+        var callbacks: [HostedScrollCallback] = []
+        let hostingView = NSHostingView(
+            rootView: HostedRecentChartScrollReaderHarness(
+                viewportWidth: 100,
+                contentWidth: 300,
+                revision: 1,
+                isReaderEnabled: true,
+                onOffsetChange: { callbacks.append($0) }
+            )
+        )
+        hostingView.frame = NSRect(x: 0, y: 0, width: 100, height: 40)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 40),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        hostingView.layoutSubtreeIfNeeded()
+        runMainLoopBriefly()
 
-        scrollView.contentView.scroll(to: NSPoint(x: 63.5, y: 0))
-        scrollView.reflectScrolledClipView(scrollView.contentView)
+        let scrollView = try XCTUnwrap(firstScrollView(in: hostingView))
+        XCTAssertTrue(scrollView.contentView.postsBoundsChangedNotifications)
 
-        XCTAssertEqual(reportedOffsets.last ?? -1, 63.5, accuracy: 0.0001)
+        callbacks.removeAll()
+        var gestureBounds = scrollView.contentView.bounds
+        gestureBounds.origin.x = 36.5
+        scrollView.contentView.bounds = gestureBounds
+        XCTAssertEqual(callbacks.last?.offset ?? -1, 36.5, accuracy: 0.0001)
+        XCTAssertEqual(callbacks.last?.viewportWidth, 100)
+        XCTAssertEqual(callbacks.last?.contentWidth, 300)
+        XCTAssertEqual(callbacks.last?.revision, 1)
+
+        hostingView.rootView = HostedRecentChartScrollReaderHarness(
+            viewportWidth: 120,
+            contentWidth: 420,
+            revision: 2,
+            isReaderEnabled: true,
+            onOffsetChange: { callbacks.append($0) }
+        )
+        hostingView.frame.size.width = 120
+        window.setContentSize(NSSize(width: 120, height: 40))
+        hostingView.layoutSubtreeIfNeeded()
+        runMainLoopBriefly()
+
+        let resizedScrollView = try XCTUnwrap(firstScrollView(in: hostingView))
+        callbacks.removeAll()
+        resizedScrollView.contentView.scroll(to: NSPoint(x: 84.25, y: 0))
+        resizedScrollView.reflectScrolledClipView(resizedScrollView.contentView)
+        XCTAssertEqual(callbacks.last?.offset ?? -1, 84.25, accuracy: 0.0001)
+        XCTAssertEqual(callbacks.last?.viewportWidth, 120)
+        XCTAssertEqual(callbacks.last?.contentWidth, 420)
+        XCTAssertEqual(callbacks.last?.revision, 2)
+
+        hostingView.rootView = HostedRecentChartScrollReaderHarness(
+            viewportWidth: 120,
+            contentWidth: 420,
+            revision: 3,
+            isReaderEnabled: true,
+            onOffsetChange: { callbacks.append($0) }
+        )
+        hostingView.layoutSubtreeIfNeeded()
+        runMainLoopBriefly()
+        callbacks.removeAll()
+        resizedScrollView.contentView.scroll(to: NSPoint(x: 91.5, y: 0))
+        resizedScrollView.reflectScrolledClipView(resizedScrollView.contentView)
+        XCTAssertEqual(callbacks.filter { abs($0.offset - 91.5) < 0.0001 }.count, 1)
+        XCTAssertEqual(callbacks.last?.revision, 3)
+
+        hostingView.rootView = HostedRecentChartScrollReaderHarness(
+            viewportWidth: 120,
+            contentWidth: 420,
+            revision: 4,
+            isReaderEnabled: false,
+            onOffsetChange: { callbacks.append($0) }
+        )
+        hostingView.layoutSubtreeIfNeeded()
+        runMainLoopBriefly()
+        callbacks.removeAll()
+        resizedScrollView.contentView.scroll(to: NSPoint(x: 110, y: 0))
+        resizedScrollView.reflectScrolledClipView(resizedScrollView.contentView)
+        XCTAssertTrue(callbacks.isEmpty)
     }
 
     func testTimeMarkerLabelsUseDatesForScrollableRanges() {
@@ -685,4 +762,62 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             )
         )
     }
+}
+
+private struct HostedScrollCallback {
+    let offset: CGFloat
+    let viewportWidth: CGFloat
+    let contentWidth: CGFloat
+    let revision: Int
+}
+
+private struct HostedRecentChartScrollReaderHarness: View {
+    let viewportWidth: CGFloat
+    let contentWidth: CGFloat
+    let revision: Int
+    let isReaderEnabled: Bool
+    let onOffsetChange: (HostedScrollCallback) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                    .frame(width: contentWidth, height: 40)
+
+                if isReaderEnabled {
+                    RecentChartScrollOffsetReader { offset in
+                        onOffsetChange(
+                            HostedScrollCallback(
+                                offset: offset,
+                                viewportWidth: viewportWidth,
+                                contentWidth: contentWidth,
+                                revision: revision
+                            )
+                        )
+                    }
+                    .frame(width: 1, height: 1)
+                }
+            }
+            .frame(width: contentWidth, height: 40)
+        }
+        .frame(width: viewportWidth, height: 40)
+    }
+}
+
+@MainActor
+private func firstScrollView(in view: NSView) -> NSScrollView? {
+    if let scrollView = view as? NSScrollView {
+        return scrollView
+    }
+    for subview in view.subviews {
+        if let scrollView = firstScrollView(in: subview) {
+            return scrollView
+        }
+    }
+    return nil
+}
+
+@MainActor
+private func runMainLoopBriefly() {
+    RunLoop.main.run(until: Date().addingTimeInterval(0.02))
 }

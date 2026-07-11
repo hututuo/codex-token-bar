@@ -151,13 +151,11 @@ struct RecentChartScrollPresentation: Equatable {
     }
 
     func targetWindowIndex(for direction: RecentChartScrollDirection) -> Int {
-        guard windowCount > 1 else { return 0 }
-        switch direction {
-        case .backward:
-            return max(Int(ceil(contentOffset / max(viewportWidth, 1))) - 1, 0)
-        case .forward:
-            return min(currentWindowIndex + 1, windowCount - 1)
-        }
+        RecentChartScrollMetrics.shiftedWindowIndex(
+            current: currentWindowIndex,
+            direction: direction,
+            windowCount: windowCount
+        )
     }
 
     var edgeFadeState: RecentChartEdgeFadeState {
@@ -208,7 +206,7 @@ final class RecentChartScrollOffsetObserver: NSObject {
     }
 }
 
-private struct RecentChartScrollOffsetReader: NSViewRepresentable {
+struct RecentChartScrollOffsetReader: NSViewRepresentable {
     let onOffsetChange: (CGFloat) -> Void
 
     func makeNSView(context: Context) -> ObservationView {
