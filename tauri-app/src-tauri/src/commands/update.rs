@@ -411,7 +411,7 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
         manual: bool,
         now: i64,
     ) -> Result<AppUpdateState, String> {
-        let (generation, previous_attempt) = {
+        let generation = {
             let mut state = self.state.lock().await;
             if let Some((_, slot)) = &state.in_flight {
                 let slot = slot.clone();
@@ -427,24 +427,36 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
             state.next_generation = state.next_generation.saturating_add(1);
             let generation = state.next_generation;
             state.in_flight = Some((generation, Arc::new(CompletionSlot::default())));
-            let previous_attempt = state.persisted.last_attempt_at;
-            state.persisted.last_attempt_at = Some(now);
-            (generation, previous_attempt)
+            generation
         };
 
-        let attempt = self.state.lock().await.persisted.clone();
-        let _persist_owner = self.persist_lock.lock().await;
-        if let Err(error) = ops.persist(&attempt) {
+        let attempt_result = {
+            let _persist_owner = self.persist_lock.lock().await;
             let mut state = self.state.lock().await;
-            if state.in_flight.as_ref().map(|value| value.0) == Some(generation)
-                && state.persisted.last_attempt_at == Some(now)
-            {
-                state.persisted.last_attempt_at = previous_attempt;
+            let revision = state.revision;
+            if state.in_flight.as_ref().map(|value| value.0) != Some(generation) {
+                Err("更新检查世代已失效".into())
+            } else {
+                let mut desired = state.persisted.clone();
+                desired.last_attempt_at = Some(now);
+                match ops.persist(&desired) {
+                    Ok(()) => {
+                        if state.in_flight.as_ref().map(|value| value.0) == Some(generation)
+                            && state.revision == revision
+                        {
+                            state.persisted = desired;
+                            Ok(())
+                        } else {
+                            Err("更新检查世代已失效".into())
+                        }
+                    }
+                    Err(error) => Err(error),
+                }
             }
-            drop(state);
+        };
+        if let Err(error) = attempt_result {
             return self.finish(generation, Err(error)).await;
         }
-        drop(_persist_owner);
 
         let checked = ops.check().await;
         let result = match checked {
@@ -823,6 +835,10 @@ mod tests {
         fail_notify: AtomicBool,
         notify_started: StdMutex<Option<mpsc::Sender<()>>>,
         notify_release: StdMutex<Option<mpsc::Receiver<()>>>,
+        dedupe_persist_started: StdMutex<Option<mpsc::Sender<()>>>,
+        dedupe_persist_release: StdMutex<Option<mpsc::Receiver<()>>>,
+        attempt_persist_started: StdMutex<Option<mpsc::Sender<()>>>,
+        attempt_persist_release: StdMutex<Option<mpsc::Receiver<()>>>,
         check_delay_ms: AtomicU64,
         install_delay_ms: AtomicU64,
     }
@@ -845,6 +861,22 @@ mod tests {
             self.loaded.lock().unwrap().clone()
         }
         fn persist(&self, state: &PersistedUpdateState) -> Result<(), String> {
+            if state.last_attempt_at == Some(42) && state.last_notified_version.is_none() {
+                if let Some(started) = self.attempt_persist_started.lock().unwrap().take() {
+                    started.send(()).unwrap();
+                }
+                if let Some(release) = self.attempt_persist_release.lock().unwrap().take() {
+                    release.recv().unwrap();
+                }
+            }
+            if state.last_notified_version.is_some() {
+                if let Some(started) = self.dedupe_persist_started.lock().unwrap().take() {
+                    started.send(()).unwrap();
+                }
+                if let Some(release) = self.dedupe_persist_release.lock().unwrap().take() {
+                    release.recv().unwrap();
+                }
+            }
             if self.fail_persist.load(Ordering::SeqCst)
                 || (self.fail_dedupe_persist.load(Ordering::SeqCst)
                     && state.last_notified_version.is_some())
@@ -938,6 +970,10 @@ mod tests {
                 fail_notify: AtomicBool::new(false),
                 notify_started: StdMutex::new(None),
                 notify_release: StdMutex::new(None),
+                dedupe_persist_started: StdMutex::new(None),
+                dedupe_persist_release: StdMutex::new(None),
+                attempt_persist_started: StdMutex::new(None),
+                attempt_persist_release: StdMutex::new(None),
                 check_delay_ms: AtomicU64::new(0),
                 install_delay_ms: AtomicU64::new(0),
             }
@@ -1105,6 +1141,109 @@ mod tests {
             assert_eq!(state.shown_notification_version.as_deref(), Some("0.8.0"));
             assert_eq!(state.persisted.last_notified_version, None);
             assert_eq!(state.dedupe_persist_retry.as_ref().unwrap().failures, 2);
+        });
+    }
+
+    #[test]
+    fn concurrent_attempt_merges_latest_persisted_notification_dedupe() {
+        let core = Arc::new(RegistryCore::<String>::default());
+        let ops = Arc::new(MockOps::available("0.8.0"));
+        *ops.loaded.lock().unwrap() = Ok(Some(PersistedUpdateState {
+            available_version: Some("0.8.0".into()),
+            ..Default::default()
+        }));
+        runtime().block_on(core.initialize(ops.as_ref()));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        *ops.dedupe_persist_started.lock().unwrap() = Some(started_tx);
+        *ops.dedupe_persist_release.lock().unwrap() = Some(release_rx);
+
+        let presentation = std::thread::spawn({
+            let core = core.clone();
+            let ops = ops.clone();
+            move || runtime().block_on(core.reconcile_presentation(ops.as_ref(), 1, false))
+        });
+        started_rx.recv().unwrap();
+        let check = std::thread::spawn({
+            let core = core.clone();
+            let ops = ops.clone();
+            move || runtime().block_on(core.check(ops.as_ref(), true, 42))
+        });
+        release_tx.send(()).unwrap();
+        presentation.join().unwrap();
+        check.join().unwrap().unwrap();
+
+        let disk = ops.persisted.lock().unwrap().last().unwrap().clone();
+        assert_eq!(disk.last_attempt_at, Some(42));
+        assert_eq!(disk.last_notified_version.as_deref(), Some("0.8.0"));
+        let memory = core.state.blocking_lock().persisted.clone();
+        assert_eq!(memory, disk);
+
+        let reloaded = RegistryCore::<String>::default();
+        let reloaded_ops = MockOps::default();
+        *reloaded_ops.loaded.lock().unwrap() = Ok(Some(disk));
+        runtime().block_on(async {
+            reloaded.initialize(&reloaded_ops).await;
+            reloaded
+                .reconcile_presentation(&reloaded_ops, 43, false)
+                .await;
+        });
+        assert_eq!(reloaded_ops.notifications.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn dedupe_after_blocked_attempt_preserves_both_fields() {
+        let core = Arc::new(RegistryCore::<String>::default());
+        let ops = Arc::new(MockOps::available("0.8.0"));
+        *ops.loaded.lock().unwrap() = Ok(Some(PersistedUpdateState {
+            available_version: Some("0.8.0".into()),
+            ..Default::default()
+        }));
+        runtime().block_on(core.initialize(ops.as_ref()));
+        core.state.blocking_lock().shown_notification_version = Some("0.8.0".into());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        *ops.attempt_persist_started.lock().unwrap() = Some(started_tx);
+        *ops.attempt_persist_release.lock().unwrap() = Some(release_rx);
+
+        let check = std::thread::spawn({
+            let core = core.clone();
+            let ops = ops.clone();
+            move || runtime().block_on(core.check(ops.as_ref(), true, 42))
+        });
+        started_rx.recv().unwrap();
+        let presentation = std::thread::spawn({
+            let core = core.clone();
+            let ops = ops.clone();
+            move || runtime().block_on(core.reconcile_presentation(ops.as_ref(), 43, false))
+        });
+        release_tx.send(()).unwrap();
+        check.join().unwrap().unwrap();
+        presentation.join().unwrap();
+
+        let disk = ops.persisted.lock().unwrap().last().unwrap().clone();
+        assert_eq!(disk.last_attempt_at, Some(42));
+        assert_eq!(disk.last_notified_version.as_deref(), Some("0.8.0"));
+        assert_eq!(core.state.blocking_lock().persisted, disk);
+    }
+
+    #[test]
+    fn apply_none_preserves_attempt_and_notification_dedupe_fields() {
+        runtime().block_on(async {
+            let core = RegistryCore::<String>::default();
+            let ops = MockOps::default();
+            *ops.loaded.lock().unwrap() = Ok(Some(PersistedUpdateState {
+                last_attempt_at: Some(7),
+                available_version: Some("0.8.0".into()),
+                last_notified_version: Some("0.8.0".into()),
+                ..Default::default()
+            }));
+            core.initialize(&ops).await;
+            core.check(&ops, true, 42).await.unwrap();
+            let disk = ops.persisted.lock().unwrap().last().unwrap().clone();
+            assert_eq!(disk.last_attempt_at, Some(42));
+            assert_eq!(disk.last_notified_version.as_deref(), Some("0.8.0"));
+            assert_eq!(disk.available_version, None);
         });
     }
 
