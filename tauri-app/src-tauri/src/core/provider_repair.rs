@@ -208,6 +208,16 @@ impl ProviderRecoveryState {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn initialize_provider_recovery_state_for_test(
+    state: &ProviderRecoveryState,
+    codex_home: &Path,
+) {
+    state.replace(ProviderRecoveryStatus::ready(
+        provider_recovery_home_scope(codex_home).unwrap(),
+    ));
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderOperationLifecycle {
@@ -998,7 +1008,7 @@ fn acquire_provider_operation_lease(
     })
 }
 
-fn run_provider_mutation<T>(
+pub(crate) fn run_provider_mutation<T>(
     codex_home: &Path,
     operation_id: &str,
     mutation: impl FnOnce(&Path) -> Result<T, String>,

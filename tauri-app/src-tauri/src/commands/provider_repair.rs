@@ -6,6 +6,18 @@ use provider_repair_core::{
     ProviderOperationError, ProviderOperationOwnershipDiscovery, ProviderOperationStatus,
     ProviderRecoveryState,
 };
+use std::path::Path;
+
+fn execute_provider_mutation_command<T>(
+    _entrypoint: &'static str,
+    codex_home: &Path,
+    recovery_state: &ProviderRecoveryState,
+    operation_id: &str,
+    mutation: impl FnOnce(&Path, &str) -> Result<T, ProviderOperationError>,
+) -> Result<T, ProviderOperationError> {
+    provider_repair_core::reconcile_provider_recovery_for_action(recovery_state, codex_home)?;
+    mutation(codex_home, operation_id)
+}
 
 #[tauri::command]
 pub fn scan_provider_repair(
@@ -31,11 +43,13 @@ pub fn create_provider_backup(
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
     require_window_label(&window, "create_provider_backup")?;
     let source = local_source();
-    provider_repair_core::reconcile_provider_recovery_for_action(
-        recovery_state.inner(),
+    execute_provider_mutation_command(
+        "create_provider_backup",
         source.codex_home(),
-    )?;
-    provider_repair_core::create_provider_backup(source.codex_home(), &operation_id)
+        recovery_state.inner(),
+        &operation_id,
+        provider_repair_core::create_provider_backup,
+    )
 }
 
 #[tauri::command]
@@ -46,11 +60,13 @@ pub fn sync_provider_history(
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
     require_window_label(&window, "sync_provider_history")?;
     let source = local_source();
-    provider_repair_core::reconcile_provider_recovery_for_action(
-        recovery_state.inner(),
+    execute_provider_mutation_command(
+        "sync_provider_history",
         source.codex_home(),
-    )?;
-    provider_repair_core::sync_provider_history(source.codex_home(), &operation_id)
+        recovery_state.inner(),
+        &operation_id,
+        provider_repair_core::sync_provider_history,
+    )
 }
 
 #[tauri::command]
@@ -73,11 +89,120 @@ pub fn rollback_provider_backup(
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
     require_window_label(&window, "rollback_provider_backup")?;
     let source = local_source();
-    provider_repair_core::reconcile_provider_recovery_for_action(
-        recovery_state.inner(),
+    execute_provider_mutation_command(
+        "rollback_provider_backup",
         source.codex_home(),
-    )?;
-    provider_repair_core::rollback_provider_backup(source.codex_home(), &backup_id, &operation_id)
+        recovery_state.inner(),
+        &operation_id,
+        |home, operation_id| {
+            provider_repair_core::rollback_provider_backup(home, &backup_id, operation_id)
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use provider_repair_core::ProviderOperationLifecycle;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn command_adapter_serializes_timeout_overlap_and_releases_failed_lease() {
+        let home = std::env::temp_dir().join(format!(
+            "provider-command-adapter-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let state = Arc::new(ProviderRecoveryState::default());
+        provider_repair_core::initialize_provider_recovery_state_for_test(&state, &home);
+        let barrier = Arc::new(Barrier::new(2));
+        let first_mutations = Arc::new(AtomicUsize::new(0));
+        let thread_home = home.clone();
+        let thread_state = Arc::clone(&state);
+        let thread_barrier = Arc::clone(&barrier);
+        let thread_mutations = Arc::clone(&first_mutations);
+        let first = std::thread::spawn(move || {
+            execute_provider_mutation_command(
+                "create_provider_backup",
+                &thread_home,
+                &thread_state,
+                "command-first",
+                |home, operation_id| {
+                    provider_repair_core::run_provider_mutation(home, operation_id, |_| {
+                        thread_mutations.fetch_add(1, Ordering::SeqCst);
+                        thread_barrier.wait();
+                        thread_barrier.wait();
+                        Ok(())
+                    })
+                },
+            )
+        });
+        barrier.wait();
+
+        let second_mutations = AtomicUsize::new(0);
+        let second = execute_provider_mutation_command(
+            "sync_provider_history",
+            &home,
+            &state,
+            "command-second",
+            |home, operation_id| {
+                provider_repair_core::run_provider_mutation(home, operation_id, |_| {
+                    second_mutations.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            },
+        );
+        assert!(matches!(
+            second,
+            Err(ProviderOperationError::RecoveryBlocked { ref code, .. })
+                if code == "backendGuardBusy"
+        ));
+        assert_eq!(
+            provider_repair_core::read_provider_operation_status("command-second").lifecycle,
+            ProviderOperationLifecycle::NotStarted
+        );
+        assert_eq!(second_mutations.load(Ordering::SeqCst), 0);
+
+        barrier.wait();
+        first.join().unwrap().unwrap();
+        assert_eq!(first_mutations.load(Ordering::SeqCst), 1);
+
+        execute_provider_mutation_command(
+            "rollback_provider_backup",
+            &home,
+            &state,
+            "command-third",
+            |home, operation_id| {
+                provider_repair_core::run_provider_mutation(home, operation_id, |_| Ok(()))
+            },
+        )
+        .unwrap();
+        let failed: Result<(), ProviderOperationError> = execute_provider_mutation_command(
+            "sync_provider_history",
+            &home,
+            &state,
+            "command-failed",
+            |home, operation_id| {
+                provider_repair_core::run_provider_mutation(home, operation_id, |_| {
+                    Err("injected command mutation failure".into())
+                })
+            },
+        );
+        assert!(matches!(failed, Err(ProviderOperationError::Failed { .. })));
+        execute_provider_mutation_command(
+            "create_provider_backup",
+            &home,
+            &state,
+            "command-after-failure",
+            |home, operation_id| {
+                provider_repair_core::run_provider_mutation(home, operation_id, |_| Ok(()))
+            },
+        )
+        .unwrap();
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
 }
 
 #[tauri::command]

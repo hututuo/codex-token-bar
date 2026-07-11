@@ -3,9 +3,11 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Barrier};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1415,6 +1417,78 @@ fn publication_sync_failure_aborts_sync_before_any_live_write() {
     );
     assert_eq!(completed_backup_count(&backup_root), 0);
     fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn session_backup_rejects_concurrent_append_and_removes_incomplete_publication() {
+    let fixture = temp_root("provider-session-copy-concurrent-append");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let session = home.join("sessions/thread.jsonl");
+    write_session(&session, "thread", "openai");
+    create_state_database(&home, &[("thread", "openai", 0)]);
+    let config_before = Sha256::digest(fs::read(home.join("config.toml")).unwrap());
+    let sqlite_before = Sha256::digest(fs::read(home.join("state_5.sqlite")).unwrap());
+    let files_before = relative_file_set(&home);
+
+    let barrier = Arc::new(Barrier::new(2));
+    let append_barrier = Arc::clone(&barrier);
+    let append_session = session.clone();
+    let appender = thread::spawn(move || {
+        append_barrier.wait();
+        let mut file = fs::OpenOptions::new().append(true).open(&append_session).unwrap();
+        writeln!(file, r#"{{"type":"event_msg","payload":{{"type":"agent_message","message":"appended"}}}}"#).unwrap();
+        file.sync_all().unwrap();
+        append_barrier.wait();
+    });
+
+    let error = backups::create_provider_backup_files_at_with_copy_hook(
+        &backup_root,
+        &home,
+        "openai",
+        |relative| {
+            if relative == Path::new("sessions/thread.jsonl") {
+                barrier.wait();
+                barrier.wait();
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    appender.join().unwrap();
+
+    assert!(error.contains("描述符复制期间发生变化"), "{error}");
+    assert_eq!(completed_backup_count(&backup_root), 0);
+    assert_eq!(fs::read_dir(&backup_root).unwrap().count(), 0);
+    assert_eq!(
+        Sha256::digest(fs::read(home.join("config.toml")).unwrap()),
+        config_before
+    );
+    assert_eq!(
+        Sha256::digest(fs::read(home.join("state_5.sqlite")).unwrap()),
+        sqlite_before
+    );
+    assert!(fs::read_to_string(&session).unwrap().contains("appended"));
+    assert_eq!(relative_file_set(&home), files_before);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+fn relative_file_set(root: &Path) -> BTreeSet<PathBuf> {
+    fn collect(root: &Path, current: &Path, files: &mut BTreeSet<PathBuf>) {
+        for entry in fs::read_dir(current).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect(root, &path, files);
+            } else {
+                files.insert(path.strip_prefix(root).unwrap().to_path_buf());
+            }
+        }
+    }
+    let mut files = BTreeSet::new();
+    collect(root, root, &mut files);
+    files
 }
 
 #[test]

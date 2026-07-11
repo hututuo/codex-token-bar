@@ -174,12 +174,47 @@ pub(super) fn create_provider_backup_files_at_with_hook(
     target_provider: &str,
     hook: impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
 ) -> Result<ProviderRepairBackupInfo, String> {
+    create_provider_backup_files_at_with_hooks(
+        backup_root,
+        codex_home,
+        target_provider,
+        hook,
+        |_| Ok(()),
+    )
+}
+
+#[cfg(test)]
+pub(super) fn create_provider_backup_files_at_with_copy_hook(
+    backup_root: &Path,
+    codex_home: &Path,
+    target_provider: &str,
+    copy_hook: impl FnMut(&Path) -> Result<(), String>,
+) -> Result<ProviderRepairBackupInfo, String> {
+    create_provider_backup_files_at_with_hooks(
+        backup_root,
+        codex_home,
+        target_provider,
+        |_, _| Ok(()),
+        copy_hook,
+    )
+}
+
+#[cfg(test)]
+fn create_provider_backup_files_at_with_hooks(
+    backup_root: &Path,
+    codex_home: &Path,
+    target_provider: &str,
+    hook: impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
+    mut copy_hook: impl FnMut(&Path) -> Result<(), String>,
+) -> Result<ProviderRepairBackupInfo, String> {
     let pinned_home = PinnedHome::open(codex_home)?;
-    create_provider_backup_files_at_with_pinned_hook(
+    create_provider_backup_files_at_with_pinned_mode(
         backup_root,
         &pinned_home,
         target_provider,
+        false,
         hook,
+        &mut copy_hook,
     )
 }
 
@@ -189,12 +224,14 @@ pub(super) fn create_provider_backup_files_at_with_pinned_hook(
     target_provider: &str,
     hook: impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
 ) -> Result<ProviderRepairBackupInfo, String> {
+    let mut copy_hook = no_session_copy_hook;
     create_provider_backup_files_at_with_pinned_mode(
         backup_root,
         pinned_home,
         target_provider,
         false,
         hook,
+        &mut copy_hook,
     )
 }
 
@@ -204,12 +241,14 @@ pub(super) fn create_provider_backup_files_at_with_pinned_stopped_hook(
     target_provider: &str,
     hook: impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
 ) -> Result<ProviderRepairBackupInfo, String> {
+    let mut copy_hook = no_session_copy_hook;
     create_provider_backup_files_at_with_pinned_mode(
         backup_root,
         pinned_home,
         target_provider,
         true,
         hook,
+        &mut copy_hook,
     )
 }
 
@@ -219,6 +258,7 @@ fn create_provider_backup_files_at_with_pinned_mode(
     target_provider: &str,
     codex_stopped: bool,
     mut hook: impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
+    session_copy_hook: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> Result<ProviderRepairBackupInfo, String> {
     fs::create_dir_all(backup_root).map_err(|error| error.to_string())?;
     let (id, backup_path) = create_unique_directory(backup_root, "")?;
@@ -231,6 +271,7 @@ fn create_provider_backup_files_at_with_pinned_mode(
         target_provider,
         codex_stopped,
         &mut hook,
+        session_copy_hook,
     );
     if let Err(error) = result {
         let cleanup = cleanup_incomplete_backup(backup_root, &backup_path, &id);
@@ -247,6 +288,7 @@ fn build_complete_backup(
     target_provider: &str,
     codex_stopped: bool,
     hook: &mut impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
+    session_copy_hook: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut members = Vec::new();
     members.push(
@@ -290,7 +332,9 @@ fn build_complete_backup(
         let source_file = pinned_home
             .open_file(relative)?
             .ok_or_else(|| format!("备份会话文件在打开前消失：{}", relative.display()))?;
-        let (size, checksum_sha256) = copy_open_file(source_file, &target)
+        let (size, checksum_sha256) = copy_open_file_with_hook(source_file, &target, || {
+            session_copy_hook(relative)
+        })
             .map_err(|error| format!("备份会话文件 {} 失败：{error}", relative.display()))?;
         members.push(BackupMember {
             kind: "session".into(),
@@ -2098,7 +2142,21 @@ fn codex_home_fingerprint_for_identity(identity: &str) -> String {
     format!("{hash:016x}")
 }
 
-fn copy_open_file(mut source: fs::File, target: &Path) -> Result<(u64, String), String> {
+fn no_session_copy_hook(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+fn copy_open_file(source: fs::File, target: &Path) -> Result<(u64, String), String> {
+    copy_open_file_with_hook(source, target, || Ok(()))
+}
+
+fn copy_open_file_with_hook(
+    mut source: fs::File,
+    target: &Path,
+    after_descriptor_open: impl FnOnce() -> Result<(), String>,
+) -> Result<(u64, String), String> {
+    let opened = source.metadata().map_err(|error| error.to_string())?;
+    after_descriptor_open()?;
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -2110,6 +2168,14 @@ fn copy_open_file(mut source: fs::File, target: &Path) -> Result<(u64, String), 
     let size = std::io::copy(&mut source, &mut target_file).map_err(|error| error.to_string())?;
     target_file.sync_all().map_err(|error| error.to_string())?;
     drop(target_file);
+    let completed = source.metadata().map_err(|error| error.to_string())?;
+    if size != opened.len()
+        || completed.len() != opened.len()
+        || completed.modified().ok() != opened.modified().ok()
+    {
+        let _ = fs::remove_file(target);
+        return Err("源文件在描述符复制期间发生变化，拒绝发布不完整快照".into());
+    }
     Ok((size, file_sha256(target)?))
 }
 
