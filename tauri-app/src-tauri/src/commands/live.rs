@@ -59,6 +59,7 @@ struct LiveRateStreamState {
     native_tray_settings_key: Option<(bool, bool)>,
     native_tray_revision: u64,
     native_tray_desired_readout: Option<(String, String)>,
+    native_tray_retry_running: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -108,6 +109,8 @@ struct LiveRateStreamRequest {
 const TRAY_RATE_THRESHOLD: f64 = 0.05;
 const TRAY_ALPHA_UP: f64 = 0.28;
 const TRAY_ALPHA_DOWN: f64 = 0.18;
+const NATIVE_TRAY_CORRECTION_RETRY_LIMIT: usize = 3;
+const NATIVE_TRAY_CORRECTION_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 impl LiveRateMonitorRegistry {
     pub fn sync_status_tray_interest(
@@ -144,6 +147,7 @@ impl LiveRateMonitorRegistry {
             let mut stream = self.stream.lock().map_err(|error| error.to_string())?;
             if stream.native_tray_settings_key == Some(settings_key)
                 && stream.native_tray_enabled == stream_enabled
+                && stream.native_tray_last_readout.as_ref() == Some(&readout)
             {
                 return Ok(None);
             }
@@ -163,7 +167,6 @@ impl LiveRateMonitorRegistry {
         }
         stream.native_tray_source = None;
         stream.native_tray_smoothed_rate = None;
-        stream.native_tray_last_readout = None;
         stream.native_tray_settings_key = Some(settings_key);
         let should_spawn = configure_native_tray_stream(&mut stream, stream_enabled);
         Ok(should_spawn.then_some(stream.loop_generation))
@@ -176,10 +179,11 @@ impl LiveRateMonitorRegistry {
         writer: &mut impl FnMut(String, String) -> Result<bool, String>,
     ) -> Result<(), String> {
         loop {
-            if !writer(readout.0, readout.1)? {
+            if !writer(readout.0.clone(), readout.1.clone())? {
                 return Err("status tray is not available".into());
             }
-            let stream = self.stream.lock().map_err(|error| error.to_string())?;
+            let mut stream = self.stream.lock().map_err(|error| error.to_string())?;
+            stream.native_tray_last_readout = Some(readout.clone());
             if stream.native_tray_revision == revision {
                 return Ok(());
             }
@@ -576,9 +580,13 @@ impl LiveRateMonitorRegistry {
         source: &CodexHomeSourceToken,
         raw_rate: f64,
     ) -> Result<(), String> {
-        self.publish_native_tray_with_writer(loop_generation, source, raw_rate, |title, tooltip| {
+        let result = self.publish_native_tray_with_writer(loop_generation, source, raw_rate, |title, tooltip| {
             platform::set_status_tray_readout_native(app, title, tooltip)
-        })
+        });
+        if result.is_err() {
+            self.schedule_native_tray_correction_retry(app.clone());
+        }
+        result
     }
 
     fn publish_native_tray_with_writer(
@@ -600,6 +608,50 @@ impl LiveRateMonitorRegistry {
         stream.native_tray_desired_readout = Some(readout.clone());
         drop(stream);
         self.write_native_presentation_revisioned(revision, readout, &mut writer)
+    }
+
+    fn retry_native_presentation_with_writer(
+        &self,
+        mut writer: impl FnMut(String, String) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        let (revision, readout) = {
+            let stream = self.stream.lock().map_err(|error| error.to_string())?;
+            (
+                stream.native_tray_revision,
+                stream
+                    .native_tray_desired_readout
+                    .clone()
+                    .ok_or_else(|| "native tray desired readout is unavailable".to_string())?,
+            )
+        };
+        self.write_native_presentation_revisioned(revision, readout, &mut writer)
+    }
+
+    fn schedule_native_tray_correction_retry(&self, app: AppHandle) {
+        {
+            let Ok(mut stream) = self.stream.lock() else { return; };
+            if stream.native_tray_retry_running {
+                return;
+            }
+            stream.native_tray_retry_running = true;
+        }
+        let registry = self.clone();
+        async_runtime::spawn(async move {
+            for attempt in 0..NATIVE_TRAY_CORRECTION_RETRY_LIMIT {
+                tokio::time::sleep(NATIVE_TRAY_CORRECTION_RETRY_DELAY * (attempt as u32 + 1)).await;
+                if registry
+                    .retry_native_presentation_with_writer(|title, tooltip| {
+                        platform::set_status_tray_readout_native(&app, title, tooltip)
+                    })
+                    .is_ok()
+                {
+                    break;
+                }
+            }
+            if let Ok(mut stream) = registry.stream.lock() {
+                stream.native_tray_retry_running = false;
+            }
+        });
     }
 
     fn publish_stream_if_current(
@@ -916,7 +968,6 @@ fn apply_native_tray_rate(
     if stream.native_tray_last_readout.as_ref() == Some(&readout) {
         return None;
     }
-    stream.native_tray_last_readout = Some(readout.clone());
     Some(readout)
 }
 
@@ -1342,6 +1393,71 @@ mod tests {
     }
 
     #[test]
+    fn identical_tick_retries_after_error_or_missing_tray_without_false_dedupe() {
+        for first_result in [Err("setter failed".to_string()), Ok(false)] {
+            let registry = LiveRateMonitorRegistry::default();
+            let display = DisplaySurfaceSettingsSnapshot::default();
+            let generation = registry
+                .apply_status_tray_settings_with_writer(&display, true, |_, _| Ok(true))
+                .unwrap().unwrap();
+            let source = live_source_for_test("source-a", 1).source_token;
+            registry.stream.lock().unwrap().native_tray_source = Some(source.clone());
+            let mut first = Some(first_result);
+            assert!(registry.publish_native_tray_with_writer(generation, &source, 10.0, |_, _| first.take().unwrap()).is_err());
+            let mut retry_calls = 0;
+            registry.publish_native_tray_with_writer(generation, &source, 10.0, |title, _| {
+                retry_calls += 1;
+                assert_eq!(title, "10.0/s");
+                Ok(true)
+            }).unwrap();
+            assert_eq!(retry_calls, 1);
+        }
+    }
+
+    #[test]
+    fn failed_stale_correction_has_bounded_owner_that_restores_ctb_while_disabled() {
+        let registry = LiveRateMonitorRegistry::default();
+        let enabled = DisplaySurfaceSettingsSnapshot::default();
+        let mut disabled = enabled.clone();
+        disabled.status_tray_live_text_enabled = false;
+        let source = live_source_for_test("source-a", 1).source_token;
+        let generation = registry.apply_status_tray_settings_with_writer(&enabled, true, |_, _| Ok(true)).unwrap().unwrap();
+        registry.stream.lock().unwrap().native_tray_source = Some(source.clone());
+        let mut writes = 0;
+        assert!(registry.publish_native_tray_with_writer(generation, &source, 12.0, |title, _| {
+            writes += 1;
+            if writes == 1 {
+                registry.apply_status_tray_settings_with_writer(&disabled, true, |_, _| Ok(true)).unwrap();
+                assert_eq!(title, "12.0/s");
+                Ok(true)
+            } else {
+                assert_eq!(title, "CTB");
+                Err("first correction failed".into())
+            }
+        }).is_err());
+        assert!(!registry.stream.lock().unwrap().running);
+
+        let mut attempts = 0;
+        for _ in 0..NATIVE_TRAY_CORRECTION_RETRY_LIMIT {
+            attempts += 1;
+            let result = registry.retry_native_presentation_with_writer(|title, _| {
+                assert_eq!(title, "CTB");
+                Ok(attempts == 2)
+            });
+            if result.is_ok() { break; }
+        }
+        assert_eq!(attempts, 2);
+        assert_eq!(registry.stream.lock().unwrap().native_tray_last_readout.as_ref().map(|value| value.0.as_str()), Some("CTB"));
+
+        let mut bounded_attempts = 0;
+        for _ in 0..NATIVE_TRAY_CORRECTION_RETRY_LIMIT {
+            bounded_attempts += 1;
+            let _ = registry.retry_native_presentation_with_writer(|_, _| Err("still failing".into()));
+        }
+        assert_eq!(bounded_attempts, NATIVE_TRAY_CORRECTION_RETRY_LIMIT);
+    }
+
+    #[test]
     fn revisioned_writer_makes_disable_ctb_win_over_old_tick_in_both_orders() {
         use std::sync::mpsc;
         use std::thread;
@@ -1467,6 +1583,7 @@ mod tests {
         let source_b = live_source_for_test("source-b", 2).source_token;
         stream.native_tray_source = Some(source_a.clone());
         assert!(apply_native_tray_rate(&mut stream, &source_a, 10.0).is_some());
+        stream.native_tray_last_readout = Some(native_tray_readout(10.0));
         assert!(apply_native_tray_rate(&mut stream, &source_a, 10.0).is_none(), "same formatted readout is deduped");
         stream.native_tray_source = Some(source_b.clone());
         stream.native_tray_smoothed_rate = None;
