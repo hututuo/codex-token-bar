@@ -75,6 +75,10 @@ final class DashboardRuntimeSideEffectCoordinator<Configuration: Equatable> {
         apply(configuration)
     }
 
+    func applyAppConfiguration(_ configuration: Configuration) {
+        apply(configuration)
+    }
+
     func handleWake() {
         guard isActive else { return }
         onWake()
@@ -112,9 +116,6 @@ struct DashboardRuntimeConfiguration: Equatable {
     let preciseTokenCountingEnabled: Bool
     let providerSyncVisible: Bool
     let radarDetailsVisible: Bool
-    let onToggleFloatingLock: () -> Void
-    let onCloseFloatingPanel: () -> Void
-    let onCloseStatusBarPanel: () -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.floatingPanelEnabled == rhs.floatingPanelEnabled
@@ -154,9 +155,13 @@ final class DashboardRuntime: ObservableObject {
     private let startupAction: (() -> Void)?
     private let floatingPanel: FloatingTokenPanelController
     private let statusBarPanel: StatusBarTokenController
+    private let settings: UserDefaults
+    private let surfaceApplyAction: ((DashboardRuntimeConfiguration) -> Void)?
+    private let sideEffectStartAction: (() -> Void)?
+    private let sideEffectStopAction: (() -> Void)?
     private var cancellables: Set<AnyCancellable> = []
     private var cadenceRecoveryTask: Task<Void, Never>?
-    private var configuration: DashboardRuntimeConfiguration?
+    private(set) var configuration: DashboardRuntimeConfiguration?
     private(set) var isStarted = false
 
     private lazy var sideEffects = DashboardRuntimeSideEffectCoordinator<DashboardRuntimeConfiguration>(
@@ -202,7 +207,11 @@ final class DashboardRuntime: ObservableObject {
         sourceTransitionCoordinator: DashboardSourceTransitionCoordinator = DashboardSourceTransitionCoordinator(),
         floatingPanel: FloatingTokenPanelController = FloatingTokenPanelController(),
         statusBarPanel: StatusBarTokenController = StatusBarTokenController(),
-        startupAction: (() -> Void)? = nil
+        settings: UserDefaults = .standard,
+        startupAction: (() -> Void)? = nil,
+        surfaceApplyAction: ((DashboardRuntimeConfiguration) -> Void)? = nil,
+        sideEffectStartAction: (() -> Void)? = nil,
+        sideEffectStopAction: (() -> Void)? = nil
     ) {
         self.usageStore = usageStore
         self.quotaStore = quotaStore
@@ -214,7 +223,11 @@ final class DashboardRuntime: ObservableObject {
         self.sourceTransitionCoordinator = sourceTransitionCoordinator
         self.floatingPanel = floatingPanel
         self.statusBarPanel = statusBarPanel
+        self.settings = settings
         self.startupAction = startupAction
+        self.surfaceApplyAction = surfaceApplyAction
+        self.sideEffectStartAction = sideEffectStartAction
+        self.sideEffectStopAction = sideEffectStopAction
     }
 
     func acquireConsumer(_ id: UUID, preciseTokenCountingEnabled: Bool = false) {
@@ -242,6 +255,26 @@ final class DashboardRuntime: ObservableObject {
 
     func reportConfiguration(_ configuration: DashboardRuntimeConfiguration, for id: UUID) {
         sideEffects.reportConfiguration(configuration, for: id)
+    }
+
+    func toggleFloatingPanelLock() {
+        guard let configuration else { return }
+        settings.set(!configuration.floatingPanelLocked, forKey: "floatingPanelLocked")
+        applyAppConfiguration(configuration.replacing(
+            floatingPanelLocked: !configuration.floatingPanelLocked
+        ))
+    }
+
+    func closeFloatingPanel() {
+        guard let configuration, configuration.floatingPanelEnabled else { return }
+        settings.set(false, forKey: "floatingPanelEnabled")
+        applyAppConfiguration(configuration.replacing(floatingPanelEnabled: false))
+    }
+
+    func closeStatusBarPanel() {
+        guard let configuration, configuration.statusBarPanelEnabled else { return }
+        settings.set(false, forKey: "statusBarPanelEnabled")
+        applyAppConfiguration(configuration.replacing(statusBarPanelEnabled: false))
     }
 
     @discardableResult
@@ -276,6 +309,7 @@ final class DashboardRuntime: ObservableObject {
     }
 
     private func startSideEffects() {
+        sideEffectStartAction?()
         guard startupAction == nil, cancellables.isEmpty else { return }
         usageStore.$dataSourceBindingKey.dropFirst().sink { [weak self] _ in
             self?.synchronizeSourceTransition()
@@ -314,6 +348,7 @@ final class DashboardRuntime: ObservableObject {
     }
 
     private func stopSideEffects() {
+        sideEffectStopAction?()
         cancellables.removeAll()
         cadenceRecoveryTask?.cancel()
         cadenceRecoveryTask = nil
@@ -322,6 +357,10 @@ final class DashboardRuntime: ObservableObject {
 
     private func bindDisplaySurfaces() {
         guard let configuration else { return }
+        if let surfaceApplyAction {
+            surfaceApplyAction(configuration)
+            return
+        }
         if configuration.floatingPanelEnabled {
             floatingPanel.show(
                 store: usageStore,
@@ -332,8 +371,8 @@ final class DashboardRuntime: ObservableObject {
                 scale: configuration.floatingPanelScale,
                 visibility: configuration.floatingPanelVisibility,
                 isLocked: configuration.floatingPanelLocked,
-                onToggleLock: configuration.onToggleFloatingLock,
-                onClose: configuration.onCloseFloatingPanel
+                onToggleLock: { [weak self] in self?.toggleFloatingPanelLock() },
+                onClose: { [weak self] in self?.closeFloatingPanel() }
             )
         } else {
             floatingPanel.close()
@@ -344,7 +383,7 @@ final class DashboardRuntime: ObservableObject {
                 monitor: liveMonitor,
                 quota: quotaStore,
                 taskCompletionMonitor: taskCompletionMonitor,
-                onClose: configuration.onCloseStatusBarPanel
+                onClose: { [weak self] in self?.closeStatusBarPanel() }
             )
         } else {
             statusBarPanel.close()
@@ -371,7 +410,7 @@ final class DashboardRuntime: ObservableObject {
         guard let configuration else { return }
         let context = DashboardRefreshContext.fromSurfaces(
             providerSyncVisible: configuration.providerSyncVisible,
-            appActive: NSApp.isActive,
+            appActive: NSApplication.shared.isActive,
             dashboardWindowVisible: hasVisibleDashboardWindow(),
             floatingPanelEnabled: configuration.floatingPanelEnabled,
             statusBarPanelEnabled: configuration.statusBarPanelEnabled,
@@ -384,13 +423,37 @@ final class DashboardRuntime: ObservableObject {
     }
 
     private func hasVisibleDashboardWindow() -> Bool {
-        guard !NSApp.isHidden else { return false }
-        return NSApp.windows.contains { window in
+        let application = NSApplication.shared
+        guard !application.isHidden else { return false }
+        return application.windows.contains { window in
             window.isVisible
                 && !window.isMiniaturized
                 && window.occlusionState.contains(.visible)
                 && !(window is NSPanel)
                 && window.contentViewController != nil
         }
+    }
+
+    private func applyAppConfiguration(_ configuration: DashboardRuntimeConfiguration) {
+        sideEffects.applyAppConfiguration(configuration)
+    }
+}
+
+private extension DashboardRuntimeConfiguration {
+    func replacing(
+        floatingPanelEnabled: Bool? = nil,
+        statusBarPanelEnabled: Bool? = nil,
+        floatingPanelLocked: Bool? = nil
+    ) -> DashboardRuntimeConfiguration {
+        DashboardRuntimeConfiguration(
+            floatingPanelEnabled: floatingPanelEnabled ?? self.floatingPanelEnabled,
+            statusBarPanelEnabled: statusBarPanelEnabled ?? self.statusBarPanelEnabled,
+            floatingPanelScale: floatingPanelScale,
+            floatingPanelVisibility: floatingPanelVisibility,
+            floatingPanelLocked: floatingPanelLocked ?? self.floatingPanelLocked,
+            preciseTokenCountingEnabled: preciseTokenCountingEnabled,
+            providerSyncVisible: providerSyncVisible,
+            radarDetailsVisible: radarDetailsVisible
+        )
     }
 }

@@ -116,4 +116,89 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
         XCTAssertEqual(stops, 0)
         XCTAssertEqual(wakes, 1)
     }
+
+    @MainActor
+    func testRuntimeCompactActionsPersistAndStopAfterLastSurfaceCloses() {
+        let suiteName = "DashboardRuntimeCompositionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var applications: [DashboardRuntimeConfiguration] = []
+        var stops = 0
+        let runtime = DashboardRuntime(
+            settings: defaults,
+            startupAction: {},
+            surfaceApplyAction: { applications.append($0) },
+            sideEffectStopAction: { stops += 1 }
+        )
+        let first = UUID()
+        let second = UUID()
+        let enabled = Self.configuration(floating: true, status: true)
+
+        runtime.acquireConsumer(first)
+        runtime.acquireConsumer(second)
+        runtime.reportConfiguration(enabled, for: first)
+        runtime.reportConfiguration(enabled, for: second)
+        runtime.releaseConsumer(first)
+        runtime.releaseConsumer(second)
+
+        runtime.closeFloatingPanel()
+        XCTAssertFalse(runtime.configuration!.floatingPanelEnabled)
+        XCTAssertTrue(runtime.configuration!.statusBarPanelEnabled)
+        XCTAssertFalse(defaults.bool(forKey: "floatingPanelEnabled"))
+        XCTAssertEqual(stops, 0)
+
+        runtime.closeStatusBarPanel()
+        XCTAssertFalse(runtime.configuration!.statusBarPanelEnabled)
+        XCTAssertFalse(defaults.bool(forKey: "statusBarPanelEnabled"))
+        XCTAssertEqual(stops, 1)
+        let applicationCount = applications.count
+
+        runtime.closeFloatingPanel()
+        runtime.closeStatusBarPanel()
+        XCTAssertEqual(applications.count, applicationCount)
+        XCTAssertEqual(stops, 1)
+
+        let reappeared = UUID()
+        runtime.acquireConsumer(reappeared)
+        runtime.reportConfiguration(Self.configuration(floating: false, status: false), for: reappeared)
+        XCTAssertEqual(applications.count, applicationCount)
+    }
+
+    @MainActor
+    func testRuntimeOwnsFloatingLockToggleAndPersistsIt() {
+        let suiteName = "DashboardRuntimeCompositionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var applications = 0
+        let runtime = DashboardRuntime(
+            settings: defaults,
+            startupAction: {},
+            surfaceApplyAction: { _ in applications += 1 }
+        )
+        let consumer = UUID()
+        runtime.acquireConsumer(consumer)
+        runtime.reportConfiguration(Self.configuration(floating: true, status: false), for: consumer)
+
+        runtime.toggleFloatingPanelLock()
+
+        XCTAssertTrue(runtime.configuration!.floatingPanelLocked)
+        XCTAssertTrue(defaults.bool(forKey: "floatingPanelLocked"))
+        XCTAssertEqual(applications, 2)
+    }
+
+    private static func configuration(
+        floating: Bool,
+        status: Bool
+    ) -> DashboardRuntimeConfiguration {
+        DashboardRuntimeConfiguration(
+            floatingPanelEnabled: floating,
+            statusBarPanelEnabled: status,
+            floatingPanelScale: 1,
+            floatingPanelVisibility: .default,
+            floatingPanelLocked: false,
+            preciseTokenCountingEnabled: false,
+            providerSyncVisible: false,
+            radarDetailsVisible: false
+        )
+    }
 }

@@ -589,10 +589,7 @@ struct DashboardView: View {
                 floatingPanelLocked: floatingPanelLocked,
                 preciseTokenCountingEnabled: preciseTokenCountingEnabled,
                 providerSyncVisible: showingProviderSync,
-                radarDetailsVisible: showingCodexRadarDetails,
-                onToggleFloatingLock: { floatingPanelLocked.toggle() },
-                onCloseFloatingPanel: { floatingPanelEnabled = false },
-                onCloseStatusBarPanel: { statusBarPanelEnabled = false }
+                radarDetailsVisible: showingCodexRadarDetails
             ),
             for: runtimeConsumerID
         )
