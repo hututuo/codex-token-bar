@@ -7,7 +7,8 @@ use tauri::Manager as _;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    if platform::activate_existing_instance_and_exit() {
+    let launch_mode = platform::StartupLaunchMode::from_args(std::env::args_os());
+    if platform::activate_existing_instance_and_exit(launch_mode) {
         return;
     }
 
@@ -19,20 +20,21 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
-        .setup(|app| {
+        .setup(move |app| {
             let recovery_state =
                 app.state::<core::provider_repair::ProviderRecoveryState>();
             commands::startup::initialize_provider_recovery(recovery_state.inner());
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
-            platform::setup_desktop_surfaces(app)?;
             let settings = platform::read_app_settings().unwrap_or_default();
+            platform::setup_desktop_surfaces(app, launch_mode, &settings)?;
             if let Err(error) = app
                 .state::<commands::live::LiveRateMonitorRegistry>()
                 .sync_status_tray_interest(app.handle(), &settings.display_surfaces)
             {
                 eprintln!("Codex Token Bar: status tray live text setup failed: {error}");
             }
+            platform::start_instance_activation_listener(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

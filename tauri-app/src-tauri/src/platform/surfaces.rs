@@ -1,4 +1,6 @@
 use crate::core::startup_trace;
+use crate::models::AppSettingsSnapshot;
+use super::StartupLaunchMode;
 use std::{
     sync::{mpsc, Mutex, OnceLock},
     time::Duration,
@@ -97,6 +99,74 @@ enum StatusPanelReleaseAction {
     Ignore,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FloatingStartupAction {
+    None,
+    CreateHidden,
+    CreateAndShow,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SurfaceStartupPlan {
+    create_dashboard: bool,
+    floating: FloatingStartupAction,
+}
+
+fn surface_startup_plan(
+    mode: StartupLaunchMode,
+    floating_enabled: bool,
+    windows: bool,
+) -> SurfaceStartupPlan {
+    match mode {
+        StartupLaunchMode::Manual => SurfaceStartupPlan {
+            create_dashboard: true,
+            // Preserve Windows' main-thread precreation so enabling floating later from the
+            // dashboard remains possible. The no-background-WebView rule applies to autostart.
+            floating: if windows {
+                FloatingStartupAction::CreateHidden
+            } else {
+                FloatingStartupAction::None
+            },
+        },
+        StartupLaunchMode::Autostart => SurfaceStartupPlan {
+            create_dashboard: false,
+            floating: if floating_enabled {
+                FloatingStartupAction::CreateAndShow
+            } else {
+                FloatingStartupAction::None
+            },
+        },
+    }
+}
+
+fn execute_surface_startup_plan(
+    plan: SurfaceStartupPlan,
+    create_dashboard: impl FnOnce() -> Result<(), String>,
+    create_floating: impl FnOnce() -> Result<(), String>,
+    show_floating: impl FnOnce() -> Result<(), String>,
+    create_tray: impl FnOnce() -> Result<(), String>,
+) -> Result<SurfaceSetupStatus, String> {
+    let mut status = SurfaceSetupStatus::default();
+    if plan.create_dashboard {
+        create_dashboard()?;
+    }
+    if plan.floating != FloatingStartupAction::None {
+        match create_floating() {
+            Err(error) => status.floating_window_error = Some(error),
+            Ok(()) if plan.floating == FloatingStartupAction::CreateAndShow => {
+                if let Err(error) = show_floating() {
+                    status.floating_window_error = Some(error);
+                }
+            }
+            Ok(()) => {}
+        }
+    }
+    if let Err(error) = create_tray() {
+        status.status_tray_error = Some(error);
+    }
+    Ok(status)
+}
+
 impl StatusPanelInteractionController {
     fn begin_tray_press(&mut self, panel_visible: bool) -> u64 {
         self.next_generation = self.next_generation.saturating_add(1);
@@ -149,31 +219,48 @@ impl StatusPanelInteractionController {
     }
 }
 
-pub fn setup_desktop_surfaces(app: &tauri::App) -> tauri::Result<()> {
+pub fn setup_desktop_surfaces(
+    app: &tauri::App,
+    mode: StartupLaunchMode,
+    settings: &AppSettingsSnapshot,
+) -> tauri::Result<()> {
     startup_trace::mark("rust setup start");
-    let mut status = SurfaceSetupStatus::default();
+    let plan = surface_startup_plan(
+        mode,
+        settings.display_surfaces.floating_window_enabled,
+        cfg!(target_os = "windows"),
+    );
 
-    startup_trace::mark("dashboard window create start");
-    create_dashboard_window(app.handle())?;
-    startup_trace::mark("dashboard window create end");
+    let status = execute_surface_startup_plan(
+        plan,
+        || {
+            startup_trace::mark("dashboard window create start");
+            let result = create_dashboard_window(app.handle()).map_err(|error| error.to_string());
+            startup_trace::mark("dashboard window create end");
+            result
+        },
+        || {
+            startup_trace::mark("floating setup create start");
+            let result = create_floating_window(app.handle()).map_err(|error| error.to_string());
+            startup_trace::mark("floating setup create end");
+            result
+        },
+        || show_floating_window(app.handle()).map(|_| ()),
+        || {
+            startup_trace::mark("status tray create start");
+            let result = create_status_tray(app).map_err(|error| error.to_string());
+            startup_trace::mark("status tray create end");
+            result
+        },
+    )
+    .map_err(|error| tauri::Error::Io(std::io::Error::other(error)))?;
 
-    if cfg!(target_os = "windows") {
-        startup_trace::mark("floating setup create start");
-        if let Err(error) = create_floating_window(app.handle()) {
-            let message = error.to_string();
-            eprintln!("Codex Token Bar: floating window setup failed: {message}");
-            status.floating_window_error = Some(message);
-        }
-        startup_trace::mark("floating setup create end");
+    if let Some(error) = status.floating_window_error.as_deref() {
+        eprintln!("Codex Token Bar: floating window setup failed: {error}");
     }
-
-    startup_trace::mark("status tray create start");
-    if let Err(error) = create_status_tray(app) {
-        let message = error.to_string();
-        eprintln!("Codex Token Bar: status tray setup failed: {message}");
-        status.status_tray_error = Some(message);
+    if let Some(error) = status.status_tray_error.as_deref() {
+        eprintln!("Codex Token Bar: status tray setup failed: {error}");
     }
-    startup_trace::mark("status tray create end");
 
     set_surface_setup_status(status);
     startup_trace::mark("rust setup end");
@@ -204,12 +291,6 @@ fn status_panel_interaction_cell() -> &'static Mutex<StatusPanelInteractionContr
 pub fn show_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {
     startup_trace::mark("floating window show start");
     if app.get_webview_window("floating").is_none() {
-        if cfg!(target_os = "windows") {
-            let message = "Windows 悬浮窗未在启动阶段完成初始化".to_string();
-            startup_trace::mark(&format!("floating window missing on windows: {message}"));
-            set_floating_window_error(Some(message.clone()));
-            return Err(message);
-        }
         startup_trace::mark("floating window create start");
         if let Err(error) = create_floating_window_on_main_thread(app) {
             if app.get_webview_window("floating").is_none() {
@@ -269,15 +350,22 @@ fn publish_floating_window_visibility(app: &tauri::AppHandle, visible: bool) {
 }
 
 pub fn show_dashboard_window(app: &tauri::AppHandle) -> Result<bool, String> {
-    if app.get_webview_window("main").is_none() {
-        create_dashboard_window(app).map_err(|error| error.to_string())?;
-    }
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "dashboard window is not available".to_string())?;
-    window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())?;
-    Ok(true)
+    super::startup::perform_dashboard_activation(
+        app.get_webview_window("main").is_some(),
+        || create_dashboard_window(app).map_err(|error| error.to_string()),
+        || {
+            app.get_webview_window("main")
+                .ok_or_else(|| "dashboard window is not available".to_string())?
+                .show()
+                .map_err(|error| error.to_string())
+        },
+        || {
+            app.get_webview_window("main")
+                .ok_or_else(|| "dashboard window is not available".to_string())?
+                .set_focus()
+                .map_err(|error| error.to_string())
+        },
+    )
 }
 
 pub fn show_status_panel_window(app: &tauri::AppHandle) -> Result<bool, String> {
@@ -1005,6 +1093,78 @@ fn set_status_panel_error(error: Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_plan_keeps_manual_dashboard_and_autostart_background_only() {
+        assert_eq!(
+            surface_startup_plan(StartupLaunchMode::Manual, true, true),
+            SurfaceStartupPlan {
+                create_dashboard: true,
+                floating: FloatingStartupAction::CreateHidden,
+            }
+        );
+        assert_eq!(
+            surface_startup_plan(StartupLaunchMode::Manual, false, true).floating,
+            FloatingStartupAction::CreateHidden
+        );
+        assert_eq!(
+            surface_startup_plan(StartupLaunchMode::Autostart, true, true),
+            SurfaceStartupPlan {
+                create_dashboard: false,
+                floating: FloatingStartupAction::CreateAndShow,
+            }
+        );
+        assert_eq!(
+            surface_startup_plan(StartupLaunchMode::Autostart, false, true),
+            SurfaceStartupPlan {
+                create_dashboard: false,
+                floating: FloatingStartupAction::None,
+            }
+        );
+        assert_eq!(
+            surface_startup_plan(StartupLaunchMode::Autostart, true, false),
+            SurfaceStartupPlan {
+                create_dashboard: false,
+                floating: FloatingStartupAction::CreateAndShow,
+            }
+        );
+    }
+
+    #[test]
+    fn startup_executor_preserves_floating_tray_and_fatal_dashboard_errors() {
+        let autostart = surface_startup_plan(StartupLaunchMode::Autostart, true, true);
+        let mut dashboard_calls = 0;
+        let mut floating_show_calls = 0;
+        let status = execute_surface_startup_plan(
+            autostart,
+            || {
+                dashboard_calls += 1;
+                Ok(())
+            },
+            || Err("floating create failed".into()),
+            || {
+                floating_show_calls += 1;
+                Ok(())
+            },
+            || Err("tray create failed".into()),
+        )
+        .unwrap();
+        assert_eq!(dashboard_calls, 0);
+        assert_eq!(floating_show_calls, 0);
+        assert_eq!(status.floating_window_error.as_deref(), Some("floating create failed"));
+        assert_eq!(status.status_tray_error.as_deref(), Some("tray create failed"));
+
+        let manual = surface_startup_plan(StartupLaunchMode::Manual, false, true);
+        let error = execute_surface_startup_plan(
+            manual,
+            || Err("dashboard create failed".into()),
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error, "dashboard create failed");
+    }
 
     #[test]
     fn floating_window_height_keeps_swift_protection_without_clipping_default_content() {

@@ -28,7 +28,10 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 mod settings;
+mod startup;
 mod surfaces;
+
+pub use startup::StartupLaunchMode;
 
 pub use capabilities::platform_capabilities;
 pub(crate) use provider_app::codex_desktop_is_running;
@@ -62,14 +65,22 @@ pub fn default_codex_home() -> PathBuf {
 }
 
 #[cfg(target_os = "windows")]
-pub fn activate_existing_instance_and_exit() -> bool {
-    windows::activate_existing_instance_and_exit()
+pub fn activate_existing_instance_and_exit(mode: StartupLaunchMode) -> bool {
+    windows::activate_existing_instance_and_exit(mode)
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn activate_existing_instance_and_exit() -> bool {
+pub fn activate_existing_instance_and_exit(_mode: StartupLaunchMode) -> bool {
     false
 }
+
+#[cfg(target_os = "windows")]
+pub fn start_instance_activation_listener(app: tauri::AppHandle) {
+    windows::start_instance_activation_listener(app)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn start_instance_activation_listener(_app: tauri::AppHandle) {}
 
 pub fn default_codex_home_status() -> CodexHomeStatus {
     let snapshot = settings::read_app_settings_or_default();
