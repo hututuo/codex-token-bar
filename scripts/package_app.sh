@@ -14,6 +14,70 @@ CODE_SIGN_IDENTITY="${CODE_SIGN_IDENTITY:-${CODESIGN_IDENTITY:--}}"
 ENABLE_HARDENED_RUNTIME="${ENABLE_HARDENED_RUNTIME:-auto}"
 ENABLE_APP_SANDBOX="${ENABLE_APP_SANDBOX:-0}"
 
+write_info_plist() {
+  local output_path="$1"
+  cat > "$output_path" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>zh_CN</string>
+  <key>CFBundleExecutable</key>
+  <string>CodexTokenBar</string>
+  <key>CFBundleIdentifier</key>
+  <string>$BUNDLE_ID</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Codex Token Bar</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>zh_CN</string>
+    <string>zh_TW</string>
+    <string>zh_HK</string>
+    <string>en</string>
+  </array>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$APP_VERSION</string>
+  <key>CFBundleVersion</key>
+  <string>$APP_BUILD</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSAccessibilityUsageDescription</key>
+  <string>用于在你开启悬浮窗锁定时读取目标窗口的位置，让悬浮窗跟随你选择的窗口。</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>用于识别屏幕上的窗口位置和名称，以支持悬浮窗锁定与跟随；不会截取或上传屏幕内容。</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUScheduledCheckInterval</key>
+  <integer>14400</integer>
+  <key>SUEnableInstallerLauncherService</key>
+  <true/>
+  <key>SUFeedURL</key>
+  <string>$SPARKLE_FEED_URL</string>
+  <key>SUPublicEDKey</key>
+  <string>$SPARKLE_PUBLIC_ED_KEY</string>
+</dict>
+</plist>
+PLIST
+}
+
+if [[ "$CONFIGURATION" == "--write-info-plist" ]]; then
+  if [[ $# -ne 2 ]]; then
+    echo "usage: $0 --write-info-plist OUTPUT_PATH" >&2
+    exit 64
+  fi
+  write_info_plist "$2"
+  exit 0
+fi
+
 cd "$ROOT_DIR"
 "$ROOT_DIR/scripts/prepare_tiktoken_lfs.sh"
 swift build ${CONFIGURATION:+-c "$CONFIGURATION"}
@@ -72,53 +136,7 @@ if [[ -d "$SPARKLE_FRAMEWORK_SRC" ]]; then
   install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/$PRODUCT_NAME" >/dev/null 2>&1 || true
 fi
 
-cat > "$CONTENTS_DIR/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleDevelopmentRegion</key>
-  <string>zh_CN</string>
-  <key>CFBundleExecutable</key>
-  <string>CodexTokenBar</string>
-  <key>CFBundleIdentifier</key>
-  <string>$BUNDLE_ID</string>
-  <key>CFBundleIconFile</key>
-  <string>AppIcon</string>
-  <key>CFBundleInfoDictionaryVersion</key>
-  <string>6.0</string>
-  <key>CFBundleName</key>
-  <string>Codex Token Bar</string>
-  <key>CFBundleLocalizations</key>
-  <array>
-    <string>zh_CN</string>
-    <string>zh_TW</string>
-    <string>zh_HK</string>
-    <string>en</string>
-  </array>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleShortVersionString</key>
-  <string>$APP_VERSION</string>
-  <key>CFBundleVersion</key>
-  <string>$APP_BUILD</string>
-  <key>LSMinimumSystemVersion</key>
-  <string>14.0</string>
-  <key>NSHighResolutionCapable</key>
-  <true/>
-  <key>NSAccessibilityUsageDescription</key>
-  <string>用于在你开启悬浮窗锁定时读取目标窗口的位置，让悬浮窗跟随你选择的窗口。</string>
-  <key>NSScreenCaptureUsageDescription</key>
-  <string>用于识别屏幕上的窗口位置和名称，以支持悬浮窗锁定与跟随；不会截取或上传屏幕内容。</string>
-  <key>SUEnableInstallerLauncherService</key>
-  <true/>
-  <key>SUFeedURL</key>
-  <string>$SPARKLE_FEED_URL</string>
-  <key>SUPublicEDKey</key>
-  <string>$SPARKLE_PUBLIC_ED_KEY</string>
-</dict>
-</plist>
-PLIST
+write_info_plist "$CONTENTS_DIR/Info.plist"
 
 if [[ -d "$FRAMEWORKS_DIR/Sparkle.framework" ]]; then
   sign_target "$FRAMEWORKS_DIR/Sparkle.framework/Versions/B/Autoupdate"
