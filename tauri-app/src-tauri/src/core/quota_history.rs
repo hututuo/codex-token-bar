@@ -31,7 +31,7 @@ use time::UtcOffset;
 
 const HEARTBEAT_SECONDS: f64 = 60.0 * 60.0;
 const RETENTION_DAYS: i64 = 45;
-const RECENT_BIN_COUNT: usize = 289;
+const LONG_RECENT_FIVE_MINUTE_BIN_COUNT: usize = 30 * 24 * 12;
 const QUOTA_HISTORY_SOURCE: &str = "tauri";
 pub(crate) const QUOTA_HISTORY_IDENTITY_VERSION: i64 = 1;
 static QUOTA_HISTORY_DATABASE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
@@ -114,7 +114,12 @@ pub fn history_bundle_for(
     day_count: usize,
 ) -> Result<QuotaHistoryBundle, String> {
     QuotaHistoryDatabase::default()?
-        .history_bundle_for_identity(Some(identity), bundle, day_count, RECENT_BIN_COUNT)
+        .history_bundle_for_identity(
+            Some(identity),
+            bundle,
+            day_count,
+            LONG_RECENT_FIVE_MINUTE_BIN_COUNT,
+        )
         .map_err(|error| format!("读取额度历史失败：{error}"))
 }
 
@@ -196,7 +201,7 @@ impl QuotaHistoryDatabase {
     }
 
     #[cfg(test)]
-    fn recent_history_24h(&self, count: usize) -> SqlResult<Vec<QuotaHistoryPoint>> {
+    fn recent_five_minute_history(&self, count: usize) -> SqlResult<Vec<QuotaHistoryPoint>> {
         self.recent_history(count, 5 * 60)
     }
 

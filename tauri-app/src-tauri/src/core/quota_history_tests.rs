@@ -141,7 +141,7 @@ fn record_normalizes_same_reset_window_regressions() {
         .record(&bundle("tester", 0.71, reset as i64, 0.21, (reset + 500_000.0) as i64))
         .unwrap();
 
-    let history = database.recent_history_24h(4).unwrap();
+    let history = database.recent_five_minute_history(4).unwrap();
     let latest = history.last().unwrap();
     assert_eq!(latest.five_hour_remaining_percent, Some(0.16));
     assert_eq!(latest.seven_day_remaining_percent, Some(0.79));
@@ -165,7 +165,7 @@ fn history_recovers_from_isolated_full_usage_spike() {
         .record(&bundle("tester", 0.15, reset as i64, 0.21, (reset + 500_000.0) as i64))
         .unwrap();
 
-    let history = database.recent_history_24h(4).unwrap();
+    let history = database.recent_five_minute_history(4).unwrap();
     let latest = history.last().unwrap();
     assert_eq!(latest.five_hour_remaining_percent, Some(0.85));
     assert_eq!(latest.seven_day_remaining_percent, Some(0.79));
@@ -192,7 +192,7 @@ fn history_suppresses_recovered_full_usage_spike_runs() {
         .record(&bundle("tester", 0.06, reset as i64, 0.04, (reset + 500_000.0) as i64))
         .unwrap();
 
-    let history = database.recent_history_24h(12).unwrap();
+    let history = database.recent_five_minute_history(12).unwrap();
     assert!(history
         .iter()
         .all(|point| point.five_hour_remaining_percent != Some(0.0)));
@@ -517,7 +517,7 @@ fn recent_history_includes_legacy_fake_pro_rows_for_same_codex_account() {
         ))
         .unwrap();
 
-    let history = database.recent_history_24h(12).unwrap();
+    let history = database.recent_five_minute_history(12).unwrap();
     assert!(history
         .iter()
         .any(|point| point.five_hour_remaining_percent == Some(0.90)));
@@ -627,7 +627,7 @@ fn recent_history_includes_legacy_codex_account_key_rows() {
     )
     .unwrap();
 
-    let history = database.recent_history_24h(12).unwrap();
+    let history = database.recent_five_minute_history(12).unwrap();
     assert!(history
         .iter()
         .any(|point| point.five_hour_remaining_percent == Some(0.90)));
@@ -674,7 +674,7 @@ fn recent_history_mixes_different_sources_for_same_codex_account() {
         Some("tauri"),
     );
 
-    let history = database.recent_history_24h(12).unwrap();
+    let history = database.recent_five_minute_history(12).unwrap();
     assert!(history
         .iter()
         .any(|point| point.five_hour_remaining_percent == Some(0.90)));
@@ -721,7 +721,7 @@ fn recent_history_does_not_merge_non_codex_limit_rows() {
     )
     .unwrap();
 
-    let history = database.recent_history_24h(12).unwrap();
+    let history = database.recent_five_minute_history(12).unwrap();
     assert!(history
         .iter()
         .all(|point| point.five_hour_remaining_percent != Some(0.50)));
@@ -756,7 +756,7 @@ fn history_suppresses_recovered_midcycle_usage_spike() {
         .unwrap();
     }
 
-    let history = database.recent_history_24h(12).unwrap();
+    let history = database.recent_five_minute_history(12).unwrap();
     assert!(history
         .iter()
         .all(|point| point.five_hour_remaining_percent != Some(0.55)));
@@ -804,7 +804,7 @@ fn history_allows_recovery_on_new_reset_window() {
     )
     .unwrap();
 
-    let history = database.recent_history_24h(12).unwrap();
+    let history = database.recent_five_minute_history(12).unwrap();
     assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(1.0));
 
     let _ = std::fs::remove_file(path);
@@ -820,7 +820,9 @@ fn quota_history_points_include_start_unix_for_time_aligned_merge() {
         .record(&bundle("tester", 0.20, reset as i64, 0.40, (reset + 500_000.0) as i64))
         .unwrap();
 
-    let history = database.recent_history_24h(RECENT_BIN_COUNT).unwrap();
+    let history = database
+        .recent_five_minute_history(LONG_RECENT_FIVE_MINUTE_BIN_COUNT)
+        .unwrap();
     assert!(history.iter().all(|point| point.start_unix > 0));
     for pair in history.windows(2) {
         assert_eq!(pair[1].start_unix - pair[0].start_unix, 5 * 60);
@@ -864,7 +866,7 @@ fn history_carries_to_reset_as_full_quota() {
         .record(&bundle("tester", 0.50, reset, 0.30, reset + 500_000))
         .unwrap();
 
-    let history = database.recent_history_24h(2).unwrap();
+    let history = database.recent_five_minute_history(2).unwrap();
     assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(1.0));
 
     let _ = std::fs::remove_file(path);
@@ -904,8 +906,16 @@ fn recent_history_uses_canonical_five_minute_axis() {
         .record(&bundle("tester", 0.20, reset as i64, 0.40, (reset + 500_000.0) as i64))
         .unwrap();
 
-    let history = database.recent_history_24h(RECENT_BIN_COUNT).unwrap();
-    assert_eq!(history.len(), 289);
+    let history = database
+        .recent_five_minute_history(LONG_RECENT_FIVE_MINUTE_BIN_COUNT)
+        .unwrap();
+    let usage_timestamps = recent_usage_five_minute_timestamps(history.last().unwrap().start_unix);
+    assert_eq!(history.len(), usage_timestamps.len());
+    assert_eq!(history.first().unwrap().start_unix, usage_timestamps[0]);
+    assert_eq!(
+        history.last().unwrap().start_unix,
+        *usage_timestamps.last().unwrap()
+    );
     assert!(history
         .iter()
         .all(|point| point.label.len() == "00:00".len()));
@@ -916,6 +926,14 @@ fn recent_history_uses_canonical_five_minute_axis() {
     }
 
     let _ = std::fs::remove_file(path);
+}
+
+fn recent_usage_five_minute_timestamps(end_unix: i64) -> Vec<i64> {
+    let point_count = 30 * 24 * 12;
+    let start_unix = end_unix - (point_count - 1) * 5 * 60;
+    (0..point_count)
+        .map(|index| start_unix + index * 5 * 60)
+        .collect()
 }
 
 #[test]
@@ -953,8 +971,13 @@ fn history_bundle_builds_all_axes_from_one_read() {
         .record(&bundle("tester", 0.20, reset as i64, 0.40, (reset + 500_000.0) as i64))
         .unwrap();
 
-    let history = database.history_bundle(365, RECENT_BIN_COUNT).unwrap();
-    assert_eq!(history.recent_24h.len(), RECENT_BIN_COUNT);
+    let history = database
+        .history_bundle(365, LONG_RECENT_FIVE_MINUTE_BIN_COUNT)
+        .unwrap();
+    assert_eq!(
+        history.recent_24h.len(),
+        LONG_RECENT_FIVE_MINUTE_BIN_COUNT
+    );
     assert_eq!(history.recent_7d.len(), 7 * 24);
     assert_eq!(history.recent_30d.len(), 30 * 4);
     assert!(history.daily.iter().any(|point| {
@@ -985,10 +1008,10 @@ fn history_bundle_for_current_account_does_not_follow_a_concurrent_latest_accoun
     database.record(&account_b).unwrap();
 
     let history_a = database
-        .history_bundle_for(&account_a, 365, RECENT_BIN_COUNT)
+        .history_bundle_for(&account_a, 365, LONG_RECENT_FIVE_MINUTE_BIN_COUNT)
         .unwrap();
     let history_b = database
-        .history_bundle_for(&account_b, 365, RECENT_BIN_COUNT)
+        .history_bundle_for(&account_b, 365, LONG_RECENT_FIVE_MINUTE_BIN_COUNT)
         .unwrap();
 
     assert_eq!(
@@ -1033,7 +1056,7 @@ fn concurrent_account_record_and_load_stays_on_each_account_filter() {
                 database.record(&account).unwrap();
                 recorded.wait();
                 let history = database
-                    .history_bundle_for(&account, 365, RECENT_BIN_COUNT)
+                    .history_bundle_for(&account, 365, LONG_RECENT_FIVE_MINUTE_BIN_COUNT)
                     .unwrap();
                 (
                     history.recent_24h.last().unwrap().five_hour_remaining_percent,

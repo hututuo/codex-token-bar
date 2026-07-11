@@ -199,6 +199,32 @@ test("quotaConsumptionSelection uses cumulative quota drop instead of start-end 
   assert.equal(selection?.sevenDay.impliedWindowBudgetUSD?.toFixed(4), "40.0000");
 });
 
+test("quotaConsumptionSelection estimates quota inside an old window of the 30-day canvas", () => {
+  const pointCount = 30 * 24 * 12;
+  const startUnix = localUnix(2026, 5, 1);
+  const oldWindowStart = 12 * 24 * 12;
+  const points = Array.from({ length: pointCount }, (_, index) =>
+    point(startUnix + index * 5 * 60, {
+      inputTokens: index >= oldWindowStart && index <= oldWindowStart + 2 ? 100_000 : 0,
+      tokens: index >= oldWindowStart && index <= oldWindowStart + 2 ? 100_000 : 0,
+      calls: index >= oldWindowStart && index <= oldWindowStart + 2 ? 1 : 0,
+      fiveHourRemainingPercent: index === oldWindowStart ? 0.8 : index === oldWindowStart + 1 ? 0.76 : index === oldWindowStart + 2 ? 0.72 : null,
+    }),
+  );
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: points,
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+
+  const selection = quotaConsumptionSelection(data, oldWindowStart, oldWindowStart + 2, "gpt55");
+
+  assert.equal(selection?.startUnix, points[oldWindowStart].startUnix);
+  assert.equal(selection?.endUnix, points[oldWindowStart + 2].startUnix + 5 * 60);
+  assert.equal(selection?.fiveHour.quotaDropPercent, 8);
+  assert.equal(selection?.fiveHour.impliedWindowBudgetUSD?.toFixed(4), "18.7500");
+});
+
 test("quotaConsumptionSelection ignores isolated full-usage quota spikes", () => {
   const data = prepareRecentChartData("24h", {
     recentUsage24h: [

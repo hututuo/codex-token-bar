@@ -30,6 +30,37 @@ test("mergeQuota aligns quota history by startUnix instead of array position", a
   });
 });
 
+test("mergeQuota overlays the full 30-day five-minute canvas without changing 7d or 30d axes", async () => {
+  return withSsrModules(async (load) => {
+    const { mergeQuota } = await load("/src/state/dashboardMergers.ts");
+    const pointCount = 30 * 24 * 12;
+    const firstStartUnix = 1_780_000_000;
+    const recentUsage24h = Array.from({ length: pointCount }, (_, index) =>
+      recentUsagePoint({ startUnix: firstStartUnix + index * 5 * 60, tokens: index }),
+    );
+    const latestStartUnix = recentUsage24h.at(-1).startUnix;
+    const recentUsage7d = [recentUsagePoint({ startUnix: 700, tokens: 7 })];
+    const recentUsage30d = [recentUsagePoint({ startUnix: 3_000, tokens: 30 })];
+    const state = stateWithDashboard({ recentUsage24h, recentUsage7d, recentUsage30d });
+    const quota = quotaBundleFixture({
+      quotaHistory24h: [
+        quotaHistoryPoint({ startUnix: firstStartUnix, fiveHourRemainingPercent: 0.91 }),
+        quotaHistoryPoint({ startUnix: latestStartUnix, fiveHourRemainingPercent: 0.42 }),
+      ],
+      quotaHistory7d: [quotaHistoryPoint({ startUnix: 700, sevenDayRemainingPercent: 0.77 })],
+      quotaHistory30d: [quotaHistoryPoint({ startUnix: 3_000, sevenDayRemainingPercent: 0.33 })],
+    });
+
+    const next = mergeQuota(state, quota);
+
+    assert.equal(next.dashboard.recentUsage24h.length, pointCount);
+    assert.equal(next.dashboard.recentUsage24h[0].fiveHourRemainingPercent, 0.91);
+    assert.equal(next.dashboard.recentUsage24h.at(-1).fiveHourRemainingPercent, 0.42);
+    assert.deepEqual(next.dashboard.recentUsage7d.map((point) => [point.startUnix, point.sevenDayRemainingPercent]), [[700, 0.77]]);
+    assert.deepEqual(next.dashboard.recentUsage30d.map((point) => [point.startUnix, point.sevenDayRemainingPercent]), [[3_000, 0.33]]);
+  });
+});
+
 test("mergeQuota carries daily quota history for the activity heatmap", async () => {
   return withSsrModules(async (load) => {
     const { mergeQuota } = await load("/src/state/dashboardMergers.ts");
