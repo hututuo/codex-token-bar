@@ -146,43 +146,76 @@ fn recent_rollout_threads(
     codex_home: &Path,
     source_scope: &LiveRateSourceScope,
 ) -> rusqlite::Result<(Vec<super::state::RolloutThread>, u64)> {
-    let state_signature = state_database_signature(codex_home);
-    let generation = {
-        let mut state = rollout_state();
-        if !state.scope_generations.contains_key(source_scope) {
-            evict_oldest_scope_if_needed(&mut state);
-            state.next_generation = state.next_generation.saturating_add(1);
-            let generation = state.next_generation;
-            state.scope_generations.insert(source_scope.clone(), generation);
-        }
-        if let Some(cached) = state.recent_threads.get(source_scope) {
-            if cached.state_signature == state_signature
-                && cached.refreshed_at.elapsed() < RECENT_ROLLOUT_TTL
-            {
-                return Ok((
-                    cached.threads.clone(),
-                    *state.scope_generations.get(source_scope).expect("scope generation"),
-                ));
-            }
-        }
-        *state.scope_generations.get(source_scope).expect("scope generation")
-    };
+    recent_rollout_threads_with_reader(codex_home, source_scope, || {
+        read_recent_rollout_threads(codex_home, RECENT_ROLLOUT_LIMIT)
+    })
+}
 
-    let threads = read_recent_rollout_threads(codex_home, RECENT_ROLLOUT_LIMIT)?;
-    let publish_signature = state_database_signature(codex_home);
-    let mut state = rollout_state();
-    if state.scope_generations.get(source_scope) == Some(&generation) {
-        #[cfg(test)]
-        {
-            *state.load_counts.entry(source_scope.clone()).or_default() += 1;
+fn recent_rollout_threads_with_reader(
+    codex_home: &Path,
+    source_scope: &LiveRateSourceScope,
+    mut read_threads: impl FnMut() -> rusqlite::Result<Vec<super::state::RolloutThread>>,
+) -> rusqlite::Result<(Vec<super::state::RolloutThread>, u64)> {
+    for attempt in 0..2 {
+        let signature_before = state_database_signature(codex_home);
+        let refresh_nonce = {
+            let mut state = rollout_state();
+            if !state.scope_generations.contains_key(source_scope) {
+                evict_oldest_scope_if_needed(&mut state);
+            }
+            if let Some(cached) = state.recent_threads.get(source_scope) {
+                if cached.state_signature == signature_before
+                    && cached.refreshed_at.elapsed() < RECENT_ROLLOUT_TTL
+                {
+                    return Ok((
+                        cached.threads.clone(),
+                        *state.scope_generations.get(source_scope).unwrap_or(&0),
+                    ));
+                }
+            }
+            state.next_generation = state.next_generation.saturating_add(1);
+            let nonce = state.next_generation;
+            state.scope_generations.insert(source_scope.clone(), nonce);
+            nonce
+        };
+
+        let threads = read_threads()?;
+        let signature_after = state_database_signature(codex_home);
+        if signature_before != signature_after {
+            if rollout_state().scope_generations.get(source_scope) != Some(&refresh_nonce) {
+                return Ok((threads, refresh_nonce));
+            }
+            if attempt == 0 {
+                continue;
+            }
+            return Ok((threads, refresh_nonce));
         }
-        state.recent_threads.insert(source_scope.clone(), CachedRolloutThreads {
-            state_signature: publish_signature,
-            threads: threads.clone(),
-            refreshed_at: Instant::now(),
-        });
+
+        let valid_paths = threads
+            .iter()
+            .map(|thread| thread.rollout_path.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut state = rollout_state();
+        if state.scope_generations.get(source_scope) == Some(&refresh_nonce) {
+            #[cfg(test)]
+            {
+                *state.load_counts.entry(source_scope.clone()).or_default() += 1;
+            }
+            state.recent_threads.insert(
+                source_scope.clone(),
+                CachedRolloutThreads {
+                    state_signature: signature_after,
+                    threads: threads.clone(),
+                    refreshed_at: Instant::now(),
+                },
+            );
+            state.offsets.retain(|(scope, path), _| {
+                scope != source_scope || valid_paths.contains(path)
+            });
+        }
+        return Ok((threads, refresh_nonce));
     }
-    Ok((threads, generation))
+    unreachable!("bounded rollout signature retry")
 }
 
 fn evict_oldest_scope_if_needed(state: &mut RolloutState) {
@@ -201,6 +234,8 @@ fn evict_oldest_scope_if_needed(state: &mut RolloutState) {
     state.scope_generations.remove(&scope);
     state.recent_threads.remove(&scope);
     state.offsets.retain(|(candidate, _), _| candidate != &scope);
+    #[cfg(test)]
+    state.load_counts.remove(&scope);
 }
 
 fn state_database_signature(codex_home: &Path) -> StateDatabaseSignature {
@@ -280,6 +315,23 @@ pub(super) fn cached_scope_thread_ids_for_test(scope: &LiveRateSourceScope) -> V
         .get(scope)
         .map(|cached| cached.threads.iter().map(|thread| thread.id.clone()).collect())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+pub(super) fn recent_thread_ids_after_read_hook_for_test(
+    codex_home: &Path,
+    scope: &LiveRateSourceScope,
+    after_first_read: impl FnOnce(),
+) -> rusqlite::Result<Vec<String>> {
+    let mut hook = Some(after_first_read);
+    recent_rollout_threads_with_reader(codex_home, scope, || {
+        let threads = read_recent_rollout_threads(codex_home, RECENT_ROLLOUT_LIMIT)?;
+        if let Some(hook) = hook.take() {
+            hook();
+        }
+        Ok(threads)
+    })
+    .map(|(threads, _)| threads.into_iter().map(|thread| thread.id).collect())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

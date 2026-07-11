@@ -7,7 +7,7 @@ use crate::core::unread;
 use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, UnreadSummary};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 const FAST_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
@@ -18,6 +18,7 @@ pub struct LiveRateMonitorService {
     codex_home: PathBuf,
     source_scope: LiveRateSourceScope,
     inner: Mutex<LiveRateMonitorState>,
+    refresh_ready: Condvar,
 }
 
 #[derive(Default)]
@@ -29,6 +30,9 @@ struct LiveRateMonitorState {
     last_active_at: Option<Instant>,
     refresh_count: usize,
     signature_count: usize,
+    next_refresh_nonce: u64,
+    refresh_in_flight: Option<u64>,
+    reset_generation: u64,
 }
 
 struct SelectedSnapshot {
@@ -65,6 +69,7 @@ impl LiveRateMonitorService {
             codex_home,
             source_scope,
             inner: Mutex::new(LiveRateMonitorState::default()),
+            refresh_ready: Condvar::new(),
         }
     }
 
@@ -95,32 +100,68 @@ impl LiveRateMonitorService {
         selected_thread_id: Option<&str>,
         unread_summary: UnreadSummary,
     ) -> LiveRateSnapshot {
-        let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(mut snapshot) = state.cached_snapshot_before_signature(selected_thread_id) {
-            snapshot.unread_summary = unread_summary;
-            return snapshot;
-        }
-        let signature = log_store_signature(&self.codex_home, &self.source_scope);
-        state.signature_count += 1;
-        let selected_matches = state
-            .selected_snapshot
-            .as_ref()
-            .is_some_and(|cached| cached.selected_thread_id.as_deref() == selected_thread_id);
+        self.snapshot_with_loaded_unread_after_claim(selected_thread_id, unread_summary, || {})
+    }
 
-        if !state.should_refresh(&signature, selected_thread_id, selected_matches) {
-            if let Some(selected) = &state.selected_snapshot {
-                if selected.selected_thread_id.as_deref() == selected_thread_id {
-                    let mut snapshot = selected.snapshot.clone();
-                    snapshot.unread_summary = unread_summary;
-                    return snapshot;
-                }
+    fn snapshot_with_loaded_unread_after_claim(
+        &self,
+        selected_thread_id: Option<&str>,
+        unread_summary: UnreadSummary,
+        after_claim: impl FnOnce(),
+    ) -> LiveRateSnapshot {
+        let (refresh_nonce, reset_generation) = loop {
+            let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(mut snapshot) = state.cached_snapshot_before_signature(selected_thread_id) {
+                snapshot.unread_summary = unread_summary.clone();
+                return snapshot;
             }
-            if selected_thread_id.is_none() {
-                if let Some(snapshot) = &state.all_snapshot {
-                    let mut snapshot = snapshot.clone();
-                    snapshot.unread_summary = unread_summary;
+            if state.refresh_in_flight.is_some() {
+                if let Some(mut snapshot) = state.cached_snapshot(selected_thread_id) {
+                    snapshot.unread_summary = unread_summary.clone();
                     return snapshot;
                 }
+                drop(
+                    self.refresh_ready
+                        .wait(state)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                );
+                continue;
+            }
+            state.next_refresh_nonce = state.next_refresh_nonce.saturating_add(1);
+            let nonce = state.next_refresh_nonce;
+            state.refresh_in_flight = Some(nonce);
+            break (nonce, state.reset_generation);
+        };
+
+        after_claim();
+        let signature = log_store_signature(&self.codex_home, &self.source_scope);
+        {
+            let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.refresh_in_flight != Some(refresh_nonce)
+                || state.reset_generation != reset_generation
+            {
+                self.refresh_ready.notify_all();
+                drop(state);
+                return read_snapshot_with_unread_scoped(
+                    &self.codex_home,
+                    &self.source_scope,
+                    selected_thread_id,
+                    unread_summary,
+                );
+            }
+            state.signature_count += 1;
+            let selected_matches = state
+                .selected_snapshot
+                .as_ref()
+                .is_some_and(|cached| cached.selected_thread_id.as_deref() == selected_thread_id);
+            if !state.should_refresh(&signature, selected_thread_id, selected_matches) {
+                let mut snapshot = state
+                    .cached_snapshot(selected_thread_id)
+                    .expect("non-refreshing monitor must have a cached snapshot");
+                snapshot.unread_summary = unread_summary;
+                state.refresh_in_flight = None;
+                self.refresh_ready.notify_all();
+                return snapshot;
             }
         }
 
@@ -140,17 +181,24 @@ impl LiveRateMonitorService {
             snapshot.clone()
         };
 
-        state.all_snapshot = Some(all_snapshot);
-        state.selected_snapshot = Some(SelectedSnapshot {
-            selected_thread_id: selected_thread_id.map(ToOwned::to_owned),
-            snapshot: snapshot.clone(),
-        });
-        state.last_signature = Some(signature);
-        state.last_refresh = Some(Instant::now());
-        if snapshot.tokens_per_second > 0.05 || snapshot.selected_tokens_per_second > 0.05 {
-            state.last_active_at = Some(Instant::now());
+        let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.refresh_in_flight == Some(refresh_nonce)
+            && state.reset_generation == reset_generation
+        {
+            state.all_snapshot = Some(all_snapshot);
+            state.selected_snapshot = Some(SelectedSnapshot {
+                selected_thread_id: selected_thread_id.map(ToOwned::to_owned),
+                snapshot: snapshot.clone(),
+            });
+            state.last_signature = Some(signature);
+            state.last_refresh = Some(Instant::now());
+            if snapshot.tokens_per_second > 0.05 || snapshot.selected_tokens_per_second > 0.05 {
+                state.last_active_at = Some(Instant::now());
+            }
+            state.refresh_count += 1;
+            state.refresh_in_flight = None;
         }
-        state.refresh_count += 1;
+        self.refresh_ready.notify_all();
         snapshot
     }
 
@@ -175,6 +223,9 @@ impl LiveRateMonitorService {
         state.last_signature = None;
         state.last_refresh = None;
         state.last_active_at = None;
+        state.reset_generation = state.reset_generation.saturating_add(1);
+        state.refresh_in_flight = None;
+        self.refresh_ready.notify_all();
     }
 
     #[cfg(test)]
@@ -192,9 +243,33 @@ impl LiveRateMonitorService {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .signature_count
     }
+
+    #[cfg(test)]
+    pub fn test_snapshot_after_claim(
+        &self,
+        selected_thread_id: Option<&str>,
+        after_claim: impl FnOnce(),
+    ) -> LiveRateSnapshot {
+        self.snapshot_with_loaded_unread_after_claim(
+            selected_thread_id,
+            unread::read_unread_summary(&self.codex_home),
+            after_claim,
+        )
+    }
 }
 
 impl LiveRateMonitorState {
+    fn cached_snapshot(&self, selected_thread_id: Option<&str>) -> Option<LiveRateSnapshot> {
+        if let Some(selected_thread_id) = selected_thread_id {
+            return self
+                .selected_snapshot
+                .as_ref()
+                .filter(|cached| cached.selected_thread_id.as_deref() == Some(selected_thread_id))
+                .map(|cached| cached.snapshot.clone());
+        }
+        self.all_snapshot.clone()
+    }
+
     fn cached_snapshot_before_signature(
         &self,
         selected_thread_id: Option<&str>,

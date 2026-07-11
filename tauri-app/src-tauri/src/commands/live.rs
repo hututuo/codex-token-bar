@@ -28,7 +28,7 @@ const UNREAD_REFRESH_RETRY_BACKOFF: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Default)]
 pub struct LiveRateMonitorRegistry {
-    monitor: Arc<Mutex<Option<LiveRateMonitorService>>>,
+    monitor: Arc<Mutex<Option<Arc<LiveRateMonitorService>>>>,
     stream: Arc<Mutex<LiveRateStreamState>>,
     unread_cache: Arc<Mutex<HashMap<String, CachedUnreadSummary>>>,
 }
@@ -260,23 +260,8 @@ impl LiveRateMonitorRegistry {
         selected_thread_id: Option<&str>,
         unread_summary: UnreadSummary,
     ) -> Result<LiveRateSnapshot, String> {
-        let mut monitor = self.monitor.lock().map_err(|error| error.to_string())?;
-        if monitor
-            .as_ref()
-            .is_none_or(|current| {
-                current.codex_home() != codex_home
-                    || current.source_scope() != &live_rate_source_scope(&source_token)
-            })
-        {
-            *monitor = Some(LiveRateMonitorService::new_scoped(
-                codex_home,
-                live_rate_source_scope(&source_token),
-            ));
-        }
-        Ok(monitor
-            .as_ref()
-            .expect("live rate monitor should be initialized")
-            .snapshot_with_unread(selected_thread_id, unread_summary))
+        let monitor = self.monitor_for_source(source_token, codex_home)?;
+        Ok(monitor.snapshot_with_unread(selected_thread_id, unread_summary))
     }
 
     fn floating_snapshot_with_unread(
@@ -285,6 +270,15 @@ impl LiveRateMonitorRegistry {
         codex_home: PathBuf,
         unread_summary: UnreadSummary,
     ) -> Result<FloatingPanelSnapshot, String> {
+        let monitor = self.monitor_for_source(source_token, codex_home)?;
+        Ok(monitor.floating_snapshot_with_unread(unread_summary))
+    }
+
+    fn monitor_for_source(
+        &self,
+        source_token: CodexHomeSourceToken,
+        codex_home: PathBuf,
+    ) -> Result<Arc<LiveRateMonitorService>, String> {
         let mut monitor = self.monitor.lock().map_err(|error| error.to_string())?;
         if monitor
             .as_ref()
@@ -293,20 +287,23 @@ impl LiveRateMonitorRegistry {
                     || current.source_scope() != &live_rate_source_scope(&source_token)
             })
         {
-            *monitor = Some(LiveRateMonitorService::new_scoped(
+            *monitor = Some(Arc::new(LiveRateMonitorService::new_scoped(
                 codex_home,
                 live_rate_source_scope(&source_token),
-            ));
+            )));
         }
-        Ok(monitor
+        Ok(Arc::clone(monitor
             .as_ref()
-            .expect("live rate monitor should be initialized")
-            .floating_snapshot_with_unread(unread_summary))
+            .expect("live rate monitor should be initialized")))
     }
 
     fn reset(&self) -> Result<(), String> {
-        let monitor = self.monitor.lock().map_err(|error| error.to_string())?;
-        if let Some(monitor) = monitor.as_ref() {
+        let monitor = self
+            .monitor
+            .lock()
+            .map_err(|error| error.to_string())?
+            .clone();
+        if let Some(monitor) = monitor {
             monitor.reset();
         }
         Ok(())
@@ -661,6 +658,11 @@ impl LiveRateMonitorRegistry {
             .unwrap()
             .as_ref()
             .map(|monitor| monitor.source_scope().physical_home_key.clone())
+    }
+
+    #[cfg(test)]
+    fn test_monitor_service(&self) -> Arc<LiveRateMonitorService> {
+        self.monitor.lock().unwrap().as_ref().unwrap().clone()
     }
 
     #[cfg(test)]
@@ -1161,6 +1163,8 @@ mod tests {
 
     #[test]
     fn same_path_physical_source_change_replaces_monitor_service() {
+        use std::sync::mpsc;
+
         let registry = LiveRateMonitorRegistry::default();
         let root = std::env::temp_dir().join(format!(
             "codex-token-bar-monitor-source-scope-{}",
@@ -1178,6 +1182,17 @@ mod tests {
             registry.test_monitor_physical_scope().as_deref(),
             Some("physical:physical-a")
         );
+        let old_monitor = registry.test_monitor_service();
+        old_monitor.reset();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let slow = std::thread::spawn(move || {
+            old_monitor.test_snapshot_after_claim(None, || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        started_rx.recv().unwrap();
         registry
             .snapshot_at_with_unread(source_b.source_token, root.clone(), None, unread)
             .unwrap();
@@ -1185,6 +1200,8 @@ mod tests {
             registry.test_monitor_physical_scope().as_deref(),
             Some("physical:physical-b")
         );
+        release_tx.send(()).unwrap();
+        let _ = slow.join().unwrap();
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -2,7 +2,8 @@ use super::*;
 use rusqlite::{params, Connection};
 use std::fs;
 use std::io::Write;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -486,6 +487,72 @@ fn monitor_reset_invalidates_cached_snapshot_immediately() {
 }
 
 #[test]
+fn slow_refresh_does_not_block_reset_or_publish_after_reset() {
+    let root = temp_root("live-rate-monitor-reset-during-refresh");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "A", 1);
+    create_logs_database(&root, |_connection, _now| {});
+    let monitor = Arc::new(LiveRateMonitorService::new(root.clone()));
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let slow_monitor = Arc::clone(&monitor);
+    let slow = std::thread::spawn(move || {
+        slow_monitor.test_snapshot_after_claim(None, || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+    });
+    started_rx.recv().unwrap();
+
+    monitor.reset();
+    assert_eq!(monitor.test_refresh_count(), 0);
+    release_tx.send(()).unwrap();
+    let _ = slow.join().unwrap();
+    assert_eq!(monitor.test_refresh_count(), 0);
+
+    let _ = monitor.snapshot(None);
+    assert_eq!(monitor.test_refresh_count(), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cold_concurrent_monitor_refresh_is_single_flight() {
+    let root = temp_root("live-rate-monitor-cold-single-flight");
+    fs::create_dir_all(&root).unwrap();
+    create_state_database(&root, "thread-a", "A", 1);
+    create_logs_database(&root, |_connection, _now| {});
+    let monitor = Arc::new(LiveRateMonitorService::new(root.clone()));
+    let claims = Arc::new(AtomicUsize::new(0));
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+
+    let first_monitor = Arc::clone(&monitor);
+    let first_claims = Arc::clone(&claims);
+    let first = std::thread::spawn(move || {
+        first_monitor.test_snapshot_after_claim(None, || {
+            first_claims.fetch_add(1, Ordering::Relaxed);
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+    });
+    started_rx.recv().unwrap();
+    let second_monitor = Arc::clone(&monitor);
+    let second_claims = Arc::clone(&claims);
+    let second = std::thread::spawn(move || {
+        second_monitor.test_snapshot_after_claim(None, || {
+            second_claims.fetch_add(1, Ordering::Relaxed);
+        })
+    });
+    release_tx.send(()).unwrap();
+    let _ = first.join().unwrap();
+    let _ = second.join().unwrap();
+
+    assert_eq!(claims.load(Ordering::Relaxed), 1);
+    assert_eq!(monitor.test_refresh_count(), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn read_snapshot_falls_back_to_rollout_assistant_message_when_logs_have_no_new_rows() {
     let root = temp_root("live-rate-rollout-fallback");
     fs::create_dir_all(&root).unwrap();
@@ -701,6 +768,53 @@ fn recent_rollout_threads_refresh_on_wal_change_and_ttl() {
     rollout::expire_cache_for_test(&scope);
     let _ = rollout::recent_thread_ids_for_test(&root, &scope).unwrap();
     assert_eq!(rollout::cache_load_count_for_test(&scope), 3);
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn slow_old_sqlite_read_cannot_overwrite_newer_same_scope_cache() {
+    let root = temp_root("live-rate-rollout-same-scope-race");
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    create_state_database(&root, "thread-a", "A", 1);
+    let rollout_a = root.join("sessions/thread-a.jsonl");
+    fs::write(&rollout_a, "").unwrap();
+    set_thread_rollout_path(&root, "thread-a", &rollout_a);
+    let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
+    connection.pragma_update(None, "journal_mode", "WAL").unwrap();
+    connection.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    let scope = LiveRateSourceScope::new(root.display().to_string(), "physical-race");
+    let (read_tx, read_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let slow_root = root.clone();
+    let slow_scope = scope.clone();
+    let slow = std::thread::spawn(move || {
+        rollout::recent_thread_ids_after_read_hook_for_test(&slow_root, &slow_scope, || {
+            read_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+        .unwrap()
+    });
+    read_rx.recv().unwrap();
+
+    let rollout_b = root.join("sessions/thread-b.jsonl");
+    fs::write(&rollout_b, "").unwrap();
+    connection
+        .execute(
+            r#"INSERT INTO threads (id, title, rollout_path, updated_at, updated_at_ms, tokens_used)
+               VALUES ('thread-b', 'B', ?1, 9999999999, 9999999999000, 1)"#,
+            [rollout_b.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+    let current = rollout::recent_thread_ids_for_test(&root, &scope).unwrap();
+    assert_eq!(current[0], "thread-b");
+    release_tx.send(()).unwrap();
+    assert_eq!(slow.join().unwrap(), vec!["thread-a"]);
+    assert_eq!(
+        rollout::cached_scope_thread_ids_for_test(&scope)[0],
+        "thread-b"
+    );
+
     drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
