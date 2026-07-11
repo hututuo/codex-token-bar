@@ -22,6 +22,55 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testCurrentStreakUsesTodayWithOneDayGraceTable() throws {
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: try makeCodexHome()))
+        let start = Date(timeIntervalSince1970: 1_782_000_000)
+        let cases: [(name: String, tokens: [Int], expected: Int)] = [
+            ("today active", [10, 20, 30], 3),
+            ("yesterday grace", [10, 20, 0], 2),
+            ("today and yesterday empty", [10, 0, 0], 0),
+            ("historical gap truncates", [10, 0, 20, 30, 0], 2),
+            ("empty precise series", [], 0),
+            ("metadata only series", [], 0)
+        ]
+
+        for testCase in cases {
+            let daily = testCase.tokens.enumerated().map { offset, tokens in
+                DayUsage(
+                    date: start.addingTimeInterval(Double(offset) * 86_400),
+                    tokens: tokens,
+                    calls: tokens > 0 ? 1 : 0
+                )
+            }
+            XCTAssertEqual(
+                analyzer.currentStreakDays(from: daily),
+                testCase.expected,
+                testCase.name
+            )
+        }
+    }
+
+    func testCurrentStreakUsesInjectedLocalDayBoundary() throws {
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: try makeCodexHome()))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+        let today = calendar.date(from: DateComponents(
+            year: 2026,
+            month: 7,
+            day: 11
+        ))!
+        let now = today.addingTimeInterval(60)
+        let events = [
+            tokenEvent(timestamp: today.addingTimeInterval(-60), sessionID: "yesterday"),
+            tokenEvent(timestamp: today.addingTimeInterval(60), sessionID: "today")
+        ]
+
+        let daily = analyzer.dailyUsage(from: events, now: now, calendar: calendar)
+
+        XCTAssertEqual(daily.suffix(2).map(\.tokens), [1, 1])
+        XCTAssertEqual(analyzer.currentStreakDays(from: daily), 2)
+    }
+
     func testPreciseJSONLScanBuildsUsageSeriesAndCacheBreakdown() throws {
         let codexHome = try makeCodexHome()
         let sessionID = "019eaaaa-bbbb-cccc-dddd-eeeeffffffff"
@@ -166,6 +215,8 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertFalse(snapshot.hasPreciseTokenUsage)
         XCTAssertEqual(snapshot.stats.totalTokens, 0)
         XCTAssertEqual(snapshot.stats.peakThreadTokens, 0)
+        XCTAssertEqual(snapshot.stats.currentStreakDays, 0)
+        XCTAssertEqual(snapshot.stats.longestStreakDays, 0)
         XCTAssertEqual(snapshot.stats.totalThreads, 2)
         XCTAssertTrue(snapshot.dailyUsage.isEmpty)
         XCTAssertTrue(snapshot.recentBins.isEmpty)
@@ -1280,6 +1331,20 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 "message": message
             ]
         ])
+    }
+
+    private func tokenEvent(timestamp: Date, sessionID: String) -> TokenEvent {
+        TokenEvent(
+            timestamp: timestamp,
+            sessionID: sessionID,
+            tokens: 1,
+            inputTokens: 1,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            userPrompt: "",
+            assistantResponse: ""
+        )
     }
 
     private func spacedSessionMetaLine(timestamp: Date, sessionID: String) -> String {

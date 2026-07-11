@@ -2,7 +2,11 @@ import Foundation
 
 extension CodexUsageAnalyzer {
     func dailyUsage(from events: [TokenEvent]) -> [DayUsage] {
-        let today = calendar.startOfDay(for: Date())
+        dailyUsage(from: events, now: Date(), calendar: calendar)
+    }
+
+    func dailyUsage(from events: [TokenEvent], now: Date, calendar: Calendar) -> [DayUsage] {
+        let today = calendar.startOfDay(for: now)
         guard let start = calendar.date(byAdding: .day, value: -364, to: today) else { return [] }
 
         var grouped: [Date: (tokens: Int, calls: Int)] = [:]
@@ -180,13 +184,20 @@ extension CodexUsageAnalyzer {
     }
 
     func currentStreakDays(from daily: [DayUsage]) -> Int {
+        guard !daily.isEmpty else { return 0 }
+        let ordered = daily.sorted { $0.date < $1.date }
+        var index = ordered.index(before: ordered.endIndex)
+        if ordered[index].tokens == 0 {
+            guard index > ordered.startIndex else { return 0 }
+            index = ordered.index(before: index)
+            guard ordered[index].tokens > 0 else { return 0 }
+        }
+
         var streak = 0
-        for day in daily.reversed() {
-            if day.tokens > 0 {
-                streak += 1
-            } else if streak > 0 {
-                break
-            }
+        while ordered[index].tokens > 0 {
+            streak += 1
+            guard index > ordered.startIndex else { break }
+            index = ordered.index(before: index)
         }
         return streak
     }
