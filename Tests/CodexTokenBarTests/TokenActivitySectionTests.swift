@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import CodexTokenBar
 
@@ -33,8 +34,8 @@ final class TokenActivitySectionTests: XCTestCase {
                 mode: mode,
                 isSelected: mode == .cacheHitRate
             )
-            let button = RecentChartAccessibilityButtonRepresentation.makeButton(
-                presentation: presentation.accessibilityButton
+            let button = ActivityModeAccessibilityButtonRepresentation.makeButton(
+                presentation: presentation
             )
 
             XCTAssertEqual(button.accessibilityLabel(), "Token 活动模式 \(mode.rawValue)")
@@ -46,4 +47,99 @@ final class TokenActivitySectionTests: XCTestCase {
             XCTAssertTrue(button.isEnabled)
         }
     }
+
+    @MainActor
+    func testHostedModeSelectorExposesFiveActionableAccessibilityButtons() throws {
+        var selectedMode = ActivityMode.weekly
+        let hostingView = NSHostingView(
+            rootView: HostedActivityModeSelectorHarness(
+                initialMode: selectedMode,
+                onSelectionChange: { selectedMode = $0 }
+            )
+        )
+        hostingView.frame = NSRect(x: 0, y: 0, width: 280, height: 44)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        hostingView.layoutSubtreeIfNeeded()
+        runMainLoopBriefly()
+
+        let expectedLabels = ActivityMode.allCases.map { "Token 活动模式 \($0.rawValue)" }
+        var buttons = hostedAccessibilityButtons(in: hostingView, labels: Set(expectedLabels))
+        XCTAssertEqual(buttons.count, ActivityMode.allCases.count)
+        XCTAssertEqual(buttons.compactMap { $0.accessibilityLabel() }.sorted(), expectedLabels.sorted())
+        XCTAssertEqual(buttons.filter { ($0.accessibilityValue() as? String) == "已选择" }.count, 1)
+        XCTAssertEqual(buttons.filter { ($0.accessibilityValue() as? String) == "未选择" }.count, 4)
+        XCTAssertTrue(buttons.allSatisfy { $0.accessibilityRole() == .button })
+
+        let dailyButton = try XCTUnwrap(
+            buttons.first { $0.accessibilityLabel() == "Token 活动模式 每日" }
+        )
+        XCTAssertTrue(dailyButton.accessibilityPerformPress())
+        runMainLoopBriefly()
+        XCTAssertEqual(selectedMode, .daily)
+
+        buttons = hostedAccessibilityButtons(in: hostingView, labels: Set(expectedLabels))
+        XCTAssertEqual(
+            buttons.first { $0.accessibilityLabel() == "Token 活动模式 每日" }?.accessibilityValue() as? String,
+            "已选择"
+        )
+        XCTAssertEqual(
+            buttons.first { $0.accessibilityLabel() == "Token 活动模式 每周" }?.accessibilityValue() as? String,
+            "未选择"
+        )
+    }
+}
+
+private struct HostedActivityModeSelectorHarness: View {
+    @State private var selectedMode: ActivityMode
+    let onSelectionChange: (ActivityMode) -> Void
+
+    init(initialMode: ActivityMode, onSelectionChange: @escaping (ActivityMode) -> Void) {
+        _selectedMode = State(initialValue: initialMode)
+        self.onSelectionChange = onSelectionChange
+    }
+
+    var body: some View {
+        ActivityModeSelector(selectedMode: $selectedMode)
+            .onChange(of: selectedMode) { _, newValue in
+                onSelectionChange(newValue)
+            }
+    }
+}
+
+@MainActor
+private func hostedAccessibilityButtons(
+    in hostingView: NSHostingView<HostedActivityModeSelectorHarness>,
+    labels: Set<String>
+) -> [NSButton] {
+    nativeButtons(in: hostingView).filter { button in
+        button.accessibilityLabel().map(labels.contains) == true
+    }
+}
+
+@MainActor
+private func nativeButtons(in root: NSView) -> [NSButton] {
+    var result: [NSButton] = []
+
+    func visit(_ view: NSView) {
+        if let button = view as? NSButton {
+            result.append(button)
+        }
+        view.subviews.forEach(visit)
+    }
+
+    visit(root)
+    return result
+}
+
+@MainActor
+private func runMainLoopBriefly() {
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 }

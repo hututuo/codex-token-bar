@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ActivityModeOptionPresentation: Equatable {
@@ -10,13 +11,67 @@ struct ActivityModeOptionPresentation: Equatable {
         accessibilityLabel = "Token 活动模式 \(mode.rawValue)"
         accessibilityValue = isSelected ? "已选择" : "未选择"
     }
+}
 
-    var accessibilityButton: RecentChartAccessibilityButtonPresentation {
-        RecentChartAccessibilityButtonPresentation(
-            label: accessibilityLabel,
-            value: accessibilityValue,
-            isEnabled: true
-        )
+struct ActivityModeAccessibilityButtonRepresentation: NSViewRepresentable {
+    let presentation: ActivityModeOptionPresentation
+    let action: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(action: action)
+    }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = Self.makeButton(presentation: presentation)
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.performAction)
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.action = action
+        Self.configure(button, presentation: presentation)
+    }
+
+    @MainActor
+    static func makeButton(presentation: ActivityModeOptionPresentation) -> NSButton {
+        let button = ActivityModeAccessibilityButton(title: "", target: nil, action: nil)
+        button.isBordered = false
+        button.setButtonType(.momentaryPushIn)
+        configure(button, presentation: presentation)
+        return button
+    }
+
+    @MainActor
+    private static func configure(_ button: NSButton, presentation: ActivityModeOptionPresentation) {
+        button.setAccessibilityLabel(presentation.accessibilityLabel)
+        button.setAccessibilityValue(presentation.accessibilityValue)
+        button.setAccessibilityHelp("切换 Token 活动显示模式")
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var action: () -> Void
+
+        init(action: @escaping () -> Void) {
+            self.action = action
+        }
+
+        @objc func performAction() {
+            action()
+        }
+    }
+}
+
+@MainActor
+private final class ActivityModeAccessibilityButton: NSButton {
+    override func accessibilityPerformPress() -> Bool {
+        performClick(nil)
+        return true
+    }
+
+    override func accessibilityRole() -> NSAccessibility.Role? {
+        .button
     }
 }
 
@@ -75,6 +130,7 @@ struct ActivityModeSelector: View {
                     .fill(AppTheme.raisedBackground)
             )
         }
+        .accessibilityElement(children: .contain)
     }
 
     private func modeButton(_ mode: ActivityMode, width: CGFloat, groupedSpecial: Bool = false) -> some View {
@@ -82,34 +138,24 @@ struct ActivityModeSelector: View {
             mode: mode,
             isSelected: selectedMode == mode
         )
-        return Button {
-            selectedMode = mode
-        } label: {
-            Label {
-                Text(presentation.accessibilityLabel)
-            } icon: {
-                Text(presentation.visibleTitle)
-                    .font(.system(size: groupedSpecial ? 12 : 13, weight: selectedMode == mode ? .semibold : .medium))
-                    .foregroundStyle(labelColor(for: mode))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                    .frame(width: width, height: 25)
-                    .background(background(for: mode))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .stroke(Color.clear, lineWidth: 1)
-                    )
-            }
-            .labelStyle(.iconOnly)
-        }
-        .buttonStyle(.plain)
-        .accessibilityRepresentation {
-            RecentChartAccessibilityButtonRepresentation(
-                presentation: presentation.accessibilityButton,
-                action: { selectedMode = mode }
+        return Text(presentation.visibleTitle)
+            .font(.system(size: groupedSpecial ? 12 : 13, weight: selectedMode == mode ? .semibold : .medium))
+            .foregroundStyle(labelColor(for: mode))
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
+            .frame(width: width, height: 25)
+            .background(background(for: mode))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(Color.clear, lineWidth: 1)
             )
-            .accessibilityHint("切换 Token 活动显示模式")
-        }
+            .accessibilityHidden(true)
+            .overlay {
+                ActivityModeAccessibilityButtonRepresentation(
+                    presentation: presentation,
+                    action: { selectedMode = mode }
+                )
+            }
     }
 
     private func labelColor(for mode: ActivityMode) -> Color {
