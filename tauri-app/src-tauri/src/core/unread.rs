@@ -6,19 +6,27 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod recent_completion;
+#[cfg(test)]
+mod sequence_tests;
 mod session_files;
 mod state;
 
 use state::read_unread_thread_ids;
 
 pub fn read_unread_summary(codex_home: &Path) -> UnreadSummary {
-    let acknowledgement = read_acknowledgement_for_home(codex_home);
-    match read_unread_thread_ids(codex_home) {
+    let native_thread_ids = read_unread_thread_ids(codex_home);
+    let acknowledgement = read_acknowledgement_for_home(codex_home, native_thread_ids.as_ref());
+    match native_thread_ids {
         Some(thread_ids) => {
-            let active_ids: HashSet<String> = thread_ids
+            let mut active_ids: HashSet<String> = thread_ids
                 .difference(&acknowledgement.unread_thread_ids)
                 .cloned()
                 .collect();
+            let completion_thread_ids = recent_completion::recent_completion_thread_ids(
+                codex_home,
+                &acknowledgement.completion_markers,
+            );
+            active_ids.extend(completion_thread_ids.intersection(&thread_ids).cloned());
             unread_state_summary(active_ids.len())
         }
         None => recent_completion::recent_completion_summary(
@@ -32,11 +40,17 @@ pub fn acknowledge_current_unread(codex_home: &Path) -> Result<UnreadSummary, St
     let mut acknowledgement = read_acknowledgement();
     let home_key = codex_home_key(codex_home);
     let home_acknowledgement = acknowledgement.by_codex_home.entry(home_key).or_default();
+    let completion_markers = recent_completion::recent_completion_markers(codex_home);
     match read_unread_thread_ids(codex_home) {
-        Some(thread_ids) => home_acknowledgement.unread_thread_ids.extend(thread_ids),
+        Some(thread_ids) => {
+            home_acknowledgement.unread_thread_ids.extend(thread_ids);
+            home_acknowledgement
+                .completion_markers
+                .extend(completion_markers);
+        }
         None => home_acknowledgement
             .completion_markers
-            .extend(recent_completion::recent_completion_markers(codex_home)),
+            .extend(completion_markers),
     }
     write_acknowledgement(&acknowledgement)?;
     Ok(read_unread_summary(codex_home))
@@ -77,12 +91,27 @@ struct HomeUnreadAcknowledgement {
     completion_markers: HashSet<String>,
 }
 
-fn read_acknowledgement_for_home(codex_home: &Path) -> HomeUnreadAcknowledgement {
-    read_acknowledgement()
-        .by_codex_home
-        .get(&codex_home_key(codex_home))
-        .cloned()
-        .unwrap_or_default()
+fn read_acknowledgement_for_home(
+    codex_home: &Path,
+    native_thread_ids: Option<&HashSet<String>>,
+) -> HomeUnreadAcknowledgement {
+    let mut acknowledgement = read_acknowledgement();
+    let home_key = codex_home_key(codex_home);
+    let Some(home_acknowledgement) = acknowledgement.by_codex_home.get_mut(&home_key) else {
+        return HomeUnreadAcknowledgement::default();
+    };
+
+    let previous_unread_count = home_acknowledgement.unread_thread_ids.len();
+    if let Some(native_thread_ids) = native_thread_ids {
+        home_acknowledgement
+            .unread_thread_ids
+            .retain(|thread_id| native_thread_ids.contains(thread_id));
+    }
+    let result = home_acknowledgement.clone();
+    if result.unread_thread_ids.len() != previous_unread_count {
+        let _ = write_acknowledgement(&acknowledgement);
+    }
+    result
 }
 
 fn read_acknowledgement() -> UnreadAcknowledgement {

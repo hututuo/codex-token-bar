@@ -19,7 +19,7 @@ pub(super) fn recent_completion_summary(
     codex_home: &Path,
     acknowledged_markers: &HashSet<String>,
 ) -> UnreadSummary {
-    let count = count_recent_completed_user_tasks(codex_home, acknowledged_markers);
+    let count = recent_completion_thread_ids(codex_home, acknowledged_markers).len();
     let active = count > 0;
     UnreadSummary {
         active,
@@ -50,22 +50,22 @@ pub(super) fn recent_completion_markers(codex_home: &Path) -> HashSet<String> {
     recent_session_files(&codex_home.join("sessions"), now)
         .into_iter()
         .flat_map(|file| recent_completed_user_task_markers(&file, now))
+        .map(|(_, marker)| marker)
         .collect()
 }
 
-fn count_recent_completed_user_tasks(
+pub(super) fn recent_completion_thread_ids(
     codex_home: &Path,
     acknowledged_markers: &HashSet<String>,
-) -> usize {
+) -> HashSet<String> {
     let now = current_time_seconds();
     recent_session_files(&codex_home.join("sessions"), now)
         .into_iter()
-        .filter(|file| {
-            recent_completed_user_task_markers(file, now)
-                .into_iter()
-                .any(|marker| !acknowledged_markers.contains(&marker))
+        .flat_map(|file| recent_completed_user_task_markers(&file, now))
+        .filter_map(|(thread_id, marker)| {
+            (!acknowledged_markers.contains(&marker)).then_some(thread_id)
         })
-        .count()
+        .collect()
 }
 
 fn recent_session_files(root: &Path, now: f64) -> Vec<PathBuf> {
@@ -89,7 +89,7 @@ fn recent_session_files(root: &Path, now: f64) -> Vec<PathBuf> {
         .collect()
 }
 
-fn recent_completed_user_task_markers(file: &Path, now: f64) -> Vec<String> {
+fn recent_completed_user_task_markers(file: &Path, now: f64) -> Vec<(String, String)> {
     let Some(payload) = session_meta_payload(file) else {
         return Vec::new();
     };
@@ -108,7 +108,9 @@ fn recent_completed_user_task_markers(file: &Path, now: f64) -> Vec<String> {
     tail_lines(file)
         .into_iter()
         .filter_map(|line| recent_task_complete_marker(&line, thread_id))
-        .filter_map(|(timestamp, marker)| (timestamp >= cutoff).then_some(marker))
+        .filter_map(|(timestamp, marker)| {
+            (timestamp >= cutoff).then_some((thread_id.to_string(), marker))
+        })
         .collect()
 }
 
