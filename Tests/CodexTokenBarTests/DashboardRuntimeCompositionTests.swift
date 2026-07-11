@@ -302,6 +302,102 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
     }
 
     @MainActor
+    func testRuntimeKeepsResolvedScaleAcrossConflictingDashboardReports() {
+        let suiteName = "DashboardRuntimeCompositionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let notifications = NotificationCenter()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(1.0, forKey: "floatingPanelScale")
+        defaults.set(true, forKey: InterfaceScaleSettings.autoEnabledKey)
+        let automaticScale = TestAutomaticInterfaceScale(1.24)
+        var applications: [DashboardRuntimeConfiguration] = []
+        let runtime = DashboardRuntime(
+            settings: defaults,
+            notificationCenter: notifications,
+            automaticInterfaceScaleProvider: { automaticScale.value },
+            startupAction: {},
+            surfaceApplyAction: { applications.append($0) }
+        )
+        let consumer = UUID()
+        runtime.acquireConsumer(consumer)
+
+        runtime.reportConfiguration(
+            Self.configuration(floating: true, status: false, interfaceScale: 1.0),
+            for: consumer
+        )
+        runtime.reportConfiguration(
+            Self.configuration(floating: true, status: false, interfaceScale: 1.0),
+            for: consumer
+        )
+
+        let statusOnly = FloatingPanelContentVisibility(
+            showRateAndBar: false,
+            showUsageStatus: true,
+            showMetrics: false,
+            showQuota: false,
+            showRadar: false
+        )
+        runtime.reportConfiguration(
+            Self.configuration(
+                floating: true,
+                status: false,
+                interfaceScale: 1.0,
+                visibility: statusOnly
+            ),
+            for: consumer
+        )
+
+        XCTAssertEqual(applications.map(\.floatingPanelScale.value), [1.24, 1.24])
+        XCTAssertEqual(applications.last?.floatingPanelVisibility, statusOnly)
+
+        defaults.set(false, forKey: InterfaceScaleSettings.autoEnabledKey)
+        defaults.set(1.3, forKey: InterfaceScaleSettings.manualMultiplierKey)
+        notifications.post(name: UserDefaults.didChangeNotification, object: defaults)
+        XCTAssertEqual(applications.last?.floatingPanelScale.value ?? -1, 1.3, accuracy: 0.001)
+
+        defaults.set(1.1, forKey: "floatingPanelScale")
+        notifications.post(name: UserDefaults.didChangeNotification, object: defaults)
+        XCTAssertEqual(applications.last?.floatingPanelScale.value ?? -1, 1.43, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testInitialFloatingBindingCorrectsOnceAfterPanelScreenBecomesKnown() {
+        let suiteName = "DashboardRuntimeCompositionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let notifications = NotificationCenter()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(1.0, forKey: "floatingPanelScale")
+        defaults.set(true, forKey: InterfaceScaleSettings.autoEnabledKey)
+        let automaticScale = TestAutomaticInterfaceScale(1.0)
+        var appliedScales: [CGFloat] = []
+        let runtime = DashboardRuntime(
+            settings: defaults,
+            notificationCenter: notifications,
+            automaticInterfaceScaleProvider: { automaticScale.value },
+            startupAction: {},
+            surfaceApplyAction: { configuration in
+                appliedScales.append(configuration.floatingPanelScale.value)
+                if appliedScales.count == 1 {
+                    automaticScale.value = 1.24
+                }
+            }
+        )
+        let consumer = UUID()
+        runtime.acquireConsumer(consumer)
+
+        runtime.reportConfiguration(
+            Self.configuration(floating: true, status: false, interfaceScale: 1.0),
+            for: consumer
+        )
+        runtime.reportConfiguration(
+            Self.configuration(floating: true, status: false, interfaceScale: 1.0),
+            for: consumer
+        )
+
+        XCTAssertEqual(appliedScales, [1.0, 1.24])
+    }
+
+    @MainActor
     func testInactiveTransitionCancelsAfterConfigurationAndReappliesOnReturn() {
         var starts = 0
         var stops = 0
@@ -347,13 +443,14 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
     private static func configuration(
         floating: Bool,
         status: Bool,
-        interfaceScale: CGFloat = 1
+        interfaceScale: CGFloat = 1,
+        visibility: FloatingPanelContentVisibility = .default
     ) -> DashboardRuntimeConfiguration {
         DashboardRuntimeConfiguration(
             floatingPanelEnabled: floating,
             statusBarPanelEnabled: status,
             floatingPanelScale: FloatingTokenPanelScale(baseScale: 1, interfaceScale: interfaceScale),
-            floatingPanelVisibility: .default,
+            floatingPanelVisibility: visibility,
             floatingPanelLocked: false,
             preciseTokenCountingEnabled: false,
             providerSyncVisible: false,

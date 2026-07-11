@@ -482,13 +482,6 @@ struct DashboardView: View {
         )
     }
 
-    private var effectiveFloatingPanelScale: FloatingTokenPanelScale {
-        FloatingTokenPanelScale(
-            baseScale: floatingPanelScale,
-            interfaceScale: requestedInterfaceScale
-        )
-    }
-
     private var floatingPanelContentVisibility: FloatingPanelContentVisibility {
         FloatingPanelContentVisibility(
             showRateAndBar: floatingPanelShowRateAndBar,
@@ -581,16 +574,13 @@ struct DashboardView: View {
 
     private func reportRuntimeConfiguration() {
         runtime.reportConfiguration(
-            DashboardRuntimeConfiguration(
-                floatingPanelEnabled: floatingPanelEnabled,
-                statusBarPanelEnabled: statusBarPanelEnabled,
-                floatingPanelScale: effectiveFloatingPanelScale,
-                floatingPanelVisibility: floatingPanelContentVisibility,
-                floatingPanelLocked: floatingPanelLocked,
-                preciseTokenCountingEnabled: preciseTokenCountingEnabled,
-                providerSyncVisible: showingProviderSync,
-                radarDetailsVisible: showingCodexRadarDetails
-            ),
+            floatingPanelEnabled: floatingPanelEnabled,
+            statusBarPanelEnabled: statusBarPanelEnabled,
+            floatingPanelVisibility: floatingPanelContentVisibility,
+            floatingPanelLocked: floatingPanelLocked,
+            preciseTokenCountingEnabled: preciseTokenCountingEnabled,
+            providerSyncVisible: showingProviderSync,
+            radarDetailsVisible: showingCodexRadarDetails,
             for: runtimeConsumerID
         )
     }

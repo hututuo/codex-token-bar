@@ -166,6 +166,7 @@ final class DashboardRuntime: ObservableObject {
     private let sideEffectStopAction: (() -> Void)?
     private var cancellables: Set<AnyCancellable> = []
     private var cadenceRecoveryTask: Task<Void, Never>?
+    private var isCorrectingFloatingPanelScale = false
     private(set) var configuration: DashboardRuntimeConfiguration?
     private(set) var isStarted = false
 
@@ -267,7 +268,32 @@ final class DashboardRuntime: ObservableObject {
     }
 
     func reportConfiguration(_ configuration: DashboardRuntimeConfiguration, for id: UUID) {
-        sideEffects.reportConfiguration(configuration, for: id)
+        sideEffects.reportConfiguration(normalizedConfiguration(configuration), for: id)
+    }
+
+    func reportConfiguration(
+        floatingPanelEnabled: Bool,
+        statusBarPanelEnabled: Bool,
+        floatingPanelVisibility: FloatingPanelContentVisibility,
+        floatingPanelLocked: Bool,
+        preciseTokenCountingEnabled: Bool,
+        providerSyncVisible: Bool,
+        radarDetailsVisible: Bool,
+        for id: UUID
+    ) {
+        sideEffects.reportConfiguration(
+            DashboardRuntimeConfiguration(
+                floatingPanelEnabled: floatingPanelEnabled,
+                statusBarPanelEnabled: statusBarPanelEnabled,
+                floatingPanelScale: resolveFloatingPanelScaleFromSettings(),
+                floatingPanelVisibility: floatingPanelVisibility,
+                floatingPanelLocked: floatingPanelLocked,
+                preciseTokenCountingEnabled: preciseTokenCountingEnabled,
+                providerSyncVisible: providerSyncVisible,
+                radarDetailsVisible: radarDetailsVisible
+            ),
+            for: id
+        )
     }
 
     func toggleFloatingPanelLock() {
@@ -387,6 +413,7 @@ final class DashboardRuntime: ObservableObject {
         guard let configuration else { return }
         if let surfaceApplyAction {
             surfaceApplyAction(configuration)
+            _ = correctFloatingPanelScaleAfterBinding(configuration)
             return
         }
         if configuration.floatingPanelEnabled {
@@ -402,6 +429,9 @@ final class DashboardRuntime: ObservableObject {
                 onToggleLock: { [weak self] in self?.toggleFloatingPanelLock() },
                 onClose: { [weak self] in self?.closeFloatingPanel() }
             )
+            if correctFloatingPanelScaleAfterBinding(configuration) {
+                return
+            }
         } else {
             floatingPanel.close()
         }
@@ -436,6 +466,12 @@ final class DashboardRuntime: ObservableObject {
 
     private func refreshFloatingPanelScaleFromSettings() {
         guard let configuration, configuration.floatingPanelEnabled else { return }
+        let scale = resolveFloatingPanelScaleFromSettings()
+        guard scale != configuration.floatingPanelScale else { return }
+        sideEffects.applyAppConfiguration(configuration.replacing(floatingPanelScale: scale))
+    }
+
+    private func resolveFloatingPanelScaleFromSettings() -> FloatingTokenPanelScale {
         let baseScale = (settings.object(forKey: "floatingPanelScale") as? NSNumber)?.doubleValue
             ?? FloatingTokenPanelMetrics.defaultScale
         let autoEnabled = (settings.object(forKey: InterfaceScaleSettings.autoEnabledKey) as? NSNumber)?.boolValue
@@ -449,12 +485,29 @@ final class DashboardRuntime: ObservableObject {
                 autoEnabled: false,
                 screen: nil
             )
-        let scale = FloatingTokenPanelScale(
+        return FloatingTokenPanelScale(
             baseScale: baseScale,
             interfaceScale: CGFloat(interfaceScale)
         )
-        guard scale != configuration.floatingPanelScale else { return }
-        applyAppConfiguration(configuration.replacing(floatingPanelScale: scale))
+    }
+
+    private func normalizedConfiguration(
+        _ configuration: DashboardRuntimeConfiguration
+    ) -> DashboardRuntimeConfiguration {
+        configuration.replacing(floatingPanelScale: resolveFloatingPanelScaleFromSettings())
+    }
+
+    @discardableResult
+    private func correctFloatingPanelScaleAfterBinding(
+        _ configuration: DashboardRuntimeConfiguration
+    ) -> Bool {
+        guard configuration.floatingPanelEnabled, !isCorrectingFloatingPanelScale else { return false }
+        let normalized = normalizedConfiguration(configuration)
+        guard normalized.floatingPanelScale != configuration.floatingPanelScale else { return false }
+        isCorrectingFloatingPanelScale = true
+        defer { isCorrectingFloatingPanelScale = false }
+        sideEffects.applyAppConfiguration(normalized)
+        return true
     }
 
     private func refreshForSystemWake() {
@@ -486,7 +539,7 @@ final class DashboardRuntime: ObservableObject {
     }
 
     private func applyAppConfiguration(_ configuration: DashboardRuntimeConfiguration) {
-        sideEffects.applyAppConfiguration(configuration)
+        sideEffects.applyAppConfiguration(normalizedConfiguration(configuration))
     }
 }
 
