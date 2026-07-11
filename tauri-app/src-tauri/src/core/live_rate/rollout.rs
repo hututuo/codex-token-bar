@@ -34,10 +34,16 @@ struct CachedRolloutThreads {
     refreshed_at: Instant,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 struct StateDatabaseSignature {
     main: FileSignature,
     wal: FileSignature,
+}
+
+impl StateDatabaseSignature {
+    fn is_same_as(&self, other: &Self) -> bool {
+        self.main.is_same_as(&other.main) && self.wal.is_same_as(&other.wal)
+    }
 }
 
 pub(super) fn read_rollout_metrics(
@@ -164,7 +170,7 @@ fn recent_rollout_threads_with_reader(
                 evict_oldest_scope_if_needed(&mut state);
             }
             if let Some(cached) = state.recent_threads.get(source_scope) {
-                if cached.state_signature == signature_before
+                if cached.state_signature.is_same_as(&signature_before)
                     && cached.refreshed_at.elapsed() < RECENT_ROLLOUT_TTL
                 {
                     return Ok((
@@ -181,7 +187,7 @@ fn recent_rollout_threads_with_reader(
 
         let threads = read_threads()?;
         let signature_after = state_database_signature(codex_home);
-        if signature_before != signature_after {
+        if !signature_before.is_same_as(&signature_after) {
             if rollout_state().scope_generations.get(source_scope) != Some(&refresh_nonce) {
                 return Ok((threads, refresh_nonce));
             }
@@ -665,12 +671,19 @@ fn file_size(path: &Path) -> Option<u64> {
 }
 
 fn file_signature(path: &Path) -> FileSignature {
+    file_signature_with_identity(path, file_identity)
+}
+
+fn file_signature_with_identity(
+    path: &Path,
+    identity_reader: impl FnOnce(&File) -> Option<String>,
+) -> FileSignature {
     File::open(path)
         .and_then(|file| file.metadata().map(|metadata| (file, metadata)))
         .map(|(file, metadata)| FileSignature {
             exists: true,
             regular: metadata.is_file(),
-            identity: file_identity(&file),
+            identity: identity_reader(&file),
             len: metadata.len(),
             modified_at: metadata.modified().ok(),
         })
@@ -734,11 +747,51 @@ fn windows_file_identity_source_uses_stable_handle_api() {
     assert!(!source.contains(&["file_", "index()"].concat()));
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 struct FileSignature {
     exists: bool,
     regular: bool,
     identity: Option<String>,
     len: u64,
     modified_at: Option<SystemTime>,
+}
+
+impl FileSignature {
+    fn is_same_as(&self, other: &Self) -> bool {
+        if !self.exists || !other.exists {
+            return self.exists == other.exists;
+        }
+        self.regular == other.regular
+            && self.len == other.len
+            && self.modified_at == other.modified_at
+            && matches!(
+                (&self.identity, &other.identity),
+                (Some(left), Some(right)) if left == right
+            )
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn file_signatures_fail_closed_when_identity_is_unavailable() {
+    let path = std::env::temp_dir().join(format!(
+        "codex-token-bar-rollout-signature-{}",
+        std::process::id()
+    ));
+    fs::write(&path, b"stable metadata").unwrap();
+
+    let unavailable_a = file_signature_with_identity(&path, |_| None);
+    let unavailable_b = file_signature_with_identity(&path, |_| None);
+    assert!(!unavailable_a.is_same_as(&unavailable_b));
+
+    let known_a = file_signature_with_identity(&path, |_| Some("volume:file".into()));
+    let known_b = file_signature_with_identity(&path, |_| Some("volume:file".into()));
+    assert!(known_a.is_same_as(&known_b));
+
+    let missing = path.with_extension("missing");
+    let absent_a = file_signature_with_identity(&missing, |_| None);
+    let absent_b = file_signature_with_identity(&missing, |_| None);
+    assert!(absent_a.is_same_as(&absent_b));
+
+    fs::remove_file(path).unwrap();
 }
