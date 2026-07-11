@@ -25,6 +25,8 @@ pub(super) enum AtomicWritePhase {
     BeforeReplace,
     AfterDestinationExists,
     CleanupTemp,
+    AfterCleanupIdentityCheck,
+    BeforeHandleDelete,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -311,7 +313,7 @@ fn write_atomic_with_hook(
             ".{file_name}.codex-token-bar-{}-{sequence:020}.tmp",
             std::process::id()
         ));
-        let mut file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
+        let mut file = match create_atomic_temp(&temp) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error.to_string()),
@@ -358,8 +360,7 @@ fn with_atomic_cleanup_error(
     match cleanup_atomic_temp(temp, expected, hook) {
         Ok(()) => original_error,
         Err(cleanup_error) => format!(
-            "{original_error}；原子替换临时文件清理失败，残留于 {}：{cleanup_error}",
-            temp.display()
+            "{original_error}；原子替换临时文件清理失败：{cleanup_error}"
         ),
     }
 }
@@ -369,20 +370,128 @@ fn cleanup_atomic_temp(
     expected: &AtomicFileIdentity,
     hook: &mut impl FnMut(AtomicWritePhase, &Path) -> Result<(), String>,
 ) -> Result<(), String> {
-    hook(AtomicWritePhase::CleanupTemp, temp)?;
-    let named = match open_atomic_temp_no_follow(temp) {
+    hook(AtomicWritePhase::CleanupTemp, temp)
+        .map_err(|error| format!("{error}；残留于 {}", temp.display()))?;
+
+    #[cfg(unix)]
+    return cleanup_unix_atomic_temp(temp, expected, hook);
+    #[cfg(windows)]
+    return cleanup_windows_atomic_temp(temp, expected, hook);
+}
+
+#[cfg(unix)]
+fn cleanup_unix_atomic_temp(
+    temp: &Path,
+    expected: &AtomicFileIdentity,
+    hook: &mut impl FnMut(AtomicWritePhase, &Path) -> Result<(), String>,
+) -> Result<(), String> {
+    use rustix::fs::{AtFlags, Mode, OFlags, RenameFlags};
+
+    let parent_path = temp
+        .parent()
+        .ok_or_else(|| format!("临时文件缺少父目录，残留于 {}", temp.display()))?;
+    let name = temp
+        .file_name()
+        .ok_or_else(|| format!("临时文件缺少文件名，残留于 {}", temp.display()))?;
+    let parent = rustix::fs::open(
+        parent_path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| format!("无法固定临时文件父目录，残留于 {}：{error}", temp.display()))?;
+    let named = match open_unix_atomic_temp_at(&parent, name) {
+        Ok(file) => file,
+        Err(error) if error == rustix::io::Errno::NOENT => return Ok(()),
+        Err(error) => return Err(format!("无法安全重新打开临时文件，残留于 {}：{error}", temp.display())),
+    };
+    validate_atomic_temp(&named, expected, temp)?;
+    hook(AtomicWritePhase::AfterCleanupIdentityCheck, temp)
+        .map_err(|error| format!("{error}；残留于 {}", temp.display()))?;
+
+    let quarantine_name = format!(
+        ".codex-token-bar-cleanup-{}-{:020}.tmp",
+        std::process::id(),
+        ATOMIC_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    let quarantine = parent_path.join(&quarantine_name);
+    rustix::fs::renameat_with(&parent, name, &parent, quarantine_name.as_str(), RenameFlags::NOREPLACE)
+        .map_err(|error| format!("无法隔离待清理临时文件，残留于 {}：{error}", temp.display()))?;
+    let quarantined = open_unix_atomic_temp_at(&parent, quarantine_name.as_ref()).map_err(|error| {
+        format!("无法复验隔离临时文件，残留于 {}：{error}", quarantine.display())
+    })?;
+    validate_atomic_temp(&quarantined, expected, &quarantine).map_err(|error| {
+        format!("{error}；隔离对象未删除，真实残留路径为 {}", quarantine.display())
+    })?;
+    hook(AtomicWritePhase::BeforeHandleDelete, &quarantine).map_err(|error| {
+        format!("{error}；隔离对象未删除，真实残留路径为 {}", quarantine.display())
+    })?;
+    rustix::fs::unlinkat(&parent, quarantine_name.as_str(), AtFlags::empty()).map_err(|error| {
+        format!("隔离临时文件删除失败，真实残留路径为 {}：{error}", quarantine.display())
+    })?;
+    rustix::fs::fsync(&parent).map_err(|error| {
+        format!("临时文件已删除但父目录同步失败，残留可能恢复于 {}：{error}", quarantine.display())
+    })
+}
+
+#[cfg(windows)]
+fn cleanup_windows_atomic_temp(
+    temp: &Path,
+    expected: &AtomicFileIdentity,
+    hook: &mut impl FnMut(AtomicWritePhase, &Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let named = match open_windows_atomic_temp_no_follow(temp) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("无法安全重新打开临时文件：{error}")),
+        Err(error) => return Err(format!("无法安全重新打开临时文件，残留于 {}：{error}", temp.display())),
     };
-    let actual = atomic_file_identity(&named)?;
-    if &actual != expected {
-        return Err("临时文件名已指向其他物理文件，拒绝误删".into());
+    validate_atomic_temp(&named, expected, temp)?;
+    hook(AtomicWritePhase::AfterCleanupIdentityCheck, temp)
+        .map_err(|error| format!("{error}；残留于 {}", temp.display()))?;
+    hook(AtomicWritePhase::BeforeHandleDelete, temp)
+        .map_err(|error| format!("{error}；残留于 {}", temp.display()))?;
+    windows_delete_open_atomic_temp(&named)
+        .map_err(|error| format!("已验证句柄删除失败，残留于 {}：{error}", temp.display()))
+}
+
+fn validate_atomic_temp(
+    file: &File,
+    expected: &AtomicFileIdentity,
+    diagnostic: &Path,
+) -> Result<(), String> {
+    let metadata = file.metadata().map_err(|error| {
+        format!("读取临时文件类型失败，残留于 {}：{error}", diagnostic.display())
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(format!("临时文件不是普通文件，拒绝清理；残留于 {}", diagnostic.display()));
     }
-    if atomic_file_link_count(&named)? > 1 {
-        return Err("临时文件存在物理别名，拒绝误删".into());
+    if atomic_file_identity(file)? != *expected {
+        return Err(format!("临时文件名已指向其他物理文件，拒绝误删；残留于 {}", diagnostic.display()));
     }
-    fs::remove_file(temp).map_err(|error| error.to_string())
+    if atomic_file_link_count(file)? > 1 {
+        return Err(format!("临时文件存在物理别名，拒绝误删；残留于 {}", diagnostic.display()));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn create_atomic_temp(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).open(path)
+}
+
+#[cfg(windows)]
+fn create_atomic_temp(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .attributes(FILE_ATTRIBUTE_NORMAL)
+        .open(path)
 }
 
 #[cfg(unix)]
@@ -404,14 +513,17 @@ fn atomic_file_link_count(file: &File) -> Result<u64, String> {
 }
 
 #[cfg(unix)]
-fn open_atomic_temp_no_follow(path: &Path) -> std::io::Result<File> {
+fn open_unix_atomic_temp_at(
+    parent: &impl std::os::fd::AsFd,
+    name: &std::ffi::OsStr,
+) -> Result<File, rustix::io::Errno> {
     use rustix::fs::{Mode, OFlags};
-    let file = rustix::fs::open(
-        path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+    let file = rustix::fs::openat(
+        parent,
+        name,
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
-    )
-    .map_err(std::io::Error::from)?;
+    )?;
     Ok(File::from(file))
 }
 
@@ -467,13 +579,39 @@ fn atomic_file_link_count(file: &File) -> Result<u64, String> {
 }
 
 #[cfg(windows)]
-fn open_atomic_temp_no_follow(path: &Path) -> std::io::Result<File> {
+fn open_windows_atomic_temp_no_follow(path: &Path) -> std::io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
     OpenOptions::new()
         .read(true)
+        .access_mode(FILE_GENERIC_READ | DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
+}
+
+#[cfg(windows)]
+fn windows_delete_open_atomic_temp(file: &File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        SetFileInformationByHandle, FileDispositionInfo, FILE_DISPOSITION_INFO,
+    };
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+    let succeeded = unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle() as _,
+            FileDispositionInfo,
+            (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+            u32::try_from(std::mem::size_of::<FILE_DISPOSITION_INFO>()).unwrap_or(u32::MAX),
+        )
+    };
+    if succeeded == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

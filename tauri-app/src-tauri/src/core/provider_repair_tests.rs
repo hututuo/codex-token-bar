@@ -1911,6 +1911,8 @@ fn session_atomic_cleanup_failure_preserves_original_error_and_temp_path() {
             session_files::AtomicWritePhase::CleanupTemp => {
                 Err("fixture cleanup failure".into())
             }
+            session_files::AtomicWritePhase::AfterCleanupIdentityCheck
+            | session_files::AtomicWritePhase::BeforeHandleDelete => Ok(()),
         },
     )
     .unwrap_err();
@@ -1921,6 +1923,85 @@ fn session_atomic_cleanup_failure_preserves_original_error_and_temp_path() {
     assert!(fs::read_dir(&root).unwrap().filter_map(Result::ok).any(|entry| {
         entry.file_name().to_string_lossy().contains("codex-token-bar")
     }));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn session_atomic_cleanup_quarantines_name_swapped_after_identity_check() {
+    let root = temp_root("provider-session-check-delete-race");
+    fs::create_dir_all(&root).unwrap();
+    let destination = root.join("session.jsonl");
+    let outside = root.join("outside.jsonl");
+    let owned = root.join("owned-temp.jsonl");
+    fs::write(&destination, "original").unwrap();
+    fs::write(&outside, "outside").unwrap();
+
+    let error = session_files::write_file_atomically_with_hook(
+        &destination,
+        b"replacement",
+        |phase, temp| match phase {
+            session_files::AtomicWritePhase::BeforeReplace => {
+                Err("fixture replace failure".into())
+            }
+            session_files::AtomicWritePhase::AfterCleanupIdentityCheck => {
+                fs::rename(temp, &owned).unwrap();
+                fs::hard_link(&outside, temp).unwrap();
+                Ok(())
+            }
+            _ => Ok(()),
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.contains("fixture replace failure"), "{error}");
+    assert!(error.contains("真实残留路径") && error.contains("cleanup"), "{error}");
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "outside");
+    assert_eq!(fs::read_to_string(&owned).unwrap(), "replacement");
+    let quarantine = fs::read_dir(&root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.file_name().unwrap().to_string_lossy().contains("cleanup"))
+        .unwrap();
+    assert_eq!(fs::read_to_string(&quarantine).unwrap(), "outside");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn session_atomic_cleanup_rejects_fifo_without_blocking() {
+    use std::os::unix::fs::FileTypeExt;
+    use std::time::{Duration, Instant};
+
+    let root = temp_root("provider-session-fifo-cleanup");
+    fs::create_dir_all(&root).unwrap();
+    let destination = root.join("session.jsonl");
+    let owned = root.join("owned-temp.jsonl");
+    fs::write(&destination, "original").unwrap();
+    let started = Instant::now();
+
+    let error = session_files::write_file_atomically_with_hook(
+        &destination,
+        b"replacement",
+        |phase, temp| {
+            if phase == session_files::AtomicWritePhase::BeforeReplace {
+                fs::rename(temp, &owned).unwrap();
+                let status = std::process::Command::new("mkfifo").arg(temp).status().unwrap();
+                assert!(status.success());
+                return Err("fixture replace failure".into());
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+
+    assert!(started.elapsed() < Duration::from_secs(2), "cleanup blocked on FIFO");
+    assert!(error.contains("不是普通文件") && error.contains("残留"), "{error}");
+    assert!(fs::read_dir(&root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|entry| entry.file_type().unwrap().is_fifo()));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1975,6 +2056,36 @@ fn session_atomic_replace_fails_closed_when_destination_disappears() {
     assert!(error.contains("原子替换") && error.contains("session.jsonl"), "{error}");
     assert!(!destination.exists());
     assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn session_atomic_cleanup_handle_delete_failure_keeps_dual_diagnostic() {
+    let root = temp_root("provider-session-windows-handle-delete");
+    fs::create_dir_all(&root).unwrap();
+    let destination = root.join("session.jsonl");
+    fs::write(&destination, "original").unwrap();
+
+    let error = session_files::write_file_atomically_with_hook(
+        &destination,
+        b"replacement",
+        |phase, _| match phase {
+            session_files::AtomicWritePhase::BeforeReplace => {
+                Err("fixture replace failure".into())
+            }
+            session_files::AtomicWritePhase::BeforeHandleDelete => {
+                Err("fixture handle delete failure".into())
+            }
+            _ => Ok(()),
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.contains("fixture replace failure"), "{error}");
+    assert!(error.contains("fixture handle delete failure"), "{error}");
+    assert!(error.contains("codex-token-bar") && error.contains("残留"), "{error}");
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
     fs::remove_dir_all(root).unwrap();
 }
 
