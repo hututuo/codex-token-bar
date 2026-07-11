@@ -2,6 +2,64 @@ import XCTest
 @testable import CodexTokenBar
 
 final class StatusBarTokenPanelTests: XCTestCase {
+    func testStatusBarLifecycleKeepsTimerAndRootStableForSameOwnersAndTicks() {
+        let owners = [NSObject(), NSObject(), NSObject(), NSObject()]
+        let identity = StatusBarOwnerIdentity(
+            store: owners[0],
+            monitor: owners[1],
+            quota: owners[2],
+            taskCompletionMonitor: owners[3]
+        )
+        let lifecycle = StatusBarLifecycleState()
+
+        XCTAssertEqual(lifecycle.bind(identity), .init(assignRoot: true, startTimer: true))
+        XCTAssertEqual(lifecycle.bind(identity), .init(assignRoot: false, startTimer: false))
+        let presentation = StatusBarTokenItemPresentation(title: "  42.4/s  ", accessibilityValue: "42.4")
+        XCTAssertTrue(lifecycle.shouldApply(presentation))
+        for _ in 0..<100 {
+            XCTAssertFalse(lifecycle.shouldApply(presentation))
+        }
+
+        let replacement = NSObject()
+        let changed = StatusBarOwnerIdentity(
+            store: replacement,
+            monitor: owners[1],
+            quota: owners[2],
+            taskCompletionMonitor: owners[3]
+        )
+        XCTAssertEqual(lifecycle.bind(changed), .init(assignRoot: true, startTimer: false))
+        XCTAssertTrue(lifecycle.close())
+    }
+
+    func testStatusBarTitleAlwaysUsesOneDecimalForSafeRates() {
+        for rate in [10.1, 42.4, 80.0, 100.0, 123.4] {
+            let snapshot = TokenDisplaySnapshot(
+                title: "全会话实时",
+                status: "等待输出",
+                rate: rate,
+                consumedTokens: 0,
+                todayTokens: 0,
+                todayRequests: 0,
+                quota: .empty,
+                updatedAt: .distantPast
+            )
+            XCTAssertEqual(snapshot.statusBarTitle, String(format: "%.1f/s", rate))
+        }
+        for rate in [-1.0, .nan, .infinity] {
+            let snapshot = TokenDisplaySnapshot(
+                title: "全会话实时",
+                status: "等待输出",
+                rate: rate,
+                consumedTokens: 0,
+                todayTokens: 0,
+                todayRequests: 0,
+                quota: .empty,
+                updatedAt: .distantPast
+            )
+            XCTAssertEqual(snapshot.statusBarTitle, "0.0/s")
+        }
+    }
+
     func testStatusItemPresentationUpdatesWhenOnlyUnreadAccessibilityChanges() {
         let previous = StatusBarTokenItemPresentation(
             title: "    0.0/s    ",

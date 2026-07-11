@@ -221,13 +221,8 @@ struct TokenDisplaySnapshot {
     }
 
     var statusBarTitle: String {
-        if rate >= 100 {
-            return "\(Int(rate.rounded()))/s"
-        }
-        if rate < 10 {
-            return String(format: "%.1f/s", rate)
-        }
-        return "\(Int(rate.rounded()))/s"
+        let safeRate = rate.isFinite ? max(0, rate) : 0
+        return String(format: "%.1f/s", safeRate)
     }
 
     var compactUsageStatus: String {

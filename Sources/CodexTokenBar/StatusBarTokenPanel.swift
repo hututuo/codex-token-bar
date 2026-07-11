@@ -1,6 +1,56 @@
 import AppKit
 import SwiftUI
 
+struct StatusBarOwnerIdentity: Equatable {
+    let store: ObjectIdentifier
+    let monitor: ObjectIdentifier
+    let quota: ObjectIdentifier
+    let taskCompletionMonitor: ObjectIdentifier
+
+    init(store: AnyObject, monitor: AnyObject, quota: AnyObject, taskCompletionMonitor: AnyObject) {
+        self.store = ObjectIdentifier(store)
+        self.monitor = ObjectIdentifier(monitor)
+        self.quota = ObjectIdentifier(quota)
+        self.taskCompletionMonitor = ObjectIdentifier(taskCompletionMonitor)
+    }
+}
+
+struct StatusBarLifecycleDecision: Equatable {
+    let assignRoot: Bool
+    let startTimer: Bool
+}
+
+final class StatusBarLifecycleState {
+    private var ownerIdentity: StatusBarOwnerIdentity?
+    private var timerActive = false
+    private var lastPresentation: StatusBarTokenItemPresentation?
+
+    func bind(_ identity: StatusBarOwnerIdentity) -> StatusBarLifecycleDecision {
+        let ownerChanged = ownerIdentity != identity
+        ownerIdentity = identity
+        let shouldStartTimer = !timerActive
+        timerActive = true
+        return StatusBarLifecycleDecision(
+            assignRoot: ownerChanged,
+            startTimer: shouldStartTimer
+        )
+    }
+
+    func shouldApply(_ presentation: StatusBarTokenItemPresentation) -> Bool {
+        guard presentation.needsApply(previous: lastPresentation) else { return false }
+        lastPresentation = presentation
+        return true
+    }
+
+    func close() -> Bool {
+        let shouldStopTimer = timerActive
+        timerActive = false
+        ownerIdentity = nil
+        lastPresentation = nil
+        return shouldStopTimer
+    }
+}
+
 @MainActor
 final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDelegate {
     @Published private(set) var isPresented = false
@@ -13,7 +63,7 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
     private weak var quota: AccountQuotaStore?
     private weak var taskCompletionMonitor: TaskCompletionMonitor?
     private var onClose: (() -> Void)?
-    private var lastStatusPresentation: StatusBarTokenItemPresentation?
+    private let lifecycle = StatusBarLifecycleState()
 
     func show(
         store: CodexUsageStore,
@@ -27,6 +77,12 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
         self.quota = quota
         self.taskCompletionMonitor = taskCompletionMonitor
         self.onClose = onClose
+        let lifecycleDecision = lifecycle.bind(StatusBarOwnerIdentity(
+            store: store,
+            monitor: monitor,
+            quota: quota,
+            taskCompletionMonitor: taskCompletionMonitor
+        ))
 
         if statusItem == nil {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -59,13 +115,22 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
                 }
             )
             self.popover = popover
+        } else if lifecycleDecision.assignRoot,
+                  let hostingController = popover?.contentViewController as? NSHostingController<StatusBarTokenPopoverView> {
+            hostingController.rootView = makePopoverView(
+                store: store,
+                monitor: monitor,
+                quota: quota,
+                taskCompletionMonitor: taskCompletionMonitor
+            )
         }
 
         updateStatusItem()
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.updateStatusItem()
+        if lifecycleDecision.startTimer {
+            timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    self?.updateStatusItem()
+                }
             }
         }
         isPresented = true
@@ -74,13 +139,19 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
     func close() {
         popover?.performClose(nil)
         popover = nil
-        timer?.invalidate()
+        if lifecycle.close() {
+            timer?.invalidate()
+        }
         timer = nil
         if let statusItem {
             NSStatusBar.system.removeStatusItem(statusItem)
         }
         statusItem = nil
-        lastStatusPresentation = nil
+        store = nil
+        monitor = nil
+        quota = nil
+        taskCompletionMonitor = nil
+        onClose = nil
         isPresented = false
     }
 
@@ -99,16 +170,6 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
 
     private func updateStatusItem() {
         guard let store, let monitor, let quota, let taskCompletionMonitor else { return }
-        if let hostingController = popover?.contentViewController as? NSHostingController<StatusBarTokenPopoverView> {
-            hostingController.rootView = StatusBarTokenPopoverView(
-                store: store,
-                monitor: monitor,
-                quota: quota,
-                taskCompletionMonitor: taskCompletionMonitor
-            ) { [weak self] in
-                self?.onClose?()
-            }
-        }
         let snapshot = TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota)
         guard let button = statusItem?.button else { return }
         let title = "    \(snapshot.statusBarTitle)    "
@@ -119,14 +180,29 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
                 unreadThreadCount: taskCompletionMonitor.unreadThreadCount
             )
         )
-        guard presentation.needsApply(previous: lastStatusPresentation) else { return }
+        guard lifecycle.shouldApply(presentation) else { return }
 
         button.title = presentation.title
         button.setAccessibilityLabel("Codex Token Bar 状态栏速率")
         button.setAccessibilityValue(presentation.accessibilityValue)
         let length = max(132, button.intrinsicContentSize.width + 48)
         statusItem?.length = length
-        lastStatusPresentation = presentation
+    }
+
+    private func makePopoverView(
+        store: CodexUsageStore,
+        monitor: LiveRateMonitor,
+        quota: AccountQuotaStore,
+        taskCompletionMonitor: TaskCompletionMonitor
+    ) -> StatusBarTokenPopoverView {
+        StatusBarTokenPopoverView(
+            store: store,
+            monitor: monitor,
+            quota: quota,
+            taskCompletionMonitor: taskCompletionMonitor
+        ) { [weak self] in
+            self?.onClose?()
+        }
     }
 
     private func statusBarAccessibilityValue(_ snapshot: TokenDisplaySnapshot, unreadThreadCount: Int) -> String {
