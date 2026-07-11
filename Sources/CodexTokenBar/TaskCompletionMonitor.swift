@@ -261,10 +261,15 @@ final class TaskCompletionMonitor: ObservableObject {
     }
 
     private func applyCodexUnreadRead(_ result: CodexUnreadThreadReadResult) {
-        guard case let .available(threadIDs) = result else { return }
-        unreadThreadState = CodexUnreadThreadState(threadIDs: readBaseline.activeUnreadThreadIDs(from: threadIDs))
-        hasCodexUnreadState = true
-        persistReadBaseline()
+        switch result {
+        case let .available(threadIDs):
+            unreadThreadState = CodexUnreadThreadState(threadIDs: readBaseline.activeUnreadThreadIDs(from: threadIDs))
+            hasCodexUnreadState = true
+            persistReadBaseline()
+        case .unavailable:
+            unreadThreadState = CodexUnreadThreadState()
+            hasCodexUnreadState = false
+        }
     }
 
     private func applyReadBaselineToFallbackEvents() {

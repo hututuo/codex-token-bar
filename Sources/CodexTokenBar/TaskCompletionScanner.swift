@@ -72,7 +72,6 @@ enum TaskCompletionScanner {
             let parsed = parseNewLines(
                 in: file,
                 from: state.offset,
-                size: size,
                 state: state,
                 dateParsers: dateParsers,
                 eventCutoff: seedMode ? seedCutoff.timeIntervalSince1970 : nil
@@ -136,7 +135,6 @@ enum TaskCompletionScanner {
     private static func parseNewLines(
         in file: URL,
         from offset: UInt64,
-        size: UInt64,
         state: TaskCompletionFileState,
         dateParsers: TaskCompletionDateParsers,
         eventCutoff: TimeInterval?
@@ -157,7 +155,12 @@ enum TaskCompletionScanner {
             return (state, events)
         }
 
-        let chunk = String(decoding: handle.readDataToEndOfFile(), as: UTF8.self)
+        let data = handle.readDataToEndOfFile()
+        guard let lastNewline = data.lastIndex(of: 10) else {
+            return (state, events)
+        }
+        let completeByteCount = data.distance(from: data.startIndex, to: data.index(after: lastNewline))
+        let chunk = String(decoding: data.prefix(completeByteCount), as: UTF8.self)
 
         for line in chunk.split(separator: "\n", omittingEmptySubsequences: true) {
             let lineString = String(line)
@@ -221,7 +224,7 @@ enum TaskCompletionScanner {
             }
         }
 
-        state.offset = size
+        state.offset = offset + UInt64(completeByteCount)
         return (state, events)
     }
 

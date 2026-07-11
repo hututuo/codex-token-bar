@@ -107,6 +107,52 @@ final class TaskCompletionMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.unreadThreadCount, 1)
     }
 
+    func testOfficialAuthorityLossExposesFallbackCompletions() {
+        let monitor = TaskCompletionMonitor(defaults: isolatedDefaults())
+        monitor.applyForTesting(result: nil, unreadThreadRead: .available(["official-thread"]))
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+        XCTAssertEqual(monitor.statusText, "有未读会话")
+
+        let fallbackEvents = [
+            TaskCompletionEvent(id: "fallback-1", threadID: "fallback-thread-1", title: "Fallback 1", body: "Done"),
+            TaskCompletionEvent(id: "fallback-2", threadID: "fallback-thread-2", title: "Fallback 2", body: "Done")
+        ]
+        monitor.applyForTesting(
+            result: scanResult(events: fallbackEvents),
+            unreadThreadRead: .unavailable
+        )
+
+        XCTAssertEqual(monitor.unreadThreadCount, 2)
+        XCTAssertEqual(monitor.statusText, "有任务完成")
+        XCTAssertEqual(monitor.detailText, "Fallback 2")
+    }
+
+    func testOfficialAuthorityRecoveryReplacesFallbackCountWithoutRecountingIt() {
+        let monitor = TaskCompletionMonitor(defaults: isolatedDefaults())
+        let fallback = TaskCompletionEvent(
+            id: "fallback-event",
+            threadID: "fallback-thread",
+            title: "Fallback",
+            body: "Done"
+        )
+        monitor.applyForTesting(
+            result: scanResult(events: [fallback]),
+            unreadThreadRead: .unavailable
+        )
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+        XCTAssertEqual(monitor.statusText, "有任务完成")
+
+        monitor.applyForTesting(result: nil, unreadThreadRead: .available(["official-thread"]))
+
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+        XCTAssertEqual(monitor.statusText, "有未读会话")
+        XCTAssertEqual(monitor.detailText, "Codex 有 1 个未读会话")
+
+        monitor.applyForTesting(result: nil, unreadThreadRead: .available(["official-thread"]))
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+        XCTAssertEqual(monitor.statusText, "有未读会话")
+    }
+
     private func scanResult(events: [TaskCompletionEvent]) -> TaskCompletionScanResult {
         TaskCompletionScanResult(states: [:], events: events, fileCount: 1)
     }
