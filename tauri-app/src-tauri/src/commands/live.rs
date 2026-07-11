@@ -1409,7 +1409,9 @@ mod tests {
         let thread_a = "019eaaaa-0000-0000-0000-0000000000a1";
         let thread_b = "019eaaaa-0000-0000-0000-0000000000b1";
         write_unread_state_for_source_test(&home, thread_a);
-        std::env::set_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", &support);
+        let _support_env = crate::core::usage::cache_lifecycle::usage_cache_test_state_guard(&[
+            ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", support.clone()),
+        ]);
         let metadata = std::fs::metadata(&home).unwrap();
         let physical_home_key = format!("unix:{}:{}", metadata.dev(), metadata.ino());
         let captured = CapturedCodexHomeSource {
@@ -1446,7 +1448,6 @@ mod tests {
         assert!(baseline.contains(thread_a));
         assert!(!baseline.contains(thread_b));
 
-        std::env::remove_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR");
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -1185,7 +1185,9 @@ fn marker_failure_warning_is_deduplicated_for_fresh_and_cached_snapshots() {
     let blocked_support = root.join("blocked-support");
     fs::create_dir_all(&root).unwrap();
     fs::write(&blocked_support, b"not a directory").unwrap();
-    std::env::set_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", &blocked_support);
+    let _state = cache_lifecycle::usage_cache_test_state_guard(&[
+        ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", blocked_support.clone()),
+    ]);
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
     let timestamp = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
@@ -1204,8 +1206,6 @@ fn marker_failure_warning_is_deduplicated_for_fresh_and_cached_snapshots() {
             1
         );
     }
-    std::env::remove_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR");
-    cache_lifecycle::clear_usage_cache_persistence_warning_for_testing();
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -760,18 +760,17 @@ mod tests {
         .unwrap();
     }
 
-    struct TauriSupportEnvGuard;
+    struct TauriSupportEnvGuard {
+        _state: crate::core::usage::cache_lifecycle::UsageCacheTestStateGuard,
+    }
 
     impl TauriSupportEnvGuard {
         fn new(path: &Path) -> Self {
-            std::env::set_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", path);
-            Self
-        }
-    }
-
-    impl Drop for TauriSupportEnvGuard {
-        fn drop(&mut self) {
-            std::env::remove_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR");
+            Self {
+                _state: crate::core::usage::cache_lifecycle::usage_cache_test_state_guard(&[
+                    ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", path.to_path_buf()),
+                ]),
+            }
         }
     }
 }

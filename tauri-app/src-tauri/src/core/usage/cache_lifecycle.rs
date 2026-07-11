@@ -6,8 +6,57 @@ use std::fs;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use std::sync::{Mutex, OnceLock};
+#[cfg(test)]
+use std::sync::MutexGuard;
 
 static MARKER_FAILURE: OnceLock<Mutex<Option<LocalDataWarning>>> = OnceLock::new();
+#[cfg(test)]
+static USAGE_CACHE_TEST_STATE_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+pub(crate) struct UsageCacheTestStateGuard {
+    _lock: MutexGuard<'static, ()>,
+    originals: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    marker_failure: Option<LocalDataWarning>,
+}
+
+#[cfg(test)]
+pub(crate) fn usage_cache_test_state_guard(
+    overrides: &[(&'static str, std::path::PathBuf)],
+) -> UsageCacheTestStateGuard {
+    let lock = USAGE_CACHE_TEST_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let originals = overrides
+        .iter()
+        .map(|(key, _)| (*key, std::env::var_os(key)))
+        .collect::<Vec<_>>();
+    let marker_failure = MARKER_FAILURE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    for (key, value) in overrides {
+        std::env::set_var(key, value);
+    }
+    UsageCacheTestStateGuard { _lock: lock, originals, marker_failure }
+}
+
+#[cfg(test)]
+impl Drop for UsageCacheTestStateGuard {
+    fn drop(&mut self) {
+        for (key, value) in &self.originals {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+        *MARKER_FAILURE
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.marker_failure.clone();
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,11 +136,6 @@ fn try_mark_usage_cache_initialized_with(
 
 pub fn usage_cache_persistence_warning() -> Option<LocalDataWarning> {
     MARKER_FAILURE.get_or_init(|| Mutex::new(None)).lock().ok().and_then(|warning| warning.clone())
-}
-
-#[cfg(test)]
-pub(crate) fn clear_usage_cache_persistence_warning_for_testing() {
-    if let Ok(mut warning) = MARKER_FAILURE.get_or_init(|| Mutex::new(None)).lock() { *warning = None; }
 }
 
 pub fn mark_usage_cache_ready_after_success() -> Result<(), String> {
@@ -270,6 +314,38 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn path_env_guard_restores_original_support_value() {
+        let original = std::ffi::OsString::from("preexisting-support-value");
+        std::env::set_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", &original);
+        {
+            let root = temp_root("env-restore");
+            let _env = PathEnvGuard::new(&root);
+            assert_ne!(std::env::var_os("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR"), Some(original.clone()));
+        }
+        assert_eq!(std::env::var_os("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR"), Some(original));
+        std::env::remove_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR");
+    }
+
+    #[test]
+    fn usage_cache_test_guard_serializes_parallel_mutation_and_restores_value() {
+        let key = "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR";
+        let original = std::env::var_os(key);
+        let first = usage_cache_test_state_guard(&[(key, PathBuf::from("first-owner"))]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            sender.send("waiting").unwrap();
+            let _second = usage_cache_test_state_guard(&[(key, PathBuf::from("second-owner"))]);
+            sender.send("acquired").unwrap();
+        });
+        assert_eq!(receiver.recv().unwrap(), "waiting");
+        assert!(receiver.recv_timeout(std::time::Duration::from_millis(50)).is_err());
+        drop(first);
+        assert_eq!(receiver.recv_timeout(std::time::Duration::from_secs(1)).unwrap(), "acquired");
+        worker.join().unwrap();
+        assert_eq!(std::env::var_os(key), original);
+    }
+
     fn temp_root(label: &str) -> PathBuf {
         let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
@@ -284,7 +360,7 @@ mod tests {
     }
 
     struct PathEnvGuard {
-        keys: [&'static str; 4],
+        _state: UsageCacheTestStateGuard,
     }
 
     impl PathEnvGuard {
@@ -301,25 +377,7 @@ mod tests {
                     root.join("cache").join("CodexTokenBarTauri"),
                 ),
             ];
-            for (key, value) in &pairs {
-                std::env::set_var(key, value);
-            }
-            Self {
-                keys: [
-                    "CODEX_TOKEN_BAR_SUPPORT_BASE_DIR",
-                    "CODEX_TOKEN_BAR_CACHE_BASE_DIR",
-                    "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",
-                    "CODEX_TOKEN_BAR_TAURI_CACHE_DIR",
-                ],
-            }
-        }
-    }
-
-    impl Drop for PathEnvGuard {
-        fn drop(&mut self) {
-            for key in self.keys {
-                std::env::remove_var(key);
-            }
+            Self { _state: usage_cache_test_state_guard(&pairs) }
         }
     }
 }
