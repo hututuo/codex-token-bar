@@ -95,6 +95,66 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
     }
 
     @MainActor
+    func testRadarPublicationFromRuntimeOwnedStoreRebindsVisibleSurface() async throws {
+        let suiteName = "DashboardRuntimeCompositionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(false, forKey: InterfaceScaleSettings.autoEnabledKey)
+        let radarReader = DashboardRuntimeSuspendedRadarReader()
+        let radarStore = CodexRadarStore(
+            reader: radarReader,
+            feedReader: DashboardRuntimeEmptyRadarFeedReader(),
+            detailReader: DashboardRuntimeFailingRadarDetailReader(),
+            detailRefreshDefaults: defaults
+        )
+        let usageStore = CodexUsageStore(
+            resolver: DashboardRuntimeNilDataSourceResolver(),
+            snapshotLoader: DashboardRuntimeEmptySnapshotLoader(),
+            autoStart: false
+        )
+        var surfaceBindCount = 0
+        let runtime = DashboardRuntime(
+            usageStore: usageStore,
+            quotaStore: AccountQuotaStore(
+                quotaReader: DashboardRuntimeFailingQuotaReader(),
+                observesUserDefaults: false
+            ),
+            quotaHistoryStore: QuotaHistoryStore(historyClient: DashboardRuntimeEmptyQuotaHistoryLoader()),
+            radarStore: radarStore,
+            taskCompletionMonitor: TaskCompletionMonitor(defaults: defaults),
+            liveMonitor: LiveRateMonitor(monitoringEnabled: false),
+            settings: defaults,
+            notificationCenter: NotificationCenter(),
+            automaticInterfaceScaleProvider: { 1.0 },
+            surfaceApplyAction: { _ in surfaceBindCount += 1 }
+        )
+        let consumer = UUID()
+
+        runtime.acquireConsumer(consumer)
+        runtime.reportConfiguration(Self.configuration(floating: true, status: false), for: consumer)
+        await Self.waitUntil("runtime radar request pending") {
+            await radarReader.hasPendingRequest()
+        }
+        let ownedRadarStore = runtime.composition.radarStore
+        XCTAssertEqual(ObjectIdentifier(ownedRadarStore), ObjectIdentifier(radarStore))
+        let bindCountBeforePublication = surfaceBindCount
+        let snapshot = try JSONDecoder.codexRadar.decode(
+            CodexRadarSnapshot.self,
+            from: Data(CodexRadarModelsTests.sampleJSON.utf8)
+        )
+
+        await radarReader.finish(with: snapshot)
+        await Self.waitUntil("radar publication rebinds surface") {
+            radarStore.snapshot == snapshot && surfaceBindCount > bindCountBeforePublication
+        }
+
+        XCTAssertEqual(runtime.composition.radarStore.snapshot, snapshot)
+        XCTAssertGreaterThan(surfaceBindCount, bindCountBeforePublication)
+        runtime.releaseConsumer(consumer)
+        radarStore.stop()
+    }
+
+    @MainActor
     func testRuntimeStartsOnceAndOneConsumerCannotStopAnother() {
         var starts = 0
         let runtime = DashboardRuntime(startupAction: { starts += 1 })
@@ -519,5 +579,68 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
             providerSyncVisible: false,
             radarDetailsVisible: false
         )
+    }
+
+    @MainActor
+    private static func waitUntil(
+        _ description: String,
+        timeout: TimeInterval = 2,
+        condition: @escaping @MainActor () async -> Bool
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await condition() { return }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("Timed out waiting for \(description)")
+    }
+}
+
+private final class DashboardRuntimeNilDataSourceResolver: CodexDataSourceResolving {
+    func resolve() -> CodexDataSource? { nil }
+    func saveSelectedDirectory(_ directory: URL) -> CodexDataSource? { nil }
+}
+
+private actor DashboardRuntimeEmptySnapshotLoader: DashboardSnapshotLoading {
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot { .empty }
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot { .empty }
+}
+
+private struct DashboardRuntimeTestError: Error, Sendable {}
+
+private actor DashboardRuntimeFailingQuotaReader: QuotaReading {
+    func readQuota(dataSource: CodexDataSource?) async -> Result<AccountQuotaSnapshot, Error> {
+        .failure(DashboardRuntimeTestError())
+    }
+}
+
+private actor DashboardRuntimeEmptyQuotaHistoryLoader: QuotaHistoryLoading {
+    func loadSnapshot(for quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot { .empty }
+    func recordAndLoadSnapshot(_ quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot { .empty }
+    func normalizedSnapshot(_ quota: AccountQuotaSnapshot) async throws -> AccountQuotaSnapshot { quota }
+}
+
+private actor DashboardRuntimeSuspendedRadarReader: CodexRadarReading {
+    private var continuation: CheckedContinuation<CodexRadarSnapshot, Error>?
+
+    func readRadar() async throws -> CodexRadarSnapshot {
+        try await withCheckedThrowingContinuation { continuation = $0 }
+    }
+
+    func hasPendingRequest() -> Bool { continuation != nil }
+
+    func finish(with snapshot: CodexRadarSnapshot) {
+        continuation?.resume(returning: snapshot)
+        continuation = nil
+    }
+}
+
+private actor DashboardRuntimeEmptyRadarFeedReader: CodexRadarFeedReading {
+    func readFeed(from url: URL) async throws -> [CodexRadarFeedItem] { [] }
+}
+
+private actor DashboardRuntimeFailingRadarDetailReader: CodexRadarDetailReading {
+    func readRadarDetail() async throws -> CodexRadarSnapshot {
+        throw DashboardRuntimeTestError()
     }
 }

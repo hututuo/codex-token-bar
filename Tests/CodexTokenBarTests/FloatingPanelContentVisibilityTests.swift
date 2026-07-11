@@ -706,17 +706,13 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let dashboardRuntime = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardRuntime.swift")
         let liveRateView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateView.swift")
         let quotaStore = projectRoot.appendingPathComponent("Sources/CodexTokenBar/AccountQuotaStore.swift")
         let tokenDisplaySurface = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurface.swift")
-        let runtimeSource = try String(contentsOf: dashboardRuntime, encoding: .utf8)
         let liveRateSource = try String(contentsOf: liveRateView, encoding: .utf8)
         let quotaStoreSource = try String(contentsOf: quotaStore, encoding: .utf8)
         let tokenDisplaySource = try String(contentsOf: tokenDisplaySurface, encoding: .utf8)
 
-        XCTAssertTrue(runtimeSource.contains("let quotaStore: AccountQuotaStore"))
-        XCTAssertTrue(runtimeSource.contains("quotaStore: AccountQuotaStore = AccountQuotaStore()"))
         XCTAssertTrue(quotaStoreSource.contains("AccountQuotaRefreshCadence.storedValue"))
         XCTAssertTrue(quotaStoreSource.contains("setAutomaticRefreshInterval"))
         XCTAssertTrue(liveRateSource.contains("@AppStorage(AccountQuotaRefreshCadence.storageKey)"))
@@ -819,17 +815,14 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let dashboardRuntime = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardRuntime.swift")
         let floatingPanel = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingTokenPanel.swift")
         let surface = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurface.swift")
         let components = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurfaceComponents.swift")
 
-        let runtimeSource = try String(contentsOf: dashboardRuntime, encoding: .utf8)
         let floatingPanelSource = try String(contentsOf: floatingPanel, encoding: .utf8)
         let surfaceSource = try String(contentsOf: surface, encoding: .utf8)
         let componentsSource = try String(contentsOf: components, encoding: .utf8)
 
-        XCTAssertTrue(runtimeSource.contains("radar: radarStore"))
         XCTAssertTrue(floatingPanelSource.contains("@ObservedObject var radar: CodexRadarStore"))
         XCTAssertTrue(floatingPanelSource.contains("radarSnapshot: radar.snapshot"))
         XCTAssertTrue(floatingPanelSource.contains("radarPresentation: CodexRadarPresentationState("))
@@ -881,26 +874,6 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(componentsSource.contains("snapshot?.modelIQ.secondaryModelRows.prefix(2)"))
         XCTAssertTrue(radarStrip.contains(".foregroundStyle(modelPalette.primaryColor)"))
         XCTAssertFalse(radarStrip.contains("alignment: .trailing"))
-    }
-
-    func testFloatingPanelRefreshesRadarRowWhenRadarStorePublishesNewSnapshot() throws {
-        let projectRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let dashboardRuntime = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardRuntime.swift")
-
-        let runtimeSource = try String(contentsOf: dashboardRuntime, encoding: .utf8)
-
-        for publisher in [
-            "radarStore.$snapshot.dropFirst().sink",
-            "radarStore.$diagnostics.dropFirst().sink",
-            "radarStore.$staleDataDisplayed.dropFirst().sink",
-            "radarStore.$feedStaleDataDisplayed.dropFirst().sink"
-        ] {
-            XCTAssertTrue(runtimeSource.contains(publisher))
-        }
-        XCTAssertTrue(runtimeSource.contains("self?.sideEffects.handleSurfaceEvent()"))
     }
 
     func testFloatingPanelPresentationKeepsNoQuotaStatesCountSafe() {
