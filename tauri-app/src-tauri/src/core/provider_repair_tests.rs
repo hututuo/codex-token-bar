@@ -1512,7 +1512,9 @@ fn session_backup_rejects_atomic_live_path_replacement_with_same_len_and_mtime()
         let replacement_result = (|| -> Result<(), ReplacementError> {
             fs::write(&replacement_path, replacement)
                 .map_err(|error| ReplacementError::FixtureIo("write replacement", error))?;
-            fs::File::open(&replacement_path)
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&replacement_path)
                 .and_then(|file| file.set_modified(original_mtime))
                 .map_err(|error| ReplacementError::FixtureIo("set replacement mtime", error))?;
             session_files::replace_file_atomically(&replacement_path, &replace_session)
