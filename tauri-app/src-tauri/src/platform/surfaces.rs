@@ -31,6 +31,7 @@ const STATUS_PANEL_WIDTH: f64 = 336.0;
 const STATUS_PANEL_HEIGHT: f64 = 236.0;
 const STATUS_TRAY_ID: &str = "codex-token-bar-status";
 const STATUS_TRAY_SHOW_DASHBOARD_ID: &str = "status-tray-show-dashboard";
+const STATUS_TRAY_UPDATE_ID: &str = "status-tray-update";
 const STATUS_TRAY_QUIT_ID: &str = "status-tray-quit";
 const STATUS_PANEL_PRESS_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -652,9 +653,21 @@ pub fn set_update_available_tray_fallback(app: &tauri::AppHandle, version: &str)
     if let Ok(mut cached) = update_tray_fallback_version().lock() {
         *cached = Some(version.to_string());
     }
-    tray.set_title(Some(format!("↑v{version}"))).map_err(|error| error.to_string())?;
+    tray.set_icon(Some(status_tray_update_icon())).map_err(|error| error.to_string())?;
     tray.set_tooltip(Some(format!("Codex Token Bar · 有新版本 v{version}，打开主界面安装")))
         .map_err(|error| error.to_string())?;
+    let menu = status_tray_menu(app, Some(version)).map_err(|error| error.to_string())?;
+    tray.set_menu(Some(menu)).map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+pub fn clear_update_available_tray_fallback(app: &tauri::AppHandle) -> Result<bool, String> {
+    let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else { return Ok(false); };
+    if let Ok(mut cached) = update_tray_fallback_version().lock() { *cached = None; }
+    tray.set_icon(Some(status_tray_icon())).map_err(|error| error.to_string())?;
+    tray.set_tooltip(Some("Codex Token Bar")).map_err(|error| error.to_string())?;
+    let menu = status_tray_menu(app, None).map_err(|error| error.to_string())?;
+    tray.set_menu(Some(menu)).map_err(|error| error.to_string())?;
     Ok(true)
 }
 
@@ -667,10 +680,7 @@ fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
         return Ok(());
     }
 
-    let show_dashboard_item =
-        MenuItem::with_id(app, STATUS_TRAY_SHOW_DASHBOARD_ID, "打开主界面", true, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, STATUS_TRAY_QUIT_ID, "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_dashboard_item, &quit_item])?;
+    let menu = status_tray_menu(app.handle(), None)?;
 
     let mut builder = TrayIconBuilder::with_id(STATUS_TRAY_ID)
         .title("0.0/s")
@@ -679,7 +689,7 @@ fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {
             let event_id = event.id().as_ref();
-            if event_id == STATUS_TRAY_SHOW_DASHBOARD_ID {
+            if event_id == STATUS_TRAY_SHOW_DASHBOARD_ID || event_id == STATUS_TRAY_UPDATE_ID {
                 let _ = show_dashboard_window(app);
             } else if event_id == STATUS_TRAY_QUIT_ID {
                 app.exit(0);
@@ -734,6 +744,19 @@ fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+fn status_tray_menu<R: tauri::Runtime, M: Manager<R>>(app: &M, update: Option<&str>) -> tauri::Result<Menu<R>> {
+    let update_item = MenuItem::with_id(
+        app,
+        STATUS_TRAY_UPDATE_ID,
+        update.map(|version| format!("发现新版本 v{version} · 打开主界面安装")).unwrap_or_else(|| "暂无可用更新".into()),
+        update.is_some(),
+        None::<&str>,
+    )?;
+    let show_dashboard_item = MenuItem::with_id(app, STATUS_TRAY_SHOW_DASHBOARD_ID, "打开主界面", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, STATUS_TRAY_QUIT_ID, "退出", true, None::<&str>)?;
+    Menu::with_items(app, &[&update_item, &show_dashboard_item, &quit_item])
+}
+
 fn status_tray_icon() -> Image<'static> {
     const SIZE: u32 = 32;
     let mut rgba = vec![0; (SIZE * SIZE * 4) as usize];
@@ -778,6 +801,23 @@ fn status_tray_icon() -> Image<'static> {
     paint_line(&mut rgba, SIZE, 10.7, 6.2, 14.1, 10.2, 1.3, [25, 70, 132, 245]);
     paint_line(&mut rgba, SIZE, 14.1, 6.2, 10.7, 10.2, 1.3, [25, 70, 132, 245]);
 
+    Image::new_owned(rgba, SIZE, SIZE)
+}
+
+fn status_tray_update_icon() -> Image<'static> {
+    let image = status_tray_icon();
+    let mut rgba = image.rgba().to_vec();
+    const SIZE: u32 = 32;
+    for y in 1..11 {
+        for x in 21..31 {
+            let dx = x as f32 - 26.0;
+            let dy = y as f32 - 6.0;
+            if dx * dx + dy * dy <= 25.0 {
+                let offset = ((y * SIZE + x) * 4) as usize;
+                rgba[offset..offset + 4].copy_from_slice(&[255, 72, 72, 255]);
+            }
+        }
+    }
     Image::new_owned(rgba, SIZE, SIZE)
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { recordStartupEvent } from "../api/client";
 import { resetLiveRateMonitor } from "../api/liveClient";
 import {
@@ -13,6 +13,7 @@ import { SetupGuide } from "../components/SetupGuide";
 import { DashboardPage } from "../pages/DashboardPage";
 import { useDashboardData } from "../state/useDashboardData";
 import { useDashboardShellSettings } from "./useDashboardShellSettings";
+import { mountUpdateStateReconciler } from "./updateStateReconciler";
 
 type AppUpdateState =
   | { kind: "idle"; message: string; update: null }
@@ -32,7 +33,7 @@ export function DashboardApp() {
   });
   useDashboardHydration(setDashboardHydrated);
   useDashboardScrollReset();
-  useAppUpdateState(setAppUpdateState);
+  useAppUpdateState(appUpdateState, setAppUpdateState);
 
   const {
     state,
@@ -138,24 +139,24 @@ async function resetLiveRate() {
 }
 
 function useAppUpdateState(
+  appUpdateState: AppUpdateState,
   setAppUpdateState: (state: AppUpdateState) => void,
 ) {
+  const phaseRef = useRef(appUpdateState.kind);
+  phaseRef.current = appUpdateState.kind;
   useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    const publish = (result: UpdateAvailability) => {
-      if (!cancelled && result.status === "available") {
-        setAppUpdateState({ kind: "available", message: `发现新版本 ${result.version}`, update: result });
-      }
-    };
-    void readCachedAppUpdate().then(publish).then(async () => {
-      if (!cancelled) unlisten = await listenForAppUpdateState(publish);
+    return mountUpdateStateReconciler({
+      read: readCachedAppUpdate,
+      listen: listenForAppUpdateState,
+      phase: () => phaseRef.current,
+      publish: result => {
+        if (result.status === "available") {
+          setAppUpdateState({ kind: "available", message: result.message ?? `发现新版本 ${result.version}`, update: result });
+        } else if (result.status === "none") {
+          setAppUpdateState({ kind: "idle", message: result.message, update: null });
+        }
+      },
     });
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
   }, [setAppUpdateState]);
 }
 

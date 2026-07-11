@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Allow the main dashboard to use settings, updater, and desktop surface APIs.",
+  "description": "Allow the main dashboard to use app commands and desktop surface APIs without direct updater access.",
   "windows": ["main"],
   "permissions": [
     "core:default",

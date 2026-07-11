@@ -1,44 +1,95 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+import {
+  mountUpdateStateReconciler,
+  shouldApplyRegistryState,
+} from "./updateStateReconciler.ts";
+import { createUpdateClient } from "../api/updateClientCore.ts";
 
-const dashboardUrl = new URL("./DashboardApp.tsx", import.meta.url);
-const clientUrl = new URL("../api/updateClient.ts", import.meta.url);
-const rustUrl = new URL("../../src-tauri/src/commands/update.rs", import.meta.url);
+const available = { status: "available", message: "available", version: "0.8.0", body: "notes", date: null, revision: 2 };
+const none = { status: "none", message: "已是最新版", revision: 3 };
 
-test("late dashboard hydrates cached registry state before subscribing to events", async () => {
-  const source = await readFile(dashboardUrl, "utf8");
-  assert.match(source, /readCachedAppUpdate\(\)\.then\(publish\)\.then\(async \(\) =>/);
-  assert.match(source, /listenForAppUpdateState\(publish\)/);
-  assert.ok(source.indexOf("readCachedAppUpdate().then") < source.indexOf("listenForAppUpdateState(publish)"));
+test("mounted lifecycle subscribes before authoritative read and event wins read race", async () => {
+  const order = [];
+  const published = [];
+  let listener;
+  const stop = mountUpdateStateReconciler({
+    listen: async callback => { order.push("listen"); listener = callback; return () => order.push("unlisten"); },
+    read: async () => { order.push("read"); listener(available); return { ...none, revision: 1 }; },
+    phase: () => "idle",
+    publish: state => published.push(state),
+  });
+  await tick();
+  assert.deepEqual(order.slice(0, 2), ["listen", "read"]);
+  assert.equal(published.at(-1).version, "0.8.0");
+  stop();
 });
 
-test("dashboard has no automatic timer, visibility, focus, or localStorage update owner", async () => {
-  const source = await readFile(dashboardUrl, "utf8");
-  for (const forbidden of ["setInterval", "localStorage", "useAutomaticUpdateChecks", "visibilitychange", 'addEventListener("focus"', "updateCheckScheduler"]) {
-    assert.equal(source.includes(forbidden), false, forbidden);
-  }
+test("read failure keeps healthy listener and late unmount immediately unlistens", async () => {
+  let listener;
+  let unlistenCount = 0;
+  let releaseListen;
+  const stop = mountUpdateStateReconciler({
+    listen: callback => { listener = callback; return new Promise(resolve => { releaseListen = () => resolve(() => { unlistenCount += 1; }); }); },
+    read: async () => { throw new Error("read failed"); },
+    phase: () => "idle",
+    publish: () => {},
+  });
+  stop();
+  releaseListen();
+  await tick();
+  assert.equal(unlistenCount, 1);
+  assert.equal(typeof listener, "function");
 });
 
-test("manual check and confirmed install use Rust registry commands without direct updater plugin", async () => {
-  const [client, dashboard, rust] = await Promise.all([
-    readFile(clientUrl, "utf8"), readFile(dashboardUrl, "utf8"), readFile(rustUrl, "utf8"),
-  ]);
-  assert.match(client, /invoke<AppUpdateSnapshot>\("read_app_update_state"\)/);
-  assert.match(client, /invoke<AppUpdateSnapshot>\("check_app_update"\)/);
-  assert.match(client, /invoke\("install_app_update", \{ version \}\)/);
-  assert.doesNotMatch(client, /plugin-updater|downloadAndInstall|\bcheck\s*\(/);
-  assert.match(dashboard, /window\.confirm/);
-  assert.match(dashboard, /installAppUpdate\(update\.version/);
-  assert.match(rust, /checked\.version\.as_deref\(\) != Some\(version\.as_str\(\)\)/);
+test("listen failure installs bounded authoritative reconcile and cancellation clears it", async () => {
+  const scheduled = [];
+  const cancelled = [];
+  const published = [];
+  const stop = mountUpdateStateReconciler({
+    listen: async () => { throw new Error("listen failed"); },
+    read: async () => none,
+    phase: () => "idle",
+    publish: state => published.push(state),
+    schedule: (callback, delay) => { scheduled.push({ callback, delay }); return 7; },
+    cancel: timer => cancelled.push(timer),
+    retryMs: 1234,
+  });
+  await tick();
+  assert.equal(published.at(-1).status, "none");
+  assert.equal(scheduled[0].delay, 1234);
+  stop();
+  assert.deepEqual(cancelled, [7]);
 });
 
-test("automatic registry is app-level, evented, persisted atomically, and tray-fallback aware", async () => {
-  const rust = await readFile(rustUrl, "utf8");
-  assert.match(rust, /WAKE_INTERVAL: Duration = Duration::from_secs\(60\)/);
-  assert.match(rust, /CHECK_INTERVAL_MS: i64 = 4 \* 60 \* 60 \* 1_000/);
-  assert.match(rust, /atomic_file::write_atomically/);
-  assert.match(rust, /app\.emit\(UPDATE_STATE_EVENT/);
-  assert.match(rust, /set_update_available_tray_fallback/);
-  assert.match(rust, /last_notified_version/);
+test("none clears available while registry events cannot overwrite checking or installing", () => {
+  assert.equal(shouldApplyRegistryState("available", none), true);
+  assert.equal(shouldApplyRegistryState("checking", none), false);
+  assert.equal(shouldApplyRegistryState("installing", available), false);
+  assert.equal(shouldApplyRegistryState("idle", available), true);
 });
+
+test("client uses fake invoke/event bridge and always releases install progress listener", async () => {
+  const calls = [];
+  const listeners = new Map();
+  let unlistenCount = 0;
+  const client = createUpdateClient({
+    runtime: () => true,
+    unsupportedMessage: "unsupported",
+    invoke: async (command, payload) => {
+      calls.push([command, payload]);
+      if (command === "read_app_update_state") return { status: "available", message: "v", version: "0.8.0", body: "", date: null, revision: 4 };
+      if (command === "check_app_update") return { status: "none", message: "none", version: null, body: null, date: null, revision: 5 };
+    },
+    listen: async (event, callback) => { listeners.set(event, callback); return () => { unlistenCount += 1; }; },
+  });
+  assert.equal((await client.read()).version, "0.8.0");
+  assert.equal((await client.check()).status, "none");
+  await client.install("0.8.0");
+  assert.deepEqual(calls.at(-1), ["install_app_update", { version: "0.8.0" }]);
+  assert.equal(unlistenCount, 1);
+});
+
+function tick() {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}

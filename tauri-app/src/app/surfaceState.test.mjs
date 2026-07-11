@@ -394,6 +394,7 @@ test("windows updater lane uses signed Tauri metadata and a dashboard entry", as
   const lib = await readFile(new URL("../../src-tauri/src/lib.rs", import.meta.url), "utf8");
   const capability = await readFile(new URL("../../src-tauri/capabilities/default.json", import.meta.url), "utf8");
   const updateClient = await readFile(new URL("../api/updateClient.ts", import.meta.url), "utf8");
+  const updateClientCore = await readFile(new URL("../api/updateClientCore.ts", import.meta.url), "utf8");
   const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
   const dashboardPage = await readFile(new URL("../pages/DashboardPage.tsx", import.meta.url), "utf8");
   const header = await readFile(new URL("../components/DashboardHeader.tsx", import.meta.url), "utf8");
@@ -402,17 +403,19 @@ test("windows updater lane uses signed Tauri metadata and a dashboard entry", as
 
   assert.equal(packageJson.includes('"@tauri-apps/api"'), true);
   assert.equal(cargoToml.includes("tauri-plugin-updater"), true);
+  assert.equal(cargoToml.includes("tauri-plugin-notification"), true);
   assert.equal(cargoToml.includes("tauri-plugin-process"), true);
   assert.equal(tauriConfig.includes('"createUpdaterArtifacts": true'), true);
   assert.equal(tauriConfig.includes("latest-windows.json"), true);
   assert.equal(tauriConfig.includes('"installMode": "passive"'), true);
   assert.equal(lib.includes("tauri_plugin_updater::Builder::new().build()"), true);
+  assert.equal(lib.includes("tauri_plugin_notification::init()"), true);
   assert.equal(lib.includes("tauri_plugin_process::init()"), true);
   assert.equal(capability.includes("core:event:allow-listen"), true);
   assert.equal(updateClient.includes("checkAppUpdate"), true);
   assert.equal(updateClient.includes("installAppUpdate"), true);
-  assert.equal(updateClient.includes('invoke<AppUpdateSnapshot>("check_app_update")'), true);
-  assert.equal(updateClient.includes('invoke("install_app_update", { version })'), true);
+  assert.equal(updateClientCore.includes('bridge.invoke<AppUpdateSnapshot>("check_app_update")'), true);
+  assert.equal(updateClientCore.includes('bridge.invoke("install_app_update", { version })'), true);
   assert.equal(dashboardApp.includes("useAutomaticUpdateChecks"), false);
   assert.equal(dashboardApp.includes("UPDATE_WAKE_POLL_INTERVAL_MS"), false);
   assert.equal(dashboardPage.includes("onCheckForUpdate"), true);
