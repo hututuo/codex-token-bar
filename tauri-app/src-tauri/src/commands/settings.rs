@@ -66,6 +66,7 @@ pub fn save_display_surfaces(
         display,
         platform::save_display_surfaces,
         |saved| live_rate.sync_status_tray_interest(&app, &saved.display_surfaces),
+        |error| eprintln!("Codex Token Bar: saved display settings but native tray sync failed: {error}"),
     )
 }
 
@@ -73,9 +74,12 @@ fn save_display_surfaces_with_sync(
     display: DisplaySurfaceSettingsSnapshot,
     save: impl FnOnce(DisplaySurfaceSettingsSnapshot) -> Result<AppSettingsSnapshot, String>,
     sync: impl FnOnce(&AppSettingsSnapshot) -> Result<(), String>,
+    on_sync_error: impl FnOnce(&str),
 ) -> Result<AppSettingsSnapshot, String> {
     let saved = save(display)?;
-    sync(&saved)?;
+    if let Err(error) = sync(&saved) {
+        on_sync_error(&error);
+    }
     Ok(saved)
 }
 
@@ -99,9 +103,29 @@ mod tests {
                 assert_eq!(settings.display_surfaces.status_tray_live_text_enabled, display.status_tray_live_text_enabled);
                 Ok(())
             },
+            |_| {},
         ).unwrap();
         assert_eq!(sync_calls, 1);
         assert_eq!(saved.display_surfaces.live_rate_enabled, display.live_rate_enabled);
+    }
+
+
+    #[test]
+    fn persisted_display_save_returns_snapshot_when_native_sync_fails() {
+        let display = DisplaySurfaceSettingsSnapshot::default();
+        let mut errors = Vec::new();
+        let saved = save_display_surfaces_with_sync(
+            display.clone(),
+            |display| {
+                let mut settings = AppSettingsSnapshot::default();
+                settings.display_surfaces = display;
+                Ok(settings)
+            },
+            |_| Err("tray missing".into()),
+            |error| errors.push(error.to_string()),
+        ).unwrap();
+        assert_eq!(saved.display_surfaces.live_rate_enabled, display.live_rate_enabled);
+        assert_eq!(errors, vec!["tray missing"]);
     }
 }
 

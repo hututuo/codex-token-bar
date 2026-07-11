@@ -32,6 +32,7 @@ pub struct LiveRateMonitorRegistry {
     monitor: Arc<Mutex<Option<Arc<LiveRateMonitorService>>>>,
     stream: Arc<Mutex<LiveRateStreamState>>,
     unread_cache: Arc<Mutex<HashMap<String, CachedUnreadSummary>>>,
+    native_tray_writer: Arc<Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -57,6 +58,7 @@ struct LiveRateStreamState {
     native_tray_smoothed_rate: Option<f64>,
     native_tray_last_readout: Option<(String, String)>,
     native_tray_settings_key: Option<(bool, bool)>,
+    native_tray_revision: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -113,7 +115,23 @@ impl LiveRateMonitorRegistry {
         app: &AppHandle,
         display: &DisplaySurfaceSettingsSnapshot,
     ) -> Result<(), String> {
-        let supported = native_tray_live_text_supported();
+        let generation = self.apply_status_tray_settings_with_writer(
+            display,
+            native_tray_live_text_supported(),
+            |title, tooltip| platform::set_status_tray_readout_native(app, title, tooltip),
+        )?;
+        if let Some(generation) = generation {
+            self.spawn_stream_loop(app.clone(), generation);
+        }
+        Ok(())
+    }
+
+    fn apply_status_tray_settings_with_writer(
+        &self,
+        display: &DisplaySurfaceSettingsSnapshot,
+        supported: bool,
+        writer: impl FnOnce(String, String) -> Result<bool, String>,
+    ) -> Result<Option<u64>, String> {
         let settings_key = (
             supported && display.status_tray_live_text_enabled,
             display.live_rate_enabled,
@@ -122,25 +140,41 @@ impl LiveRateMonitorRegistry {
             display,
             supported,
         );
+        let revision = {
+            let mut stream = self.stream.lock().map_err(|error| error.to_string())?;
+            if stream.native_tray_settings_key == Some(settings_key)
+                && stream.native_tray_enabled == stream_enabled
+            {
+                return Ok(None);
+            }
+            stream.native_tray_revision = stream.native_tray_revision.saturating_add(1);
+            stream.native_tray_enabled = false;
+            if active_subscription_count(&stream) == 0 {
+                stream.running = false;
+            }
+            stream.native_tray_settings_key = None;
+            stream.native_tray_revision
+        };
+        let _writer_guard = self.native_tray_writer.lock().map_err(|error| error.to_string())?;
+        {
+            let stream = self.stream.lock().map_err(|error| error.to_string())?;
+            if stream.native_tray_revision != revision {
+                return Ok(None);
+            }
+        }
+        if !writer(readout.0, readout.1)? {
+            return Err("status tray is not available".into());
+        }
         let mut stream = self.stream.lock().map_err(|error| error.to_string())?;
-        let settings_changed = stream.native_tray_settings_key != Some(settings_key);
+        if stream.native_tray_revision != revision {
+            return Ok(None);
+        }
+        stream.native_tray_source = None;
+        stream.native_tray_smoothed_rate = None;
+        stream.native_tray_last_readout = None;
+        stream.native_tray_settings_key = Some(settings_key);
         let should_spawn = configure_native_tray_stream(&mut stream, stream_enabled);
-        if settings_changed {
-            stream.native_tray_source = None;
-            stream.native_tray_smoothed_rate = None;
-            stream.native_tray_last_readout = None;
-            stream.native_tray_settings_key = Some(settings_key);
-        }
-        let generation = stream.loop_generation;
-        drop(stream);
-
-        if settings_changed {
-            platform::set_status_tray_readout_native(app, readout.0, readout.1)?;
-        }
-        if should_spawn {
-            self.spawn_stream_loop(app.clone(), generation);
-        }
-        Ok(())
+        Ok(should_spawn.then_some(stream.loop_generation))
     }
 
     fn unread_summary_for_source(
@@ -528,6 +562,19 @@ impl LiveRateMonitorRegistry {
         source: &CodexHomeSourceToken,
         raw_rate: f64,
     ) -> Result<(), String> {
+        self.publish_native_tray_with_writer(loop_generation, source, raw_rate, |title, tooltip| {
+            platform::set_status_tray_readout_native(app, title, tooltip)
+        })
+    }
+
+    fn publish_native_tray_with_writer(
+        &self,
+        loop_generation: u64,
+        source: &CodexHomeSourceToken,
+        raw_rate: f64,
+        writer: impl FnOnce(String, String) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        let _writer_guard = self.native_tray_writer.lock().map_err(|error| error.to_string())?;
         let mut stream = self.stream.lock().map_err(|error| error.to_string())?;
         if !stream.running || stream.loop_generation != loop_generation {
             return Ok(());
@@ -536,7 +583,9 @@ impl LiveRateMonitorRegistry {
             return Ok(());
         };
         drop(stream);
-        platform::set_status_tray_readout_native(app, readout.0, readout.1)?;
+        if !writer(readout.0, readout.1)? {
+            return Err("status tray is not available".into());
+        }
         Ok(())
     }
 
@@ -1255,6 +1304,71 @@ fn result_status<T>(result: &Result<T, String>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_tray_write_failure_keeps_interest_off_and_same_settings_retryable() {
+        let registry = LiveRateMonitorRegistry::default();
+        let display = DisplaySurfaceSettingsSnapshot::default();
+        assert!(registry
+            .apply_status_tray_settings_with_writer(&display, true, |_, _| Ok(false))
+            .is_err());
+        {
+            let stream = registry.stream.lock().unwrap();
+            assert!(!stream.native_tray_enabled);
+            assert!(!stream.running);
+            assert!(stream.native_tray_settings_key.is_none());
+        }
+        let generation = registry
+            .apply_status_tray_settings_with_writer(&display, true, |_, _| Ok(true))
+            .unwrap();
+        assert!(generation.is_some());
+        assert!(registry.stream.lock().unwrap().native_tray_enabled);
+    }
+
+    #[test]
+    fn revisioned_writer_makes_disable_ctb_win_over_old_tick_in_both_orders() {
+        let source = live_source_for_test("source-a", 1).source_token;
+        let enabled = DisplaySurfaceSettingsSnapshot::default();
+        let mut disabled = enabled.clone();
+        disabled.status_tray_live_text_enabled = false;
+
+        for tick_first in [false, true] {
+            let registry = LiveRateMonitorRegistry::default();
+            let mut writes = Vec::new();
+            let generation = registry
+                .apply_status_tray_settings_with_writer(&enabled, true, |title, _| {
+                    writes.push(title);
+                    Ok(true)
+                })
+                .unwrap()
+                .unwrap();
+            registry.stream.lock().unwrap().native_tray_source = Some(source.clone());
+            if tick_first {
+                registry
+                    .publish_native_tray_with_writer(generation, &source, 12.0, |title, _| {
+                        writes.push(title);
+                        Ok(true)
+                    })
+                    .unwrap();
+            }
+            registry
+                .apply_status_tray_settings_with_writer(&disabled, true, |title, _| {
+                    writes.push(title);
+                    Ok(true)
+                })
+                .unwrap();
+            if !tick_first {
+                registry
+                    .publish_native_tray_with_writer(generation, &source, 12.0, |title, _| {
+                        writes.push(title);
+                        Ok(true)
+                    })
+                    .unwrap();
+            }
+            assert_eq!(writes.last().map(String::as_str), Some("CTB"));
+            assert_eq!(writes.iter().filter(|title| title.as_str() == "12.0/s").count(), usize::from(tick_first));
+        }
+    }
 
     #[test]
     fn native_interest_shares_ui_loop_and_survives_dashboard_stop() {
