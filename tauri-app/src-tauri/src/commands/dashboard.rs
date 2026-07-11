@@ -40,6 +40,7 @@ const PINNED_SESSION_LOOKBACK_SECONDS: i64 = 30;
 struct CachedPinnedDbSnapshot {
     signature: u64,
     directory: PathBuf,
+    _owner_lock: std::fs::File,
 }
 
 #[derive(Debug, Serialize)]
@@ -456,13 +457,7 @@ fn materialize_cached_pinned_database(
         }
     }
 
-    let sequence = PINNED_SOURCE_SNAPSHOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let directory = std::env::temp_dir().join(format!(
-        "codex-token-bar-pinned-db-{}-{sequence}",
-        std::process::id()
-    ));
-    std::fs::create_dir(&directory)
-        .map_err(|error| format!("failed to create pinned DB cache directory: {error}"))?;
+    let (directory, owner_lock) = create_owned_pinned_db_directory(&std::env::temp_dir())?;
     let result = (|| {
         for file_name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
             copy_optional_pinned_file(root, file_name, &directory.join(file_name))?;
@@ -487,6 +482,7 @@ fn materialize_cached_pinned_database(
         CachedPinnedDbSnapshot {
             signature: signature_before,
             directory: directory.clone(),
+            _owner_lock: owner_lock,
         },
     ) {
         let _ = std::fs::remove_dir_all(previous.directory);
@@ -497,45 +493,38 @@ fn materialize_cached_pinned_database(
 #[cfg(unix)]
 fn pinned_db_snapshot_cache(
 ) -> Result<&'static Mutex<HashMap<String, CachedPinnedDbSnapshot>>, String> {
-    static CLEANUP: OnceLock<Result<(), String>> = OnceLock::new();
-    CLEANUP
-        .get_or_init(clean_stale_pinned_db_snapshots)
-        .clone()?;
+    clean_stale_pinned_db_snapshots()?;
     Ok(PINNED_DB_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(HashMap::new())))
 }
 
 #[cfg(unix)]
 fn clean_stale_pinned_db_snapshots() -> Result<(), String> {
-    clean_stale_pinned_db_snapshots_in(
-        &std::env::temp_dir(),
-        std::process::id(),
-        process_liveness,
-    )
+    clean_stale_pinned_db_snapshots_in(&std::env::temp_dir())
 }
 
 #[cfg(unix)]
-fn clean_stale_pinned_db_snapshots_in(
-    directory: &Path,
-    current_pid: u32,
-    liveness: impl Fn(u32) -> Option<bool>,
-) -> Result<(), String> {
+fn clean_stale_pinned_db_snapshots_in(directory: &Path) -> Result<(), String> {
     const PREFIX: &str = "codex-token-bar-pinned-db-";
     let entries = std::fs::read_dir(directory)
         .map_err(|error| format!("failed to inspect pinned DB cache directory: {error}"))?;
     for entry in entries
         .flatten()
         .filter(|entry| entry.file_name().to_string_lossy().starts_with(PREFIX))
-        .take(64)
     {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(pid) = name
-            .strip_prefix(PREFIX)
-            .and_then(|suffix| suffix.split('-').next())
-            .and_then(|pid| pid.parse::<u32>().ok())
+        let lock_path = entry.path().join(".owner.lock");
+        let Ok(lock) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lock_path)
         else {
             continue;
         };
-        if pid != current_pid && liveness(pid) == Some(false) {
+        if rustix::fs::flock(
+            &lock,
+            rustix::fs::FlockOperation::NonBlockingLockExclusive,
+        )
+        .is_ok()
+        {
             let _ = std::fs::remove_dir_all(entry.path());
         }
     }
@@ -543,19 +532,52 @@ fn clean_stale_pinned_db_snapshots_in(
 }
 
 #[cfg(unix)]
-fn process_liveness(pid: u32) -> Option<bool> {
-    unsafe extern "C" {
-        fn kill(pid: i32, signal: i32) -> i32;
+fn process_session_identity() -> &'static str {
+    static IDENTITY: OnceLock<String> = OnceLock::new();
+    IDENTITY.get_or_init(|| {
+        let started = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        format!("{:x}-{started:x}", std::process::id())
+    })
+}
+
+#[cfg(unix)]
+fn create_owned_pinned_db_directory(
+    parent: &Path,
+) -> Result<(PathBuf, std::fs::File), String> {
+    for _ in 0..16 {
+        let sequence = PINNED_SOURCE_SNAPSHOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let directory = parent.join(format!(
+            "codex-token-bar-pinned-db-{}-{sequence}",
+            process_session_identity()
+        ));
+        match std::fs::create_dir(&directory) {
+            Ok(()) => {
+                let result = (|| {
+                    let lock = std::fs::OpenOptions::new()
+                        .create_new(true)
+                        .read(true)
+                        .write(true)
+                        .open(directory.join(".owner.lock"))
+                        .map_err(|error| format!("failed to create pinned DB owner lock: {error}"))?;
+                    rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
+                        .map_err(|error| format!("failed to lock pinned DB cache owner: {error}"))?;
+                    Ok::<_, String>((directory.clone(), lock))
+                })();
+                if result.is_err() {
+                    let _ = std::fs::remove_dir_all(&directory);
+                }
+                return result;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!("failed to create pinned DB cache directory: {error}"))
+            }
+        }
     }
-    let pid = i32::try_from(pid).ok()?;
-    if unsafe { kill(pid, 0) } == 0 {
-        return Some(true);
-    }
-    match std::io::Error::last_os_error().raw_os_error() {
-        Some(1) => Some(true),
-        Some(3) => Some(false),
-        _ => None,
-    }
+    Err("failed to allocate a unique pinned DB cache directory".into())
 }
 
 #[cfg(unix)]
@@ -2021,28 +2043,48 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn stale_cache_cleanup_filters_unrelated_entries_and_preserves_active_processes() {
+    fn owner_lock_cleanup_removes_all_stale_and_preserves_active_or_unknown() {
         let root = disposable_source_test_directory("stale-cache-cleanup");
         for index in 0..100 {
             std::fs::create_dir(root.join(format!("unrelated-{index}"))).unwrap();
         }
-        let stale = root.join("codex-token-bar-pinned-db-4001-1");
-        let active = root.join("codex-token-bar-pinned-db-4002-1");
-        let unknown = root.join("codex-token-bar-pinned-db-4003-1");
-        std::fs::create_dir(&stale).unwrap();
+        let same_pid_old_epoch = root.join(format!(
+            "codex-token-bar-pinned-db-{:x}-old-0",
+            std::process::id()
+        ));
+        std::fs::create_dir(&same_pid_old_epoch).unwrap();
+        std::fs::write(same_pid_old_epoch.join(".owner.lock"), b"").unwrap();
+        let mut stale = Vec::new();
+        for index in 0..65 {
+            let path = root.join(format!("codex-token-bar-pinned-db-deadbeef-old-{index}"));
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join(".owner.lock"), b"").unwrap();
+            stale.push(path);
+        }
+        let active = root.join("codex-token-bar-pinned-db-active-epoch-1");
+        let unknown = root.join("codex-token-bar-pinned-db-unknown-epoch-1");
         std::fs::create_dir(&active).unwrap();
         std::fs::create_dir(&unknown).unwrap();
+        let active_lock = std::fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(active.join(".owner.lock"))
+            .unwrap();
+        rustix::fs::flock(&active_lock, rustix::fs::FlockOperation::LockExclusive).unwrap();
 
-        clean_stale_pinned_db_snapshots_in(&root, 4000, |pid| match pid {
-            4001 => Some(false),
-            4002 => Some(true),
-            _ => None,
-        })
-        .unwrap();
+        clean_stale_pinned_db_snapshots_in(&root).unwrap();
 
-        assert!(!stale.exists());
+        assert!(!same_pid_old_epoch.exists());
+        assert!(stale.iter().all(|path| !path.exists()));
         assert!(active.exists());
         assert!(unknown.exists());
+        let (created, created_lock) = create_owned_pinned_db_directory(&root).unwrap();
+        assert!(created.exists());
+        assert_ne!(created, same_pid_old_epoch);
+        drop(created_lock);
+        std::fs::remove_dir_all(created).unwrap();
+        drop(active_lock);
         remove_source_test_directory(root);
     }
 
@@ -2280,7 +2322,10 @@ mod tests {
     #[test]
     fn failed_db_snapshot_creation_leaves_no_task_owned_directory() {
         let _guard = pinned_db_test_lock().lock().unwrap();
-        let prefix = format!("codex-token-bar-pinned-db-{}-", std::process::id());
+        let prefix = format!(
+            "codex-token-bar-pinned-db-{}-",
+            process_session_identity()
+        );
         let count = || {
             std::fs::read_dir(std::env::temp_dir())
                 .unwrap()
