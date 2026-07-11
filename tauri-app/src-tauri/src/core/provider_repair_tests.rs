@@ -1501,14 +1501,14 @@ fn session_backup_rejects_atomic_live_path_replacement_with_same_len_and_mtime()
     let replace_session = session.clone();
     let replacer = thread::spawn(move || {
         replace_barrier.wait();
-        let replacement_path = replace_session.with_extension("replacement");
-        fs::write(&replacement_path, replacement).unwrap();
-        fs::File::open(&replacement_path)
-            .unwrap()
-            .set_modified(original_mtime)
-            .unwrap();
-        let replacement_result =
-            session_files::replace_file_atomically(&replacement_path, &replace_session);
+        let replacement_result = (|| -> Result<(), String> {
+            let replacement_path = replace_session.with_extension("replacement");
+            fs::write(&replacement_path, replacement).map_err(|error| error.to_string())?;
+            fs::File::open(&replacement_path)
+                .and_then(|file| file.set_modified(original_mtime))
+                .map_err(|error| error.to_string())?;
+            session_files::replace_file_atomically(&replacement_path, &replace_session)
+        })();
         replace_barrier.wait();
         replacement_result
     });
