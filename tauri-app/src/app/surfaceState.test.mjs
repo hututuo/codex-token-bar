@@ -394,7 +394,10 @@ test("windows updater lane uses signed Tauri metadata and a dashboard entry", as
   assert.equal(updateClient.includes("installAppUpdate"), true);
   assert.equal(updateClient.includes("downloadAndInstall"), true);
   assert.equal(updateClient.includes("relaunch()"), true);
-  assert.equal(dashboardApp.includes("useStartupUpdateCheck"), true);
+  assert.equal(dashboardApp.includes("useAutomaticUpdateChecks"), true);
+  assert.equal(dashboardApp.includes('window.addEventListener("focus", trigger)'), true);
+  assert.equal(dashboardApp.includes('document.addEventListener("visibilitychange", onVisibilityChange)'), true);
+  assert.equal(dashboardApp.includes("UPDATE_WAKE_POLL_INTERVAL_MS"), true);
   assert.equal(dashboardPage.includes("onCheckForUpdate"), true);
   assert.equal(header.includes("检查更新"), true);
   assert.equal(header.includes("安装更新"), true);

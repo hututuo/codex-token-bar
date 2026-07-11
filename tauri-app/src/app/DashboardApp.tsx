@@ -1,11 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { recordStartupEvent } from "../api/client";
 import { resetLiveRateMonitor } from "../api/liveClient";
-import { checkAppUpdate, installAppUpdate, type UpdateAvailability } from "../api/updateClient";
+import {
+  checkAppUpdate,
+  installAppUpdate,
+  manualUpdateFailureMessage,
+  type UpdateAvailability,
+} from "../api/updateClient";
 import { SetupGuide } from "../components/SetupGuide";
 import { DashboardPage } from "../pages/DashboardPage";
 import { useDashboardData } from "../state/useDashboardData";
 import { useDashboardShellSettings } from "./useDashboardShellSettings";
+import {
+  createUpdateCheckScheduler,
+  type UpdateCheckScheduler,
+} from "./updateCheckScheduler";
+import { automaticUpdateNotice } from "./updateCheckPresentation";
+
+const UPDATE_CHECK_ATTEMPT_STORAGE_KEY = "codex-token-bar:update-check-attempt-v1";
+const UPDATE_WAKE_POLL_INTERVAL_MS = 60_000;
 
 type AppUpdateState =
   | { kind: "idle"; message: string; update: null }
@@ -23,10 +36,11 @@ export function DashboardApp() {
     message: "",
     update: null,
   });
+  const updateCheckScheduler = useAppUpdateCheckScheduler();
 
   useDashboardHydration(setDashboardHydrated);
   useDashboardScrollReset();
-  useStartupUpdateCheck(setAppUpdateState);
+  useAutomaticUpdateChecks(updateCheckScheduler, setAppUpdateState);
 
   const {
     state,
@@ -99,7 +113,11 @@ export function DashboardApp() {
         onCodexHomeChange={updateCodexHome}
         onCodexHomeReset={restoreAutoCodexHome}
         onCustomAccountDisplayNameChange={shellSettings.updateCustomAccountDisplayName}
-        onCheckForUpdate={() => handleCheckForUpdate(appUpdateState, setAppUpdateState)}
+        onCheckForUpdate={() => handleCheckForUpdate(
+          appUpdateState,
+          updateCheckScheduler,
+          setAppUpdateState,
+        )}
         onToggleAutostart={shellSettings.toggleAutostart}
         refreshing={refreshing}
         appUpdateState={appUpdateState}
@@ -129,35 +147,66 @@ async function resetLiveRate() {
   await resetLiveRateMonitor();
 }
 
-function useStartupUpdateCheck(setAppUpdateState: (state: AppUpdateState) => void) {
+function useAppUpdateCheckScheduler(): UpdateCheckScheduler<UpdateAvailability> {
+  const schedulerRef = useRef<UpdateCheckScheduler<UpdateAvailability> | null>(null);
+  if (schedulerRef.current === null) {
+    schedulerRef.current = createUpdateCheckScheduler({
+      check: checkAppUpdate,
+      storage: updateCheckStorage(),
+      storageKey: UPDATE_CHECK_ATTEMPT_STORAGE_KEY,
+    });
+  }
+  return schedulerRef.current;
+}
+
+function updateCheckStorage(): Storage | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function useAutomaticUpdateChecks(
+  scheduler: UpdateCheckScheduler<UpdateAvailability>,
+  setAppUpdateState: (state: AppUpdateState) => void,
+) {
   useEffect(() => {
     let cancelled = false;
-    const timer = window.setTimeout(() => {
-      void checkAppUpdate()
-        .then((result) => {
-          if (cancelled || result.status !== "available") {
-            return;
-          }
-          setAppUpdateState({
-            kind: "available",
-            message: `发现新版本 ${result.version}`,
-            update: result,
-          });
-        })
-        .catch(() => {
-          // Startup checks stay quiet; the manual button reports detailed failures.
-        });
-    }, 5_000);
+    const trigger = () => {
+      void scheduler.runAutomatic().then((outcome) => {
+        const notice = automaticUpdateNotice(outcome);
+        if (cancelled || notice === null) {
+          return;
+        }
+        setAppUpdateState(notice);
+      });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        trigger();
+      }
+    };
+
+    trigger();
+    const wakeTimer = window.setInterval(trigger, UPDATE_WAKE_POLL_INTERVAL_MS);
+    window.addEventListener("focus", trigger);
+    window.addEventListener("pageshow", trigger);
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      window.clearInterval(wakeTimer);
+      window.removeEventListener("focus", trigger);
+      window.removeEventListener("pageshow", trigger);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [setAppUpdateState]);
+  }, [scheduler, setAppUpdateState]);
 }
 
 async function handleCheckForUpdate(
   appUpdateState: AppUpdateState,
+  scheduler: UpdateCheckScheduler<UpdateAvailability>,
   setAppUpdateState: (state: AppUpdateState) => void,
 ) {
   if (appUpdateState.kind === "available" && appUpdateState.update) {
@@ -170,8 +219,9 @@ async function handleCheckForUpdate(
   }
 
   setAppUpdateState({ kind: "checking", message: "正在检查更新...", update: null });
-  try {
-    const result = await checkAppUpdate();
+  const outcome = await scheduler.runManual();
+  if (outcome.kind === "completed") {
+    const result = outcome.value;
     if (result.status === "available") {
       setAppUpdateState({
         kind: "available",
@@ -189,10 +239,12 @@ async function handleCheckForUpdate(
       message: result.message,
       update: null,
     });
-  } catch (error) {
+    return;
+  }
+  if (outcome.kind === "failed") {
     setAppUpdateState({
       kind: "error",
-      message: updateErrorMessage(error),
+      message: manualUpdateFailureMessage(outcome.error),
       update: null,
     });
   }
@@ -215,23 +267,13 @@ async function installPendingUpdate(
         update,
       });
     });
-  } catch (error) {
+  } catch {
     setAppUpdateState({
       kind: "error",
-      message: updateErrorMessage(error),
+      message: "更新未完成，请稍后重试",
       update: null,
     });
   }
-}
-
-function updateErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) {
-    return `检查更新失败：${error.message}`;
-  }
-  if (typeof error === "string" && error.trim()) {
-    return `检查更新失败：${error}`;
-  }
-  return "检查更新失败，请稍后重试。";
 }
 
 function useDashboardHydration(setDashboardHydrated: (hydrated: boolean) => void) {

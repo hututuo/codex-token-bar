@@ -318,8 +318,10 @@ button {
   opacity: 0.55;
 }
 
-.update-status {
-  max-width: 180px;
+.update-status-slot {
+  flex: 0 0 156px;
+  width: 156px;
+  min-height: 13px;
   overflow: hidden;
   color: var(--muted);
   font-size: 11.5px;

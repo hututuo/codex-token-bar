@@ -1,6 +1,13 @@
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { isTauriRuntimeAvailable, withTimeout } from "../platform/runtime";
+import {
+  isUnsupportedUpdaterError,
+  manualUpdateFailureMessage,
+  UNSUPPORTED_UPDATE_MESSAGE,
+} from "./updateModel";
+
+export { isUnsupportedUpdaterError, manualUpdateFailureMessage } from "./updateModel";
 
 export type UpdateAvailability =
   | { status: "unsupported"; message: string }
@@ -11,11 +18,19 @@ export async function checkAppUpdate(timeoutMs = 15_000): Promise<UpdateAvailabi
   if (!isTauriRuntimeAvailable()) {
     return {
       status: "unsupported",
-      message: "当前不是桌面运行环境，无法检查更新。",
+      message: UNSUPPORTED_UPDATE_MESSAGE,
     };
   }
 
-  const update = await withTimeout(check({ timeout: timeoutMs }), timeoutMs + 1_000);
+  let update: Update | null;
+  try {
+    update = await withTimeout(check({ timeout: timeoutMs }), timeoutMs + 1_000);
+  } catch (error) {
+    if (isUnsupportedUpdaterError(error)) {
+      return { status: "unsupported", message: UNSUPPORTED_UPDATE_MESSAGE };
+    }
+    throw error;
+  }
   if (!update) {
     return {
       status: "none",

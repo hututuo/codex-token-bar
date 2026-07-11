@@ -134,9 +134,13 @@ export function DashboardHeader({
         <button className="toolbar-button" disabled={updateBusy} onClick={onCheckForUpdate} type="button">
           {updateButtonLabel}
         </button>
-        {appUpdateState.message ? (
-          <span className={`update-status update-status--${appUpdateState.kind}`}>{appUpdateState.message}</span>
-        ) : null}
+        <span
+          aria-live={appUpdateState.message ? "polite" : "off"}
+          className={`update-status-slot update-status--${appUpdateState.kind}`}
+          title={appUpdateState.message || undefined}
+        >
+          {appUpdateState.message || "\u00a0"}
+        </span>
         <button className="toolbar-button" onClick={onExportCsv} type="button">
           导出 CSV
         </button>

@@ -19,6 +19,20 @@ test("DashboardHeader renders restrained provider repair entry", async () => {
   });
 });
 
+test("DashboardHeader reserves one bounded update status slot", async () => {
+  await withSsrModules(async (load) => {
+    const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
+    const idle = renderComponent(DashboardHeader, headerProps());
+    const failed = renderComponent(DashboardHeader, headerProps({
+      appUpdateState: { kind: "error", message: "暂时无法检查更新，请稍后重试" },
+    }));
+
+    assert.match(idle, /class="update-status-slot update-status--idle"/);
+    assert.match(failed, /class="update-status-slot update-status--error"/);
+    assert.match(failed, /暂时无法检查更新，请稍后重试/);
+  });
+});
+
 function findButton(html, text) {
   const pattern = new RegExp(`<button(?<attrs>[^>]*)>${text}</button>`);
   const match = html.match(pattern);
