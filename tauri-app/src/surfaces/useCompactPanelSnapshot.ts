@@ -28,6 +28,7 @@ import {
   resetFloatingUsageSummary,
   shouldResetCompactUsageSummarySource,
 } from "./compactPanelSnapshotModel";
+import { createCompactLiveRateAttemptRunner } from "./compactLiveRateAttempt";
 
 interface CompactPanelSnapshotOptions {
   active: boolean;
@@ -50,6 +51,7 @@ export function useCompactPanelSnapshot({
   const usageSummaryRef = useRef<UsageSummarySnapshot | null>(null);
   const usageSummarySourceKeyRef = useRef<string | null>(sourceKey);
   const leaseControllerRef = useRef<LiveRateLeaseController | null | undefined>(undefined);
+  const liveRateAttemptRunnerRef = useRef(createCompactLiveRateAttemptRunner());
   let leaseController = leaseControllerRef.current;
   if (leaseController === undefined) {
     const ownerSession = tryCreateLiveRateOwnerSession(liveRateOwnerToken);
@@ -170,7 +172,7 @@ export function useCompactPanelSnapshot({
       ));
       return;
     }
-    const leaseRequest = leaseController.begin();
+    let leaseRequest: ReturnType<LiveRateLeaseController["begin"]> | null = null;
 
     void desktopPlatform.onLiveRateSnapshot((liveRate) => {
       if (!cancelled) {
@@ -185,46 +187,54 @@ export function useCompactPanelSnapshot({
       }
     });
 
-    void desktopPlatform.claimLiveRateOwnerSession(
-      leaseRequest.ownerToken,
-      leaseRequest.ownerSessionEpoch,
-    ).then((claimed) => claimed
-      ? desktopPlatform.startLiveRateStreamCommand({
+    const attempt = liveRateAttemptRunnerRef.current.start({
+      async start() {
+        leaseRequest = leaseController.begin();
+        const claimed = await desktopPlatform.claimLiveRateOwnerSession(
+          leaseRequest.ownerToken,
+          leaseRequest.ownerSessionEpoch,
+        );
+        if (!claimed) {
+          return { ok: false, accepted: false, error: "实时速率流暂不可用" };
+        }
+        const result = await desktopPlatform.startLiveRateStreamCommand({
           selectedThreadId: null,
           controlsSelectedThread: false,
           subscriberOwnerToken: leaseRequest.ownerToken,
           ownerSessionEpoch: leaseRequest.ownerSessionEpoch,
           ownerGeneration: leaseRequest.ownerGeneration,
           sourceToken: null,
-        })
-      : null).then((result) => {
-      if (result === null) {
-        return;
-      }
-      if (result.ok && result.value !== null) {
-        leaseRequest.accept(result.value);
-        return;
-      }
-      if (cancelled) {
-        return;
-      }
-      const message = result.ok ? "实时速率流暂不可用" : result.error;
-      setRawSnapshot(floatingSnapshotForLiveRate(
-        liveRateStreamStartFailureSnapshot(message),
-        usageSummaryRef.current,
-      ));
-    });
-    void readLiveRateSnapshot(null).then((liveRate) => {
-      if (!cancelled) {
+        });
+        if (!result.ok || result.value === null) {
+          return {
+            ok: false,
+            accepted: false,
+            error: result.ok ? "实时速率流暂不可用" : result.error,
+          };
+        }
+        return { ok: true, accepted: leaseRequest.accept(result.value) };
+      },
+      cancelStart() {
+        leaseRequest?.cancel();
+        leaseRequest = null;
+      },
+      readInitial: () => readLiveRateSnapshot(null),
+      publishSnapshot(liveRate) {
         markLiveUsageActivity(liveRate);
         setRawSnapshot(floatingSnapshotForLiveRate(liveRate, usageSummaryRef.current));
-      }
+      },
+      publishFailure(message) {
+        setRawSnapshot(floatingSnapshotForLiveRate(
+          liveRateStreamStartFailureSnapshot(message),
+          usageSummaryRef.current,
+        ));
+      },
     });
 
     return () => {
       cancelled = true;
       unlisten?.();
-      leaseRequest.cancel();
+      attempt.cancel();
     };
   }, [active, liveRateEnabled, liveRateOwnerToken, markLiveUsageActivity, sourceKey]);
 

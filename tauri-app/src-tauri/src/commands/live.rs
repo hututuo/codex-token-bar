@@ -452,6 +452,12 @@ impl LiveRateMonitorRegistry {
         })
     }
 
+    fn stream_publish_is_current(&self, loop_generation: u64) -> bool {
+        self.stream.lock().is_ok_and(|stream| {
+            stream.running && stream.loop_generation == loop_generation
+        })
+    }
+
     fn spawn_stream_loop(&self, app: AppHandle, loop_generation: u64) {
         let registry = self.clone();
         async_runtime::spawn(async move {
@@ -515,6 +521,10 @@ impl LiveRateMonitorRegistry {
                         continue;
                     }
                 };
+
+                if !registry.stream_publish_is_current(loop_generation) {
+                    break;
+                }
 
                 let elapsed_ms = started.elapsed().as_millis();
                 if elapsed_ms > 50 {
@@ -618,6 +628,11 @@ impl LiveRateMonitorRegistry {
     #[cfg(test)]
     fn test_total_lease_count(&self) -> usize {
         self.stream.lock().unwrap().leases.len()
+    }
+
+    #[cfg(test)]
+    fn test_stream_publish_is_current(&self, loop_generation: u64) -> bool {
+        self.stream_publish_is_current(loop_generation)
     }
 }
 
@@ -1035,6 +1050,40 @@ mod tests {
 
         assert!(!registry.test_stop_subscription(&second.lease.lease_id));
         assert_eq!(registry.test_stream_state(), (0, false, None));
+    }
+
+    #[test]
+    fn completed_tick_from_replaced_loop_generation_is_discarded() {
+        use std::sync::mpsc;
+
+        let registry = LiveRateMonitorRegistry::default();
+        let source = live_source_for_test("source-a", 1);
+        let old = registry.test_start_subscription(
+            source.clone(),
+            "compact-owner",
+            1,
+            None,
+            false,
+        );
+        let (tick_started_tx, tick_started_rx) = mpsc::channel();
+        let (release_tick_tx, release_tick_rx) = mpsc::channel();
+        let old_registry = registry.clone();
+        let old_generation = old.loop_generation;
+        let old_tick = std::thread::spawn(move || {
+            tick_started_tx.send(()).unwrap();
+            release_tick_rx.recv().unwrap();
+            old_registry.test_stream_publish_is_current(old_generation)
+        });
+        tick_started_rx.recv().unwrap();
+
+        assert!(!registry.test_stop_subscription(&old.lease.lease_id));
+        let new = registry.test_start_subscription(source, "compact-owner", 2, None, false);
+        assert!(new.should_spawn);
+        assert_ne!(new.loop_generation, old.loop_generation);
+
+        release_tick_tx.send(()).unwrap();
+        assert!(!old_tick.join().unwrap());
+        assert!(registry.test_stream_publish_is_current(new.loop_generation));
     }
 
     #[test]
