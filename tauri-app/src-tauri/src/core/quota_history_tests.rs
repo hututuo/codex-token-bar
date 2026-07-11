@@ -1275,8 +1275,9 @@ fn concurrent_account_record_and_load_stays_on_each_account_filter() {
 #[test]
 fn partial_window_rows_remain_missing_until_that_window_is_measured_again() {
     let interval = 5 * 60;
-    let end = (now_unix() / interval as f64).floor() * interval as f64;
-    let start = end - 2.0 * interval as f64;
+    let current_bin_start = fixed_bin_start(interval);
+    let now = fixed_series_now(interval);
+    let start = current_bin_start - 2.0 * interval as f64;
 
     for unavailable_window in ["five", "seven"] {
         let first = history_row(
@@ -1285,18 +1286,19 @@ fn partial_window_rows_remain_missing_until_that_window_is_measured_again() {
             "Pro",
             Some("codex"),
             10,
-            end + 3_600.0,
+            current_bin_start + 3_600.0,
             20,
-            end + 500_000.0,
+            current_bin_start + 500_000.0,
         );
         let mut partial = first.clone();
         partial.created_at = start + interval as f64 + 1.0;
         partial.five_hour_used_percent = Some(30);
         partial.seven_day_used_percent = Some(40);
         let mut full = partial.clone();
-        full.created_at = end + 1.0;
+        full.created_at = current_bin_start + 1.0;
         full.five_hour_used_percent = Some(35);
         full.seven_day_used_percent = Some(45);
+        assert!(full.created_at <= now);
 
         match unavailable_window {
             "five" => {
@@ -1323,7 +1325,12 @@ fn partial_window_rows_remain_missing_until_that_window_is_measured_again() {
             assert_eq!(sanitized[1].seven_day_used_percent, None);
         }
 
-        let series = make_interval_history(vec![first, partial, full], 3, interval);
+        let series = super::series::make_interval_history_at(
+            vec![first, partial, full],
+            3,
+            interval,
+            now,
+        );
         if unavailable_window == "five" {
             assert_eq!(series[1].five_hour_remaining_percent, None);
             assert_eq!(series[1].seven_day_remaining_percent, Some(0.60));
