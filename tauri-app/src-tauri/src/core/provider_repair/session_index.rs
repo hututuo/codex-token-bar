@@ -1,5 +1,5 @@
 use super::safe_fs::PinnedHome;
-use super::sqlite_state::{latest_thread_index_entry, scan_sqlite, SQLiteScan};
+use super::sqlite_state::{latest_thread_index_entry_in, scan_sqlite_in, SQLiteScan};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
@@ -17,7 +17,20 @@ pub(super) fn scan_session_index(codex_home: &Path) -> SessionIndexScan {
     let Ok(text) = fs::read_to_string(path) else {
         return SessionIndexScan::default();
     };
+    scan_session_index_text(&text)
+}
 
+pub(super) fn scan_session_index_in(pinned_home: &PinnedHome) -> SessionIndexScan {
+    let Ok(bytes) = pinned_home.read(Path::new("session_index.jsonl")) else {
+        return SessionIndexScan::default();
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
+        return SessionIndexScan::default();
+    };
+    scan_session_index_text(&text)
+}
+
+fn scan_session_index_text(text: &str) -> SessionIndexScan {
     let mut ids = HashSet::new();
     let mut rows = 0;
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
@@ -49,16 +62,15 @@ pub(super) fn repair_session_index(codex_home: &Path) -> Result<bool, String> {
 
 pub(super) fn repair_session_index_in(pinned_home: &PinnedHome) -> Result<bool, String> {
     pinned_home.ensure_canonical_path_identity()?;
-    let access_path = pinned_home.access_path();
-    let sqlite = scan_sqlite(&access_path).map_err(|error| error.to_string())?;
+    let sqlite = scan_sqlite_in(pinned_home)?;
     let Some(thread_id) = sqlite.latest_unarchived_thread_id else {
         return Ok(false);
     };
-    let session_index = scan_session_index(&access_path);
+    let session_index = scan_session_index_in(pinned_home);
     if session_index.ids.contains(&thread_id) {
         return Ok(false);
     }
-    let entry = latest_thread_index_entry(&access_path, &thread_id)?;
+    let entry = latest_thread_index_entry_in(pinned_home, &thread_id)?;
     let relative = Path::new("session_index.jsonl");
     let mut bytes = match pinned_home.open_file(relative)? {
         Some(_) => pinned_home.read(relative)?,

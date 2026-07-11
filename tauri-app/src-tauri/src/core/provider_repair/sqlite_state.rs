@@ -74,6 +74,12 @@ pub(super) fn scan_sqlite(codex_home: &Path) -> SqlResult<SQLiteScan> {
     })
 }
 
+pub(super) fn scan_sqlite_in(pinned_home: &PinnedHome) -> Result<SQLiteScan, String> {
+    with_pinned_sqlite_snapshot(pinned_home, |snapshot_root| {
+        scan_sqlite(snapshot_root).map_err(|error| error.to_string())
+    })
+}
+
 #[cfg(test)]
 pub(super) fn sync_sqlite_provider(
     codex_home: &Path,
@@ -323,6 +329,37 @@ pub(super) fn latest_thread_index_entry(
         "thread_name": title,
         "updated_at": format_unix_millis_rfc3339(updated_ms)
     }))
+}
+
+pub(super) fn latest_thread_index_entry_in(
+    pinned_home: &PinnedHome,
+    thread_id: &str,
+) -> Result<Value, String> {
+    with_pinned_sqlite_snapshot(pinned_home, |snapshot_root| {
+        latest_thread_index_entry(snapshot_root, thread_id)
+    })
+}
+
+fn with_pinned_sqlite_snapshot<T>(
+    pinned_home: &PinnedHome,
+    operation: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let stage = create_sqlite_stage_directory()?;
+    let result = (|| {
+        copy_pinned_member(
+            pinned_home,
+            Path::new("state_5.sqlite"),
+            &stage.join("state_5.sqlite"),
+        )?;
+        for sidecar in ["state_5.sqlite-wal", "state_5.sqlite-shm"] {
+            let relative = Path::new(sidecar);
+            if pinned_home.open_file(relative)?.is_some() {
+                copy_pinned_member(pinned_home, relative, &stage.join(sidecar))?;
+            }
+        }
+        operation(&stage)
+    })();
+    cleanup_sqlite_stage(&stage, result)
 }
 
 fn sqlite_provider_counts(

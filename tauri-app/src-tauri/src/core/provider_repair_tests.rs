@@ -2,6 +2,7 @@ use super::*;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -393,7 +394,7 @@ fn sync_and_automatic_restore_keep_using_the_original_home_after_root_swap() {
     .unwrap_err();
 
     assert!(swapped);
-    assert!(error.contains("已自动恢复"), "{error}");
+    assert!(error.contains("规范路径") || error.contains("路径"), "{error}");
     assert!(fs::read_to_string(held_home.join("sessions/thread.jsonl"))
         .unwrap()
         .contains("legacy-provider"));
@@ -804,6 +805,7 @@ fn sync_transaction_creates_and_returns_a_fresh_backup() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "sync-fresh-backup-account");
     fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
     write_session(
         &home.join("sessions/thread.jsonl"),
@@ -888,6 +890,41 @@ fn verification_mismatch_after_all_writes_automatically_restores() {
         sqlite_provider_for_thread(&home, "thread"),
         "codex_local_access"
     );
+    assert_eq!(completed_backup_count(&backup_root), 1);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn sync_running_flip_before_final_commit_restores_the_fresh_backup() {
+    let fixture = temp_root("provider-sync-running-flip");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "sync-running-race-account");
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let session = home.join("sessions/thread.jsonl");
+    write_session(&session, "thread", "codex_local_access");
+    create_state_database(&home, &[("thread", "codex_local_access", 0)]);
+    let probes = Cell::new(0_u32);
+    let error = sync_provider_history_transaction_at_with_backup_hook_and_probe(
+        &home,
+        &backup_root,
+        scan_provider_repair_result_for_home,
+        |_, _| Ok(()),
+        || {
+            let call = probes.get().saturating_add(1);
+            probes.set(call);
+            Ok(call >= 2)
+        },
+    )
+    .unwrap_err();
+    assert_eq!(probes.get(), 2);
+    assert!(error.contains("Codex"), "{error}");
+    assert!(error.contains("自动恢复"), "{error}");
+    assert!(fs::read_to_string(&session)
+        .unwrap()
+        .contains("codex_local_access"));
+    assert_eq!(sqlite_provider_for_thread(&home, "thread"), "codex_local_access");
     assert_eq!(completed_backup_count(&backup_root), 1);
     fs::remove_dir_all(fixture).unwrap();
 }
@@ -1348,6 +1385,7 @@ fn publication_sync_failure_aborts_sync_before_any_live_write() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "publication-sync-failure-account");
     fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
     let session = home.join("sessions/thread.jsonl");
     write_session(&session, "thread", "codex_local_access");
@@ -1470,6 +1508,230 @@ fn final_restore_verification_rehashes_every_installed_member_before_cleanup() {
     assert!(error.contains("已补偿"), "{error}");
     assert_eq!(fs::read_to_string(&session).unwrap(), live_before_restore);
     assert_no_recovery_staging(&backup_root);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn restore_running_flip_after_prepare_compensates_before_commit() {
+    let fixture = temp_root("provider-restore-running-flip");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "restore-running-race-account");
+    fs::write(home.join("config.toml"), "backup-config").unwrap();
+    let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    fs::write(home.join("config.toml"), "live-config").unwrap();
+    let probes = Cell::new(0_u32);
+    let committed = Cell::new(false);
+    let error = backups::restore_provider_backup_files_at_with_probe_and_hook(
+        &home,
+        &backup,
+        || {
+            let call = probes.get().saturating_add(1);
+            probes.set(call);
+            Ok(call >= 2)
+        },
+        |phase, _, _| {
+            if phase == backups::RestorePhase::JournalCommitted {
+                committed.set(true);
+            }
+            Ok(())
+        },
+        |_| Ok(()),
+    )
+    .unwrap_err();
+    assert_eq!(probes.get(), 2);
+    assert!(!committed.get());
+    assert!(error.contains("Codex"), "{error}");
+    assert!(error.contains("已补偿"), "{error}");
+    assert_eq!(fs::read_to_string(home.join("config.toml")).unwrap(), "live-config");
+    assert_no_recovery_staging(&backup_root);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn restore_commit_revalidation_rejects_replacement_and_physical_alias() {
+    for case in ["replacement", "hard-link"] {
+        let fixture = temp_root(&format!("provider-restore-commit-{case}"));
+        let home = fixture.join("home");
+        let backup_root = fixture.join("backups");
+        let session = home.join("sessions/thread.jsonl");
+        fs::create_dir_all(session.parent().unwrap()).unwrap();
+        write_test_auth_subject(&home, "restore-identity-race-account");
+        fs::write(home.join("config.toml"), "backup-config").unwrap();
+        write_session(&session, "thread", "backup-provider");
+        let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+        fs::write(home.join("config.toml"), "live-config").unwrap();
+        write_session(&session, "thread", "live-provider");
+        let error = backups::restore_provider_backup_files_at_with_probe_and_hook(
+            &home,
+            &backup,
+            || Ok(false),
+            |phase, _, _| {
+                if phase == backups::RestorePhase::JournalVerified {
+                    fs::remove_file(home.join("config.toml")).unwrap();
+                    if case == "hard-link" {
+                        fs::hard_link(&session, home.join("config.toml")).unwrap();
+                    } else {
+                        fs::write(home.join("config.toml"), "replaced-before-commit").unwrap();
+                    }
+                }
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("身份") || error.contains("别名") || error.contains("hard link"),
+            "{case}: {error}"
+        );
+        assert!(error.contains("已补偿"), "{case}: {error}");
+        assert_eq!(fs::read_to_string(home.join("config.toml")).unwrap(), "live-config");
+        assert!(fs::read_to_string(&session).unwrap().contains("live-provider"));
+        assert_no_recovery_staging(&backup_root);
+        fs::remove_dir_all(fixture).unwrap();
+    }
+}
+
+#[test]
+fn restore_commit_revalidation_rejects_account_and_home_generation_switches() {
+    for case in ["account", "generation"] {
+        let fixture = temp_root(&format!("provider-restore-commit-scope-{case}"));
+        let home = fixture.join("home");
+        let held_home = fixture.join("held-home");
+        let backup_root = fixture.join("backups");
+        fs::create_dir_all(&home).unwrap();
+        write_test_auth_subject(&home, "commit-scope-account-a");
+        fs::write(home.join("config.toml"), "backup-config").unwrap();
+        let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+        fs::write(home.join("config.toml"), "live-config").unwrap();
+        let error = backups::restore_provider_backup_files_at_with_probe_and_hook(
+            &home,
+            &backup,
+            || Ok(false),
+            |phase, _, _| {
+                if phase == backups::RestorePhase::JournalVerified {
+                    if case == "account" {
+                        write_test_auth_subject(&home, "commit-scope-account-b");
+                    } else {
+                        fs::rename(&home, &held_home).unwrap();
+                        fs::create_dir_all(&home).unwrap();
+                        write_test_auth_subject(&home, "commit-scope-account-a");
+                        fs::write(home.join("config.toml"), "new-home-sentinel").unwrap();
+                    }
+                }
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("账号")
+                || error.contains("generation")
+                || error.contains("规范路径"),
+            "{case}: {error}"
+        );
+        assert!(error.contains("已补偿"), "{case}: {error}");
+        if case == "generation" {
+            assert_eq!(
+                fs::read_to_string(home.join("config.toml")).unwrap(),
+                "new-home-sentinel"
+            );
+            assert_eq!(
+                fs::read_to_string(held_home.join("config.toml")).unwrap(),
+                "live-config"
+            );
+        } else {
+            assert_eq!(
+                fs::read_to_string(home.join("config.toml")).unwrap(),
+                "live-config"
+            );
+        }
+        assert_no_recovery_staging(&backup_root);
+        fs::remove_dir_all(fixture).unwrap();
+    }
+}
+
+#[test]
+fn atomic_temp_cleanup_failure_reports_and_retains_its_unique_temp() {
+    let fixture = temp_root("provider-atomic-temp-cleanup-failure");
+    let home = fixture.join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("config.toml"), "original").unwrap();
+    let pinned_home = safe_fs::PinnedHome::open(&home).unwrap();
+    let residual = RefCell::new(None::<PathBuf>);
+    let error = pinned_home
+        .install_atomically(
+            Path::new("config.toml"),
+            None,
+            None,
+            |target| {
+                std::io::Write::write_all(target, b"replacement")
+                    .map_err(|error| error.to_string())
+            },
+            |phase, path| match phase {
+                safe_fs::AtomicInstallPhase::ValidateTemp => {
+                    Err("fixture temp validation failure".into())
+                }
+                safe_fs::AtomicInstallPhase::CleanupTemp => {
+                    residual.replace(Some(path.to_path_buf()));
+                    Err("fixture temp cleanup failure".into())
+                }
+                _ => Ok(()),
+            },
+        )
+        .unwrap_err();
+    let residual = residual.into_inner().expect("cleanup temp path");
+    assert!(error.contains("fixture temp validation failure"), "{error}");
+    assert!(error.contains("fixture temp cleanup failure"), "{error}");
+    assert!(error.contains(&residual.display().to_string()), "{error}");
+    assert!(residual.exists());
+    assert_eq!(fs::read_to_string(home.join("config.toml")).unwrap(), "original");
+    drop(pinned_home);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn atomic_temp_cleanup_does_not_delete_a_replaced_physical_alias() {
+    let fixture = temp_root("provider-atomic-temp-cleanup-alias");
+    let home = fixture.join("home");
+    let outside = fixture.join("outside-sentinel");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("config.toml"), "original").unwrap();
+    fs::write(&outside, "outside-must-remain").unwrap();
+    let pinned_home = safe_fs::PinnedHome::open(&home).unwrap();
+    let alias = RefCell::new(None::<PathBuf>);
+    let error = pinned_home
+        .install_atomically(
+            Path::new("config.toml"),
+            None,
+            None,
+            |target| {
+                std::io::Write::write_all(target, b"replacement")
+                    .map_err(|error| error.to_string())
+            },
+            |phase, path| match phase {
+                safe_fs::AtomicInstallPhase::ValidateTemp => {
+                    Err("fixture temp validation failure".into())
+                }
+                safe_fs::AtomicInstallPhase::CleanupTemp => {
+                    fs::remove_file(path).unwrap();
+                    fs::hard_link(&outside, path).unwrap();
+                    alias.replace(Some(path.to_path_buf()));
+                    Ok(())
+                }
+                _ => Ok(()),
+            },
+        )
+        .unwrap_err();
+    let alias = alias.into_inner().expect("replacement alias path");
+    assert!(
+        error.contains("拒绝误删") || error.contains("清理后仍存在"),
+        "{error}"
+    );
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "outside-must-remain");
+    assert_eq!(fs::read_to_string(&alias).unwrap(), "outside-must-remain");
+    drop(pinned_home);
     fs::remove_dir_all(fixture).unwrap();
 }
 
@@ -2502,7 +2764,7 @@ fn restore_component_swap_cannot_replace_a_file_outside_the_pinned_home() {
     fs::write(home.join("config.toml"), "live-config").unwrap();
     let mut swapped = false;
 
-    backups::restore_provider_backup_files_at_with_hook(&home, &backup, |phase, _, relative| {
+    let error = backups::restore_provider_backup_files_at_with_hook(&home, &backup, |phase, _, relative| {
         if phase == backups::RestorePhase::BeforeReplace
             && relative == Path::new("config.toml")
             && !swapped
@@ -2524,16 +2786,17 @@ fn restore_component_swap_cannot_replace_a_file_outside_the_pinned_home() {
         }
         Ok(())
     })
-    .unwrap();
+    .unwrap_err();
 
     assert!(swapped);
+    assert!(error.contains("已补偿"), "{error}");
     assert_eq!(
         fs::read_to_string(outside.join("config.toml")).unwrap(),
         "outside-sentinel"
     );
     assert_eq!(
         fs::read_to_string(held_home.join("config.toml")).unwrap(),
-        "backup-config"
+        "live-config"
     );
     fs::remove_file(&home).unwrap();
     fs::remove_dir_all(fixture).unwrap();

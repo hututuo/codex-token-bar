@@ -27,7 +27,7 @@ const UNIQUE_DIRECTORY_ATTEMPTS: usize = 64;
 const MAX_SYNC_DIRECTORIES: usize = 100_000;
 static RECOVERY_POINT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct BackupManifest {
     schema_version: u32,
@@ -40,7 +40,7 @@ struct BackupManifest {
     members: Vec<BackupMember>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct BackupMember {
     kind: String,
@@ -101,6 +101,7 @@ pub(super) enum RestorePhase {
     BeforeReplace,
     SyncDestinationFile,
     SyncDestinationParent,
+    CleanupTemp,
     Verify,
     JournalVerified,
     JournalCommitted,
@@ -585,6 +586,47 @@ pub(super) fn verified_session_relative_paths(
         .collect()
 }
 
+pub(super) fn verified_member_relative_paths(
+    backup: &ProviderRepairBackupInfo,
+) -> Result<Vec<PathBuf>, String> {
+    let manifest = validate_backup_manifest(Path::new(&backup.path))?;
+    if manifest.id != backup.id || manifest.codex_home_fingerprint != backup.codex_home_fingerprint
+    {
+        return Err("备份 manifest 与恢复点身份不一致。".into());
+    }
+    manifest
+        .members
+        .iter()
+        .map(|member| manifest_path(&member.relative_path))
+        .collect()
+}
+
+pub(super) fn current_member_relative_paths_with_pinned(
+    pinned_home: &PinnedHome,
+) -> Result<Vec<PathBuf>, String> {
+    pinned_home.ensure_canonical_path_identity()?;
+    let mut relatives = [
+        "config.toml",
+        "state_5.sqlite",
+        "session_index.jsonl",
+        "state_5.sqlite-wal",
+        "state_5.sqlite-shm",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect::<Vec<_>>();
+    for source in find_session_files(pinned_home.canonical_path(), true)? {
+        let relative = source
+            .strip_prefix(pinned_home.canonical_path())
+            .map_err(|_| format!("会话文件不在固定 Codex Home 内：{}", source.display()))?;
+        validate_relative_member_path(relative, "session")?;
+        relatives.push(relative.to_path_buf());
+    }
+    pinned_home.ensure_canonical_path_identity()?;
+    relatives.sort();
+    Ok(relatives)
+}
+
 pub(super) struct VerifiedSQLiteSnapshot {
     pub(super) path: PathBuf,
     pub(super) size: u64,
@@ -652,26 +694,37 @@ fn ensure_backup_matches_pinned_home(
 pub(super) fn restore_provider_backup_files_with_verification(
     codex_home: &Path,
     backup: &ProviderRepairBackupInfo,
-    verify: impl FnOnce(&Path) -> Result<(), String>,
+    verify: impl FnOnce(&PinnedHome) -> Result<(), String>,
 ) -> Result<(), String> {
     let pinned_home = PinnedHome::open(codex_home)?;
-    restore_provider_backup_files_with_pinned_verification(&pinned_home, backup, verify)
+    let mut probe = crate::platform::codex_desktop_is_running;
+    restore_provider_backup_files_with_home(
+        &pinned_home,
+        backup,
+        &mut noop_restore_hook,
+        &mut probe,
+        verify,
+        None,
+    )
+    .map(|_| ())
 }
 
 pub(super) fn restore_provider_backup_files_with_pinned_verification(
     pinned_home: &PinnedHome,
     backup: &ProviderRepairBackupInfo,
-    verify: impl FnOnce(&Path) -> Result<(), String>,
+    verify: impl FnOnce(&PinnedHome) -> Result<(), String>,
 ) -> Result<(), String> {
     let backup_path = PathBuf::from(&backup.path);
     let backup_root = backup_path
         .parent()
         .ok_or_else(|| "备份目录缺少父目录".to_string())?;
     reconcile_unfinished_restore_transactions_with_home(backup_root, pinned_home)?;
+    let mut probe = || Ok(false);
     restore_provider_backup_files_with_home(
         pinned_home,
         backup,
         &mut noop_restore_hook,
+        &mut probe,
         verify,
         None,
     )
@@ -717,8 +770,41 @@ pub(super) fn restore_provider_backup_files_at_with_verification_and_hook(
         .parent()
         .ok_or_else(|| "备份目录缺少父目录".to_string())?;
     reconcile_unfinished_restore_transactions_with_home(backup_root, &pinned_home)?;
-    restore_provider_backup_files_with_home(&pinned_home, backup, &mut hook, verify, None)
-        .map(|_| ())
+    let mut probe = || Ok(false);
+    restore_provider_backup_files_with_home(
+        &pinned_home,
+        backup,
+        &mut hook,
+        &mut probe,
+        |pinned_home| verify(pinned_home.canonical_path()),
+        None,
+    )
+    .map(|_| ())
+}
+
+#[cfg(test)]
+pub(super) fn restore_provider_backup_files_at_with_probe_and_hook(
+    codex_home: &Path,
+    backup: &ProviderRepairBackupInfo,
+    mut probe: impl FnMut() -> Result<bool, String>,
+    mut hook: impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
+    verify: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let pinned_home = PinnedHome::open(codex_home)?;
+    let backup_path = PathBuf::from(&backup.path);
+    let backup_root = backup_path
+        .parent()
+        .ok_or_else(|| "备份目录缺少父目录".to_string())?;
+    reconcile_unfinished_restore_transactions_with_home(backup_root, &pinned_home)?;
+    restore_provider_backup_files_with_home(
+        &pinned_home,
+        backup,
+        &mut hook,
+        &mut probe,
+        |pinned_home| verify(pinned_home.canonical_path()),
+        None,
+    )
+    .map(|_| ())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -733,7 +819,8 @@ fn restore_provider_backup_files_with_home(
     pinned_home: &PinnedHome,
     backup: &ProviderRepairBackupInfo,
     hook: &mut impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
-    verify: impl FnOnce(&Path) -> Result<(), String>,
+    probe: &mut impl FnMut() -> Result<bool, String>,
+    verify: impl FnOnce(&PinnedHome) -> Result<(), String>,
     stop: Option<RestoreStopPoint>,
 ) -> Result<Option<PathBuf>, String> {
     ensure_backup_matches_pinned_home(backup, pinned_home)?;
@@ -743,6 +830,12 @@ fn restore_provider_backup_files_with_home(
     {
         return Err("备份 manifest 与所选恢复点身份不一致。".into());
     }
+    let member_paths = manifest
+        .members
+        .iter()
+        .map(|member| manifest_path(&member.relative_path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let initial_guard = pinned_home.capture_mutation_guard(&member_paths)?;
 
     let backup_root = backup_path
         .parent()
@@ -771,7 +864,13 @@ fn restore_provider_backup_files_with_home(
         return Ok(Some(recovery_path));
     }
 
+    let mut mutation_started = false;
     let restore_result: Result<bool, String> = (|| {
+        ensure_codex_stopped(probe, "恢复首次写入前")?;
+        pinned_home.verify_mutation_guard(&initial_guard)?;
+        if validate_backup_manifest(&backup_path)? != manifest {
+            return Err("恢复源 manifest 在首次写入前发生变化，已拒绝写入。".into());
+        }
         transition_restore_journal(
             &recovery_path,
             &mut journal,
@@ -779,6 +878,7 @@ fn restore_provider_backup_files_with_home(
             RestorePhase::JournalApplying,
             hook,
         )?;
+        mutation_started = true;
         if apply_restore_members(
             pinned_home,
             &backup_path,
@@ -790,8 +890,10 @@ fn restore_provider_backup_files_with_home(
         }
         hook(RestorePhase::Verify, 0, pinned_home.canonical_path())?;
         verify_installed_members(pinned_home, &manifest.members)?;
-        verify(pinned_home.canonical_path())
+        verify(pinned_home)
             .map_err(|error| format!("恢复后的 Provider 强验证失败：{error}"))?;
+        pinned_home.verify_mutation_scope(&initial_guard)?;
+        let committed_guard = pinned_home.capture_mutation_guard(&member_paths)?;
         transition_restore_journal(
             &recovery_path,
             &mut journal,
@@ -801,6 +903,12 @@ fn restore_provider_backup_files_with_home(
         )?;
         if stop == Some(RestoreStopPoint::Verified) {
             return Ok(true);
+        }
+        ensure_codex_stopped(probe, "恢复最终提交前")?;
+        pinned_home.verify_mutation_scope(&initial_guard)?;
+        pinned_home.verify_mutation_guard(&committed_guard)?;
+        if validate_backup_manifest(&backup_path)? != manifest {
+            return Err("恢复源 manifest 在最终提交前发生变化，已拒绝提交。".into());
         }
         transition_restore_journal(
             &recovery_path,
@@ -816,6 +924,14 @@ fn restore_provider_backup_files_with_home(
         return Ok(Some(recovery_path));
     }
     if let Err(error) = restore_result {
+        if !mutation_started {
+            return Err(error_with_recovery_cleanup(
+                format!("恢复在首次 Home 写入前已拒绝：{error}"),
+                backup_root,
+                &recovery_path,
+                hook,
+            ));
+        }
         let compensation_errors =
             compensate_restore(pinned_home, &recovery_path, &journal.members, hook);
         if compensation_errors.is_empty() {
@@ -1053,6 +1169,7 @@ fn install_logical_member(
             AtomicInstallPhase::BeforeParentSync => {
                 hook(RestorePhase::SyncDestinationParent, index, &relative)
             }
+            AtomicInstallPhase::CleanupTemp => hook(RestorePhase::CleanupTemp, index, &relative),
         },
     )
 }
@@ -1112,6 +1229,7 @@ fn install_sqlite_unit(
             AtomicInstallPhase::BeforeParentSync => {
                 hook(RestorePhase::SyncDestinationParent, index, relative)
             }
+            AtomicInstallPhase::CleanupTemp => hook(RestorePhase::CleanupTemp, index, relative),
         },
     )?;
     verify_installed_sqlite(pinned_home, true)
@@ -1277,10 +1395,13 @@ pub(super) fn simulate_restore_crash_at(
         RestoreCrashPoint::Verified => RestoreStopPoint::Verified,
         RestoreCrashPoint::Committed => RestoreStopPoint::Committed,
     };
+    let mut hook = |_, _, _: &Path| Ok(());
+    let mut probe = || Ok(false);
     restore_provider_backup_files_with_home(
         &pinned_home,
         backup,
-        &mut |_, _, _| Ok(()),
+        &mut hook,
+        &mut probe,
         |_| Ok(()),
         Some(stop),
     )?
@@ -1500,6 +1621,17 @@ fn recovery_blocked(
 }
 
 fn noop_restore_hook(_: RestorePhase, _: usize, _: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+fn ensure_codex_stopped(
+    probe: &mut impl FnMut() -> Result<bool, String>,
+    boundary: &str,
+) -> Result<(), String> {
+    let running = probe().map_err(|error| format!("{boundary}无法确认 Codex 运行状态：{error}"))?;
+    if running {
+        return Err(format!("{boundary}检测到 Codex 正在运行，已拒绝继续提交。"));
+    }
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
@@ -29,6 +30,33 @@ pub(super) enum AtomicInstallPhase {
     BeforeReplace,
     BeforeFileSync,
     BeforeParentSync,
+    CleanupTemp,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum PhysicalFileIdentity {
+    #[cfg(unix)]
+    Unix { device: u64, inode: u64 },
+    #[cfg(windows)]
+    Windows {
+        volume_serial_number: u64,
+        file_id: [u8; 16],
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PinnedMemberState {
+    relative: PathBuf,
+    identity: Option<PhysicalFileIdentity>,
+    size: Option<u64>,
+    checksum_sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PinnedMutationGuard {
+    home_generation: HomeGenerationIdentity,
+    account_identity: String,
+    members: Vec<PinnedMemberState>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -294,6 +322,104 @@ impl PinnedHome {
         let length = file.metadata().map_err(|error| error.to_string())?.len();
         let checksum = sha256_file(&mut file)?;
         Ok(Some((length, checksum)))
+    }
+
+    pub(super) fn capture_mutation_guard(
+        &self,
+        relatives: &[PathBuf],
+    ) -> Result<PinnedMutationGuard, String> {
+        let mut logical_members = HashSet::new();
+        let mut physical_members = HashSet::new();
+        let mut members = Vec::with_capacity(relatives.len());
+        for relative in relatives {
+            let logical_key = logical_member_key(relative)?;
+            if !logical_members.insert(logical_key) {
+                return Err(format!(
+                    "Provider 待写成员集合存在逻辑别名：{}",
+                    relative.display()
+                ));
+            }
+            let state = self.capture_member_state(relative)?;
+            if let Some(identity) = &state.identity {
+                if !physical_members.insert(identity.clone()) {
+                    return Err(format!(
+                        "Provider 待写成员集合存在物理别名（相同 dev/inode 或 volume/file ID）：{}",
+                        relative.display()
+                    ));
+                }
+            }
+            members.push(state);
+        }
+        members.sort_by(|left, right| left.relative.cmp(&right.relative));
+        let account_identity = self
+            .account_identity_fingerprint()?
+            .ok_or_else(|| "Provider commit 前无法确认稳定账号身份，已拒绝写入。".to_string())?;
+        Ok(PinnedMutationGuard {
+            home_generation: self.generation_identity()?,
+            account_identity,
+            members,
+        })
+    }
+
+    pub(super) fn verify_mutation_guard(
+        &self,
+        expected: &PinnedMutationGuard,
+    ) -> Result<(), String> {
+        self.ensure_canonical_path_identity()?;
+        let relatives = expected
+            .members
+            .iter()
+            .map(|member| member.relative.clone())
+            .collect::<Vec<_>>();
+        let actual = self.capture_mutation_guard(&relatives)?;
+        if actual.home_generation != expected.home_generation {
+            return Err("Provider commit 前 Codex Home generation 已变化，已拒绝提交。".into());
+        }
+        if actual.account_identity != expected.account_identity {
+            return Err("Provider commit 前账号身份已变化，已拒绝提交。".into());
+        }
+        if actual.members != expected.members {
+            return Err("Provider commit 前待写成员 descriptor 身份、内容或 expected set 已变化，已拒绝提交。".into());
+        }
+        Ok(())
+    }
+
+    pub(super) fn verify_mutation_scope(
+        &self,
+        expected: &PinnedMutationGuard,
+    ) -> Result<(), String> {
+        self.ensure_canonical_path_identity()?;
+        if self.generation_identity()? != expected.home_generation {
+            return Err("Provider commit 前 Codex Home generation 已变化，已拒绝提交。".into());
+        }
+        let account_identity = self
+            .account_identity_fingerprint()?
+            .ok_or_else(|| "Provider commit 前账号身份变为未知，已拒绝提交。".to_string())?;
+        if account_identity != expected.account_identity {
+            return Err("Provider commit 前账号身份已变化，已拒绝提交。".into());
+        }
+        Ok(())
+    }
+
+    fn capture_member_state(&self, relative: &Path) -> Result<PinnedMemberState, String> {
+        let Some(mut file) = self.open_file(relative)? else {
+            return Ok(PinnedMemberState {
+                relative: relative.to_path_buf(),
+                identity: None,
+                size: None,
+                checksum_sha256: None,
+            });
+        };
+        reject_physical_alias(&file, relative)?;
+        let identity = physical_file_identity(&file)?;
+        let size = file.metadata().map_err(|error| error.to_string())?.len();
+        let checksum_sha256 = sha256_file(&mut file)?;
+        Ok(PinnedMemberState {
+            relative: relative.to_path_buf(),
+            identity: Some(identity),
+            size: Some(size),
+            checksum_sha256: Some(checksum_sha256),
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -626,11 +752,25 @@ impl PinnedHome {
                 Ok(())
             })();
 
-            if result.is_err() {
-                let _ = unix_fs::unlinkat(&parent.fd, temp_name.as_str(), AtFlags::empty());
-                let _ = unix_fs::fsync(&parent.fd);
+            if let Err(error) = result {
+                let cleanup = match event(AtomicInstallPhase::CleanupTemp, &temp_display) {
+                    Ok(()) => cleanup_unix_temp_file(
+                        &temp_file,
+                        &parent.fd,
+                        temp_name.as_str(),
+                        &temp_display,
+                    ),
+                    Err(cleanup_error) => Err(format!(
+                        "Provider 临时文件清理失败，残留路径为 {}：{cleanup_error}",
+                        temp_display.display()
+                    )),
+                };
+                return Err(match cleanup {
+                    Ok(()) => error,
+                    Err(cleanup_error) => format!("{error}；{cleanup_error}"),
+                });
             }
-            return result;
+            return Ok(());
         }
         Err(format!(
             "无法为 Provider 目标创建唯一临时文件：{}",
@@ -841,6 +981,12 @@ impl PinnedHome {
                 if renamed {
                     return Err(error);
                 }
+                if let Err(cleanup_error) = event(AtomicInstallPhase::CleanupTemp, &temp_display) {
+                    return Err(format!(
+                        "{error}；Provider 临时文件清理失败，残留路径为 {}：{cleanup_error}",
+                        temp_display.display()
+                    ));
+                }
                 return Err(
                     match cleanup_windows_temp_file(
                         temp_file,
@@ -930,6 +1076,65 @@ fn open_absolute_directory_without_following(path: &Path) -> Result<OwnedFd, Str
         }
     }
     Ok(current)
+}
+
+#[cfg(any(unix, windows))]
+fn logical_member_key(path: &Path) -> Result<String, String> {
+    let components = normal_components(path)?;
+    let key = components
+        .iter()
+        .map(|component| {
+            component
+                .to_str()
+                .ok_or_else(|| format!("Provider 成员路径不是有效 UTF-8：{}", path.display()))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .join("/");
+    #[cfg(windows)]
+    let key = key.to_lowercase();
+    Ok(key)
+}
+
+#[cfg(unix)]
+fn physical_file_identity(file: &File) -> Result<PhysicalFileIdentity, String> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    Ok(PhysicalFileIdentity::Unix {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn physical_file_identity(file: &File) -> Result<PhysicalFileIdentity, String> {
+    let identity = windows_file_identity(file)?;
+    Ok(PhysicalFileIdentity::Windows {
+        volume_serial_number: identity.volume_serial_number,
+        file_id: identity.file_id,
+    })
+}
+
+#[cfg(unix)]
+fn reject_physical_alias(file: &File, diagnostic: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    if file.metadata().map_err(|error| error.to_string())?.nlink() > 1 {
+        return Err(format!(
+            "Provider 成员是 hard link 物理别名，已拒绝写入：{}",
+            diagnostic.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn reject_physical_alias(file: &File, diagnostic: &Path) -> Result<(), String> {
+    if windows_file_link_count(file)? > 1 {
+        return Err(format!(
+            "Provider 成员是 hard link 物理别名，已拒绝写入：{}",
+            diagnostic.display()
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(any(unix, windows))]
@@ -1473,6 +1678,29 @@ fn windows_file_identity(file: &File) -> Result<WindowsFileIdentity, String> {
 }
 
 #[cfg(windows)]
+fn windows_file_link_count(file: &File) -> Result<u32, String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileStandardInfo, GetFileInformationByHandleEx, FILE_STANDARD_INFO,
+    };
+    let mut info = FILE_STANDARD_INFO::default();
+    let succeeded = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as _,
+            FileStandardInfo,
+            (&mut info as *mut FILE_STANDARD_INFO).cast(),
+            u32::try_from(std::mem::size_of::<FILE_STANDARD_INFO>()).unwrap_or(u32::MAX),
+        )
+    };
+    if succeeded == 0 {
+        return Err(format!(
+            "读取 Windows Provider hard link 计数失败：{}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(info.NumberOfLinks)
+}
+
+#[cfg(windows)]
 fn windows_verify_named_file_identity(
     parent: &File,
     name: &OsStr,
@@ -1571,6 +1799,42 @@ fn windows_delete_open_file(file: &File) -> std::io::Result<()> {
         let code = unsafe { RtlNtStatusToDosError(status) };
         return Err(std::io::Error::from_raw_os_error(
             i32::try_from(code).unwrap_or(i32::MAX),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn cleanup_unix_temp_file(
+    file: &File,
+    parent: &OwnedFd,
+    name: &str,
+    diagnostic: &Path,
+) -> Result<(), String> {
+    if let Some(named) = open_regular_file_at(parent, name.as_ref(), diagnostic)? {
+        if physical_file_identity(&named)? != physical_file_identity(file)? {
+            return Err(format!(
+                "Provider 临时文件名称已指向其他物理文件，拒绝误删；残留路径为 {}",
+                diagnostic.display()
+            ));
+        }
+        unix_fs::unlinkat(parent, name, AtFlags::empty()).map_err(|error| {
+            format!(
+                "Provider 临时文件清理失败，残留路径为 {}：{error}",
+                diagnostic.display()
+            )
+        })?;
+    }
+    unix_fs::fsync(parent).map_err(|error| {
+        format!(
+            "Provider 临时文件已删除但父目录同步失败，残留可能恢复于 {}：{error}",
+            diagnostic.display()
+        )
+    })?;
+    if open_regular_file_at(parent, name.as_ref(), diagnostic)?.is_some() {
+        return Err(format!(
+            "Provider 临时文件清理后仍存在，残留路径为 {}",
+            diagnostic.display()
         ));
     }
     Ok(())

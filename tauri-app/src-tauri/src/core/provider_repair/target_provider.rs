@@ -14,7 +14,16 @@ pub(super) fn detect_target_provider(
     sqlite_scan: &SQLiteScan,
     session_scan: &SessionScan,
 ) -> TargetProvider {
-    if let Some(provider) = config_provider(codex_home) {
+    let config = fs::read(codex_home.join("config.toml")).ok();
+    detect_target_provider_from_config(config.as_deref(), sqlite_scan, session_scan)
+}
+
+pub(super) fn detect_target_provider_from_config(
+    config: Option<&[u8]>,
+    sqlite_scan: &SQLiteScan,
+    session_scan: &SessionScan,
+) -> TargetProvider {
+    if let Some(provider) = config.and_then(config_provider) {
         return TargetProvider {
             provider,
             source: "config.toml".into(),
@@ -46,8 +55,8 @@ pub(super) fn detect_target_provider(
     }
 }
 
-fn config_provider(codex_home: &Path) -> Option<String> {
-    let text = fs::read_to_string(codex_home.join("config.toml")).ok()?;
+fn config_provider(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
     let config = toml::from_str::<toml::Table>(&text).ok()?;
     config
         .get("model_provider")
