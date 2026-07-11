@@ -6,13 +6,17 @@ import SwiftUI
 @MainActor
 extension FloatingTokenPanelController {
     func recordExternalMouseClick(at location: NSPoint) {
-        guard shouldProcessExternalMouseEvents else { return }
+        guard FloatingPanelExternalEventRelevance.shouldRecordClick(isPresented: externalEventState.isPresented) else { return }
         if let panel, panel.frame.contains(location) {
             activeLockedTargetDrag = nil
             return
         }
         lastExternalClickLocation = location
         lastExternalClickAt = Date()
+        lastExternalClickWindowNumber = nil
+        lastExternalClickOwnerPID = nil
+        lastExternalClickAXWindow = nil
+        guard shouldInspectExternalMouseWindow else { return }
         let clickedAXTarget: FloatingPanelAccessibilityTarget?
         if let externalClickAccessibilityTargetProvider {
             clickedAXTarget = externalClickAccessibilityTargetProvider(location)
@@ -46,7 +50,7 @@ extension FloatingTokenPanelController {
     }
 
     func recordExternalMouseDrag(at location: NSPoint) {
-        guard shouldProcessExternalMouseEvents else { return }
+        guard shouldInspectExternalMouseWindow else { return }
         guard activeLockedTargetDrag != nil else { return }
         fastFollowUntil = Date().addingTimeInterval(fastFollowGracePeriod)
         scheduleFollowTimer(interval: fastFollowInterval)
@@ -54,17 +58,22 @@ extension FloatingTokenPanelController {
     }
 
     func finishExternalMouseDrag(at location: NSPoint) {
-        guard shouldProcessExternalMouseEvents else { return }
+        guard shouldInspectExternalMouseWindow else { return }
         guard activeLockedTargetDrag != nil else { return }
         followLockedTargetDrag(at: location)
         activeLockedTargetDrag = nil
         refreshLockedAnchorOffsetForCurrentFrame()
     }
 
-    private var shouldProcessExternalMouseEvents: Bool {
-        FloatingPanelExternalEventRelevance.shouldProcess(
-            isPresented: isPresented,
-            isLocked: appliedLockState,
+    private var externalEventState: (isPresented: Bool, isLocked: Bool) {
+        externalEventStateProvider?() ?? (isPresented: isPresented, isLocked: appliedLockState)
+    }
+
+    private var shouldInspectExternalMouseWindow: Bool {
+        let state = externalEventState
+        return FloatingPanelExternalEventRelevance.shouldInspectWindow(
+            isPresented: state.isPresented,
+            isLocked: state.isLocked,
             hasLockedAnchor: lockedAnchor != nil,
             hasActiveDrag: activeLockedTargetDrag != nil
         )

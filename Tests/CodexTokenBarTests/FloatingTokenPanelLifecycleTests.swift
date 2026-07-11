@@ -28,28 +28,22 @@ final class FloatingTokenPanelLifecycleTests: XCTestCase {
         XCTAssertEqual(removals, 1)
     }
 
-    func testClosedOrUnlockedPanelRejectsExternalMouseWork() {
+    func testExternalMouseRelevanceSeparatesRecordingFromInspection() {
         XCTAssertFalse(
-            FloatingPanelExternalEventRelevance.shouldProcess(
-                isPresented: false,
-                isLocked: true,
-                hasLockedAnchor: true,
-                hasActiveDrag: false
-            )
-        )
-        XCTAssertFalse(
-            FloatingPanelExternalEventRelevance.shouldProcess(
-                isPresented: true,
-                isLocked: false,
-                hasLockedAnchor: false,
-                hasActiveDrag: false
+            FloatingPanelExternalEventRelevance.shouldRecordClick(
+                isPresented: false
             )
         )
         XCTAssertTrue(
-            FloatingPanelExternalEventRelevance.shouldProcess(
+            FloatingPanelExternalEventRelevance.shouldRecordClick(
+                isPresented: true
+            )
+        )
+        XCTAssertFalse(
+            FloatingPanelExternalEventRelevance.shouldInspectWindow(
                 isPresented: true,
-                isLocked: true,
-                hasLockedAnchor: true,
+                isLocked: false,
+                hasLockedAnchor: false,
                 hasActiveDrag: false
             )
         )
@@ -72,5 +66,60 @@ final class FloatingTokenPanelLifecycleTests: XCTestCase {
 
         XCTAssertEqual(accessibilityCalls, 0)
         XCTAssertEqual(windowCalls, 0)
+    }
+
+    func testUnlockedClickRecordsLocationAndDefersWindowResolutionUntilLock() {
+        let controller = FloatingTokenPanelController()
+        var isLocked = false
+        controller.externalEventStateProvider = { (isPresented: true, isLocked: isLocked) }
+        var accessibilityCalls = 0
+        var windowCalls = 0
+        let clickedLocation = NSPoint(x: 240, y: 180)
+        let targetFrame = NSRect(x: 100, y: 100, width: 400, height: 300)
+        controller.externalClickAccessibilityTargetProvider = { location in
+            accessibilityCalls += 1
+            XCTAssertEqual(location, clickedLocation)
+            return FloatingPanelAccessibilityTarget(
+                window: AXUIElementCreateApplication(4242),
+                ownerPID: 4242,
+                ownerBundleID: "test.target",
+                ownerName: "Target",
+                title: "Document",
+                frame: targetFrame
+            )
+        }
+        controller.externalClickVisibleWindowsProvider = {
+            windowCalls += 1
+            return []
+        }
+
+        controller.recordExternalMouseClick(at: clickedLocation)
+
+        XCTAssertEqual(controller.lastExternalClickLocation, clickedLocation)
+        XCTAssertNotNil(controller.lastExternalClickAt)
+        XCTAssertEqual(accessibilityCalls, 0)
+        XCTAssertEqual(windowCalls, 0)
+
+        isLocked = true
+        let panel = NSPanel(contentRect: NSRect(x: 500, y: 400, width: 120, height: 80), styleMask: .borderless, backing: .buffered, defer: false)
+        let anchor = controller.currentAnchor(for: panel)
+
+        XCTAssertEqual(accessibilityCalls, 1)
+        XCTAssertEqual(windowCalls, 0)
+        XCTAssertEqual(anchor?.ownerPID, 4242)
+        XCTAssertEqual(anchor?.windowTitle, "Document")
+    }
+
+    func testQueuedClickAfterCloseDoesNotMutateRecentClickState() {
+        let controller = FloatingTokenPanelController()
+        let originalLocation = NSPoint(x: 12, y: 34)
+        let originalDate = Date(timeIntervalSince1970: 123)
+        controller.lastExternalClickLocation = originalLocation
+        controller.lastExternalClickAt = originalDate
+
+        controller.recordExternalMouseClick(at: NSPoint(x: 800, y: 600))
+
+        XCTAssertEqual(controller.lastExternalClickLocation, originalLocation)
+        XCTAssertEqual(controller.lastExternalClickAt, originalDate)
     }
 }

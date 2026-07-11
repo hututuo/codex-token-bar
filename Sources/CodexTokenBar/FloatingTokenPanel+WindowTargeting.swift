@@ -39,7 +39,7 @@ extension FloatingTokenPanelController {
             return nil
         }
 
-        let windows = visibleWindows(relaxed: true, forceRefresh: true)
+        let windows = externalClickVisibleWindowsProvider?() ?? visibleWindows(relaxed: true, forceRefresh: true)
         if let lastExternalClickWindowNumber,
            let clickedWindow = windows.first(where: { $0.windowNumber == lastExternalClickWindowNumber }) {
             return clickedWindow
@@ -55,14 +55,19 @@ extension FloatingTokenPanelController {
     }
 
     func targetAccessibilityWindowAtRecentExternalClick() -> FloatingPanelAccessibilityTarget? {
-        guard let clickAt = lastExternalClickAt,
-              Date().timeIntervalSince(clickAt) <= recentExternalClickTargetInterval,
-              let lastExternalClickAXWindow,
-              let target = accessibilityTarget(from: lastExternalClickAXWindow)
+        guard let location = lastExternalClickLocation,
+              let clickAt = lastExternalClickAt,
+              Date().timeIntervalSince(clickAt) <= recentExternalClickTargetInterval
         else {
             return nil
         }
-        return target
+        if let lastExternalClickAXWindow {
+            return accessibilityTarget(from: lastExternalClickAXWindow)
+        }
+        if let externalClickAccessibilityTargetProvider {
+            return externalClickAccessibilityTargetProvider(location)
+        }
+        return accessibilityTarget(at: location)
     }
 
     func windowContainsClick(_ location: NSPoint, window: FloatingPanelTargetWindow) -> Bool {

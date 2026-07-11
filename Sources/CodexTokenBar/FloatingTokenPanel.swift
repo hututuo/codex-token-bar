@@ -28,7 +28,11 @@ final class FloatingPanelEventSourceLifecycle {
 }
 
 enum FloatingPanelExternalEventRelevance {
-    static func shouldProcess(
+    static func shouldRecordClick(isPresented: Bool) -> Bool {
+        isPresented
+    }
+
+    static func shouldInspectWindow(
         isPresented: Bool,
         isLocked: Bool,
         hasLockedAnchor: Bool,
@@ -71,6 +75,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     nonisolated(unsafe) private var activationObserver: NSObjectProtocol?
     var externalClickAccessibilityTargetProvider: ((NSPoint) -> FloatingPanelAccessibilityTarget?)?
     var externalClickVisibleWindowsProvider: (() -> [FloatingPanelTargetWindow])?
+    var externalEventStateProvider: (() -> (isPresented: Bool, isLocked: Bool))?
     var isProgrammaticPanelMove = false
     var appliedLockState = false
     let recentExternalClickTargetInterval: TimeInterval = 5 * 60
