@@ -46,6 +46,7 @@ struct DashboardView: View {
     @State private var showingPaletteMenu = false
     @State private var showingUnreadEffectMenu = false
     @State private var showingContentSettingsMenu = false
+    @State private var exportAlert: DashboardExportAlertPresentation?
 
     init(
         loginItemStore: LoginItemStore,
@@ -333,6 +334,13 @@ struct DashboardView: View {
                 )
             }
         }
+        .alert(item: $exportAlert) { presentation in
+            Alert(
+                title: Text(presentation.title),
+                message: Text(presentation.message),
+                dismissButton: .default(Text("好"))
+            )
+        }
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -343,18 +351,23 @@ struct DashboardView: View {
                 .disabled(store.isRefreshing)
 
                 Button {
-                    Exporter.exportCSV(snapshot: store.snapshot)
+                    presentExportResult(Exporter.exportCSV(snapshot: store.snapshot))
                 } label: {
                     Label("导出 CSV", systemImage: "tablecells")
                 }
 
                 Button {
-                    Exporter.exportPNG(snapshot: store.snapshot)
+                    presentExportResult(Exporter.exportPNG(snapshot: store.snapshot))
                 } label: {
                     Label("导出 PNG", systemImage: "photo")
                 }
             }
         }
+    }
+
+    private func presentExportResult(_ result: DashboardExportResult) {
+        guard let presentation = DashboardExportAlertPresentation(result: result) else { return }
+        exportAlert = presentation
     }
 
     @ViewBuilder
