@@ -19,7 +19,7 @@ test("Codex Radar detail card keeps the full human-readable feed breakdown", () 
     assert.match(source, new RegExp(`title="${title}"`));
   }
 
-  for (const label of ["Codex 雷达详细信息", "codex-radar-detail-layer", "role=\"dialog\"", "RadarLineChart", "IQ 指数", "评测日期", "额度趋势", "codex-radar-window-selector", "窗口状态", "范围", "建议动作", "24h 概率", "有效", "无效", "官方动态 24h", "社区提及 24h", "异常/限额反馈", "暂无 RSS 提醒历史", "feedItems", "感谢 Codex Radar 提供公开雷达数据"]) {
+  for (const label of ["Codex 雷达详细信息", "codex-radar-detail-layer", "role=\"dialog\"", "RadarLineChart", "IQ 指数", "评测日期", "额度趋势", "codex-radar-window-selector", "窗口状态", "范围", "建议动作", "24h 概率", "通过", "状态", "费用", "耗时", "Tokens", "官方动态 24h", "社区提及 24h", "异常/限额反馈", "暂无 RSS 提醒历史", "feedItems", "感谢 Codex Radar 提供公开雷达数据"]) {
     assert.match(source, new RegExp(label));
   }
 });

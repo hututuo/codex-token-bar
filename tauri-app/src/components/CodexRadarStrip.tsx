@@ -14,7 +14,6 @@ import {
   type CodexRadarChartSeries,
   type CodexRadarDiagnostic,
   type CodexRadarModelIQComparisonRow,
-  type CodexRadarModelIQPoint,
   type CodexRadarQuotaWindow,
   displayRadarNumber,
   environmentCount,
@@ -1091,19 +1090,4 @@ function formatSeconds(value: number): string {
     return `${displayRadarNumber(value / 60, 1)} 分钟`;
   }
   return `${Math.round(value)} 秒`;
-}
-
-function modelPointSummary(point: CodexRadarModelIQPoint): string {
-  return [
-    `IQ ${displayRadarNumber(point.score)} ${point.status || ""}`.trim(),
-    `通过 ${point.passed}/${point.tasks}`,
-    `有效 ${point.validTasks}`,
-    `无效 ${point.invalid}`,
-    `总 ${formatTokens(point.totalTokens)}`,
-    `输入 ${formatTokens(point.inputTokens)}`,
-    `缓存 ${formatTokens(point.cachedInputTokens)}`,
-    `输出 ${formatTokens(point.outputTokens)}`,
-    point.wallTimeHuman || formatSeconds(point.wallSeconds),
-    formatCost(point.costUsd),
-  ].filter(Boolean).join(" · ");
 }
