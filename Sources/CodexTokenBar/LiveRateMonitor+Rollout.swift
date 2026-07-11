@@ -45,17 +45,27 @@ extension LiveRateMonitor {
 
     nonisolated static func rolloutEvents(fromLines lines: [String]) -> [RolloutMetricEvent] {
         var callStarts: [String: TimeInterval] = [:]
+        var currentTurnID: String?
         return suppressDuplicateVisibleMessages(
-            lines.flatMap { rolloutEvents(fromLine: $0, callStarts: &callStarts) }
+            lines.flatMap { line in
+                if let turnID = rolloutTurnID(fromLine: line) {
+                    currentTurnID = turnID
+                }
+                return rolloutEvents(fromLine: line, callStarts: &callStarts, currentTurnID: currentTurnID)
+            }
         )
     }
 
     nonisolated static func rolloutEvents(fromLine line: String) -> [RolloutMetricEvent] {
         var callStarts: [String: TimeInterval] = [:]
-        return rolloutEvents(fromLine: line, callStarts: &callStarts)
+        return rolloutEvents(fromLine: line, callStarts: &callStarts, currentTurnID: rolloutTurnID(fromLine: line))
     }
 
-    nonisolated static func rolloutEvents(fromLine line: String, callStarts: inout [String: TimeInterval]) -> [RolloutMetricEvent] {
+    nonisolated static func rolloutEvents(
+        fromLine line: String,
+        callStarts: inout [String: TimeInterval],
+        currentTurnID: String? = nil
+    ) -> [RolloutMetricEvent] {
         guard let data = line.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let payload = object["payload"] as? [String: Any] else {
@@ -68,6 +78,7 @@ extension LiveRateMonitor {
         let recordType = object["type"] as? String
         let payloadType = payload["type"] as? String
         let keyPrefix = (payload["call_id"] as? String) ?? (payload["id"] as? String) ?? UUID().uuidString
+        let turnID = rolloutTurnID(object: object, payload: payload) ?? currentTurnID
 
         if recordType == "response_item", payloadType == "function_call" {
             callStarts[keyPrefix] = timestamp
@@ -90,6 +101,8 @@ extension LiveRateMonitor {
                 RolloutMetricEvent(
                     timestamp: timestamp,
                     key: "agent:\(timestamp):\(text.hashValue)",
+                    turnID: turnID,
+                    itemID: nil,
                     category: .visibleText,
                     text: text
                 )
@@ -104,6 +117,8 @@ extension LiveRateMonitor {
                 RolloutMetricEvent(
                     timestamp: timestamp,
                     key: keyPrefix,
+                    turnID: turnID,
+                    itemID: payload["id"] as? String,
                     category: .visibleText,
                     text: text
                 )
@@ -130,15 +145,41 @@ extension LiveRateMonitor {
     }
 
     nonisolated private static func suppressDuplicateVisibleMessages(_ events: [RolloutMetricEvent]) -> [RolloutMetricEvent] {
-        var seen: [String: TimeInterval] = [:]
+        var seen: [(event: RolloutMetricEvent, timestamp: TimeInterval)] = []
         return events.filter { event in
             guard event.category == .visibleText, !event.text.isEmpty else { return true }
-            if let previous = seen[event.text], event.timestamp - previous <= 10 {
+            let duplicatePairIndex = seen.firstIndex { previous in
+                guard event.timestamp - previous.timestamp <= 10,
+                      event.text == previous.event.text,
+                      event.turnID == previous.event.turnID
+                else { return false }
+                return (event.itemID == nil) != (previous.event.itemID == nil)
+            }
+            if let duplicatePairIndex {
+                seen.remove(at: duplicatePairIndex)
                 return false
             }
-            seen[event.text] = event.timestamp
+            seen.append((event, event.timestamp))
+            seen.removeAll { event.timestamp - $0.timestamp > 10 }
             return true
         }
+    }
+
+    nonisolated private static func rolloutTurnID(fromLine line: String) -> String? {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = object["payload"] as? [String: Any]
+        else { return nil }
+        return rolloutTurnID(object: object, payload: payload)
+    }
+
+    nonisolated private static func rolloutTurnID(object: [String: Any], payload: [String: Any]) -> String? {
+        if let turnID = payload["turn_id"] as? String, !turnID.isEmpty { return turnID }
+        if let turnID = object["turn_id"] as? String, !turnID.isEmpty { return turnID }
+        if let metadata = payload["metadata"] as? [String: Any],
+           let turnID = metadata["turn_id"] as? String,
+           !turnID.isEmpty { return turnID }
+        return nil
     }
 
     nonisolated static func parseTimestamp(_ text: String?) -> TimeInterval? {

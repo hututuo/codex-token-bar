@@ -715,6 +715,76 @@ final class LiveRateMonitorTests: XCTestCase {
     }
 
     @MainActor
+    func testChunkedStreamAndMatchingFullRolloutMessageCountOnceByIdentity() {
+        let streamOnly = LiveRateMonitor(monitoringEnabled: false)
+        let combined = LiveRateMonitor(monitoringEnabled: false)
+        for monitor in [streamOnly, combined] {
+            monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        }
+        let chunks = [
+            streamDeltaRow(id: 1, threadID: "thread-1", turnID: "turn-1", itemID: "msg-1", sequence: 1, text: "same "),
+            streamDeltaRow(id: 2, threadID: "thread-1", turnID: "turn-1", itemID: "msg-1", sequence: 2, text: "answer")
+        ]
+        streamOnly.testProcessPollInputs(streamRows: chunks, rolloutReads: [], now: 1_002.2)
+        combined.testProcessPollInputs(
+            streamRows: chunks,
+            rolloutReads: [
+                LiveRateMonitor.RolloutRead(
+                    threadID: "thread-1",
+                    path: "/tmp/rollout.jsonl",
+                    newOffset: 1,
+                    events: [RolloutMetricEvent(timestamp: 1_002.1, key: "msg-1", turnID: "turn-1", itemID: "msg-1", category: .visibleText, text: "same answer")]
+                )
+            ],
+            now: 1_002.2
+        )
+
+        XCTAssertEqual(combined.snapshot.breakdown.visibleText, streamOnly.snapshot.breakdown.visibleText)
+    }
+
+    @MainActor
+    func testCrossSourceVisibleDedupNeverCrossesTurnOrItemAndDoesNotMatchPrefix() {
+        let streamRows = [
+            streamDeltaRow(id: 1, threadID: "thread-1", turnID: "turn-a", itemID: "msg-a", sequence: 1, text: "repeat"),
+            streamDeltaRow(id: 2, threadID: "thread-1", turnID: "turn-b", itemID: "msg-b", sequence: 1, text: "repeat"),
+            streamDeltaRow(id: 3, threadID: "thread-1", turnID: "turn-c", itemID: "msg-c1", sequence: 1, text: "same"),
+            streamDeltaRow(id: 4, threadID: "thread-1", turnID: "turn-c", itemID: "msg-c2", sequence: 1, text: "same"),
+            streamDeltaRow(id: 5, threadID: "thread-1", turnID: "turn-d", itemID: "msg-d", sequence: 1, text: "partial")
+        ]
+        let rolloutReads = [
+            LiveRateMonitor.RolloutRead(
+                threadID: "thread-1",
+                path: "/tmp/rollout.jsonl",
+                newOffset: 1,
+                events: [
+                    RolloutMetricEvent(timestamp: 1_006, key: "other-a", turnID: "turn-a", itemID: "other-a", category: .visibleText, text: "repeat"),
+                    RolloutMetricEvent(timestamp: 1_006.1, key: "msg-c3", turnID: "turn-c", itemID: "msg-c3", category: .visibleText, text: "same"),
+                    RolloutMetricEvent(timestamp: 1_006.2, key: "msg-d", turnID: "turn-d", itemID: "msg-d", category: .visibleText, text: "partial suffix")
+                ]
+            )
+        ]
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        monitor.testProcessPollInputs(streamRows: streamRows, rolloutReads: [], now: 1_006.3)
+
+        XCTAssertEqual(monitor.testAcceptedRolloutEventCount(rolloutReads[0].events, threadID: "thread-1"), 3)
+    }
+
+    @MainActor
+    func testVisibleAssemblyIsBoundedAndClearedOnSourceSwitch() throws {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        let rows = (0..<5_000).map { index in
+            streamDeltaRow(id: index + 1, threadID: "thread-1", turnID: "turn-\(index)", itemID: "msg-\(index)", sequence: 1, text: "x")
+        }
+        monitor.testProcessPollInputs(streamRows: rows, rolloutReads: [], now: 2_000)
+        XCTAssertLessThanOrEqual(monitor.testVisibleAssemblyCount, 1_024)
+
+        monitor.setDataSource(try makeCodexDataSource(named: "assembly-reset"))
+        XCTAssertEqual(monitor.testVisibleAssemblyCount, 0)
+    }
+
+    @MainActor
     func testDataSourceSwitchClearsSourceLocalLiveRateState() throws {
         let monitor = LiveRateMonitor(monitoringEnabled: false)
         let sourceA = try makeCodexDataSource(named: "source-a")
@@ -1057,6 +1127,24 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(events.first?.rollingOnly, false)
     }
 
+    func testRolloutVisibleSuppressionIsScopedToTurnAndAgentResponsePair() {
+        let lines = [
+            rolloutTurnContextLine(timestamp: "2026-06-24T13:00:00.000Z", turnID: "turn-1"),
+            rolloutAgentMessageLine(timestamp: "2026-06-24T13:00:00.010Z", message: "same"),
+            rolloutAssistantResponseItemLine(timestamp: "2026-06-24T13:00:00.020Z", id: "msg-1", text: "same"),
+            rolloutTurnContextLine(timestamp: "2026-06-24T13:00:01.000Z", turnID: "turn-2"),
+            rolloutAgentMessageLine(timestamp: "2026-06-24T13:00:01.010Z", message: "same"),
+            rolloutAssistantResponseItemLine(timestamp: "2026-06-24T13:00:01.020Z", id: "msg-2", text: "same"),
+            rolloutAssistantResponseItemLine(timestamp: "2026-06-24T13:00:01.030Z", id: "msg-3", text: "same")
+        ]
+
+        let events = LiveRateMonitor.rolloutEvents(fromLines: lines)
+
+        XCTAssertEqual(events.map(\.turnID), ["turn-1", "turn-2", "turn-2"])
+        XCTAssertEqual(events.map(\.itemID), [nil, nil, "msg-3"])
+        XCTAssertEqual(events.map(\.text), ["same", "same", "same"])
+    }
+
     func testRolloutParserCountsCompleteAgentMessageWhileAssistantItemIsStillBuffered() {
         let text = "可以，先按这个修。"
         let events = LiveRateMonitor.rolloutEvents(fromLines: [
@@ -1231,6 +1319,26 @@ final class LiveRateMonitorTests: XCTestCase {
         )
     }
 
+    private func streamDeltaRow(
+        id: Int,
+        threadID: String,
+        turnID: String,
+        itemID: String,
+        sequence: Int,
+        text: String
+    ) -> LiveRateMonitor.LogRow {
+        LiveRateMonitor.LogRow(
+            id: id,
+            threadID: threadID,
+            ts: 1_000 + id,
+            tsNanos: 0,
+            target: "codex_api::sse::responses",
+            feedbackLogBody: """
+            SSE event: {"type":"response.output_text.delta","delta":\(String(reflecting: text)),"item_id":"\(itemID)","sequence_number":\(sequence),"item":{"id":"\(itemID)","type":"message","metadata":{"turn_id":"\(turnID)"}}}
+            """
+        )
+    }
+
     private func rolloutAgentMessageLine(timestamp: String, message: String) -> String {
         jsonLine([
             "timestamp": timestamp,
@@ -1238,6 +1346,17 @@ final class LiveRateMonitorTests: XCTestCase {
             "payload": [
                 "type": "agent_message",
                 "message": message
+            ]
+        ])
+    }
+
+    private func rolloutTurnContextLine(timestamp: String, turnID: String) -> String {
+        jsonLine([
+            "timestamp": timestamp,
+            "type": "turn_context",
+            "payload": [
+                "type": "turn_context",
+                "turn_id": turnID
             ]
         ])
     }

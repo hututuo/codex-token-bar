@@ -186,6 +186,8 @@ struct RolloutMetricEvent {
     let timestamp: TimeInterval
     let startTimestamp: TimeInterval?
     let key: String
+    let turnID: String?
+    let itemID: String?
     let category: LiveTokenCategory?
     let text: String
     let exactTokens: Int?
@@ -196,6 +198,8 @@ struct RolloutMetricEvent {
         timestamp: TimeInterval,
         startTimestamp: TimeInterval? = nil,
         key: String,
+        turnID: String? = nil,
+        itemID: String? = nil,
         category: LiveTokenCategory?,
         text: String,
         exactTokens: Int? = nil,
@@ -205,10 +209,69 @@ struct RolloutMetricEvent {
         self.timestamp = timestamp
         self.startTimestamp = startTimestamp
         self.key = key
+        self.turnID = turnID
+        self.itemID = itemID
         self.category = category
         self.text = text
         self.exactTokens = exactTokens
         self.exactOutputTokens = exactOutputTokens
         self.rollingOnly = rollingOnly
+    }
+}
+
+struct RecentVisibleTextAssemblies {
+    private struct Entry {
+        var text = ""
+        var overflowed = false
+    }
+
+    private let limit: Int
+    private let textLimit = 32_768
+    private var values: [String: Entry] = [:]
+    private var insertionOrder: [String] = []
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+    }
+
+    var count: Int { values.count }
+
+    mutating func append(_ text: String, for key: String) {
+        guard !text.isEmpty else { return }
+        if values[key] == nil {
+            insertionOrder.append(key)
+        }
+        var entry = values[key] ?? Entry()
+        if !entry.overflowed {
+            if entry.text.count + text.count > textLimit {
+                entry.text = ""
+                entry.overflowed = true
+            } else {
+                entry.text += text
+            }
+        }
+        values[key] = entry
+        let overflow = insertionOrder.count - limit
+        guard overflow > 0 else { return }
+        for expired in insertionOrder.prefix(overflow) {
+            values.removeValue(forKey: expired)
+        }
+        insertionOrder.removeFirst(overflow)
+    }
+
+    func text(for key: String) -> String? {
+        guard let entry = values[key], !entry.overflowed else { return nil }
+        return entry.text
+    }
+
+    func contains(text: String, keyPrefix: String) -> Bool {
+        values.contains { key, entry in
+            key.hasPrefix(keyPrefix) && !entry.overflowed && entry.text == text
+        }
+    }
+
+    mutating func removeAll() {
+        values.removeAll()
+        insertionOrder.removeAll()
     }
 }

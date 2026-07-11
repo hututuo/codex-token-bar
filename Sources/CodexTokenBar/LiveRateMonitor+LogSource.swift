@@ -101,5 +101,6 @@ extension LiveRateMonitor {
         countedRolloutFingerprints.removeAll()
         countedStreamVisibleFingerprints.removeAll()
         countedRolloutVisibleFingerprints.removeAll()
+        visibleStreamAssemblies.removeAll()
     }
 }

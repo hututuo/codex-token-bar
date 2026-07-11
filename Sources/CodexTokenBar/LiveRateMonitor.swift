@@ -74,6 +74,7 @@ final class LiveRateMonitor: ObservableObject {
     var countedRolloutFingerprints = RecentFingerprintSet(limit: 4_096)
     var countedStreamVisibleFingerprints = RecentFingerprintSet(limit: 4_096)
     var countedRolloutVisibleFingerprints = RecentFingerprintSet(limit: 4_096)
+    var visibleStreamAssemblies = RecentVisibleTextAssemblies(limit: 1_024)
     var tokenEncoder: CoreBpe?
 
     struct FileStoreSignature: Equatable {
@@ -777,7 +778,8 @@ final class LiveRateMonitor: ObservableObject {
                 timestamp: event.timestamp,
                 startTimestamp: event.startTimestamp,
                 threadID: threadID,
-                itemID: event.key,
+                turnID: event.turnID,
+                itemID: event.itemID ?? event.key,
                 category: event.category,
                 text: event.text,
                 exactTokens: event.exactTokens,
@@ -795,7 +797,8 @@ final class LiveRateMonitor: ObservableObject {
                 timestamp: event.timestamp,
                 startTimestamp: event.startTimestamp,
                 threadID: threadID,
-                itemID: event.key,
+                turnID: event.turnID,
+                itemID: event.itemID ?? event.key,
                 category: event.category,
                 text: event.text,
                 exactTokens: event.exactTokens,
@@ -815,7 +818,8 @@ final class LiveRateMonitor: ObservableObject {
     @discardableResult
     private func add(event: LiveMetricEvent, keyThreadID: String, to rate: inout RateAccumulator) -> Bool {
         guard let category = event.category, category.contributesToLiveRate else { return false }
-        let key = Self.metricKey(threadID: keyThreadID, itemID: event.itemID, category: category)
+        let scopedItemID = event.turnID.map { "\($0):\(event.itemID)" } ?? event.itemID
+        let key = Self.metricKey(threadID: keyThreadID, itemID: scopedItemID, category: category)
         if event.rollingOnly {
             rate.addRollingOnly(text: event.text, key: key, at: event.timestamp, windowSeconds: windowSeconds, estimator: estimateTokenCount)
             return !event.text.isEmpty
@@ -843,17 +847,16 @@ final class LiveRateMonitor: ObservableObject {
             return true
         }
         let sequence = event.sequenceNumber.map(String.init) ?? "text:\(event.text.hashValue)"
-        let fingerprint = "\(event.itemID):\(category.rawValue):\(sequence)"
+        let resolvedTurnID = event.turnID ?? itemTurnIDs[event.itemID]
+        let fingerprint = "\(resolvedThreadID ?? "unknown"):\(resolvedTurnID ?? "unknown"):\(event.itemID):\(category.rawValue):\(sequence)"
         guard countedStreamFingerprints.insertIfNew(fingerprint) else { return false }
-        if let visibleFingerprint = Self.crossSourceVisibleFingerprint(
-            itemID: event.itemID,
-            category: category,
-            text: event.text
-        ) {
-            guard !countedRolloutVisibleFingerprints.contains(visibleFingerprint) else {
-                return false
-            }
-            _ = countedStreamVisibleFingerprints.insertIfNew(visibleFingerprint)
+        if category == .visibleText,
+           let identity = Self.visibleMessageIdentity(
+               threadID: resolvedThreadID,
+               turnID: resolvedTurnID,
+               itemID: event.itemID
+           ) {
+            visibleStreamAssemblies.append(event.text, for: identity)
         }
         return true
     }
@@ -869,27 +872,35 @@ final class LiveRateMonitor: ObservableObject {
             String(event.exactOutputTokens ?? -1)
         ].joined(separator: ":")
         guard countedRolloutFingerprints.insertIfNew(fingerprint) else { return false }
-        if let visibleFingerprint = Self.crossSourceVisibleFingerprint(
-            itemID: event.key,
-            category: event.category,
-            text: event.text
-        ) {
-            guard !countedStreamVisibleFingerprints.contains(visibleFingerprint) else {
-                _ = countedRolloutVisibleFingerprints.insertIfNew(visibleFingerprint)
+        if event.category == .visibleText, !event.text.isEmpty {
+            if let itemID = event.itemID,
+               let identity = Self.visibleMessageIdentity(threadID: threadID, turnID: event.turnID, itemID: itemID),
+               visibleStreamAssemblies.text(for: identity) == event.text {
                 return false
             }
-            _ = countedRolloutVisibleFingerprints.insertIfNew(visibleFingerprint)
+            if event.itemID == nil,
+               let turnID = event.turnID,
+               visibleStreamAssemblies.contains(
+                   text: event.text,
+                   keyPrefix: Self.visibleTurnIdentityPrefix(threadID: threadID, turnID: turnID)
+               ) {
+                return false
+            }
         }
         return true
     }
 
-    nonisolated private static func crossSourceVisibleFingerprint(
-        itemID: String,
-        category: LiveTokenCategory?,
-        text: String
+    nonisolated private static func visibleMessageIdentity(
+        threadID: String?,
+        turnID: String?,
+        itemID: String
     ) -> String? {
-        guard category == .visibleText, !text.isEmpty else { return nil }
-        return "\(itemID):visibleText:\(text.hashValue)"
+        guard let threadID, !threadID.isEmpty, !itemID.isEmpty, itemID != "unknown" else { return nil }
+        return "\(visibleTurnIdentityPrefix(threadID: threadID, turnID: turnID))item:\(itemID)"
+    }
+
+    nonisolated private static func visibleTurnIdentityPrefix(threadID: String, turnID: String?) -> String {
+        "thread:\(threadID)|turn:\(turnID ?? "unknown")|"
     }
 
     private func updateTraceAttribution(from row: LogRow) {
@@ -1165,6 +1176,14 @@ extension LiveRateMonitor {
 
     var testTotalSessionRateKeys: [String] {
         totalSessionRates.keys.sorted()
+    }
+
+    var testVisibleAssemblyCount: Int {
+        visibleStreamAssemblies.count
+    }
+
+    func testAcceptedRolloutEventCount(_ events: [RolloutMetricEvent], threadID: String) -> Int {
+        events.filter { shouldCountRolloutEvent($0, threadID: threadID) }.count
     }
 
     nonisolated static func testMaxLogID(logsDB: String, threadID: String) throws -> Int {
