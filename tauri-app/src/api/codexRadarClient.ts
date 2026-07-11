@@ -6,7 +6,7 @@ import {
   type CodexRadarFeedItem,
   type CodexRadarReadState,
   type CodexRadarSnapshot,
-} from "../components/codexRadar/model";
+} from "../domain/codexRadar/model";
 import { withTimeout } from "../platform/runtime";
 
 const CODEX_RADAR_ENDPOINT = "https://codexradar.com/current.json";

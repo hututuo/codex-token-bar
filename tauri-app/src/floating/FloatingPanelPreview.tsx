@@ -6,7 +6,7 @@ import {
   primaryModelRow,
   secondaryModelRows,
   type CodexRadarSnapshot,
-} from "../components/codexRadar/model";
+} from "../domain/codexRadar/model";
 import { formatLiveRateValue, rateFillStyle, sanitizeRateFullScale } from "../components/liveRate/rateDisplay";
 import type { FloatingContentGroup, FloatingPanelSnapshot, FloatingUnreadEffect, FloatingWindowSettings } from "../types/dashboard";
 import { embedsUsageStatusInRateRow, layoutFloatingContentGroups } from "./floatingContent";

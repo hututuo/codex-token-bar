@@ -34,7 +34,7 @@ test("Codex Radar diagnostics notice renders root failure without fake radar val
 test("Codex Radar diagnostics notice marks stale root and feed states", async () => {
   await withSsrModules(async (load) => {
     const { CodexRadarDiagnosticsNotice } = await load("/src/components/CodexRadarStrip.tsx");
-    const { normalizeCodexRadarSnapshot } = await load("/src/components/codexRadar/model.ts");
+    const { normalizeCodexRadarSnapshot } = await load("/src/domain/codexRadar/model.ts");
 
     const staleRoot = {
       ...normalizeCodexRadarSnapshot(snapshotFixture()),
@@ -69,7 +69,7 @@ test("Codex Radar diagnostics notice marks stale root and feed states", async ()
 test("floating Radar row preserves stale snapshot and shows a restrained marker", async () => {
   await withSsrModules(async (load) => {
     const { FloatingPanelSurface } = await load("/src/floating/FloatingPanelPreview.tsx");
-    const { normalizeCodexRadarSnapshot } = await load("/src/components/codexRadar/model.ts");
+    const { normalizeCodexRadarSnapshot } = await load("/src/domain/codexRadar/model.ts");
     const radarSnapshot = {
       ...normalizeCodexRadarSnapshot(snapshotFixture()),
       diagnostics: [{
@@ -97,7 +97,7 @@ test("floating Radar row preserves stale snapshot and shows a restrained marker"
 test("Codex Radar detail overlay prefers full detail snapshot and falls back to public summary", async () => {
   await withSsrModules(async (load) => {
     const { CodexRadarDetailOverlay } = await load("/src/components/CodexRadarStrip.tsx");
-    const { normalizeCodexRadarSnapshot, primaryModelRow, secondaryModelRows } = await load("/src/components/codexRadar/model.ts");
+    const { normalizeCodexRadarSnapshot, primaryModelRow, secondaryModelRows } = await load("/src/domain/codexRadar/model.ts");
     const publicSnapshot = normalizeCodexRadarSnapshot(snapshotFixture({
       recommended_action: "wait",
       model_iq: { ...snapshotFixture().model_iq, latest: { ...snapshotFixture().model_iq.latest, score: 100 } },

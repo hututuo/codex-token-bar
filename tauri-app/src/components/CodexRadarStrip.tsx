@@ -26,7 +26,7 @@ import {
   secondaryModelRows,
   shortDateLabel,
   type CodexRadarSnapshot,
-} from "./codexRadar/model";
+} from "../domain/codexRadar/model";
 
 const RADAR_REFRESH_INTERVAL_MS = 600_000;
 const RADAR_CHART_COLORS = ["#18a7f2", "#ff8a2c", "#2f7df6", "#32b85f", "#a65af5"];

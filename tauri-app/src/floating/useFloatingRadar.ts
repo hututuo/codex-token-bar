@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { readCodexRadarState } from "../api/codexRadarClient";
-import type { CodexRadarSnapshot } from "../components/codexRadar/model";
+import type { CodexRadarSnapshot } from "../domain/codexRadar/model";
 
 const FLOATING_RADAR_REFRESH_INTERVAL_MS = 600_000;
 

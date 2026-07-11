@@ -1,4 +1,4 @@
-import { normalizeCodexRadarSnapshot, type CodexRadarSnapshot } from "../components/codexRadar/model";
+import { normalizeCodexRadarSnapshot, type CodexRadarSnapshot } from "../domain/codexRadar/model";
 import { callCommandStrict } from "./command";
 
 const CODEX_RADAR_FULL_DETAIL_TIMEOUT_MS = 20_000;
