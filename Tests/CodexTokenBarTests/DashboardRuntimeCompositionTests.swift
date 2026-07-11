@@ -161,7 +161,9 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
         let reappeared = UUID()
         runtime.acquireConsumer(reappeared)
         runtime.reportConfiguration(Self.configuration(floating: false, status: false), for: reappeared)
-        XCTAssertEqual(applications.count, applicationCount)
+        XCTAssertEqual(applications.count, applicationCount + 1)
+        runtime.reportConfiguration(Self.configuration(floating: false, status: false), for: reappeared)
+        XCTAssertEqual(applications.count, applicationCount + 1)
     }
 
     @MainActor
@@ -184,6 +186,49 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
         XCTAssertTrue(runtime.configuration!.floatingPanelLocked)
         XCTAssertTrue(defaults.bool(forKey: "floatingPanelLocked"))
         XCTAssertEqual(applications, 2)
+    }
+
+    @MainActor
+    func testInactiveTransitionCancelsAfterConfigurationAndReappliesOnReturn() {
+        var starts = 0
+        var stops = 0
+        var applications = 0
+        var pending = false
+        let coordinator = DashboardRuntimeSideEffectCoordinator<Bool>(
+            onStart: { starts += 1 },
+            onStop: {
+                pending = false
+                stops += 1
+            },
+            onWake: {},
+            onSurfaceEvent: {},
+            onCadenceEvent: {},
+            onConfiguration: { _ in
+                pending = true
+                applications += 1
+            },
+            keepsAppOwnerActive: { $0 }
+        )
+        let first = UUID()
+
+        coordinator.acquire(first)
+        coordinator.reportConfiguration(false, for: first)
+        XCTAssertTrue(pending)
+        coordinator.release(first)
+        XCTAssertFalse(pending)
+        XCTAssertEqual(stops, 1)
+
+        let second = UUID()
+        coordinator.acquire(second)
+        coordinator.reportConfiguration(false, for: second)
+        coordinator.reportConfiguration(false, for: second)
+        XCTAssertTrue(pending)
+        XCTAssertEqual(starts, 2)
+        XCTAssertEqual(applications, 2)
+
+        coordinator.release(second)
+        XCTAssertFalse(pending)
+        XCTAssertEqual(stops, 2)
     }
 
     private static func configuration(

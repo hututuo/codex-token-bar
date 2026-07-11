@@ -48,8 +48,10 @@ final class DashboardRuntimeSideEffectCoordinator<Configuration: Equatable> {
         consumers.removeAll { $0 == id }
         configurations.removeValue(forKey: id)
         guard !consumers.isEmpty else {
-            appliedConfiguration = nil
-            if !appOwnerActive { onStop() }
+            if !appOwnerActive {
+                appliedConfiguration = nil
+                onStop()
+            }
             return
         }
         if wasPrimary, let primary = consumers.first, let configuration = configurations[primary] {
@@ -64,6 +66,7 @@ final class DashboardRuntimeSideEffectCoordinator<Configuration: Equatable> {
         if !wasActive && isActive {
             onStart()
         } else if wasActive && !isActive {
+            appliedConfiguration = nil
             onStop()
         }
     }
@@ -97,8 +100,8 @@ final class DashboardRuntimeSideEffectCoordinator<Configuration: Equatable> {
     private func apply(_ configuration: Configuration) {
         guard appliedConfiguration != configuration else { return }
         appliedConfiguration = configuration
-        setAppOwnerActive(keepsAppOwnerActive(configuration))
         onConfiguration(configuration)
+        setAppOwnerActive(keepsAppOwnerActive(configuration))
     }
 
 
@@ -348,11 +351,10 @@ final class DashboardRuntime: ObservableObject {
     }
 
     private func stopSideEffects() {
-        sideEffectStopAction?()
         cancellables.removeAll()
         cadenceRecoveryTask?.cancel()
         cadenceRecoveryTask = nil
-        configuration = nil
+        sideEffectStopAction?()
     }
 
     private func bindDisplaySurfaces() {
