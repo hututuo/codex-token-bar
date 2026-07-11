@@ -743,6 +743,99 @@ final class LiveRateMonitorTests: XCTestCase {
     }
 
     @MainActor
+    func testRolloutFirstThenRealShapeStreamChunksCountOnceAcrossPolls() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        let rollout = RolloutMetricEvent(
+            timestamp: 1_000,
+            key: "msg-1",
+            turnID: "turn-1",
+            itemID: "msg-1",
+            category: .visibleText,
+            text: "same answer"
+        )
+
+        monitor.testProcessPollInputs(
+            streamRows: [],
+            rolloutReads: [LiveRateMonitor.RolloutRead(threadID: "thread-1", path: "/tmp/r.jsonl", newOffset: 1, events: [rollout])],
+            now: 1_000
+        )
+        XCTAssertEqual(monitor.snapshot.breakdown.visibleText, 0)
+
+        monitor.testProcessPollInputs(
+            streamRows: [
+                streamDeltaRowWithoutItemMetadata(id: 1, threadID: "thread-1", itemID: "msg-1", sequence: 1, text: "same "),
+                streamDeltaRowWithoutItemMetadata(id: 2, threadID: "thread-1", itemID: "msg-1", sequence: 2, text: "answer")
+            ],
+            rolloutReads: [],
+            now: 1_000.5
+        )
+
+        XCTAssertEqual(monitor.testPendingRolloutCount, 0)
+        XCTAssertEqual(monitor.snapshot.breakdown.visibleText, monitor.estimateTokenCount("same answer", category: .visibleText))
+    }
+
+    func testStreamParserUsesTopLevelTurnIDWithoutOutputItem() throws {
+        let row = LiveRateMonitor.LogRow(
+            id: 1,
+            threadID: "thread-1",
+            ts: 1_000,
+            tsNanos: 0,
+            target: "codex_api::sse::responses",
+            feedbackLogBody: #"SSE event: {"type":"response.output_text.delta","turn_id":"turn-top","delta":"text","item_id":"msg-1","sequence_number":1}"#
+        )
+
+        let streamEvent = try XCTUnwrap(LiveRateMonitor.streamEvent(from: row))
+        let metric = try XCTUnwrap(LiveRateMonitor.metricEvents(from: streamEvent, row: row, toolNames: [:]).first)
+
+        XCTAssertEqual(metric.turnID, "turn-top")
+        XCTAssertEqual(metric.itemID, "msg-1")
+    }
+
+    @MainActor
+    func testRolloutOnlyPendingFlushesAfterWindow() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        let rollout = RolloutMetricEvent(timestamp: 1_000, key: "msg-1", turnID: "turn-1", itemID: "msg-1", category: .visibleText, text: "rollout only")
+
+        monitor.testProcessPollInputs(
+            streamRows: [],
+            rolloutReads: [LiveRateMonitor.RolloutRead(threadID: "thread-1", path: "/tmp/r.jsonl", newOffset: 1, events: [rollout])],
+            now: 1_000
+        )
+        monitor.testProcessPollInputs(streamRows: [], rolloutReads: [], now: 1_001.1)
+
+        XCTAssertEqual(monitor.testPendingRolloutCount, 0)
+        XCTAssertGreaterThan(monitor.snapshot.breakdown.visibleText, 0)
+    }
+
+    @MainActor
+    func testLongChunkedStreamAndFullRolloutUseBoundedSummary() {
+        let text = String(repeating: "long-answer-", count: 4_000)
+        let split = text.index(text.startIndex, offsetBy: text.count / 2)
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        monitor.testProcessPollInputs(
+            streamRows: [
+                streamDeltaRowWithoutItemMetadata(id: 1, threadID: "thread-1", itemID: "msg-long", sequence: 1, text: String(text[..<split])),
+                streamDeltaRowWithoutItemMetadata(id: 2, threadID: "thread-1", itemID: "msg-long", sequence: 2, text: String(text[split...]))
+            ],
+            rolloutReads: [
+                LiveRateMonitor.RolloutRead(
+                    threadID: "thread-1",
+                    path: "/tmp/r.jsonl",
+                    newOffset: 1,
+                    events: [RolloutMetricEvent(timestamp: 1_002, key: "msg-long", itemID: "msg-long", category: .visibleText, text: text)]
+                )
+            ],
+            now: 1_002
+        )
+
+        XCTAssertEqual(monitor.testPendingRolloutCount, 0)
+        XCTAssertEqual(monitor.testVisibleAssemblyCount, 1)
+    }
+
+    @MainActor
     func testCrossSourceVisibleDedupNeverCrossesTurnOrItemAndDoesNotMatchPrefix() {
         let streamRows = [
             streamDeltaRow(id: 1, threadID: "thread-1", turnID: "turn-a", itemID: "msg-a", sequence: 1, text: "repeat"),
@@ -780,8 +873,19 @@ final class LiveRateMonitorTests: XCTestCase {
         monitor.testProcessPollInputs(streamRows: rows, rolloutReads: [], now: 2_000)
         XCTAssertLessThanOrEqual(monitor.testVisibleAssemblyCount, 1_024)
 
+        let pendingEvents = (0..<1_100).map { index in
+            RolloutMetricEvent(timestamp: 2_000, key: "pending-\(index)", itemID: "pending-\(index)", category: .visibleText, text: "pending \(index)")
+        }
+        monitor.testProcessPollInputs(
+            streamRows: [],
+            rolloutReads: [LiveRateMonitor.RolloutRead(threadID: "thread-1", path: "/tmp/pending.jsonl", newOffset: 1, events: pendingEvents)],
+            now: 2_000
+        )
+        XCTAssertLessThanOrEqual(monitor.testPendingRolloutCount, 1_024)
+
         monitor.setDataSource(try makeCodexDataSource(named: "assembly-reset"))
         XCTAssertEqual(monitor.testVisibleAssemblyCount, 0)
+        XCTAssertEqual(monitor.testPendingRolloutCount, 0)
     }
 
     @MainActor
@@ -1336,6 +1440,27 @@ final class LiveRateMonitorTests: XCTestCase {
             feedbackLogBody: """
             SSE event: {"type":"response.output_text.delta","delta":\(String(reflecting: text)),"item_id":"\(itemID)","sequence_number":\(sequence),"item":{"id":"\(itemID)","type":"message","metadata":{"turn_id":"\(turnID)"}}}
             """
+        )
+    }
+
+    private func streamDeltaRowWithoutItemMetadata(
+        id: Int,
+        threadID: String,
+        itemID: String,
+        sequence: Int,
+        text: String
+    ) -> LiveRateMonitor.LogRow {
+        let escapedText = String(
+            data: try! JSONSerialization.data(withJSONObject: text, options: [.fragmentsAllowed]),
+            encoding: .utf8
+        )!
+        return LiveRateMonitor.LogRow(
+            id: id,
+            threadID: threadID,
+            ts: 1_000 + id,
+            tsNanos: 0,
+            target: "codex_api::sse::responses",
+            feedbackLogBody: "SSE event: {\"type\":\"response.output_text.delta\",\"delta\":\(escapedText),\"item_id\":\"\(itemID)\",\"sequence_number\":\(sequence)}"
         )
     }
 

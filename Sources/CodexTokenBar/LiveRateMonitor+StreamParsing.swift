@@ -45,7 +45,7 @@ extension LiveRateMonitor {
             source = .bridgedLog
         }
         let itemID = streamEvent.itemID ?? streamEvent.item?.id ?? "unknown"
-        let turnID = streamEvent.item?.metadata?.turnID
+        let turnID = streamEvent.turnID ?? streamEvent.item?.metadata?.turnID
         let callID = streamEvent.item?.callID
 
         switch streamEvent.type {

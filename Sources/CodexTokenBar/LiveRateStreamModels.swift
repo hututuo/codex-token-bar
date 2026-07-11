@@ -38,6 +38,7 @@ extension LiveRateMonitor {
         let delta: String?
         let text: String?
         let itemID: String?
+        let turnID: String?
         let sequenceNumber: Int?
         let arguments: String?
         let item: ResponseStreamItem?
@@ -48,6 +49,7 @@ extension LiveRateMonitor {
             case delta
             case text
             case itemID = "item_id"
+            case turnID = "turn_id"
             case sequenceNumber = "sequence_number"
             case arguments
             case item

@@ -219,14 +219,50 @@ struct RolloutMetricEvent {
     }
 }
 
+struct VisibleTextSummary: Equatable {
+    private(set) var utf8Count = 0
+    private(set) var hashA: UInt64 = 14_695_981_039_346_656_037
+    private(set) var hashB: UInt64 = 5_381
+    private(set) var prefix: [UInt8] = []
+    private(set) var suffix: [UInt8] = []
+    private(set) var exactText: String? = ""
+
+    init() {}
+
+    init(text: String) {
+        append(text)
+    }
+
+    mutating func append(_ text: String) {
+        let bytes = Array(text.utf8)
+        utf8Count += bytes.count
+        for byte in bytes {
+            hashA = (hashA ^ UInt64(byte)) &* 1_099_511_628_211
+            hashB = ((hashB &* 33) ^ UInt64(byte)) &+ 0x9e3779b97f4a7c15
+        }
+        if prefix.count < 64 {
+            prefix.append(contentsOf: bytes.prefix(64 - prefix.count))
+        }
+        suffix.append(contentsOf: bytes)
+        if suffix.count > 64 {
+            suffix.removeFirst(suffix.count - 64)
+        }
+        if let current = exactText, current.utf8.count + bytes.count <= 32_768 {
+            exactText = current + text
+        } else {
+            exactText = nil
+        }
+    }
+}
+
 struct RecentVisibleTextAssemblies {
     private struct Entry {
-        var text = ""
-        var overflowed = false
+        let threadID: String
+        var turnID: String?
+        var summary = VisibleTextSummary()
     }
 
     private let limit: Int
-    private let textLimit = 32_768
     private var values: [String: Entry] = [:]
     private var insertionOrder: [String] = []
 
@@ -236,20 +272,14 @@ struct RecentVisibleTextAssemblies {
 
     var count: Int { values.count }
 
-    mutating func append(_ text: String, for key: String) {
+    mutating func append(_ text: String, for key: String, threadID: String, turnID: String?) {
         guard !text.isEmpty else { return }
         if values[key] == nil {
             insertionOrder.append(key)
         }
-        var entry = values[key] ?? Entry()
-        if !entry.overflowed {
-            if entry.text.count + text.count > textLimit {
-                entry.text = ""
-                entry.overflowed = true
-            } else {
-                entry.text += text
-            }
-        }
+        var entry = values[key] ?? Entry(threadID: threadID, turnID: turnID)
+        entry.turnID = entry.turnID ?? turnID
+        entry.summary.append(text)
         values[key] = entry
         let overflow = insertionOrder.count - limit
         guard overflow > 0 else { return }
@@ -259,14 +289,14 @@ struct RecentVisibleTextAssemblies {
         insertionOrder.removeFirst(overflow)
     }
 
-    func text(for key: String) -> String? {
-        guard let entry = values[key], !entry.overflowed else { return nil }
-        return entry.text
+    func matches(text: String, for key: String) -> Bool {
+        values[key]?.summary == VisibleTextSummary(text: text)
     }
 
-    func contains(text: String, keyPrefix: String) -> Bool {
-        values.contains { key, entry in
-            key.hasPrefix(keyPrefix) && !entry.overflowed && entry.text == text
+    func contains(text: String, threadID: String, turnID: String) -> Bool {
+        let summary = VisibleTextSummary(text: text)
+        return values.values.contains { entry in
+            entry.threadID == threadID && entry.turnID == turnID && entry.summary == summary
         }
     }
 

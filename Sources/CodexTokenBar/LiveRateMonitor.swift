@@ -75,6 +75,15 @@ final class LiveRateMonitor: ObservableObject {
     var countedStreamVisibleFingerprints = RecentFingerprintSet(limit: 4_096)
     var countedRolloutVisibleFingerprints = RecentFingerprintSet(limit: 4_096)
     var visibleStreamAssemblies = RecentVisibleTextAssemblies(limit: 1_024)
+    private struct PendingRolloutCompletion {
+        let event: RolloutMetricEvent
+        let threadID: String
+        let enqueuedAt: TimeInterval
+    }
+    private var pendingRolloutCompletions: [String: PendingRolloutCompletion] = [:]
+    private var pendingRolloutOrder: [String] = []
+    private let pendingRolloutWindow: TimeInterval = 1.0
+    private let pendingRolloutLimit = 1_024
     var tokenEncoder: CoreBpe?
 
     struct FileStoreSignature: Equatable {
@@ -480,6 +489,10 @@ final class LiveRateMonitor: ObservableObject {
         do {
             let logsDB = cachedLogsDatabasePath
             let now = Date().timeIntervalSince1970
+            if flushExpiredPendingRollouts(now: now) {
+                lastPollProcessedRows = true
+                extendFastPolling(from: now)
+            }
             if refreshLogStoreSignature(logsDB: logsDB) {
                 logChangePending = true
             }
@@ -711,8 +724,13 @@ final class LiveRateMonitor: ObservableObject {
         now: TimeInterval
     ) -> Bool {
         guard isCurrentSource(generation: generation, bindingGeneration: bindingGeneration) else { return false }
+        var processedRolloutEvents = flushExpiredPendingRollouts(now: now)
         let processedStreamEvents = processStreamRows(streamRows)
-        let processedRolloutEvents = processRolloutReads(rolloutReads, now: now)
+        discardPendingRolloutsMatchedByStream()
+        if processRolloutReads(rolloutReads, now: now) {
+            processedRolloutEvents = true
+        }
+        discardPendingRolloutsMatchedByStream()
         if processedStreamEvents || processedRolloutEvents {
             lastPollProcessedRows = true
             extendFastPolling(from: now)
@@ -737,17 +755,80 @@ final class LiveRateMonitor: ObservableObject {
 
         for read in reads {
             rolloutOffsets[read.path] = read.newOffset
-            let events = read.events.filter { shouldCountRolloutEvent($0, threadID: read.threadID) }
-            guard !events.isEmpty else { continue }
-            processedEvents = true
-            add(events: events, threadID: read.threadID, keyThreadID: "all", to: &totalRate)
-            add(events: events, threadID: read.threadID, keyThreadID: read.threadID, toTotalSessionRateFor: read.threadID)
-            if read.threadID == threadID {
-                add(events: events, threadID: read.threadID, keyThreadID: read.threadID, to: &selectedRate)
+            for event in read.events {
+                if shouldPendRolloutCompletion(event) {
+                    enqueuePendingRollout(event, threadID: read.threadID, now: now)
+                } else if publishRolloutEvent(event, threadID: read.threadID) {
+                    processedEvents = true
+                }
             }
         }
 
         return processedEvents
+    }
+
+    private func shouldPendRolloutCompletion(_ event: RolloutMetricEvent) -> Bool {
+        event.category == .visibleText && event.itemID?.isEmpty == false && !event.text.isEmpty
+    }
+
+    private func enqueuePendingRollout(_ event: RolloutMetricEvent, threadID: String, now: TimeInterval) {
+        guard let itemID = event.itemID else { return }
+        let key = Self.visibleMessageIdentity(threadID: threadID, itemID: itemID)
+        if pendingRolloutCompletions[key] == nil {
+            pendingRolloutOrder.append(key)
+        }
+        pendingRolloutCompletions[key] = PendingRolloutCompletion(event: event, threadID: threadID, enqueuedAt: now)
+        let overflow = pendingRolloutOrder.count - pendingRolloutLimit
+        guard overflow > 0 else { return }
+        let overflowKeys = Array(pendingRolloutOrder.prefix(overflow))
+        pendingRolloutOrder.removeFirst(overflow)
+        for overflowKey in overflowKeys {
+            if let pending = pendingRolloutCompletions.removeValue(forKey: overflowKey) {
+                _ = publishRolloutEvent(pending.event, threadID: pending.threadID)
+            }
+        }
+    }
+
+    private func discardPendingRolloutsMatchedByStream() {
+        let matched = pendingRolloutOrder.filter { key in
+            guard let pending = pendingRolloutCompletions[key] else { return true }
+            return visibleStreamAssemblies.matches(text: pending.event.text, for: key)
+        }
+        let matchedSet = Set(matched)
+        pendingRolloutOrder.removeAll { matchedSet.contains($0) }
+        for key in matched {
+            pendingRolloutCompletions.removeValue(forKey: key)
+        }
+    }
+
+    private func flushExpiredPendingRollouts(now: TimeInterval) -> Bool {
+        let expired = pendingRolloutOrder.filter { key in
+            guard let pending = pendingRolloutCompletions[key] else { return true }
+            return now - pending.enqueuedAt >= pendingRolloutWindow
+        }
+        let expiredSet = Set(expired)
+        pendingRolloutOrder.removeAll { expiredSet.contains($0) }
+        var published = false
+        for key in expired {
+            guard let pending = pendingRolloutCompletions.removeValue(forKey: key) else { continue }
+            published = publishRolloutEvent(pending.event, threadID: pending.threadID) || published
+        }
+        return published
+    }
+
+    func clearPendingRolloutCompletions() {
+        pendingRolloutCompletions.removeAll()
+        pendingRolloutOrder.removeAll()
+    }
+
+    private func publishRolloutEvent(_ event: RolloutMetricEvent, threadID eventThreadID: String) -> Bool {
+        guard shouldCountRolloutEvent(event, threadID: eventThreadID) else { return false }
+        add(events: [event], threadID: eventThreadID, keyThreadID: "all", to: &totalRate)
+        add(events: [event], threadID: eventThreadID, keyThreadID: eventThreadID, toTotalSessionRateFor: eventThreadID)
+        if eventThreadID == threadID {
+            add(events: [event], threadID: eventThreadID, keyThreadID: eventThreadID, to: &selectedRate)
+        }
+        return true
     }
 
     private func add(row: LogRow) -> Bool {
@@ -851,17 +932,40 @@ final class LiveRateMonitor: ObservableObject {
         let fingerprint = "\(resolvedThreadID ?? "unknown"):\(resolvedTurnID ?? "unknown"):\(event.itemID):\(category.rawValue):\(sequence)"
         guard countedStreamFingerprints.insertIfNew(fingerprint) else { return false }
         if category == .visibleText,
-           let identity = Self.visibleMessageIdentity(
-               threadID: resolvedThreadID,
-               turnID: resolvedTurnID,
-               itemID: event.itemID
-           ) {
-            visibleStreamAssemblies.append(event.text, for: identity)
+           let resolvedThreadID,
+           !event.itemID.isEmpty,
+           event.itemID != "unknown" {
+            let identity = Self.visibleMessageIdentity(threadID: resolvedThreadID, itemID: event.itemID)
+            visibleStreamAssemblies.append(
+                event.text,
+                for: identity,
+                threadID: resolvedThreadID,
+                turnID: resolvedTurnID
+            )
         }
         return true
     }
 
     private func shouldCountRolloutEvent(_ event: RolloutMetricEvent, threadID: String) -> Bool {
+        if event.category == .visibleText, !event.text.isEmpty {
+            if let itemID = event.itemID,
+               !itemID.isEmpty,
+               visibleStreamAssemblies.matches(
+                   text: event.text,
+                   for: Self.visibleMessageIdentity(threadID: threadID, itemID: itemID)
+               ) {
+                return false
+            }
+            if event.itemID == nil,
+               let turnID = event.turnID,
+               visibleStreamAssemblies.contains(
+                   text: event.text,
+                   threadID: threadID,
+                   turnID: turnID
+               ) {
+                return false
+            }
+        }
         let timestampBucket = Int((event.timestamp * 1_000).rounded())
         let fingerprint = [
             threadID,
@@ -872,35 +976,11 @@ final class LiveRateMonitor: ObservableObject {
             String(event.exactOutputTokens ?? -1)
         ].joined(separator: ":")
         guard countedRolloutFingerprints.insertIfNew(fingerprint) else { return false }
-        if event.category == .visibleText, !event.text.isEmpty {
-            if let itemID = event.itemID,
-               let identity = Self.visibleMessageIdentity(threadID: threadID, turnID: event.turnID, itemID: itemID),
-               visibleStreamAssemblies.text(for: identity) == event.text {
-                return false
-            }
-            if event.itemID == nil,
-               let turnID = event.turnID,
-               visibleStreamAssemblies.contains(
-                   text: event.text,
-                   keyPrefix: Self.visibleTurnIdentityPrefix(threadID: threadID, turnID: turnID)
-               ) {
-                return false
-            }
-        }
         return true
     }
 
-    nonisolated private static func visibleMessageIdentity(
-        threadID: String?,
-        turnID: String?,
-        itemID: String
-    ) -> String? {
-        guard let threadID, !threadID.isEmpty, !itemID.isEmpty, itemID != "unknown" else { return nil }
-        return "\(visibleTurnIdentityPrefix(threadID: threadID, turnID: turnID))item:\(itemID)"
-    }
-
-    nonisolated private static func visibleTurnIdentityPrefix(threadID: String, turnID: String?) -> String {
-        "thread:\(threadID)|turn:\(turnID ?? "unknown")|"
+    nonisolated private static func visibleMessageIdentity(threadID: String, itemID: String) -> String {
+        "thread:\(threadID)|item:\(itemID)"
     }
 
     private func updateTraceAttribution(from row: LogRow) {
@@ -914,7 +994,7 @@ final class LiveRateMonitor: ObservableObject {
 
     private func updateAttribution(from event: ResponseStreamEvent, row: LogRow) {
         let resolvedThread = row.threadID ?? Self.traceValue(in: row.feedbackLogBody, keys: ["thread.id=", "thread_id=", "conversation.id="])
-        if let turnID = event.item?.metadata?.turnID,
+        if let turnID = event.turnID ?? event.item?.metadata?.turnID,
            let resolvedThread {
             turnThreadIDs[turnID] = resolvedThread
         }
@@ -1136,13 +1216,13 @@ extension LiveRateMonitor {
         rolloutReads: [RolloutRead],
         now: TimeInterval
     ) {
-        let processedStreamEvents = processStreamRows(streamRows)
-        let processedRolloutEvents = processRolloutReads(rolloutReads, now: now)
-        if processedStreamEvents || processedRolloutEvents {
-            lastPollProcessedRows = true
-            extendFastPolling(from: now)
-        }
-        updateSnapshots(now: now)
+        _ = applyPollCompletion(
+            streamRows: streamRows,
+            rolloutReads: rolloutReads,
+            sourceGeneration: sourceGeneration,
+            sourceBindingGeneration: sourceBindingGeneration,
+            now: now
+        )
     }
 
     var testSourceGeneration: Int {
@@ -1180,6 +1260,10 @@ extension LiveRateMonitor {
 
     var testVisibleAssemblyCount: Int {
         visibleStreamAssemblies.count
+    }
+
+    var testPendingRolloutCount: Int {
+        pendingRolloutCompletions.count
     }
 
     func testAcceptedRolloutEventCount(_ events: [RolloutMetricEvent], threadID: String) -> Int {
