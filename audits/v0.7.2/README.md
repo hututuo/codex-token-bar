@@ -35,6 +35,7 @@ The fresh audit worktree could not recreate the TiktokenSwift checkout because a
 
 ## Reports
 
+- `THREAD_CONTACTS.md` - active task ownership and completion callback routing.
 - `coverage-ledger.md`
 - `progress.md`
 - `reports/swift-manual-review.md`
