@@ -61,6 +61,7 @@ final class AccountQuotaStore: ObservableObject {
     private(set) var sourceBindingGeneration = 0
     private var activeRefreshSourceID: String?
     private var snapshotSourceID: String?
+    private var snapshotBeforeRefresh: AccountQuotaSnapshot?
 
     var currentDataSourceIdentity: String? {
         currentDataSource?.stableIdentityKey
@@ -120,6 +121,10 @@ final class AccountQuotaStore: ObservableObject {
         sourceBindingGeneration += 1
         activeRefreshSourceID = nil
         isRefreshing = false
+        if let snapshotBeforeRefresh {
+            snapshot = snapshotBeforeRefresh
+        }
+        snapshotBeforeRefresh = nil
         guard identityChanged else { return true }
 
         historyStore?.clearIdentity()
@@ -144,6 +149,15 @@ final class AccountQuotaStore: ObservableObject {
     func stop() {
         timer?.invalidate()
         timer = nil
+        refreshTask?.cancel()
+        refreshTask = nil
+        refreshGeneration += 1
+        activeRefreshSourceID = nil
+        isRefreshing = false
+        if let snapshotBeforeRefresh {
+            snapshot = snapshotBeforeRefresh
+        }
+        snapshotBeforeRefresh = nil
     }
 
     func setAutomaticRefreshInterval(_ interval: TimeInterval) {
@@ -164,6 +178,8 @@ final class AccountQuotaStore: ObservableObject {
             "source": effectiveDataSource?.displayPath ?? "default",
             "recentSuccessAge": recentSuccessAge.map { String(format: "%.2f", $0) } ?? "nil"
         ])
+        let trustedSnapshot = snapshotBeforeRefresh
+            ?? (snapshotSourceID == sourceID && snapshot.isAvailable ? snapshot : nil)
         if isRefreshing, sourceID == activeRefreshSourceID {
             trace?.end("skipped-refresh-in-flight")
             return
@@ -190,6 +206,7 @@ final class AccountQuotaStore: ObservableObject {
         let generation = refreshGeneration
         let bindingGeneration = sourceBindingGeneration
         activeRefreshSourceID = sourceID
+        snapshotBeforeRefresh = trustedSnapshot
         var refreshing = snapshotSourceID == sourceID ? snapshot : .empty
         refreshing.status = snapshot.isAvailable ? "正在更新额度" : "正在读取额度"
         snapshot = refreshing
@@ -245,6 +262,7 @@ final class AccountQuotaStore: ObservableObject {
                     self.lastSuccessfulRefreshCompletedAt = Date()
                     self.snapshot = adjustedQuota
                     self.snapshotSourceID = sourceID
+                    self.snapshotBeforeRefresh = nil
                     self.historyStore?.record(adjustedQuota)
                 }
                 trace?.mark("mainActor.publish.end")
@@ -280,6 +298,7 @@ final class AccountQuotaStore: ObservableObject {
                     failed.diagnostics = diagnostics
                     failed.status = "额度读取失败：\(diagnostic.message)"
                     self.snapshot = failed
+                    self.snapshotBeforeRefresh = nil
                     if !retainsSameSourceSnapshot {
                         self.snapshotSourceID = nil
                     }

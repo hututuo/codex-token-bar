@@ -13,6 +13,64 @@ final class LiveRateMonitorTests: XCTestCase {
     }
 
     @MainActor
+    func testPausedPollRejectsSuspendedCompletionAndResumeAcceptsCurrentGeneration() async throws {
+        let source = try makeCodexDataSource(named: "PausedPoll")
+        let logsURL = source.codexHome.appendingPathComponent("logs_2.sqlite")
+        try Data().write(to: logsURL)
+        let reader = SuspendedLiveRateLogReader(path: logsURL.path)
+        let monitor = LiveRateMonitor(
+            monitoringEnabled: false,
+            logReaderFactory: SuspendedLiveRateLogReaderFactory(reader: reader)
+        )
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        monitor.setDataSource(source)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        monitor.testActivatePollingWithoutScheduling()
+        monitor.testForceStreamRead(logsDB: logsURL.path)
+        let trustedSnapshot = monitor.totalSnapshot
+        let initialCursor = monitor.testLastGlobalLogID
+
+        let oldPoll = Task { @MainActor in
+            await monitor.testPollOnce()
+        }
+        await waitUntil("suspended old poll") { reader.readCount == 1 }
+        let oldActivityGeneration = monitor.testPollingActivityGeneration
+
+        monitor.setPollingActive(false)
+        XCTAssertGreaterThan(monitor.testPollingActivityGeneration, oldActivityGeneration)
+        monitor.setPollingActive(true)
+        reader.releaseNext(rows: [streamDeltaRow(
+            id: 10,
+            threadID: "thread-1",
+            turnID: "turn-late",
+            itemID: "item-late",
+            sequence: 1,
+            text: "late"
+        )])
+        await oldPoll.value
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(monitor.testLastGlobalLogID, initialCursor)
+        XCTAssertEqual(monitor.totalSnapshot, trustedSnapshot)
+
+        monitor.testForceStreamRead(logsDB: logsURL.path)
+        await waitUntil("current generation poll") { reader.readCount == 2 }
+        reader.releaseNext(rows: [streamDeltaRow(
+            id: 20,
+            threadID: "thread-1",
+            turnID: "turn-current",
+            itemID: "item-current",
+            sequence: 1,
+            text: "current"
+        )])
+        await waitUntil("current cursor accepted") { monitor.testLastGlobalLogID == 20 }
+        monitor.setPollingActive(false)
+
+        XCTAssertGreaterThan(monitor.totalSnapshot.outputCharacters, trustedSnapshot.outputCharacters)
+        XCTAssertEqual(reader.readCount, 2)
+    }
+
+    @MainActor
     func testPhysicalLogReplacementRecreatesReaderAndAllowsLowIDs() throws {
         let databaseURL = try makeDatabaseURL()
         try Data("old".utf8).write(to: databaseURL)
@@ -1946,6 +2004,20 @@ final class LiveRateMonitorTests: XCTestCase {
         return directory.appendingPathComponent("logs.sqlite")
     }
 
+    @MainActor
+    private func waitUntil(
+        _ label: String,
+        timeout: TimeInterval = 3,
+        predicate: @escaping @MainActor () -> Bool
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if predicate() { return }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("Timed out waiting for \(label)")
+    }
+
     private func makeCodexDataSource(named name: String) throws -> CodexDataSource {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("LiveRateMonitorSource-\(name)-\(UUID().uuidString)", isDirectory: true)
@@ -2139,6 +2211,54 @@ final class LiveRateMonitorTests: XCTestCase {
     private func jsonLine(_ object: [String: Any]) -> String {
         let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         return String(data: data, encoding: .utf8)!
+    }
+}
+
+private struct SuspendedLiveRateLogReaderFactory: LiveRateLogReaderMaking, @unchecked Sendable {
+    let reader: SuspendedLiveRateLogReader
+
+    func makeLiveRateLogReader(path: String) -> LiveRateLogReading {
+        reader
+    }
+}
+
+private final class SuspendedLiveRateLogReader: LiveRateLogReading, @unchecked Sendable {
+    let path: String
+    private let condition = NSCondition()
+    private var releases: [[LiveRateMonitor.LogRow]] = []
+    private var reads = 0
+
+    init(path: String) {
+        self.path = path
+    }
+
+    var readCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return reads
+    }
+
+    func releaseNext(rows: [LiveRateMonitor.LogRow]) {
+        condition.lock()
+        releases.append(rows)
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func globalLogRows(afterID: Int) throws -> [LiveRateMonitor.LogRow] {
+        condition.lock()
+        reads += 1
+        condition.broadcast()
+        while releases.isEmpty {
+            condition.wait()
+        }
+        let rows = releases.removeFirst()
+        condition.unlock()
+        return rows.filter { $0.id > afterID }
+    }
+
+    func globalLogRows(since timestamp: TimeInterval) throws -> [LiveRateMonitor.LogRow] {
+        try globalLogRows(afterID: 0)
     }
 }
 

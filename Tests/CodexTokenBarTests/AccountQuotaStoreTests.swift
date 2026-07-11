@@ -4,6 +4,100 @@ import XCTest
 
 @MainActor
 final class AccountQuotaStoreTests: XCTestCase {
+    func testStopRejectsLateSuccessAndRestartAcceptsOnlyNewGeneration() async throws {
+        let source = CodexDataSource(
+            codexHome: try makeTemporaryDirectory(named: "QuotaStopLateSuccess"),
+            origin: .userSelected
+        )
+        let historyClient = RecordingQuotaHistoryClient(snapshot: .empty)
+        let historyStore = QuotaHistoryStore(historyClient: historyClient)
+        let reader = SuspendedQuotaReader()
+        let store = AccountQuotaStore(quotaReader: reader, observesUserDefaults: false)
+        store.setHistoryStore(historyStore)
+        let historyIdentity = try XCTUnwrap(QuotaHistoryIdentity(
+            homeIdentity: source.stableIdentityKey,
+            stableAccountKey: "stable-account",
+            planType: "pro",
+            limitID: "codex"
+        ))
+        var trusted = quotaSnapshot(usedPercent: 20, accountName: "trusted")
+        trusted.historyIdentity = historyIdentity
+
+        store.setDataSource(source)
+        store.refresh()
+        await waitUntil("trusted request") { await reader.hasPendingRequest(for: source) }
+        await reader.completeRequest(for: source, with: trusted)
+        await waitUntil("trusted publish") { store.snapshot.accountName == "trusted" }
+        await waitUntil("trusted history record") { await historyClient.recordCount() == 1 }
+
+        store.refresh()
+        await waitUntil("late success request") { await reader.hasPendingRequest(for: source) }
+        store.stop()
+        var late = quotaSnapshot(usedPercent: 90, accountName: "late")
+        late.historyIdentity = historyIdentity
+        await reader.completeRequest(for: source, with: late)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(store.snapshot.accountName, "trusted")
+        XCTAssertEqual(store.snapshot.status, trusted.status)
+        let recordsAfterLateSuccess = await historyClient.recordCount()
+        XCTAssertEqual(recordsAfterLateSuccess, 1)
+
+        store.start(dataSource: source)
+        await waitUntil("restart request") { await reader.hasPendingRequest(for: source) }
+        var current = quotaSnapshot(usedPercent: 30, accountName: "current")
+        current.historyIdentity = historyIdentity
+        await reader.completeRequest(for: source, with: current)
+        await waitUntil("restart publish") { store.snapshot.accountName == "current" }
+        await waitUntil("restart history record") { await historyClient.recordCount() == 2 }
+    }
+
+    func testStopRejectsLateFailureAndRestartIsNotBlockedByOldRefresh() async throws {
+        let source = CodexDataSource(
+            codexHome: try makeTemporaryDirectory(named: "QuotaStopLateFailure"),
+            origin: .userSelected
+        )
+        let historyClient = RecordingQuotaHistoryClient(snapshot: .empty)
+        let historyStore = QuotaHistoryStore(historyClient: historyClient)
+        let reader = SuspendedQuotaReader()
+        let store = AccountQuotaStore(quotaReader: reader, observesUserDefaults: false)
+        store.setHistoryStore(historyStore)
+        let historyIdentity = try XCTUnwrap(QuotaHistoryIdentity(
+            homeIdentity: source.stableIdentityKey,
+            stableAccountKey: "stable-account",
+            planType: "pro",
+            limitID: "codex"
+        ))
+        var trusted = quotaSnapshot(usedPercent: 20, accountName: "trusted")
+        trusted.historyIdentity = historyIdentity
+
+        store.setDataSource(source)
+        store.refresh()
+        await waitUntil("trusted request") { await reader.hasPendingRequest(for: source) }
+        await reader.completeRequest(for: source, with: trusted)
+        await waitUntil("trusted publish") { store.snapshot.accountName == "trusted" }
+        await waitUntil("trusted history record") { await historyClient.recordCount() == 1 }
+
+        store.refresh()
+        await waitUntil("late failure request") { await reader.hasPendingRequest(for: source) }
+        store.stop()
+        await reader.failRequest(for: source, error: QuotaTestError())
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(store.snapshot.accountName, "trusted")
+        XCTAssertEqual(store.snapshot.status, trusted.status)
+        XCTAssertFalse(store.snapshot.status.hasPrefix("额度读取失败"))
+        let recordsAfterLateFailure = await historyClient.recordCount()
+        XCTAssertEqual(recordsAfterLateFailure, 1)
+
+        store.start(dataSource: source)
+        await waitUntil("restart request") { await reader.hasPendingRequest(for: source) }
+        var current = quotaSnapshot(usedPercent: 35, accountName: "current")
+        current.historyIdentity = historyIdentity
+        await reader.completeRequest(for: source, with: current)
+        await waitUntil("restart publish") { store.snapshot.accountName == "current" }
+    }
+
     func testRefreshFailurePreservesLastSuccessfulQuotaSnapshot() async {
         let successfulSnapshot = AccountQuotaSnapshot(
             fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 42, resetsAt: Date(timeIntervalSince1970: 1_800)),
@@ -725,6 +819,7 @@ private actor SuspendedQuotaReader: QuotaReading {
 private actor RecordingQuotaHistoryClient: QuotaHistoryLoading {
     private let snapshot: QuotaHistorySnapshot
     private var loadIdentities: [QuotaHistoryIdentity] = []
+    private var records = 0
 
     init(snapshot: QuotaHistorySnapshot) {
         self.snapshot = snapshot
@@ -738,7 +833,8 @@ private actor RecordingQuotaHistoryClient: QuotaHistoryLoading {
     }
 
     func recordAndLoadSnapshot(_ quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot {
-        snapshot
+        records += 1
+        return snapshot
     }
 
     func normalizedSnapshot(_ quota: AccountQuotaSnapshot) async throws -> AccountQuotaSnapshot {
@@ -751,6 +847,10 @@ private actor RecordingQuotaHistoryClient: QuotaHistoryLoading {
 
     func loadedIdentities() -> [QuotaHistoryIdentity] {
         loadIdentities
+    }
+
+    func recordCount() -> Int {
+        records
     }
 }
 
