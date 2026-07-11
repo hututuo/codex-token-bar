@@ -38,9 +38,9 @@ test("prepareRecentChartData selects range-specific points and carries cache hit
   const data = prepareRecentChartData("7d", {
     recentUsage24h: [point(0, { tokens: 10 })],
     recentUsage7d: [
-      point(0, { calls: 1, cacheHitRate: 0.8, fiveHourRemainingPercent: 0.7 }),
+      point(0, { calls: 1, inputTokens: 100, cachedInputTokens: 80, cacheHitRate: 0.8, fiveHourRemainingPercent: 0.7 }),
       point(3600, { calls: 0, cacheHitRate: null }),
-      point(7200, { calls: 1, cacheHitRate: 0.9, sevenDayRemainingPercent: 0.6 }),
+      point(7200, { calls: 1, inputTokens: 100, cachedInputTokens: 90, cacheHitRate: 0.9, sevenDayRemainingPercent: 0.6 }),
     ],
     recentUsage30d: [point(0, { tokens: 30 })],
   });
@@ -78,8 +78,8 @@ test("prepareRecentChartData weights headline cache rate by input tokens", () =>
 
 test("recent chart normalizes malformed cache inputs at the model boundary", () => {
   const malformed = [
-    point(0, { calls: 1, inputTokens: 100, cachedInputTokens: 250, cacheHitRate: 2 }),
-    point(300, { calls: 1, inputTokens: -10, cachedInputTokens: 5, cacheHitRate: -1 }),
+    point(0, { calls: 1, inputTokens: 100, cachedInputTokens: 250, cacheHitRate: 0.2 }),
+    point(300, { calls: 1, inputTokens: 0, cachedInputTokens: 0, cacheHitRate: 1 }),
     point(600, {
       calls: 1,
       inputTokens: Number.NaN,
@@ -107,8 +107,22 @@ test("recent chart normalizes malformed cache inputs at the model boundary", () 
     ],
   );
   assert.ok(data.cacheHitRate >= 0 && data.cacheHitRate <= 1);
+  assert.deepEqual(data.carriedCacheHitRates, [1, 0, 0]);
   assert.ok(selection.cachedInputTokens <= selection.inputTokens);
-  assert.ok(selection.cacheHitRate >= 0 && selection.cacheHitRate <= 1);
+  assert.equal(data.cacheHitRate, 1);
+  assert.equal(selection.cacheHitRate, 1);
+});
+
+test("recent chart preserves null cache availability while deriving numeric rates from tokens", () => {
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [point(0, { calls: 1, inputTokens: 100, cachedInputTokens: 40, cacheHitRate: null })],
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+
+  assert.equal(data.points[0].cacheHitRate, null);
+  assert.equal(data.hasCacheCalls, false);
+  assert.equal(data.cacheHitRate, 0.4);
 });
 
 test("recent chart cache normalization preserves valid points exactly", () => {

@@ -476,7 +476,7 @@ function normalizeRecentUsagePoint(point: RecentUsagePoint): RecentUsagePoint {
   const cachedInputTokens = Math.min(finiteNonnegative(point.cachedInputTokens), inputTokens);
   const cacheHitRate = point.cacheHitRate === null || !Number.isFinite(point.cacheHitRate)
     ? null
-    : clamp(point.cacheHitRate, 0, 1);
+    : inputTokens === 0 ? 0 : cachedInputTokens / inputTokens;
   return {
     ...point,
     inputTokens,
