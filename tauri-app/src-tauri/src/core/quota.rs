@@ -13,7 +13,7 @@ use rate_limits::{parse_rate_limits_with_plan, placeholder_quota, ParsedRateLimi
 use reset_credit::read_reset_credits;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex, OnceLock, TryLockError};
@@ -30,6 +30,7 @@ const FORCED_REFRESH_COALESCE_TTL: Duration = Duration::from_secs(5);
 const RATE_LIMIT_READ_ATTEMPTS: usize = 3;
 const RATE_LIMIT_READ_TIMEOUT: Duration = Duration::from_secs(12);
 const RATE_LIMIT_RETRY_DELAY: Duration = Duration::from_millis(350);
+const STDERR_TAIL_LIMIT_BYTES: usize = 16 * 1024;
 pub(super) const RESET_CREDIT_READ_ATTEMPTS: usize = 3;
 pub(super) const RESET_CREDIT_TIMEOUT: Duration = Duration::from_secs(14);
 const QUOTA_CHILD_ENV_REMOVE: &[&str] = &[
@@ -848,8 +849,15 @@ fn read_rate_limits_once(codex_home: &Path, timeout: Duration) -> Result<ParsedR
     let codex = find_codex_binary_with_report()?.path;
     let mut command = Command::new(codex);
     configure_quota_child_process(&mut command, Some(codex_home));
+    command.args(["app-server", "--listen", "stdio://"]);
+    read_rate_limits_from_command(command, timeout)
+}
+
+fn read_rate_limits_from_command(
+    mut command: Command,
+    timeout: Duration,
+) -> Result<ParsedRateLimits, String> {
     let child = command
-        .args(["app-server", "--listen", "stdio://"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -857,6 +865,12 @@ fn read_rate_limits_once(codex_home: &Path, timeout: Duration) -> Result<ParsedR
         .map_err(|error| format!("启动 Codex 失败：{error}"))?;
     let mut child = QuotaChildGuard::new(child);
 
+    let stderr = child
+        .child_mut()
+        .stderr
+        .take()
+        .ok_or_else(|| "Codex stderr 不可用".to_string())?;
+    child.collect_stderr(stderr);
     let stdout = child
         .child_mut()
         .stdout
@@ -867,7 +881,6 @@ fn read_rate_limits_once(codex_home: &Path, timeout: Duration) -> Result<ParsedR
         .stdin
         .take()
         .ok_or_else(|| "Codex stdin 不可用".to_string())?;
-    let stderr = child.child_mut().stderr.take();
     let (sender, receiver) = mpsc::channel();
 
     thread::spawn(move || {
@@ -920,7 +933,7 @@ fn read_rate_limits_once(codex_home: &Path, timeout: Duration) -> Result<ParsedR
         }
 
         if message.get("id").and_then(Value::as_i64) == Some(2) {
-            child.cleanup();
+            let _ = child.cleanup();
             if let Some(error) = message
                 .get("error")
                 .and_then(|value| value.get("message"))
@@ -935,14 +948,68 @@ fn read_rate_limits_once(codex_home: &Path, timeout: Duration) -> Result<ParsedR
         }
     }
 
-    child.cleanup();
-    let mut stderr_text = None;
-    if let Some(mut stderr) = stderr {
-        let mut text = String::new();
-        let _ = std::io::Read::read_to_string(&mut stderr, &mut text);
-        stderr_text = Some(text);
+    let stderr_tail = child.cleanup();
+    Err(quota_deadline_error(timeout, Some(&stderr_tail)))
+}
+
+struct StderrTailCollector {
+    reader: Option<thread::JoinHandle<Vec<u8>>>,
+}
+
+impl StderrTailCollector {
+    fn spawn<R>(mut stderr: R) -> Self
+    where
+        R: Read + Send + 'static,
+    {
+        let reader = thread::spawn(move || {
+            let mut tail = Vec::with_capacity(STDERR_TAIL_LIMIT_BYTES);
+            let mut buffer = [0_u8; 4 * 1024];
+            loop {
+                match stderr.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => append_stderr_tail(&mut tail, &buffer[..count]),
+                    Err(_) => break,
+                }
+            }
+            tail
+        });
+        Self {
+            reader: Some(reader),
+        }
     }
-    Err(quota_deadline_error(timeout, stderr_text.as_deref()))
+
+    fn finish(mut self) -> String {
+        let bytes = self
+            .reader
+            .take()
+            .and_then(|reader| reader.join().ok())
+            .unwrap_or_default();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+impl Drop for StderrTailCollector {
+    fn drop(&mut self) {
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+fn append_stderr_tail(tail: &mut Vec<u8>, bytes: &[u8]) {
+    if bytes.len() >= STDERR_TAIL_LIMIT_BYTES {
+        tail.clear();
+        tail.extend_from_slice(&bytes[(bytes.len() - STDERR_TAIL_LIMIT_BYTES)..]);
+        return;
+    }
+    let overflow = tail
+        .len()
+        .saturating_add(bytes.len())
+        .saturating_sub(STDERR_TAIL_LIMIT_BYTES);
+    if overflow > 0 {
+        tail.drain(..overflow);
+    }
+    tail.extend_from_slice(bytes);
 }
 
 trait QuotaChildProcess {
@@ -963,6 +1030,7 @@ impl QuotaChildProcess for Child {
 struct QuotaChildGuard<C: QuotaChildProcess> {
     child: C,
     cleaned: bool,
+    stderr: Option<StderrTailCollector>,
 }
 
 impl<C: QuotaChildProcess> QuotaChildGuard<C> {
@@ -970,16 +1038,27 @@ impl<C: QuotaChildProcess> QuotaChildGuard<C> {
         Self {
             child,
             cleaned: false,
+            stderr: None,
         }
     }
 
-    fn cleanup(&mut self) {
-        if self.cleaned {
-            return;
+    fn collect_stderr<R>(&mut self, stderr: R)
+    where
+        R: Read + Send + 'static,
+    {
+        self.stderr = Some(StderrTailCollector::spawn(stderr));
+    }
+
+    fn cleanup(&mut self) -> String {
+        if !self.cleaned {
+            self.child.kill_for_cleanup();
+            self.child.wait_for_cleanup();
+            self.cleaned = true;
         }
-        self.child.kill_for_cleanup();
-        self.child.wait_for_cleanup();
-        self.cleaned = true;
+        self.stderr
+            .take()
+            .map(StderrTailCollector::finish)
+            .unwrap_or_default()
     }
 }
 
@@ -991,7 +1070,7 @@ impl QuotaChildGuard<Child> {
 
 impl<C: QuotaChildProcess> Drop for QuotaChildGuard<C> {
     fn drop(&mut self) {
-        self.cleanup();
+        let _ = self.cleanup();
     }
 }
 
@@ -1786,6 +1865,144 @@ mod tests {
         assert_eq!(RATE_LIMIT_RETRY_DELAY, Duration::from_millis(350));
         assert_eq!(RESET_CREDIT_READ_ATTEMPTS, 3);
         assert_eq!(RESET_CREDIT_TIMEOUT, Duration::from_secs(14));
+    }
+
+    #[test]
+    fn quota_stderr_collector_keeps_only_the_bounded_tail() {
+        let marker = "stderr-final-marker";
+        let mut bytes = b"discarded-prefix".to_vec();
+        bytes.extend(vec![b'x'; STDERR_TAIL_LIMIT_BYTES * 4]);
+        bytes.extend_from_slice(marker.as_bytes());
+
+        let tail = StderrTailCollector::spawn(std::io::Cursor::new(bytes)).finish();
+
+        assert!(tail.len() <= STDERR_TAIL_LIMIT_BYTES);
+        assert!(tail.ends_with(marker));
+        assert!(!tail.contains("discarded-prefix"));
+    }
+
+    #[test]
+    fn quota_stderr_collector_handles_empty_stderr() {
+        let tail = StderrTailCollector::spawn(std::io::Cursor::new(Vec::<u8>::new())).finish();
+        assert!(tail.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quota_stderr_large_output_does_not_block_successful_json_rpc() {
+        let response = r#"{"jsonrpc":"2.0","id":2,"result":{"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":"Codex","primary":{"usedPercent":20,"resetsAt":1781715600},"secondary":{"usedPercent":40,"resetsAt":1782144492}}}}}"#;
+        let command = quota_stderr_fixture_command(response, 4_096);
+
+        let result = read_rate_limits_from_command(command, Duration::from_secs(3));
+
+        assert!(result.is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quota_stderr_json_rpc_error_path_still_terminates_reader() {
+        let response = r#"{"jsonrpc":"2.0","id":2,"error":{"message":"fixture rpc error"}}"#;
+        let command = quota_stderr_fixture_command(response, 4_096);
+
+        let error = match read_rate_limits_from_command(command, Duration::from_secs(3)) {
+            Ok(_) => panic!("fixture JSON-RPC error unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error, "fixture rpc error");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quota_stderr_timeout_remains_primary_and_includes_bounded_tail() {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("IFS= read -r _; printf 'timeout-tail-marker\\n' >&2; IFS= read -r _");
+
+        let error = match read_rate_limits_from_command(command, Duration::from_millis(100)) {
+            Ok(_) => panic!("fixture timeout unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        assert!(error.starts_with("额度读取超时"));
+        assert!(error.contains("timeout-tail-marker"));
+        assert_eq!(classify_quota_error("account_quota", &error).category, "timeout");
+    }
+
+    #[test]
+    fn quota_stderr_reader_is_joined_when_child_guard_drops() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct ProbeChild {
+            killed: Arc<AtomicBool>,
+            waited: Arc<AtomicBool>,
+        }
+
+        impl QuotaChildProcess for ProbeChild {
+            fn kill_for_cleanup(&mut self) {
+                self.killed.store(true, Ordering::Relaxed);
+            }
+
+            fn wait_for_cleanup(&mut self) {
+                self.waited.store(true, Ordering::Relaxed);
+            }
+        }
+
+        struct DropReader(Arc<AtomicBool>);
+
+        impl Read for DropReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                Ok(0)
+            }
+        }
+
+        impl Drop for DropReader {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let killed = Arc::new(AtomicBool::new(false));
+        let waited = Arc::new(AtomicBool::new(false));
+        let reader_dropped = Arc::new(AtomicBool::new(false));
+        {
+            let mut guard = QuotaChildGuard::new(ProbeChild {
+                killed: killed.clone(),
+                waited: waited.clone(),
+            });
+            guard.collect_stderr(DropReader(reader_dropped.clone()));
+        }
+
+        assert!(killed.load(Ordering::Relaxed));
+        assert!(waited.load(Ordering::Relaxed));
+        assert!(reader_dropped.load(Ordering::Relaxed));
+    }
+
+    #[cfg(unix)]
+    fn quota_stderr_fixture_command(response: &str, stderr_lines: usize) -> Command {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(
+                r#"
+i=0
+while [ "$i" -lt "$2" ]; do
+  printf 'stderr-padding-0123456789abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMN\n' >&2
+  i=$((i + 1))
+done
+printf 'stderr-final-marker\n' >&2
+IFS= read -r _
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{}}'
+IFS= read -r _
+IFS= read -r _
+printf '%s\n' "$1"
+"#,
+            )
+            .arg("quota-stderr-fixture")
+            .arg(response)
+            .arg(stderr_lines.to_string());
+        command
     }
 
     #[test]
