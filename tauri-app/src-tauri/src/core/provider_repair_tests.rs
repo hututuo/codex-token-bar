@@ -1438,13 +1438,16 @@ fn session_backup_rejects_concurrent_append_and_removes_incomplete_publication()
     let append_session = session.clone();
     let appender = thread::spawn(move || {
         append_barrier.wait();
-        let mut file = fs::OpenOptions::new().append(true).open(&append_session).unwrap();
-        writeln!(file, r#"{{"type":"event_msg","payload":{{"type":"agent_message","message":"appended"}}}}"#).unwrap();
-        file.sync_all().unwrap();
+        let append_result = (|| -> std::io::Result<()> {
+            let mut file = fs::OpenOptions::new().append(true).open(&append_session)?;
+            writeln!(file, r#"{{"type":"event_msg","payload":{{"type":"agent_message","message":"appended"}}}}"#)?;
+            file.sync_all()
+        })();
         append_barrier.wait();
+        append_result
     });
 
-    let error = backups::create_provider_backup_files_at_with_copy_hook(
+    let backup_result = backups::create_provider_backup_files_at_with_copy_hook(
         &backup_root,
         &home,
         "openai",
@@ -1455,9 +1458,9 @@ fn session_backup_rejects_concurrent_append_and_removes_incomplete_publication()
             }
             Ok(())
         },
-    )
-    .unwrap_err();
-    appender.join().unwrap();
+    );
+    appender.join().unwrap().unwrap();
+    let error = backup_result.unwrap_err();
 
     assert!(error.contains("描述符复制期间发生变化"), "{error}");
     assert_eq!(completed_backup_count(&backup_root), 0);
@@ -1504,11 +1507,13 @@ fn session_backup_rejects_atomic_live_path_replacement_with_same_len_and_mtime()
             .unwrap()
             .set_modified(original_mtime)
             .unwrap();
-        fs::rename(replacement_path, replace_session).unwrap();
+        let replacement_result =
+            session_files::replace_file_atomically(&replacement_path, &replace_session);
         replace_barrier.wait();
+        replacement_result
     });
 
-    let error = backups::create_provider_backup_files_at_with_copy_hook(
+    let backup_result = backups::create_provider_backup_files_at_with_copy_hook(
         &backup_root,
         &home,
         "openai",
@@ -1519,9 +1524,9 @@ fn session_backup_rejects_atomic_live_path_replacement_with_same_len_and_mtime()
             }
             Ok(())
         },
-    )
-    .unwrap_err();
-    replacer.join().unwrap();
+    );
+    replacer.join().unwrap().unwrap();
+    let error = backup_result.unwrap_err();
 
     assert!(error.contains("描述符复制期间发生变化"), "{error}");
     assert_failed_session_backup_cleanup(
@@ -1556,18 +1561,20 @@ fn session_backup_rejects_same_inode_same_len_overwrite_with_restored_mtime() {
     let overwrite_session = session.clone();
     let overwriter = thread::spawn(move || {
         overwrite_barrier.wait();
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&overwrite_session)
-            .unwrap();
-        file.write_all(&overwritten).unwrap();
-        file.sync_all().unwrap();
-        file.set_modified(original_mtime).unwrap();
+        let overwrite_result = (|| -> std::io::Result<()> {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&overwrite_session)?;
+            file.write_all(&overwritten)?;
+            file.sync_all()?;
+            file.set_modified(original_mtime)
+        })();
         overwrite_barrier.wait();
+        overwrite_result
     });
 
-    let error = backups::create_provider_backup_files_at_with_copy_hook(
+    let backup_result = backups::create_provider_backup_files_at_with_copy_hook(
         &backup_root,
         &home,
         "openai",
@@ -1578,9 +1585,9 @@ fn session_backup_rejects_same_inode_same_len_overwrite_with_restored_mtime() {
             }
             Ok(())
         },
-    )
-    .unwrap_err();
-    overwriter.join().unwrap();
+    );
+    overwriter.join().unwrap().unwrap();
+    let error = backup_result.unwrap_err();
 
     assert!(error.contains("描述符复制期间发生变化"), "{error}");
     assert_failed_session_backup_cleanup(
