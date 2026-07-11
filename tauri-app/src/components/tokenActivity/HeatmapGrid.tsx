@@ -1,4 +1,10 @@
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { cellColor, cellLabel, isInRange, type ActivityMode, type HeatmapDay, type MonthMarker } from "./model";
+import {
+  heatmapKeyboardAction,
+  resolveHeatmapFocusDate,
+  selectHeatmapDate,
+} from "./heatmapNavigation";
 
 interface HeatmapGridProps {
   days: HeatmapDay[];
@@ -21,10 +27,54 @@ export function HeatmapGrid({
   rangeEnd,
   rangeStart,
 }: HeatmapGridProps) {
+  const dates = useMemo(() => days.map(({ day }) => day.date), [days]);
+  const [focusedDate, setFocusedDate] = useState<string | null>(() => (
+    resolveHeatmapFocusDate(dates, null, hoveredDate, rangeStart)
+  ));
+  const cellRefs = useRef(new Map<string, HTMLButtonElement>());
+  const validFocusedDate = resolveHeatmapFocusDate(
+    dates,
+    focusedDate,
+    hoveredDate,
+    rangeStart,
+  );
+
+  useEffect(() => {
+    if (focusedDate !== validFocusedDate) {
+      setFocusedDate(validFocusedDate);
+    }
+  }, [focusedDate, validFocusedDate]);
+
+  function handleCellKeyDown(
+    event: KeyboardEvent<HTMLButtonElement>,
+    index: number,
+    date: string,
+  ) {
+    const action = heatmapKeyboardAction(event.key, index, days.length);
+    if (!action.handled) {
+      return;
+    }
+    event.preventDefault();
+    if (action.select) {
+      selectHeatmapDate(date, onDateSelect);
+      return;
+    }
+    const nextDay = days[action.index]?.day;
+    if (!nextDay) {
+      return;
+    }
+    setFocusedDate(nextDay.date);
+    cellRefs.current.get(nextDay.date)?.focus();
+  }
+
   return (
     <>
-      <div className="heatmap-grid">
-        {days.map(({ day, intensity }) => {
+      <div
+        aria-label="过去一年 Token 活动热图；使用方向键移动，Enter 或空格选择日期"
+        className="heatmap-grid"
+        role="group"
+      >
+        {days.map(({ day, intensity }, index) => {
           const selected = isInRange(day.date, rangeStart, rangeEnd);
           const hovered = hoveredDate === day.date;
           const classes = [
@@ -38,12 +88,24 @@ export function HeatmapGrid({
               aria-pressed={selected}
               className={classes}
               key={day.date}
-              onClick={() => onDateSelect(day.date)}
-              onFocus={() => onDayHover(day)}
+              onClick={() => selectHeatmapDate(day.date, onDateSelect)}
+              onFocus={() => {
+                setFocusedDate(day.date);
+                onDayHover(day);
+              }}
+              onKeyDown={(event) => handleCellKeyDown(event, index, day.date)}
               onMouseEnter={() => onDayHover(day)}
               onMouseLeave={() => onDayHover(null)}
               onBlur={() => onDayHover(null)}
+              ref={(node) => {
+                if (node) {
+                  cellRefs.current.set(day.date, node);
+                } else {
+                  cellRefs.current.delete(day.date);
+                }
+              }}
               style={{ backgroundColor: cellColor(mode, intensity) }}
+              tabIndex={validFocusedDate === day.date ? 0 : -1}
               title={cellLabel(day, mode)}
               type="button"
             />
