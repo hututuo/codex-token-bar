@@ -506,17 +506,56 @@ fn pinned_db_snapshot_cache(
 
 #[cfg(unix)]
 fn clean_stale_pinned_db_snapshots() -> Result<(), String> {
-    let prefix = "codex-token-bar-pinned-db-";
-    let active_prefix = format!("{prefix}{}-", std::process::id());
-    let entries = std::fs::read_dir(std::env::temp_dir())
+    clean_stale_pinned_db_snapshots_in(
+        &std::env::temp_dir(),
+        std::process::id(),
+        process_liveness,
+    )
+}
+
+#[cfg(unix)]
+fn clean_stale_pinned_db_snapshots_in(
+    directory: &Path,
+    current_pid: u32,
+    liveness: impl Fn(u32) -> Option<bool>,
+) -> Result<(), String> {
+    const PREFIX: &str = "codex-token-bar-pinned-db-";
+    let entries = std::fs::read_dir(directory)
         .map_err(|error| format!("failed to inspect pinned DB cache directory: {error}"))?;
-    for entry in entries.flatten().take(64) {
+    for entry in entries
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(PREFIX))
+        .take(64)
+    {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with(prefix) && !name.starts_with(&active_prefix) {
+        let Some(pid) = name
+            .strip_prefix(PREFIX)
+            .and_then(|suffix| suffix.split('-').next())
+            .and_then(|pid| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid != current_pid && liveness(pid) == Some(false) {
             let _ = std::fs::remove_dir_all(entry.path());
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn process_liveness(pid: u32) -> Option<bool> {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    let pid = i32::try_from(pid).ok()?;
+    if unsafe { kill(pid, 0) } == 0 {
+        return Some(true);
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(1) => Some(true),
+        Some(3) => Some(false),
+        _ => None,
+    }
 }
 
 #[cfg(unix)]
@@ -717,9 +756,16 @@ fn validate_canonical_sessions_root(root: &impl std::os::fd::AsFd) -> Result<(),
         let text = String::from_utf8_lossy(name);
         let stat = statat(root, text.as_ref(), AtFlags::SYMLINK_NOFOLLOW)
             .map_err(|error| format!("failed to inspect pinned sessions root: {error}"))?;
+        let file_type = FileType::from_raw_mode(stat.st_mode);
+        if text.starts_with('.')
+            && !text.to_ascii_lowercase().ends_with(".jsonl")
+            && file_type == FileType::RegularFile
+        {
+            continue;
+        }
         if text.len() != 4
             || !text.bytes().all(|byte| byte.is_ascii_digit())
-            || FileType::from_raw_mode(stat.st_mode) != FileType::Directory
+            || file_type != FileType::Directory
         {
             return Err("non-canonical sessions layout cannot be observed safely".into());
         }
@@ -1781,6 +1827,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pinned_source_observation_survives_a_to_b_to_a_swap() {
+        let _guard = pinned_db_test_lock().lock().unwrap();
         let home = disposable_source_test_directory("pinned-source-a");
         let displaced = home.with_extension("displaced");
         let session_path = canonical_session_test_directory(&home);
@@ -1822,6 +1869,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pinned_source_accepts_a_legal_canonical_target() {
+        let _guard = pinned_db_test_lock().lock().unwrap();
         use std::os::unix::fs::symlink;
 
         let target = disposable_source_test_directory("canonical-target");
@@ -1858,6 +1906,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pinned_source_copies_only_bounded_recent_session_candidates() {
+        let _guard = pinned_db_test_lock().lock().unwrap();
         let home = disposable_source_test_directory("bounded-pinned-sessions");
         let old_sessions = home.join("sessions/2000/01/01");
         std::fs::create_dir_all(&old_sessions).unwrap();
@@ -1899,6 +1948,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pinned_source_selects_the_newest_sixty_four_recent_sessions() {
+        let _guard = pinned_db_test_lock().lock().unwrap();
         let home = disposable_source_test_directory("newest-pinned-sessions");
         let sessions = canonical_session_test_directory(&home);
         std::fs::create_dir_all(&sessions).unwrap();
@@ -1971,7 +2021,64 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn stale_cache_cleanup_filters_unrelated_entries_and_preserves_active_processes() {
+        let root = disposable_source_test_directory("stale-cache-cleanup");
+        for index in 0..100 {
+            std::fs::create_dir(root.join(format!("unrelated-{index}"))).unwrap();
+        }
+        let stale = root.join("codex-token-bar-pinned-db-4001-1");
+        let active = root.join("codex-token-bar-pinned-db-4002-1");
+        let unknown = root.join("codex-token-bar-pinned-db-4003-1");
+        std::fs::create_dir(&stale).unwrap();
+        std::fs::create_dir(&active).unwrap();
+        std::fs::create_dir(&unknown).unwrap();
+
+        clean_stale_pinned_db_snapshots_in(&root, 4000, |pid| match pid {
+            4001 => Some(false),
+            4002 => Some(true),
+            _ => None,
+        })
+        .unwrap();
+
+        assert!(!stale.exists());
+        assert!(active.exists());
+        assert!(unknown.exists());
+        remove_source_test_directory(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sessions_root_allows_ds_store_without_weakening_layout_validation() {
+        let _guard = pinned_db_test_lock().lock().unwrap();
+        let home = disposable_source_test_directory("sessions-ds-store");
+        std::fs::create_dir(home.join("sessions")).unwrap();
+        std::fs::write(home.join("sessions/.DS_Store"), b"metadata").unwrap();
+        let current = canonical_session_test_directory(&home);
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::write(current.join("recent.jsonl"), b"recent").unwrap();
+        let mut transition = CodexHomeTransitionState::default();
+        let source = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
+            .unwrap();
+
+        let pinned = pin_captured_codex_home_source(&captured).unwrap();
+
+        assert!(pinned
+            .read_path()
+            .join(current.strip_prefix(&home).unwrap())
+            .join("recent.jsonl")
+            .exists());
+        remove_source_test_directory(home);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn pinned_source_fails_with_diagnostic_when_archived_fallback_cannot_be_safe() {
+        let _guard = pinned_db_test_lock().lock().unwrap();
         let home = disposable_source_test_directory("unsafe-archived-fallback");
         std::fs::write(
             home.join(".codex-global-state.json"),
@@ -2006,6 +2113,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn empty_native_state_never_copies_large_sqlite_files() {
+        let _guard = pinned_db_test_lock().lock().unwrap();
         let home = disposable_source_test_directory("empty-state-skips-db");
         std::fs::write(
             home.join(".codex-global-state.json"),
@@ -2034,6 +2142,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn state_sqlite_directory_is_rejected_as_a_non_file() {
+        let _guard = pinned_db_test_lock().lock().unwrap();
         let home = disposable_source_test_directory("sqlite-directory");
         std::fs::write(
             home.join(".codex-global-state.json"),
@@ -2062,6 +2171,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unchanged_native_state_and_db_reuse_verified_db_snapshot_until_signature_changes() {
+        let _guard = pinned_db_test_lock().lock().unwrap();
         let home = disposable_source_test_directory("db-signature-cache");
         let thread_id = "019eaaaa-0000-0000-0000-0000000000aa";
         std::fs::write(
@@ -2111,6 +2221,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn empty_native_source_evicts_previous_physical_db_cache_and_directory() {
+        let _guard = pinned_db_test_lock().lock().unwrap();
         let home_a = disposable_source_test_directory("cache-source-a");
         let thread_id = "019eaaaa-0000-0000-0000-0000000000aa";
         std::fs::write(
@@ -2168,6 +2279,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn failed_db_snapshot_creation_leaves_no_task_owned_directory() {
+        let _guard = pinned_db_test_lock().lock().unwrap();
         let prefix = format!("codex-token-bar-pinned-db-{}-", std::process::id());
         let count = || {
             std::fs::read_dir(std::env::temp_dir())
@@ -2325,5 +2437,11 @@ mod tests {
             .next()
             .unwrap(),
         )
+    }
+
+    #[cfg(unix)]
+    fn pinned_db_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
     }
 }
