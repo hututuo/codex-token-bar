@@ -67,8 +67,7 @@ extension CodexUsageAnalyzer {
                 previousTotalTokens: Int?,
                 canIncrementFromOffset: Bool,
                 forkReplayActive: Bool,
-                lastSkippedForkReplayTokenAt: Date?,
-                migratedFromLegacyCache _: Bool = false
+                lastSkippedForkReplayTokenAt: Date?
             ) {
                 self.key = key
                 self.events = events

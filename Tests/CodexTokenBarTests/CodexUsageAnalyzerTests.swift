@@ -965,8 +965,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             previousTotalTokens: 120,
             canIncrementFromOffset: true,
             forkReplayActive: false,
-            lastSkippedForkReplayTokenAt: nil,
-            migratedFromLegacyCache: false
+            lastSkippedForkReplayTokenAt: nil
         )
 
         cache.store(cached, for: path)

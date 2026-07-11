@@ -343,8 +343,7 @@ extension CodexUsageAnalyzer {
                     previousTotalTokens: appended.previousTotalTokens,
                     canIncrementFromOffset: appended.endedWithNewline,
                     forkReplayActive: appended.forkReplayActive,
-                    lastSkippedForkReplayTokenAt: appended.lastSkippedForkReplayTokenAt,
-                    migratedFromLegacyCache: false
+                    lastSkippedForkReplayTokenAt: appended.lastSkippedForkReplayTokenAt
                 ),
                 for: cachePath
             )
@@ -372,8 +371,7 @@ extension CodexUsageAnalyzer {
                 previousTotalTokens: result.previousTotalTokens,
                 canIncrementFromOffset: result.endedWithNewline,
                 forkReplayActive: result.forkReplayActive,
-                lastSkippedForkReplayTokenAt: result.lastSkippedForkReplayTokenAt,
-                migratedFromLegacyCache: false
+                lastSkippedForkReplayTokenAt: result.lastSkippedForkReplayTokenAt
             ),
             for: cachePath
         )
