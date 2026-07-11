@@ -1,6 +1,15 @@
 import XCTest
 @testable import CodexTokenBar
 
+@MainActor
+private final class TestAutomaticInterfaceScale {
+    var value: Double
+
+    init(_ value: Double) {
+        self.value = value
+    }
+}
+
 final class DashboardRuntimeCompositionTests: XCTestCase {
     @MainActor
     func testTwoDashboardCompositionsShareEveryLongLivedOwner() {
@@ -189,6 +198,110 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
     }
 
     @MainActor
+    func testCompactFloatingOwnerRebindsScaleAfterDefaultsChangeWithoutDashboardConsumer() {
+        let suiteName = "DashboardRuntimeCompositionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let notifications = NotificationCenter()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(1.0, forKey: "floatingPanelScale")
+        defaults.set(false, forKey: InterfaceScaleSettings.autoEnabledKey)
+        defaults.set(1.0, forKey: InterfaceScaleSettings.manualMultiplierKey)
+        var layouts: [FloatingTokenPanelLayout] = []
+        let runtime = DashboardRuntime(
+            settings: defaults,
+            notificationCenter: notifications,
+            automaticInterfaceScaleProvider: { 1.0 },
+            startupAction: {},
+            surfaceApplyAction: { configuration in
+                layouts.append(FloatingTokenPanelLayout(
+                    scale: configuration.floatingPanelScale,
+                    visibility: configuration.floatingPanelVisibility
+                ))
+            }
+        )
+        let consumer = UUID()
+
+        runtime.acquireConsumer(consumer)
+        runtime.reportConfiguration(Self.configuration(floating: true, status: false), for: consumer)
+        runtime.releaseConsumer(consumer)
+        XCTAssertEqual(runtime.activeConsumerCount, 0)
+        XCTAssertEqual(layouts.map(\.effectiveScale), [1.0])
+
+        defaults.set(1.3, forKey: InterfaceScaleSettings.manualMultiplierKey)
+        notifications.post(name: UserDefaults.didChangeNotification, object: defaults)
+
+        XCTAssertEqual(layouts.map(\.effectiveScale), [1.0, 1.3])
+        XCTAssertEqual(layouts.last?.size, FloatingTokenPanelMetrics.size(scale: 1.3, visibility: .default))
+
+        notifications.post(name: UserDefaults.didChangeNotification, object: defaults)
+        XCTAssertEqual(layouts.count, 2, "An unchanged effective scale must not rebind the compact surface.")
+    }
+
+    @MainActor
+    func testCompactFloatingOwnerRebindsAutomaticScaleAfterScreenChanges() {
+        let suiteName = "DashboardRuntimeCompositionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let notifications = NotificationCenter()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(1.0, forKey: "floatingPanelScale")
+        defaults.set(true, forKey: InterfaceScaleSettings.autoEnabledKey)
+        let automaticScale = TestAutomaticInterfaceScale(1.0)
+        var appliedScales: [CGFloat] = []
+        let runtime = DashboardRuntime(
+            settings: defaults,
+            notificationCenter: notifications,
+            automaticInterfaceScaleProvider: { automaticScale.value },
+            startupAction: {},
+            surfaceApplyAction: { appliedScales.append($0.floatingPanelScale.value) }
+        )
+        let consumer = UUID()
+
+        runtime.acquireConsumer(consumer)
+        runtime.reportConfiguration(Self.configuration(floating: true, status: false), for: consumer)
+        runtime.releaseConsumer(consumer)
+
+        automaticScale.value = 1.13
+        notifications.post(name: NSWindow.didChangeScreenNotification, object: nil)
+        notifications.post(name: NSWindow.didChangeScreenNotification, object: nil)
+
+        automaticScale.value = 1.24
+        notifications.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+
+        XCTAssertEqual(appliedScales, [1.0, 1.13, 1.24])
+    }
+
+    @MainActor
+    func testDashboardReportDoesNotRebindAfterRuntimeAlreadyAppliedSameScale() {
+        let suiteName = "DashboardRuntimeCompositionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let notifications = NotificationCenter()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(1.0, forKey: "floatingPanelScale")
+        defaults.set(false, forKey: InterfaceScaleSettings.autoEnabledKey)
+        defaults.set(1.0, forKey: InterfaceScaleSettings.manualMultiplierKey)
+        var applications = 0
+        let runtime = DashboardRuntime(
+            settings: defaults,
+            notificationCenter: notifications,
+            automaticInterfaceScaleProvider: { 1.0 },
+            startupAction: {},
+            surfaceApplyAction: { _ in applications += 1 }
+        )
+        let consumer = UUID()
+        runtime.acquireConsumer(consumer)
+        runtime.reportConfiguration(Self.configuration(floating: true, status: false), for: consumer)
+
+        defaults.set(1.3, forKey: InterfaceScaleSettings.manualMultiplierKey)
+        notifications.post(name: UserDefaults.didChangeNotification, object: defaults)
+        runtime.reportConfiguration(
+            Self.configuration(floating: true, status: false, interfaceScale: 1.3),
+            for: consumer
+        )
+
+        XCTAssertEqual(applications, 2)
+    }
+
+    @MainActor
     func testInactiveTransitionCancelsAfterConfigurationAndReappliesOnReturn() {
         var starts = 0
         var stops = 0
@@ -233,12 +346,13 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
 
     private static func configuration(
         floating: Bool,
-        status: Bool
+        status: Bool,
+        interfaceScale: CGFloat = 1
     ) -> DashboardRuntimeConfiguration {
         DashboardRuntimeConfiguration(
             floatingPanelEnabled: floating,
             statusBarPanelEnabled: status,
-            floatingPanelScale: FloatingTokenPanelScale(baseScale: 1, interfaceScale: 1),
+            floatingPanelScale: FloatingTokenPanelScale(baseScale: 1, interfaceScale: interfaceScale),
             floatingPanelVisibility: .default,
             floatingPanelLocked: false,
             preciseTokenCountingEnabled: false,

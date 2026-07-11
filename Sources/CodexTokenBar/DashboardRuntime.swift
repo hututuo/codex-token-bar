@@ -159,6 +159,8 @@ final class DashboardRuntime: ObservableObject {
     private let floatingPanel: FloatingTokenPanelController
     private let statusBarPanel: StatusBarTokenController
     private let settings: UserDefaults
+    private let notificationCenter: NotificationCenter
+    private let automaticInterfaceScaleProvider: @MainActor () -> Double
     private let surfaceApplyAction: ((DashboardRuntimeConfiguration) -> Void)?
     private let sideEffectStartAction: (() -> Void)?
     private let sideEffectStopAction: (() -> Void)?
@@ -211,6 +213,8 @@ final class DashboardRuntime: ObservableObject {
         floatingPanel: FloatingTokenPanelController = FloatingTokenPanelController(),
         statusBarPanel: StatusBarTokenController = StatusBarTokenController(),
         settings: UserDefaults = .standard,
+        notificationCenter: NotificationCenter = .default,
+        automaticInterfaceScaleProvider: (@MainActor () -> Double)? = nil,
         startupAction: (() -> Void)? = nil,
         surfaceApplyAction: ((DashboardRuntimeConfiguration) -> Void)? = nil,
         sideEffectStartAction: (() -> Void)? = nil,
@@ -227,6 +231,12 @@ final class DashboardRuntime: ObservableObject {
         self.floatingPanel = floatingPanel
         self.statusBarPanel = statusBarPanel
         self.settings = settings
+        self.notificationCenter = notificationCenter
+        self.automaticInterfaceScaleProvider = automaticInterfaceScaleProvider ?? { [weak floatingPanel] in
+            InterfaceScaleSettings.autoScale(
+                for: floatingPanel?.panel?.screen ?? InterfaceScaleSettings.activeScreen()
+            )
+        }
         self.startupAction = startupAction
         self.surfaceApplyAction = surfaceApplyAction
         self.sideEffectStartAction = sideEffectStartAction
@@ -313,7 +323,23 @@ final class DashboardRuntime: ObservableObject {
 
     private func startSideEffects() {
         sideEffectStartAction?()
-        guard startupAction == nil, cancellables.isEmpty else { return }
+        guard cancellables.isEmpty else { return }
+        notificationCenter.publisher(
+            for: UserDefaults.didChangeNotification,
+            object: settings
+        ).sink { [weak self] _ in
+            self?.refreshFloatingPanelScaleFromSettings()
+        }.store(in: &cancellables)
+        for name in [
+            NSWindow.didChangeScreenNotification,
+            NSApplication.didChangeScreenParametersNotification
+        ] {
+            notificationCenter.publisher(for: name).sink { [weak self] _ in
+                self?.refreshFloatingPanelScaleFromSettings()
+            }.store(in: &cancellables)
+        }
+
+        guard startupAction == nil else { return }
         usageStore.$dataSourceBindingKey.dropFirst().sink { [weak self] _ in
             self?.synchronizeSourceTransition()
         }.store(in: &cancellables)
@@ -341,7 +367,7 @@ final class DashboardRuntime: ObservableObject {
             NSWindow.didDeminiaturizeNotification
         ]
         for name in appNotifications {
-            NotificationCenter.default.publisher(for: name).sink { [weak self] _ in
+            notificationCenter.publisher(for: name).sink { [weak self] _ in
                 self?.sideEffects.handleCadenceEvent()
             }.store(in: &cancellables)
         }
@@ -408,6 +434,29 @@ final class DashboardRuntime: ObservableObject {
         }
     }
 
+    private func refreshFloatingPanelScaleFromSettings() {
+        guard let configuration, configuration.floatingPanelEnabled else { return }
+        let baseScale = (settings.object(forKey: "floatingPanelScale") as? NSNumber)?.doubleValue
+            ?? FloatingTokenPanelMetrics.defaultScale
+        let autoEnabled = (settings.object(forKey: InterfaceScaleSettings.autoEnabledKey) as? NSNumber)?.boolValue
+            ?? InterfaceScaleSettings.defaultAutoEnabled
+        let manualMultiplier = (settings.object(forKey: InterfaceScaleSettings.manualMultiplierKey) as? NSNumber)?.doubleValue
+            ?? InterfaceScaleSettings.defaultManualMultiplier
+        let interfaceScale = autoEnabled
+            ? InterfaceScaleSettings.clampedEffective(automaticInterfaceScaleProvider())
+            : InterfaceScaleSettings.effectiveScale(
+                manualMultiplier: manualMultiplier,
+                autoEnabled: false,
+                screen: nil
+            )
+        let scale = FloatingTokenPanelScale(
+            baseScale: baseScale,
+            interfaceScale: CGFloat(interfaceScale)
+        )
+        guard scale != configuration.floatingPanelScale else { return }
+        applyAppConfiguration(configuration.replacing(floatingPanelScale: scale))
+    }
+
     private func refreshForSystemWake() {
         guard let configuration else { return }
         let context = DashboardRefreshContext.fromSurfaces(
@@ -445,12 +494,13 @@ private extension DashboardRuntimeConfiguration {
     func replacing(
         floatingPanelEnabled: Bool? = nil,
         statusBarPanelEnabled: Bool? = nil,
+        floatingPanelScale: FloatingTokenPanelScale? = nil,
         floatingPanelLocked: Bool? = nil
     ) -> DashboardRuntimeConfiguration {
         DashboardRuntimeConfiguration(
             floatingPanelEnabled: floatingPanelEnabled ?? self.floatingPanelEnabled,
             statusBarPanelEnabled: statusBarPanelEnabled ?? self.statusBarPanelEnabled,
-            floatingPanelScale: floatingPanelScale,
+            floatingPanelScale: floatingPanelScale ?? self.floatingPanelScale,
             floatingPanelVisibility: floatingPanelVisibility,
             floatingPanelLocked: floatingPanelLocked ?? self.floatingPanelLocked,
             preciseTokenCountingEnabled: preciseTokenCountingEnabled,

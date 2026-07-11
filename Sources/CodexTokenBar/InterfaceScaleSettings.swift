@@ -408,14 +408,14 @@ struct InterfaceScaleMenuContent: View {
         Divider()
 
         Button("缩小一点") {
-            autoEnabled = false
             manualMultiplier = InterfaceScaleSettings.nudgeManual(manualMultiplier, delta: -InterfaceScaleSettings.step)
+            autoEnabled = false
         }
         .disabled(!autoEnabled && manualMultiplier <= InterfaceScaleSettings.manualRange.lowerBound)
 
         Button("放大一点") {
-            autoEnabled = false
             manualMultiplier = InterfaceScaleSettings.nudgeManual(manualMultiplier, delta: InterfaceScaleSettings.step)
+            autoEnabled = false
         }
         .disabled(!autoEnabled && manualMultiplier >= InterfaceScaleSettings.manualRange.upperBound)
 
