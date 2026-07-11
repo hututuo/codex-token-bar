@@ -2,6 +2,23 @@ import XCTest
 @testable import CodexTokenBar
 
 final class StatusBarTokenPanelTests: XCTestCase {
+    func testClosedStatusItemRefreshUsesOneSecondCadence() {
+        XCTAssertEqual(StatusBarRefreshCadence.statusItem, 1.0)
+    }
+
+    func testClosedPopoverDetachesContentAndReattachesLatestPresentationOnOpen() {
+        let lifecycle = StatusBarPopoverContentLifecycle()
+
+        XCTAssertFalse(lifecycle.isContentAttached)
+        XCTAssertTrue(lifecycle.prepareToPresent())
+        XCTAssertTrue(lifecycle.isContentAttached)
+        XCTAssertFalse(lifecycle.prepareToPresent())
+        XCTAssertTrue(lifecycle.didClose())
+        XCTAssertFalse(lifecycle.isContentAttached)
+        XCTAssertFalse(lifecycle.didClose())
+        XCTAssertTrue(lifecycle.prepareToPresent())
+    }
+
     func testStatusBarLifecycleKeepsTimerAndRootStableForSameOwnersAndTicks() {
         let owners = [NSObject(), NSObject(), NSObject(), NSObject()]
         let identity = StatusBarOwnerIdentity(
@@ -15,9 +32,15 @@ final class StatusBarTokenPanelTests: XCTestCase {
         XCTAssertEqual(lifecycle.bind(identity), .init(assignRoot: true, startTimer: true))
         XCTAssertEqual(lifecycle.bind(identity), .init(assignRoot: false, startTimer: false))
         let presentation = StatusBarTokenItemPresentation(title: "  42.4/s  ", accessibilityValue: "42.4")
-        XCTAssertTrue(lifecycle.shouldApply(presentation))
+        XCTAssertEqual(
+            lifecycle.changes(for: presentation),
+            .init(titleChanged: true, accessibilityChanged: true)
+        )
         for _ in 0..<100 {
-            XCTAssertFalse(lifecycle.shouldApply(presentation))
+            XCTAssertEqual(
+                lifecycle.changes(for: presentation),
+                .init(titleChanged: false, accessibilityChanged: false)
+            )
         }
 
         let replacement = NSObject()
@@ -70,7 +93,22 @@ final class StatusBarTokenPanelTests: XCTestCase {
             accessibilityValue: "实时速率 0.0 token 每秒；未读会话 1 个"
         )
 
-        XCTAssertTrue(next.needsApply(previous: previous))
+        XCTAssertEqual(
+            next.changes(previous: previous),
+            .init(titleChanged: false, accessibilityChanged: true)
+        )
+    }
+
+    func testStatusItemPresentationSkipsAllWritesWhenVisibleAndAccessibilityTextAreStable() {
+        let presentation = StatusBarTokenItemPresentation(
+            title: "    42.4/s    ",
+            accessibilityValue: "实时速率 42.4 token 每秒"
+        )
+
+        XCTAssertEqual(
+            presentation.changes(previous: presentation),
+            .init(titleChanged: false, accessibilityChanged: false)
+        )
     }
 
     func testStatusBarUsageMetricsUsePendingLabelsForMetadataOnlySnapshot() {
