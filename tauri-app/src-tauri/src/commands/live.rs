@@ -23,11 +23,19 @@ const LIVE_RATE_SNAPSHOT_EVENT: &str = "live-rate-snapshot";
 const FAST_STREAM_INTERVAL: Duration = Duration::from_millis(250);
 const IDLE_STREAM_INTERVAL: Duration = Duration::from_secs(1);
 const ACTIVE_STREAM_HOLD: Duration = Duration::from_secs(10);
+const UNREAD_OBSERVATION_CADENCE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Default)]
 pub struct LiveRateMonitorRegistry {
     monitor: Arc<Mutex<Option<LiveRateMonitorService>>>,
     stream: Arc<Mutex<LiveRateStreamState>>,
+    unread_cache: Arc<Mutex<HashMap<String, CachedUnreadSummary>>>,
+}
+
+#[derive(Clone)]
+struct CachedUnreadSummary {
+    summary: UnreadSummary,
+    refreshed_at: Instant,
 }
 
 #[derive(Default)]
@@ -83,6 +91,73 @@ struct LiveRateStreamRequest {
 }
 
 impl LiveRateMonitorRegistry {
+    fn unread_summary_for_source(
+        &self,
+        captured: &CapturedCodexHomeSource,
+        force_refresh: bool,
+    ) -> Result<UnreadSummary, String> {
+        self.unread_summary_for_source_with_validator(captured, force_refresh, || {
+            validate_captured_codex_home_source(captured)
+        })
+    }
+
+    fn unread_summary_for_source_with_validator(
+        &self,
+        captured: &CapturedCodexHomeSource,
+        force_refresh: bool,
+        validate_before_write: impl FnOnce() -> Result<(), String>,
+    ) -> Result<UnreadSummary, String> {
+        let source_scope_key = format!(
+            "{}|{}",
+            captured.source_token.canonical_home_key,
+            captured.source_token.physical_home_key
+        );
+        if !force_refresh {
+            let cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
+            if let Some(cached) = cache.get(&source_scope_key) {
+                if cached.refreshed_at.elapsed() < UNREAD_OBSERVATION_CADENCE {
+                    return Ok(cached.summary.clone());
+                }
+            }
+        }
+        let pinned = pin_captured_codex_home_source(captured)?;
+        let summary = unread::try_read_unread_summary_for_source(
+            pinned.read_path(),
+            &pinned.source_scope_key,
+            validate_before_write,
+        )?;
+        let mut cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
+        cache.retain(|key, _| key == &source_scope_key);
+        cache.insert(
+            source_scope_key,
+            CachedUnreadSummary {
+                summary: summary.clone(),
+                refreshed_at: Instant::now(),
+            },
+        );
+        Ok(summary)
+    }
+
+    fn store_unread_summary(
+        &self,
+        source_token: &CodexHomeSourceToken,
+        summary: UnreadSummary,
+    ) -> Result<(), String> {
+        let source_scope_key = format!(
+            "{}|{}",
+            source_token.canonical_home_key, source_token.physical_home_key
+        );
+        let mut cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
+        cache.retain(|key, _| key == &source_scope_key);
+        cache.insert(
+            source_scope_key,
+            CachedUnreadSummary {
+                summary,
+                refreshed_at: Instant::now(),
+            },
+        );
+        Ok(())
+    }
     fn snapshot_at_with_unread(
         &self,
         codex_home: PathBuf,
@@ -313,14 +388,10 @@ impl LiveRateMonitorRegistry {
                 };
                 let started = Instant::now();
                 let snapshot = async_runtime::spawn_blocking(move || {
-                    let pinned = pin_captured_codex_home_source(&captured)?;
-                    let unread_summary = unread::try_read_unread_summary_for_source(
-                        pinned.read_path(),
-                        &pinned.source_scope_key,
-                        || validate_captured_codex_home_source(&captured),
-                    )?;
+                    let unread_summary = snapshot_registry
+                        .unread_summary_for_source(&captured, false)?;
                     snapshot_registry.snapshot_at_with_unread(
-                        pinned.read_path().to_path_buf(),
+                        captured.codex_home.clone(),
                         selected_for_snapshot.as_deref(),
                         unread_summary,
                     )
@@ -558,14 +629,9 @@ pub async fn read_live_rate_snapshot(
     let captured = capture_codex_home_source(source_token.as_ref())?;
     let completed_source_token = captured.source_token.clone();
     let result = run_blocking_command(move || {
-        let pinned = pin_captured_codex_home_source(&captured)?;
-        let unread_summary = unread::try_read_unread_summary_for_source(
-            pinned.read_path(),
-            &pinned.source_scope_key,
-            || validate_captured_codex_home_source(&captured),
-        )?;
+        let unread_summary = registry.unread_summary_for_source(&captured, false)?;
         registry.snapshot_at_with_unread(
-            pinned.read_path().to_path_buf(),
+            captured.codex_home.clone(),
             selected_thread_id.as_deref(),
             unread_summary,
         )
@@ -743,20 +809,15 @@ pub async fn read_floating_snapshot(
 #[tauri::command]
 pub async fn read_unread_summary(
     app: AppHandle,
+    state: State<'_, LiveRateMonitorRegistry>,
     source_token: Option<CodexHomeSourceToken>,
 ) -> Result<UnreadSummary, String> {
     let started = Instant::now();
     emit_detected_source_transition(&app)?;
     let captured = capture_codex_home_source(source_token.as_ref())?;
     let completed_source_token = captured.source_token.clone();
-    let result = run_blocking_command(move || {
-        let pinned = pin_captured_codex_home_source(&captured)?;
-        unread::try_read_unread_summary_for_source(
-            pinned.read_path(),
-            &pinned.source_scope_key,
-            || validate_captured_codex_home_source(&captured),
-        )
-    })
+    let registry = state.inner().clone();
+    let result = run_blocking_command(move || registry.unread_summary_for_source(&captured, true))
     .await
     .and_then(|summary| {
         emit_detected_source_transition(&app)?;
@@ -774,18 +835,22 @@ pub async fn read_unread_summary(
 #[tauri::command]
 pub async fn acknowledge_current_unread(
     app: AppHandle,
+    state: State<'_, LiveRateMonitorRegistry>,
     source_token: Option<CodexHomeSourceToken>,
 ) -> Result<UnreadSummary, String> {
     let started = Instant::now();
     emit_detected_source_transition(&app)?;
     let captured = capture_codex_home_source(source_token.as_ref())?;
     let completed_source_token = captured.source_token.clone();
+    let registry = state.inner().clone();
     let result = run_blocking_command(move || {
-        acknowledge_pinned_unread(
+        let summary = acknowledge_pinned_unread(
             captured.clone(),
             || Ok(()),
             || validate_captured_codex_home_source(&captured),
-        )
+        )?;
+        registry.store_unread_summary(&captured.source_token, summary.clone())?;
+        Ok(summary)
     })
     .await
     .and_then(|summary| {
@@ -984,8 +1049,11 @@ mod tests {
         assert!(require_live_rate_owner("unknown", "dashboard-live-rate").is_err());
     }
 
+    #[cfg(unix)]
     #[test]
-    fn consecutive_live_ticks_do_not_create_pinned_unread_snapshots() {
+    fn production_unread_cadence_pins_once_across_consecutive_live_ticks() {
+        use std::os::unix::fs::MetadataExt;
+
         super::super::dashboard::reset_pinned_source_copy_count_for_test();
         let root = std::env::temp_dir().join(format!(
             "codex-token-bar-live-no-pinned-copy-{}",
@@ -993,24 +1061,27 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let registry = LiveRateMonitorRegistry::default();
-        let unread = UnreadSummary {
-            active: false,
-            count: 0,
-            label: "none".into(),
-            detail: "none".into(),
-            source: "test".into(),
+        let metadata = std::fs::metadata(&root).unwrap();
+        let captured = CapturedCodexHomeSource {
+            source_token: CodexHomeSourceToken {
+                canonical_home_key: root.display().to_string(),
+                physical_home_key: format!("unix:{}:{}", metadata.dev(), metadata.ino()),
+                transition_generation: 1,
+            },
+            codex_home: root.clone(),
+            source_path: root.clone(),
         };
 
         registry
-            .snapshot_at_with_unread(root.clone(), None, unread.clone())
+            .unread_summary_for_source_with_validator(&captured, false, || Ok(()))
             .unwrap();
         registry
-            .snapshot_at_with_unread(root.clone(), None, unread)
+            .unread_summary_for_source_with_validator(&captured, false, || Ok(()))
             .unwrap();
 
         assert_eq!(
-            super::super::dashboard::pinned_source_copy_count_for_test(),
-            0
+            super::super::dashboard::pinned_source_snapshot_count_for_test(),
+            1
         );
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1093,10 +1164,18 @@ mod tests {
 
     #[cfg(unix)]
     fn write_unread_state_for_source_test(home: &std::path::Path, thread_id: &str) {
+        let sessions = home.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let completed_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
         std::fs::write(
-            home.join(".codex-global-state.json"),
+            sessions.join("completion.jsonl"),
             format!(
-                r#"{{"electron-persisted-atom-state":{{"unread-thread-ids-by-host-v1":{{"localhost":["{thread_id}"]}}}}}}"#
+                "{}\n{}\n",
+                format!(r#"{{"type":"session_meta","payload":{{"id":"{thread_id}","thread_source":"user","source":"user"}}}}"#),
+                format!(r#"{{"type":"event_msg","payload":{{"type":"task_complete","turn_id":"turn-1","completed_at":{completed_at}}}}}"#)
             ),
         )
         .unwrap();

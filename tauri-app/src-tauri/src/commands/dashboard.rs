@@ -20,9 +20,10 @@ static CODEX_HOME_TRANSITION_STATE: OnceLock<Mutex<CodexHomeTransitionState>> = 
 static PINNED_SOURCE_SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static PINNED_SOURCE_SESSION_FILES_COPIED: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static PINNED_SOURCE_SNAPSHOTS_CREATED: AtomicU64 = AtomicU64::new(0);
 
 const PINNED_SESSION_FILE_LIMIT: usize = 64;
-const PINNED_SESSION_ENTRY_LIMIT: usize = 1_024;
 const PINNED_SESSION_FIRST_LINE_LIMIT: u64 = 262_144;
 const PINNED_SESSION_TAIL_LIMIT: u64 = 4 * 1024 * 1024;
 const PINNED_SESSION_LOOKBACK_SECONDS: i64 = 30;
@@ -337,6 +338,8 @@ fn snapshot_pinned_unread_source(root: &std::fs::File) -> Result<PathBuf, String
     builder.mode(0o700);
     builder.create(&snapshot)
         .map_err(|error| format!("failed to create pinned Codex Home snapshot: {error}"))?;
+    #[cfg(test)]
+    PINNED_SOURCE_SNAPSHOTS_CREATED.fetch_add(1, Ordering::Relaxed);
     let result = (|| {
         for file_name in [
             ".codex-global-state.json",
@@ -346,6 +349,7 @@ fn snapshot_pinned_unread_source(root: &std::fs::File) -> Result<PathBuf, String
         ] {
             copy_optional_pinned_entry(root, file_name, &snapshot.join(file_name))?;
         }
+        validate_pinned_state_database(&snapshot)?;
         copy_recent_pinned_sessions(root, &snapshot.join("sessions"))?;
         Ok::<(), String>(())
     })();
@@ -361,6 +365,30 @@ fn snapshot_pinned_unread_source(root: &std::fs::File) -> Result<PathBuf, String
         return Err("pinned Codex Home stopped being a directory".into());
     }
     Ok(snapshot)
+}
+
+#[cfg(unix)]
+fn validate_pinned_state_database(snapshot: &Path) -> Result<(), String> {
+    let state = snapshot.join(".codex-global-state.json");
+    if !state.exists() {
+        return Ok(());
+    }
+    let database = snapshot.join("state_5.sqlite");
+    if !database.exists() {
+        return Err(
+            "pinned unread observation requires state_5.sqlite when native unread state exists"
+                .into(),
+        );
+    }
+    let connection = rusqlite::Connection::open_with_flags(
+        database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|error| format!("pinned unread SQLite validation failed: {error}"))?;
+    connection
+        .prepare("SELECT id FROM threads LIMIT 0")
+        .map_err(|error| format!("pinned unread SQLite threads validation failed: {error}"))?;
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -384,28 +412,29 @@ fn copy_recent_pinned_sessions(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64 - PINNED_SESSION_LOOKBACK_SECONDS)
         .unwrap_or(i64::MAX);
-    let mut copied = 0usize;
-    let mut inspected = 0usize;
-    copy_recent_pinned_session_tree(
+    let mut candidates = Vec::new();
+    collect_recent_pinned_session_candidates(
         &sessions,
-        destination,
+        Path::new(""),
         cutoff,
-        &mut inspected,
-        &mut copied,
-    )
+        &mut candidates,
+    )?;
+    candidates.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    for (relative_path, _) in candidates.into_iter().take(PINNED_SESSION_FILE_LIMIT) {
+        copy_pinned_session_candidate(&sessions, &relative_path, destination)?;
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
-fn copy_recent_pinned_session_tree<Fd: std::os::fd::AsFd>(
+fn collect_recent_pinned_session_candidates<Fd: std::os::fd::AsFd>(
     parent: Fd,
-    destination: &Path,
+    relative_root: &Path,
     cutoff: i64,
-    inspected: &mut usize,
-    copied: &mut usize,
+    candidates: &mut Vec<(PathBuf, i64)>,
 ) -> Result<(), String> {
     use rustix::fs::{openat, statat, AtFlags, Dir, FileType, Mode, OFlags};
     use std::ffi::OsStr;
-    use std::io::{Read, Seek, SeekFrom, Write};
     use std::os::unix::ffi::OsStrExt;
 
     let mut directory = Dir::read_from(&parent)
@@ -415,12 +444,6 @@ fn copy_recent_pinned_session_tree<Fd: std::os::fd::AsFd>(
         let bytes = entry.file_name().to_bytes();
         if bytes == b"." || bytes == b".." {
             continue;
-        }
-        *inspected += 1;
-        if *inspected > PINNED_SESSION_ENTRY_LIMIT {
-            return Err(format!(
-                "pinned session observation exceeded {PINNED_SESSION_ENTRY_LIMIT} entries"
-            ));
         }
         let child_name = OsStr::from_bytes(bytes);
         let child_name_text = child_name.to_string_lossy();
@@ -435,68 +458,22 @@ fn copy_recent_pinned_session_tree<Fd: std::os::fd::AsFd>(
                     Mode::empty(),
                 )
                 .map_err(|error| format!("failed to open pinned session directory: {error}"))?;
-                copy_recent_pinned_session_tree(
+                collect_recent_pinned_session_candidates(
                     &fd,
-                    &destination.join(child_name),
+                    &relative_root.join(child_name),
                     cutoff,
-                    inspected,
-                    copied,
+                    candidates,
                 )?;
             }
             FileType::RegularFile => {
-                if *copied >= PINNED_SESSION_FILE_LIMIT
-                    || !child_name
-                        .to_string_lossy()
-                        .to_ascii_lowercase()
-                        .ends_with(".jsonl")
-                    || stat.st_mtime < cutoff
+                if child_name
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .ends_with(".jsonl")
+                    && stat.st_mtime >= cutoff
                 {
-                    continue;
+                    candidates.push((relative_root.join(child_name), stat.st_mtime));
                 }
-                let fd = openat(
-                    &parent,
-                    child_name_text.as_ref(),
-                    OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-                    Mode::empty(),
-                )
-                .map_err(|error| format!("failed to open recent pinned session: {error}"))?;
-                let mut source = std::fs::File::from(fd);
-                let size = source
-                    .metadata()
-                    .map_err(|error| format!("failed to inspect recent pinned session: {error}"))?
-                    .len();
-                std::fs::create_dir_all(destination).map_err(|error| {
-                    format!("failed to create pinned session snapshot directory: {error}")
-                })?;
-                let mut target = std::fs::File::create(destination.join(child_name)).map_err(
-                    |error| format!("failed to create pinned session snapshot: {error}"),
-                )?;
-                if size <= PINNED_SESSION_FIRST_LINE_LIMIT + PINNED_SESSION_TAIL_LIMIT {
-                    std::io::copy(&mut source, &mut target).map_err(|error| {
-                        format!("failed to copy recent pinned session: {error}")
-                    })?;
-                } else {
-                    let mut first = vec![0; PINNED_SESSION_FIRST_LINE_LIMIT as usize];
-                    let first_len = source
-                        .read(&mut first)
-                        .map_err(|error| format!("failed to read pinned session head: {error}"))?;
-                    let first_line_end = first[..first_len]
-                        .iter()
-                        .position(|byte| *byte == b'\n')
-                        .map(|index| index + 1)
-                        .unwrap_or(first_len);
-                    target.write_all(&first[..first_line_end]).map_err(|error| {
-                        format!("failed to write pinned session head: {error}")
-                    })?;
-                    source
-                        .seek(SeekFrom::Start(size - PINNED_SESSION_TAIL_LIMIT))
-                        .map_err(|error| format!("failed to seek pinned session tail: {error}"))?;
-                    std::io::copy(&mut source.take(PINNED_SESSION_TAIL_LIMIT), &mut target)
-                        .map_err(|error| format!("failed to copy pinned session tail: {error}"))?;
-                }
-                *copied += 1;
-                #[cfg(test)]
-                PINNED_SOURCE_SESSION_FILES_COPIED.fetch_add(1, Ordering::Relaxed);
             }
             FileType::Symlink => {
                 return Err("pinned session entry is a symlink and was rejected".into())
@@ -507,14 +484,83 @@ fn copy_recent_pinned_session_tree<Fd: std::os::fd::AsFd>(
     Ok(())
 }
 
+#[cfg(unix)]
+fn copy_pinned_session_candidate(
+    sessions: &impl std::os::fd::AsFd,
+    relative_path: &Path,
+    destination_root: &Path,
+) -> Result<(), String> {
+    use rustix::fs::{openat, Mode, OFlags};
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    let mut current = rustix::io::dup(sessions)
+        .map_err(|error| format!("failed to duplicate pinned sessions handle: {error}"))?;
+    let mut components = relative_path.components().peekable();
+    while let Some(component) = components.next() {
+        let name = component.as_os_str();
+        let flags = if components.peek().is_some() {
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::DIRECTORY
+        } else {
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW
+        };
+        current = openat(&current, name, flags, Mode::empty())
+            .map_err(|error| format!("failed to open pinned session candidate: {error}"))?;
+    }
+    let mut source = std::fs::File::from(current);
+    let size = source
+        .metadata()
+        .map_err(|error| format!("failed to inspect pinned session candidate: {error}"))?
+        .len();
+    let destination = destination_root.join(relative_path);
+    std::fs::create_dir_all(
+        destination
+            .parent()
+            .ok_or_else(|| "pinned session snapshot path has no parent".to_string())?,
+    )
+    .map_err(|error| format!("failed to create pinned session snapshot directory: {error}"))?;
+    let mut target = std::fs::File::create(destination)
+        .map_err(|error| format!("failed to create pinned session snapshot: {error}"))?;
+    if size <= PINNED_SESSION_FIRST_LINE_LIMIT + PINNED_SESSION_TAIL_LIMIT {
+        std::io::copy(&mut source, &mut target)
+            .map_err(|error| format!("failed to copy recent pinned session: {error}"))?;
+    } else {
+        let mut first = vec![0; PINNED_SESSION_FIRST_LINE_LIMIT as usize];
+        let first_len = source
+            .read(&mut first)
+            .map_err(|error| format!("failed to read pinned session head: {error}"))?;
+        let first_line_end = first[..first_len]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(first_len);
+        target
+            .write_all(&first[..first_line_end])
+            .map_err(|error| format!("failed to write pinned session head: {error}"))?;
+        source
+            .seek(SeekFrom::Start(size - PINNED_SESSION_TAIL_LIMIT))
+            .map_err(|error| format!("failed to seek pinned session tail: {error}"))?;
+        std::io::copy(&mut source.take(PINNED_SESSION_TAIL_LIMIT), &mut target)
+            .map_err(|error| format!("failed to copy pinned session tail: {error}"))?;
+    }
+    #[cfg(test)]
+    PINNED_SOURCE_SESSION_FILES_COPIED.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) fn reset_pinned_source_copy_count_for_test() {
     PINNED_SOURCE_SESSION_FILES_COPIED.store(0, Ordering::Relaxed);
+    PINNED_SOURCE_SNAPSHOTS_CREATED.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
 pub(crate) fn pinned_source_copy_count_for_test() -> u64 {
     PINNED_SOURCE_SESSION_FILES_COPIED.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn pinned_source_snapshot_count_for_test() -> u64 {
+    PINNED_SOURCE_SNAPSHOTS_CREATED.load(Ordering::Relaxed)
 }
 
 #[cfg(unix)]
@@ -1447,7 +1493,8 @@ mod tests {
     fn pinned_source_observation_survives_a_to_b_to_a_swap() {
         let home = disposable_source_test_directory("pinned-source-a");
         let displaced = home.with_extension("displaced");
-        std::fs::write(home.join(".codex-global-state.json"), "A").unwrap();
+        std::fs::create_dir(home.join("sessions")).unwrap();
+        std::fs::write(home.join("sessions/observation.jsonl"), "A").unwrap();
         let mut transition = CodexHomeTransitionState::default();
         let source_a = resolve_codex_home_source(
             &mut transition,
@@ -1460,12 +1507,13 @@ mod tests {
 
         std::fs::rename(&home, &displaced).expect("replace A with B after pin");
         std::fs::create_dir(&home).expect("install B at the same canonical path");
-        std::fs::write(home.join(".codex-global-state.json"), "B").unwrap();
+        std::fs::create_dir(home.join("sessions")).unwrap();
+        std::fs::write(home.join("sessions/observation.jsonl"), "B").unwrap();
         std::fs::remove_dir_all(&home).unwrap();
         std::fs::rename(&displaced, &home).expect("restore A before validation");
 
         assert_eq!(
-            std::fs::read_to_string(pinned.read_path().join(".codex-global-state.json")).unwrap(),
+            std::fs::read_to_string(pinned.read_path().join("sessions/observation.jsonl")).unwrap(),
             "A"
         );
         assert!(pinned.source_scope_key.contains(&source_a.physical_home_key));
@@ -1481,7 +1529,8 @@ mod tests {
         let target = disposable_source_test_directory("canonical-target");
         let link = target.with_extension("link");
         symlink(&target, &link).unwrap();
-        std::fs::write(target.join(".codex-global-state.json"), "target").unwrap();
+        std::fs::create_dir(target.join("sessions")).unwrap();
+        std::fs::write(target.join("sessions/observation.jsonl"), "target").unwrap();
         let mut transition = CodexHomeTransitionState::default();
         let source = resolve_codex_home_source(
             &mut transition,
@@ -1493,7 +1542,7 @@ mod tests {
 
         let pinned = pin_captured_codex_home_source(&captured).expect("pin canonical target");
         assert_eq!(
-            std::fs::read_to_string(pinned.read_path().join(".codex-global-state.json")).unwrap(),
+            std::fs::read_to_string(pinned.read_path().join("sessions/observation.jsonl")).unwrap(),
             "target"
         );
 
@@ -1509,7 +1558,7 @@ mod tests {
         std::fs::create_dir(&sessions).unwrap();
         let old_time = std::fs::FileTimes::new()
             .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1));
-        for index in 0..200 {
+        for index in 0..1_100 {
             let path = sessions.join(format!("old-{index}.jsonl"));
             std::fs::write(&path, "old").unwrap();
             std::fs::File::options()
@@ -1541,6 +1590,88 @@ mod tests {
                 .count(),
             2
         );
+        remove_source_test_directory(home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pinned_source_selects_the_newest_sixty_four_recent_sessions() {
+        let home = disposable_source_test_directory("newest-pinned-sessions");
+        let sessions = home.join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        let base = std::time::SystemTime::now() - std::time::Duration::from_secs(20);
+        for index in 0..70 {
+            let path = sessions.join(format!("recent-{index:02}.jsonl"));
+            std::fs::write(&path, format!("session-{index}")).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(
+                    std::fs::FileTimes::new()
+                        .set_modified(base + std::time::Duration::from_millis(index * 100)),
+                )
+                .unwrap();
+        }
+        let mut transition = CodexHomeTransitionState::default();
+        let source = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
+            .unwrap();
+
+        let pinned = pin_captured_codex_home_source(&captured).unwrap();
+
+        assert_eq!(
+            std::fs::read_dir(pinned.read_path().join("sessions"))
+                .unwrap()
+                .count(),
+            64
+        );
+        assert!(!pinned
+            .read_path()
+            .join("sessions/recent-05.jsonl")
+            .exists());
+        assert!(pinned
+            .read_path()
+            .join("sessions/recent-69.jsonl")
+            .exists());
+        remove_source_test_directory(home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pinned_source_fails_with_diagnostic_when_archived_fallback_cannot_be_safe() {
+        let home = disposable_source_test_directory("unsafe-archived-fallback");
+        std::fs::write(
+            home.join(".codex-global-state.json"),
+            r#"{"unread-thread-ids-by-host-v1":{"localhost":["019eaaaa-0000-0000-0000-0000000000aa"]}}"#,
+        )
+        .unwrap();
+        let archived = home.join("archived_sessions");
+        std::fs::create_dir(&archived).unwrap();
+        std::fs::write(
+            archived.join("archived.jsonl"),
+            r#"{"type":"session_meta","payload":{"id":"019eaaaa-0000-0000-0000-0000000000aa","thread_source":"user"}}"#,
+        )
+        .unwrap();
+        let mut transition = CodexHomeTransitionState::default();
+        let source = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
+            .unwrap();
+
+        let error = match pin_captured_codex_home_source(&captured) {
+            Ok(_) => panic!("unsafe archived fallback must fail closed"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("requires state_5.sqlite"), "{error}");
         remove_source_test_directory(home);
     }
 
