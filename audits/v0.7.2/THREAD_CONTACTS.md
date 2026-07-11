@@ -16,6 +16,7 @@
 | `019f508c-f57c-7822-beea-82e917ece841` | Tauri tray status-panel reachability and positioning | implementation |
 | `019f508e-b0df-7b83-97b6-59583adea93a` | Swift residual-finding reconciliation | independent review |
 | `019f5092-79b4-76c3-bd26-e43ae68cfeef` | Swift chart gesture-to-navigation state repair | implementation |
+| `019f5155-379a-7832-8e47-481462931988` | Swift status-only background CPU repair | implementation |
 
 ## Completion Callback
 
