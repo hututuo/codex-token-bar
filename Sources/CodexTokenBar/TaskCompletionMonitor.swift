@@ -16,21 +16,58 @@ protocol TaskCompletionPollLoading: Sendable {
     func load(request: TaskCompletionPollRequest) async -> TaskCompletionPollOutput
 }
 
-struct LiveTaskCompletionPollLoader: TaskCompletionPollLoading {
-    func load(request: TaskCompletionPollRequest) async -> TaskCompletionPollOutput {
-        let dataSource = request.dataSource
-        let unreadThreadRead = await Task.detached(priority: .utility) {
-            CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: dataSource.codexHome)
+protocol CodexUnreadThreadReading: Sendable {
+    func readUnreadThreadIDs(codexHome: URL) async -> CodexUnreadThreadReadResult
+}
+
+protocol TaskCompletionScanning: Sendable {
+    func scan(request: TaskCompletionPollRequest) async -> TaskCompletionScanResult
+}
+
+struct LiveCodexUnreadThreadReader: CodexUnreadThreadReading {
+    func readUnreadThreadIDs(codexHome: URL) async -> CodexUnreadThreadReadResult {
+        await Task.detached(priority: .utility) {
+            CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)
         }.value
-        let result = await Task.detached(priority: .utility) {
+    }
+}
+
+struct LiveTaskCompletionScanner: TaskCompletionScanning {
+    func scan(request: TaskCompletionPollRequest) async -> TaskCompletionScanResult {
+        await Task.detached(priority: .utility) {
             TaskCompletionScanner.scan(
-                sessionsRoot: dataSource.sessionsRoot,
+                sessionsRoot: request.dataSource.sessionsRoot,
                 previousStates: request.previousStates,
                 seedMode: request.seedMode,
                 seedCutoff: request.seedCutoff
             )
         }.value
-        return TaskCompletionPollOutput(result: result, unreadThreadRead: unreadThreadRead)
+    }
+}
+
+struct LiveTaskCompletionPollLoader: TaskCompletionPollLoading {
+    private let unreadReader: any CodexUnreadThreadReading
+    private let scanner: any TaskCompletionScanning
+
+    init(
+        unreadReader: any CodexUnreadThreadReading = LiveCodexUnreadThreadReader(),
+        scanner: any TaskCompletionScanning = LiveTaskCompletionScanner()
+    ) {
+        self.unreadReader = unreadReader
+        self.scanner = scanner
+    }
+
+    func load(request: TaskCompletionPollRequest) async -> TaskCompletionPollOutput {
+        let unreadThreadRead = await unreadReader.readUnreadThreadIDs(
+            codexHome: request.dataSource.codexHome
+        )
+        switch unreadThreadRead {
+        case .available:
+            return TaskCompletionPollOutput(result: nil, unreadThreadRead: unreadThreadRead)
+        case .unavailable:
+            let result = await scanner.scan(request: request)
+            return TaskCompletionPollOutput(result: result, unreadThreadRead: unreadThreadRead)
+        }
     }
 }
 
@@ -48,6 +85,7 @@ final class TaskCompletionMonitor: ObservableObject {
     private let liveSeedWindow: TimeInterval = 30.0
     private let defaults: UserDefaults
     private let pollLoader: any TaskCompletionPollLoading
+    private let now: () -> Date
     private var dataSource: CodexDataSource?
     private var fileStates: [String: TaskCompletionFileState] = [:]
     private var completedEventIDs: Set<String> = []
@@ -63,14 +101,17 @@ final class TaskCompletionMonitor: ObservableObject {
     private(set) var sourceIdentityGeneration = 0
     private(set) var sourceBindingGeneration = 0
     private var seeded = false
-    private var monitorStartedAt = Date()
+    private var fallbackSeedCutoff: Date
 
     init(
         defaults: UserDefaults = .standard,
-        pollLoader: any TaskCompletionPollLoading = LiveTaskCompletionPollLoader()
+        pollLoader: any TaskCompletionPollLoading = LiveTaskCompletionPollLoader(),
+        now: @escaping () -> Date = Date.init
     ) {
         self.defaults = defaults
         self.pollLoader = pollLoader
+        self.now = now
+        fallbackSeedCutoff = now().addingTimeInterval(-liveSeedWindow)
         loadPersistedCompletedEventIDs()
         updateStatusText()
     }
@@ -102,7 +143,7 @@ final class TaskCompletionMonitor: ObservableObject {
             sourceIdentityGeneration += 1
             fileStates.removeAll()
             seeded = false
-            monitorStartedAt = Date()
+            fallbackSeedCutoff = now().addingTimeInterval(-liveSeedWindow)
             loadPersistedCompletedEventIDs()
             readBaseline = TaskCompletionReadBaselineStore.load(codexHomePath: newPath, defaults: defaults)
             completedTaskThreadIDs.removeAll()
@@ -135,9 +176,7 @@ final class TaskCompletionMonitor: ObservableObject {
         }
 
         if hasCodexUnreadState {
-            completedTaskThreadIDs = completedTaskThreadIDs.filter { _, threadID in
-                officialUnreadThreadIDs.contains(threadID)
-            }
+            prepareFallbackForOfficialAvailability()
         } else {
             completedTaskThreadIDs.removeAll()
         }
@@ -185,12 +224,7 @@ final class TaskCompletionMonitor: ObservableObject {
         let generation = pollGeneration
         let identityGeneration = sourceIdentityGeneration
         let bindingGeneration = sourceBindingGeneration
-        let request = TaskCompletionPollRequest(
-            dataSource: dataSource,
-            previousStates: fileStates,
-            seedMode: !seeded,
-            seedCutoff: monitorStartedAt.addingTimeInterval(-liveSeedWindow)
-        )
+        let request = makePollRequest(dataSource: dataSource)
         let pollLoader = pollLoader
 
         pollTask = Task { [weak self] in
@@ -208,8 +242,25 @@ final class TaskCompletionMonitor: ObservableObject {
         }
     }
 
+    private func makePollRequest(dataSource: CodexDataSource) -> TaskCompletionPollRequest {
+        TaskCompletionPollRequest(
+            dataSource: dataSource,
+            previousStates: fileStates,
+            seedMode: !seeded,
+            seedCutoff: fallbackSeedCutoff
+        )
+    }
+
+    func pollRequestForTesting(dataSource: CodexDataSource) -> TaskCompletionPollRequest {
+        makePollRequest(dataSource: dataSource)
+    }
+
     private func apply(_ result: TaskCompletionScanResult?, unreadThreadRead: CodexUnreadThreadReadResult) {
         applyCodexUnreadRead(unreadThreadRead)
+
+        if hasCodexUnreadState, result == nil {
+            prepareFallbackForOfficialAvailability()
+        }
 
         if hasCodexUnreadState {
             completedTaskThreadIDs = completedTaskThreadIDs.filter { _, threadID in
@@ -273,6 +324,13 @@ final class TaskCompletionMonitor: ObservableObject {
             unreadThreadState = CodexUnreadThreadState()
             hasCodexUnreadState = false
         }
+    }
+
+    private func prepareFallbackForOfficialAvailability() {
+        fileStates.removeAll()
+        seeded = false
+        fallbackSeedCutoff = now()
+        completedTaskThreadIDs.removeAll()
     }
 
     private func refreshActiveOfficialUnreadState() {
