@@ -43,10 +43,14 @@ function global:rustc {
 function global:npm {
     $Arguments = @($args)
     $global:ReleaseSelfTestCalls.Add($Arguments) | Out-Null
-    if ($Arguments.Count -ge 8 -and $Arguments[0] -eq "run" -and $Arguments[1] -eq "tauri" -and $Arguments[3] -eq "build") {
+    if ($Arguments.Count -ge 2 -and $Arguments[0] -eq "run" -and $Arguments[1] -eq "tauri") {
+        $BuildIndex = 2
+        if ($Arguments.Count -gt 2 -and $Arguments[2] -eq "--") { $BuildIndex = 3 }
+        Assert-True ($Arguments.Count -gt $BuildIndex -and $Arguments[$BuildIndex] -eq "build") "tauri argv is missing build"
         $TargetIndex = [Array]::IndexOf($Arguments, "--target")
         $ConfigIndex = [Array]::IndexOf($Arguments, "--config")
-        Assert-True ($TargetIndex -ge 0 -and $ConfigIndex -ge 0) "tauri build argv is missing target or config"
+        Assert-True ($TargetIndex -eq ($BuildIndex + 1) -and $ConfigIndex -eq ($TargetIndex + 2)) "tauri build argv is missing ordered target or config"
+        Assert-True ($Arguments.Count -gt ($ConfigIndex + 1)) "tauri build argv is missing target or config value"
         $Target = $Arguments[$TargetIndex + 1]
         if ($global:FailArm64 -and $Target.StartsWith("aarch64")) {
             $global:LASTEXITCODE = 42
