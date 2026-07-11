@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 use tauri::{
+    async_runtime,
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -29,6 +30,7 @@ const STATUS_PANEL_HEIGHT: f64 = 236.0;
 const STATUS_TRAY_ID: &str = "codex-token-bar-status";
 const STATUS_TRAY_SHOW_DASHBOARD_ID: &str = "status-tray-show-dashboard";
 const STATUS_TRAY_QUIT_ID: &str = "status-tray-quit";
+const STATUS_PANEL_PRESS_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PhysicalBounds {
@@ -65,7 +67,15 @@ static STATUS_PANEL_INTERACTION: OnceLock<Mutex<StatusPanelInteractionController
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct StatusPanelInteractionController {
-    tray_press_started_visible: Option<bool>,
+    next_generation: u64,
+    active_press: Option<StatusPanelPress>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StatusPanelPress {
+    generation: u64,
+    started_visible: bool,
+    deferred_blur: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,13 +84,27 @@ enum StatusPanelBlurAction {
     DeferToTrayRelease,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusPanelCancelAction {
+    Nothing,
+    HideDeferredBlur,
+}
+
 impl StatusPanelInteractionController {
-    fn begin_tray_press(&mut self, panel_visible: bool) {
-        self.tray_press_started_visible = Some(panel_visible);
+    fn begin_tray_press(&mut self, panel_visible: bool) -> u64 {
+        self.next_generation = self.next_generation.saturating_add(1);
+        let generation = self.next_generation;
+        self.active_press = Some(StatusPanelPress {
+            generation,
+            started_visible: panel_visible,
+            deferred_blur: false,
+        });
+        generation
     }
 
-    fn blur(&self) -> StatusPanelBlurAction {
-        if self.tray_press_started_visible.is_some() {
+    fn blur(&mut self) -> StatusPanelBlurAction {
+        if let Some(press) = self.active_press.as_mut() {
+            press.deferred_blur = true;
             StatusPanelBlurAction::DeferToTrayRelease
         } else {
             StatusPanelBlurAction::HideNow
@@ -89,14 +113,26 @@ impl StatusPanelInteractionController {
 
     fn finish_tray_press(&mut self, panel_visible_now: bool) -> StatusPanelToggleAction {
         status_panel_toggle_action(
-            self.tray_press_started_visible
+            self.active_press
                 .take()
+                .map(|press| press.started_visible)
                 .unwrap_or(panel_visible_now),
         )
     }
 
-    fn cancel(&mut self) {
-        self.tray_press_started_visible = None;
+    fn cancel(&mut self, generation: Option<u64>) -> StatusPanelCancelAction {
+        let Some(press) = self.active_press else {
+            return StatusPanelCancelAction::Nothing;
+        };
+        if generation.is_some_and(|generation| generation != press.generation) {
+            return StatusPanelCancelAction::Nothing;
+        }
+        self.active_press = None;
+        if press.deferred_blur {
+            StatusPanelCancelAction::HideDeferredBlur
+        } else {
+            StatusPanelCancelAction::Nothing
+        }
     }
 }
 
@@ -399,7 +435,7 @@ fn physical_tray_bounds(rect: tauri::Rect, scale_factor: f64) -> PhysicalBounds 
 
 pub fn hide_status_panel_window(app: &tauri::AppHandle) -> Result<bool, String> {
     if let Ok(mut controller) = status_panel_interaction_cell().lock() {
-        controller.cancel();
+        controller.cancel(None);
     }
     hide_status_panel_window_without_cancelling_interaction(app)
 }
@@ -415,12 +451,42 @@ fn hide_status_panel_window_without_cancelling_interaction(app: &tauri::AppHandl
 pub fn dismiss_status_panel_on_blur(app: &tauri::AppHandle) -> Result<bool, String> {
     let action = status_panel_interaction_cell()
         .lock()
-        .map(|controller| controller.blur())
+        .map(|mut controller| controller.blur())
         .unwrap_or(StatusPanelBlurAction::HideNow);
     match action {
         StatusPanelBlurAction::HideNow => hide_status_panel_window_without_cancelling_interaction(app),
         StatusPanelBlurAction::DeferToTrayRelease => Ok(false),
     }
+}
+
+fn cancel_status_panel_press(
+    app: &tauri::AppHandle,
+    generation: Option<u64>,
+) -> Result<bool, String> {
+    let action = status_panel_interaction_cell()
+        .lock()
+        .map(|mut controller| controller.cancel(generation))
+        .unwrap_or(StatusPanelCancelAction::Nothing);
+    perform_status_panel_cancel(action, || {
+        hide_status_panel_window_without_cancelling_interaction(app)
+    })
+}
+
+fn perform_status_panel_cancel(
+    action: StatusPanelCancelAction,
+    hide: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    match action {
+        StatusPanelCancelAction::Nothing => Ok(false),
+        StatusPanelCancelAction::HideDeferredBlur => hide(),
+    }
+}
+
+fn schedule_status_panel_press_timeout(app: tauri::AppHandle, generation: u64) {
+    async_runtime::spawn(async move {
+        tokio::time::sleep(STATUS_PANEL_PRESS_TIMEOUT).await;
+        let _ = cancel_status_panel_press(&app, Some(generation));
+    });
 }
 
 fn create_floating_window_on_main_thread(app: &tauri::AppHandle) -> Result<(), String> {
@@ -483,24 +549,32 @@ fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
             }
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                position,
-                rect,
-                button: MouseButton::Left,
-                button_state,
-                ..
-            } = event
-            {
-                let app = tray.app_handle();
-                if button_state == MouseButtonState::Down {
+            let app = tray.app_handle();
+            match event {
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Down,
+                    ..
+                } => {
                     let visible = app
                         .get_webview_window("status")
                         .and_then(|window| window.is_visible().ok())
                         .unwrap_or(false);
-                    if let Ok(mut controller) = status_panel_interaction_cell().lock() {
-                        controller.begin_tray_press(visible);
+                    let generation = status_panel_interaction_cell()
+                        .lock()
+                        .ok()
+                        .map(|mut controller| controller.begin_tray_press(visible));
+                    if let Some(generation) = generation {
+                        schedule_status_panel_press_timeout(app.clone(), generation);
                     }
-                } else if button_state == MouseButtonState::Up {
+                }
+                TrayIconEvent::Click {
+                    position,
+                    rect,
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } => {
                     let scale_factor = app
                         .monitor_from_point(position.x, position.y)
                         .ok()
@@ -509,6 +583,10 @@ fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
                         .unwrap_or(1.0);
                     let _ = toggle_status_panel_at_tray(app, physical_tray_bounds(rect, scale_factor));
                 }
+                TrayIconEvent::Leave { .. } => {
+                    let _ = cancel_status_panel_press(app, None);
+                }
+                _ => {}
             }
         });
 
@@ -1027,5 +1105,66 @@ mod tests {
             controller.finish_tray_press(false),
             StatusPanelToggleAction::Show
         );
+    }
+
+    #[test]
+    fn deferred_blur_on_leave_without_mouse_up_runs_real_hide_callback() {
+        let mut controller = StatusPanelInteractionController::default();
+        let generation = controller.begin_tray_press(true);
+        assert_eq!(controller.blur(), StatusPanelBlurAction::DeferToTrayRelease);
+        let action = controller.cancel(Some(generation));
+        let mut hide_calls = 0;
+
+        let hidden = perform_status_panel_cancel(action, || {
+            hide_calls += 1;
+            Ok(false)
+        })
+        .unwrap();
+
+        assert!(!hidden);
+        assert_eq!(hide_calls, 1);
+        assert_eq!(controller.blur(), StatusPanelBlurAction::HideNow);
+    }
+
+    #[test]
+    fn deferred_blur_on_generation_timeout_hides_panel() {
+        let mut controller = StatusPanelInteractionController::default();
+        let generation = controller.begin_tray_press(true);
+        assert_eq!(controller.blur(), StatusPanelBlurAction::DeferToTrayRelease);
+        assert_eq!(
+            controller.cancel(Some(generation)),
+            StatusPanelCancelAction::HideDeferredBlur
+        );
+        assert_eq!(controller.blur(), StatusPanelBlurAction::HideNow);
+    }
+
+    #[test]
+    fn cancellation_without_blur_only_restores_ordinary_blur_behavior() {
+        let mut controller = StatusPanelInteractionController::default();
+        let generation = controller.begin_tray_press(true);
+        assert_eq!(
+            controller.cancel(Some(generation)),
+            StatusPanelCancelAction::Nothing
+        );
+        assert_eq!(controller.blur(), StatusPanelBlurAction::HideNow);
+    }
+
+    #[test]
+    fn stale_timeout_cannot_cancel_a_new_press_or_hide_a_reopened_panel() {
+        let mut controller = StatusPanelInteractionController::default();
+        let old_generation = controller.begin_tray_press(true);
+        assert_eq!(controller.blur(), StatusPanelBlurAction::DeferToTrayRelease);
+        let new_generation = controller.begin_tray_press(false);
+
+        assert_eq!(
+            controller.cancel(Some(old_generation)),
+            StatusPanelCancelAction::Nothing
+        );
+        assert_eq!(
+            controller.finish_tray_press(false),
+            StatusPanelToggleAction::Show
+        );
+        assert_ne!(old_generation, new_generation);
+        assert_eq!(controller.blur(), StatusPanelBlurAction::HideNow);
     }
 }
