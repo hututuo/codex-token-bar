@@ -1032,7 +1032,12 @@ mod tests {
                 let ops = ops.clone();
                 async move { core.check(ops.as_ref(), false, 1).await }
             });
-            tokio::time::sleep(Duration::from_millis(2)).await;
+            loop {
+                if core.state.lock().await.in_flight.is_some() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
             let manual = tokio::spawn({
                 let core = core.clone();
                 let ops = ops.clone();
@@ -1042,6 +1047,9 @@ mod tests {
             let manual = manual.await.unwrap().unwrap();
             assert_eq!(automatic, manual);
             assert_eq!(ops.checks.load(Ordering::SeqCst), 1);
+            let state = core.state.lock().await;
+            assert!(state.in_flight.is_none());
+            assert_eq!(state.next_generation, 1);
         });
     }
 
