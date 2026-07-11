@@ -859,8 +859,9 @@ fn overlay_history_matches_points_by_start_unix_not_position() {
 #[test]
 fn reset_crossing_synthesizes_one_full_point_for_five_minute_and_hourly_axes() {
     for interval in [5 * 60, 60 * 60] {
-        let end = aligned_series_end(interval);
-        let reset = end - 2.0 * interval as f64;
+        let now = fixed_series_now(interval);
+        let current_bin_start = fixed_bin_start(interval);
+        let reset = current_bin_start - 2.0 * interval as f64;
         let row = history_row(
             reset - 2.0 * interval as f64,
             "tester|Pro|codex",
@@ -869,10 +870,11 @@ fn reset_crossing_synthesizes_one_full_point_for_five_minute_and_hourly_axes() {
             50,
             reset,
             30,
-            end + 500_000.0,
+            now + 500_000.0,
         );
 
-        let history = make_interval_history(vec![row], 7, interval);
+        let history =
+            super::series::make_interval_history_at(vec![row], 7, interval, now);
         let five_values = history
             .iter()
             .map(|point| point.five_hour_remaining_percent)
@@ -892,10 +894,73 @@ fn reset_crossing_synthesizes_one_full_point_for_five_minute_and_hourly_axes() {
 }
 
 #[test]
+fn current_partial_bin_does_not_predict_reset_or_consume_future_row() {
+    for interval in [5 * 60, 60 * 60, 6 * 60 * 60] {
+        let bin_start = fixed_bin_start(interval);
+        let now = bin_start + interval as f64 / 2.0;
+        let reset = now + interval as f64 / 4.0;
+        let old_row = history_row(
+            bin_start - interval as f64,
+            "tester|Pro|codex",
+            "Pro",
+            Some("codex"),
+            50,
+            reset,
+            30,
+            reset + 500_000.0,
+        );
+        let future_row = history_row(
+            now + interval as f64 / 8.0,
+            "tester|Pro|codex",
+            "Pro",
+            Some("codex"),
+            20,
+            reset + 5.0 * interval as f64,
+            10,
+            reset + 500_000.0,
+        );
+
+        let history = super::series::make_interval_history_at(
+            vec![old_row.clone(), future_row],
+            3,
+            interval,
+            now,
+        );
+
+        assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(0.50));
+        assert_eq!(history.last().unwrap().seven_day_remaining_percent, Some(0.70));
+
+        let crossed = super::series::make_interval_history_at(
+            vec![old_row.clone()],
+            3,
+            interval,
+            reset + interval as f64 / 8.0,
+        );
+        assert_eq!(crossed.last().unwrap().five_hour_remaining_percent, Some(1.0));
+
+        let next_bin = super::series::make_interval_history_at(
+            vec![old_row],
+            3,
+            interval,
+            bin_start + interval as f64 + interval as f64 / 8.0,
+        );
+        assert_eq!(
+            next_bin
+                .iter()
+                .filter(|point| point.five_hour_remaining_percent == Some(1.0))
+                .count(),
+            1
+        );
+        assert!(next_bin.last().unwrap().five_hour_remaining_percent.is_none());
+    }
+}
+
+#[test]
 fn reset_carry_is_unknown_until_a_post_reset_sample_then_recovers() {
     let interval = 5 * 60;
-    let end = aligned_series_end(interval);
-    let reset = end - 2.0 * 60.0 * 60.0;
+    let now = fixed_series_now(interval);
+    let current_bin_start = fixed_bin_start(interval);
+    let reset = current_bin_start - 2.0 * 60.0 * 60.0;
     let old_row = history_row(
         reset - 60.0 * 60.0,
         "tester|Pro|codex",
@@ -904,7 +969,7 @@ fn reset_carry_is_unknown_until_a_post_reset_sample_then_recovers() {
         50,
         reset,
         30,
-        end + 500_000.0,
+        now + 500_000.0,
     );
     let new_row = history_row(
         reset + 30.0 * 60.0,
@@ -912,12 +977,17 @@ fn reset_carry_is_unknown_until_a_post_reset_sample_then_recovers() {
         "Pro",
         Some("codex"),
         20,
-        end + 5.0 * 60.0 * 60.0,
+        now + 5.0 * 60.0 * 60.0,
         31,
-        end + 500_000.0,
+        now + 500_000.0,
     );
 
-    let history = make_interval_history(vec![old_row, new_row.clone()], 48, interval);
+    let history = super::series::make_interval_history_at(
+        vec![old_row, new_row.clone()],
+        48,
+        interval,
+        now,
+    );
     let boundary = history
         .iter()
         .position(|point| point.start_unix as f64 + interval as f64 == reset)
@@ -937,10 +1007,11 @@ fn reset_carry_is_unknown_until_a_post_reset_sample_then_recovers() {
 #[test]
 fn stale_reset_uses_bounded_carry_and_windows_reset_independently() {
     let interval = 5 * 60;
-    let end = aligned_series_end(interval);
-    let created_at = end - 2.0 * 60.0 * 60.0;
+    let now = fixed_series_now(interval);
+    let current_bin_start = fixed_bin_start(interval);
+    let created_at = current_bin_start - 2.0 * 60.0 * 60.0;
     let five_reset = created_at - 60.0;
-    let seven_reset = end - 30.0 * 60.0;
+    let seven_reset = current_bin_start - 30.0 * 60.0;
     let row = history_row(
         created_at,
         "tester|Pro|codex",
@@ -952,7 +1023,8 @@ fn stale_reset_uses_bounded_carry_and_windows_reset_independently() {
         seven_reset,
     );
 
-    let history = make_interval_history(vec![row], 36, interval);
+    let history =
+        super::series::make_interval_history_at(vec![row], 36, interval, now);
     let five_values = history
         .iter()
         .map(|point| point.five_hour_remaining_percent)
@@ -973,8 +1045,9 @@ fn stale_reset_uses_bounded_carry_and_windows_reset_independently() {
 #[test]
 fn six_hour_axis_does_not_expand_reset_boundary_into_continuous_full_quota() {
     let interval = 6 * 60 * 60;
-    let end = aligned_series_end(interval);
-    let reset = end - 2.0 * interval as f64;
+    let now = fixed_series_now(interval);
+    let current_bin_start = fixed_bin_start(interval);
+    let reset = current_bin_start - 2.0 * interval as f64;
     let row = history_row(
         reset - interval as f64,
         "tester|Pro|codex",
@@ -983,10 +1056,11 @@ fn six_hour_axis_does_not_expand_reset_boundary_into_continuous_full_quota() {
         50,
         reset,
         30,
-        end + 500_000.0,
+        now + 500_000.0,
     );
 
-    let history = make_interval_history(vec![row], 8, interval);
+    let history =
+        super::series::make_interval_history_at(vec![row], 8, interval, now);
     assert_eq!(
         history
             .iter()
@@ -1430,12 +1504,16 @@ fn minutes_since_midnight(label: &str) -> i32 {
     hour.parse::<i32>().unwrap() * 60 + minute.parse::<i32>().unwrap()
 }
 
-fn aligned_series_end(interval_seconds: i64) -> f64 {
+fn fixed_bin_start(interval_seconds: i64) -> f64 {
     crate::core::time_series_timeline::aligned_bin_starts(
-        now_unix() as i64,
+        1_800_000_000,
         interval_seconds,
         1,
     )[0] as f64
+}
+
+fn fixed_series_now(interval_seconds: i64) -> f64 {
+    fixed_bin_start(interval_seconds) + interval_seconds as f64 / 2.0
 }
 
 fn recent_point(start_unix: i64) -> RecentUsagePoint {

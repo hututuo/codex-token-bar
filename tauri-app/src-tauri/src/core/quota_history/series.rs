@@ -53,8 +53,17 @@ pub(super) fn make_interval_history(
     count: usize,
     interval_seconds: i64,
 ) -> Vec<QuotaHistoryPoint> {
+    make_interval_history_at(rows, count, interval_seconds, now_unix())
+}
+
+pub(super) fn make_interval_history_at(
+    rows: Vec<QuotaHistoryRow>,
+    count: usize,
+    interval_seconds: i64,
+    now: f64,
+) -> Vec<QuotaHistoryPoint> {
     let interval_seconds = interval_seconds.max(LONG_RECENT_INTERVAL_SECONDS);
-    let bin_starts = aligned_bin_starts(now_unix() as i64, interval_seconds, count as i64);
+    let bin_starts = aligned_bin_starts(now as i64, interval_seconds, count as i64);
     let sorted = sanitized_rows(rows);
     let mut row_index = 0;
     let mut latest: Option<QuotaHistoryRow> = None;
@@ -64,7 +73,8 @@ pub(super) fn make_interval_history(
         .map(|bin_start| {
             let bin_start = bin_start as f64;
             let end = bin_start + interval_seconds as f64;
-            while row_index < sorted.len() && sorted[row_index].created_at <= end {
+            let sample_at = end.min(now);
+            while row_index < sorted.len() && sorted[row_index].created_at <= sample_at {
                 latest = Some(sorted[row_index].clone());
                 row_index += 1;
             }
@@ -74,14 +84,14 @@ pub(super) fn make_interval_history(
                 five_hour_remaining_percent: quota_remaining(
                     latest.as_ref(),
                     bin_start,
-                    end,
+                    sample_at,
                     |row| row.five_hour_remaining(),
                     |row| row.five_hour_resets_at,
                 ),
                 seven_day_remaining_percent: quota_remaining(
                     latest.as_ref(),
                     bin_start,
-                    end,
+                    sample_at,
                     |row| row.seven_day_remaining(),
                     |row| row.seven_day_resets_at,
                 ),
