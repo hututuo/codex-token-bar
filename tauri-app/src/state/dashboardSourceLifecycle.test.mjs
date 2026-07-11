@@ -1,28 +1,53 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Window } from "happy-dom";
 
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
-test("fast and precise production IPC seams require and forward the exact source token", async () => {
-  const [client, commands] = await Promise.all([
-    readFile(new URL("../api/dashboardClient.ts", import.meta.url), "utf8"),
-    readFile(new URL("../../src-tauri/src/commands/dashboard.rs", import.meta.url), "utf8"),
-  ]);
-  const fastClient = sourceBlock(client, "export function readDashboardSnapshot", "export function readPreciseDashboardSnapshot");
-  const preciseClient = sourceBlock(client, "export function readPreciseDashboardSnapshot", "export function readUsageSummarySnapshot");
-  const fastCommand = sourceBlock(commands, "pub async fn read_dashboard_snapshot", "#[tauri::command]\npub async fn read_precise_dashboard_snapshot");
-  const preciseCommand = sourceBlock(commands, "pub async fn read_precise_dashboard_snapshot", "async fn run_source_bound_dashboard_read_with");
+test("fast and precise dashboard clients invoke production IPC with the exact source token", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const calls = [];
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      __TAURI_INTERNALS__: {
+        invoke(command, args) {
+          calls.push({ args, command });
+          return Promise.resolve(command === "read_precise_dashboard_snapshot" ? null : { stats: {} });
+        },
+      },
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      setTimeout: globalThis.setTimeout.bind(globalThis),
+    },
+    writable: true,
+  });
 
-  assert.match(fastClient, /sourceToken: CodexHomeSourceToken/);
-  assert.match(fastClient, /callCommand\("read_dashboard_snapshot", emptyDashboardSnapshot\(\), \{ sourceToken \}\)/);
-  assert.match(preciseClient, /sourceToken: CodexHomeSourceToken/);
-  assert.match(preciseClient, /callCommandOptional\("read_precise_dashboard_snapshot", \{ sourceToken \}, 30_000\)/);
-  assert.match(fastCommand, /source_token: CodexHomeSourceToken/);
-  assert.match(fastCommand, /run_source_bound_dashboard_read\(&app, source_token,/);
-  assert.match(preciseCommand, /source_token: CodexHomeSourceToken/);
-  assert.match(preciseCommand, /run_source_bound_dashboard_read\(&app, source_token,/);
+  try {
+    await withSsrModules(async (load) => {
+      const {
+        readDashboardSnapshot,
+        readPreciseDashboardSnapshot,
+      } = await load("/src/api/dashboardClient.ts");
+      const sourceToken = {
+        canonicalHomeKey: "/same/.codex",
+        physicalHomeKey: "unix:1:2",
+        transitionGeneration: 7,
+      };
+
+      await readDashboardSnapshot(sourceToken);
+      assert.equal(await readPreciseDashboardSnapshot(sourceToken), null);
+      assert.deepEqual(calls, [
+        { command: "read_dashboard_snapshot", args: { sourceToken } },
+        { command: "read_precise_dashboard_snapshot", args: { sourceToken } },
+      ]);
+    });
+  } finally {
+    if (previousWindow) {
+      Object.defineProperty(globalThis, "window", previousWindow);
+    } else {
+      delete globalThis.window;
+    }
+  }
 });
 
 test("mounted main forwards exact tokens and never publishes a delayed snapshot from source A", async () => {
@@ -204,6 +229,40 @@ test("late resolved listener failure after unmount never schedules reconciliatio
   });
 });
 
+test("late resolved healthy listener after unmount unlistens without scheduling", async () => {
+  await withMountedDashboard(async ({ React, load, render }) => {
+    const { emptyDashboardSnapshot, fallbackPlatformCapabilities } = await load("/src/api/fallback.ts");
+    const subscription = deferred();
+    let scheduleCalls = 0;
+    let unlistenCalls = 0;
+    const source = dashboardSource({
+      emptyDashboardSnapshot,
+      fallbackPlatformCapabilities,
+      getCodexHome: () => Promise.resolve(sourceEnvelope("physical-a", 1)),
+      readDashboardSnapshot: (token) => Promise.resolve(snapshot(emptyDashboardSnapshot, token.physicalHomeKey)),
+    });
+    const root = await render(source, {
+      subscribeToSourceChanges: () => subscription.promise,
+      scheduleSourceReconcile() {
+        scheduleCalls += 1;
+        return () => {};
+      },
+    });
+    await React.act(async () => root.unmount());
+    await React.act(async () => {
+      subscription.resolve({
+        ok: true,
+        unlisten: () => {
+          unlistenCalls += 1;
+        },
+      });
+      await tick();
+    });
+    assert.equal(unlistenCalls, 1);
+    assert.equal(scheduleCalls, 0);
+  });
+});
+
 async function withMountedDashboard(run) {
   const window = new Window({ url: "http://localhost/" });
   const restore = installDomGlobals(window);
@@ -312,12 +371,4 @@ function installDomGlobals(window) {
       else delete globalThis[name];
     }
   };
-}
-
-function sourceBlock(source, start, end) {
-  const startIndex = source.indexOf(start);
-  const endIndex = source.indexOf(end, startIndex + start.length);
-  assert.notEqual(startIndex, -1, `missing source block start: ${start}`);
-  assert.notEqual(endIndex, -1, `missing source block end: ${end}`);
-  return source.slice(startIndex, endIndex);
 }
