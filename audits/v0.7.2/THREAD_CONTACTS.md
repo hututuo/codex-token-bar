@@ -13,6 +13,7 @@
 | `019f507e-656b-7363-9876-6325703e2717` | Tauri source/status-tray audit | independent review |
 | `019f5082-b8f6-7b30-87b1-66155797b03e` | Windows release atomic-boundary repair | implementation |
 | `019f507e-68ba-7002-9d0f-72d413f6fe82` | Windows release independent review | independent review |
+| `019f508c-f57c-7822-beea-82e917ece841` | Tauri tray status-panel reachability and positioning | implementation |
 
 ## Completion Callback
 
@@ -25,4 +26,3 @@ When a task reaches a real handoff point, call `codex_app__send_message_to_threa
 - remaining risk or requested decision.
 
 Do not send progress pings for ordinary work. The Commander reads a task manually only after a callback, an error, or an abnormal delay. Reviewers must callback independently after inspecting the exact implementation commit.
-
