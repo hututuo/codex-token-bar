@@ -510,7 +510,22 @@ fn clean_stale_pinned_db_snapshots_in(directory: &Path) -> Result<(), String> {
 #[cfg(unix)]
 fn clean_stale_pinned_db_snapshots_in_with_hook(
     directory: &Path,
+    after_lock: impl FnMut(&str),
+) -> Result<(), String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(i64::MAX);
+    clean_stale_pinned_db_snapshots_in_with_policy(directory, after_lock, |stat| {
+        now.saturating_sub(stat.st_mtime) >= 60
+    })
+}
+
+#[cfg(unix)]
+fn clean_stale_pinned_db_snapshots_in_with_policy(
+    directory: &Path,
     mut after_lock: impl FnMut(&str),
+    old_enough: impl Fn(&rustix::fs::Stat) -> bool,
 ) -> Result<(), String> {
     use rustix::fs::{
         fstat, openat, statat, unlinkat, AtFlags, Dir, FileType, Mode, OFlags,
@@ -522,6 +537,7 @@ fn clean_stale_pinned_db_snapshots_in_with_hook(
     let canonical_root = std::fs::canonicalize(directory)
         .map_err(|error| format!("failed to resolve pinned DB cache root: {error}"))?;
     let root = open_cache_root_without_following(&canonical_root)?;
+    clean_stale_pinned_db_staging(&root, &mut after_lock, &old_enough)?;
     let mut entries = Dir::read_from(&root)
         .map_err(|error| format!("failed to inspect pinned DB cache directory: {error}"))?;
     while let Some(entry) = entries.read() {
@@ -648,6 +664,214 @@ fn clean_stale_pinned_db_snapshots_in_with_hook(
 }
 
 #[cfg(unix)]
+fn clean_stale_pinned_db_staging(
+    root: &impl std::os::fd::AsFd,
+    after_lock: &mut impl FnMut(&str),
+    old_enough: &impl Fn(&rustix::fs::Stat) -> bool,
+) -> Result<(), String> {
+    use rustix::fs::{
+        fstat, openat, statat, unlinkat, AtFlags, Dir, FileType, Mode, OFlags,
+    };
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    const STAGING_PREFIX: &[u8] = b".codex-token-bar-pinned-db-staging-";
+    const OWNER_PREFIX: &[u8] = b".codex-token-bar-pinned-db-owner-";
+    let mut entries = Dir::read_from(root)
+        .map_err(|error| format!("failed to inspect pinned DB staging directory: {error}"))?;
+    while let Some(entry) = entries.read() {
+        let Ok(entry) = entry else { continue };
+        let bytes = entry.file_name().to_bytes();
+        if !bytes.starts_with(STAGING_PREFIX) {
+            continue;
+        }
+        let name = OsStr::from_bytes(bytes);
+        let Ok(path_stat) = statat(root, name, AtFlags::SYMLINK_NOFOLLOW) else {
+            continue;
+        };
+        if FileType::from_raw_mode(path_stat.st_mode) != FileType::Directory {
+            continue;
+        }
+        let Ok(candidate) = openat(
+            root,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) else {
+            continue;
+        };
+        let Ok(candidate_stat) = fstat(&candidate) else {
+            continue;
+        };
+        if !same_unix_file_identity(&path_stat, &candidate_stat) {
+            continue;
+        }
+        let token = &bytes[STAGING_PREFIX.len()..];
+        let owner_name = format!(
+            ".codex-token-bar-pinned-db-owner-{}.lock",
+            String::from_utf8_lossy(token)
+        );
+        let owner_path_stat = statat(root, owner_name.as_str(), AtFlags::SYMLINK_NOFOLLOW);
+        let Ok(owner_path_stat) = owner_path_stat else {
+            if old_enough(&candidate_stat)
+                && directory_is_empty(&candidate)
+                && statat(root, name, AtFlags::SYMLINK_NOFOLLOW)
+                    .is_ok_and(|stat| same_unix_file_identity(&candidate_stat, &stat))
+            {
+                let _ = unlinkat(root, name, AtFlags::REMOVEDIR);
+            }
+            continue;
+        };
+        if FileType::from_raw_mode(owner_path_stat.st_mode) != FileType::RegularFile
+            || !old_enough(&owner_path_stat)
+        {
+            continue;
+        }
+        let Ok(owner_fd) = openat(
+            root,
+            owner_name.as_str(),
+            OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) else {
+            continue;
+        };
+        let owner = std::fs::File::from(owner_fd);
+        let Ok(owner_stat) = fstat(&owner) else {
+            continue;
+        };
+        if !same_unix_file_identity(&owner_path_stat, &owner_stat)
+            || rustix::fs::flock(
+                &owner,
+                rustix::fs::FlockOperation::NonBlockingLockExclusive,
+            )
+            .is_err()
+        {
+            continue;
+        }
+        after_lock(&name.to_string_lossy());
+        let Ok(current_candidate) = statat(root, name, AtFlags::SYMLINK_NOFOLLOW) else {
+            continue;
+        };
+        let Ok(current_owner) = statat(root, owner_name.as_str(), AtFlags::SYMLINK_NOFOLLOW)
+        else {
+            continue;
+        };
+        if !same_unix_file_identity(&candidate_stat, &current_candidate)
+            || !same_unix_file_identity(&owner_stat, &current_owner)
+        {
+            continue;
+        }
+        match statat(&candidate, ".owner.lock", AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(internal)
+                if FileType::from_raw_mode(internal.st_mode) == FileType::RegularFile
+                    && same_unix_file_identity(&owner_stat, &internal) =>
+            {
+                if unlinkat(&candidate, ".owner.lock", AtFlags::empty()).is_err() {
+                    continue;
+                }
+            }
+            Err(rustix::io::Errno::NOENT) => {}
+            _ => continue,
+        }
+        if !directory_is_empty(&candidate) {
+            continue;
+        }
+        let Ok(final_candidate) = statat(root, name, AtFlags::SYMLINK_NOFOLLOW) else {
+            continue;
+        };
+        if !same_unix_file_identity(&candidate_stat, &final_candidate)
+            || unlinkat(root, name, AtFlags::REMOVEDIR).is_err()
+        {
+            continue;
+        }
+        let Ok(final_owner) = statat(root, owner_name.as_str(), AtFlags::SYMLINK_NOFOLLOW) else {
+            continue;
+        };
+        if same_unix_file_identity(&owner_stat, &final_owner) {
+            let _ = unlinkat(root, owner_name.as_str(), AtFlags::empty());
+        }
+    }
+
+    let mut owners = Dir::read_from(root)
+        .map_err(|error| format!("failed to inspect pinned DB owner artifacts: {error}"))?;
+    while let Some(entry) = owners.read() {
+        let Ok(entry) = entry else { continue };
+        let bytes = entry.file_name().to_bytes();
+        if !bytes.starts_with(OWNER_PREFIX) || !bytes.ends_with(b".lock") {
+            continue;
+        }
+        let name = OsStr::from_bytes(bytes);
+        let Ok(path_stat) = statat(root, name, AtFlags::SYMLINK_NOFOLLOW) else {
+            continue;
+        };
+        if FileType::from_raw_mode(path_stat.st_mode) != FileType::RegularFile
+            || !old_enough(&path_stat)
+        {
+            continue;
+        }
+        let token = &bytes[OWNER_PREFIX.len()..bytes.len() - b".lock".len()];
+        let staging_name = format!(
+            ".codex-token-bar-pinned-db-staging-{}",
+            String::from_utf8_lossy(token)
+        );
+        let final_name = format!(
+            "codex-token-bar-pinned-db-{}",
+            String::from_utf8_lossy(token)
+        );
+        if statat(root, staging_name.as_str(), AtFlags::SYMLINK_NOFOLLOW).is_ok()
+            || statat(root, final_name.as_str(), AtFlags::SYMLINK_NOFOLLOW).is_ok()
+        {
+            continue;
+        }
+        let Ok(fd) = openat(
+            root,
+            name,
+            OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) else {
+            continue;
+        };
+        let file = std::fs::File::from(fd);
+        let Ok(opened_stat) = fstat(&file) else {
+            continue;
+        };
+        if !same_unix_file_identity(&path_stat, &opened_stat)
+            || rustix::fs::flock(
+                &file,
+                rustix::fs::FlockOperation::NonBlockingLockExclusive,
+            )
+            .is_err()
+        {
+            continue;
+        }
+        let Ok(current) = statat(root, name, AtFlags::SYMLINK_NOFOLLOW) else {
+            continue;
+        };
+        if same_unix_file_identity(&opened_stat, &current) {
+            let _ = unlinkat(root, name, AtFlags::empty());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn directory_is_empty(directory: &impl std::os::fd::AsFd) -> bool {
+    use rustix::fs::Dir;
+
+    let Ok(mut entries) = Dir::read_from(directory) else {
+        return false;
+    };
+    while let Some(entry) = entries.read() {
+        let Ok(entry) = entry else { return false };
+        let bytes = entry.file_name().to_bytes();
+        if bytes != b"." && bytes != b".." {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(unix)]
 fn same_unix_file_identity(left: &rustix::fs::Stat, right: &rustix::fs::Stat) -> bool {
     left.st_dev == right.st_dev && left.st_ino == right.st_ino
 }
@@ -704,7 +928,7 @@ fn create_owned_pinned_db_directory_with_hook(
     parent: &Path,
     mut publication_hook: impl FnMut(&Path, &Path, bool),
 ) -> Result<(PathBuf, std::fs::File), String> {
-    use rustix::fs::{mkdirat, openat, unlinkat, AtFlags, Mode, OFlags};
+    use rustix::fs::{linkat, mkdirat, openat, unlinkat, AtFlags, Mode, OFlags};
 
     let canonical_root = std::fs::canonicalize(parent)
         .map_err(|error| format!("failed to resolve pinned DB cache root: {error}"))?;
@@ -719,7 +943,31 @@ fn create_owned_pinned_db_directory_with_hook(
             "codex-token-bar-pinned-db-{}-{sequence}",
             process_session_identity()
         );
+        let owner_name = format!(
+            ".codex-token-bar-pinned-db-owner-{}-{sequence}.lock",
+            process_session_identity()
+        );
+        let owner_fd = match openat(
+            &root,
+            owner_name.as_str(),
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        ) {
+            Ok(fd) => fd,
+            Err(rustix::io::Errno::EXIST) => continue,
+            Err(error) => {
+                return Err(format!("failed to create pinned DB staging owner: {error}"))
+            }
+        };
+        let owner_lock = std::fs::File::from(owner_fd);
+        if let Err(error) =
+            rustix::fs::flock(&owner_lock, rustix::fs::FlockOperation::LockExclusive)
+        {
+            let _ = unlinkat(&root, owner_name.as_str(), AtFlags::empty());
+            return Err(format!("failed to lock pinned DB staging owner: {error}"));
+        }
         if let Err(error) = mkdirat(&root, staging_name.as_str(), Mode::from_raw_mode(0o700)) {
+            let _ = unlinkat(&root, owner_name.as_str(), AtFlags::empty());
             if error == rustix::io::Errno::EXIST {
                 continue;
             }
@@ -733,22 +981,21 @@ fn create_owned_pinned_db_directory_with_hook(
                 Mode::empty(),
             )
             .map_err(|error| format!("failed to open pinned DB staging directory: {error}"))?;
-            let lock_fd = openat(
+            linkat(
+                &root,
+                owner_name.as_str(),
                 &staging,
                 ".owner.lock",
-                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::from_raw_mode(0o600),
+                AtFlags::empty(),
             )
-            .map_err(|error| format!("failed to create pinned DB owner lock: {error}"))?;
-            let lock = std::fs::File::from(lock_fd);
-            rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
-                .map_err(|error| format!("failed to lock pinned DB cache owner: {error}"))?;
+            .map_err(|error| format!("failed to bind pinned DB staging owner: {error}"))?;
             let staging_path = canonical_root.join(&staging_name);
             let final_path = canonical_root.join(&final_name);
             publication_hook(&staging_path, &final_path, false);
             publish_pinned_db_cache_directory(&root, &staging_name, &final_name)?;
+            let _ = unlinkat(&root, owner_name.as_str(), AtFlags::empty());
             publication_hook(&staging_path, &final_path, true);
-            Ok::<_, String>((final_path, lock))
+            Ok::<_, String>((final_path, owner_lock))
         })();
         if result.is_err() {
             if let Ok(staging) = openat(
@@ -760,6 +1007,7 @@ fn create_owned_pinned_db_directory_with_hook(
                 let _ = unlinkat(&staging, ".owner.lock", AtFlags::empty());
             }
             let _ = unlinkat(&root, staging_name.as_str(), AtFlags::REMOVEDIR);
+            let _ = unlinkat(&root, owner_name.as_str(), AtFlags::empty());
         }
         match result {
             Ok(created) => return Ok(created),
@@ -2341,6 +2589,35 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn cache_publication_collision_retries_without_staging_or_owner_residue() {
+        let root = disposable_source_test_directory("cache-publish-collision");
+        let mut collision = None;
+        let (published, owner_lock) = create_owned_pinned_db_directory_with_hook(
+            &root,
+            |_, final_path, published| {
+                if !published && collision.is_none() {
+                    std::fs::create_dir(final_path).unwrap();
+                    collision = Some(final_path.to_path_buf());
+                }
+            },
+        )
+        .unwrap();
+
+        assert!(published.exists());
+        assert!(std::fs::read_dir(&root).unwrap().flatten().all(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            !name.starts_with(".codex-token-bar-pinned-db-staging-")
+                && !name.starts_with(".codex-token-bar-pinned-db-owner-")
+        }));
+        std::fs::remove_dir(collision.unwrap()).unwrap();
+        drop(owner_lock);
+        clean_stale_pinned_db_snapshots_in(&root).unwrap();
+        assert!(!published.exists());
+        remove_source_test_directory(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn stale_cleanup_never_follows_candidate_or_owner_lock_symlinks() {
         use std::os::unix::fs::symlink;
 
@@ -2400,6 +2677,75 @@ mod tests {
         assert!(directory_swapped.exists());
         assert!(moved_directory.exists());
         remove_source_test_directory(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_cleanup_is_owner_locked_bounded_and_symlink_safe() {
+        use std::os::unix::fs::symlink;
+
+        let root = disposable_source_test_directory("staging-cleanup");
+        let active_owner = root.join(".codex-token-bar-pinned-db-owner-active-1.lock");
+        let active_staging = root.join(".codex-token-bar-pinned-db-staging-active-1");
+        std::fs::write(&active_owner, b"").unwrap();
+        let active_lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&active_owner)
+            .unwrap();
+        rustix::fs::flock(&active_lock, rustix::fs::FlockOperation::LockExclusive).unwrap();
+        std::fs::create_dir(&active_staging).unwrap();
+        std::fs::hard_link(&active_owner, active_staging.join(".owner.lock")).unwrap();
+
+        let mut stale = Vec::new();
+        for index in 0..65 {
+            let owner = root.join(format!(
+                ".codex-token-bar-pinned-db-owner-stale-{index}.lock"
+            ));
+            let staging = root.join(format!(
+                ".codex-token-bar-pinned-db-staging-stale-{index}"
+            ));
+            std::fs::write(&owner, b"").unwrap();
+            std::fs::create_dir(&staging).unwrap();
+            std::fs::hard_link(&owner, staging.join(".owner.lock")).unwrap();
+            stale.push((owner, staging));
+        }
+        let fresh_ownerless = root.join(".codex-token-bar-pinned-db-staging-fresh-1");
+        std::fs::create_dir(&fresh_ownerless).unwrap();
+        let orphan_owner = root.join(".codex-token-bar-pinned-db-owner-orphan-1.lock");
+        std::fs::write(&orphan_owner, b"").unwrap();
+
+        let outside = disposable_source_test_directory("staging-cleanup-outside");
+        std::fs::write(outside.join("sentinel"), b"keep").unwrap();
+        let staging_link = root.join(".codex-token-bar-pinned-db-staging-linked-1");
+        symlink(&outside, &staging_link).unwrap();
+        let owner_link = root.join(".codex-token-bar-pinned-db-owner-linked-1.lock");
+        symlink(outside.join("sentinel"), &owner_link).unwrap();
+
+        clean_stale_pinned_db_snapshots_in_with_policy(&root, |_| {}, |_| false).unwrap();
+        assert!(active_staging.exists());
+        assert!(fresh_ownerless.exists());
+
+        clean_stale_pinned_db_snapshots_in_with_policy(&root, |_| {}, |_| true).unwrap();
+        assert!(active_staging.exists());
+        assert!(active_owner.exists());
+        assert!(stale
+            .iter()
+            .all(|(owner, staging)| !owner.exists() && !staging.exists()));
+        assert!(!fresh_ownerless.exists());
+        assert!(!orphan_owner.exists());
+        assert!(staging_link.symlink_metadata().is_ok());
+        assert!(owner_link.symlink_metadata().is_ok());
+        assert_eq!(std::fs::read(outside.join("sentinel")).unwrap(), b"keep");
+
+        drop(active_lock);
+        clean_stale_pinned_db_snapshots_in_with_policy(&root, |_| {}, |_| true).unwrap();
+        assert!(!active_staging.exists());
+        assert!(!active_owner.exists());
+        std::fs::remove_file(staging_link).unwrap();
+        std::fs::remove_file(owner_link).unwrap();
+        remove_source_test_directory(root);
+        remove_source_test_directory(outside);
     }
 
     #[cfg(unix)]
