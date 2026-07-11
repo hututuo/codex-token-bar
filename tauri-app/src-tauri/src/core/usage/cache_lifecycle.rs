@@ -1,4 +1,5 @@
 use crate::core::app_paths;
+use crate::core::atomic_file;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use time::format_description::well_known::Rfc3339;
@@ -54,18 +55,13 @@ pub fn mark_usage_cache_initialized() -> Result<(), String> {
     };
     let data = serde_json::to_vec(&payload)
         .map_err(|error| format!("序列化 Tauri 统计缓存状态失败：{error}"))?;
-    let temp_path = path.with_extension("json.tmp");
-    fs::write(&temp_path, data).map_err(|error| {
-        format!("写入 Tauri 统计缓存状态失败：{}（{}）", temp_path.display(), error)
-    })?;
-    fs::rename(&temp_path, &path).map_err(|error| {
-        format!("替换 Tauri 统计缓存状态失败：{}（{}）", path.display(), error)
-    })
+    atomic_file::write_atomically(&path, &data)
 }
 
-pub fn mark_usage_cache_ready_after_success() {
-    let _ = mark_usage_cache_initialized();
+pub fn mark_usage_cache_ready_after_success() -> Result<(), String> {
+    mark_usage_cache_initialized()?;
     cleanup_old_discardable_usage_caches_async();
+    Ok(())
 }
 
 pub fn cleanup_old_discardable_usage_caches_async() {
@@ -129,6 +125,31 @@ mod tests {
         assert!(ready.initialized);
         assert!(ready.initialized_at.is_some());
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn marker_repeated_save_replaces_existing_file_without_temp_residue() {
+        let root = temp_root("marker-replace");
+        let _env = PathEnvGuard::new(&root);
+        mark_usage_cache_initialized().unwrap();
+        mark_usage_cache_initialized().unwrap();
+        let path = app_paths::tauri_cache_state_path().unwrap();
+        assert!(usage_cache_status().initialized);
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn marker_persistence_failure_does_not_report_ready() {
+        let root = temp_root("marker-failure");
+        let _env = PathEnvGuard::new(&root);
+        let marker = app_paths::tauri_cache_state_path().unwrap();
+        let marker_parent = marker.parent().unwrap();
+        fs::create_dir_all(marker_parent.parent().unwrap()).unwrap();
+        fs::write(marker_parent, b"not a directory").unwrap();
+        assert!(mark_usage_cache_initialized().is_err());
+        assert!(!usage_cache_status().initialized);
         let _ = fs::remove_dir_all(root);
     }
 

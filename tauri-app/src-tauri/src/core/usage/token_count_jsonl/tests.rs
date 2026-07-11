@@ -1116,7 +1116,7 @@ fn dashboard_aggregate_cache_save_does_not_clobber_existing_temp_file() {
     );
 
     store_dashboard_aggregate(
-        signature,
+        signature.clone(),
         None,
         TokenUsageSummary {
             total_tokens: 10,
@@ -1124,6 +1124,16 @@ fn dashboard_aggregate_cache_save_does_not_clobber_existing_temp_file() {
             today_requests: 1,
         },
     );
+    let second_warning = store_dashboard_aggregate(
+        signature,
+        None,
+        TokenUsageSummary {
+            total_tokens: 20,
+            today_tokens: 20,
+            today_requests: 2,
+        },
+    );
+    assert!(second_warning.is_none(), "{second_warning:?}");
 
     assert_eq!(
         fs::read_to_string(&legacy_temp_path).unwrap(),
@@ -1131,7 +1141,41 @@ fn dashboard_aggregate_cache_save_does_not_clobber_existing_temp_file() {
         "aggregate cache should use a unique temp path instead of overwriting another save"
     );
     assert!(cache_path.exists());
+    assert_eq!(load_persistent_dashboard_aggregate().unwrap().summary.total_tokens, 20);
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn aggregate_persistence_failure_keeps_memory_snapshot_with_one_warning() {
+    let root = temp_root();
+    let blocked_parent = root.join("blocked-parent");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(&blocked_parent, b"not a directory").unwrap();
+    let _cache_env = AggregateCacheEnvGuard::new(blocked_parent.join("dashboard-aggregate.json"));
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let timestamp = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019eaggregate-persistence-warning.jsonl"),
+        &[&format!(
+            r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}}}}}"#
+        )],
+    );
+
+    let first = dashboard_snapshot(&root).unwrap();
+    let second = dashboard_snapshot(&root).unwrap();
+    for snapshot in [first, second] {
+        assert_eq!(snapshot.stats.total_tokens, 120);
+        assert_eq!(
+            snapshot
+                .warnings
+                .iter()
+                .filter(|warning| warning.source == "usage-cache-persistence")
+                .count(),
+            1
+        );
+    }
     fs::remove_dir_all(root).unwrap();
 }
 

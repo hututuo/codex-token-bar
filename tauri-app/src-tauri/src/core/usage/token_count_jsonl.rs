@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
@@ -74,7 +73,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings);
     let signature = dashboard_scan_signature(codex_home, &session_files);
     if let Some(snapshot) = cached_dashboard_snapshot(&signature) {
-        cache_lifecycle::mark_usage_cache_ready_after_success();
+        let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
         return Ok(snapshot_with_generated_at(snapshot));
     }
 
@@ -99,7 +98,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     let cache_hit_ranking = cache_hit_ranking(&events, codex_home, local_offset, &mut warnings);
     let cache_usage = cache_usage(&events, codex_home, local_offset, &mut warnings);
 
-    let snapshot = DashboardSnapshot {
+    let mut snapshot = DashboardSnapshot {
         generated_at,
         account: AccountInfo {
             display_name: "账户待读取".into(),
@@ -116,8 +115,10 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         warnings,
         diagnostics: Vec::new(),
     };
-    store_dashboard_aggregate(signature, Some(snapshot.clone()), summary);
-    cache_lifecycle::mark_usage_cache_ready_after_success();
+    if let Some(warning) = store_dashboard_aggregate(signature, Some(snapshot.clone()), summary) {
+        snapshot.warnings.push(warning);
+    }
+    let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
     Ok(snapshot)
 }
 
@@ -445,19 +446,28 @@ fn store_dashboard_aggregate(
     signature: DashboardScanSignature,
     snapshot: Option<DashboardSnapshot>,
     summary: TokenUsageSummary,
-) {
+) -> Option<LocalDataWarning> {
     let cache = DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()));
-    let aggregate = CachedDashboardAggregate {
+    let mut aggregate = CachedDashboardAggregate {
         signature,
         snapshot,
         summary,
     };
+    let warning = save_persistent_dashboard_aggregate(&aggregate).err().map(|error| LocalDataWarning {
+        source: "usage-cache-persistence".into(),
+        message: error,
+    });
+    if let (Some(warning), Some(snapshot)) = (&warning, aggregate.snapshot.as_mut()) {
+        if !snapshot.warnings.iter().any(|existing| existing.source == warning.source) {
+            snapshot.warnings.push(warning.clone());
+        }
+    }
     if let Ok(mut guard) = cache.lock() {
         guard.persistent_loaded = true;
-        guard.aggregate = Some(aggregate.clone());
+        guard.aggregate = Some(aggregate);
     }
-    save_persistent_dashboard_aggregate(&aggregate);
+    warning
 }
 
 #[cfg(test)]
@@ -473,7 +483,7 @@ fn cached_usage_summary(signature: &DashboardScanSignature) -> Option<TokenUsage
 
     if let Some(cached) = load_persistent_dashboard_aggregate() {
         if &cached.signature == signature {
-            store_dashboard_aggregate(
+            let _ = store_dashboard_aggregate(
                 cached.signature.clone(),
                 cached.snapshot.clone(),
                 cached.summary.clone(),
@@ -513,7 +523,7 @@ fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSum
     });
 
     if let Some(snapshot) = persistent_snapshot {
-        store_dashboard_aggregate(signature, Some(snapshot), summary);
+        let _ = store_dashboard_aggregate(signature, Some(snapshot), summary);
     }
 }
 
@@ -532,14 +542,12 @@ fn decode_persistent_dashboard_aggregate(data: &[u8]) -> Option<CachedDashboardA
     })
 }
 
-fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) {
+fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) -> Result<(), String> {
     let Some(path) = app_paths::token_aggregate_cache_path() else {
-        return;
+        return Ok(());
     };
     if let Some(parent) = path.parent() {
-        if fs::create_dir_all(parent).is_err() {
-            return;
-        }
+        fs::create_dir_all(parent).map_err(|error| format!("create aggregate cache directory {}: {error}", parent.display()))?;
     }
     let payload = PersistentDashboardAggregateCache {
         version: DASHBOARD_AGGREGATE_CACHE_VERSION,
@@ -547,21 +555,9 @@ fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) {
         snapshot: aggregate.snapshot.clone().map(sanitize_snapshot_for_persistence),
         summary: aggregate.summary.clone(),
     };
-    let Ok(data) = serde_json::to_vec(&payload) else {
-        return;
-    };
-    let temp_path = unique_cache_temp_path(&path, "json.tmp");
-    if fs::write(&temp_path, data).is_ok() {
-        let _ = fs::rename(temp_path, path);
-    }
-}
-
-fn unique_cache_temp_path(path: &Path, label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    path.with_extension(format!("{label}-{}-{nanos}", std::process::id()))
+    let data = serde_json::to_vec(&payload)
+        .map_err(|error| format!("serialize aggregate cache {}: {error}", path.display()))?;
+    crate::core::atomic_file::write_atomically(&path, &data)
 }
 
 #[derive(Deserialize, Serialize)]
