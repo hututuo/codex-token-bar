@@ -31,7 +31,7 @@ mod settings;
 mod startup;
 mod surfaces;
 
-pub use startup::StartupLaunchMode;
+pub use startup::{SingleInstanceLaunchOutcome, StartupLaunchMode};
 
 pub use capabilities::platform_capabilities;
 pub(crate) use provider_app::codex_desktop_is_running;
@@ -65,13 +65,23 @@ pub fn default_codex_home() -> PathBuf {
 }
 
 #[cfg(target_os = "windows")]
-pub fn activate_existing_instance_and_exit(mode: StartupLaunchMode) -> bool {
-    windows::activate_existing_instance_and_exit(mode)
+pub fn prepare_single_instance(mode: StartupLaunchMode) -> SingleInstanceLaunchOutcome {
+    windows::prepare_single_instance(mode)
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn activate_existing_instance_and_exit(_mode: StartupLaunchMode) -> bool {
-    false
+pub fn prepare_single_instance(_mode: StartupLaunchMode) -> SingleInstanceLaunchOutcome {
+    SingleInstanceLaunchOutcome::ContinueAsPrimary
+}
+
+#[cfg(target_os = "windows")]
+pub fn report_startup_failure(error: &str) {
+    windows::report_startup_failure(error)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn report_startup_failure(error: &str) {
+    eprintln!("Codex Token Bar: fatal startup failure: {error}");
 }
 
 #[cfg(target_os = "windows")]

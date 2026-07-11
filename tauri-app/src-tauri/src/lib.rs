@@ -8,8 +8,13 @@ use tauri::Manager as _;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let launch_mode = platform::StartupLaunchMode::from_args(std::env::args_os());
-    if platform::activate_existing_instance_and_exit(launch_mode) {
-        return;
+    match platform::prepare_single_instance(launch_mode) {
+        platform::SingleInstanceLaunchOutcome::ContinueAsPrimary => {}
+        platform::SingleInstanceLaunchOutcome::SecondaryExit => return,
+        platform::SingleInstanceLaunchOutcome::FatalFailure(error) => {
+            platform::report_startup_failure(&error);
+            return;
+        }
     }
 
     tauri::Builder::default()
