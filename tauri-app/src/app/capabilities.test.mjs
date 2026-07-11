@@ -27,6 +27,7 @@ test("Tauri capabilities give floating and status only surface-safe frontend API
   assert.ok(permissions.floating.has("core:window:allow-set-size"));
   assert.ok(permissions.floating.has("core:window:allow-set-position"));
   assert.ok(permissions.floating.has("core:window:allow-start-dragging"));
+  assert.ok(permissions.floating.has("core:window:allow-is-visible"));
   assert.ok(permissions.floating.has("core:event:allow-listen"));
   assert.ok(permissions.floating.has("core:event:allow-emit"));
 

@@ -62,6 +62,17 @@ export function disabledFloatingLiveSnapshot(
   };
 }
 
+export function compactSnapshotForSurfaceActivity(
+  snapshot: FloatingPanelSnapshot,
+  active: boolean,
+  liveRateEnabled: boolean,
+): FloatingPanelSnapshot {
+  if (!active) {
+    return snapshot;
+  }
+  return liveRateEnabled ? snapshot : disabledFloatingLiveSnapshot(snapshot);
+}
+
 export function floatingLiveRateStatusText(
   snapshot: Pick<FloatingPanelSnapshot, "liveRateStatusLabel">,
 ): string {

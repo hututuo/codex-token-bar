@@ -7,6 +7,7 @@ import {
   floatingSnapshotForLiveRate,
   liveRateStreamStartFailureSnapshot,
   preserveFloatingUsageSummary,
+  compactSnapshotForSurfaceActivity,
   shouldResetCompactUsageSummarySource,
 } from "./compactPanelSnapshotModel.ts";
 
@@ -39,6 +40,18 @@ test("compact panel keeps usage summary raw state when live rate is disabled", (
   assert.equal(disabled.totalTokensLabel, "总 59.1亿");
   assert.equal(disabled.todayTokensLabel, "今 7965.0万");
   assert.equal(disabled.requestsLabel, "次 534");
+});
+
+test("hidden compact surface retains the exact last snapshot", () => {
+  const current = floatingSnapshotForLiveRate(liveRateSnapshot({ tokensPerSecond: 42 }), {
+    totalTokens: 500,
+    todayTokens: 50,
+    todayRequests: 5,
+  });
+
+  assert.equal(compactSnapshotForSurfaceActivity(current, false, true), current);
+  assert.equal(compactSnapshotForSurfaceActivity(current, true, false).tokensPerSecond, 0);
+  assert.equal(compactSnapshotForSurfaceActivity(current, true, false).totalTokensLabel, current.totalTokensLabel);
 });
 
 test("compact panel summary labels are generated from raw summary instead of compact labels", () => {

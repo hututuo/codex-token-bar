@@ -20,6 +20,7 @@ import {
   usageRefreshIntervalMs,
 } from "../utils/usageRefreshCadence";
 import {
+  compactSnapshotForSurfaceActivity,
   disabledFloatingLiveSnapshot,
   floatingSnapshotForLiveRate,
   liveRateStreamStartFailureSnapshot,
@@ -82,6 +83,9 @@ export function useCompactPanelSnapshot({
   }, []);
 
   useEffect(() => {
+    if (!active) {
+      return;
+    }
     if (shouldResetCompactUsageSummarySource(
       usageSummarySourceKeyRef.current,
       sourceKey,
@@ -91,15 +95,12 @@ export function useCompactPanelSnapshot({
       setRawSnapshot(resetFloatingUsageSummary);
     }
     usageSummarySourceKeyRef.current = sourceKey;
-  }, [sourceKey]);
+  }, [active, sourceKey]);
 
   useEffect(() => {
     if (!active) {
-      usageSummaryRef.current = null;
-      usageSummarySourceKeyRef.current = sourceKey;
       lastLiveActivityAtMsRef.current = 0;
       setLastLiveActivityAtMs(0);
-      setRawSnapshot(emptyFloatingPanelSnapshot);
       return;
     }
 
@@ -158,10 +159,24 @@ export function useCompactPanelSnapshot({
   }, [lastLiveActivityAtMs]);
 
   useEffect(() => {
-    if (!active || !liveRateEnabled) {
+    if (!active) {
       lastLiveActivityAtMsRef.current = 0;
       setLastLiveActivityAtMs(0);
-      setRawSnapshot(disabledFloatingLiveSnapshot);
+      setRawSnapshot((current) => compactSnapshotForSurfaceActivity(
+        current,
+        active,
+        liveRateEnabled,
+      ));
+      return;
+    }
+    if (!liveRateEnabled) {
+      lastLiveActivityAtMsRef.current = 0;
+      setLastLiveActivityAtMs(0);
+      setRawSnapshot((current) => compactSnapshotForSurfaceActivity(
+        current,
+        active,
+        liveRateEnabled,
+      ));
       return;
     }
 

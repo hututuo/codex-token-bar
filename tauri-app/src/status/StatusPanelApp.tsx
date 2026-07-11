@@ -10,6 +10,7 @@ import { floatingStandaloneStatusText } from "../floating/floatingPanelLabels";
 import { desktopPlatform } from "../platform/desktop";
 import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS, sanitizeQuotaRefreshIntervalMs } from "../settings/quotaRefreshCadence";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
+import { statusPanelIsActive } from "../surfaces/surfaceLifecycle";
 import type { FloatingWindowSettings, UnreadSummary } from "../types/dashboard";
 import { StatusQuotaProjection } from "./StatusQuotaProjection";
 
@@ -116,11 +117,11 @@ export function StatusPanelApp() {
       try {
         const visible = await appWindow.isVisible();
         if (!cancelled) {
-          setActive(Boolean(visible) && document.hasFocus());
+          setActive(statusPanelIsActive(Boolean(visible), document.hasFocus()));
         }
       } catch {
         if (!cancelled) {
-          setActive(document.hasFocus());
+          setActive(statusPanelIsActive(true, document.hasFocus()));
         }
       }
     }

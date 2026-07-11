@@ -1,10 +1,13 @@
-import { type CSSProperties, type MouseEvent, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type MouseEvent, useEffect, useReducer, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { readAppSettings, recordStartupEvent } from "../api/client";
-import { readCodexRadarState } from "../api/codexRadarClient";
-import type { CodexRadarSnapshot } from "../components/codexRadar/model";
 import { desktopPlatform } from "../platform/desktop";
 import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS, sanitizeQuotaRefreshIntervalMs } from "../settings/quotaRefreshCadence";
+import {
+  INITIAL_FLOATING_SURFACE_LIFECYCLE,
+  observeFloatingSurfaceVisibility,
+  reduceFloatingSurfaceLifecycle,
+} from "../surfaces/surfaceLifecycle";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
 import { floatingContentHeight } from "./floatingContent";
 import {
@@ -14,22 +17,27 @@ import {
   type FloatingWindowSettings,
 } from "./floatingSettings";
 import { FloatingPanelSurface } from "./FloatingPanelPreview";
+import { useFloatingRadar } from "./useFloatingRadar";
 import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
 
 export function FloatingWindowApp() {
+  const [surfaceLifecycle, dispatchSurfaceLifecycle] = useReducer(
+    reduceFloatingSurfaceLifecycle,
+    INITIAL_FLOATING_SURFACE_LIFECYCLE,
+  );
   const [liveRateEnabled, setLiveRateEnabled] = useState(true);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const [codexHomeKey, setCodexHomeKey] = useState<string | null>(null);
   const { snapshot } = useCompactPanelData({
+    active: surfaceLifecycle.active,
     liveRateEnabled,
     liveRateOwnerToken: "floating-live-rate",
-    quotaInitialDelayMs: 8_000,
+    quotaInitialDelayMs: 0,
     quotaIntervalMs: quotaRefreshIntervalMs,
     sourceKey: codexHomeKey,
   });
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
-  const [radarSnapshot, setRadarSnapshot] = useState<CodexRadarSnapshot | null>(null);
-  const radarSnapshotRef = useRef<CodexRadarSnapshot | null>(null);
+  const radarSnapshot = useFloatingRadar(surfaceLifecycle.active);
   useFloatingWindowPlacement();
 
   useEffect(() => {
@@ -100,6 +108,7 @@ export function FloatingWindowApp() {
 
     void desktopPlatform.onDisplaySurfacesChanged((payload) => {
       setLiveRateEnabled(payload.liveRateEnabled);
+      dispatchSurfaceLifecycle({ type: "enabled", value: payload.floatingWindowEnabled });
     }).then((listener) => {
       if (disposed) {
         listener();
@@ -111,6 +120,10 @@ export function FloatingWindowApp() {
     void desktopPlatform.onAppSettingsChanged((payload) => {
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(payload.quotaRefreshIntervalMs));
       setCodexHomeKey(payload.codexHome);
+      dispatchSurfaceLifecycle({
+        type: "enabled",
+        value: payload.displaySurfaces.floatingWindowEnabled,
+      });
     }).then((listener) => {
       if (disposed) {
         listener();
@@ -134,6 +147,10 @@ export function FloatingWindowApp() {
       if (!cancelled && settings !== null) {
         setSettings(sanitizeFloatingSettings(settings.floatingWindow));
         setLiveRateEnabled(settings.displaySurfaces.liveRateEnabled);
+        dispatchSurfaceLifecycle({
+          type: "enabled",
+          value: settings.displaySurfaces.floatingWindowEnabled,
+        });
         setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
         setCodexHomeKey(settings.codexHome);
       }
@@ -145,6 +162,16 @@ export function FloatingWindowApp() {
   }, []);
 
   useEffect(() => {
+    return observeFloatingSurfaceVisibility({
+      onVisible(visible) {
+        dispatchSurfaceLifecycle({ type: "visible", value: Boolean(visible) });
+      },
+      readVisible: () => getCurrentWindow().isVisible(),
+      subscribe: desktopPlatform.onFloatingWindowVisibilityChanged,
+    });
+  }, []);
+
+  useEffect(() => {
     const height = floatingContentHeight(settings.contentVisibility);
     void desktopPlatform.resizeFloatingWindow(
       FLOATING_BASE_WIDTH * settings.scale,
@@ -152,27 +179,9 @@ export function FloatingWindowApp() {
     );
   }, [settings.contentVisibility, settings.scale]);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    const refreshRadar = async () => {
-      const next = await readCodexRadarState(radarSnapshotRef.current);
-      if (!cancelled) {
-        radarSnapshotRef.current = next.snapshot;
-        setRadarSnapshot(next.snapshot);
-      }
-    };
-
-    void refreshRadar();
-    const timer = window.setInterval(refreshRadar, 600_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
-
   function closeFloatingWindow() {
     void desktopPlatform.hideFloatingWindow().then((visible) => {
+      dispatchSurfaceLifecycle({ type: "visible", value: Boolean(visible) });
       if (!visible) {
         void desktopPlatform.notifyFloatingWindowHidden();
       }

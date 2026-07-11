@@ -10,6 +10,7 @@ import type {
 import { emitPlatformEvent, listenToEvent, type Unlisten } from "./desktopBridge";
 
 const FLOATING_WINDOW_HIDDEN_EVENT = "floating-window-hidden";
+const FLOATING_WINDOW_VISIBILITY_EVENT = "floating-window-visibility-changed";
 const LIVE_RATE_SNAPSHOT_EVENT = "live-rate-snapshot";
 const UNREAD_SUMMARY_CHANGED_EVENT = "unread-summary-changed";
 const DISPLAY_SURFACES_EVENT = "display-surfaces-changed";
@@ -22,6 +23,14 @@ export function notifyFloatingWindowHidden(): Promise<boolean> {
 
 export function onFloatingWindowHidden(handler: () => void): Promise<Unlisten> {
   return listenToEvent(FLOATING_WINDOW_HIDDEN_EVENT, handler);
+}
+
+export function publishFloatingWindowVisibility(visible: boolean): Promise<boolean> {
+  return emitPlatformEvent(FLOATING_WINDOW_VISIBILITY_EVENT, "publish-floating-window-visibility", visible);
+}
+
+export function onFloatingWindowVisibilityChanged(handler: (visible: boolean) => void): Promise<Unlisten> {
+  return listenToEvent<boolean>(FLOATING_WINDOW_VISIBILITY_EVENT, handler);
 }
 
 export function onLiveRateSnapshot(handler: (snapshot: LiveRateSnapshot) => void): Promise<Unlisten> {

@@ -221,7 +221,10 @@ test("hidden status panel starts inactive and verifies window visibility before 
   assert.equal(statusPanel.includes("useState(false)"), true);
   assert.equal(statusPanel.includes("appWindow.isVisible()"), true);
   assert.equal(statusPanel.includes("document.hasFocus()"), true);
-  assert.equal(statusPanel.includes("setActive(Boolean(visible) && document.hasFocus())"), true);
+  assert.equal(
+    statusPanel.includes("setActive(statusPanelIsActive(Boolean(visible), document.hasFocus()))"),
+    true,
+  );
 });
 
 test("status panel hides itself when focus leaves", async () => {

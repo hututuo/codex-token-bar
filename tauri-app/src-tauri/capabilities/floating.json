@@ -8,6 +8,7 @@
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:window:allow-is-decorated",
+    "core:window:allow-is-visible",
     "core:window:allow-inner-size",
     "core:window:allow-outer-size",
     "core:window:allow-set-position",

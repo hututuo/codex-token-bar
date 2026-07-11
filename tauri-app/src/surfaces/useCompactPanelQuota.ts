@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { readAccountQuota } from "../api/client";
 import { emptyAccountQuotaBundle } from "../api/fallback";
 import type { AccountQuotaBundle } from "../types/dashboard";
@@ -12,37 +12,69 @@ interface CompactPanelQuotaOptions {
   intervalMs: number;
 }
 
+type QuotaReader = typeof readAccountQuota;
+
 export function useCompactPanelQuota({
   active,
   enabled,
   initialDelayMs,
   intervalMs,
-}: CompactPanelQuotaOptions): AccountQuotaBundle {
+}: CompactPanelQuotaOptions, readQuota: QuotaReader = readAccountQuota): AccountQuotaBundle {
   const [quota, setQuota] = useState<AccountQuotaBundle>(() => emptyAccountQuotaBundle());
-  const inFlight = useRef(false);
+  const inFlightGeneration = useRef<number | null>(null);
+  const lifecycleRef = useRef({ active, enabled, generation: 0 });
   const mounted = useRef(true);
 
+  useLayoutEffect(() => {
+    const current = lifecycleRef.current;
+    lifecycleRef.current = {
+      active,
+      enabled,
+      generation: current.active === active && current.enabled === enabled
+        ? current.generation
+        : current.generation + 1,
+    };
+  }, [active, enabled]);
+
   useEffect(() => {
+    mounted.current = true;
     return () => {
       mounted.current = false;
     };
   }, []);
 
   const refreshQuota = useCallback(async (forceRefresh = false) => {
-    if (!active || !enabled || inFlight.current) {
+    const lifecycle = lifecycleRef.current;
+    if (
+      !active
+      || !enabled
+      || !lifecycle.active
+      || !lifecycle.enabled
+      || inFlightGeneration.current === lifecycle.generation
+    ) {
       return;
     }
 
-    inFlight.current = true;
+    const requestGeneration = lifecycle.generation;
+    inFlightGeneration.current = requestGeneration;
     try {
-      const next = await readAccountQuota(forceRefresh);
-      if (mounted.current && next !== null) {
+      const next = await readQuota(forceRefresh);
+      const current = lifecycleRef.current;
+      if (
+        mounted.current
+        && current.active
+        && current.enabled
+        && current.generation === requestGeneration
+        && next !== null
+      ) {
         setQuota(next);
       }
     } finally {
-      inFlight.current = false;
+      if (inFlightGeneration.current === requestGeneration) {
+        inFlightGeneration.current = null;
+      }
     }
-  }, [active, enabled]);
+  }, [active, enabled, readQuota]);
 
   useEffect(() => {
     if (!active || !enabled) {
