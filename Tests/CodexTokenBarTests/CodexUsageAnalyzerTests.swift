@@ -24,26 +24,31 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
     func testCurrentStreakUsesTodayWithOneDayGraceTable() throws {
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: try makeCodexHome()))
-        let start = Date(timeIntervalSince1970: 1_782_000_000)
-        let cases: [(name: String, tokens: [Int], expected: Int)] = [
-            ("today active", [10, 20, 30], 3),
-            ("yesterday grace", [10, 20, 0], 2),
-            ("today and yesterday empty", [10, 0, 0], 0),
-            ("historical gap truncates", [10, 0, 20, 30, 0], 2),
-            ("empty precise series", [], 0),
-            ("metadata only series", [], 0)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+        let today = calendar.date(from: DateComponents(year: 2026, month: 7, day: 11))!
+        let now = today.addingTimeInterval(12 * 60 * 60)
+        let cases: [(name: String, days: [(offset: Int, tokens: Int)], expected: Int)] = [
+            ("today active", [(-2, 10), (-1, 20), (0, 30)], 3),
+            ("yesterday grace", [(-2, 10), (-1, 20), (0, 0)], 2),
+            ("today and yesterday empty", [(-2, 10), (-1, 0), (0, 0)], 0),
+            ("missing yesterday truncates", [(-2, 10), (0, 20)], 1),
+            ("same local day merges", [(0, 10), (0, 20)], 1),
+            ("stale only", [(-2, 10)], 0),
+            ("future ignored", [(0, 10), (1, 20)], 1),
+            ("empty precise series", [], 0)
         ]
 
         for testCase in cases {
-            let daily = testCase.tokens.enumerated().map { offset, tokens in
+            let daily = testCase.days.map { day in
                 DayUsage(
-                    date: start.addingTimeInterval(Double(offset) * 86_400),
-                    tokens: tokens,
-                    calls: tokens > 0 ? 1 : 0
+                    date: calendar.date(byAdding: .day, value: day.offset, to: today)!,
+                    tokens: day.tokens,
+                    calls: day.tokens > 0 ? 1 : 0
                 )
             }
             XCTAssertEqual(
-                analyzer.currentStreakDays(from: daily),
+                analyzer.currentStreakDays(from: daily, now: now, calendar: calendar),
                 testCase.expected,
                 testCase.name
             )
@@ -68,7 +73,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let daily = analyzer.dailyUsage(from: events, now: now, calendar: calendar)
 
         XCTAssertEqual(daily.suffix(2).map(\.tokens), [1, 1])
-        XCTAssertEqual(analyzer.currentStreakDays(from: daily), 2)
+        XCTAssertEqual(analyzer.currentStreakDays(from: daily, now: now, calendar: calendar), 2)
     }
 
     func testPreciseJSONLScanBuildsUsageSeriesAndCacheBreakdown() throws {

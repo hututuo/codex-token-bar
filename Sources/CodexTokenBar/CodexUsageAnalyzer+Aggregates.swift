@@ -184,20 +184,33 @@ extension CodexUsageAnalyzer {
     }
 
     func currentStreakDays(from daily: [DayUsage]) -> Int {
-        guard !daily.isEmpty else { return 0 }
-        let ordered = daily.sorted { $0.date < $1.date }
-        var index = ordered.index(before: ordered.endIndex)
-        if ordered[index].tokens == 0 {
-            guard index > ordered.startIndex else { return 0 }
-            index = ordered.index(before: index)
-            guard ordered[index].tokens > 0 else { return 0 }
+        guard let anchor = daily.map(\.date).max() else { return 0 }
+        return currentStreakDays(from: daily, now: anchor, calendar: calendar)
+    }
+
+    func currentStreakDays(from daily: [DayUsage], now: Date, calendar: Calendar) -> Int {
+        let today = calendar.startOfDay(for: now)
+        var tokensByDay: [Date: Int] = [:]
+        for usage in daily {
+            let day = calendar.startOfDay(for: usage.date)
+            guard day <= today else { continue }
+            tokensByDay[day, default: 0] += usage.tokens
+        }
+
+        var day = today
+        if tokensByDay[day, default: 0] == 0 {
+            guard let yesterday = calendar.date(byAdding: .day, value: -1, to: today),
+                  tokensByDay[yesterday, default: 0] > 0 else {
+                return 0
+            }
+            day = yesterday
         }
 
         var streak = 0
-        while ordered[index].tokens > 0 {
+        while tokensByDay[day, default: 0] > 0 {
             streak += 1
-            guard index > ordered.startIndex else { break }
-            index = ordered.index(before: index)
+            guard let previous = calendar.date(byAdding: .day, value: -1, to: day) else { break }
+            day = previous
         }
         return streak
     }
