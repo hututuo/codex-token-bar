@@ -87,11 +87,12 @@ test("ProviderRepairPanel model scans only when opened on an unscanned repair sn
 });
 
 test("Provider repair card remounts on exact dashboard source token without resetting the global safety latch", async () => {
-  const [appSource, pageSource, panelSource, cardSource] = await Promise.all([
+  const [appSource, pageSource, panelSource, cardSource, dashboardDataSource] = await Promise.all([
     readFile(new URL("../../app/DashboardApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../DashboardPage.tsx", import.meta.url), "utf8"),
     readFile(new URL("./ProviderRepairPanel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../../components/ProviderRepairCard.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../../state/useDashboardData.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(appSource, /providerSourceKey={providerSourceKey}/);
@@ -99,6 +100,7 @@ test("Provider repair card remounts on exact dashboard source token without rese
   assert.match(panelSource, /key={providerSourceKey}/);
   assert.match(panelSource, /providerSourceKey: string/);
   assert.match(cardSource, /providerRepairSafetyLatch/);
+  assert.match(dashboardDataSource, /sourceToken\.physicalHomeKey/);
 });
 
 function findButton(html, text) {

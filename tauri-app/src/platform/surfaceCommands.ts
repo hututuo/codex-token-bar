@@ -14,9 +14,20 @@ export type LiveRateStreamCommandResult = PlatformCommandResult<LiveRateStreamLe
 export interface LiveRateStreamStartOptions {
   controlsSelectedThread: boolean;
   ownerGeneration: number;
+  ownerSessionEpoch: number;
   selectedThreadId?: string | null;
   sourceToken?: CodexHomeSourceToken | null;
   subscriberOwnerToken: string;
+}
+
+export function claimLiveRateOwnerSession(
+  subscriberOwnerToken: string,
+  ownerSessionEpoch: number,
+): Promise<boolean> {
+  return invokePlatformCommand("claim_live_rate_owner_session", false, {
+    subscriberOwnerToken,
+    ownerSessionEpoch,
+  });
 }
 
 export function showFloatingWindow(): Promise<boolean> {

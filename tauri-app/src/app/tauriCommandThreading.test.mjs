@@ -11,6 +11,7 @@ test("live commands that read local files run off the command thread", async () 
   for (const command of [
     "read_live_rate_snapshot",
     "read_live_thread_options",
+    "claim_live_rate_owner_session",
     "start_live_rate_stream",
     "read_floating_snapshot",
     "read_unread_summary",

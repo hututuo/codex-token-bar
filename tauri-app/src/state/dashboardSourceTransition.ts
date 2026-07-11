@@ -51,7 +51,10 @@ export function acceptDashboardSourceEnvelope(
   }
 
   if (incoming.transitionGeneration === current.transitionGeneration) {
-    if (incoming.canonicalHomeKey !== current.canonicalHomeKey) {
+    if (
+      incoming.canonicalHomeKey !== current.canonicalHomeKey
+      || incoming.physicalHomeKey !== current.physicalHomeKey
+    ) {
       return rejectedTransition(transition);
     }
     return {
@@ -62,8 +65,11 @@ export function acceptDashboardSourceEnvelope(
     };
   }
 
-  if (incoming.canonicalHomeKey === current.canonicalHomeKey) {
-    // The Rust publisher never advances generation for an unchanged canonical source.
+  if (
+    incoming.canonicalHomeKey === current.canonicalHomeKey
+    && incoming.physicalHomeKey === current.physicalHomeKey
+  ) {
+    // The Rust publisher never advances generation for an unchanged physical source.
     return rejectedTransition(transition);
   }
 
@@ -104,7 +110,8 @@ export function dashboardSourceTokenMatches(
   return current !== null
     && token !== null
     && current.transitionGeneration === token.transitionGeneration
-    && current.canonicalHomeKey === token.canonicalHomeKey;
+    && current.canonicalHomeKey === token.canonicalHomeKey
+    && current.physicalHomeKey === token.physicalHomeKey;
 }
 
 export function publishForDashboardSource(
@@ -124,12 +131,14 @@ export function dashboardSourceTokenFromEnvelope(
 ): DashboardSourceToken {
   return {
     canonicalHomeKey: envelope.canonicalHomeKey,
+    physicalHomeKey: envelope.physicalHomeKey,
     transitionGeneration: envelope.transitionGeneration,
   };
 }
 
 function validSourceToken(token: DashboardSourceToken): boolean {
   return token.canonicalHomeKey.trim().length > 0
+    && token.physicalHomeKey.trim().length > 0
     && Number.isSafeInteger(token.transitionGeneration)
     && token.transitionGeneration > 0;
 }

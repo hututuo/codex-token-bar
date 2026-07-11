@@ -597,7 +597,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const readyState = useMemo(() => visibleDashboardState(state), [state]);
   const providerSourceKey = sourceToken === null
     ? "unavailable"
-    : `${sourceToken.transitionGeneration}:${sourceToken.canonicalHomeKey}`;
+    : `${sourceToken.transitionGeneration}:${sourceToken.canonicalHomeKey}:${sourceToken.physicalHomeKey}`;
 
   return {
     state,

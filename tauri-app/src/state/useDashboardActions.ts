@@ -136,7 +136,8 @@ export function useDashboardActions({
     const committedSourceToken = dashboardSourceTokenFromEnvelope(envelope);
     const sourceWasUnchanged = sourceTokenBeforeSave !== null
       && sourceTokenBeforeSave.transitionGeneration === committedSourceToken.transitionGeneration
-      && sourceTokenBeforeSave.canonicalHomeKey === committedSourceToken.canonicalHomeKey;
+      && sourceTokenBeforeSave.canonicalHomeKey === committedSourceToken.canonicalHomeKey
+      && sourceTokenBeforeSave.physicalHomeKey === committedSourceToken.physicalHomeKey;
     if (
       acceptSourceEnvelope(envelope)
       && sourceWasUnchanged

@@ -33,6 +33,7 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "read_account_quota",
     "read_usage_summary_snapshot",
     "read_live_rate_snapshot",
+    "claim_live_rate_owner_session",
     "start_live_rate_stream",
     "stop_live_rate_stream",
     "read_floating_snapshot",

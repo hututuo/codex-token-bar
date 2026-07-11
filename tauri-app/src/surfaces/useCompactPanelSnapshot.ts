@@ -6,6 +6,7 @@ import { desktopPlatform } from "../platform/desktop";
 import {
   createLiveRateLeaseController,
   type LiveRateLeaseController,
+  tryCreateLiveRateOwnerSession,
 } from "../state/liveRateLease";
 import type {
   FloatingPanelSnapshot,
@@ -31,6 +32,7 @@ import {
 interface CompactPanelSnapshotOptions {
   active: boolean;
   liveRateEnabled: boolean;
+  liveRateOwnerToken: string;
   sourceKey?: string | null;
 }
 
@@ -39,6 +41,7 @@ const COMPACT_USAGE_SUMMARY_REFRESH_INTERVAL_MS = 60_000;
 export function useCompactPanelSnapshot({
   active,
   liveRateEnabled,
+  liveRateOwnerToken,
   sourceKey = null,
 }: CompactPanelSnapshotOptions): FloatingPanelSnapshot {
   const [rawSnapshot, setRawSnapshot] = useState<FloatingPanelSnapshot>(emptyFloatingPanelSnapshot);
@@ -46,12 +49,15 @@ export function useCompactPanelSnapshot({
   const lastLiveActivityAtMsRef = useRef(0);
   const usageSummaryRef = useRef<UsageSummarySnapshot | null>(null);
   const usageSummarySourceKeyRef = useRef<string | null>(sourceKey);
-  const leaseControllerRef = useRef<LiveRateLeaseController | null>(null);
+  const leaseControllerRef = useRef<LiveRateLeaseController | null | undefined>(undefined);
   let leaseController = leaseControllerRef.current;
-  if (leaseController === null) {
-    leaseController = createLiveRateLeaseController((leaseId) => {
-      void desktopPlatform.stopLiveRateStream(leaseId);
-    });
+  if (leaseController === undefined) {
+    const ownerSession = tryCreateLiveRateOwnerSession(liveRateOwnerToken);
+    leaseController = ownerSession === null
+      ? null
+      : createLiveRateLeaseController((leaseId) => {
+          void desktopPlatform.stopLiveRateStream(leaseId);
+        }, ownerSession);
     leaseControllerRef.current = leaseController;
   }
 
@@ -156,6 +162,14 @@ export function useCompactPanelSnapshot({
 
     let cancelled = false;
     let unlisten: (() => void) | null = null;
+
+    if (leaseController === null) {
+      setRawSnapshot(floatingSnapshotForLiveRate(
+        liveRateStreamStartFailureSnapshot("Live-rate owner epoch storage is unavailable"),
+        usageSummaryRef.current,
+      ));
+      return;
+    }
     const leaseRequest = leaseController.begin();
 
     void desktopPlatform.onLiveRateSnapshot((liveRate) => {
@@ -171,13 +185,22 @@ export function useCompactPanelSnapshot({
       }
     });
 
-    void desktopPlatform.startLiveRateStreamCommand({
-      selectedThreadId: null,
-      controlsSelectedThread: false,
-      subscriberOwnerToken: leaseRequest.ownerToken,
-      ownerGeneration: leaseRequest.ownerGeneration,
-      sourceToken: null,
-    }).then((result) => {
+    void desktopPlatform.claimLiveRateOwnerSession(
+      leaseRequest.ownerToken,
+      leaseRequest.ownerSessionEpoch,
+    ).then((claimed) => claimed
+      ? desktopPlatform.startLiveRateStreamCommand({
+          selectedThreadId: null,
+          controlsSelectedThread: false,
+          subscriberOwnerToken: leaseRequest.ownerToken,
+          ownerSessionEpoch: leaseRequest.ownerSessionEpoch,
+          ownerGeneration: leaseRequest.ownerGeneration,
+          sourceToken: null,
+        })
+      : null).then((result) => {
+      if (result === null) {
+        return;
+      }
       if (result.ok && result.value !== null) {
         leaseRequest.accept(result.value);
         return;
@@ -203,7 +226,7 @@ export function useCompactPanelSnapshot({
       unlisten?.();
       leaseRequest.cancel();
     };
-  }, [active, liveRateEnabled, markLiveUsageActivity, sourceKey]);
+  }, [active, liveRateEnabled, liveRateOwnerToken, markLiveUsageActivity, sourceKey]);
 
   useEffect(() => {
     if (!active || !liveRateEnabled) {

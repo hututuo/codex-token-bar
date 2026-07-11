@@ -4,6 +4,7 @@ export interface LiveRateLeaseRequest {
   accept: (lease: LiveRateStreamLease) => boolean;
   cancel: () => void;
   ownerGeneration: number;
+  ownerSessionEpoch: number;
   ownerToken: string;
 }
 
@@ -11,9 +12,47 @@ export interface LiveRateLeaseController {
   begin: () => LiveRateLeaseRequest;
 }
 
+export interface LiveRateOwnerSession {
+  ownerSessionEpoch: number;
+  ownerToken: string;
+}
+
+export interface LiveRateOwnerEpochStorage {
+  getItem: (key: string) => string | null;
+  setItem: (key: string, value: string) => void;
+}
+
+const OWNER_EPOCH_KEY_PREFIX = "codex-token-bar:live-rate-owner-epoch:";
+
+export function createLiveRateOwnerSession(
+  ownerToken: string,
+  storage: LiveRateOwnerEpochStorage = window.localStorage,
+): LiveRateOwnerSession {
+  if (!ownerToken.trim()) {
+    throw new Error("Live-rate owner token is required");
+  }
+  const key = `${OWNER_EPOCH_KEY_PREFIX}${ownerToken}`;
+  const previous = Number.parseInt(storage.getItem(key) ?? "0", 10);
+  const normalizedPrevious = Number.isSafeInteger(previous) && previous >= 0 ? previous : 0;
+  if (normalizedPrevious >= Number.MAX_SAFE_INTEGER) {
+    throw new Error("Live-rate owner session epoch overflow");
+  }
+  const ownerSessionEpoch = normalizedPrevious + 1;
+  storage.setItem(key, String(ownerSessionEpoch));
+  return { ownerToken, ownerSessionEpoch };
+}
+
+export function tryCreateLiveRateOwnerSession(ownerToken: string): LiveRateOwnerSession | null {
+  try {
+    return createLiveRateOwnerSession(ownerToken);
+  } catch {
+    return null;
+  }
+}
+
 export function createLiveRateLeaseController(
   releaseLease: (leaseId: string) => void,
-  ownerToken = createLiveRateOwnerToken(),
+  ownerSession: LiveRateOwnerSession,
 ): LiveRateLeaseController {
   let ownerGeneration = 0;
 
@@ -25,10 +64,11 @@ export function createLiveRateLeaseController(
       let acceptedLeaseId: string | null = null;
 
       return {
-        ownerToken,
+        ownerToken: ownerSession.ownerToken,
+        ownerSessionEpoch: ownerSession.ownerSessionEpoch,
         ownerGeneration: requestGeneration,
         accept(lease) {
-          if (cancelled || requestGeneration !== ownerGeneration) {
+          if (!lease.registered || cancelled || requestGeneration !== ownerGeneration) {
             releaseLease(lease.leaseId);
             return false;
           }
@@ -48,11 +88,4 @@ export function createLiveRateLeaseController(
       };
     },
   };
-}
-
-function createLiveRateOwnerToken(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `live-rate-owner-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }

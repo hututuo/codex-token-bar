@@ -26,6 +26,7 @@ export interface LiveThreadOption {
 
 export interface LiveRateStreamLease {
   leaseId: string;
+  registered: boolean;
 }
 
 export interface FloatingPanelSnapshot {

@@ -1,7 +1,7 @@
 use super::window_auth::require_window_label;
 use crate::commands::dashboard::{
-    capture_codex_home_source, validate_codex_home_source, with_valid_codex_home_source,
-    CodexHomeSourceToken,
+    capture_codex_home_source, validate_captured_codex_home_source, validate_codex_home_source,
+    with_valid_codex_home_source, CodexHomeSourceToken,
 };
 use crate::commands::local_source;
 use crate::core::{
@@ -31,11 +31,17 @@ pub struct LiveRateMonitorRegistry {
 #[derive(Default)]
 struct LiveRateStreamState {
     leases: HashMap<String, LiveRateSubscription>,
-    latest_owner_generation: HashMap<String, u64>,
+    latest_owner_version: HashMap<String, LiveRateOwnerVersion>,
     next_lease_id: u64,
     next_registration_sequence: u64,
     loop_generation: u64,
     running: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct LiveRateOwnerVersion {
+    session_epoch: u64,
+    generation: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +54,7 @@ struct LiveRateSubscriptionSource {
 struct LiveRateSubscription {
     source: LiveRateSubscriptionSource,
     owner_token: String,
+    owner_session_epoch: u64,
     owner_generation: u64,
     registration_sequence: u64,
     selected_thread_id: Option<String>,
@@ -58,12 +65,14 @@ struct LiveRateSubscription {
 #[serde(rename_all = "camelCase")]
 pub struct LiveRateStreamLease {
     pub lease_id: String,
+    pub registered: bool,
 }
 
 struct LiveRateSubscriptionStart {
     lease: LiveRateStreamLease,
     loop_generation: u64,
     should_spawn: bool,
+    registered: bool,
 }
 
 struct LiveRateStreamRequest {
@@ -122,12 +131,16 @@ impl LiveRateMonitorRegistry {
         &self,
         source: LiveRateSubscriptionSource,
         owner_token: String,
+        owner_session_epoch: u64,
         owner_generation: u64,
         selected_thread_id: Option<String>,
         controls_selected_thread: bool,
     ) -> Result<LiveRateSubscriptionStart, String> {
-        if owner_token.trim().is_empty() || owner_generation == 0 {
-            return Err("live rate subscriber owner token and generation are required".into());
+        if owner_token.trim().is_empty() || owner_session_epoch == 0 || owner_generation == 0 {
+            return Err(
+                "live rate subscriber owner token, session epoch, and generation are required"
+                    .into(),
+            );
         }
         let mut stream = self.stream.lock().map_err(|error| error.to_string())?;
         stream.next_lease_id = stream
@@ -140,34 +153,46 @@ impl LiveRateMonitorRegistry {
             .ok_or_else(|| "live rate registration sequence overflow".to_string())?;
         let lease = LiveRateStreamLease {
             lease_id: format!("live-rate-{}", stream.next_lease_id),
+            registered: false,
         };
         let registration_sequence = stream.next_registration_sequence;
-        let latest_owner_generation = stream
-            .latest_owner_generation
+        let latest_owner_version = stream
+            .latest_owner_version
             .get(&owner_token)
             .copied()
-            .unwrap_or(0);
-        if owner_generation < latest_owner_generation {
+            .unwrap_or_default();
+        let requested_version = LiveRateOwnerVersion {
+            session_epoch: owner_session_epoch,
+            generation: owner_generation,
+        };
+        if latest_owner_version.session_epoch != owner_session_epoch
+            || requested_version <= latest_owner_version
+        {
             return Ok(LiveRateSubscriptionStart {
                 lease,
                 loop_generation: stream.loop_generation,
                 should_spawn: false,
+                registered: false,
             });
         }
-        if owner_generation > latest_owner_generation {
-            stream.leases.retain(|_, subscription| {
-                subscription.owner_token != owner_token
-                    || subscription.owner_generation >= owner_generation
-            });
-            stream
-                .latest_owner_generation
-                .insert(owner_token.clone(), owner_generation);
-        }
+        stream.leases.retain(|_, subscription| {
+            subscription.owner_token != owner_token
+                || LiveRateOwnerVersion {
+                    session_epoch: subscription.owner_session_epoch,
+                    generation: subscription.owner_generation,
+                } >= requested_version
+        });
+        stream
+            .latest_owner_version
+            .insert(owner_token.clone(), requested_version);
+        let mut lease = lease;
+        lease.registered = true;
         stream.leases.insert(
             lease.lease_id.clone(),
             LiveRateSubscription {
                 source,
                 owner_token,
+                owner_session_epoch,
                 owner_generation,
                 registration_sequence,
                 selected_thread_id,
@@ -183,7 +208,40 @@ impl LiveRateMonitorRegistry {
             lease,
             loop_generation: stream.loop_generation,
             should_spawn,
+            registered: true,
         })
+    }
+
+    fn claim_owner_session(&self, owner_token: &str, session_epoch: u64) -> Result<bool, String> {
+        if owner_token.trim().is_empty() || session_epoch == 0 {
+            return Err("live rate owner token and session epoch are required".into());
+        }
+        let mut stream = self.stream.lock().map_err(|error| error.to_string())?;
+        let current = stream
+            .latest_owner_version
+            .get(owner_token)
+            .copied()
+            .unwrap_or_default();
+        if session_epoch < current.session_epoch {
+            return Ok(false);
+        }
+        if session_epoch > current.session_epoch {
+            stream.leases.retain(|_, subscription| {
+                subscription.owner_token != owner_token
+                    || subscription.owner_session_epoch >= session_epoch
+            });
+            stream.latest_owner_version.insert(
+                owner_token.to_string(),
+                LiveRateOwnerVersion {
+                    session_epoch,
+                    generation: 0,
+                },
+            );
+            if active_subscription_count(&stream) == 0 {
+                stream.running = false;
+            }
+        }
+        Ok(true)
     }
 
     fn stop_subscription(&self, lease_id: &str) -> Result<bool, String> {
@@ -307,9 +365,38 @@ impl LiveRateMonitorRegistry {
         selected_thread_id: Option<String>,
         controls_selected_thread: bool,
     ) -> LiveRateSubscriptionStart {
+        self.claim_owner_session(owner_token, 1).unwrap();
         self.start_subscription(
             source,
             owner_token.into(),
+            1,
+            owner_generation,
+            selected_thread_id,
+            controls_selected_thread,
+        )
+        .unwrap()
+    }
+
+    #[cfg(test)]
+    fn test_claim_owner_session(&self, owner_token: &str, session_epoch: u64) -> bool {
+        self.claim_owner_session(owner_token, session_epoch)
+            .unwrap()
+    }
+
+    #[cfg(test)]
+    fn test_start_subscription_with_session(
+        &self,
+        source: LiveRateSubscriptionSource,
+        owner_token: &str,
+        owner_session_epoch: u64,
+        owner_generation: u64,
+        selected_thread_id: Option<String>,
+        controls_selected_thread: bool,
+    ) -> LiveRateSubscriptionStart {
+        self.start_subscription(
+            source,
+            owner_token.into(),
+            owner_session_epoch,
             owner_generation,
             selected_thread_id,
             controls_selected_thread,
@@ -346,9 +433,15 @@ fn active_subscriptions(
 ) -> impl Iterator<Item = &LiveRateSubscription> {
     stream.leases.values().filter(|subscription| {
         stream
-            .latest_owner_generation
+            .latest_owner_version
             .get(&subscription.owner_token)
-            .is_some_and(|generation| *generation == subscription.owner_generation)
+            .is_some_and(|version| {
+                *version
+                    == LiveRateOwnerVersion {
+                        session_epoch: subscription.owner_session_epoch,
+                        generation: subscription.owner_generation,
+                    }
+            })
     })
 }
 
@@ -383,6 +476,16 @@ where
     async_runtime::spawn_blocking(work)
         .await
         .map_err(|error| error.to_string())?
+}
+
+fn run_source_bound_work<T>(
+    mut validate_source: impl FnMut() -> Result<(), String>,
+    work: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    validate_source()?;
+    let result = work()?;
+    validate_source()?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -420,15 +523,33 @@ pub async fn read_live_thread_options(
 }
 
 #[tauri::command]
+pub async fn claim_live_rate_owner_session(
+    window: tauri::WebviewWindow,
+    state: State<'_, LiveRateMonitorRegistry>,
+    subscriber_owner_token: String,
+    owner_session_epoch: u64,
+) -> Result<bool, String> {
+    require_live_rate_owner(window.label(), &subscriber_owner_token)?;
+    let registry = state.inner().clone();
+    run_blocking_command(move || {
+        registry.claim_owner_session(&subscriber_owner_token, owner_session_epoch)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn start_live_rate_stream(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<'_, LiveRateMonitorRegistry>,
     selected_thread_id: Option<String>,
     controls_selected_thread: Option<bool>,
     subscriber_owner_token: String,
+    owner_session_epoch: u64,
     owner_generation: u64,
     source_token: Option<CodexHomeSourceToken>,
 ) -> Result<LiveRateStreamLease, String> {
+    require_live_rate_owner(window.label(), &subscriber_owner_token)?;
     startup_trace::mark_once("command start_live_rate_stream start");
     let started = Instant::now();
     let captured = capture_codex_home_source(source_token.as_ref())?;
@@ -444,6 +565,7 @@ pub async fn start_live_rate_stream(
             registry.start_subscription(
                 subscription_source,
                 subscriber_owner_token,
+                owner_session_epoch,
                 owner_generation,
                 selected_thread_id,
                 controls_selected_thread.unwrap_or(false),
@@ -452,6 +574,9 @@ pub async fn start_live_rate_stream(
     })
     .await
     .and_then(|subscription| {
+        if !subscription.registered {
+            return Ok(subscription.lease);
+        }
         if subscription.should_spawn {
             registry.spawn_stream_loop(app, subscription.loop_generation);
         }
@@ -468,6 +593,26 @@ pub async fn start_live_rate_stream(
     ));
     startup_trace::mark_once("command start_live_rate_stream end");
     result
+}
+
+fn require_live_rate_owner(window_label: &str, owner_token: &str) -> Result<(), String> {
+    let expected = match window_label {
+        "main" => "dashboard-live-rate",
+        "floating" => "floating-live-rate",
+        "status" => "status-live-rate",
+        _ => {
+            return Err(format!(
+                "live rate is not available from the {window_label} window"
+            ))
+        }
+    };
+    if owner_token == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "live rate owner {owner_token} does not match the {window_label} window"
+        ))
+    }
 }
 
 #[tauri::command]
@@ -513,13 +658,18 @@ pub async fn acknowledge_current_unread(
     let started = Instant::now();
     let captured = capture_codex_home_source(source_token.as_ref())?;
     let completed_source_token = captured.source_token.clone();
-    let codex_home = captured.codex_home;
-    let result = run_blocking_command(move || unread::acknowledge_current_unread(&codex_home))
-        .await
-        .and_then(|summary| {
-            validate_codex_home_source(&completed_source_token)?;
-            Ok(summary)
-        });
+    let codex_home = captured.codex_home.clone();
+    let result = run_blocking_command(move || {
+        run_source_bound_work(
+            || validate_captured_codex_home_source(&captured),
+            || unread::acknowledge_current_unread(&codex_home),
+        )
+    })
+    .await
+    .and_then(|summary| {
+        validate_codex_home_source(&completed_source_token)?;
+        Ok(summary)
+    });
     startup_trace::mark_performance(format!(
         "acknowledge_current_unread {}ms {}",
         started.elapsed().as_millis(),
@@ -670,6 +820,62 @@ mod tests {
         assert_eq!(selected.selected_thread_id.as_deref(), Some("thread-b"));
     }
 
+    #[test]
+    fn newer_webview_session_rejects_unobserved_late_start_from_old_session() {
+        let registry = LiveRateMonitorRegistry::default();
+        let source = live_source_for_test("source-a", 1);
+
+        assert!(registry.test_claim_owner_session("dashboard-live-rate", 2));
+        let current = registry.test_start_subscription_with_session(
+            source.clone(),
+            "dashboard-live-rate",
+            2,
+            1,
+            Some("thread-b".into()),
+            true,
+        );
+        let late_old = registry.test_start_subscription_with_session(
+            source,
+            "dashboard-live-rate",
+            1,
+            99,
+            Some("thread-a".into()),
+            true,
+        );
+
+        assert!(current.registered);
+        assert!(!late_old.registered);
+        assert_eq!(registry.test_total_lease_count(), 1);
+        assert_eq!(
+            registry.test_stream_state(),
+            (1, true, Some("thread-b".into()))
+        );
+    }
+
+    #[test]
+    fn stable_surface_owner_ids_are_bound_to_their_webview_labels() {
+        assert!(require_live_rate_owner("main", "dashboard-live-rate").is_ok());
+        assert!(require_live_rate_owner("floating", "floating-live-rate").is_ok());
+        assert!(require_live_rate_owner("status", "status-live-rate").is_ok());
+        assert!(require_live_rate_owner("status", "dashboard-live-rate").is_err());
+        assert!(require_live_rate_owner("unknown", "dashboard-live-rate").is_err());
+    }
+
+    #[test]
+    fn stale_physical_source_guard_stops_unread_work_before_write() {
+        let wrote = std::cell::Cell::new(false);
+        let result = run_source_bound_work(
+            || Err("physical Home replaced".into()),
+            || {
+                wrote.set(true);
+                Ok(())
+            },
+        );
+
+        assert_eq!(result.unwrap_err(), "physical Home replaced");
+        assert!(!wrote.get());
+    }
+
     fn live_source_for_test(
         canonical_home_key: &str,
         transition_generation: u64,
@@ -677,6 +883,7 @@ mod tests {
         LiveRateSubscriptionSource {
             source_token: super::super::dashboard::CodexHomeSourceToken {
                 canonical_home_key: canonical_home_key.into(),
+                physical_home_key: format!("physical:{canonical_home_key}"),
                 transition_generation,
             },
             codex_home: std::path::PathBuf::from(canonical_home_key),

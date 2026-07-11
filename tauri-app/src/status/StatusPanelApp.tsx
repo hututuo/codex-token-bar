@@ -23,6 +23,7 @@ export function StatusPanelApp() {
   const { snapshot, quota } = useCompactPanelData({
     active,
     liveRateEnabled,
+    liveRateOwnerToken: "status-live-rate",
     quotaInitialDelayMs: 0,
     quotaIntervalMs: quotaRefreshIntervalMs,
     sourceKey: codexHomeKey,

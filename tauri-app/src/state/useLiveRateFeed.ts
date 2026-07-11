@@ -12,6 +12,7 @@ import type { DashboardSourceToken } from "./dashboardSourceTransition";
 import {
   createLiveRateLeaseController,
   type LiveRateLeaseController,
+  tryCreateLiveRateOwnerSession,
 } from "./liveRateLease";
 import { liveRateStreamFailureSnapshot } from "./liveRateStreamFailure";
 
@@ -35,12 +36,15 @@ export function useLiveRateFeed({
   const lastSmoothedSnapshotRef = useRef<LiveRateSnapshot | null>(null);
   const lastDisplayBucketRef = useRef("");
   const previousSourceTokenRef = useRef<DashboardSourceToken | null>(null);
-  const leaseControllerRef = useRef<LiveRateLeaseController | null>(null);
+  const leaseControllerRef = useRef<LiveRateLeaseController | null | undefined>(undefined);
   let leaseController = leaseControllerRef.current;
-  if (leaseController === null) {
-    leaseController = createLiveRateLeaseController((leaseId) => {
-      void desktopPlatform.stopLiveRateStream(leaseId);
-    });
+  if (leaseController === undefined) {
+    const ownerSession = tryCreateLiveRateOwnerSession("dashboard-live-rate");
+    leaseController = ownerSession === null
+      ? null
+      : createLiveRateLeaseController((leaseId) => {
+          void desktopPlatform.stopLiveRateStream(leaseId);
+        }, ownerSession);
     leaseControllerRef.current = leaseController;
   }
 
@@ -60,7 +64,6 @@ export function useLiveRateFeed({
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     const selected = selectedThreadId || null;
-    const leaseRequest = leaseController.begin();
 
     const publishSnapshot = (liveRate: LiveRateSnapshot) => {
       const smoothed = smoothLiveRateSnapshot(liveRate, lastSmoothedSnapshotRef.current);
@@ -72,6 +75,15 @@ export function useLiveRateFeed({
       lastDisplayBucketRef.current = bucket;
       onSnapshot(smoothed);
     };
+
+    if (leaseController === null) {
+      publishSnapshot(liveRateStreamFailureSnapshot(
+        selected,
+        failedLiveRateStartResult("Live-rate owner epoch storage is unavailable"),
+      ));
+      return;
+    }
+    const leaseRequest = leaseController.begin();
 
     void desktopPlatform.onLiveRateSnapshot((liveRate) => {
       if (!cancelled) {
@@ -85,7 +97,14 @@ export function useLiveRateFeed({
       }
     });
 
-    void resetLiveRateMonitor().then(async () => {
+    void desktopPlatform.claimLiveRateOwnerSession(
+      leaseRequest.ownerToken,
+      leaseRequest.ownerSessionEpoch,
+    ).then(async (claimed) => {
+      if (cancelled || !claimed) {
+        return null;
+      }
+      await resetLiveRateMonitor();
       if (cancelled) {
         return null;
       }
@@ -93,6 +112,7 @@ export function useLiveRateFeed({
         selectedThreadId: selected,
         controlsSelectedThread: true,
         subscriberOwnerToken: leaseRequest.ownerToken,
+        ownerSessionEpoch: leaseRequest.ownerSessionEpoch,
         ownerGeneration: leaseRequest.ownerGeneration,
         sourceToken,
       });
@@ -135,6 +155,7 @@ function sameSourceToken(
     && right !== null
     && left.transitionGeneration === right.transitionGeneration
     && left.canonicalHomeKey === right.canonicalHomeKey
+    && left.physicalHomeKey === right.physicalHomeKey
   );
 }
 

@@ -115,6 +115,24 @@ test("same canonical source command and event envelopes do not advance deferred 
   assert.equal(transition.deferredGeneration, 2);
 });
 
+test("same canonical path with a replaced physical Home advances the source", () => {
+  let transition = createDashboardSourceTransition();
+  transition = acceptedTransition(
+    transition,
+    envelope("/source/A", 1, "manual", "unix:1:100"),
+  );
+
+  const replaced = acceptDashboardSourceEnvelope(
+    transition,
+    envelope("/source/A", 2, "manual", "unix:1:200"),
+  );
+
+  assert.equal(replaced.accepted, true);
+  assert.equal(replaced.sourceChanged, true);
+  assert.equal(replaced.transition.sourceToken.physicalHomeKey, "unix:1:200");
+  assert.equal(replaced.transition.deferredGeneration, 1);
+});
+
 test("completion publication requires the exact generation and canonical source", () => {
   let transition = createDashboardSourceTransition();
   transition = acceptedTransition(transition, envelope("/source/A", 1, "manual"));
@@ -218,7 +236,12 @@ function acceptedTransition(transition, sourceEnvelope) {
   return result.transition;
 }
 
-function envelope(canonicalHomeKey, transitionGeneration, source) {
+function envelope(
+  canonicalHomeKey,
+  transitionGeneration,
+  source,
+  physicalHomeKey = `physical:${canonicalHomeKey}`,
+) {
   return {
     codexHome: {
       path: canonicalHomeKey,
@@ -226,6 +249,7 @@ function envelope(canonicalHomeKey, transitionGeneration, source) {
       source,
     },
     canonicalHomeKey,
+    physicalHomeKey,
     transitionGeneration,
   };
 }

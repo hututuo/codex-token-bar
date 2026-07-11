@@ -22,6 +22,7 @@ export function FloatingWindowApp() {
   const [codexHomeKey, setCodexHomeKey] = useState<string | null>(null);
   const { snapshot } = useCompactPanelData({
     liveRateEnabled,
+    liveRateOwnerToken: "floating-live-rate",
     quotaInitialDelayMs: 8_000,
     quotaIntervalMs: quotaRefreshIntervalMs,
     sourceKey: codexHomeKey,

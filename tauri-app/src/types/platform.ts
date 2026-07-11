@@ -7,11 +7,13 @@ export interface CodexHomeStatus {
 export interface CodexHomeSourceEnvelope {
   codexHome: CodexHomeStatus;
   canonicalHomeKey: string;
+  physicalHomeKey: string;
   transitionGeneration: number;
 }
 
 export interface CodexHomeSourceToken {
   canonicalHomeKey: string;
+  physicalHomeKey: string;
   transitionGeneration: number;
 }
 
