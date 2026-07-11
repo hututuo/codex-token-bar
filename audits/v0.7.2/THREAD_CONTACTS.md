@@ -29,3 +29,9 @@ When a task reaches a real handoff point, call `codex_app__send_message_to_threa
 - remaining risk or requested decision.
 
 Do not send progress pings for ordinary work. The Commander reads a task manually only after a callback, an error, or an abnormal delay. Reviewers must callback independently after inspecting the exact implementation commit.
+
+## Runtime Handoff Gate
+
+- Before building a new App for manual/runtime verification, close the previous running instance owned by that platform lane.
+- After the build, open only the new App and verify by full executable path that at most one Swift instance and one Tauri instance are running.
+- Swift tasks may manage only the Swift App; Tauri tasks may manage only the Tauri App. Never stop, open, or replace the other lane's runtime.
