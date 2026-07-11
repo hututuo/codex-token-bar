@@ -233,6 +233,10 @@ struct VisibleTextSummary: Equatable {
         append(text)
     }
 
+    var identityComponent: String {
+        "\(utf8Count):\(hashA):\(hashB):\(prefix):\(suffix)"
+    }
+
     mutating func append(_ text: String) {
         let bytes = Array(text.utf8)
         utf8Count += bytes.count

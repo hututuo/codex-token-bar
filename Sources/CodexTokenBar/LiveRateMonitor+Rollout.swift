@@ -47,11 +47,25 @@ extension LiveRateMonitor {
         var callStarts: [String: TimeInterval] = [:]
         var currentTurnID: String?
         return suppressDuplicateVisibleMessages(
-            lines.flatMap { line in
+            lines.enumerated().flatMap { lineIndex, line in
                 if let turnID = rolloutTurnID(fromLine: line) {
                     currentTurnID = turnID
                 }
-                return rolloutEvents(fromLine: line, callStarts: &callStarts, currentTurnID: currentTurnID)
+                return rolloutEvents(fromLine: line, callStarts: &callStarts, currentTurnID: currentTurnID).map { event in
+                    guard event.category == .visibleText, event.itemID == nil else { return event }
+                    return RolloutMetricEvent(
+                        timestamp: event.timestamp,
+                        startTimestamp: event.startTimestamp,
+                        key: "\(event.key):line:\(lineIndex)",
+                        turnID: event.turnID,
+                        itemID: nil,
+                        category: event.category,
+                        text: event.text,
+                        exactTokens: event.exactTokens,
+                        exactOutputTokens: event.exactOutputTokens,
+                        rollingOnly: event.rollingOnly
+                    )
+                }
             }
         )
     }

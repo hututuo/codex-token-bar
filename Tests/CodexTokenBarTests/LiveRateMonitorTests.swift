@@ -775,6 +775,70 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.snapshot.breakdown.visibleText, monitor.estimateTokenCount("same answer", category: .visibleText))
     }
 
+    @MainActor
+    func testParsedAgentMessagePendingMatchesStreamAtDeadlineAcrossAllScopes() throws {
+        let parsedEvents = LiveRateMonitor.rolloutEvents(fromLines: [
+            rolloutTurnContextLine(timestamp: "2026-06-24T13:00:00.000Z", turnID: "turn-1"),
+            rolloutAgentMessageLine(timestamp: "2026-06-24T13:00:00.010Z", message: "same answer"),
+            rolloutAssistantResponseItemLine(timestamp: "2026-06-24T13:00:00.020Z", id: "msg-1", text: "same answer")
+        ])
+        XCTAssertEqual(parsedEvents.count, 1)
+        XCTAssertNil(parsedEvents[0].itemID)
+        XCTAssertEqual(parsedEvents[0].turnID, "turn-1")
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        let baseline = LiveRateMonitor(monitoringEnabled: false)
+        for subject in [monitor, baseline] {
+            subject.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        }
+        monitor.testProcessPollInputs(
+            streamRows: [],
+            rolloutReads: [LiveRateMonitor.RolloutRead(threadID: "thread-1", path: "/tmp/r.jsonl", newOffset: 1, events: parsedEvents)],
+            now: 1_000
+        )
+        XCTAssertEqual(monitor.testPendingRolloutCount, 1)
+        let chunks = [
+            streamDeltaRowWithTopLevelTurn(id: 1, threadID: "thread-1", turnID: "turn-1", itemID: "msg-1", sequence: 1, text: "same "),
+            streamDeltaRowWithTopLevelTurn(id: 2, threadID: "thread-1", turnID: "turn-1", itemID: "msg-1", sequence: 2, text: "answer")
+        ]
+
+        monitor.testProcessPollInputs(streamRows: chunks, rolloutReads: [], now: 1_001)
+        baseline.testProcessPollInputs(streamRows: chunks, rolloutReads: [], now: 1_001)
+
+        XCTAssertEqual(monitor.snapshot.breakdown, baseline.snapshot.breakdown)
+        XCTAssertEqual(monitor.totalSnapshot.breakdown, baseline.totalSnapshot.breakdown)
+        XCTAssertEqual(monitor.testSessionBreakdown(threadID: "thread-1"), baseline.testSessionBreakdown(threadID: "thread-1"))
+        XCTAssertEqual(monitor.testPendingRolloutCount, 0)
+    }
+
+    @MainActor
+    func testTwoParsedAgentOccurrencesDoNotOverwriteAndOneStreamConsumesOnlyOne() {
+        let parsedEvents = LiveRateMonitor.rolloutEvents(fromLines: [
+            rolloutTurnContextLine(timestamp: "2026-06-24T13:00:00.000Z", turnID: "turn-1"),
+            rolloutAgentMessageLine(timestamp: "2026-06-24T13:00:00.010Z", message: "same"),
+            rolloutAssistantResponseItemLine(timestamp: "2026-06-24T13:00:00.020Z", id: "msg-1", text: "same"),
+            rolloutAgentMessageLine(timestamp: "2026-06-24T13:00:00.030Z", message: "same"),
+            rolloutAssistantResponseItemLine(timestamp: "2026-06-24T13:00:00.040Z", id: "msg-2", text: "same")
+        ])
+        XCTAssertEqual(parsedEvents.count, 2)
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        monitor.testProcessPollInputs(
+            streamRows: [],
+            rolloutReads: [LiveRateMonitor.RolloutRead(threadID: "thread-1", path: "/tmp/r.jsonl", newOffset: 1, events: parsedEvents)],
+            now: 1_000
+        )
+        XCTAssertEqual(monitor.testPendingRolloutCount, 2)
+
+        monitor.testProcessPollInputs(
+            streamRows: [streamDeltaRowWithoutItemMetadata(id: 1, threadID: "thread-1", itemID: "msg-1", sequence: 1, text: "same")],
+            rolloutReads: [],
+            now: 1_001
+        )
+
+        XCTAssertEqual(monitor.testPendingRolloutCount, 0)
+        XCTAssertGreaterThan(monitor.snapshot.breakdown.visibleText, monitor.estimateTokenCount("same", category: .visibleText))
+    }
+
     func testStreamParserUsesTopLevelTurnIDWithoutOutputItem() throws {
         let row = LiveRateMonitor.LogRow(
             id: 1,
@@ -1461,6 +1525,28 @@ final class LiveRateMonitorTests: XCTestCase {
             tsNanos: 0,
             target: "codex_api::sse::responses",
             feedbackLogBody: "SSE event: {\"type\":\"response.output_text.delta\",\"delta\":\(escapedText),\"item_id\":\"\(itemID)\",\"sequence_number\":\(sequence)}"
+        )
+    }
+
+    private func streamDeltaRowWithTopLevelTurn(
+        id: Int,
+        threadID: String,
+        turnID: String,
+        itemID: String,
+        sequence: Int,
+        text: String
+    ) -> LiveRateMonitor.LogRow {
+        let escapedText = String(
+            data: try! JSONSerialization.data(withJSONObject: text, options: [.fragmentsAllowed]),
+            encoding: .utf8
+        )!
+        return LiveRateMonitor.LogRow(
+            id: id,
+            threadID: threadID,
+            ts: 1_000 + id,
+            tsNanos: 0,
+            target: "codex_api::sse::responses",
+            feedbackLogBody: "SSE event: {\"type\":\"response.output_text.delta\",\"turn_id\":\"\(turnID)\",\"delta\":\(escapedText),\"item_id\":\"\(itemID)\",\"sequence_number\":\(sequence)}"
         )
     }
 
