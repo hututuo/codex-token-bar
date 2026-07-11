@@ -8,3 +8,4 @@ pub mod sqlite;
 pub mod startup_trace;
 pub mod unread;
 pub mod usage;
+pub(crate) mod windows_path;

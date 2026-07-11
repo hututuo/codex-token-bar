@@ -1,4 +1,6 @@
-use crate::core::{app_paths, unread, usage::token_count_jsonl};
+use crate::core::usage::token_count_jsonl;
+#[cfg(test)]
+use crate::core::{app_paths, unread};
 use crate::models::{
     FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, LocalDataWarning, UnreadSummary,
 };
@@ -6,17 +8,25 @@ use logs::read_recent_log_rows;
 pub use monitor::LiveRateMonitorService;
 use rusqlite::Result;
 use rollout::{read_rollout_metrics, sync_rollout_offsets_to_current};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
+#[cfg(test)]
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(test)]
+use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 use state::{read_thread_options_result, read_thread_title, UsageSummary};
 use stream::{rollup_metric_events, rollup_stream_rows};
 
 const LOOKBACK_SECONDS: f64 = 8.0;
 const MAX_TOKENS_PER_SECOND: f64 = 200.0;
+#[cfg(test)]
 const UNREAD_SUMMARY_TTL: Duration = Duration::from_secs(3);
+#[cfg(test)]
 static UNREAD_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUnreadSummary>>> = OnceLock::new();
 
+#[cfg(test)]
 #[derive(Clone)]
 struct CachedUnreadSummary {
     codex_home: PathBuf,
@@ -25,6 +35,7 @@ struct CachedUnreadSummary {
     signature: UnreadStoreSignature,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct UnreadStoreSignature {
     unread_state: StoreFileSignature,
@@ -32,6 +43,7 @@ struct UnreadStoreSignature {
     acknowledgement: StoreFileSignature,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct StoreFileSignature {
     exists: bool,
@@ -45,16 +57,29 @@ mod rollout;
 mod state;
 mod stream;
 
+#[cfg(test)]
 pub fn read_snapshot(codex_home: &Path, selected_thread_id: Option<&str>) -> LiveRateSnapshot {
+    let unread_summary = read_unread_summary_cached(codex_home);
+    read_snapshot_with_unread(codex_home, selected_thread_id, unread_summary)
+}
+
+pub fn read_snapshot_with_unread(
+    codex_home: &Path,
+    selected_thread_id: Option<&str>,
+    unread_summary: UnreadSummary,
+) -> LiveRateSnapshot {
     match try_read_snapshot(codex_home, selected_thread_id) {
-        Ok(snapshot) => snapshot,
+        Ok(mut snapshot) => {
+            snapshot.unread_summary = unread_summary;
+            snapshot
+        }
         Err(error) => {
             let warnings = vec![live_rate_warning(format!(
                 "读取实时输出流失败：{}（{}）",
                 codex_home.join("logs_2.sqlite").display(),
                 error
             ))];
-            idle_snapshot_with_warnings(codex_home, selected_thread_id, warnings)
+            idle_snapshot_with_warnings(codex_home, selected_thread_id, unread_summary, warnings)
         }
     }
 }
@@ -73,10 +98,10 @@ pub fn try_read_thread_options(codex_home: &Path) -> Result<Vec<LiveThreadOption
 fn idle_snapshot_with_warnings(
     codex_home: &Path,
     selected_thread_id: Option<&str>,
+    unread_summary: UnreadSummary,
     mut warnings: Vec<LocalDataWarning>,
 ) -> LiveRateSnapshot {
     let summary = read_precise_usage_summary_or_fallback(codex_home, &mut warnings);
-    let unread_summary = read_unread_summary_cached(codex_home);
     let selected_thread_title = selected_thread_id
         .and_then(|thread_id| read_thread_title_or_warn(codex_home, thread_id, &mut warnings))
         .unwrap_or_else(|| "选择会话查看单会话速率".into());
@@ -130,7 +155,6 @@ fn read_snapshot_result(
         (rollup, selected_rollup)
     };
     let summary = read_precise_usage_summary_or_fallback(codex_home, &mut warnings);
-    let unread_summary = read_unread_summary_cached(codex_home);
     let _observed_live_source_tokens = rollup.breakdown.observed_total();
     let thread_title = rollup
         .latest_thread_id
@@ -153,9 +177,19 @@ fn read_snapshot_result(
         requests_today: summary.today_requests,
         max_tokens_per_second: MAX_TOKENS_PER_SECOND,
         precise_enabled: false,
-        unread_summary,
+        unread_summary: empty_unread_summary(),
         warnings,
     })
+}
+
+fn empty_unread_summary() -> UnreadSummary {
+    UnreadSummary {
+        active: false,
+        count: 0,
+        label: "暂无未读完成会话".into(),
+        detail: "未读状态由来源作用域调用方注入。".into(),
+        source: "unread_not_loaded".into(),
+    }
 }
 
 pub fn read_floating_snapshot_from_live(
@@ -225,6 +259,7 @@ fn read_precise_usage_summary_or_fallback(
     UsageSummary::default()
 }
 
+#[cfg(test)]
 fn read_unread_summary_cached(codex_home: &Path) -> UnreadSummary {
     let now = Instant::now();
     let signature = unread_store_signature(codex_home);
@@ -258,6 +293,7 @@ fn read_unread_summary_cached(codex_home: &Path) -> UnreadSummary {
     summary
 }
 
+#[cfg(test)]
 fn unread_store_signature(codex_home: &Path) -> UnreadStoreSignature {
     UnreadStoreSignature {
         unread_state: store_file_signature(&codex_home.join(".codex-global-state.json")),
@@ -272,10 +308,12 @@ fn unread_store_signature(codex_home: &Path) -> UnreadStoreSignature {
     }
 }
 
+#[cfg(test)]
 fn state_database_signature(codex_home: &Path) -> StoreFileSignature {
     store_file_signature(&codex_home.join("state_5.sqlite"))
 }
 
+#[cfg(test)]
 fn store_file_signature(path: &Path) -> StoreFileSignature {
     std::fs::metadata(path)
         .map(|metadata| StoreFileSignature {

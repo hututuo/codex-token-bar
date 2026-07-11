@@ -11,7 +11,6 @@ use crate::core::{
     dashboard::DashboardDataSource, live_rate::LiveRateMonitorService, startup_trace, unread,
 };
 use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, UnreadSummary};
-use crate::platform;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -84,15 +83,11 @@ struct LiveRateStreamRequest {
 }
 
 impl LiveRateMonitorRegistry {
-    fn snapshot(&self, selected_thread_id: Option<&str>) -> Result<LiveRateSnapshot, String> {
-        let codex_home = platform::default_codex_home();
-        self.snapshot_at(codex_home, selected_thread_id)
-    }
-
-    fn snapshot_at(
+    fn snapshot_at_with_unread(
         &self,
         codex_home: PathBuf,
         selected_thread_id: Option<&str>,
+        unread_summary: UnreadSummary,
     ) -> Result<LiveRateSnapshot, String> {
         let mut monitor = self.monitor.lock().map_err(|error| error.to_string())?;
         if monitor
@@ -104,11 +99,14 @@ impl LiveRateMonitorRegistry {
         Ok(monitor
             .as_ref()
             .expect("live rate monitor should be initialized")
-            .snapshot(selected_thread_id))
+            .snapshot_with_unread(selected_thread_id, unread_summary))
     }
 
-    fn floating_snapshot(&self) -> Result<FloatingPanelSnapshot, String> {
-        let codex_home = platform::default_codex_home();
+    fn floating_snapshot_with_unread(
+        &self,
+        codex_home: PathBuf,
+        unread_summary: UnreadSummary,
+    ) -> Result<FloatingPanelSnapshot, String> {
         let mut monitor = self.monitor.lock().map_err(|error| error.to_string())?;
         if monitor
             .as_ref()
@@ -119,7 +117,7 @@ impl LiveRateMonitorRegistry {
         Ok(monitor
             .as_ref()
             .expect("live rate monitor should be initialized")
-            .floating_snapshot())
+            .floating_snapshot_with_unread(unread_summary))
     }
 
     fn reset(&self) -> Result<(), String> {
@@ -316,16 +314,16 @@ impl LiveRateMonitorRegistry {
                 let started = Instant::now();
                 let snapshot = async_runtime::spawn_blocking(move || {
                     let pinned = pin_captured_codex_home_source(&captured)?;
-                    let mut snapshot = snapshot_registry.snapshot_at(
-                        pinned.read_path().to_path_buf(),
-                        selected_for_snapshot.as_deref(),
-                    )?;
-                    snapshot.unread_summary = unread::try_read_unread_summary_for_source(
+                    let unread_summary = unread::try_read_unread_summary_for_source(
                         pinned.read_path(),
                         &pinned.source_scope_key,
                         || validate_captured_codex_home_source(&captured),
                     )?;
-                    Ok::<_, String>(snapshot)
+                    snapshot_registry.snapshot_at_with_unread(
+                        pinned.read_path().to_path_buf(),
+                        selected_for_snapshot.as_deref(),
+                        unread_summary,
+                    )
                 })
                 .await;
                 let snapshot = match snapshot {
@@ -560,16 +558,16 @@ pub async fn read_live_rate_snapshot(
     let completed_source_token = captured.source_token.clone();
     let result = run_blocking_command(move || {
         let pinned = pin_captured_codex_home_source(&captured)?;
-        let mut snapshot = registry.snapshot_at(
-            pinned.read_path().to_path_buf(),
-            selected_thread_id.as_deref(),
-        )?;
-        snapshot.unread_summary = unread::try_read_unread_summary_for_source(
+        let unread_summary = unread::try_read_unread_summary_for_source(
             pinned.read_path(),
             &pinned.source_scope_key,
             || validate_captured_codex_home_source(&captured),
         )?;
-        Ok(snapshot)
+        registry.snapshot_at_with_unread(
+            pinned.read_path().to_path_buf(),
+            selected_thread_id.as_deref(),
+            unread_summary,
+        )
     })
     .await
     .and_then(|snapshot| {
@@ -717,14 +715,15 @@ pub async fn read_floating_snapshot(
     let completed_source_token = captured.source_token.clone();
     let result = run_blocking_command(move || {
         let pinned = pin_captured_codex_home_source(&captured)?;
-        let mut snapshot = registry.floating_snapshot()?;
-        snapshot.unread_summary = unread::try_read_unread_summary_for_source(
+        let unread_summary = unread::try_read_unread_summary_for_source(
             pinned.read_path(),
             &pinned.source_scope_key,
             || validate_captured_codex_home_source(&captured),
         )?;
-        snapshot.unread = snapshot.unread_summary.active;
-        Ok(snapshot)
+        registry.floating_snapshot_with_unread(
+            pinned.read_path().to_path_buf(),
+            unread_summary,
+        )
     })
     .await
     .and_then(|snapshot| {

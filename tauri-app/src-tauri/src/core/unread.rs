@@ -343,16 +343,11 @@ fn sync_parent_directory(parent: &Path) -> Result<(), String> {
 fn replace_file_atomically(source: &Path, destination: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
 
         if destination.exists() {
-            let destination: Vec<u16> = destination
-                .as_os_str()
-                .encode_wide()
-                .chain(Some(0))
-                .collect();
-            let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+            let destination = crate::core::windows_path::extended_length_path(destination)?;
+            let source = crate::core::windows_path::extended_length_path(source)?;
             let replaced = unsafe {
                 ReplaceFileW(
                     destination.as_ptr(),

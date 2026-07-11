@@ -1,3 +1,4 @@
+use crate::core::windows_path::extended_length_path_from_wide;
 use super::recent_completion::{
     current_time_seconds, lookback_seconds, recent_completion_markers,
 };
@@ -16,6 +17,34 @@ use std::sync::{Arc, Barrier};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn windows_extended_paths_cover_drive_unc_and_existing_prefixes() {
+    let drive = extended_length_path_from_wide(r"C:\Codex Home\ack.json".encode_utf16().collect())
+        .unwrap();
+    assert_eq!(
+        String::from_utf16(&drive[..drive.len() - 1]).unwrap(),
+        r"\\?\C:\Codex Home\ack.json"
+    );
+
+    let unc = extended_length_path_from_wide(r"\\server\share\ack.json".encode_utf16().collect())
+        .unwrap();
+    assert_eq!(
+        String::from_utf16(&unc[..unc.len() - 1]).unwrap(),
+        r"\\?\UNC\server\share\ack.json"
+    );
+
+    let prefixed = extended_length_path_from_wide(r"\\?\C:\ack.json".encode_utf16().collect())
+        .unwrap();
+    assert_eq!(
+        String::from_utf16(&prefixed[..prefixed.len() - 1]).unwrap(),
+        r"\\?\C:\ack.json"
+    );
+    assert!(
+        extended_length_path_from_wide(r"relative\ack.json".encode_utf16().collect()).is_err()
+    );
+    assert!(extended_length_path_from_wide(r"\\?\relative".encode_utf16().collect()).is_err());
+}
 
 #[test]
 fn shared_unread_correctness_sequence() {

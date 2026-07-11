@@ -15,4 +15,10 @@ test("unread summary reads propagate persistence failures instead of returning a
   assert.match(commands, /unread::try_read_unread_summary_for_source\(/);
   assert.match(commands, /&pinned\.source_scope_key/);
   assert.match(commands, /validate_codex_home_source\(&completed_source_token\)/);
+  assert.match(commands, /snapshot_at_with_unread\(/);
+  assert.match(commands, /floating_snapshot_with_unread\(/);
+  assert.doesNotMatch(
+    commands,
+    /snapshot_at\([\s\S]{0,300}try_read_unread_summary_for_source/,
+  );
 });

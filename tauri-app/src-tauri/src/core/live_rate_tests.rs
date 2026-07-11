@@ -803,6 +803,38 @@ fn unread_acknowledgement_invalidates_live_rate_unread_cache() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn scoped_monitor_snapshot_does_not_mutate_canonical_unread_baseline() {
+    let root = temp_root("scoped-unread-no-canonical-write");
+    let support = root.join("tauri-support");
+    fs::create_dir_all(&root).unwrap();
+    let _support_env = TauriSupportEnvGuard::new(&support);
+    let thread_id = "019eaaaa-0000-0000-0000-000000000299";
+    write_unread_state(&root, &[thread_id]);
+    unread::acknowledge_current_unread(&root).unwrap();
+    let acknowledgement_path = support.join("unread-acknowledgement.json");
+    let before = fs::read(&acknowledgement_path).unwrap();
+    write_unread_state(&root, &[]);
+
+    let monitor = LiveRateMonitorService::new(root.clone());
+    let injected = UnreadSummary {
+        active: false,
+        count: 0,
+        label: "暂无未读完成会话".into(),
+        detail: "physical scope B".into(),
+        source: "codex_unread_state".into(),
+    };
+    let snapshot = monitor.snapshot_with_unread(None, injected.clone());
+    let floating = monitor.floating_snapshot_with_unread(injected);
+
+    assert_eq!(snapshot.unread_summary.count, 0);
+    assert_eq!(snapshot.unread_summary.detail, "physical scope B");
+    assert_eq!(floating.unread_summary.count, 0);
+    assert!(!floating.unread);
+    assert_eq!(fs::read(&acknowledgement_path).unwrap(), before);
+    let _ = fs::remove_dir_all(root);
+}
+
 fn temp_root(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "codex-token-bar-tauri-{label}-{}-{}",

@@ -1,5 +1,9 @@
-use super::{read_floating_snapshot_from_live, read_snapshot, rollout::rollout_file_signatures};
-use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot};
+use super::{
+    read_floating_snapshot_from_live, read_snapshot_with_unread, rollout::rollout_file_signatures,
+};
+#[cfg(test)]
+use crate::core::unread;
+use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, UnreadSummary};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -60,9 +64,28 @@ impl LiveRateMonitorService {
         &self.codex_home
     }
 
+    #[cfg(test)]
     pub fn snapshot(&self, selected_thread_id: Option<&str>) -> LiveRateSnapshot {
+        let unread_summary = unread::read_unread_summary(&self.codex_home);
+        self.snapshot_with_loaded_unread(selected_thread_id, unread_summary)
+    }
+
+    pub fn snapshot_with_unread(
+        &self,
+        selected_thread_id: Option<&str>,
+        unread_summary: UnreadSummary,
+    ) -> LiveRateSnapshot {
+        self.snapshot_with_loaded_unread(selected_thread_id, unread_summary)
+    }
+
+    fn snapshot_with_loaded_unread(
+        &self,
+        selected_thread_id: Option<&str>,
+        unread_summary: UnreadSummary,
+    ) -> LiveRateSnapshot {
         let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(snapshot) = state.cached_snapshot_before_signature(selected_thread_id) {
+        if let Some(mut snapshot) = state.cached_snapshot_before_signature(selected_thread_id) {
+            snapshot.unread_summary = unread_summary;
             return snapshot;
         }
         let signature = log_store_signature(&self.codex_home);
@@ -75,17 +98,22 @@ impl LiveRateMonitorService {
         if !state.should_refresh(&signature, selected_thread_id, selected_matches) {
             if let Some(selected) = &state.selected_snapshot {
                 if selected.selected_thread_id.as_deref() == selected_thread_id {
-                    return selected.snapshot.clone();
+                    let mut snapshot = selected.snapshot.clone();
+                    snapshot.unread_summary = unread_summary;
+                    return snapshot;
                 }
             }
             if selected_thread_id.is_none() {
                 if let Some(snapshot) = &state.all_snapshot {
-                    return snapshot.clone();
+                    let mut snapshot = snapshot.clone();
+                    snapshot.unread_summary = unread_summary;
+                    return snapshot;
                 }
             }
         }
 
-        let snapshot = read_snapshot(&self.codex_home, selected_thread_id);
+        let snapshot =
+            read_snapshot_with_unread(&self.codex_home, selected_thread_id, unread_summary);
         let all_snapshot = if selected_thread_id.is_some() {
             let mut all_snapshot = snapshot.clone();
             all_snapshot.selected_thread_id = None;
@@ -110,8 +138,17 @@ impl LiveRateMonitorService {
         snapshot
     }
 
+    #[cfg(test)]
     pub fn floating_snapshot(&self) -> FloatingPanelSnapshot {
         let live = self.snapshot(None);
+        read_floating_snapshot_from_live(&self.codex_home, &live)
+    }
+
+    pub fn floating_snapshot_with_unread(
+        &self,
+        unread_summary: UnreadSummary,
+    ) -> FloatingPanelSnapshot {
+        let live = self.snapshot_with_unread(None, unread_summary);
         read_floating_snapshot_from_live(&self.codex_home, &live)
     }
 
