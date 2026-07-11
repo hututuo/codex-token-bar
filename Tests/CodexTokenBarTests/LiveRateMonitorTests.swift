@@ -90,6 +90,78 @@ final class LiveRateMonitorTests: XCTestCase {
     }
 
     @MainActor
+    func testThreadReconciliationDeduplicatesSharedRolloutPathWithSelectedThreadPriority() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LiveRateDuplicateRollout-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        temporaryDirectories.append(directory)
+        let sharedRollout = directory.appendingPathComponent("shared.jsonl")
+        try Data("existing".utf8).write(to: sharedRollout)
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-selected")
+
+        monitor.testReconcileThreadOptions([
+            LiveRateMonitor.ThreadRow(id: "thread-newest", title: "Newest", updatedAtMS: 3, rolloutPath: sharedRollout.path),
+            LiveRateMonitor.ThreadRow(id: "thread-selected", title: "Selected", updatedAtMS: 2, rolloutPath: sharedRollout.standardizedFileURL.path),
+            LiveRateMonitor.ThreadRow(id: "thread-selected", title: "Duplicate ID", updatedAtMS: 1, rolloutPath: directory.appendingPathComponent("other.jsonl").path)
+        ])
+
+        XCTAssertEqual(monitor.threadOptions.map(\.id), ["thread-selected"])
+        XCTAssertEqual(monitor.threadOptions.map(\.rolloutPath), [sharedRollout.standardizedFileURL.path])
+        XCTAssertEqual(monitor.testRolloutPathCount, 1)
+    }
+
+    @MainActor
+    func testThreadReconciliationUsesFirstRecentThreadWhenSharedRolloutHasNoSelection() {
+        let sharedRollout = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shared-\(UUID().uuidString).jsonl")
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "unrelated")
+
+        monitor.testReconcileThreadOptions([
+            LiveRateMonitor.ThreadRow(id: "thread-first", title: "First", updatedAtMS: 3, rolloutPath: sharedRollout.path),
+            LiveRateMonitor.ThreadRow(id: "thread-second", title: "Second", updatedAtMS: 2, rolloutPath: sharedRollout.path)
+        ])
+
+        XCTAssertEqual(monitor.threadOptions.map(\.id), ["thread-first"])
+        XCTAssertEqual(monitor.selectedThreadID, "thread-first")
+    }
+
+    @MainActor
+    func testEmptyThreadRefreshClearsSelectedSnapshotWithoutClearingAllSessionRate() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-old")
+        monitor.testProcessPollInputs(
+            streamRows: [
+                LiveRateMonitor.LogRow(
+                    id: 1,
+                    threadID: "thread-old",
+                    ts: 1_000,
+                    tsNanos: 0,
+                    target: "codex_api::sse::responses",
+                    feedbackLogBody: #"SSE event: {"type":"response.output_text.delta","delta":"old rate","item_id":"old-1","sequence_number":1}"#
+                )
+            ],
+            rolloutReads: [],
+            now: 1_000.2
+        )
+        XCTAssertGreaterThan(monitor.snapshot.breakdown.visibleText, 0)
+        let totalBefore = monitor.totalSnapshot.breakdown
+
+        monitor.testReconcileThreadOptions([])
+
+        XCTAssertEqual(monitor.selectedThreadID, "")
+        XCTAssertEqual(monitor.snapshot.threadID, "")
+        XCTAssertEqual(monitor.snapshot.threadTitle, "等待会话")
+        XCTAssertEqual(monitor.snapshot.status, "未找到活动会话")
+        XCTAssertEqual(monitor.snapshot.rollingTokensPerSecond, 0)
+        XCTAssertEqual(monitor.snapshot.averageTokensPerSecond, 0)
+        XCTAssertEqual(monitor.snapshot.outputTokens, 0)
+        XCTAssertEqual(monitor.snapshot.breakdown, LiveTokenBreakdown())
+        XCTAssertEqual(monitor.totalSnapshot.breakdown, totalBefore)
+    }
+
+    @MainActor
     func testThreadRefreshWiringSkipsRapidUnchangedQueriesAndReloadsOnWalRevision() async throws {
         let source = try makeCodexDataSource(named: "thread-refresh")
         try Data("state".utf8).write(to: source.stateDatabase)

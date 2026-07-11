@@ -359,9 +359,10 @@ final class LiveRateMonitor: ObservableObject {
         lastLogsSignature = Self.logStoreSignature(logsDB: cachedLogsDatabasePath)
 
         do {
+            let recentThreadsLoader = recentThreadsLoader
             let stateDB = source.stateDatabase.path
             let threads = try await Task.detached(priority: .utility) {
-                try self.recentThreadsLoader(stateDB)
+                try recentThreadsLoader(stateDB)
             }.value
             guard isCurrentSource(generation: generation, bindingGeneration: bindingGeneration) else { return }
             threadOptions = threads.map {
@@ -604,8 +605,9 @@ final class LiveRateMonitor: ObservableObject {
         lastThreadOptionsSignature = signature
         lastThreadOptionsRefreshAt = now
         do {
+            let recentThreadsLoader = recentThreadsLoader
             let threads = try await Task.detached(priority: .utility) {
-                try self.recentThreadsLoader(stateDB)
+                try recentThreadsLoader(stateDB)
             }.value
             guard isCurrentSource(generation: generation, bindingGeneration: bindingGeneration) else { return }
             reconcileThreadOptions(threads)
@@ -616,8 +618,34 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     private func reconcileThreadOptions(_ threads: [ThreadRow]) {
-        let previousOffsets = rolloutOffsets
-        let options = threads.map {
+        var seenThreadIDs = Set<String>()
+        let uniqueThreads = threads.filter { seenThreadIDs.insert($0.id).inserted }
+        var pathOrder: [String] = []
+        var ownerByPath: [String: ThreadRow] = [:]
+        for thread in uniqueThreads {
+            let path = Self.standardizedRolloutPath(thread.rolloutPath)
+            let standardized = ThreadRow(
+                id: thread.id,
+                title: thread.title,
+                updatedAtMS: thread.updatedAtMS,
+                rolloutPath: path
+            )
+            if let current = ownerByPath[path] {
+                if standardized.id == threadID, current.id != threadID {
+                    ownerByPath[path] = standardized
+                }
+            } else {
+                pathOrder.append(path)
+                ownerByPath[path] = standardized
+            }
+        }
+        let uniqueOwners = pathOrder.compactMap { ownerByPath[$0] }
+        var previousOffsets: [String: UInt64] = [:]
+        for (path, offset) in rolloutOffsets {
+            let standardizedPath = Self.standardizedRolloutPath(path)
+            previousOffsets[standardizedPath] = max(previousOffsets[standardizedPath] ?? 0, offset)
+        }
+        let options = uniqueOwners.map {
             LiveThreadOption(id: $0.id, title: $0.title, updatedAtMS: $0.updatedAtMS, rolloutPath: $0.rolloutPath)
         }
         threadOptions = options
@@ -632,8 +660,18 @@ final class LiveRateMonitor: ObservableObject {
         guard let replacement = options.first else {
             threadID = ""
             selectedThreadID = ""
+            lastLogID = 0
+            selectedRate.clear()
+            selectedSmoothedTokensPerSecond = 0
             snapshot.threadID = ""
             snapshot.threadTitle = "等待会话"
+            snapshot.status = "未找到活动会话"
+            snapshot.rollingTokensPerSecond = 0
+            snapshot.averageTokensPerSecond = 0
+            snapshot.outputTokens = 0
+            snapshot.outputCharacters = 0
+            snapshot.breakdown = LiveTokenBreakdown()
+            snapshot.updatedAt = Date()
             return
         }
         threadID = replacement.id
@@ -643,6 +681,10 @@ final class LiveRateMonitor: ObservableObject {
         selectedSmoothedTokensPerSecond = 0
         snapshot.threadID = replacement.id
         snapshot.threadTitle = replacement.displayTitle
+    }
+
+    nonisolated private static func standardizedRolloutPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
     private func loadRolloutUpdates(now: TimeInterval) async throws -> [RolloutRead] {
@@ -1153,6 +1195,10 @@ extension LiveRateMonitor {
 
     func testReconcileThreadOptions(_ threads: [ThreadRow]) {
         reconcileThreadOptions(threads)
+    }
+
+    var testRolloutPathCount: Int {
+        rolloutOffsets.count
     }
 
     func testRefreshThreadOptionsIfNeeded(now: TimeInterval) async {
