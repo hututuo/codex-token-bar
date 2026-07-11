@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent,
+  type KeyboardEvent,
+} from "react";
 import { cellColor, cellLabel, isInRange, type ActivityMode, type HeatmapDay, type MonthMarker } from "./model";
 import {
   heatmapKeyboardAction,
@@ -31,6 +38,8 @@ export function HeatmapGrid({
   const [focusedDate, setFocusedDate] = useState<string | null>(() => (
     resolveHeatmapFocusDate(dates, null, hoveredDate, rangeStart)
   ));
+  const gridRef = useRef<HTMLDivElement>(null);
+  const gridHasFocusRef = useRef(false);
   const cellRefs = useRef(new Map<string, HTMLButtonElement>());
   const validFocusedDate = resolveHeatmapFocusDate(
     dates,
@@ -38,12 +47,39 @@ export function HeatmapGrid({
     hoveredDate,
     rangeStart,
   );
+  const focusedCellWasRemoved = focusedDate !== null && !dates.includes(focusedDate);
+  const shouldRestoreRemovedFocus = focusedCellWasRemoved && gridHasFocusRef.current;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (focusedDate !== validFocusedDate) {
       setFocusedDate(validFocusedDate);
     }
-  }, [focusedDate, validFocusedDate]);
+    if (
+      !shouldRestoreRemovedFocus
+      || !gridHasFocusRef.current
+      || validFocusedDate === null
+    ) {
+      return;
+    }
+    const grid = gridRef.current;
+    if (!grid) {
+      return;
+    }
+    const activeElement = grid.ownerDocument.activeElement;
+    if (activeElement !== null
+      && activeElement !== grid.ownerDocument.body
+      && !grid.contains(activeElement)) {
+      return;
+    }
+    cellRefs.current.get(validFocusedDate)?.focus();
+  }, [focusedDate, shouldRestoreRemovedFocus, validFocusedDate]);
+
+  function handleGridBlur(event: FocusEvent<HTMLDivElement>) {
+    const nextTarget = event.relatedTarget as Node | null;
+    if (nextTarget === null || !event.currentTarget.contains(nextTarget)) {
+      gridHasFocusRef.current = false;
+    }
+  }
 
   function handleCellKeyDown(
     event: KeyboardEvent<HTMLButtonElement>,
@@ -72,6 +108,11 @@ export function HeatmapGrid({
       <div
         aria-label="过去一年 Token 活动热图；使用方向键移动，Enter 或空格选择日期"
         className="heatmap-grid"
+        onBlurCapture={handleGridBlur}
+        onFocusCapture={() => {
+          gridHasFocusRef.current = true;
+        }}
+        ref={gridRef}
         role="group"
       >
         {days.map(({ day, intensity }, index) => {
