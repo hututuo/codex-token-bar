@@ -69,6 +69,7 @@ static STATUS_PANEL_INTERACTION: OnceLock<Mutex<StatusPanelInteractionController
 struct StatusPanelInteractionController {
     next_generation: u64,
     active_press: Option<StatusPanelPress>,
+    suppress_orphan_up: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,10 +91,17 @@ enum StatusPanelCancelAction {
     HideDeferredBlur,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusPanelReleaseAction {
+    Toggle(StatusPanelToggleAction),
+    Ignore,
+}
+
 impl StatusPanelInteractionController {
     fn begin_tray_press(&mut self, panel_visible: bool) -> u64 {
         self.next_generation = self.next_generation.saturating_add(1);
         let generation = self.next_generation;
+        self.suppress_orphan_up = false;
         self.active_press = Some(StatusPanelPress {
             generation,
             started_visible: panel_visible,
@@ -111,13 +119,17 @@ impl StatusPanelInteractionController {
         }
     }
 
-    fn finish_tray_press(&mut self, panel_visible_now: bool) -> StatusPanelToggleAction {
-        status_panel_toggle_action(
-            self.active_press
-                .take()
-                .map(|press| press.started_visible)
-                .unwrap_or(panel_visible_now),
-        )
+    fn finish_tray_press(&mut self, panel_visible_now: bool) -> StatusPanelReleaseAction {
+        if let Some(press) = self.active_press.take() {
+            return StatusPanelReleaseAction::Toggle(status_panel_toggle_action(
+                press.started_visible,
+            ));
+        }
+        if self.suppress_orphan_up {
+            self.suppress_orphan_up = false;
+            return StatusPanelReleaseAction::Ignore;
+        }
+        StatusPanelReleaseAction::Toggle(status_panel_toggle_action(panel_visible_now))
     }
 
     fn cancel(&mut self, generation: Option<u64>) -> StatusPanelCancelAction {
@@ -128,6 +140,7 @@ impl StatusPanelInteractionController {
             return StatusPanelCancelAction::Nothing;
         }
         self.active_press = None;
+        self.suppress_orphan_up = true;
         if press.deferred_blur {
             StatusPanelCancelAction::HideDeferredBlur
         } else {
@@ -295,10 +308,15 @@ fn toggle_status_panel_at_tray(app: &tauri::AppHandle, tray_bounds: PhysicalBoun
         .map(|window| window.is_visible().map_err(|error| error.to_string()))
         .transpose()?
         .unwrap_or(false);
-    let action = status_panel_interaction_cell()
+    let release = status_panel_interaction_cell()
         .lock()
         .map(|mut controller| controller.finish_tray_press(is_visible))
-        .unwrap_or_else(|_| status_panel_toggle_action(is_visible));
+        .unwrap_or_else(|_| {
+            StatusPanelReleaseAction::Toggle(status_panel_toggle_action(is_visible))
+        });
+    let StatusPanelReleaseAction::Toggle(action) = release else {
+        return Ok(false);
+    };
     if action == StatusPanelToggleAction::Hide {
         return hide_status_panel_window(app);
     }
@@ -1089,7 +1107,7 @@ mod tests {
 
         assert_eq!(
             controller.finish_tray_press(panel_visible),
-            StatusPanelToggleAction::Hide
+            StatusPanelReleaseAction::Toggle(StatusPanelToggleAction::Hide)
         );
         panel_visible = false;
         assert!(!panel_visible, "the same tray click must finish hidden");
@@ -1103,7 +1121,7 @@ mod tests {
         controller.begin_tray_press(false);
         assert_eq!(
             controller.finish_tray_press(false),
-            StatusPanelToggleAction::Show
+            StatusPanelReleaseAction::Toggle(StatusPanelToggleAction::Show)
         );
     }
 
@@ -1123,6 +1141,11 @@ mod tests {
 
         assert!(!hidden);
         assert_eq!(hide_calls, 1);
+        assert_eq!(
+            controller.finish_tray_press(false),
+            StatusPanelReleaseAction::Ignore,
+            "late Up after Leave must not reopen the panel"
+        );
         assert_eq!(controller.blur(), StatusPanelBlurAction::HideNow);
     }
 
@@ -1134,6 +1157,11 @@ mod tests {
         assert_eq!(
             controller.cancel(Some(generation)),
             StatusPanelCancelAction::HideDeferredBlur
+        );
+        assert_eq!(
+            controller.finish_tray_press(false),
+            StatusPanelReleaseAction::Ignore,
+            "late Up after timeout must not reopen the panel"
         );
         assert_eq!(controller.blur(), StatusPanelBlurAction::HideNow);
     }
@@ -1154,15 +1182,14 @@ mod tests {
         let mut controller = StatusPanelInteractionController::default();
         let old_generation = controller.begin_tray_press(true);
         assert_eq!(controller.blur(), StatusPanelBlurAction::DeferToTrayRelease);
-        let new_generation = controller.begin_tray_press(false);
-
         assert_eq!(
             controller.cancel(Some(old_generation)),
-            StatusPanelCancelAction::Nothing
+            StatusPanelCancelAction::HideDeferredBlur
         );
+        let new_generation = controller.begin_tray_press(false);
         assert_eq!(
             controller.finish_tray_press(false),
-            StatusPanelToggleAction::Show
+            StatusPanelReleaseAction::Toggle(StatusPanelToggleAction::Show)
         );
         assert_ne!(old_generation, new_generation);
         assert_eq!(controller.blur(), StatusPanelBlurAction::HideNow);
