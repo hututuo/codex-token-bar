@@ -61,14 +61,15 @@ esac
 MANIFEST="$BUILD_DIR/build-manifest.json"
 [[ -f "$MANIFEST" ]] || { echo "Build manifest not found" >&2; exit 1; }
 STAGING=$(mktemp -d "$RELEASE_PARENT/.${RELEASE_NAME}.staging.XXXXXX")
-RENAME_HELPER=$(mktemp "$RELEASE_PARENT/.rename-excl.XXXXXX")
-ASSET_LIST="$STAGING/.assets.json"
+RENAME_HELPER=""
 cleanup() {
   if [[ -n "${STAGING:-}" && -d "$STAGING" ]]; then rm -rf "$STAGING"; fi
   if [[ -n "${RENAME_HELPER:-}" ]]; then rm -f "$RENAME_HELPER"; fi
 }
 trap cleanup EXIT INT TERM
 
+RENAME_HELPER=$(mktemp "$RELEASE_PARENT/.rename-excl.XXXXXX")
+ASSET_LIST="$STAGING/.assets.json"
 cc -std=c11 -Wall -Wextra -Werror "$RENAME_HELPER_SOURCE" -o "$RENAME_HELPER"
 
 node "$HELPER" validate-build "$MANIFEST" "$BUILD_DIR" "$VERSION" "$ASSET_LIST"

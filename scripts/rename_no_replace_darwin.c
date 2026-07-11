@@ -1,8 +1,10 @@
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+
+#ifdef RENAME_EXCL_TESTING
+#include <fcntl.h>
+#include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -38,13 +40,16 @@ static int wait_at_test_barrier(void) {
     unlink(ready);
     return -1;
 }
+#endif
 
 int main(int argc, char **argv) {
     if (argc != 3) {
         fprintf(stderr, "Usage: %s STAGING DESTINATION\n", argv[0]);
         return 2;
     }
+#ifdef RENAME_EXCL_TESTING
     if (wait_at_test_barrier() != 0) return 3;
+#endif
 
     if (renamex_np(argv[1], argv[2], RENAME_EXCL) == 0) return 0;
     if (errno == EEXIST || errno == ENOTEMPTY) {

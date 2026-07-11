@@ -110,6 +110,21 @@ writeFileSync(file + ".sig", envelope);
 
   const binDir = path.join(root, "bin");
   await mkdir(binDir);
+  if (options.emptyDestinationRace) {
+    await writeFile(
+      path.join(binDir, "cc"),
+      "#!/bin/sh\nexec /usr/bin/cc -DRENAME_EXCL_TESTING \"$@\"\n",
+      { mode: 0o755 },
+    );
+  }
+  if (options.failSecondMktemp) {
+    const countFile = path.join(root, "mktemp-count");
+    await writeFile(
+      path.join(binDir, "mktemp"),
+      `#!/bin/sh\ncount=0\n[ ! -f '${countFile}' ] || count=$(cat '${countFile}')\ncount=$((count + 1))\nprintf '%s' "$count" > '${countFile}'\n[ "$count" -ne 2 ] || exit 73\nexec /usr/bin/mktemp "$@"\n`,
+      { mode: 0o755 },
+    );
+  }
   await writeFile(
     path.join(binDir, "file"),
     `#!/bin/sh\n${options.swapAfterValidate ? `case "$2" in *x64*) printf 'tampered-after-validation' > "$2";; esac` : ":"}\ncase "$2" in *arm64*) echo '${options.badArch ? "PE32+ executable x86-64" : "PE32+ executable Aarch64"}';; *) echo 'PE32+ executable x86-64';; esac\n`,
@@ -172,13 +187,13 @@ async function runSignerFixture(options = {}) {
       }
     }
     await mkdir(fixture.releaseDir);
-    await writeFile(path.join(fixture.releaseDir, "marker.txt"), "NONCOOPERATIVE_OLD_BYTES");
+    const destinationBefore = await stat(fixture.releaseDir);
     await writeFile(`${env.RENAME_EXCL_TEST_BARRIER}.continue`, "continue");
     const code = await new Promise((resolve, reject) => {
       child.once("error", reject);
       child.once("close", resolve);
     });
-    return { ...fixture, ok: code === 0, code, stdout, stderr, buildSnapshot, outputSnapshot };
+    return { ...fixture, ok: code === 0, code, stdout, stderr, buildSnapshot, outputSnapshot, destinationBefore };
   }
   try {
     const result = await execFileAsync("bash", [
@@ -243,12 +258,25 @@ test("Mac signing refuses an existing output directory byte-for-byte", async () 
 test("Mac rename helper uses Darwin RENAME_EXCL and preserves an empty destination created at the syscall boundary", async () => {
   const source = await readFile(renameHelperSource, "utf8");
   assert.match(source, /renamex_np\s*\([^;]+RENAME_EXCL/);
+  assert.match(source, /#ifdef RENAME_EXCL_TESTING[\s\S]+RENAME_EXCL_TEST_BARRIER[\s\S]+#endif/);
   const result = await runSignerFixture({ emptyDestinationRace: true });
   assert.equal(result.ok, false);
   assert.match(result.stderr, /already exists|RENAME_EXCL|publish/i);
-  assert.equal(await readFile(path.join(result.releaseDir, "marker.txt"), "utf8"), "NONCOOPERATIVE_OLD_BYTES");
-  assert.deepEqual((await readdir(result.releaseDir)).sort(), ["marker.txt"]);
+  const destinationAfter = await stat(result.releaseDir);
+  assert.equal(destinationAfter.dev, result.destinationBefore.dev);
+  assert.equal(destinationAfter.ino, result.destinationBefore.ino);
+  assert.deepEqual(await readdir(result.releaseDir), []);
   assert.equal((await readdir(result.root)).some(name => name.includes(".windows.staging.")), false);
+  assert.deepEqual(await snapshotDirectory(result.buildDir), result.buildSnapshot);
+});
+
+test("Mac signing installs cleanup trap before allocating the rename helper temp file", async () => {
+  const source = await readFile(macScript, "utf8");
+  assert.ok(source.indexOf("trap cleanup EXIT INT TERM") < source.indexOf('RENAME_HELPER=$(mktemp'));
+  const result = await runSignerFixture({ failSecondMktemp: true });
+  assert.equal(result.ok, false);
+  assert.equal((await readdir(result.root)).some(name => name.includes(".windows.staging.")), false);
+  await assert.rejects(access(result.releaseDir), { code: "ENOENT" });
   assert.deepEqual(await snapshotDirectory(result.buildDir), result.buildSnapshot);
 });
 
