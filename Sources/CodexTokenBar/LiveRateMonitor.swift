@@ -365,12 +365,10 @@ final class LiveRateMonitor: ObservableObject {
                 try recentThreadsLoader(stateDB)
             }.value
             guard isCurrentSource(generation: generation, bindingGeneration: bindingGeneration) else { return }
-            threadOptions = threads.map {
-                LiveThreadOption(id: $0.id, title: $0.title, updatedAtMS: $0.updatedAtMS, rolloutPath: $0.rolloutPath)
-            }
+            reconcileThreadOptions(threads)
             lastThreadOptionsSignature = Self.logStoreSignature(logsDB: stateDB)
             lastThreadOptionsRefreshAt = Date().timeIntervalSince1970
-            guard let thread = threads.first else {
+            guard let thread = threadOptions.first else {
                 snapshot.status = "未找到活动会话"
                 return
             }
@@ -385,9 +383,6 @@ final class LiveRateMonitor: ObservableObject {
             selectedSmoothedTokensPerSecond = 0
             totalSmoothedTokensPerSecond = 0
             clearStreamState()
-            rolloutOffsets = Dictionary(
-                uniqueKeysWithValues: threads.map { ($0.rolloutPath, Self.fileSize(path: $0.rolloutPath)) }
-            )
             configureTotalSnapshot(source: source)
             await switchToThread(thread.id)
             guard isCurrentSource(generation: generation, bindingGeneration: bindingGeneration) else { return }
@@ -620,37 +615,50 @@ final class LiveRateMonitor: ObservableObject {
     private func reconcileThreadOptions(_ threads: [ThreadRow]) {
         var seenThreadIDs = Set<String>()
         let uniqueThreads = threads.filter { seenThreadIDs.insert($0.id).inserted }
-        var pathOrder: [String] = []
-        var ownerByPath: [String: ThreadRow] = [:]
+        var optionOrder: [String] = []
+        var ownerByKey: [String: ThreadRow] = [:]
         for thread in uniqueThreads {
-            let path = Self.standardizedRolloutPath(thread.rolloutPath)
+            let option = LiveThreadOption(
+                id: thread.id,
+                title: thread.title,
+                updatedAtMS: thread.updatedAtMS,
+                rolloutPath: thread.rolloutPath
+            )
+            let path = option.normalizedRolloutPath
             let standardized = ThreadRow(
                 id: thread.id,
                 title: thread.title,
                 updatedAtMS: thread.updatedAtMS,
-                rolloutPath: path
+                rolloutPath: path ?? ""
             )
-            if let current = ownerByPath[path] {
+            let key = path.map { "path:\($0)" } ?? "thread:\(thread.id)"
+            if let current = ownerByKey[key] {
                 if standardized.id == threadID, current.id != threadID {
-                    ownerByPath[path] = standardized
+                    ownerByKey[key] = standardized
                 }
             } else {
-                pathOrder.append(path)
-                ownerByPath[path] = standardized
+                optionOrder.append(key)
+                ownerByKey[key] = standardized
             }
         }
-        let uniqueOwners = pathOrder.compactMap { ownerByPath[$0] }
+        let uniqueOwners = optionOrder.compactMap { ownerByKey[$0] }
         var previousOffsets: [String: UInt64] = [:]
         for (path, offset) in rolloutOffsets {
-            let standardizedPath = Self.standardizedRolloutPath(path)
+            guard let standardizedPath = LiveThreadOption(
+                id: "",
+                title: "",
+                updatedAtMS: 0,
+                rolloutPath: path
+            ).normalizedRolloutPath else { continue }
             previousOffsets[standardizedPath] = max(previousOffsets[standardizedPath] ?? 0, offset)
         }
         let options = uniqueOwners.map {
             LiveThreadOption(id: $0.id, title: $0.title, updatedAtMS: $0.updatedAtMS, rolloutPath: $0.rolloutPath)
         }
         threadOptions = options
-        rolloutOffsets = Dictionary(uniqueKeysWithValues: options.map { option in
-            (option.rolloutPath, previousOffsets[option.rolloutPath] ?? Self.fileSize(path: option.rolloutPath))
+        rolloutOffsets = Dictionary(uniqueKeysWithValues: options.compactMap { option in
+            guard let path = option.normalizedRolloutPath else { return nil }
+            return (path, previousOffsets[path] ?? Self.fileSize(path: path))
         })
 
         if options.contains(where: { $0.id == threadID }) {
@@ -683,12 +691,8 @@ final class LiveRateMonitor: ObservableObject {
         snapshot.threadTitle = replacement.displayTitle
     }
 
-    nonisolated private static func standardizedRolloutPath(_ path: String) -> String {
-        URL(fileURLWithPath: path).standardizedFileURL.path
-    }
-
     private func loadRolloutUpdates(now: TimeInterval) async throws -> [RolloutRead] {
-        guard !threadOptions.isEmpty else { return [] }
+        guard threadOptions.contains(where: \.hasRolloutPath) else { return [] }
         lastRolloutReadAt = now
         let options = threadOptions
         let offsets = rolloutOffsets

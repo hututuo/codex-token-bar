@@ -128,6 +128,33 @@ final class LiveRateMonitorTests: XCTestCase {
     }
 
     @MainActor
+    func testThreadsWithoutRolloutPathsRemainSelectableAndAreExcludedFromRolloutReads() throws {
+        let validRollout = FileManager.default.temporaryDirectory
+            .appendingPathComponent("valid-\(UUID().uuidString).jsonl")
+        try Data("existing".utf8).write(to: validRollout)
+        defer { try? FileManager.default.removeItem(at: validRollout) }
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-blank")
+
+        monitor.testReconcileThreadOptions([
+            LiveRateMonitor.ThreadRow(id: "thread-empty", title: "Empty", updatedAtMS: 3, rolloutPath: ""),
+            LiveRateMonitor.ThreadRow(id: "thread-blank", title: "Blank", updatedAtMS: 2, rolloutPath: "   \t"),
+            LiveRateMonitor.ThreadRow(id: "thread-file", title: "File", updatedAtMS: 1, rolloutPath: validRollout.path)
+        ])
+
+        XCTAssertEqual(monitor.threadOptions.map(\.id), ["thread-empty", "thread-blank", "thread-file"])
+        XCTAssertEqual(monitor.selectedThreadID, "thread-blank")
+        XCTAssertEqual(monitor.testRolloutPathCount, 1)
+
+        let reads = try LiveRateMonitor.rolloutReads(
+            options: monitor.threadOptions,
+            offsets: [validRollout.path: UInt64(try Data(contentsOf: validRollout).count)]
+        )
+        XCTAssertEqual(reads.map(\.threadID), ["thread-file"])
+        XCTAssertEqual(reads.map(\.path), [validRollout.path])
+    }
+
+    @MainActor
     func testEmptyThreadRefreshClearsSelectedSnapshotWithoutClearingAllSessionRate() {
         let monitor = LiveRateMonitor(monitoringEnabled: false)
         monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-old")

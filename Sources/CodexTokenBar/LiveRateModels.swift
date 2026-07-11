@@ -65,6 +65,16 @@ struct LiveThreadOption: Identifiable, Hashable {
     var shortID: String {
         String(id.prefix(8))
     }
+
+    var normalizedRolloutPath: String? {
+        let trimmed = rolloutPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
+    }
+
+    var hasRolloutPath: Bool {
+        normalizedRolloutPath != nil
+    }
 }
 
 enum LiveTokenCategory: String {

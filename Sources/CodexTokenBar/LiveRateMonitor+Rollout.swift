@@ -2,10 +2,11 @@ import Foundation
 
 extension LiveRateMonitor {
     nonisolated static func rolloutReads(options: [LiveThreadOption], offsets: [String: UInt64]) throws -> [RolloutRead] {
-        try options.map { option in
-            let offset = offsets[option.rolloutPath] ?? fileSize(path: option.rolloutPath)
-            let result = try rolloutEvents(path: option.rolloutPath, afterOffset: offset)
-            return RolloutRead(threadID: option.id, path: option.rolloutPath, newOffset: result.offset, events: result.events)
+        try options.compactMap { option in
+            guard let path = option.normalizedRolloutPath else { return nil }
+            let offset = offsets[path] ?? fileSize(path: path)
+            let result = try rolloutEvents(path: path, afterOffset: offset)
+            return RolloutRead(threadID: option.id, path: path, newOffset: result.offset, events: result.events)
         }
     }
 
