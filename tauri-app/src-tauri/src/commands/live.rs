@@ -303,10 +303,29 @@ impl LiveRateMonitorRegistry {
                 let snapshot_registry = registry.clone();
                 let selected_for_snapshot = request.selected_thread_id.clone();
                 let source_token = request.source.source_token.clone();
-                let codex_home = request.source.codex_home;
+                let captured = match capture_codex_home_source(Some(&source_token)) {
+                    Ok(captured) => captured,
+                    Err(error) => {
+                        startup_trace::mark_performance(format!(
+                            "live_rate_stream_source_capture_failed {error}"
+                        ));
+                        sleep_stream_interval(IDLE_STREAM_INTERVAL).await;
+                        continue;
+                    }
+                };
                 let started = Instant::now();
                 let snapshot = async_runtime::spawn_blocking(move || {
-                    snapshot_registry.snapshot_at(codex_home, selected_for_snapshot.as_deref())
+                    let pinned = pin_captured_codex_home_source(&captured)?;
+                    let mut snapshot = snapshot_registry.snapshot_at(
+                        pinned.read_path().to_path_buf(),
+                        selected_for_snapshot.as_deref(),
+                    )?;
+                    snapshot.unread_summary = unread::try_read_unread_summary_for_source(
+                        pinned.read_path(),
+                        &pinned.source_scope_key,
+                        || validate_captured_codex_home_source(&captured),
+                    )?;
+                    Ok::<_, String>(snapshot)
                 })
                 .await;
                 let snapshot = match snapshot {
@@ -528,14 +547,36 @@ fn acknowledge_pinned_unread(
 
 #[tauri::command]
 pub async fn read_live_rate_snapshot(
+    app: AppHandle,
     state: State<'_, LiveRateMonitorRegistry>,
     selected_thread_id: Option<String>,
+    source_token: Option<CodexHomeSourceToken>,
 ) -> Result<LiveRateSnapshot, String> {
     startup_trace::mark_once("command read_live_rate_snapshot start");
     let started = Instant::now();
     let registry = state.inner().clone();
-    let result =
-        run_blocking_command(move || registry.snapshot(selected_thread_id.as_deref())).await;
+    emit_detected_source_transition(&app)?;
+    let captured = capture_codex_home_source(source_token.as_ref())?;
+    let completed_source_token = captured.source_token.clone();
+    let result = run_blocking_command(move || {
+        let pinned = pin_captured_codex_home_source(&captured)?;
+        let mut snapshot = registry.snapshot_at(
+            pinned.read_path().to_path_buf(),
+            selected_thread_id.as_deref(),
+        )?;
+        snapshot.unread_summary = unread::try_read_unread_summary_for_source(
+            pinned.read_path(),
+            &pinned.source_scope_key,
+            || validate_captured_codex_home_source(&captured),
+        )?;
+        Ok(snapshot)
+    })
+    .await
+    .and_then(|snapshot| {
+        emit_detected_source_transition(&app)?;
+        validate_codex_home_source(&completed_source_token)?;
+        Ok(snapshot)
+    });
     startup_trace::mark_performance(format!(
         "read_live_rate_snapshot {}ms {}",
         started.elapsed().as_millis(),
@@ -665,11 +706,32 @@ pub async fn stop_live_rate_stream(
 
 #[tauri::command]
 pub async fn read_floating_snapshot(
+    app: AppHandle,
     state: State<'_, LiveRateMonitorRegistry>,
+    source_token: Option<CodexHomeSourceToken>,
 ) -> Result<FloatingPanelSnapshot, String> {
     let started = Instant::now();
     let registry = state.inner().clone();
-    let result = run_blocking_command(move || registry.floating_snapshot()).await;
+    emit_detected_source_transition(&app)?;
+    let captured = capture_codex_home_source(source_token.as_ref())?;
+    let completed_source_token = captured.source_token.clone();
+    let result = run_blocking_command(move || {
+        let pinned = pin_captured_codex_home_source(&captured)?;
+        let mut snapshot = registry.floating_snapshot()?;
+        snapshot.unread_summary = unread::try_read_unread_summary_for_source(
+            pinned.read_path(),
+            &pinned.source_scope_key,
+            || validate_captured_codex_home_source(&captured),
+        )?;
+        snapshot.unread = snapshot.unread_summary.active;
+        Ok(snapshot)
+    })
+    .await
+    .and_then(|snapshot| {
+        emit_detected_source_transition(&app)?;
+        validate_codex_home_source(&completed_source_token)?;
+        Ok(snapshot)
+    });
     startup_trace::mark_performance(format!(
         "read_floating_snapshot {}ms {}",
         started.elapsed().as_millis(),
@@ -679,13 +741,28 @@ pub async fn read_floating_snapshot(
 }
 
 #[tauri::command]
-pub async fn read_unread_summary() -> Result<UnreadSummary, String> {
+pub async fn read_unread_summary(
+    app: AppHandle,
+    source_token: Option<CodexHomeSourceToken>,
+) -> Result<UnreadSummary, String> {
     let started = Instant::now();
-    let result = run_blocking_command(|| {
-        let source = local_source();
-        unread::try_read_unread_summary(source.codex_home())
+    emit_detected_source_transition(&app)?;
+    let captured = capture_codex_home_source(source_token.as_ref())?;
+    let completed_source_token = captured.source_token.clone();
+    let result = run_blocking_command(move || {
+        let pinned = pin_captured_codex_home_source(&captured)?;
+        unread::try_read_unread_summary_for_source(
+            pinned.read_path(),
+            &pinned.source_scope_key,
+            || validate_captured_codex_home_source(&captured),
+        )
     })
-    .await;
+    .await
+    .and_then(|summary| {
+        emit_detected_source_transition(&app)?;
+        validate_codex_home_source(&completed_source_token)?;
+        Ok(summary)
+    });
     startup_trace::mark_performance(format!(
         "read_unread_summary {}ms {}",
         started.elapsed().as_millis(),

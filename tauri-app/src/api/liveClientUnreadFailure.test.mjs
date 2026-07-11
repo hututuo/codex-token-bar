@@ -11,5 +11,8 @@ test("unread summary reads propagate persistence failures instead of returning a
 
   assert.match(source, /callCommandStrict<UnreadSummary>\("read_unread_summary"/);
   assert.doesNotMatch(source, /callCommand\("read_unread_summary", emptyUnreadSummary/);
-  assert.match(commands, /unread::try_read_unread_summary\(source\.codex_home\(\)\)/);
+  assert.match(commands, /pin_captured_codex_home_source\(&captured\)/);
+  assert.match(commands, /unread::try_read_unread_summary_for_source\(/);
+  assert.match(commands, /&pinned\.source_scope_key/);
+  assert.match(commands, /validate_codex_home_source\(&completed_source_token\)/);
 });

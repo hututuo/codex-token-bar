@@ -36,8 +36,25 @@ pub fn try_read_unread_summary(codex_home: &Path) -> Result<UnreadSummary, Strin
         &source_scope_key,
         recent_completion::current_time_seconds(),
         &write_acknowledgement_at,
+        || Ok(()),
     )?;
     remember_trusted_summary(&source_scope_key, &summary);
+    Ok(summary)
+}
+
+pub fn try_read_unread_summary_for_source(
+    observation_home: &Path,
+    source_scope_key: &str,
+    validate_before_write: impl FnOnce() -> Result<(), String>,
+) -> Result<UnreadSummary, String> {
+    let summary = try_read_unread_summary_for_source_at(
+        observation_home,
+        source_scope_key,
+        recent_completion::current_time_seconds(),
+        &write_acknowledgement_at,
+        validate_before_write,
+    )?;
+    remember_trusted_summary(source_scope_key, &summary);
     Ok(summary)
 }
 
@@ -53,23 +70,25 @@ fn try_read_unread_summary_at_with_writer<W>(
     writer: &W,
 ) -> Result<UnreadSummary, String>
 where
-    W: Fn(&Path, &UnreadAcknowledgement) -> Result<(), String> + ?Sized,
+    W: Fn(&Path, &UnreadAcknowledgement) -> Result<AcknowledgementWriteOutcome, String> + ?Sized,
 {
     let source_scope_key = codex_home_key(codex_home);
-    try_read_unread_summary_for_source_at(codex_home, &source_scope_key, now, writer)
+    try_read_unread_summary_for_source_at(codex_home, &source_scope_key, now, writer, || Ok(()))
 }
 
-fn try_read_unread_summary_for_source_at<W>(
+fn try_read_unread_summary_for_source_at<W, V>(
     codex_home: &Path,
     source_scope_key: &str,
     now: f64,
     writer: &W,
+    validate_before_write: V,
 ) -> Result<UnreadSummary, String>
 where
-    W: Fn(&Path, &UnreadAcknowledgement) -> Result<(), String> + ?Sized,
+    W: Fn(&Path, &UnreadAcknowledgement) -> Result<AcknowledgementWriteOutcome, String> + ?Sized,
+    V: FnOnce() -> Result<(), String>,
 {
     let native_thread_ids = read_unread_thread_ids(codex_home);
-    acknowledgement_transaction(writer, || Ok(()), |acknowledgement| {
+    acknowledgement_transaction(writer, validate_before_write, |acknowledgement| {
         let home_acknowledgement = acknowledgement
             .by_codex_home
             .entry(source_scope_key.to_string())
@@ -195,9 +214,10 @@ fn acknowledgement_transaction<T, W, V, F>(
     operation: F,
 ) -> Result<T, String>
 where
-    W: Fn(&Path, &UnreadAcknowledgement) -> Result<(), String> + ?Sized,
+    W: Fn(&Path, &UnreadAcknowledgement) -> Result<AcknowledgementWriteOutcome, String> + ?Sized,
     V: FnOnce() -> Result<(), String>,
     F: FnOnce(&mut UnreadAcknowledgement) -> Result<(T, bool), String>,
+    T: DurabilityWarning,
 {
     let lock = ACKNOWLEDGEMENT_LOCK.get_or_init(|| Mutex::new(()));
     let _guard = lock
@@ -207,10 +227,14 @@ where
         return Err("无法定位 Tauri 应用支持目录，不能记录未读基线".into());
     };
     let mut acknowledgement = read_acknowledgement_at(&path)?;
-    let (result, changed) = operation(&mut acknowledgement)?;
+    let (mut result, changed) = operation(&mut acknowledgement)?;
     if changed {
         validate_before_write()?;
-        writer(&path, &acknowledgement)?;
+        if let AcknowledgementWriteOutcome::CommittedDurabilityUncertain(error) =
+            writer(&path, &acknowledgement)?
+        {
+            attach_durability_warning(&mut result, &error);
+        }
     }
     Ok(result)
 }
@@ -228,10 +252,42 @@ fn read_acknowledgement_at(path: &Path) -> Result<UnreadAcknowledgement, String>
     serde_json::from_slice(&data).map_err(|error| format!("未读基线 JSON 损坏：{error}"))
 }
 
+#[derive(Debug)]
+enum AcknowledgementWriteOutcome {
+    Durable,
+    CommittedDurabilityUncertain(String),
+}
+
+trait DurabilityWarning {
+    fn attach_durability_warning(&mut self, _error: &str) {}
+}
+
+impl DurabilityWarning for UnreadSummary {
+    fn attach_durability_warning(&mut self, error: &str) {
+        self.detail = format!("{} · 基线已提交，但目录持久性未确认：{error}", self.detail);
+        self.source = format!("{}_durability_uncertain", self.source);
+    }
+}
+
+fn attach_durability_warning<T: DurabilityWarning>(result: &mut T, error: &str) {
+    result.attach_durability_warning(error);
+}
+
 fn write_acknowledgement_at(
     path: &Path,
     acknowledgement: &UnreadAcknowledgement,
-) -> Result<(), String> {
+) -> Result<AcknowledgementWriteOutcome, String> {
+    write_acknowledgement_at_with_sync(path, acknowledgement, sync_parent_directory)
+}
+
+fn write_acknowledgement_at_with_sync<S>(
+    path: &Path,
+    acknowledgement: &UnreadAcknowledgement,
+    sync_parent: S,
+) -> Result<AcknowledgementWriteOutcome, String>
+where
+    S: FnOnce(&Path) -> Result<(), String>,
+{
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("创建未读基线目录失败：{error}"))?;
     }
@@ -265,15 +321,55 @@ fn write_acknowledgement_at(
         temp_file
             .sync_all()
             .map_err(|error| format!("同步未读基线临时文件失败：{error}"))?;
-        fs::rename(&temp_path, path).map_err(|error| format!("替换未读基线失败：{error}"))?;
-        fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| format!("同步未读基线目录失败：{error}"))
+        replace_file_atomically(&temp_path, path)
+            .map_err(|error| format!("替换未读基线失败：{error}"))?;
+        Ok(match sync_parent(parent) {
+            Ok(()) => AcknowledgementWriteOutcome::Durable,
+            Err(error) => AcknowledgementWriteOutcome::CommittedDurabilityUncertain(error),
+        })
     })();
     if write_result.is_err() {
         let _ = fs::remove_file(&temp_path);
     }
     write_result
+}
+
+fn sync_parent_directory(parent: &Path) -> Result<(), String> {
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("同步未读基线目录失败：{error}"))
+}
+
+fn replace_file_atomically(source: &Path, destination: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
+
+        if destination.exists() {
+            let destination: Vec<u16> = destination
+                .as_os_str()
+                .encode_wide()
+                .chain(Some(0))
+                .collect();
+            let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+            let replaced = unsafe {
+                ReplaceFileW(
+                    destination.as_ptr(),
+                    source.as_ptr(),
+                    std::ptr::null(),
+                    REPLACEFILE_WRITE_THROUGH,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            };
+            if replaced == 0 {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+            return Ok(());
+        }
+    }
+    fs::rename(source, destination).map_err(|error| error.to_string())
 }
 
 fn remember_trusted_summary(source_scope_key: &str, summary: &UnreadSummary) {

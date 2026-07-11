@@ -4,6 +4,8 @@ use super::recent_completion::{
 use super::{
     acknowledge_current_unread, read_unread_summary, read_unread_summary_at,
     try_read_unread_summary, try_read_unread_summary_at_with_writer,
+    try_read_unread_summary_for_source, write_acknowledgement_at_with_sync,
+    AcknowledgementWriteOutcome, UnreadAcknowledgement,
 };
 use serde::Deserialize;
 use std::fs;
@@ -196,6 +198,101 @@ fn concurrent_home_acknowledgements_preserve_both_records() {
     let _ = fs::remove_dir_all(support);
     let _ = fs::remove_dir_all(home_a);
     let _ = fs::remove_dir_all(home_b);
+}
+
+#[test]
+fn existing_acknowledgement_target_is_atomically_replaced() {
+    let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("unread-acknowledgement.json");
+    fs::write(&path, b"old").unwrap();
+
+    let outcome = write_acknowledgement_at_with_sync(
+        &path,
+        &UnreadAcknowledgement::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
+
+    assert!(matches!(outcome, AcknowledgementWriteOutcome::Durable));
+    assert_ne!(fs::read(&path).unwrap(), b"old");
+    serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn post_commit_directory_sync_failure_reports_committed_summary() {
+    let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("unread-acknowledgement.json");
+
+    let outcome = write_acknowledgement_at_with_sync(
+        &path,
+        &UnreadAcknowledgement::default(),
+        |_| Err("injected parent sync failure".into()),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        outcome,
+        AcknowledgementWriteOutcome::CommittedDurabilityUncertain(ref error)
+            if error.contains("injected parent sync failure")
+    ));
+    assert!(path.exists(), "replacement is the commit point");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn post_commit_failure_publishes_new_summary_with_durability_diagnostic() {
+    let root = temp_root();
+    let support = root.join("tauri-support");
+    let sessions = root.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let _support_env = TauriSupportEnvGuard::new(&support);
+    let session = sessions.join("post-commit.jsonl");
+    let thread_id = "019eaaaa-0000-0000-0000-000000000188";
+    let now = current_time_seconds();
+    write_session_meta(&session, thread_id);
+    write_unread_state(&root, &[thread_id.to_string()]);
+    acknowledge_current_unread(&root).unwrap();
+    append_task_complete(&session, now + 1.0, "turn-post-commit");
+
+    let summary = try_read_unread_summary_at_with_writer(&root, now + 1.0, &|_, _| {
+        Ok(AcknowledgementWriteOutcome::CommittedDurabilityUncertain(
+            "injected parent sync failure".into(),
+        ))
+    })
+    .unwrap();
+
+    assert_eq!(summary.count, 1);
+    assert!(summary.source.ends_with("_durability_uncertain"));
+    assert!(summary.detail.contains("已提交"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn physical_source_scope_does_not_inherit_acknowledgement_at_same_path() {
+    let root = temp_root();
+    let support = root.join("tauri-support");
+    fs::create_dir_all(&root).unwrap();
+    let _support_env = TauriSupportEnvGuard::new(&support);
+    let thread_id = "019eaaaa-0000-0000-0000-000000000199";
+    write_unread_state(&root, &[thread_id.to_string()]);
+
+    super::acknowledge_current_unread_for_source(&root, "same-path|physical-a", || Ok(()))
+        .unwrap();
+    let summary = try_read_unread_summary_for_source(
+        &root,
+        "same-path|physical-b",
+        || Ok(()),
+    )
+    .unwrap();
+
+    assert_eq!(summary.count, 1);
+    let persisted = fs::read_to_string(support.join("unread-acknowledgement.json")).unwrap();
+    assert!(persisted.contains("same-path|physical-a"));
+    assert!(!persisted.contains("same-path|physical-b"));
+    let _ = fs::remove_dir_all(root);
 }
 
 #[derive(Deserialize)]

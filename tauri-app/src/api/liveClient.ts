@@ -11,11 +11,14 @@ import {
 } from "./fallback";
 import { callCommand, callCommandOptional, callCommandStrict } from "./command";
 
-export function readLiveRateSnapshot(selectedThreadId?: string | null): Promise<LiveRateSnapshot> {
+export function readLiveRateSnapshot(
+  selectedThreadId?: string | null,
+  sourceToken: CodexHomeSourceToken | null = null,
+): Promise<LiveRateSnapshot> {
   return callCommand(
     "read_live_rate_snapshot",
     emptyLiveRateSnapshot(selectedThreadId),
-    { selectedThreadId: selectedThreadId || null },
+    { selectedThreadId: selectedThreadId || null, sourceToken },
     1_500,
   );
 }
@@ -24,12 +27,16 @@ export function readLiveThreadOptions(): Promise<LiveThreadOption[]> {
   return callCommand("read_live_thread_options", [], undefined, 1_500);
 }
 
-export function readFloatingPanelSnapshot(): Promise<FloatingPanelSnapshot> {
-  return callCommand("read_floating_snapshot", emptyFloatingPanelSnapshot, undefined, 1_500);
+export function readFloatingPanelSnapshot(
+  sourceToken: CodexHomeSourceToken | null = null,
+): Promise<FloatingPanelSnapshot> {
+  return callCommand("read_floating_snapshot", emptyFloatingPanelSnapshot, { sourceToken }, 1_500);
 }
 
-export function readUnreadSummary(): Promise<UnreadSummary> {
-  return callCommandStrict<UnreadSummary>("read_unread_summary", undefined, 1_500);
+export function readUnreadSummary(
+  sourceToken: CodexHomeSourceToken | null = null,
+): Promise<UnreadSummary> {
+  return callCommandStrict<UnreadSummary>("read_unread_summary", { sourceToken }, 1_500);
 }
 
 export function acknowledgeUnreadSummary(
