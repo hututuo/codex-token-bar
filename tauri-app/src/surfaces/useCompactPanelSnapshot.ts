@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { emptyFloatingPanelSnapshot } from "../api/fallback";
 import { readUsageSummarySnapshot } from "../api/dashboardClient";
-import { readLiveRateSnapshot } from "../api/liveClient";
+import { readLiveRateSnapshotStrict } from "../api/liveClient";
 import { desktopPlatform } from "../platform/desktop";
 import {
   createLiveRateLeaseController,
@@ -28,7 +28,10 @@ import {
   resetFloatingUsageSummary,
   shouldResetCompactUsageSummarySource,
 } from "./compactPanelSnapshotModel";
-import { createCompactLiveRateAttemptRunner } from "./compactLiveRateAttempt";
+import {
+  createCompactLiveRateAttemptRunner,
+  type CompactLiveRateAttemptHandle,
+} from "./compactLiveRateAttempt";
 
 interface CompactPanelSnapshotOptions {
   active: boolean;
@@ -173,9 +176,11 @@ export function useCompactPanelSnapshot({
       return;
     }
     let leaseRequest: ReturnType<LiveRateLeaseController["begin"]> | null = null;
+    let attempt: CompactLiveRateAttemptHandle | null = null;
 
     void desktopPlatform.onLiveRateSnapshot((liveRate) => {
       if (!cancelled) {
+        attempt?.noteExternalSuccess();
         markLiveUsageActivity(liveRate);
         setRawSnapshot(floatingSnapshotForLiveRate(liveRate, usageSummaryRef.current));
       }
@@ -187,7 +192,7 @@ export function useCompactPanelSnapshot({
       }
     });
 
-    const attempt = liveRateAttemptRunnerRef.current.start({
+    attempt = liveRateAttemptRunnerRef.current.start({
       async start() {
         leaseRequest = leaseController.begin();
         const claimed = await desktopPlatform.claimLiveRateOwnerSession(
@@ -218,7 +223,7 @@ export function useCompactPanelSnapshot({
         leaseRequest?.cancel();
         leaseRequest = null;
       },
-      readInitial: () => readLiveRateSnapshot(null),
+      readInitial: () => readLiveRateSnapshotStrict(null),
       publishSnapshot(liveRate) {
         markLiveUsageActivity(liveRate);
         setRawSnapshot(floatingSnapshotForLiveRate(liveRate, usageSummaryRef.current));
@@ -234,7 +239,7 @@ export function useCompactPanelSnapshot({
     return () => {
       cancelled = true;
       unlisten?.();
-      attempt.cancel();
+      attempt?.cancel();
     };
   }, [active, liveRateEnabled, liveRateOwnerToken, markLiveUsageActivity, sourceKey]);
 

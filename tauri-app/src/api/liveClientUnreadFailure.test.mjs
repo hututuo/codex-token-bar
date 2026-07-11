@@ -22,3 +22,14 @@ test("unread summary reads propagate persistence failures instead of returning a
     /snapshot_at\([\s\S]{0,300}try_read_unread_summary_for_source/,
   );
 });
+
+test("compact initial live-rate reads propagate timeout instead of returning empty fallback", async () => {
+  const source = await readFile(new URL("./liveClient.ts", import.meta.url), "utf8");
+  const strictRead = source.slice(
+    source.indexOf("export function readLiveRateSnapshotStrict"),
+    source.indexOf("export function readLiveThreadOptions"),
+  );
+
+  assert.match(strictRead, /callCommandStrict<LiveRateSnapshot>/);
+  assert.doesNotMatch(strictRead, /emptyLiveRateSnapshot/);
+});

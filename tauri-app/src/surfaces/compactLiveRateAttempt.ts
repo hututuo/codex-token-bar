@@ -19,6 +19,7 @@ interface CompactLiveRateAttemptOptions {
 
 export interface CompactLiveRateAttemptHandle {
   cancel: () => void;
+  noteExternalSuccess: () => boolean;
   settled: Promise<void>;
 }
 
@@ -39,8 +40,11 @@ export function createCompactLiveRateAttemptRunner(
     start<T>(operations: CompactLiveRateAttemptOperations<T>): CompactLiveRateAttemptHandle {
       generation += 1;
       const expectedGeneration = generation;
+      let accepted = false;
       let cancelled = false;
       let didSettle = false;
+      let externalSuccess = false;
+      let externalSuccessObserved = false;
       let resolveSettled = () => {};
       const settled = new Promise<void>((resolve) => {
         resolveSettled = resolve;
@@ -59,7 +63,12 @@ export function createCompactLiveRateAttemptRunner(
       const isCurrent = () => !cancelled && generation === expectedGeneration;
 
       const failAttempt = (error: unknown, failureCount: number) => {
+        if (isCurrent() && accepted && externalSuccess) {
+          settle();
+          return;
+        }
         operations.cancelStart?.();
+        accepted = false;
         if (!isCurrent()) {
           settle();
           return;
@@ -76,6 +85,9 @@ export function createCompactLiveRateAttemptRunner(
       };
 
       const run = async (failureCount: number): Promise<void> => {
+        accepted = false;
+        externalSuccess = false;
+        externalSuccessObserved = false;
         let result: CompactLiveRateStartResult;
         try {
           result = await operations.start();
@@ -92,6 +104,8 @@ export function createCompactLiveRateAttemptRunner(
           failAttempt(result.error ?? "实时速率流暂不可用", failureCount);
           return;
         }
+        accepted = true;
+        externalSuccess = externalSuccessObserved;
 
         let snapshot: T;
         try {
@@ -100,7 +114,7 @@ export function createCompactLiveRateAttemptRunner(
           failAttempt(error, failureCount);
           return;
         }
-        if (isCurrent()) {
+        if (isCurrent() && !externalSuccess) {
           operations.publishSnapshot(snapshot);
         }
         settle();
@@ -119,7 +133,18 @@ export function createCompactLiveRateAttemptRunner(
             cancelCurrentRetry = null;
           }
           operations.cancelStart?.();
+          accepted = false;
           settle();
+        },
+        noteExternalSuccess() {
+          if (!isCurrent()) {
+            return false;
+          }
+          externalSuccessObserved = true;
+          if (accepted) {
+            externalSuccess = true;
+          }
+          return true;
         },
         settled,
       };

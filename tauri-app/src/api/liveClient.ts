@@ -23,6 +23,17 @@ export function readLiveRateSnapshot(
   );
 }
 
+export function readLiveRateSnapshotStrict(
+  selectedThreadId?: string | null,
+  sourceToken: CodexHomeSourceToken | null = null,
+): Promise<LiveRateSnapshot> {
+  return callCommandStrict<LiveRateSnapshot>(
+    "read_live_rate_snapshot",
+    { selectedThreadId: selectedThreadId || null, sourceToken },
+    1_500,
+  );
+}
+
 export function readLiveThreadOptions(): Promise<LiveThreadOption[]> {
   return callCommand("read_live_thread_options", [], undefined, 1_500);
 }

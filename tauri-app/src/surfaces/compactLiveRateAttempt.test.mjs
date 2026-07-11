@@ -204,6 +204,112 @@ test("cancelled thrown work cannot publish or retry over a new attempt", async (
   assert.equal(scheduled.length, 0);
 });
 
+test("external event success wins over a later initial timeout", async () => {
+  const initial = deferredReject();
+  const states = [];
+  const scheduled = [];
+  let cancellations = 0;
+  const runner = createCompactLiveRateAttemptRunner({
+    scheduleRetry(delayMs, retry) {
+      scheduled.push({ delayMs, retry });
+      return () => {};
+    },
+  });
+  const attempt = runner.start({
+    start: async () => ({ ok: true, accepted: true }),
+    cancelStart: () => { cancellations += 1; },
+    readInitial: () => initial.promise,
+    publishSnapshot: (value) => states.push(value),
+    publishFailure: (message) => states.push(message),
+  });
+  await Promise.resolve();
+  assert.equal(attempt.noteExternalSuccess(), true);
+  states.push("event snapshot");
+  initial.reject(new Error("Command timed out"));
+  await attempt.settled;
+
+  assert.deepEqual(states, ["event snapshot"]);
+  assert.equal(cancellations, 0);
+  assert.equal(scheduled.length, 0);
+});
+
+test("external event success wins over a later rejected initial read", async () => {
+  const initial = deferredReject();
+  const failures = [];
+  const snapshots = ["event snapshot"];
+  let cancellations = 0;
+  const runner = createCompactLiveRateAttemptRunner({
+    scheduleRetry() {
+      throw new Error("must not retry after external success");
+    },
+  });
+  const attempt = runner.start({
+    start: async () => ({ ok: true, accepted: true }),
+    cancelStart: () => { cancellations += 1; },
+    readInitial: () => initial.promise,
+    publishSnapshot: (value) => snapshots.push(value),
+    publishFailure: (message) => failures.push(message),
+  });
+  await Promise.resolve();
+  assert.equal(attempt.noteExternalSuccess(), true);
+  initial.reject(new Error("initial rejected"));
+  await attempt.settled;
+
+  assert.deepEqual(snapshots, ["event snapshot"]);
+  assert.deepEqual(failures, []);
+  assert.equal(cancellations, 0);
+});
+
+test("current event observed before the accepted start response still wins", async () => {
+  const start = deferred();
+  const initial = deferredReject();
+  const states = ["event snapshot"];
+  let cancellations = 0;
+  const runner = createCompactLiveRateAttemptRunner({
+    scheduleRetry() {
+      throw new Error("must not retry");
+    },
+  });
+  const attempt = runner.start({
+    start: () => start.promise,
+    cancelStart: () => { cancellations += 1; },
+    readInitial: () => initial.promise,
+    publishSnapshot: (value) => states.push(value),
+    publishFailure: (message) => states.push(message),
+  });
+
+  assert.equal(attempt.noteExternalSuccess(), true);
+  start.resolve({ ok: true, accepted: true });
+  await Promise.resolve();
+  initial.reject(new Error("late timeout"));
+  await attempt.settled;
+
+  assert.deepEqual(states, ["event snapshot"]);
+  assert.equal(cancellations, 0);
+});
+
+test("without an external event an initial failure still cancels and retries", async () => {
+  const scheduled = [];
+  let cancellations = 0;
+  const runner = createCompactLiveRateAttemptRunner({
+    scheduleRetry(delayMs, retry) {
+      scheduled.push({ delayMs, retry });
+      return () => {};
+    },
+  });
+  const attempt = runner.start({
+    start: async () => ({ ok: true, accepted: true }),
+    cancelStart: () => { cancellations += 1; },
+    readInitial: async () => { throw new Error("initial failed"); },
+    publishSnapshot() {},
+    publishFailure() {},
+  });
+  await attempt.settled;
+
+  assert.equal(cancellations, 1);
+  assert.equal(scheduled.length, 1);
+});
+
 function deferred() {
   let resolve;
   let started = false;
