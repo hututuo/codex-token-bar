@@ -176,8 +176,8 @@ final class DashboardRefreshPlanTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
-        let source = try String(contentsOf: dashboardView, encoding: .utf8)
+        let dashboardRuntime = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardRuntime.swift")
+        let source = try String(contentsOf: dashboardRuntime, encoding: .utf8)
 
         XCTAssertTrue(source.contains("DashboardRefreshContext.fromSurfaces("))
         XCTAssertTrue(source.contains("DashboardRefreshPlan.make(trigger: trigger, context:"))
@@ -189,12 +189,12 @@ final class DashboardRefreshPlanTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
-        let source = try String(contentsOf: dashboardView, encoding: .utf8)
+        let dashboardRuntime = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardRuntime.swift")
+        let source = try String(contentsOf: dashboardRuntime, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("sourceTransitionCoordinator.transition("))
-        XCTAssertTrue(source.contains(".onChange(of: store.dataSourceBindingKey)"))
-        XCTAssertFalse(source.contains(".onChange(of: store.dataSourceLabel)"))
+        XCTAssertTrue(source.contains("usageStore.$dataSourceBindingKey.dropFirst().sink"))
+        XCTAssertTrue(source.contains("self?.synchronizeSourceTransition()"))
+        XCTAssertFalse(source.contains("usageStore.$dataSourceLabel"))
     }
 
     @MainActor
@@ -219,7 +219,11 @@ final class DashboardRefreshPlanTests: XCTestCase {
         ])
         let quotaStore = AccountQuotaStore(quotaReader: quotaReader, observesUserDefaults: false)
         let liveMonitor = LiveRateMonitor(monitoringEnabled: false)
-        let taskMonitor = TaskCompletionMonitor(defaults: isolatedDefaults())
+        let taskPollLoader = DashboardTransitionSuspendedTaskPollLoader()
+        let taskMonitor = TaskCompletionMonitor(
+            defaults: isolatedDefaults(),
+            pollLoader: taskPollLoader
+        )
         let providerStore = ProviderSyncStore()
         let coordinator = DashboardSourceTransitionCoordinator()
 
@@ -235,6 +239,9 @@ final class DashboardRefreshPlanTests: XCTestCase {
             taskCompletionMonitor: taskMonitor,
             providerSyncStore: providerStore
         )
+        await waitUntil("old-path task poll") {
+            await taskPollLoader.hasPendingRequest(at: oldHome)
+        }
         await waitUntil("old-path quota") {
             quotaStore.snapshot.accountName == "source-a-account"
         }
@@ -288,6 +295,9 @@ final class DashboardRefreshPlanTests: XCTestCase {
         )
 
         XCTAssertEqual(rebind, .pathRebind)
+        await waitUntil("new-path task poll") {
+            await taskPollLoader.hasPendingRequest(at: newHome)
+        }
         await waitUntil("single new-path owner reads") {
             let usageReadCount = await usageLoader.requestedSourcePaths().count
             let quotaReadCount = await quotaReader.readCount()
@@ -589,6 +599,20 @@ private actor DashboardTransitionQuotaReader: QuotaReading {
 
     func requestedSourcePaths() -> [String?] {
         sourcePaths
+    }
+}
+
+private actor DashboardTransitionSuspendedTaskPollLoader: TaskCompletionPollLoading {
+    private var continuations: [String: CheckedContinuation<TaskCompletionPollOutput, Never>] = [:]
+
+    func load(request: TaskCompletionPollRequest) async -> TaskCompletionPollOutput {
+        await withCheckedContinuation { continuation in
+            continuations[request.dataSource.codexHome.path] = continuation
+        }
+    }
+
+    func hasPendingRequest(at codexHome: URL) -> Bool {
+        continuations[codexHome.path] != nil
     }
 }
 
