@@ -15,11 +15,12 @@ const RECENT_COMPLETION_LOOKBACK_SECONDS: f64 = 30.0;
 const RECENT_COMPLETION_FILE_LIMIT: usize = 64;
 const RECENT_COMPLETION_TAIL_BYTE_LIMIT: u64 = 4 * 1024 * 1024;
 
-pub(super) fn recent_completion_summary(
+pub(super) fn recent_completion_summary_at(
     codex_home: &Path,
     acknowledged_markers: &HashSet<String>,
+    now: f64,
 ) -> UnreadSummary {
-    let count = recent_completion_thread_ids(codex_home, acknowledged_markers).len();
+    let count = recent_completion_thread_ids_at(codex_home, acknowledged_markers, now).len();
     let active = count > 0;
     UnreadSummary {
         active,
@@ -54,11 +55,11 @@ pub(super) fn recent_completion_markers(codex_home: &Path) -> HashSet<String> {
         .collect()
 }
 
-pub(super) fn recent_completion_thread_ids(
+pub(super) fn recent_completion_thread_ids_at(
     codex_home: &Path,
     acknowledged_markers: &HashSet<String>,
+    now: f64,
 ) -> HashSet<String> {
-    let now = current_time_seconds();
     recent_session_files(&codex_home.join("sessions"), now)
         .into_iter()
         .flat_map(|file| recent_completed_user_task_markers(&file, now))
@@ -149,11 +150,7 @@ fn recent_task_complete_marker(line: &str, thread_id: &str) -> Option<(f64, Stri
     }
     let timestamp = number(payload.get("completed_at"))
         .or_else(|| parse_timestamp(object.get("timestamp")?.as_str()?))?;
-    let turn = payload
-        .get("turn_id")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{timestamp:.3}"));
+    let turn = payload.get("turn_id").and_then(Value::as_str)?;
     Some((timestamp, format!("{thread_id}:{turn}")))
 }
 

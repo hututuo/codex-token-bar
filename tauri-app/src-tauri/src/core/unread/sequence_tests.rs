@@ -1,4 +1,7 @@
-use super::{acknowledge_current_unread, read_unread_summary};
+use super::recent_completion::{
+    current_time_seconds, lookback_seconds, recent_completion_markers,
+};
+use super::{acknowledge_current_unread, read_unread_summary, read_unread_summary_at};
 use serde::Deserialize;
 use std::fs;
 use std::io::Write;
@@ -22,18 +25,24 @@ fn shared_unread_correctness_sequence() {
     let session = sessions.join("sequence.jsonl");
     let thread_id = "019eaaaa-0000-0000-0000-0000000000aa";
     write_session_meta(&session, thread_id);
+    let base_completed_at = current_time_seconds();
 
     for step in sequence.steps {
         write_unread_state(&root, &step.native_thread_ids);
         for completion in &step.append_completions {
             assert_eq!(completion.thread_id, thread_id, "{}", step.name);
-            assert_eq!(
-                completion.event_id,
-                format!("{}:{}", completion.thread_id, completion.turn_id),
+            assert!(!completion.title.is_empty(), "{}", step.name);
+            append_task_complete(
+                &session,
+                base_completed_at + completion.completed_at_offset_seconds,
+                &completion.turn_id,
+            );
+            let parsed_ids = recent_completion_markers(&root);
+            assert!(
+                parsed_ids.contains(&completion.expected_canonical_id),
                 "{}",
                 step.name
             );
-            append_task_complete(&session, current_time_seconds(), &completion.turn_id);
         }
 
         let summary = if step.action == "markAllRead" {
@@ -43,6 +52,36 @@ fn shared_unread_correctness_sequence() {
         };
         assert_eq!(summary.count, step.expected_count, "{}", step.name);
     }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn completion_rearm_persists_after_lookback_until_next_acknowledgement() {
+    let root = temp_root();
+    let support = root.join("tauri-support");
+    let sessions = root.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let _support_env = TauriSupportEnvGuard::new(&support);
+    let session = sessions.join("persistent-rearm.jsonl");
+    let thread_id = "019eaaaa-0000-0000-0000-0000000000dd";
+    let now = current_time_seconds();
+    write_session_meta(&session, thread_id);
+    write_unread_state(&root, &[thread_id.to_string()]);
+
+    assert_eq!(read_unread_summary_at(&root, now).count, 1);
+    assert_eq!(acknowledge_current_unread(&root).unwrap().count, 0);
+
+    append_task_complete(&session, now + 1.0, "turn-rearm");
+    assert_eq!(read_unread_summary_at(&root, now + 1.0).count, 1);
+    let persisted = fs::read_to_string(support.join("unread-acknowledgement.json")).unwrap();
+    assert!(!persisted.contains(thread_id));
+
+    let after_lookback = now + lookback_seconds() + 5.0;
+    assert_eq!(read_unread_summary_at(&root, after_lookback).count, 1);
+
+    assert_eq!(acknowledge_current_unread(&root).unwrap().count, 0);
+    assert_eq!(read_unread_summary_at(&root, after_lookback).count, 0);
 
     let _ = fs::remove_dir_all(root);
 }
@@ -67,12 +106,14 @@ struct UnreadCorrectnessStep {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UnreadCorrectnessCompletion {
-    #[serde(rename = "eventID")]
-    event_id: String,
+    #[serde(rename = "expectedCanonicalID")]
+    expected_canonical_id: String,
     #[serde(rename = "threadID")]
     thread_id: String,
     #[serde(rename = "turnID")]
     turn_id: String,
+    completed_at_offset_seconds: f64,
+    title: String,
 }
 
 fn temp_root() -> PathBuf {
@@ -118,13 +159,6 @@ fn append_task_complete(path: &Path, completed_at: f64, turn_id: &str) {
         r#"{{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{{"type":"task_complete","turn_id":"{turn_id}","completed_at":{completed_at},"duration_ms":2000}}}}"#
     )
     .unwrap();
-}
-
-fn current_time_seconds() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs_f64()
 }
 
 struct TauriSupportEnvGuard;
