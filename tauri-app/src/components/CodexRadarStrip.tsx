@@ -758,6 +758,7 @@ function RadarChartToggleRow({
         const isActive = activeIds.has(item.id);
         return (
           <button
+            aria-pressed={isActive}
             className={isActive ? "codex-radar-chart-toggle is-active" : "codex-radar-chart-toggle"}
             key={item.id}
             onClick={() => onToggle(item.id, !isActive)}

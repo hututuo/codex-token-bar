@@ -156,6 +156,7 @@ export function RecentUsageChart({
         <div className="recent-range-tabs" aria-label="曲线范围">
           {RANGE_OPTIONS.map((option) => (
             <button
+              aria-pressed={range === option}
               className={range === option ? "is-active" : ""}
               key={option}
               onClick={() => updateRange(option)}
@@ -477,7 +478,7 @@ function LineToggle({
   onClick: () => void;
 }) {
   return (
-    <button className={`chart-line-toggle ${className} ${active ? "is-active" : ""}`} onClick={onClick} type="button">
+    <button aria-pressed={active} className={`chart-line-toggle ${className} ${active ? "is-active" : ""}`} onClick={onClick} type="button">
       <span>{active ? "●" : "○"}</span>
       {label}
     </button>

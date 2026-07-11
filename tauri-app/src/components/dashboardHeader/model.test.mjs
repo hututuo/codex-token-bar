@@ -85,15 +85,18 @@ test("DashboardHeader falls back to the account display name when custom name is
   });
 });
 
-test("DashboardHeader keeps refresh progress in the updated timestamp slot", async () => {
+test("DashboardHeader renders the Chinese updated timestamp and refresh progress", async () => {
   await withSsrModules(async (load) => {
     const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
-    const html = renderComponent(DashboardHeader, headerProps({
+    const idle = renderComponent(DashboardHeader, headerProps());
+    const refreshing = renderComponent(DashboardHeader, headerProps({
       refreshing: true,
     }));
 
-    assert.match(html, /Updated 同步中/);
-    assert.doesNotMatch(html, /refresh-label/);
+    assert.match(idle, /更新于 \d{2}:\d{2}:\d{2}/);
+    assert.doesNotMatch(idle, /Updated/);
+    assert.match(refreshing, /更新于 同步中/);
+    assert.doesNotMatch(refreshing, /Updated|refresh-label/);
   });
 });
 
