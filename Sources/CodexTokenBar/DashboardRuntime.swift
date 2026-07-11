@@ -113,7 +113,7 @@ final class DashboardRuntimeSideEffectCoordinator<Configuration: Equatable> {
 struct DashboardRuntimeConfiguration: Equatable {
     let floatingPanelEnabled: Bool
     let statusBarPanelEnabled: Bool
-    let floatingPanelScale: Double
+    let floatingPanelScale: FloatingTokenPanelScale
     let floatingPanelVisibility: FloatingPanelContentVisibility
     let floatingPanelLocked: Bool
     let preciseTokenCountingEnabled: Bool

@@ -215,7 +215,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         quota: AccountQuotaStore,
         radar: CodexRadarStore,
         taskCompletionMonitor: TaskCompletionMonitor,
-        scale: Double,
+        scale: FloatingTokenPanelScale,
         visibility: FloatingPanelContentVisibility,
         isLocked: Bool,
         onToggleLock: @escaping () -> Void,
@@ -224,6 +224,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         Self.claimActiveController(self)
         self.onClose = onClose
         self.onToggleLock = onToggleLock
+        let layout = FloatingTokenPanelLayout(scale: scale, visibility: visibility)
 
         if panel == nil {
             let hostingController = NSHostingController(
@@ -233,6 +234,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                     quota: quota,
                     radar: radar,
                     taskCompletionMonitor: taskCompletionMonitor,
+                    layout: layout,
                     visibility: visibility,
                     isLocked: isLocked,
                     lockTargetDescription: lockTargetDescription,
@@ -244,7 +246,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                     }
                 )
             )
-            let initialSize = FloatingTokenPanelMetrics.size(scale: scale, visibility: visibility)
+            let initialSize = layout.size
             hostingController.view.frame = NSRect(origin: .zero, size: initialSize)
             hostingController.view.autoresizingMask = [.width, .height]
 
@@ -265,7 +267,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
             panel.delegate = self
             panel.contentView?.wantsLayer = true
-            panel.contentView?.layer?.cornerRadius = FloatingTokenPanelMetrics.cornerRadius(scale: scale)
+            panel.contentView?.layer?.cornerRadius = layout.cornerRadius
             panel.contentView?.layer?.cornerCurve = .continuous
             panel.contentView?.layer?.masksToBounds = true
             position(panel)
@@ -280,6 +282,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 quota: quota,
                 radar: radar,
                 taskCompletionMonitor: taskCompletionMonitor,
+                layout: layout,
                 visibility: visibility,
                 isLocked: isLocked,
                 lockTargetDescription: lockTargetDescription,
@@ -293,18 +296,18 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         }
 
         let wasPresented = isPresented
-        updateSize(scale: scale, visibility: visibility)
+        updateSize(layout: layout)
         updateLockState(isLocked, force: !wasPresented)
         panel?.orderFrontRegardless()
         isPresented = true
         eventSourceLifecycle.activate()
     }
 
-    func updateSize(scale: Double, visibility: FloatingPanelContentVisibility) {
+    func updateSize(layout: FloatingTokenPanelLayout) {
         guard let panel else { return }
         isProgrammaticPanelMove = true
-        resizePanel(panel, scale: scale, visibility: visibility)
-        panel.contentView?.layer?.cornerRadius = FloatingTokenPanelMetrics.cornerRadius(scale: scale)
+        resizePanel(panel, layout: layout)
+        panel.contentView?.layer?.cornerRadius = layout.cornerRadius
         saveLockedOrigin(panel.frame.origin)
         refreshLockedAnchorOffsetForCurrentFrame()
         DispatchQueue.main.async { [weak self] in
@@ -355,12 +358,12 @@ struct FloatingTokenPanelView: View {
     @ObservedObject var quota: AccountQuotaStore
     @ObservedObject var radar: CodexRadarStore
     @ObservedObject var taskCompletionMonitor: TaskCompletionMonitor
+    let layout: FloatingTokenPanelLayout
     let visibility: FloatingPanelContentVisibility
     let isLocked: Bool
     var lockTargetDescription: String?
     let onToggleLock: () -> Void
     @AppStorage("floatingPanelOpacity") private var floatingPanelOpacity = 0.88
-    @AppStorage("floatingPanelScale") private var floatingPanelScale = FloatingTokenPanelMetrics.defaultScale
     @AppStorage(FloatingPanelAppearance.startHexKey) private var floatingPanelGradientStartHex = FloatingPanelAppearance.defaultStartHex
     @AppStorage(FloatingPanelAppearance.endHexKey) private var floatingPanelGradientEndHex = FloatingPanelAppearance.defaultEndHex
     @AppStorage(FloatingPanelAppearance.directionKey) private var floatingPanelGradientDirection = FloatingPanelAppearance.defaultDirection
@@ -377,9 +380,9 @@ struct FloatingTokenPanelView: View {
             && unreadEffect != .off
             && floatingPanelUnreadPreviewUntil > Date.timeIntervalSinceReferenceDate
         let shouldShowUnreadEffect = unreadEffect != .off && (unreadCount > 0 || isPreviewingUnreadEffect)
-        let scale = FloatingTokenPanelMetrics.clampedScale(floatingPanelScale)
-        let size = FloatingTokenPanelMetrics.size(scale: floatingPanelScale, visibility: visibility)
-        let cornerRadius = FloatingTokenPanelMetrics.cornerRadius(scale: floatingPanelScale)
+        let scale = layout.effectiveScale
+        let size = layout.size
+        let cornerRadius = layout.cornerRadius
         let appearance = FloatingPanelAppearance(
             startHex: floatingPanelGradientStartHex,
             endHex: floatingPanelGradientEndHex,
@@ -482,10 +485,10 @@ struct FloatingTokenPanelView: View {
 }
 
 @MainActor
-func resizePanel(_ panel: NSPanel, scale: Double, visibility: FloatingPanelContentVisibility) {
+func resizePanel(_ panel: NSPanel, layout: FloatingTokenPanelLayout) {
     let previousFrame = panel.frame
     let topLeft = NSPoint(x: previousFrame.minX, y: previousFrame.maxY)
-    let targetSize = FloatingTokenPanelMetrics.size(scale: scale, visibility: visibility)
+    let targetSize = layout.size
     let targetFrame = anchoredPanelFrame(for: panel, size: targetSize, topLeft: topLeft)
     panel.contentViewController?.view.frame = NSRect(origin: .zero, size: targetSize)
     panel.contentMinSize = targetSize

@@ -238,7 +238,7 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
         DashboardRuntimeConfiguration(
             floatingPanelEnabled: floating,
             statusBarPanelEnabled: status,
-            floatingPanelScale: 1,
+            floatingPanelScale: FloatingTokenPanelScale(baseScale: 1, interfaceScale: 1),
             floatingPanelVisibility: .default,
             floatingPanelLocked: false,
             preciseTokenCountingEnabled: false,

@@ -3,6 +3,51 @@ import SwiftUI
 @testable import CodexTokenBar
 
 final class InterfaceScaleSettingsTests: XCTestCase {
+    func testFloatingPanelScaleComposesBaseAndInterfaceScaleOnce() {
+        let scale = FloatingTokenPanelScale(baseScale: 1.0, interfaceScale: 1.3)
+        let layout = FloatingTokenPanelLayout(scale: scale, visibility: .default)
+
+        XCTAssertEqual(scale.value, 1.3, accuracy: 0.001)
+        XCTAssertEqual(layout.effectiveScale, 1.3, accuracy: 0.001)
+        XCTAssertEqual(layout.size.width, 336, accuracy: 0.001)
+        XCTAssertEqual(layout.size.height, 127, accuracy: 0.001)
+        XCTAssertEqual(layout.cornerRadius, 18.2, accuracy: 0.001)
+    }
+
+    func testFloatingPanelScaleClampsComposedValueAtBothBoundaries() {
+        let belowMinimum = FloatingTokenPanelScale(baseScale: 0.75, interfaceScale: 0.5)
+        let aboveMaximum = FloatingTokenPanelScale(baseScale: 2.0, interfaceScale: 1.3)
+
+        XCTAssertEqual(belowMinimum.value, 0.75, accuracy: 0.001)
+        XCTAssertEqual(aboveMaximum.value, 2.0, accuracy: 0.001)
+    }
+
+    func testFloatingPanelLayoutUpdateUsesEffectiveScaleWithoutMultiplyingAgain() {
+        let initial = FloatingTokenPanelLayout(
+            scale: FloatingTokenPanelScale(baseScale: 1.0, interfaceScale: 1.0),
+            visibility: .default
+        )
+        let updated = FloatingTokenPanelLayout(
+            scale: FloatingTokenPanelScale(baseScale: 1.0, interfaceScale: 1.3),
+            visibility: .default
+        )
+
+        XCTAssertEqual(initial.effectiveScale, 1.0, accuracy: 0.001)
+        XCTAssertEqual(updated.effectiveScale, 1.3, accuracy: 0.001)
+        XCTAssertEqual(updated.size, FloatingTokenPanelMetrics.size(scale: 1.3, visibility: .default))
+        XCTAssertNotEqual(initial.size, updated.size)
+        XCTAssertNotEqual(initial.cornerRadius, updated.cornerRadius)
+    }
+
+    func testFloatingPanelInterfaceScaleOnePreservesBaseScale() {
+        let scale = FloatingTokenPanelScale(baseScale: 1.14, interfaceScale: 1.0)
+        let layout = FloatingTokenPanelLayout(scale: scale, visibility: .default)
+
+        XCTAssertEqual(scale.value, 1.14, accuracy: 0.001)
+        XCTAssertEqual(layout.size, FloatingTokenPanelMetrics.size(scale: 1.14, visibility: .default))
+        XCTAssertEqual(layout.cornerRadius, FloatingTokenPanelMetrics.cornerRadius(scale: 1.14), accuracy: 0.001)
+    }
+
     func testAutoScaleKeepsNormalLaptopScreensAtDefaultSize() {
         let scale = InterfaceScaleSettings.autoScale(logicalLongSide: 1512, pixelLongSide: 3024)
         XCTAssertEqual(scale, 1.0, accuracy: 0.001)

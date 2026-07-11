@@ -36,9 +36,15 @@ enum FloatingTokenPanelMetrics {
     }
 
     static func size(scale: Double, visibility: FloatingPanelContentVisibility) -> NSSize {
-        let clamped = clampedScale(scale)
+        size(effectiveScale: clampedScale(scale), visibility: visibility)
+    }
+
+    fileprivate static func size(effectiveScale: CGFloat, visibility: FloatingPanelContentVisibility) -> NSSize {
         let unscaled = unscaledSize(visibility: visibility)
-        return NSSize(width: ceil(unscaled.width * clamped), height: ceil(unscaled.height * clamped))
+        return NSSize(
+            width: ceil(unscaled.width * effectiveScale),
+            height: ceil(unscaled.height * effectiveScale)
+        )
     }
 
     static func contentHeight(visibility: FloatingPanelContentVisibility) -> CGFloat {
@@ -90,6 +96,29 @@ enum FloatingTokenPanelMetrics {
 
     static func cornerRadius(scale: Double) -> CGFloat {
         baseCornerRadius * clampedScale(scale)
+    }
+}
+
+struct FloatingTokenPanelScale: Equatable {
+    let value: CGFloat
+
+    init(baseScale: Double, interfaceScale: CGFloat) {
+        value = FloatingTokenPanelMetrics.clampedScale(baseScale * Double(interfaceScale))
+    }
+}
+
+struct FloatingTokenPanelLayout: Equatable {
+    let effectiveScale: CGFloat
+    let size: NSSize
+    let cornerRadius: CGFloat
+
+    init(scale: FloatingTokenPanelScale, visibility: FloatingPanelContentVisibility) {
+        effectiveScale = scale.value
+        size = FloatingTokenPanelMetrics.size(
+            effectiveScale: scale.value,
+            visibility: visibility
+        )
+        cornerRadius = FloatingTokenPanelMetrics.baseCornerRadius * scale.value
     }
 }
 

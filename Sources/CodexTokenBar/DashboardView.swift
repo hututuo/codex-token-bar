@@ -482,11 +482,10 @@ struct DashboardView: View {
         )
     }
 
-    private var effectiveFloatingPanelScale: Double {
-        Double(
-            FloatingTokenPanelMetrics.clampedScale(
-                floatingPanelScale * Double(requestedInterfaceScale)
-            )
+    private var effectiveFloatingPanelScale: FloatingTokenPanelScale {
+        FloatingTokenPanelScale(
+            baseScale: floatingPanelScale,
+            interfaceScale: requestedInterfaceScale
         )
     }
 
