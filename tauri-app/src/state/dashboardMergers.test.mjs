@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { withSsrModules } from "../test/ssrHarness.mjs";
+import { LONG_RECENT_POINT_COUNT } from "../timeSeriesTimeline.ts";
 
 test("mergeQuota aligns quota history by startUnix instead of array position", async () => {
   return withSsrModules(async (load) => {
@@ -33,7 +34,7 @@ test("mergeQuota aligns quota history by startUnix instead of array position", a
 test("mergeQuota overlays the full 30-day five-minute canvas without changing 7d or 30d axes", async () => {
   return withSsrModules(async (load) => {
     const { mergeQuota } = await load("/src/state/dashboardMergers.ts");
-    const pointCount = 30 * 24 * 12;
+    const pointCount = LONG_RECENT_POINT_COUNT;
     const firstStartUnix = 1_780_000_000;
     const recentUsage24h = Array.from({ length: pointCount }, (_, index) =>
       recentUsagePoint({ startUnix: firstStartUnix + index * 5 * 60, tokens: index }),
@@ -58,6 +59,40 @@ test("mergeQuota overlays the full 30-day five-minute canvas without changing 7d
     assert.equal(next.dashboard.recentUsage24h.at(-1).fiveHourRemainingPercent, 0.42);
     assert.deepEqual(next.dashboard.recentUsage7d.map((point) => [point.startUnix, point.sevenDayRemainingPercent]), [[700, 0.77]]);
     assert.deepEqual(next.dashboard.recentUsage30d.map((point) => [point.startUnix, point.sevenDayRemainingPercent]), [[3_000, 0.33]]);
+  });
+});
+
+test("fallback -> quota -> precise preserves quota across the full long recent timeline", async () => {
+  return withSsrModules(async (load) => {
+    const { mergePreciseDashboard, mergeQuota } = await load("/src/state/dashboardMergers.ts");
+    const { emptyRecentUsage } = await load("/src/api/fallback/timeSeriesFallback.ts");
+    const fallbackPoints = emptyRecentUsage(new Date("2026-07-11T12:02:00Z"));
+    const indices = [0, Math.floor(fallbackPoints.length / 2), fallbackPoints.length - 1];
+    const quota = quotaBundleFixture({
+      quotaHistory24h: indices.map((index) => quotaHistoryPoint({
+        startUnix: fallbackPoints[index].startUnix,
+        fiveHourRemainingPercent: 0.9 - index / fallbackPoints.length / 2,
+      })),
+    });
+    const fallback = stateWithDashboard({ recentUsage24h: fallbackPoints });
+    const withQuota = mergeQuota(fallback, quota);
+    const precisePoints = fallbackPoints.map((point, index) => recentUsagePoint({
+      ...point,
+      tokens: index + 1,
+    }));
+    const precise = dashboardFixture({ recentUsage24h: precisePoints });
+
+    const next = mergePreciseDashboard(withQuota, precise);
+
+    assert.equal(next.dashboard.recentUsage24h.length, LONG_RECENT_POINT_COUNT);
+    assert.deepEqual(
+      indices.map((index) => next.dashboard.recentUsage24h[index].fiveHourRemainingPercent),
+      indices.map((index) => withQuota.dashboard.recentUsage24h[index].fiveHourRemainingPercent),
+    );
+    assert.deepEqual(
+      indices.map((index) => next.dashboard.recentUsage24h[index].tokens),
+      indices.map((index) => index + 1),
+    );
   });
 });
 

@@ -1,5 +1,6 @@
 use crate::core::app_paths;
 use crate::core::sqlite;
+use crate::core::time_series_timeline::LONG_RECENT_POINT_COUNT;
 use crate::models::{
     AccountQuotaBundle, LocalDataWarning, QuotaAvailability, QuotaHistoryDailyPoint,
     QuotaHistoryPoint, QuotaLimit, QuotaSnapshot,
@@ -31,7 +32,6 @@ use time::UtcOffset;
 
 const HEARTBEAT_SECONDS: f64 = 60.0 * 60.0;
 const RETENTION_DAYS: i64 = 45;
-const LONG_RECENT_FIVE_MINUTE_BIN_COUNT: usize = 30 * 24 * 12;
 const QUOTA_HISTORY_SOURCE: &str = "tauri";
 pub(crate) const QUOTA_HISTORY_IDENTITY_VERSION: i64 = 1;
 static QUOTA_HISTORY_DATABASE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
@@ -118,7 +118,7 @@ pub fn history_bundle_for(
             Some(identity),
             bundle,
             day_count,
-            LONG_RECENT_FIVE_MINUTE_BIN_COUNT,
+            LONG_RECENT_POINT_COUNT as usize,
         )
         .map_err(|error| format!("读取额度历史失败：{error}"))
 }

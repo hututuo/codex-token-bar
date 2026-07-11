@@ -1,10 +1,10 @@
 use super::{now_unix, QuotaHistoryRow};
+use crate::core::time_series_timeline::{aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS};
 use crate::models::QuotaHistoryPoint;
 use std::collections::HashMap;
 use time::macros::format_description;
 use time::{OffsetDateTime, UtcOffset};
 
-const RECENT_INTERVAL_SECONDS: i64 = 5 * 60;
 const MAX_CARRY_GAP_SECONDS: f64 = 90.0 * 60.0;
 
 #[derive(Clone, Debug)]
@@ -45,7 +45,7 @@ pub(super) fn make_recent_history(
     rows: Vec<QuotaHistoryRow>,
     count: usize,
 ) -> Vec<QuotaHistoryPoint> {
-    make_interval_history(rows, count, RECENT_INTERVAL_SECONDS)
+    make_interval_history(rows, count, LONG_RECENT_INTERVAL_SECONDS)
 }
 
 pub(super) fn make_interval_history(
@@ -53,16 +53,16 @@ pub(super) fn make_interval_history(
     count: usize,
     interval_seconds: i64,
 ) -> Vec<QuotaHistoryPoint> {
-    let interval_seconds = interval_seconds.max(RECENT_INTERVAL_SECONDS);
-    let end = floor_to_bin(now_unix(), interval_seconds);
-    let start = end - (count.saturating_sub(1) as f64) * interval_seconds as f64;
+    let interval_seconds = interval_seconds.max(LONG_RECENT_INTERVAL_SECONDS);
+    let bin_starts = aligned_bin_starts(now_unix() as i64, interval_seconds, count as i64);
     let sorted = sanitized_rows(rows);
     let mut row_index = 0;
     let mut latest: Option<QuotaHistoryRow> = None;
 
-    (0..count)
-        .map(|index| {
-            let bin_start = start + index as f64 * interval_seconds as f64;
+    bin_starts
+        .into_iter()
+        .map(|bin_start| {
+            let bin_start = bin_start as f64;
             let end = bin_start + interval_seconds as f64;
             while row_index < sorted.len() && sorted[row_index].created_at <= end {
                 latest = Some(sorted[row_index].clone());
@@ -174,11 +174,6 @@ fn suppress_recovered_usage_spikes_for_window(
 
 fn reset_bucket(value: Option<f64>) -> Option<i64> {
     value.map(|value| value.round() as i64)
-}
-
-fn floor_to_bin(timestamp: f64, interval_seconds: i64) -> f64 {
-    let interval = interval_seconds as f64;
-    (timestamp / interval).floor() * interval
 }
 
 fn quota_remaining(

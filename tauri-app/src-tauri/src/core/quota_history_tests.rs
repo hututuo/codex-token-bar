@@ -821,7 +821,7 @@ fn quota_history_points_include_start_unix_for_time_aligned_merge() {
         .unwrap();
 
     let history = database
-        .recent_five_minute_history(LONG_RECENT_FIVE_MINUTE_BIN_COUNT)
+        .recent_five_minute_history(LONG_RECENT_POINT_COUNT as usize)
         .unwrap();
     assert!(history.iter().all(|point| point.start_unix > 0));
     for pair in history.windows(2) {
@@ -907,9 +907,11 @@ fn recent_history_uses_canonical_five_minute_axis() {
         .unwrap();
 
     let history = database
-        .recent_five_minute_history(LONG_RECENT_FIVE_MINUTE_BIN_COUNT)
+        .recent_five_minute_history(LONG_RECENT_POINT_COUNT as usize)
         .unwrap();
-    let usage_timestamps = recent_usage_five_minute_timestamps(history.last().unwrap().start_unix);
+    let usage_timestamps = crate::core::time_series_timeline::long_recent_bin_starts(
+        history.last().unwrap().start_unix,
+    );
     assert_eq!(history.len(), usage_timestamps.len());
     assert_eq!(history.first().unwrap().start_unix, usage_timestamps[0]);
     assert_eq!(
@@ -926,14 +928,6 @@ fn recent_history_uses_canonical_five_minute_axis() {
     }
 
     let _ = std::fs::remove_file(path);
-}
-
-fn recent_usage_five_minute_timestamps(end_unix: i64) -> Vec<i64> {
-    let point_count = 30 * 24 * 12;
-    let start_unix = end_unix - (point_count - 1) * 5 * 60;
-    (0..point_count)
-        .map(|index| start_unix + index * 5 * 60)
-        .collect()
 }
 
 #[test]
@@ -972,11 +966,11 @@ fn history_bundle_builds_all_axes_from_one_read() {
         .unwrap();
 
     let history = database
-        .history_bundle(365, LONG_RECENT_FIVE_MINUTE_BIN_COUNT)
+        .history_bundle(365, LONG_RECENT_POINT_COUNT as usize)
         .unwrap();
     assert_eq!(
         history.recent_24h.len(),
-        LONG_RECENT_FIVE_MINUTE_BIN_COUNT
+        LONG_RECENT_POINT_COUNT as usize
     );
     assert_eq!(history.recent_7d.len(), 7 * 24);
     assert_eq!(history.recent_30d.len(), 30 * 4);
@@ -1008,10 +1002,10 @@ fn history_bundle_for_current_account_does_not_follow_a_concurrent_latest_accoun
     database.record(&account_b).unwrap();
 
     let history_a = database
-        .history_bundle_for(&account_a, 365, LONG_RECENT_FIVE_MINUTE_BIN_COUNT)
+        .history_bundle_for(&account_a, 365, LONG_RECENT_POINT_COUNT as usize)
         .unwrap();
     let history_b = database
-        .history_bundle_for(&account_b, 365, LONG_RECENT_FIVE_MINUTE_BIN_COUNT)
+        .history_bundle_for(&account_b, 365, LONG_RECENT_POINT_COUNT as usize)
         .unwrap();
 
     assert_eq!(
@@ -1056,7 +1050,7 @@ fn concurrent_account_record_and_load_stays_on_each_account_filter() {
                 database.record(&account).unwrap();
                 recorded.wait();
                 let history = database
-                    .history_bundle_for(&account, 365, LONG_RECENT_FIVE_MINUTE_BIN_COUNT)
+                    .history_bundle_for(&account, 365, LONG_RECENT_POINT_COUNT as usize)
                     .unwrap();
                 (
                     history.recent_24h.last().unwrap().five_hour_remaining_percent,

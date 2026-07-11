@@ -1,4 +1,7 @@
 use crate::core::sqlite;
+use crate::core::time_series_timeline::{
+    aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT,
+};
 use crate::models::{
     AccountInfo, ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats,
     LocalDataWarning, QuotaLimit, QuotaSnapshot, RecentUsagePoint, ResetCreditSummary,
@@ -23,7 +26,11 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
     let local_now = OffsetDateTime::now_utc().to_offset(local_offset);
     let activity_days = empty_activity_days(local_now.date());
     let warnings = vec![usage_precision_warning()];
-    let recent_usage_24h = empty_recent_usage(local_now, 5 * 60, 289);
+    let recent_usage_24h = empty_recent_usage(
+        local_now,
+        LONG_RECENT_INTERVAL_SECONDS,
+        LONG_RECENT_POINT_COUNT,
+    );
     let recent_usage_7d = empty_recent_usage(local_now, 60 * 60, 7 * 24);
     let recent_usage_30d = empty_recent_usage(local_now, 6 * 60 * 60, 30 * 4);
 
@@ -72,12 +79,9 @@ fn empty_recent_usage(
     interval_seconds: i64,
     point_count: i64,
 ) -> Vec<RecentUsagePoint> {
-    let now_epoch = now.unix_timestamp();
-    let end_bin = now_epoch - now_epoch.rem_euclid(interval_seconds);
-    let start_bin = end_bin - (point_count.saturating_sub(1)) * interval_seconds;
-    (0..point_count)
-        .map(|index| {
-            let bin_epoch = start_bin + index * interval_seconds;
+    aligned_bin_starts(now.unix_timestamp(), interval_seconds, point_count)
+        .into_iter()
+        .map(|bin_epoch| {
             let timestamp = OffsetDateTime::from_unix_timestamp(bin_epoch)
                 .unwrap_or(now)
                 .to_offset(now.offset());
@@ -206,7 +210,21 @@ mod tests {
         assert_eq!(snapshot.stats.total_calls, 0);
         assert_eq!(snapshot.stats.total_threads, 2);
         assert!(snapshot.activity_days.iter().all(|day| day.tokens == 0));
-        assert_eq!(snapshot.recent_usage_24h.len(), 289);
+        assert_eq!(
+            snapshot.recent_usage_24h.len(),
+            LONG_RECENT_POINT_COUNT as usize
+        );
+        let expected_recent_starts = crate::core::time_series_timeline::long_recent_bin_starts(
+            snapshot.recent_usage_24h.last().unwrap().start_unix,
+        );
+        assert_eq!(
+            snapshot.recent_usage_24h.first().unwrap().start_unix,
+            expected_recent_starts[0]
+        );
+        assert_eq!(
+            snapshot.recent_usage_24h.last().unwrap().start_unix,
+            *expected_recent_starts.last().unwrap()
+        );
         assert_eq!(snapshot.recent_usage_7d.len(), 168);
         assert_eq!(snapshot.recent_usage_30d.len(), 120);
         assert!(snapshot.recent_usage_24h.iter().all(|point| point.tokens == 0));

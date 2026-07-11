@@ -1,11 +1,12 @@
 use super::TokenEvent;
+use crate::core::time_series_timeline::{
+    aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT,
+};
 use crate::models::{ActivityDay, DashboardStats, RecentUsagePoint};
 use std::collections::{HashMap, HashSet};
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
 
-const RECENT_INTERVAL_SECONDS: i64 = 5 * 60;
-const RECENT_POINT_COUNT: i64 = 30 * 24 * 12;
 const HOURLY_INTERVAL_SECONDS: i64 = 60 * 60;
 const SEVEN_DAY_POINT_COUNT: i64 = 7 * 24;
 const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
@@ -76,7 +77,12 @@ pub(super) fn recent_usage(
     events: &[TokenEvent],
     local_offset: UtcOffset,
 ) -> Vec<RecentUsagePoint> {
-    usage_series(events, local_offset, RECENT_INTERVAL_SECONDS, RECENT_POINT_COUNT)
+    usage_series(
+        events,
+        local_offset,
+        LONG_RECENT_INTERVAL_SECONDS,
+        LONG_RECENT_POINT_COUNT,
+    )
 }
 
 pub(super) fn recent_usage_7d(
@@ -105,8 +111,9 @@ fn usage_series(
     point_count: i64,
 ) -> Vec<RecentUsagePoint> {
     let now_epoch = OffsetDateTime::now_utc().unix_timestamp();
-    let end_bin = floor_to_bin(now_epoch, interval_seconds);
-    let start_bin = end_bin - (point_count.saturating_sub(1)) * interval_seconds;
+    let bin_starts = aligned_bin_starts(now_epoch, interval_seconds, point_count);
+    let start_bin = *bin_starts.first().unwrap_or(&now_epoch);
+    let end_bin = *bin_starts.last().unwrap_or(&now_epoch);
     let mut grouped: HashMap<i64, TokenAccumulator> = HashMap::new();
 
     for event in events {
@@ -117,9 +124,9 @@ fn usage_series(
         grouped.entry(bin_epoch).or_default().add(event);
     }
 
-    (0..point_count)
-        .map(|offset| {
-            let bin_epoch = start_bin + offset * interval_seconds;
+    bin_starts
+        .into_iter()
+        .map(|bin_epoch| {
             let bin_time = OffsetDateTime::from_unix_timestamp(bin_epoch)
                 .unwrap_or_else(|_| OffsetDateTime::now_utc());
             let usage = grouped.remove(&bin_epoch).unwrap_or_default();

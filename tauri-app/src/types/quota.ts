@@ -63,6 +63,7 @@ export interface AccountQuotaBundle {
   account: AccountInfo;
   quota: QuotaSnapshot;
   quotaHistoryDaily: QuotaHistoryDailyPoint[];
+  /** Compatibility name: this is the 30-day, five-minute long recent canvas. */
   quotaHistory24h: QuotaHistoryPoint[];
   quotaHistory7d: QuotaHistoryPoint[];
   quotaHistory30d: QuotaHistoryPoint[];

@@ -1,4 +1,9 @@
 import type { ActivityDay, RecentUsagePoint } from "../../types/usage";
+import {
+  alignedTimeSeriesStarts,
+  LONG_RECENT_INTERVAL_MS,
+  LONG_RECENT_POINT_COUNT,
+} from "../../timeSeriesTimeline";
 
 export function emptyActivityDays(now: Date): ActivityDay[] {
   return Array.from({ length: 365 }, (_, index) => {
@@ -17,13 +22,11 @@ export function emptyActivityDays(now: Date): ActivityDay[] {
 
 export function emptyRecentUsage(
   now: Date,
-  intervalMs = 300_000,
-  pointCount = 289,
+  intervalMs = LONG_RECENT_INTERVAL_MS,
+  pointCount = LONG_RECENT_POINT_COUNT,
 ): RecentUsagePoint[] {
-  const end = Math.floor(now.getTime() / intervalMs) * intervalMs;
-  const start = end - (pointCount - 1) * intervalMs;
-  return Array.from({ length: pointCount }, (_, index) => {
-    const date = new Date(start + index * intervalMs);
+  return alignedTimeSeriesStarts(now.getTime(), intervalMs, pointCount).map((startMs) => {
+    const date = new Date(startMs);
     return {
       label: `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`,
       startUnix: Math.floor(date.getTime() / 1_000),

@@ -79,6 +79,7 @@ export interface DashboardSnapshot {
   stats: DashboardStats;
   quota: QuotaSnapshot;
   activityDays: ActivityDay[];
+  /** Compatibility name: this is the 30-day, five-minute long recent canvas. */
   recentUsage24h: RecentUsagePoint[];
   recentUsage7d: RecentUsagePoint[];
   recentUsage30d: RecentUsagePoint[];

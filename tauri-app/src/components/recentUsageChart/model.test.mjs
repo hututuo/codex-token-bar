@@ -13,6 +13,8 @@ import {
   recentChartVisibleWindowLabel,
   smoothPath,
 } from "./model.ts";
+import { withSsrModules } from "../../test/ssrHarness.mjs";
+import { LONG_RECENT_POINT_COUNT } from "../../timeSeriesTimeline.ts";
 
 function point(startUnix, overrides = {}) {
   return {
@@ -199,31 +201,64 @@ test("quotaConsumptionSelection uses cumulative quota drop instead of start-end 
   assert.equal(selection?.sevenDay.impliedWindowBudgetUSD?.toFixed(4), "40.0000");
 });
 
-test("quotaConsumptionSelection estimates quota inside an old window of the 30-day canvas", () => {
-  const pointCount = 30 * 24 * 12;
-  const startUnix = localUnix(2026, 5, 1);
-  const oldWindowStart = 12 * 24 * 12;
-  const points = Array.from({ length: pointCount }, (_, index) =>
-    point(startUnix + index * 5 * 60, {
-      inputTokens: index >= oldWindowStart && index <= oldWindowStart + 2 ? 100_000 : 0,
-      tokens: index >= oldWindowStart && index <= oldWindowStart + 2 ? 100_000 : 0,
-      calls: index >= oldWindowStart && index <= oldWindowStart + 2 ? 1 : 0,
-      fiveHourRemainingPercent: index === oldWindowStart ? 0.8 : index === oldWindowStart + 1 ? 0.76 : index === oldWindowStart + 2 ? 0.72 : null,
-    }),
-  );
-  const data = prepareRecentChartData("24h", {
-    recentUsage24h: points,
-    recentUsage7d: [],
-    recentUsage30d: [],
+test("quotaConsumptionSelection estimates quota from the fallback -> quota -> precise chain", async () => {
+  return withSsrModules(async (load) => {
+    const { mergePreciseDashboard, mergeQuota } = await load("/src/state/dashboardMergers.ts");
+    const { emptyRecentUsage } = await load("/src/api/fallback/timeSeriesFallback.ts");
+    const fallbackPoints = emptyRecentUsage(new Date("2026-07-01T00:02:00Z"));
+    const oldWindowStart = 12 * 24 * 12;
+    const precisePoints = fallbackPoints.map((fallbackPoint, index) =>
+      point(fallbackPoint.startUnix, {
+        inputTokens: index >= oldWindowStart && index <= oldWindowStart + 2 ? 100_000 : 0,
+        tokens: index >= oldWindowStart && index <= oldWindowStart + 2 ? 100_000 : 0,
+        calls: index >= oldWindowStart && index <= oldWindowStart + 2 ? 1 : 0,
+      }),
+    );
+    const fallbackDashboard = dashboardStateWithRecentUsage(fallbackPoints);
+    const quotaHistory = [
+      [oldWindowStart, 0.8],
+      [oldWindowStart + 1, 0.76],
+      [oldWindowStart + 2, 0.72],
+    ].map(([index, remaining]) => ({
+      label: "quota",
+      startUnix: fallbackPoints[index].startUnix,
+      fiveHourRemainingPercent: remaining,
+      sevenDayRemainingPercent: null,
+    }));
+    const withQuota = mergeQuota(fallbackDashboard, quotaBundleWithHistory(quotaHistory));
+    const merged = mergePreciseDashboard(withQuota, dashboardSnapshotWithRecentUsage(precisePoints));
+    const data = prepareRecentChartData("24h", {
+      recentUsage24h: merged.dashboard.recentUsage24h,
+      recentUsage7d: [],
+      recentUsage30d: [],
+    });
+
+    const selection = quotaConsumptionSelection(data, oldWindowStart, oldWindowStart + 2, "gpt55");
+
+    assert.equal(selection?.startUnix, precisePoints[oldWindowStart].startUnix);
+    assert.equal(selection?.endUnix, precisePoints[oldWindowStart + 2].startUnix + 5 * 60);
+    assert.equal(selection?.fiveHour.quotaDropPercent, 8);
+    assert.equal(selection?.fiveHour.impliedWindowBudgetUSD?.toFixed(4), "18.7500");
   });
-
-  const selection = quotaConsumptionSelection(data, oldWindowStart, oldWindowStart + 2, "gpt55");
-
-  assert.equal(selection?.startUnix, points[oldWindowStart].startUnix);
-  assert.equal(selection?.endUnix, points[oldWindowStart + 2].startUnix + 5 * 60);
-  assert.equal(selection?.fiveHour.quotaDropPercent, 8);
-  assert.equal(selection?.fiveHour.impliedWindowBudgetUSD?.toFixed(4), "18.7500");
 });
+
+function dashboardStateWithRecentUsage(recentUsage24h) {
+  return { dashboard: dashboardSnapshotWithRecentUsage(recentUsage24h) };
+}
+
+function dashboardSnapshotWithRecentUsage(recentUsage24h) {
+  return {
+    account: {}, quota: {}, activityDays: [], recentUsage24h, recentUsage7d: [], recentUsage30d: [],
+    warnings: [], diagnostics: [],
+  };
+}
+
+function quotaBundleWithHistory(quotaHistory24h) {
+  return {
+    account: {}, quota: {}, quotaHistoryDaily: [], quotaHistory24h, quotaHistory7d: [], quotaHistory30d: [],
+    warnings: [], diagnostics: [],
+  };
+}
 
 test("quotaConsumptionSelection ignores isolated full-usage quota spikes", () => {
   const data = prepareRecentChartData("24h", {
@@ -261,7 +296,7 @@ test("quotaConsumptionSelection ignores isolated full remaining spikes before re
 });
 
 test("recent chart gives the 24h viewport a 30-day horizontal history canvas", () => {
-  const layout = recentChartScrollLayout("24h", 30 * 24 * 12, 5 * 60, 980);
+  const layout = recentChartScrollLayout("24h", LONG_RECENT_POINT_COUNT, 5 * 60, 980);
 
   assert.equal(layout.isHorizontal, true);
   assert.equal(layout.viewportWidth, 980);
@@ -275,7 +310,7 @@ test("recent chart gives the 24h viewport a 30-day horizontal history canvas", (
 
 test("24h long chart time markers show one local date label per day", () => {
   const startUnix = localUnix(2026, 6, 1);
-  const points = Array.from({ length: 30 * 24 * 12 }, (_, index) => point(startUnix + index * 5 * 60));
+  const points = Array.from({ length: LONG_RECENT_POINT_COUNT }, (_, index) => point(startUnix + index * 5 * 60));
   const data = prepareRecentChartData("24h", {
     recentUsage24h: points,
     recentUsage7d: [],
@@ -294,7 +329,7 @@ test("24h long chart time markers show one local date label per day", () => {
 
 test("24h day markers are positioned by full scroll content width", () => {
   const startUnix = localUnix(2026, 6, 1);
-  const points = Array.from({ length: 30 * 24 * 12 }, (_, index) => point(startUnix + index * 5 * 60));
+  const points = Array.from({ length: LONG_RECENT_POINT_COUNT }, (_, index) => point(startUnix + index * 5 * 60));
   const data = prepareRecentChartData("24h", {
     recentUsage24h: points,
     recentUsage7d: [],
@@ -331,7 +366,7 @@ test("7d and 30d time markers keep the existing sparse month-day behavior", () =
 
 test("24h visible window label describes the latest local date range", () => {
   const startUnix = localUnix(2026, 6, 1, 0, 35);
-  const points = Array.from({ length: 30 * 24 * 12 }, (_, index) => point(startUnix + index * 5 * 60));
+  const points = Array.from({ length: LONG_RECENT_POINT_COUNT }, (_, index) => point(startUnix + index * 5 * 60));
   const data = prepareRecentChartData("24h", {
     recentUsage24h: points,
     recentUsage7d: [],
@@ -347,7 +382,7 @@ test("24h visible window label describes the latest local date range", () => {
 
 test("24h visible window label follows a middle scroll position", () => {
   const startUnix = localUnix(2026, 6, 1, 0, 35);
-  const points = Array.from({ length: 30 * 24 * 12 }, (_, index) => point(startUnix + index * 5 * 60));
+  const points = Array.from({ length: LONG_RECENT_POINT_COUNT }, (_, index) => point(startUnix + index * 5 * 60));
   const data = prepareRecentChartData("24h", {
     recentUsage24h: points,
     recentUsage7d: [],
