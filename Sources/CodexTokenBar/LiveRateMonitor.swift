@@ -797,45 +797,42 @@ final class LiveRateMonitor: ObservableObject {
         let summary = VisibleTextSummary(text: event.text).identityComponent
         if let itemID = event.itemID, !itemID.isEmpty {
             if let turnID = event.turnID, !turnID.isEmpty {
-                return "thread:\(threadID)|turn:\(turnID)|item:\(itemID)"
+                return VisibleMessageIdentity.key(threadID: threadID, turnID: turnID, itemID: itemID)
             }
-            return "thread:\(threadID)|item:\(itemID)|summary:\(summary)"
+            return "\(VisibleMessageIdentity.fallbackKey(threadID: threadID, itemID: itemID))|summary:\(summary)"
         }
         return "thread:\(threadID)|turn:\(event.turnID ?? "unknown")|summary:\(summary)|event:\(event.key)"
     }
 
     private func discardPendingRolloutsMatchedByStream() {
-        guard let matchedKey = pendingRolloutOrder.first(where: { key in
-            guard let pending = pendingRolloutCompletions[key] else { return false }
-            let consumptionKey = streamConsumptionKey(event: pending.event, threadID: pending.threadID)
-            guard !consumedVisibleAssemblyMatches.contains(consumptionKey) else { return false }
-            if let itemID = pending.event.itemID, !itemID.isEmpty {
-                return visibleStreamAssemblies.matches(
-                    text: pending.event.text,
-                    for: Self.visibleMessageIdentity(threadID: pending.threadID, itemID: itemID)
-                )
-            }
-            guard let turnID = pending.event.turnID else { return false }
-            return visibleStreamAssemblies.contains(
-                text: pending.event.text,
-                threadID: pending.threadID,
-                turnID: turnID
-            )
-        }) else { return }
-        if let pending = pendingRolloutCompletions[matchedKey] {
-            _ = consumedVisibleAssemblyMatches.insertIfNew(
-                streamConsumptionKey(event: pending.event, threadID: pending.threadID)
-            )
+        var matchedPendingKeys: [String] = []
+        for pendingKey in pendingRolloutOrder {
+            guard let pending = pendingRolloutCompletions[pendingKey],
+                  let assemblyIdentity = matchingUnconsumedAssemblyIdentity(
+                      event: pending.event,
+                      threadID: pending.threadID
+                  )
+            else { continue }
+            _ = consumedVisibleAssemblyMatches.insertIfNew(assemblyIdentity)
+            matchedPendingKeys.append(pendingKey)
         }
-        pendingRolloutOrder.removeAll { $0 == matchedKey }
-        pendingRolloutCompletions.removeValue(forKey: matchedKey)
+        let matchedSet = Set(matchedPendingKeys)
+        pendingRolloutOrder.removeAll { matchedSet.contains($0) }
+        for key in matchedPendingKeys {
+            pendingRolloutCompletions.removeValue(forKey: key)
+        }
     }
 
-    private func streamConsumptionKey(event: RolloutMetricEvent, threadID: String) -> String {
-        if let itemID = event.itemID, !itemID.isEmpty {
-            return Self.visibleMessageIdentity(threadID: threadID, itemID: itemID)
-        }
-        return "thread:\(threadID)|turn:\(event.turnID ?? "unknown")|summary:\(VisibleTextSummary(text: event.text).identityComponent)"
+    private func matchingUnconsumedAssemblyIdentity(
+        event: RolloutMetricEvent,
+        threadID: String
+    ) -> String? {
+        visibleStreamAssemblies.matchingIdentities(
+            text: event.text,
+            threadID: threadID,
+            turnID: event.turnID,
+            itemID: event.itemID
+        ).first { !consumedVisibleAssemblyMatches.contains($0) }
     }
 
     private func flushExpiredPendingRollouts(now: TimeInterval) -> Bool {
@@ -972,12 +969,11 @@ final class LiveRateMonitor: ObservableObject {
            let resolvedThreadID,
            !event.itemID.isEmpty,
            event.itemID != "unknown" {
-            let identity = Self.visibleMessageIdentity(threadID: resolvedThreadID, itemID: event.itemID)
             visibleStreamAssemblies.append(
                 event.text,
-                for: identity,
                 threadID: resolvedThreadID,
-                turnID: resolvedTurnID
+                turnID: resolvedTurnID,
+                itemID: event.itemID
             )
         }
         return true
@@ -985,33 +981,8 @@ final class LiveRateMonitor: ObservableObject {
 
     private func shouldCountRolloutEvent(_ event: RolloutMetricEvent, threadID: String) -> Bool {
         if event.category == .visibleText, !event.text.isEmpty {
-            if let itemID = event.itemID,
-               !itemID.isEmpty,
-               !consumedVisibleAssemblyMatches.contains(
-                   Self.visibleMessageIdentity(threadID: threadID, itemID: itemID)
-               ),
-               visibleStreamAssemblies.matches(
-                   text: event.text,
-                   for: Self.visibleMessageIdentity(threadID: threadID, itemID: itemID)
-               ) {
-                _ = consumedVisibleAssemblyMatches.insertIfNew(
-                    Self.visibleMessageIdentity(threadID: threadID, itemID: itemID)
-                )
-                return false
-            }
-            if event.itemID == nil,
-               let turnID = event.turnID,
-               !consumedVisibleAssemblyMatches.contains(
-                   streamConsumptionKey(event: event, threadID: threadID)
-               ),
-               visibleStreamAssemblies.contains(
-                   text: event.text,
-                   threadID: threadID,
-                   turnID: turnID
-               ) {
-                _ = consumedVisibleAssemblyMatches.insertIfNew(
-                    streamConsumptionKey(event: event, threadID: threadID)
-                )
+            if let assemblyIdentity = matchingUnconsumedAssemblyIdentity(event: event, threadID: threadID) {
+                _ = consumedVisibleAssemblyMatches.insertIfNew(assemblyIdentity)
                 return false
             }
         }
@@ -1026,10 +997,6 @@ final class LiveRateMonitor: ObservableObject {
         ].joined(separator: ":")
         guard countedRolloutFingerprints.insertIfNew(fingerprint) else { return false }
         return true
-    }
-
-    nonisolated private static func visibleMessageIdentity(threadID: String, itemID: String) -> String {
-        "thread:\(threadID)|item:\(itemID)"
     }
 
     private func updateTraceAttribution(from row: LogRow) {

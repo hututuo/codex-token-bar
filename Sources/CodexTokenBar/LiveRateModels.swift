@@ -259,9 +259,23 @@ struct VisibleTextSummary: Equatable {
     }
 }
 
+enum VisibleMessageIdentity {
+    static func key(threadID: String, turnID: String?, itemID: String) -> String {
+        if let turnID, !turnID.isEmpty {
+            return "thread:\(threadID)|turn:\(turnID)|item:\(itemID)"
+        }
+        return fallbackKey(threadID: threadID, itemID: itemID)
+    }
+
+    static func fallbackKey(threadID: String, itemID: String) -> String {
+        "thread:\(threadID)|item:\(itemID)"
+    }
+}
+
 struct RecentVisibleTextAssemblies {
     private struct Entry {
         let threadID: String
+        let itemID: String
         var turnID: String?
         var summary = VisibleTextSummary()
     }
@@ -276,12 +290,23 @@ struct RecentVisibleTextAssemblies {
 
     var count: Int { values.count }
 
-    mutating func append(_ text: String, for key: String, threadID: String, turnID: String?) {
+    mutating func append(_ text: String, threadID: String, turnID: String?, itemID: String) {
         guard !text.isEmpty else { return }
+        let key = VisibleMessageIdentity.key(threadID: threadID, turnID: turnID, itemID: itemID)
+        if let turnID, !turnID.isEmpty {
+            let fallbackKey = VisibleMessageIdentity.fallbackKey(threadID: threadID, itemID: itemID)
+            if key != fallbackKey, values[key] == nil, var fallback = values.removeValue(forKey: fallbackKey) {
+                fallback.turnID = turnID
+                values[key] = fallback
+                if let index = insertionOrder.firstIndex(of: fallbackKey) {
+                    insertionOrder[index] = key
+                }
+            }
+        }
         if values[key] == nil {
             insertionOrder.append(key)
         }
-        var entry = values[key] ?? Entry(threadID: threadID, turnID: turnID)
+        var entry = values[key] ?? Entry(threadID: threadID, itemID: itemID, turnID: turnID)
         entry.turnID = entry.turnID ?? turnID
         entry.summary.append(text)
         values[key] = entry
@@ -293,14 +318,21 @@ struct RecentVisibleTextAssemblies {
         insertionOrder.removeFirst(overflow)
     }
 
-    func matches(text: String, for key: String) -> Bool {
-        values[key]?.summary == VisibleTextSummary(text: text)
-    }
-
-    func contains(text: String, threadID: String, turnID: String) -> Bool {
+    func matchingIdentities(
+        text: String,
+        threadID: String,
+        turnID: String?,
+        itemID: String?
+    ) -> [String] {
         let summary = VisibleTextSummary(text: text)
-        return values.values.contains { entry in
-            entry.threadID == threadID && entry.turnID == turnID && entry.summary == summary
+        return insertionOrder.filter { key in
+            guard let entry = values[key], entry.threadID == threadID, entry.summary == summary else { return false }
+            if let itemID, !itemID.isEmpty {
+                guard entry.itemID == itemID else { return false }
+                return turnID == nil || entry.turnID == turnID || entry.turnID == nil
+            }
+            guard let turnID else { return false }
+            return entry.turnID == turnID
         }
     }
 

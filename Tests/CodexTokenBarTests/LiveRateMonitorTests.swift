@@ -839,6 +839,90 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertGreaterThan(monitor.snapshot.breakdown.visibleText, monitor.estimateTokenCount("same", category: .visibleText))
     }
 
+    @MainActor
+    func testDeadlineBatchMatchesThreePendingItemsOneToOneAcrossAllScopes() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        let baseline = LiveRateMonitor(monitoringEnabled: false)
+        for subject in [monitor, baseline] {
+            subject.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        }
+        let pending = (1...3).map { index in
+            RolloutMetricEvent(timestamp: 1_000, key: "msg-\(index)", turnID: "turn-\(index)", itemID: "msg-\(index)", category: .visibleText, text: "answer \(index)")
+        }
+        monitor.testProcessPollInputs(
+            streamRows: [],
+            rolloutReads: [LiveRateMonitor.RolloutRead(threadID: "thread-1", path: "/tmp/r.jsonl", newOffset: 1, events: pending)],
+            now: 1_000
+        )
+        let rows = (1...3).map { index in
+            streamDeltaRowWithTopLevelTurn(id: index, threadID: "thread-1", turnID: "turn-\(index)", itemID: "msg-\(index)", sequence: 1, text: "answer \(index)")
+        }
+
+        monitor.testProcessPollInputs(streamRows: rows, rolloutReads: [], now: 1_001)
+        baseline.testProcessPollInputs(streamRows: rows, rolloutReads: [], now: 1_001)
+
+        XCTAssertEqual(monitor.snapshot.breakdown, baseline.snapshot.breakdown)
+        XCTAssertEqual(monitor.totalSnapshot.breakdown, baseline.totalSnapshot.breakdown)
+        XCTAssertEqual(monitor.testSessionBreakdown(threadID: "thread-1"), baseline.testSessionBreakdown(threadID: "thread-1"))
+        XCTAssertEqual(monitor.testPendingRolloutCount, 0)
+    }
+
+    @MainActor
+    func testTwoAgentOccurrencesMatchTwoConcreteStreamAssembliesInSameTurn() {
+        let events = LiveRateMonitor.rolloutEvents(fromLines: [
+            rolloutTurnContextLine(timestamp: "2026-06-24T13:00:00.000Z", turnID: "turn-1"),
+            rolloutAgentMessageLine(timestamp: "2026-06-24T13:00:00.010Z", message: "same"),
+            rolloutAssistantResponseItemLine(timestamp: "2026-06-24T13:00:00.020Z", id: "msg-1", text: "same"),
+            rolloutAgentMessageLine(timestamp: "2026-06-24T13:00:00.030Z", message: "same"),
+            rolloutAssistantResponseItemLine(timestamp: "2026-06-24T13:00:00.040Z", id: "msg-2", text: "same")
+        ])
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        monitor.testProcessPollInputs(
+            streamRows: [],
+            rolloutReads: [LiveRateMonitor.RolloutRead(threadID: "thread-1", path: "/tmp/r.jsonl", newOffset: 1, events: events)],
+            now: 1_000
+        )
+
+        monitor.testProcessPollInputs(
+            streamRows: [
+                streamDeltaRowWithTopLevelTurn(id: 1, threadID: "thread-1", turnID: "turn-1", itemID: "stream-1", sequence: 1, text: "same"),
+                streamDeltaRowWithTopLevelTurn(id: 2, threadID: "thread-1", turnID: "turn-1", itemID: "stream-2", sequence: 1, text: "same")
+            ],
+            rolloutReads: [],
+            now: 1_001
+        )
+
+        XCTAssertEqual(monitor.testPendingRolloutCount, 0)
+    }
+
+    @MainActor
+    func testSameItemAcrossKnownTurnsKeepsSeparateAssembliesAndMatchesPending() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        let pending = [
+            RolloutMetricEvent(timestamp: 1_000, key: "a", turnID: "turn-a", itemID: "shared-item", category: .visibleText, text: "answer A"),
+            RolloutMetricEvent(timestamp: 1_000, key: "b", turnID: "turn-b", itemID: "shared-item", category: .visibleText, text: "answer B")
+        ]
+        monitor.testProcessPollInputs(
+            streamRows: [],
+            rolloutReads: [LiveRateMonitor.RolloutRead(threadID: "thread-1", path: "/tmp/r.jsonl", newOffset: 1, events: pending)],
+            now: 1_000
+        )
+
+        monitor.testProcessPollInputs(
+            streamRows: [
+                streamDeltaRowWithTopLevelTurn(id: 1, threadID: "thread-1", turnID: "turn-a", itemID: "shared-item", sequence: 1, text: "answer A"),
+                streamDeltaRowWithTopLevelTurn(id: 2, threadID: "thread-1", turnID: "turn-b", itemID: "shared-item", sequence: 1, text: "answer B")
+            ],
+            rolloutReads: [],
+            now: 1_001
+        )
+
+        XCTAssertEqual(monitor.testPendingRolloutCount, 0)
+        XCTAssertEqual(monitor.testVisibleAssemblyCount, 2)
+    }
+
     func testStreamParserUsesTopLevelTurnIDWithoutOutputItem() throws {
         let row = LiveRateMonitor.LogRow(
             id: 1,
