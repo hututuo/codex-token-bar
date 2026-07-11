@@ -1854,6 +1854,151 @@ fn atomic_replace_repeatedly_overwrites_an_existing_destination() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn session_atomic_cleanup_rejects_replaced_temp_physical_alias() {
+    let root = temp_root("provider-session-temp-alias");
+    fs::create_dir_all(&root).unwrap();
+    let destination = root.join("session.jsonl");
+    let outside = root.join("outside.jsonl");
+    let moved_temp = root.join("owned-temp.jsonl");
+    fs::write(&destination, "original").unwrap();
+    fs::write(&outside, "outside").unwrap();
+
+    let error = session_files::write_file_atomically_with_hook(
+        &destination,
+        b"replacement",
+        |phase, temp| {
+            if phase == session_files::AtomicWritePhase::BeforeReplace {
+                fs::rename(temp, &moved_temp).unwrap();
+                fs::hard_link(&outside, temp).unwrap();
+                return Err("fixture replace failure".into());
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.contains("fixture replace failure"), "{error}");
+    assert!(error.contains("拒绝") && error.contains("残留"), "{error}");
+    assert!(error.contains("codex-token-bar"), "{error}");
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "outside");
+    let alias = fs::read_dir(&root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.file_name().unwrap().to_string_lossy().contains("codex-token-bar"))
+        .unwrap();
+    assert_eq!(fs::read_to_string(alias).unwrap(), "outside");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn session_atomic_cleanup_failure_preserves_original_error_and_temp_path() {
+    let root = temp_root("provider-session-cleanup-failure");
+    fs::create_dir_all(&root).unwrap();
+    let destination = root.join("session.jsonl");
+    fs::write(&destination, "original").unwrap();
+
+    let error = session_files::write_file_atomically_with_hook(
+        &destination,
+        b"replacement",
+        |phase, _| match phase {
+            session_files::AtomicWritePhase::BeforeReplace => {
+                Err("fixture replace failure".into())
+            }
+            session_files::AtomicWritePhase::AfterDestinationExists => Ok(()),
+            session_files::AtomicWritePhase::CleanupTemp => {
+                Err("fixture cleanup failure".into())
+            }
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.contains("fixture replace failure"), "{error}");
+    assert!(error.contains("fixture cleanup failure"), "{error}");
+    assert!(error.contains("codex-token-bar") && error.contains("残留"), "{error}");
+    assert!(fs::read_dir(&root).unwrap().filter_map(Result::ok).any(|entry| {
+        entry.file_name().to_string_lossy().contains("codex-token-bar")
+    }));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn session_atomic_replace_supports_extended_length_paths() {
+    use std::os::windows::ffi::OsStrExt;
+
+    let root = temp_root("provider-session-windows-long-path");
+    let mut long_root = root.clone();
+    while long_root.as_os_str().encode_wide().count() < 280 {
+        long_root.push("provider-session-path-segment-0123456789");
+    }
+    fs::create_dir_all(&long_root).unwrap();
+    let destination = long_root.join("session.jsonl");
+
+    for version in 0..=3 {
+        session_files::write_file_atomically(
+            &destination,
+            format!("version-{version}").as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&destination).unwrap(),
+            format!("version-{version}")
+        );
+        assert_eq!(fs::read_dir(&long_root).unwrap().count(), 1);
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn session_atomic_replace_fails_closed_when_destination_disappears() {
+    let root = temp_root("provider-session-windows-destination-race");
+    fs::create_dir_all(&root).unwrap();
+    let destination = root.join("session.jsonl");
+    fs::write(&destination, "original").unwrap();
+
+    let error = session_files::write_file_atomically_with_hook(
+        &destination,
+        b"replacement",
+        |phase, _| {
+            if phase == session_files::AtomicWritePhase::AfterDestinationExists {
+                fs::remove_file(&destination).unwrap();
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.contains("原子替换") && error.contains("session.jsonl"), "{error}");
+    assert!(!destination.exists());
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn session_atomic_write_creates_then_repeatedly_replaces_destination() {
+    let root = temp_root("provider-session-atomic-write");
+    fs::create_dir_all(&root).unwrap();
+    let destination = root.join("session.jsonl");
+
+    for version in 0..=3 {
+        session_files::write_file_atomically(
+            &destination,
+            format!("version-{version}").as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&destination).unwrap(),
+            format!("version-{version}")
+        );
+    }
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn restore_rejects_manifest_member_outside_canonical_home() {
     let fixture = temp_root("provider-restore-member-scope");
