@@ -839,7 +839,8 @@ mod tests {
         dedupe_persist_release: StdMutex<Option<mpsc::Receiver<()>>>,
         attempt_persist_started: StdMutex<Option<mpsc::Sender<()>>>,
         attempt_persist_release: StdMutex<Option<mpsc::Receiver<()>>>,
-        check_delay_ms: AtomicU64,
+        check_started: StdMutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        check_release: StdMutex<Option<tokio::sync::oneshot::Receiver<()>>>,
         install_delay_ms: AtomicU64,
     }
 
@@ -889,10 +890,18 @@ mod tests {
         fn check(&self) -> BoxFuture<'_, Result<Option<CheckedUpdate<String>>, String>> {
             self.checks.fetch_add(1, Ordering::SeqCst);
             let result = self.check_result.lock().unwrap().clone();
-            let delay = self.check_delay_ms.load(Ordering::SeqCst);
+            let started = self.check_started.lock().unwrap().take();
+            let release = self.check_release.lock().unwrap().take();
             Box::pin(async move {
-                if delay > 0 {
-                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                if let Some(started) = started {
+                    started
+                        .send(())
+                        .map_err(|_| "check started receiver dropped".to_string())?;
+                }
+                if let Some(release) = release {
+                    release
+                        .await
+                        .map_err(|_| "check release sender dropped".to_string())?;
                 }
                 result
             })
@@ -974,7 +983,8 @@ mod tests {
                 dedupe_persist_release: StdMutex::new(None),
                 attempt_persist_started: StdMutex::new(None),
                 attempt_persist_release: StdMutex::new(None),
-                check_delay_ms: AtomicU64::new(0),
+                check_started: StdMutex::new(None),
+                check_release: StdMutex::new(None),
                 install_delay_ms: AtomicU64::new(0),
             }
         }
@@ -1026,33 +1036,43 @@ mod tests {
         runtime().block_on(async {
             let core = Arc::new(RegistryCore::<String>::default());
             let ops = Arc::new(MockOps::available("0.8.0"));
-            ops.check_delay_ms.store(25, Ordering::SeqCst);
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            *ops.check_started.lock().unwrap() = Some(started_tx);
+            *ops.check_release.lock().unwrap() = Some(release_rx);
             let automatic = tokio::spawn({
                 let core = core.clone();
                 let ops = ops.clone();
                 async move { core.check(ops.as_ref(), false, 1).await }
             });
-            tokio::time::timeout(Duration::from_secs(1), async {
-                loop {
-                    if core.state.lock().await.in_flight.is_some() {
-                        break;
+            tokio::time::timeout(Duration::from_secs(1), started_rx)
+                .await
+                .expect("automatic check did not enter UpdateOps::check within one second")
+                .expect("automatic check dropped the started gate");
+            assert!(core.state.lock().await.in_flight.is_some());
+            let mut manual = Box::pin(core.check(ops.as_ref(), true, 2));
+            let mut release = Some(release_tx);
+            let manual = tokio::time::timeout(
+                Duration::from_secs(1),
+                std::future::poll_fn(|context| match manual.as_mut().poll(context) {
+                    std::task::Poll::Ready(_) if release.is_some() => {
+                        panic!("manual check finished before joining the automatic generation")
                     }
-                    assert!(
-                        !automatic.is_finished(),
-                        "automatic check finished before claiming in_flight"
-                    );
-                    tokio::task::yield_now().await;
-                }
-            })
+                    std::task::Poll::Ready(result) => std::task::Poll::Ready(result),
+                    std::task::Poll::Pending => {
+                        if let Some(release) = release.take() {
+                            release
+                                .send(())
+                                .expect("automatic check dropped the release gate");
+                        }
+                        std::task::Poll::Pending
+                    }
+                }),
+            )
             .await
-            .expect("automatic check did not claim in_flight within one second");
-            let manual = tokio::spawn({
-                let core = core.clone();
-                let ops = ops.clone();
-                async move { core.check(ops.as_ref(), true, 2).await }
-            });
+            .expect("manual check did not join and finish the automatic generation");
             let automatic = automatic.await.unwrap().unwrap();
-            let manual = manual.await.unwrap().unwrap();
+            let manual = manual.unwrap();
             assert_eq!(automatic, manual);
             assert_eq!(ops.checks.load(Ordering::SeqCst), 1);
             let state = core.state.lock().await;
