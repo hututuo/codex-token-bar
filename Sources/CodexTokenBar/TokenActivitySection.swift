@@ -1,5 +1,25 @@
 import SwiftUI
 
+struct ActivityModeOptionPresentation: Equatable {
+    let visibleTitle: String
+    let accessibilityLabel: String
+    let accessibilityValue: String
+
+    init(mode: ActivityMode, isSelected: Bool) {
+        visibleTitle = mode.rawValue
+        accessibilityLabel = "Token 活动模式 \(mode.rawValue)"
+        accessibilityValue = isSelected ? "已选择" : "未选择"
+    }
+
+    var accessibilityButton: RecentChartAccessibilityButtonPresentation {
+        RecentChartAccessibilityButtonPresentation(
+            label: accessibilityLabel,
+            value: accessibilityValue,
+            isEnabled: true
+        )
+    }
+}
+
 struct ActivitySection: View {
     let dailyUsage: [DayUsage]
     let cacheDaily: [TokenCacheBucket]
@@ -58,25 +78,38 @@ struct ActivityModeSelector: View {
     }
 
     private func modeButton(_ mode: ActivityMode, width: CGFloat, groupedSpecial: Bool = false) -> some View {
-        Button {
+        let presentation = ActivityModeOptionPresentation(
+            mode: mode,
+            isSelected: selectedMode == mode
+        )
+        return Button {
             selectedMode = mode
         } label: {
-            Text(mode.rawValue)
-                .font(.system(size: groupedSpecial ? 12 : 13, weight: selectedMode == mode ? .semibold : .medium))
-                .foregroundStyle(labelColor(for: mode))
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .frame(width: width, height: 25)
-                .background(background(for: mode))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(Color.clear, lineWidth: 1)
-                )
+            Label {
+                Text(presentation.accessibilityLabel)
+            } icon: {
+                Text(presentation.visibleTitle)
+                    .font(.system(size: groupedSpecial ? 12 : 13, weight: selectedMode == mode ? .semibold : .medium))
+                    .foregroundStyle(labelColor(for: mode))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .frame(width: width, height: 25)
+                    .background(background(for: mode))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(Color.clear, lineWidth: 1)
+                    )
+            }
+            .labelStyle(.iconOnly)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Token 活动模式 \(mode.rawValue)")
-        .accessibilityValue(selectedMode == mode ? "已选择" : "未选择")
-        .accessibilityHint("切换 Token 活动显示模式")
+        .accessibilityRepresentation {
+            RecentChartAccessibilityButtonRepresentation(
+                presentation: presentation.accessibilityButton,
+                action: { selectedMode = mode }
+            )
+            .accessibilityHint("切换 Token 活动显示模式")
+        }
     }
 
     private func labelColor(for mode: ActivityMode) -> Color {
