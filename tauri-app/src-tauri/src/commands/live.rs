@@ -452,10 +452,17 @@ impl LiveRateMonitorRegistry {
         })
     }
 
-    fn stream_publish_is_current(&self, loop_generation: u64) -> bool {
-        self.stream.lock().is_ok_and(|stream| {
-            stream.running && stream.loop_generation == loop_generation
-        })
+    fn publish_stream_if_current(
+        &self,
+        loop_generation: u64,
+        publish: impl FnOnce() -> Result<(), String>,
+    ) -> Result<bool, String> {
+        let stream = self.stream.lock().map_err(|error| error.to_string())?;
+        if !stream.running || stream.loop_generation != loop_generation {
+            return Ok(false);
+        }
+        publish()?;
+        Ok(true)
     }
 
     fn spawn_stream_loop(&self, app: AppHandle, loop_generation: u64) {
@@ -522,10 +529,6 @@ impl LiveRateMonitorRegistry {
                     }
                 };
 
-                if !registry.stream_publish_is_current(loop_generation) {
-                    break;
-                }
-
                 let elapsed_ms = started.elapsed().as_millis();
                 if elapsed_ms > 50 {
                     startup_trace::mark_performance(format!(
@@ -539,15 +542,21 @@ impl LiveRateMonitorRegistry {
                 }
                 let recently_active = last_active_at
                     .is_some_and(|last_active| last_active.elapsed() <= ACTIVE_STREAM_HOLD);
-                if let Err(error) = with_valid_codex_home_source(&source_token, || {
-                    app.emit(LIVE_RATE_SNAPSHOT_EVENT, snapshot)
-                        .map_err(|error| error.to_string())
+                match with_valid_codex_home_source(&source_token, || {
+                    registry.publish_stream_if_current(loop_generation, || {
+                        app.emit(LIVE_RATE_SNAPSHOT_EVENT, snapshot)
+                            .map_err(|error| error.to_string())
+                    })
                 }) {
-                    startup_trace::mark_performance(format!(
-                        "live_rate_stream_publish_skipped {error}"
-                    ));
-                    sleep_stream_interval(IDLE_STREAM_INTERVAL).await;
-                    continue;
+                    Ok(true) => {}
+                    Ok(false) => break,
+                    Err(error) => {
+                        startup_trace::mark_performance(format!(
+                            "live_rate_stream_publish_skipped {error}"
+                        ));
+                        sleep_stream_interval(IDLE_STREAM_INTERVAL).await;
+                        continue;
+                    }
                 }
                 sleep_stream_interval(if recently_active {
                     FAST_STREAM_INTERVAL
@@ -631,8 +640,12 @@ impl LiveRateMonitorRegistry {
     }
 
     #[cfg(test)]
-    fn test_stream_publish_is_current(&self, loop_generation: u64) -> bool {
-        self.stream_publish_is_current(loop_generation)
+    fn test_publish_stream_if_current(
+        &self,
+        loop_generation: u64,
+        publish: impl FnOnce() -> Result<(), String>,
+    ) -> Result<bool, String> {
+        self.publish_stream_if_current(loop_generation, publish)
     }
 }
 
@@ -1072,7 +1085,14 @@ mod tests {
         let old_tick = std::thread::spawn(move || {
             tick_started_tx.send(()).unwrap();
             release_tick_rx.recv().unwrap();
-            old_registry.test_stream_publish_is_current(old_generation)
+            let mut emitted = Vec::new();
+            let published = old_registry
+                .test_publish_stream_if_current(old_generation, || {
+                    emitted.push("old-payload");
+                    Ok(())
+                })
+                .unwrap();
+            (published, emitted)
         });
         tick_started_rx.recv().unwrap();
 
@@ -1082,8 +1102,12 @@ mod tests {
         assert_ne!(new.loop_generation, old.loop_generation);
 
         release_tick_tx.send(()).unwrap();
-        assert!(!old_tick.join().unwrap());
-        assert!(registry.test_stream_publish_is_current(new.loop_generation));
+        let (published, emitted) = old_tick.join().unwrap();
+        assert!(!published);
+        assert!(emitted.is_empty());
+        assert!(registry
+            .test_publish_stream_if_current(new.loop_generation, || Ok(()))
+            .unwrap());
     }
 
     #[test]
@@ -1214,6 +1238,7 @@ mod tests {
     fn production_unread_cadence_pins_once_across_consecutive_live_ticks() {
         use std::os::unix::fs::MetadataExt;
 
+        let _counter_guard = super::super::dashboard::pinned_source_counter_test_guard();
         super::super::dashboard::reset_pinned_source_copy_count_for_test();
         let root = std::env::temp_dir().join(format!(
             "codex-token-bar-live-no-pinned-copy-{}",
@@ -1444,6 +1469,7 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
         use std::sync::atomic::{AtomicU64, Ordering};
 
+        let _counter_guard = super::super::dashboard::pinned_source_counter_test_guard();
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(

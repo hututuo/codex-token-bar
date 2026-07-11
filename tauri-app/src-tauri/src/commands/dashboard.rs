@@ -30,6 +30,8 @@ static PINNED_SOURCE_SNAPSHOTS_CREATED: AtomicU64 = AtomicU64::new(0);
 static PINNED_SOURCE_DB_FILES_COPIED: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static PINNED_SOURCE_SESSION_ENTRIES_INSPECTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static PINNED_SOURCE_COUNTER_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 const PINNED_SESSION_FILE_LIMIT: usize = 64;
 const PINNED_SESSION_FIRST_LINE_LIMIT: u64 = 262_144;
@@ -1399,6 +1401,14 @@ pub(crate) fn reset_pinned_source_copy_count_for_test() {
 }
 
 #[cfg(test)]
+pub(crate) fn pinned_source_counter_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    PINNED_SOURCE_COUNTER_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
 pub(crate) fn pinned_source_copy_count_for_test() -> u64 {
     PINNED_SOURCE_SESSION_FILES_COPIED.load(Ordering::Relaxed)
 }
@@ -2318,7 +2328,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pinned_source_observation_survives_a_to_b_to_a_swap() {
-        let _guard = pinned_db_test_lock().lock().unwrap();
+        let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("pinned-source-a");
         let displaced = home.with_extension("displaced");
         let session_path = canonical_session_test_directory(&home);
@@ -2360,7 +2370,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pinned_source_accepts_a_legal_canonical_target() {
-        let _guard = pinned_db_test_lock().lock().unwrap();
+        let _guard = pinned_source_counter_test_guard();
         use std::os::unix::fs::symlink;
 
         let target = disposable_source_test_directory("canonical-target");
@@ -2397,7 +2407,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pinned_source_copies_only_bounded_recent_session_candidates() {
-        let _guard = pinned_db_test_lock().lock().unwrap();
+        let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("bounded-pinned-sessions");
         let old_sessions = home.join("sessions/2000/01/01");
         std::fs::create_dir_all(&old_sessions).unwrap();
@@ -2439,7 +2449,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pinned_source_selects_the_newest_sixty_four_recent_sessions() {
-        let _guard = pinned_db_test_lock().lock().unwrap();
+        let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("newest-pinned-sessions");
         let sessions = canonical_session_test_directory(&home);
         std::fs::create_dir_all(&sessions).unwrap();
@@ -2751,7 +2761,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn sessions_root_allows_ds_store_without_weakening_layout_validation() {
-        let _guard = pinned_db_test_lock().lock().unwrap();
+        let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("sessions-ds-store");
         std::fs::create_dir(home.join("sessions")).unwrap();
         std::fs::write(home.join("sessions/.DS_Store"), b"metadata").unwrap();
@@ -2780,7 +2790,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn pinned_source_fails_with_diagnostic_when_archived_fallback_cannot_be_safe() {
-        let _guard = pinned_db_test_lock().lock().unwrap();
+        let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("unsafe-archived-fallback");
         std::fs::write(
             home.join(".codex-global-state.json"),
@@ -2815,7 +2825,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn empty_native_state_never_copies_large_sqlite_files() {
-        let _guard = pinned_db_test_lock().lock().unwrap();
+        let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("empty-state-skips-db");
         std::fs::write(
             home.join(".codex-global-state.json"),
@@ -2844,7 +2854,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn state_sqlite_directory_is_rejected_as_a_non_file() {
-        let _guard = pinned_db_test_lock().lock().unwrap();
+        let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("sqlite-directory");
         std::fs::write(
             home.join(".codex-global-state.json"),
@@ -2873,7 +2883,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unchanged_native_state_and_db_reuse_verified_db_snapshot_until_signature_changes() {
-        let _guard = pinned_db_test_lock().lock().unwrap();
+        let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("db-signature-cache");
         let thread_id = "019eaaaa-0000-0000-0000-0000000000aa";
         std::fs::write(
@@ -2923,7 +2933,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn empty_native_source_evicts_previous_physical_db_cache_and_directory() {
-        let _guard = pinned_db_test_lock().lock().unwrap();
+        let _guard = pinned_source_counter_test_guard();
         let home_a = disposable_source_test_directory("cache-source-a");
         let thread_id = "019eaaaa-0000-0000-0000-0000000000aa";
         std::fs::write(
@@ -2981,7 +2991,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn failed_db_snapshot_creation_leaves_no_task_owned_directory() {
-        let _guard = pinned_db_test_lock().lock().unwrap();
+        let _guard = pinned_source_counter_test_guard();
         let prefix = format!(
             "codex-token-bar-pinned-db-{}-",
             process_session_identity()
@@ -3144,9 +3154,4 @@ mod tests {
         )
     }
 
-    #[cfg(unix)]
-    fn pinned_db_test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 }

@@ -124,6 +124,86 @@ test("cleanup cancels a scheduled retry", async () => {
   assert.equal(scheduled[0].cancelled, true);
 });
 
+test("a thrown start publishes one failure, cancels its lease, and schedules retry", async () => {
+  const failures = [];
+  const scheduled = [];
+  let cancellations = 0;
+  const runner = createCompactLiveRateAttemptRunner({
+    scheduleRetry(delayMs, retry) {
+      scheduled.push({ delayMs, retry });
+      return () => {};
+    },
+  });
+  const attempt = runner.start({
+    start: async () => { throw new Error("start transport rejected"); },
+    cancelStart: () => { cancellations += 1; },
+    readInitial: async () => "unused",
+    publishSnapshot() {},
+    publishFailure: (message) => failures.push(message),
+  });
+  await attempt.settled;
+
+  assert.equal(cancellations, 1);
+  assert.deepEqual(failures, ["start transport rejected"]);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].delayMs, 5_000);
+});
+
+test("a thrown initial read cancels the accepted lease and retries", async () => {
+  const failures = [];
+  const scheduled = [];
+  let cancellations = 0;
+  const runner = createCompactLiveRateAttemptRunner({
+    scheduleRetry(delayMs, retry) {
+      scheduled.push({ delayMs, retry });
+      return () => {};
+    },
+  });
+  const attempt = runner.start({
+    start: async () => ({ ok: true, accepted: true }),
+    cancelStart: () => { cancellations += 1; },
+    readInitial: async () => { throw new Error("initial read rejected"); },
+    publishSnapshot() {},
+    publishFailure: (message) => failures.push(message),
+  });
+  await attempt.settled;
+
+  assert.equal(cancellations, 1);
+  assert.deepEqual(failures, ["initial read rejected"]);
+  assert.equal(scheduled.length, 1);
+});
+
+test("cancelled thrown work cannot publish or retry over a new attempt", async () => {
+  const oldStart = deferredReject();
+  const states = [];
+  const scheduled = [];
+  const runner = createCompactLiveRateAttemptRunner({
+    scheduleRetry(delayMs, retry) {
+      scheduled.push({ delayMs, retry });
+      return () => {};
+    },
+  });
+  const oldAttempt = runner.start({
+    start: () => oldStart.promise,
+    readInitial: async () => "old",
+    publishSnapshot: (value) => states.push(value),
+    publishFailure: (message) => states.push(message),
+  });
+  oldAttempt.cancel();
+  const newAttempt = runner.start({
+    start: async () => ({ ok: true, accepted: true }),
+    readInitial: async () => "new",
+    publishSnapshot: (value) => states.push(value),
+    publishFailure: (message) => states.push(message),
+  });
+  oldStart.reject(new Error("late old rejection"));
+  await oldAttempt.settled;
+  await newAttempt.settled;
+
+  assert.deepEqual(states, ["new"]);
+  assert.equal(scheduled.length, 0);
+});
+
 function deferred() {
   let resolve;
   let started = false;
@@ -140,4 +220,12 @@ function deferred() {
     },
     resolve,
   };
+}
+
+function deferredReject() {
+  let reject;
+  const promise = new Promise((_, fail) => {
+    reject = fail;
+  });
+  return { promise, reject };
 }

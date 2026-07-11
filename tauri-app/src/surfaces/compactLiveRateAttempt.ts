@@ -40,6 +40,7 @@ export function createCompactLiveRateAttemptRunner(
       generation += 1;
       const expectedGeneration = generation;
       let cancelled = false;
+      let didSettle = false;
       let resolveSettled = () => {};
       const settled = new Promise<void>((resolve) => {
         resolveSettled = resolve;
@@ -48,30 +49,61 @@ export function createCompactLiveRateAttemptRunner(
       cancelCurrentRetry?.();
       cancelCurrentRetry = null;
 
-      const run = async (failureCount: number): Promise<void> => {
-        const result = await operations.start();
-        if (cancelled || generation !== expectedGeneration) {
-          operations.cancelStart?.();
+      const settle = () => {
+        if (!didSettle) {
+          didSettle = true;
           resolveSettled();
+        }
+      };
+
+      const isCurrent = () => !cancelled && generation === expectedGeneration;
+
+      const failAttempt = (error: unknown, failureCount: number) => {
+        operations.cancelStart?.();
+        if (!isCurrent()) {
+          settle();
+          return;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        operations.publishFailure(message || "实时速率流暂不可用");
+        const delayMs = retryDelaysMs[Math.min(failureCount, retryDelaysMs.length - 1)];
+        cancelCurrentRetry?.();
+        cancelCurrentRetry = scheduleRetry(delayMs, () => {
+          cancelCurrentRetry = null;
+          void run(failureCount + 1);
+        });
+        settle();
+      };
+
+      const run = async (failureCount: number): Promise<void> => {
+        let result: CompactLiveRateStartResult;
+        try {
+          result = await operations.start();
+        } catch (error) {
+          failAttempt(error, failureCount);
+          return;
+        }
+        if (!isCurrent()) {
+          operations.cancelStart?.();
+          settle();
           return;
         }
         if (!result.ok || !result.accepted) {
-          operations.cancelStart?.();
-          operations.publishFailure(result.error ?? "实时速率流暂不可用");
-          const delayMs = retryDelaysMs[Math.min(failureCount, retryDelaysMs.length - 1)];
-          cancelCurrentRetry = scheduleRetry(delayMs, () => {
-            cancelCurrentRetry = null;
-            void run(failureCount + 1);
-          });
-          resolveSettled();
+          failAttempt(result.error ?? "实时速率流暂不可用", failureCount);
           return;
         }
 
-        const snapshot = await operations.readInitial();
-        if (!cancelled && generation === expectedGeneration) {
+        let snapshot: T;
+        try {
+          snapshot = await operations.readInitial();
+        } catch (error) {
+          failAttempt(error, failureCount);
+          return;
+        }
+        if (isCurrent()) {
           operations.publishSnapshot(snapshot);
         }
-        resolveSettled();
+        settle();
       };
 
       void run(0);
@@ -87,7 +119,7 @@ export function createCompactLiveRateAttemptRunner(
             cancelCurrentRetry = null;
           }
           operations.cancelStart?.();
-          resolveSettled();
+          settle();
         },
         settled,
       };
