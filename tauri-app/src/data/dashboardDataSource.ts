@@ -32,7 +32,10 @@ export interface DashboardDataSource {
   readDashboardSnapshot: () => Promise<DashboardSnapshot>;
   readPreciseDashboardSnapshot: () => Promise<DashboardSnapshot | null>;
   readUsageCacheStatus: () => Promise<UsageCacheStatus>;
-  readAccountQuota: (forceRefresh?: boolean) => Promise<AccountQuotaBundle | null>;
+  readAccountQuota: (
+    sourceToken: CodexHomeSourceToken,
+    forceRefresh?: boolean,
+  ) => Promise<AccountQuotaBundle | null>;
   readLiveRateSnapshot: (selectedThreadId?: string | null) => Promise<LiveRateSnapshot>;
   readLiveThreadOptions: () => Promise<LiveThreadOption[]>;
   acknowledgeUnreadSummary: (

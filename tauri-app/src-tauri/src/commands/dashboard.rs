@@ -9,11 +9,12 @@ use crate::platform;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
-use tauri::{async_runtime, Emitter};
+use tauri::{async_runtime, AppHandle, Emitter};
 
 pub(crate) const CODEX_HOME_SOURCE_CHANGED_EVENT: &str = "codex-home-source-changed";
 
@@ -240,6 +241,20 @@ pub(crate) fn finish_codex_home_source_transition_claim(
         finish_codex_home_source_transition_claim_in_state(transition, claim, published);
         Ok(())
     })
+}
+
+pub(crate) fn emit_detected_source_transition(app: &AppHandle) -> Result<bool, String> {
+    let Some(claim) = claim_codex_home_source_transition()? else {
+        return Ok(false);
+    };
+    let publish_result = serde_json::to_string(&claim.envelope)
+        .map_err(|error| error.to_string())
+        .and_then(|payload| {
+            app.emit_str(CODEX_HOME_SOURCE_CHANGED_EVENT, payload)
+                .map_err(|error| error.to_string())
+        });
+    finish_codex_home_source_transition_claim(&claim, publish_result.is_ok())?;
+    publish_result.map(|_| true)
 }
 
 fn claim_codex_home_source_transition_in_state(
@@ -1877,12 +1892,67 @@ pub async fn read_precise_dashboard_snapshot(
     result
 }
 
+async fn run_source_bound_dashboard_read_with<
+    T,
+    Detect,
+    Capture,
+    Read,
+    ReadFuture,
+    Validate,
+>(
+    expected: &CodexHomeSourceToken,
+    mut detect: Detect,
+    capture: Capture,
+    read: Read,
+    validate: Validate,
+) -> Result<T, String>
+where
+    Detect: FnMut() -> Result<(), String>,
+    Capture: FnOnce(&CodexHomeSourceToken) -> Result<CapturedCodexHomeSource, String>,
+    Read: FnOnce(PathBuf) -> ReadFuture,
+    ReadFuture: Future<Output = Result<T, String>>,
+    Validate: FnOnce(&CodexHomeSourceToken) -> Result<(), String>,
+{
+    detect()?;
+    let captured = capture(expected)?;
+    let completed_source_token = captured.source_token.clone();
+    let result = read(captured.codex_home).await;
+    let detection = detect();
+    let validation = validate(&completed_source_token);
+    detection?;
+    validation?;
+    result
+}
+
+async fn run_source_bound_dashboard_read<T, Read>(
+    app: &AppHandle,
+    expected: CodexHomeSourceToken,
+    read: Read,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    Read: FnOnce(PathBuf) -> Result<T, String> + Send + 'static,
+{
+    run_source_bound_dashboard_read_with(
+        &expected,
+        || emit_detected_source_transition(app).map(|_| ()),
+        |expected| capture_codex_home_source(Some(expected)),
+        |codex_home| run_blocking_command(move || read(codex_home)),
+        validate_codex_home_source,
+    )
+    .await
+}
+
 #[tauri::command]
-pub async fn read_usage_summary_snapshot() -> Result<TokenUsageSummary, String> {
+pub async fn read_usage_summary_snapshot(
+    app: AppHandle,
+    source_token: CodexHomeSourceToken,
+) -> Result<TokenUsageSummary, String> {
     let started = Instant::now();
-    let codex_home = platform::default_codex_home();
-    let result =
-        run_blocking_command(move || token_count_jsonl::usage_summary_snapshot(&codex_home)).await;
+    let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
+        token_count_jsonl::usage_summary_snapshot(&codex_home)
+    })
+    .await;
     startup_trace::mark_performance(format!(
         "read_usage_summary_snapshot {}ms {}",
         started.elapsed().as_millis(),
@@ -1898,11 +1968,19 @@ pub fn read_usage_cache_status(window: tauri::WebviewWindow) -> Result<UsageCach
 }
 
 #[tauri::command]
-pub async fn read_account_quota(force_refresh: Option<bool>) -> Result<AccountQuotaBundle, String> {
+pub async fn read_account_quota(
+    app: AppHandle,
+    source_token: CodexHomeSourceToken,
+    force_refresh: Option<bool>,
+) -> Result<AccountQuotaBundle, String> {
     startup_trace::mark_once("command read_account_quota start");
     let started = Instant::now();
     let forced = force_refresh.unwrap_or(false);
-    let result = run_blocking_command(move || local_source().read_account_quota(forced)).await;
+    let result = run_source_bound_dashboard_read(&app, source_token, move |codex_home| {
+        crate::core::dashboard::LocalCodexDataSource::new(codex_home)
+            .read_account_quota(forced)
+    })
+    .await;
     startup_trace::mark_performance(format!(
         "read_account_quota force={} {}ms {}",
         forced,
@@ -2124,6 +2202,77 @@ mod tests {
 
         remove_source_test_directory(home_a);
         remove_source_test_directory(home_b);
+    }
+
+    #[test]
+    fn source_bound_dashboard_read_detects_captures_reads_and_post_validates_in_order() {
+        let order = RefCell::new(Vec::new());
+        let expected = CodexHomeSourceToken {
+            canonical_home_key: "/captured/.codex".into(),
+            physical_home_key: "unix:1:2".into(),
+            transition_generation: 9,
+        };
+        let captured = CapturedCodexHomeSource {
+            source_token: expected.clone(),
+            codex_home: PathBuf::from("/captured/.codex"),
+            source_path: PathBuf::from("/captured/.codex"),
+        };
+
+        let result = async_runtime::block_on(run_source_bound_dashboard_read_with(
+            &expected,
+            || {
+                order.borrow_mut().push("detect");
+                Ok(())
+            },
+            |token| {
+                order.borrow_mut().push("capture");
+                assert_eq!(token, &expected);
+                Ok(captured)
+            },
+            |path| {
+                order.borrow_mut().push("read");
+                std::future::ready(Ok(path))
+            },
+            |token| {
+                order.borrow_mut().push("validate");
+                assert_eq!(token, &expected);
+                Ok(())
+            },
+        ))
+        .expect("source-bound read should complete");
+
+        assert_eq!(result, PathBuf::from("/captured/.codex"));
+        assert_eq!(
+            order.into_inner(),
+            vec!["detect", "capture", "read", "detect", "validate"]
+        );
+    }
+
+    #[test]
+    fn source_bound_dashboard_read_rejects_data_when_physical_source_changes_after_read() {
+        let expected = CodexHomeSourceToken {
+            canonical_home_key: "/same/.codex".into(),
+            physical_home_key: "unix:1:2".into(),
+            transition_generation: 4,
+        };
+        let captured = CapturedCodexHomeSource {
+            source_token: expected.clone(),
+            codex_home: PathBuf::from("/same/.codex"),
+            source_path: PathBuf::from("/same/.codex"),
+        };
+
+        let result = async_runtime::block_on(run_source_bound_dashboard_read_with(
+            &expected,
+            || Ok(()),
+            |_| Ok(captured),
+            |_| std::future::ready(Ok("data from physical A")),
+            |_| Err("Codex Home physical identity changed".into()),
+        ));
+
+        assert_eq!(
+            result.unwrap_err(),
+            "Codex Home physical identity changed"
+        );
     }
 
     #[test]

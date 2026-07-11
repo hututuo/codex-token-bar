@@ -292,11 +292,14 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       if (!cancelled) {
         acceptSourceEnvelope(envelope);
       }
-    }).then((listener) => {
+    }).then((subscription) => {
+      if (!subscription.ok) {
+        return;
+      }
       if (cancelled) {
-        listener();
+        subscription.unlisten();
       } else {
-        unlisten = listener;
+        unlisten = subscription.unlisten;
       }
     });
     return () => {
@@ -393,18 +396,16 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     }
     let cancelled = false;
     let unlisten: (() => void) | null = null;
-    const listenerSourceToken = sourceToken;
-
-    void desktopPlatform.onUnreadSummaryChanged((unreadSummary) => {
-      if (cancelled || !isSourceTokenCurrent(listenerSourceToken)) {
+    void desktopPlatform.onUnreadSummaryChanged((payload) => {
+      if (cancelled || !isSourceTokenCurrent(payload.sourceToken)) {
         return;
       }
-      setState((current) => isSourceTokenCurrent(listenerSourceToken) && current.liveRate
+      setState((current) => isSourceTokenCurrent(payload.sourceToken) && current.liveRate
         ? {
             ...current,
             liveRate: {
               ...current.liveRate,
-              unreadSummary,
+              unreadSummary: payload.summary,
             },
           }
         : current);
@@ -563,6 +564,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     generation: loadGeneration,
     quotaGeneration: quotaLoadGeneration,
     forceQuotaRefresh: forceNextQuotaLoad,
+    sourceToken,
     source,
     onPreciseDashboard: mergePreciseSnapshot,
     onUsageCacheInitialized: markUsageCacheInitialized,

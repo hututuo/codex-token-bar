@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCodexHome } from "../api/dashboardClient";
 import { desktopPlatform } from "../platform/desktop";
+import type { EventSubscriptionResult } from "../platform/desktopBridge";
 import {
   acceptDashboardSourceEnvelope,
   createDashboardSourceTransition,
@@ -13,10 +14,21 @@ import type {
 
 interface CompactPanelSourceDependencies {
   readCurrentSource: () => Promise<CodexHomeSourceEnvelope | null>;
+  scheduleReconcile?: (
+    refresh: () => Promise<void>,
+    intervalMs: number,
+  ) => () => void;
   subscribe: (
     handler: (envelope: CodexHomeSourceEnvelope) => void,
-  ) => Promise<() => void>;
+  ) => Promise<EventSubscriptionResult>;
 }
+
+export interface CompactPanelSourceState {
+  sourceReady: boolean;
+  sourceToken: CodexHomeSourceToken | null;
+}
+
+export const COMPACT_SOURCE_RECONCILE_INTERVAL_MS = 30_000;
 
 const DEFAULT_SOURCE_DEPENDENCIES: CompactPanelSourceDependencies = {
   readCurrentSource: getCodexHome,
@@ -24,52 +36,121 @@ const DEFAULT_SOURCE_DEPENDENCIES: CompactPanelSourceDependencies = {
 };
 
 export function useCompactPanelSource(
+  active: boolean,
   dependencies: CompactPanelSourceDependencies = DEFAULT_SOURCE_DEPENDENCIES,
-): CodexHomeSourceToken | null {
+): CompactPanelSourceState {
   const transitionRef = useRef<DashboardSourceTransition>(createDashboardSourceTransition());
   const [sourceToken, setSourceToken] = useState<CodexHomeSourceToken | null>(null);
+  const [activeSourceVerified, setActiveSourceVerified] = useState(false);
+  const activeRef = useRef(active);
+  activeRef.current = active;
 
   const acceptEnvelope = useCallback((envelope: CodexHomeSourceEnvelope) => {
     const result = acceptDashboardSourceEnvelope(transitionRef.current, envelope);
     if (!result.accepted) {
-      return;
+      return false;
     }
     transitionRef.current = result.transition;
     const acceptedToken = result.transition.sourceToken;
     setSourceToken((current) => sameCodexHomeSourceToken(current, acceptedToken)
       ? current
       : acceptedToken);
+    return true;
   }, []);
 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
+    let cancelReconcile: (() => void) | null = null;
+
+    async function refreshCurrentSource() {
+      const startedWhileActive = activeRef.current;
+      let envelope: CodexHomeSourceEnvelope | null;
+      try {
+        envelope = await dependencies.readCurrentSource();
+      } catch {
+        return;
+      }
+      if (disposed) {
+        return;
+      }
+      if (envelope === null || !acceptEnvelope(envelope)) {
+        return;
+      }
+      if (startedWhileActive && activeRef.current) {
+        setActiveSourceVerified(true);
+      }
+    }
 
     void (async () => {
-      const listener = await dependencies.subscribe((envelope) => {
+      const subscription = await dependencies.subscribe((envelope) => {
         if (!disposed) {
           acceptEnvelope(envelope);
         }
       });
       if (disposed) {
-        listener();
+        if (subscription.ok) {
+          subscription.unlisten();
+        }
         return;
       }
-      unlisten = listener;
-
-      const envelope = await dependencies.readCurrentSource();
-      if (!disposed && envelope !== null) {
-        acceptEnvelope(envelope);
+      if (subscription.ok) {
+        unlisten = subscription.unlisten;
+      } else {
+        const schedule = dependencies.scheduleReconcile ?? scheduleSourceReconcile;
+        cancelReconcile = schedule(
+          refreshCurrentSource,
+          COMPACT_SOURCE_RECONCILE_INTERVAL_MS,
+        );
       }
     })();
 
     return () => {
       disposed = true;
       unlisten?.();
+      cancelReconcile?.();
     };
   }, [acceptEnvelope, dependencies]);
 
-  return sourceToken;
+  useEffect(() => {
+    if (!active) {
+      setActiveSourceVerified(false);
+      return;
+    }
+
+    let cancelled = false;
+    setActiveSourceVerified(false);
+    void dependencies.readCurrentSource()
+      .then((envelope) => {
+        if (
+          !cancelled
+          && activeRef.current
+          && envelope !== null
+          && acceptEnvelope(envelope)
+        ) {
+          setActiveSourceVerified(true);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [acceptEnvelope, active, dependencies]);
+
+  return {
+    sourceReady: sourceToken !== null && (!active || activeSourceVerified),
+    sourceToken,
+  };
+}
+
+function scheduleSourceReconcile(
+  refresh: () => Promise<void>,
+  intervalMs: number,
+): () => void {
+  const timer = window.setInterval(() => {
+    void refresh();
+  }, intervalMs);
+  return () => window.clearInterval(timer);
 }
 
 export function codexHomeSourceTokenKey(token: CodexHomeSourceToken | null): string | null {

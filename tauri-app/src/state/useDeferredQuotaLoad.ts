@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
-import type { AccountQuotaBundle } from "../types/dashboard";
+import type { AccountQuotaBundle, CodexHomeSourceToken } from "../types/dashboard";
 
 interface DeferredQuotaLoadOptions {
   active: boolean;
@@ -8,6 +8,7 @@ interface DeferredQuotaLoadOptions {
   loading: boolean;
   generation: number;
   forceQuotaRefresh: boolean;
+  sourceToken: CodexHomeSourceToken | null;
   source: Pick<DashboardDataSource, "readAccountQuota">;
   onQuota: (quota: AccountQuotaBundle) => void;
   onForceQuotaRefreshConsumed: () => void;
@@ -21,6 +22,7 @@ export function useDeferredQuotaLoad({
   loading,
   generation,
   forceQuotaRefresh,
+  sourceToken,
   source,
   onQuota,
   onForceQuotaRefreshConsumed,
@@ -30,7 +32,13 @@ export function useDeferredQuotaLoad({
   const quotaGeneration = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!active || !dashboardReady || loading || quotaGeneration.current === generation) {
+    if (
+      !active
+      || !dashboardReady
+      || loading
+      || sourceToken === null
+      || quotaGeneration.current === generation
+    ) {
       return;
     }
 
@@ -38,12 +46,13 @@ export function useDeferredQuotaLoad({
     const isFirstQuotaLoad = quotaGeneration.current === null;
     quotaGeneration.current = generation;
     const shouldForceRefresh = forceQuotaRefresh;
+    const requestSourceToken = sourceToken;
     const delayMs = shouldForceRefresh || !isFirstQuotaLoad ? 0 : 5_000;
 
     async function loadQuota() {
       onLoadStart?.();
       try {
-        const quota = await source.readAccountQuota(shouldForceRefresh);
+        const quota = await source.readAccountQuota(requestSourceToken, shouldForceRefresh);
         if (!cancelled && quota !== null) {
           onQuota(quota);
         }
@@ -74,5 +83,6 @@ export function useDeferredQuotaLoad({
     onLoadStart,
     onQuota,
     source,
+    sourceToken,
   ]);
 }

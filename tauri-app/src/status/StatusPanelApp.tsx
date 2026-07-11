@@ -28,10 +28,10 @@ export function StatusPanelApp() {
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   const [acknowledgedUnreadSummary, setAcknowledgedUnreadSummary] = useState<UnreadSummary | null>(null);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
-  const sourceToken = useCompactPanelSource();
+  const { sourceReady, sourceToken } = useCompactPanelSource(active);
   const sourceTokenRef = useRef<CodexHomeSourceToken | null>(sourceToken);
   const { snapshot, quota } = useCompactPanelData({
-    active,
+    active: active && sourceReady,
     liveRateEnabled,
     liveRateOwnerToken: "status-live-rate",
     quotaInitialDelayMs: 0,
@@ -115,11 +115,9 @@ export function StatusPanelApp() {
     }
     let disposed = false;
     let unlisten: (() => void) | null = null;
-    const listenerSourceToken = sourceToken;
-
     void desktopPlatform.onUnreadSummaryChanged((payload) => {
-      if (!disposed && sameCodexHomeSourceToken(sourceTokenRef.current, listenerSourceToken)) {
-        setAcknowledgedUnreadSummary(payload);
+      if (!disposed && sameCodexHomeSourceToken(sourceTokenRef.current, payload.sourceToken)) {
+        setAcknowledgedUnreadSummary(payload.summary);
       }
     }).then((handler) => {
       if (disposed) {
@@ -191,7 +189,10 @@ export function StatusPanelApp() {
         return;
       }
       setAcknowledgedUnreadSummary(summary);
-      void desktopPlatform.publishUnreadSummaryChanged(summary);
+      void desktopPlatform.publishUnreadSummaryChanged({
+        sourceToken: acknowledgedSourceToken,
+        summary,
+      });
     });
   }
 

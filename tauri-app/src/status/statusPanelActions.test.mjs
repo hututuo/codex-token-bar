@@ -25,9 +25,9 @@ test("Unread acknowledgement publishes to the shared compact panel and dashboard
   assert.match(desktopEvents, /onUnreadSummaryChanged/);
   assert.match(desktopPlatform, /publishUnreadSummaryChanged/);
   assert.match(desktopPlatform, /onUnreadSummaryChanged/);
-  assert.match(dashboardActions, /publishUnreadSummaryChanged\(unreadSummary\)/);
+  assert.match(dashboardActions, /publishUnreadSummaryChanged\(\{[\s\S]*sourceToken,[\s\S]*summary: unreadSummary/);
   assert.match(dashboardData, /onUnreadSummaryChanged/);
   assert.match(compactSnapshot, /onUnreadSummaryChanged/);
-  assert.match(compactSnapshot, /unreadSummary: summary/);
-  assert.match(compactSnapshot, /unread: summary\.active/);
+  assert.match(compactSnapshot, /codexHomeSourceTokenKey\(payload\.sourceToken\) === requestSourceKey/);
+  assert.match(compactSnapshot, /applyUnreadSummary\(payload\.summary\)/);
 });

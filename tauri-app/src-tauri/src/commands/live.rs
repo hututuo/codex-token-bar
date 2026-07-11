@@ -1,10 +1,9 @@
 use super::window_auth::require_window_label;
 use crate::commands::dashboard::{
-    capture_codex_home_source, claim_codex_home_source_transition,
-    finish_codex_home_source_transition_claim, pin_captured_codex_home_source,
-    validate_captured_codex_home_source, validate_codex_home_source,
-    with_valid_codex_home_source, CapturedCodexHomeSource, CodexHomeSourceToken,
-    CODEX_HOME_SOURCE_CHANGED_EVENT,
+    capture_codex_home_source, emit_detected_source_transition,
+    pin_captured_codex_home_source, validate_captured_codex_home_source,
+    validate_codex_home_source, with_valid_codex_home_source, CapturedCodexHomeSource,
+    CodexHomeSourceToken,
 };
 use crate::core::{
     live_rate::{self, LiveRateMonitorService, LiveRateSourceScope},
@@ -704,20 +703,6 @@ fn unread_retry_backoff(failed_attempts: u32) -> Duration {
     Duration::from_secs(
         (UNREAD_REFRESH_RETRY_BACKOFF.as_secs() * multiplier).min(30),
     )
-}
-
-fn emit_detected_source_transition(app: &AppHandle) -> Result<bool, String> {
-    let Some(claim) = claim_codex_home_source_transition()? else {
-        return Ok(false);
-    };
-    let publish_result = serde_json::to_string(&claim.envelope)
-        .map_err(|error| error.to_string())
-        .and_then(|payload| {
-            app.emit_str(CODEX_HOME_SOURCE_CHANGED_EVENT, payload)
-                .map_err(|error| error.to_string())
-        });
-    finish_codex_home_source_transition_claim(&claim, publish_result.is_ok())?;
-    publish_result.map(|_| true)
 }
 
 fn active_subscriptions(

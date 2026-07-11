@@ -1,4 +1,5 @@
 import type { LocalDataWarning } from "./diagnostics";
+import type { CodexHomeSourceToken } from "./platform";
 
 export interface LiveRateSnapshot {
   scopeLabel: string;
@@ -57,4 +58,9 @@ export interface UnreadSummary {
   label: string;
   detail: string;
   source: string;
+}
+
+export interface UnreadSummaryChangedPayload {
+  sourceToken: CodexHomeSourceToken;
+  summary: UnreadSummary;
 }

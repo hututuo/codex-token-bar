@@ -5,7 +5,7 @@ import type {
   CodexHomeSourceEnvelope,
   DisplaySurfaceSettings,
   LiveRateSnapshot,
-  UnreadSummary,
+  UnreadSummaryChangedPayload,
 } from "../types/dashboard";
 import {
   emitPlatformEvent,
@@ -41,12 +41,14 @@ export function onLiveRateSnapshot(handler: (snapshot: LiveRateSnapshot) => void
   return listenToEvent<LiveRateSnapshot>(LIVE_RATE_SNAPSHOT_EVENT, handler);
 }
 
-export function publishUnreadSummaryChanged(summary: UnreadSummary): Promise<boolean> {
-  return emitPlatformEvent(UNREAD_SUMMARY_CHANGED_EVENT, "publish-unread-summary", summary);
+export function publishUnreadSummaryChanged(payload: UnreadSummaryChangedPayload): Promise<boolean> {
+  return emitPlatformEvent(UNREAD_SUMMARY_CHANGED_EVENT, "publish-unread-summary", payload);
 }
 
-export function onUnreadSummaryChanged(handler: (summary: UnreadSummary) => void): Promise<Unlisten> {
-  return listenToEvent<UnreadSummary>(UNREAD_SUMMARY_CHANGED_EVENT, handler);
+export function onUnreadSummaryChanged(
+  handler: (payload: UnreadSummaryChangedPayload) => void,
+): Promise<Unlisten> {
+  return listenToEvent<UnreadSummaryChangedPayload>(UNREAD_SUMMARY_CHANGED_EVENT, handler);
 }
 
 export function publishFloatingSettings(settings: FloatingWindowSettings): Promise<boolean> {
@@ -75,6 +77,6 @@ export function onAppSettingsChanged(handler: (settings: AppSettingsSnapshot) =>
 
 export function onCodexHomeSourceChanged(
   handler: (envelope: CodexHomeSourceEnvelope) => void,
-): Promise<Unlisten> {
-  return listenToEvent<CodexHomeSourceEnvelope>(CODEX_HOME_SOURCE_CHANGED_EVENT, handler);
+): Promise<EventSubscriptionResult> {
+  return listenToEventResult<CodexHomeSourceEnvelope>(CODEX_HOME_SOURCE_CHANGED_EVENT, handler);
 }

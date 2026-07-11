@@ -1,6 +1,7 @@
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type {
   AccountQuotaBundle,
+  CodexHomeSourceToken,
   DashboardSnapshot,
   LiveThreadOption,
   UsageCacheStatus,
@@ -16,6 +17,7 @@ interface DeferredDashboardLoadsOptions {
   generation: number;
   quotaGeneration: number;
   forceQuotaRefresh: boolean;
+  sourceToken: CodexHomeSourceToken | null;
   source: Pick<
     DashboardDataSource,
     | "readPreciseDashboardSnapshot"
@@ -40,6 +42,7 @@ export function useDeferredDashboardLoads({
   generation,
   quotaGeneration,
   forceQuotaRefresh,
+  sourceToken,
   source,
   onPreciseDashboard,
   onUsageCacheInitialized,
@@ -74,6 +77,7 @@ export function useDeferredDashboardLoads({
     onLoadEnd: onRefreshTaskEnd,
     onLoadStart: onRefreshTaskStart,
     source,
+    sourceToken,
   });
 
   useLiveThreadOptionsLoad({

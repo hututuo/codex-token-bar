@@ -126,7 +126,10 @@ export function useDashboardActions({
           },
         }
       : current);
-    void desktopPlatform.publishUnreadSummaryChanged(unreadSummary);
+    void desktopPlatform.publishUnreadSummaryChanged({
+      sourceToken,
+      summary: unreadSummary,
+    });
   }, [captureSourceToken, isSourceTokenCurrent, setState, source]);
 
   const applyCommittedSourceEnvelope = useCallback((

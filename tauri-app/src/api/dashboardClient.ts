@@ -1,6 +1,7 @@
 import type {
   AccountQuotaBundle,
   CodexHomeSourceEnvelope,
+  CodexHomeSourceToken,
   DashboardSnapshot,
   PlatformCapabilities,
   UsageSummarySnapshot,
@@ -36,8 +37,10 @@ export function readPreciseDashboardSnapshot(): Promise<DashboardSnapshot | null
   return callCommandOptional("read_precise_dashboard_snapshot", undefined, 30_000);
 }
 
-export function readUsageSummarySnapshot(): Promise<UsageSummarySnapshot | null> {
-  return callCommandOptional("read_usage_summary_snapshot", undefined, 8_000);
+export function readUsageSummarySnapshot(
+  sourceToken: CodexHomeSourceToken,
+): Promise<UsageSummarySnapshot | null> {
+  return callCommandOptional("read_usage_summary_snapshot", { sourceToken }, 8_000);
 }
 
 export function readUsageCacheStatus(): Promise<UsageCacheStatus> {
@@ -48,10 +51,13 @@ export function readUsageCacheStatus(): Promise<UsageCacheStatus> {
   });
 }
 
-export function readAccountQuota(forceRefresh = false): Promise<AccountQuotaBundle | null> {
+export function readAccountQuota(
+  sourceToken: CodexHomeSourceToken,
+  forceRefresh = false,
+): Promise<AccountQuotaBundle | null> {
   return callCommandOptional(
     "read_account_quota",
-    { forceRefresh },
+    { forceRefresh, sourceToken },
     90_000,
   );
 }

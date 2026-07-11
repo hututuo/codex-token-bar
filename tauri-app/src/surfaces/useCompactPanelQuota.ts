@@ -19,7 +19,9 @@ type QuotaReader = (
   sourceToken: CodexHomeSourceToken,
 ) => ReturnType<typeof readAccountQuota>;
 
-const defaultQuotaReader: QuotaReader = (forceRefresh) => readAccountQuota(forceRefresh);
+const defaultQuotaReader: QuotaReader = (forceRefresh, sourceToken) => (
+  readAccountQuota(sourceToken, forceRefresh)
+);
 
 export function useCompactPanelQuota({
   active,

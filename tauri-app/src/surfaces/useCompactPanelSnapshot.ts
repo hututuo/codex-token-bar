@@ -57,7 +57,7 @@ interface CompactPanelSnapshotDependencies {
 const DEFAULT_SNAPSHOT_DEPENDENCIES: CompactPanelSnapshotDependencies = {
   platform: desktopPlatform,
   readInitialLiveRate: readLiveRateSnapshotStrict,
-  readUsageSummary: () => readUsageSummarySnapshot(),
+  readUsageSummary: (sourceToken) => readUsageSummarySnapshot(sourceToken),
 };
 
 const COMPACT_USAGE_SUMMARY_REFRESH_INTERVAL_MS = 60_000;
@@ -311,9 +311,13 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
       }));
     };
 
-    void dependencies.platform.onUnreadSummaryChanged((summary) => {
-      if (!cancelled && sourceKeyRef.current === requestSourceKey) {
-        applyUnreadSummary(summary);
+    void dependencies.platform.onUnreadSummaryChanged((payload) => {
+      if (
+        !cancelled
+        && sourceKeyRef.current === requestSourceKey
+        && codexHomeSourceTokenKey(payload.sourceToken) === requestSourceKey
+      ) {
+        applyUnreadSummary(payload.summary);
       }
     }).then((listener) => {
       if (cancelled) {

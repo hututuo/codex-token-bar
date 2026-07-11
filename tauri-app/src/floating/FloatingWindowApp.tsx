@@ -28,9 +28,9 @@ export function FloatingWindowApp() {
   );
   const [liveRateEnabled, setLiveRateEnabled] = useState(true);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
-  const sourceToken = useCompactPanelSource();
+  const { sourceReady, sourceToken } = useCompactPanelSource(surfaceLifecycle.active);
   const { snapshot } = useCompactPanelData({
-    active: surfaceLifecycle.active,
+    active: surfaceLifecycle.active && sourceReady,
     liveRateEnabled,
     liveRateOwnerToken: "floating-live-rate",
     quotaInitialDelayMs: 0,
@@ -38,7 +38,7 @@ export function FloatingWindowApp() {
     sourceToken,
   });
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
-  const radarSnapshot = useFloatingRadar(surfaceLifecycle.active);
+  const radarSnapshot = useFloatingRadar(surfaceLifecycle.active && sourceReady);
   useFloatingWindowPlacement();
 
   useEffect(() => {
