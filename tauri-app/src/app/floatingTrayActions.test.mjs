@@ -13,7 +13,7 @@ test("floating panel double click opens dashboard instead of starting a drag", a
   assert.match(floatingPanel, /onDoubleClick=\{onOpenDashboard\}/);
 });
 
-test("status tray left click opens dashboard and right click menu can quit", async () => {
+test("status tray left click toggles status panel while its menu opens dashboard or quits", async () => {
   const surfaces = await readFile(new URL("../../src-tauri/src/platform/surfaces.rs", import.meta.url), "utf8");
 
   assert.match(surfaces, /const STATUS_TRAY_SHOW_DASHBOARD_ID/);
@@ -22,7 +22,8 @@ test("status tray left click opens dashboard and right click menu can quit", asy
   assert.match(surfaces, /MenuItem::with_id\(app,\s*STATUS_TRAY_QUIT_ID,\s*"退出"/);
   assert.match(surfaces, /\.menu\(&menu\)/);
   assert.match(surfaces, /\.show_menu_on_left_click\(false\)/);
-  assert.match(surfaces, /button: MouseButton::Left[\s\S]*?show_dashboard_window\(tray\.app_handle\(\)\)/);
-  assert.doesNotMatch(surfaces, /button: MouseButton::Left[\s\S]*?toggle_status_panel_window\(tray\.app_handle\(\)\)/);
+  assert.match(surfaces, /button: MouseButton::Left[\s\S]*?toggle_status_panel_at_tray/);
+  assert.match(surfaces, /event_id == STATUS_TRAY_SHOW_DASHBOARD_ID[\s\S]*?show_dashboard_window\(app\)/);
+  assert.doesNotMatch(surfaces, /event_id == STATUS_TRAY_SHOW_DASHBOARD_ID[\s\S]*?show_status_panel_at_tray\(app/);
   assert.match(surfaces, /app\.exit\(0\)/);
 });

@@ -8,7 +8,8 @@ use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     webview::PageLoadEvent,
-    Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    Emitter, LogicalSize, Manager, PhysicalPosition, Position, Size, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
 };
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
@@ -28,6 +29,29 @@ const STATUS_PANEL_HEIGHT: f64 = 236.0;
 const STATUS_TRAY_ID: &str = "codex-token-bar-status";
 const STATUS_TRAY_SHOW_DASHBOARD_ID: &str = "status-tray-show-dashboard";
 const STATUS_TRAY_QUIT_ID: &str = "status-tray-quit";
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PhysicalBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+enum StatusPanelAnchor {
+    Below,
+    Above,
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusPanelToggleAction {
+    Show,
+    Hide,
+}
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SurfaceSetupStatus {
@@ -166,6 +190,10 @@ pub fn show_dashboard_window(app: &tauri::AppHandle) -> Result<bool, String> {
 }
 
 pub fn show_status_panel_window(app: &tauri::AppHandle) -> Result<bool, String> {
+    show_status_panel_at_tray(app, None)
+}
+
+fn show_status_panel_at_tray(app: &tauri::AppHandle, tray_bounds: Option<PhysicalBounds>) -> Result<bool, String> {
     if app.get_webview_window("status").is_none() {
         create_status_panel_window(app).map_err(|error| {
             let message = error.to_string();
@@ -177,9 +205,150 @@ pub fn show_status_panel_window(app: &tauri::AppHandle) -> Result<bool, String> 
     let window = app
         .get_webview_window("status")
         .ok_or_else(|| "status panel is not available".to_string())?;
+    position_status_panel(app, &window, tray_bounds)?;
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
     Ok(true)
+}
+
+fn toggle_status_panel_at_tray(app: &tauri::AppHandle, tray_bounds: PhysicalBounds) -> Result<bool, String> {
+    let is_visible = app
+        .get_webview_window("status")
+        .map(|window| window.is_visible().map_err(|error| error.to_string()))
+        .transpose()?
+        .unwrap_or(false);
+    if status_panel_toggle_action(is_visible) == StatusPanelToggleAction::Hide {
+        return hide_status_panel_window(app);
+    }
+    show_status_panel_at_tray(app, Some(tray_bounds))
+}
+
+fn status_panel_toggle_action(is_visible: bool) -> StatusPanelToggleAction {
+    if is_visible {
+        StatusPanelToggleAction::Hide
+    } else {
+        StatusPanelToggleAction::Show
+    }
+}
+
+fn position_status_panel(
+    app: &tauri::AppHandle,
+    window: &WebviewWindow,
+    tray_bounds: Option<PhysicalBounds>,
+) -> Result<(), String> {
+    let tray_monitor = tray_bounds.and_then(|tray| {
+        app.monitor_from_point(tray.x + tray.width / 2.0, tray.y + tray.height / 2.0)
+            .ok()
+            .flatten()
+    });
+    let usable_tray_bounds = tray_monitor.as_ref().and(tray_bounds);
+    let monitor = tray_monitor
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten())
+        .ok_or_else(|| "no monitor is available for the status panel".to_string())?;
+
+    let work_area = monitor.work_area();
+    let work_bounds = PhysicalBounds {
+        x: work_area.position.x as f64,
+        y: work_area.position.y as f64,
+        width: work_area.size.width as f64,
+        height: work_area.size.height as f64,
+    };
+    let scale_factor = monitor.scale_factor();
+    let panel_size = LogicalSize::new(STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT).to_physical::<f64>(scale_factor);
+    let panel_size = (panel_size.width, panel_size.height);
+    let position = if let Some(tray) = usable_tray_bounds {
+        status_panel_position(tray, work_bounds, panel_size, status_panel_anchor_for_monitor(&monitor))
+    } else {
+        safe_status_panel_position(work_bounds, panel_size)
+    };
+    window
+        .set_position(PhysicalPosition::new(
+            position.0.round() as i32,
+            position.1.round() as i32,
+        ))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn status_panel_anchor_for_monitor(monitor: &tauri::Monitor) -> StatusPanelAnchor {
+    let position = monitor.position();
+    let size = monitor.size();
+    let work = monitor.work_area();
+    let insets = [
+        (work.position.y - position.y, StatusPanelAnchor::Below),
+        (
+            position.y + size.height as i32 - work.position.y - work.size.height as i32,
+            StatusPanelAnchor::Above,
+        ),
+        (work.position.x - position.x, StatusPanelAnchor::Right),
+        (
+            position.x + size.width as i32 - work.position.x - work.size.width as i32,
+            StatusPanelAnchor::Left,
+        ),
+    ];
+    insets
+        .into_iter()
+        .max_by_key(|(inset, _)| *inset)
+        .filter(|(inset, _)| *inset > 0)
+        .map(|(_, anchor)| anchor)
+        .unwrap_or(StatusPanelAnchor::Below)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn status_panel_anchor_for_monitor(_monitor: &tauri::Monitor) -> StatusPanelAnchor {
+    StatusPanelAnchor::Below
+}
+
+fn status_panel_position(
+    tray: PhysicalBounds,
+    work: PhysicalBounds,
+    panel: (f64, f64),
+    anchor: StatusPanelAnchor,
+) -> (f64, f64) {
+    let centered_x = tray.x + (tray.width - panel.0) / 2.0;
+    let centered_y = tray.y + (tray.height - panel.1) / 2.0;
+    let desired = match anchor {
+        StatusPanelAnchor::Below => (centered_x, tray.y + tray.height),
+        StatusPanelAnchor::Above => (centered_x, tray.y - panel.1),
+        StatusPanelAnchor::Left => (tray.x - panel.0, centered_y),
+        StatusPanelAnchor::Right => (tray.x + tray.width, centered_y),
+    };
+    clamp_status_panel_position(desired, work, panel)
+}
+
+fn safe_status_panel_position(work: PhysicalBounds, panel: (f64, f64)) -> (f64, f64) {
+    clamp_status_panel_position(
+        (
+            work.x + (work.width - panel.0) / 2.0,
+            work.y + (work.height - panel.1) / 2.0,
+        ),
+        work,
+        panel,
+    )
+}
+
+fn clamp_status_panel_position(desired: (f64, f64), work: PhysicalBounds, panel: (f64, f64)) -> (f64, f64) {
+    let max_x = (work.x + work.width - panel.0).max(work.x);
+    let max_y = (work.y + work.height - panel.1).max(work.y);
+    (desired.0.clamp(work.x, max_x), desired.1.clamp(work.y, max_y))
+}
+
+fn physical_tray_bounds(rect: tauri::Rect, scale_factor: f64) -> PhysicalBounds {
+    let position = match rect.position {
+        Position::Physical(position) => position.cast::<f64>(),
+        Position::Logical(position) => position.to_physical::<f64>(scale_factor),
+    };
+    let size = match rect.size {
+        Size::Physical(size) => size.cast::<f64>(),
+        Size::Logical(size) => size.to_physical::<f64>(scale_factor),
+    };
+    PhysicalBounds {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    }
 }
 
 pub fn hide_status_panel_window(app: &tauri::AppHandle) -> Result<bool, String> {
@@ -251,12 +420,21 @@ fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
+                position,
+                rect,
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 ..
             } = event
             {
-                let _ = show_dashboard_window(tray.app_handle());
+                let app = tray.app_handle();
+                let scale_factor = app
+                    .monitor_from_point(position.x, position.y)
+                    .ok()
+                    .flatten()
+                    .map(|monitor| monitor.scale_factor())
+                    .unwrap_or(1.0);
+                let _ = toggle_status_panel_at_tray(app, physical_tray_bounds(rect, scale_factor));
             }
         });
 
@@ -620,7 +798,6 @@ fn create_status_panel_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     )
     .title("Codex Token Bar Status")
     .inner_size(STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT)
-    .position(84.0, 80.0)
     .decorations(false)
     .resizable(false)
     .focused(false)
@@ -674,5 +851,78 @@ mod tests {
         .expect_err("failed hide");
         assert_eq!(error, "hide failed");
         assert_eq!(published, vec![true]);
+    }
+
+    fn bounds(x: f64, y: f64, width: f64, height: f64) -> PhysicalBounds {
+        PhysicalBounds { x, y, width, height }
+    }
+
+    #[test]
+    fn status_panel_supports_all_taskbar_edges() {
+        let work = bounds(0.0, 0.0, 1920.0, 1040.0);
+        let panel = (336.0, 236.0);
+        assert_eq!(
+            status_panel_position(bounds(900.0, 0.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Below),
+            (744.0, 24.0)
+        );
+        assert_eq!(
+            status_panel_position(bounds(900.0, 1016.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Above),
+            (744.0, 780.0)
+        );
+        assert_eq!(
+            status_panel_position(bounds(0.0, 500.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Right),
+            (24.0, 394.0)
+        );
+        assert_eq!(
+            status_panel_position(bounds(1896.0, 500.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Left),
+            (1560.0, 394.0)
+        );
+    }
+
+    #[test]
+    fn status_panel_clamps_on_negative_multimonitor_work_area() {
+        let work = bounds(-1920.0, -120.0, 1920.0, 1080.0);
+        assert_eq!(
+            status_panel_position(
+                bounds(-20.0, -120.0, 20.0, 20.0),
+                work,
+                (336.0, 236.0),
+                StatusPanelAnchor::Below
+            ),
+            (-336.0, -100.0)
+        );
+    }
+
+    #[test]
+    fn status_panel_uses_physical_panel_size_and_clamps_oversize_panels() {
+        let work = bounds(2560.0, 0.0, 2560.0, 1440.0);
+        assert_eq!(
+            status_panel_position(
+                bounds(3800.0, 0.0, 40.0, 40.0),
+                work,
+                (672.0, 472.0),
+                StatusPanelAnchor::Below
+            ),
+            (3484.0, 40.0)
+        );
+        assert_eq!(
+            safe_status_panel_position(bounds(-800.0, 0.0, 800.0, 600.0), (900.0, 700.0)),
+            (-800.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn logical_tray_rect_converts_once_to_physical_pixels() {
+        let rect = tauri::Rect {
+            position: Position::Logical((10.0, -20.0).into()),
+            size: Size::Logical((18.0, 22.0).into()),
+        };
+        assert_eq!(physical_tray_bounds(rect, 2.0), bounds(20.0, -40.0, 36.0, 44.0));
+    }
+
+    #[test]
+    fn status_panel_toggle_hides_visible_and_shows_hidden_panel() {
+        assert_eq!(status_panel_toggle_action(true), StatusPanelToggleAction::Hide);
+        assert_eq!(status_panel_toggle_action(false), StatusPanelToggleAction::Show);
     }
 }
