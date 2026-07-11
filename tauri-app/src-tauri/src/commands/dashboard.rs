@@ -22,6 +22,8 @@ static PINNED_SOURCE_SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static PINNED_SOURCE_SESSION_FILES_COPIED: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static PINNED_SOURCE_SNAPSHOTS_CREATED: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static PINNED_SOURCE_DB_FILES_COPIED: AtomicU64 = AtomicU64::new(0);
 
 const PINNED_SESSION_FILE_LIMIT: usize = 64;
 const PINNED_SESSION_FIRST_LINE_LIMIT: u64 = 262_144;
@@ -341,15 +343,17 @@ fn snapshot_pinned_unread_source(root: &std::fs::File) -> Result<PathBuf, String
     #[cfg(test)]
     PINNED_SOURCE_SNAPSHOTS_CREATED.fetch_add(1, Ordering::Relaxed);
     let result = (|| {
-        for file_name in [
+        copy_optional_pinned_file(
+            root,
             ".codex-global-state.json",
-            "state_5.sqlite",
-            "state_5.sqlite-wal",
-            "state_5.sqlite-shm",
-        ] {
-            copy_optional_pinned_entry(root, file_name, &snapshot.join(file_name))?;
+            &snapshot.join(".codex-global-state.json"),
+        )?;
+        if pinned_state_has_native_unread_ids(&snapshot)? {
+            for file_name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
+                copy_optional_pinned_file(root, file_name, &snapshot.join(file_name))?;
+            }
+            validate_pinned_state_database(&snapshot)?;
         }
-        validate_pinned_state_database(&snapshot)?;
         copy_recent_pinned_sessions(root, &snapshot.join("sessions"))?;
         Ok::<(), String>(())
     })();
@@ -365,6 +369,33 @@ fn snapshot_pinned_unread_source(root: &std::fs::File) -> Result<PathBuf, String
         return Err("pinned Codex Home stopped being a directory".into());
     }
     Ok(snapshot)
+}
+
+#[cfg(unix)]
+fn pinned_state_has_native_unread_ids(snapshot: &Path) -> Result<bool, String> {
+    let path = snapshot.join(".codex-global-state.json");
+    let data = match std::fs::read(path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("failed to read pinned native unread state: {error}")),
+    };
+    let value: serde_json::Value = serde_json::from_slice(&data)
+        .map_err(|error| format!("pinned native unread state JSON is invalid: {error}"))?;
+    let unread = value
+        .get("electron-persisted-atom-state")
+        .and_then(|state| state.get("unread-thread-ids-by-host-v1"))
+        .or_else(|| value.get("unread-thread-ids-by-host-v1"));
+    Ok(unread.is_some_and(value_contains_thread_id))
+}
+
+#[cfg(unix)]
+fn value_contains_thread_id(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => text.len() >= 24 && text.contains('-'),
+        serde_json::Value::Array(items) => items.iter().any(value_contains_thread_id),
+        serde_json::Value::Object(map) => map.values().any(value_contains_thread_id),
+        _ => false,
+    }
 }
 
 #[cfg(unix)]
@@ -431,7 +462,7 @@ fn collect_recent_pinned_session_candidates<Fd: std::os::fd::AsFd>(
     parent: Fd,
     relative_root: &Path,
     cutoff: i64,
-    candidates: &mut Vec<(PathBuf, i64)>,
+    candidates: &mut Vec<(PathBuf, (i64, i64))>,
 ) -> Result<(), String> {
     use rustix::fs::{openat, statat, AtFlags, Dir, FileType, Mode, OFlags};
     use std::ffi::OsStr;
@@ -472,7 +503,10 @@ fn collect_recent_pinned_session_candidates<Fd: std::os::fd::AsFd>(
                     .ends_with(".jsonl")
                     && stat.st_mtime >= cutoff
                 {
-                    candidates.push((relative_root.join(child_name), stat.st_mtime));
+                    candidates.push((
+                        relative_root.join(child_name),
+                        (stat.st_mtime, stat.st_mtime_nsec),
+                    ));
                 }
             }
             FileType::Symlink => {
@@ -551,6 +585,7 @@ fn copy_pinned_session_candidate(
 pub(crate) fn reset_pinned_source_copy_count_for_test() {
     PINNED_SOURCE_SESSION_FILES_COPIED.store(0, Ordering::Relaxed);
     PINNED_SOURCE_SNAPSHOTS_CREATED.store(0, Ordering::Relaxed);
+    PINNED_SOURCE_DB_FILES_COPIED.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -563,15 +598,18 @@ pub(crate) fn pinned_source_snapshot_count_for_test() -> u64 {
     PINNED_SOURCE_SNAPSHOTS_CREATED.load(Ordering::Relaxed)
 }
 
+#[cfg(test)]
+pub(crate) fn pinned_source_db_copy_count_for_test() -> u64 {
+    PINNED_SOURCE_DB_FILES_COPIED.load(Ordering::Relaxed)
+}
+
 #[cfg(unix)]
-fn copy_optional_pinned_entry<Fd: std::os::fd::AsFd>(
+fn copy_optional_pinned_file<Fd: std::os::fd::AsFd>(
     parent: Fd,
     name: &str,
     destination: &Path,
 ) -> Result<(), String> {
-    use rustix::fs::{openat, statat, AtFlags, Dir, FileType, Mode, OFlags};
-    use std::ffi::OsStr;
-    use std::os::unix::ffi::OsStrExt;
+    use rustix::fs::{openat, statat, AtFlags, FileType, Mode, OFlags};
 
     let stat = match statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(stat) => stat,
@@ -595,39 +633,13 @@ fn copy_optional_pinned_entry<Fd: std::os::fd::AsFd>(
             })?;
             std::io::copy(&mut source, &mut target)
                 .map_err(|error| format!("failed to copy pinned unread file {name}: {error}"))?;
-            Ok(())
-        }
-        FileType::Directory => {
-            std::fs::create_dir(destination).map_err(|error| {
-                format!("failed to create pinned unread snapshot directory {name}: {error}")
-            })?;
-            let fd = openat(
-                &parent,
-                name,
-                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::DIRECTORY,
-                Mode::empty(),
-            )
-            .map_err(|error| format!("failed to open pinned unread directory {name}: {error}"))?;
-            let mut directory = Dir::read_from(&fd)
-                .map_err(|error| format!("failed to enumerate pinned unread directory {name}: {error}"))?;
-            while let Some(entry) = directory.read() {
-                let entry = entry.map_err(|error| {
-                    format!("failed to enumerate pinned unread directory {name}: {error}")
-                })?;
-                let bytes = entry.file_name().to_bytes();
-                if bytes == b"." || bytes == b".." {
-                    continue;
-                }
-                let child_name = OsStr::from_bytes(bytes);
-                let child_name_text = child_name.to_string_lossy();
-                copy_optional_pinned_entry(
-                    &fd,
-                    child_name_text.as_ref(),
-                    &destination.join(child_name),
-                )?;
+            #[cfg(test)]
+            if name.starts_with("state_5.sqlite") {
+                PINNED_SOURCE_DB_FILES_COPIED.fetch_add(1, Ordering::Relaxed);
             }
             Ok(())
         }
+        FileType::Directory => Err(format!("pinned unread file {name} is a directory")),
         FileType::Symlink => Err(format!(
             "pinned unread entry {name} is a symlink and was rejected"
         )),
@@ -1672,6 +1684,62 @@ mod tests {
         };
 
         assert!(error.contains("requires state_5.sqlite"), "{error}");
+        remove_source_test_directory(home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_native_state_never_copies_large_sqlite_files() {
+        let home = disposable_source_test_directory("empty-state-skips-db");
+        std::fs::write(
+            home.join(".codex-global-state.json"),
+            r#"{"unread-thread-ids-by-host-v1":{"localhost":[]}}"#,
+        )
+        .unwrap();
+        std::fs::write(home.join("state_5.sqlite"), vec![0u8; 2 * 1024 * 1024]).unwrap();
+        std::fs::write(home.join("state_5.sqlite-wal"), vec![0u8; 1024 * 1024]).unwrap();
+        let mut transition = CodexHomeTransitionState::default();
+        let source = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
+            .unwrap();
+        reset_pinned_source_copy_count_for_test();
+
+        let pinned = pin_captured_codex_home_source(&captured).unwrap();
+
+        assert_eq!(pinned_source_db_copy_count_for_test(), 0);
+        assert!(!pinned.read_path().join("state_5.sqlite").exists());
+        remove_source_test_directory(home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_sqlite_directory_is_rejected_as_a_non_file() {
+        let home = disposable_source_test_directory("sqlite-directory");
+        std::fs::write(
+            home.join(".codex-global-state.json"),
+            r#"{"unread-thread-ids-by-host-v1":{"localhost":["019eaaaa-0000-0000-0000-0000000000aa"]}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir(home.join("state_5.sqlite")).unwrap();
+        let mut transition = CodexHomeTransitionState::default();
+        let source = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
+            .unwrap();
+
+        let error = match pin_captured_codex_home_source(&captured) {
+            Ok(_) => panic!("SQLite directory must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("is a directory"), "{error}");
         remove_source_test_directory(home);
     }
 

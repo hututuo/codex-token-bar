@@ -23,7 +23,8 @@ const LIVE_RATE_SNAPSHOT_EVENT: &str = "live-rate-snapshot";
 const FAST_STREAM_INTERVAL: Duration = Duration::from_millis(250);
 const IDLE_STREAM_INTERVAL: Duration = Duration::from_secs(1);
 const ACTIVE_STREAM_HOLD: Duration = Duration::from_secs(10);
-const UNREAD_OBSERVATION_CADENCE: Duration = Duration::from_secs(5);
+const UNREAD_OBSERVATION_CADENCE: Duration = Duration::from_secs(15);
+const UNREAD_REFRESH_RETRY_BACKOFF: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Default)]
 pub struct LiveRateMonitorRegistry {
@@ -36,6 +37,9 @@ pub struct LiveRateMonitorRegistry {
 struct CachedUnreadSummary {
     summary: UnreadSummary,
     refreshed_at: Instant,
+    last_attempt: Instant,
+    retry_after: Option<Instant>,
+    failed_attempts: u32,
 }
 
 #[derive(Default)]
@@ -107,6 +111,22 @@ impl LiveRateMonitorRegistry {
         force_refresh: bool,
         validate_before_write: impl FnOnce() -> Result<(), String>,
     ) -> Result<UnreadSummary, String> {
+        self.unread_summary_for_source_with_refresh(captured, force_refresh, || {
+            let pinned = pin_captured_codex_home_source(captured)?;
+            unread::try_read_unread_summary_for_source(
+                pinned.read_path(),
+                &pinned.source_scope_key,
+                validate_before_write,
+            )
+        })
+    }
+
+    fn unread_summary_for_source_with_refresh(
+        &self,
+        captured: &CapturedCodexHomeSource,
+        force_refresh: bool,
+        refresh: impl FnOnce() -> Result<UnreadSummary, String>,
+    ) -> Result<UnreadSummary, String> {
         let source_scope_key = format!(
             "{}|{}",
             captured.source_token.canonical_home_key,
@@ -118,21 +138,42 @@ impl LiveRateMonitorRegistry {
                 if cached.refreshed_at.elapsed() < UNREAD_OBSERVATION_CADENCE {
                     return Ok(cached.summary.clone());
                 }
+                if cached
+                    .retry_after
+                    .is_some_and(|retry_after| Instant::now() < retry_after)
+                {
+                    return Ok(stale_unread_summary(
+                        &cached.summary,
+                        "refresh retry is backing off",
+                    ));
+                }
             }
         }
-        let pinned = pin_captured_codex_home_source(captured)?;
-        let summary = unread::try_read_unread_summary_for_source(
-            pinned.read_path(),
-            &pinned.source_scope_key,
-            validate_before_write,
-        )?;
+        let attempted_at = Instant::now();
+        let summary = match refresh() {
+            Ok(summary) => summary,
+            Err(error) if !force_refresh => {
+                let mut cache = self.unread_cache.lock().map_err(|lock| lock.to_string())?;
+                if let Some(cached) = cache.get_mut(&source_scope_key) {
+                    cached.last_attempt = attempted_at;
+                    cached.failed_attempts = cached.failed_attempts.saturating_add(1);
+                    cached.retry_after = Some(attempted_at + UNREAD_REFRESH_RETRY_BACKOFF);
+                    return Ok(stale_unread_summary(&cached.summary, &error));
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         let mut cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
         cache.retain(|key, _| key == &source_scope_key);
         cache.insert(
             source_scope_key,
             CachedUnreadSummary {
                 summary: summary.clone(),
-                refreshed_at: Instant::now(),
+                refreshed_at: attempted_at,
+                last_attempt: attempted_at,
+                retry_after: None,
+                failed_attempts: 0,
             },
         );
         Ok(summary)
@@ -154,6 +195,9 @@ impl LiveRateMonitorRegistry {
             CachedUnreadSummary {
                 summary,
                 refreshed_at: Instant::now(),
+                last_attempt: Instant::now(),
+                retry_after: None,
+                failed_attempts: 0,
             },
         );
         Ok(())
@@ -526,6 +570,13 @@ impl LiveRateMonitorRegistry {
     }
 }
 
+fn stale_unread_summary(summary: &UnreadSummary, error: &str) -> UnreadSummary {
+    let mut stale = summary.clone();
+    stale.detail = format!("{} · unread refresh failed; using cached value: {error}", stale.detail);
+    stale.source = format!("{}_stale", stale.source.trim_end_matches("_stale"));
+    stale
+}
+
 fn emit_detected_source_transition(app: &AppHandle) -> Result<bool, String> {
     let Some(claim) = claim_codex_home_source_transition()? else {
         return Ok(false);
@@ -781,16 +832,8 @@ pub async fn read_floating_snapshot(
     let captured = capture_codex_home_source(source_token.as_ref())?;
     let completed_source_token = captured.source_token.clone();
     let result = run_blocking_command(move || {
-        let pinned = pin_captured_codex_home_source(&captured)?;
-        let unread_summary = unread::try_read_unread_summary_for_source(
-            pinned.read_path(),
-            &pinned.source_scope_key,
-            || validate_captured_codex_home_source(&captured),
-        )?;
-        registry.floating_snapshot_with_unread(
-            pinned.read_path().to_path_buf(),
-            unread_summary,
-        )
+        let unread_summary = registry.unread_summary_for_source(&captured, false)?;
+        registry.floating_snapshot_with_unread(captured.codex_home.clone(), unread_summary)
     })
     .await
     .and_then(|snapshot| {
@@ -1082,6 +1125,99 @@ mod tests {
         assert_eq!(
             super::super::dashboard::pinned_source_snapshot_count_for_test(),
             1
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn expired_cache_refresh_failure_backs_off_and_returns_trusted_stale_summary() {
+        use std::os::unix::fs::MetadataExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-unread-backoff-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let metadata = std::fs::metadata(&root).unwrap();
+        let captured = CapturedCodexHomeSource {
+            source_token: CodexHomeSourceToken {
+                canonical_home_key: root.display().to_string(),
+                physical_home_key: format!("unix:{}:{}", metadata.dev(), metadata.ino()),
+                transition_generation: 1,
+            },
+            codex_home: root.clone(),
+            source_path: root.clone(),
+        };
+        let key = format!(
+            "{}|{}",
+            captured.source_token.canonical_home_key,
+            captured.source_token.physical_home_key
+        );
+        let registry = LiveRateMonitorRegistry::default();
+        registry.unread_cache.lock().unwrap().insert(
+            key,
+            CachedUnreadSummary {
+                summary: UnreadSummary {
+                    active: true,
+                    count: 3,
+                    label: "trusted".into(),
+                    detail: "trusted detail".into(),
+                    source: "trusted_source".into(),
+                },
+                refreshed_at: Instant::now() - UNREAD_OBSERVATION_CADENCE,
+                last_attempt: Instant::now() - UNREAD_OBSERVATION_CADENCE,
+                retry_after: None,
+                failed_attempts: 0,
+            },
+        );
+        let attempts = AtomicUsize::new(0);
+
+        for _ in 0..3 {
+            let summary = registry
+                .unread_summary_for_source_with_refresh(&captured, false, || {
+                    attempts.fetch_add(1, Ordering::Relaxed);
+                    Err("injected refresh failure".into())
+                })
+                .unwrap();
+            assert_eq!(summary.count, 3);
+            assert!(summary.source.ends_with("_stale"));
+        }
+
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn floating_monitor_keeps_the_real_codex_home_path() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-floating-real-home-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let registry = LiveRateMonitorRegistry::default();
+        let unread = UnreadSummary {
+            active: false,
+            count: 0,
+            label: "none".into(),
+            detail: "none".into(),
+            source: "test".into(),
+        };
+
+        registry
+            .floating_snapshot_with_unread(root.clone(), unread)
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .monitor
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .codex_home(),
+            root
         );
         let _ = std::fs::remove_dir_all(root);
     }
