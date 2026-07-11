@@ -334,6 +334,12 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
         acceptSourceEnvelope(envelope);
       }
     }).then((subscription) => {
+      if (cancelled) {
+        if (subscription.ok) {
+          subscription.unlisten();
+        }
+        return;
+      }
       if (!subscription.ok) {
         cancelReconcile = scheduleSourceReconcile(() => {
           if (!cancelled) {
@@ -342,11 +348,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
         }, MAIN_SOURCE_RECONCILE_INTERVAL_MS);
         return;
       }
-      if (cancelled) {
-        subscription.unlisten();
-      } else {
-        unlisten = subscription.unlisten;
-      }
+      unlisten = subscription.unlisten;
     }).catch(() => {
       if (!cancelled && cancelReconcile === null) {
         cancelReconcile = scheduleSourceReconcile(() => {

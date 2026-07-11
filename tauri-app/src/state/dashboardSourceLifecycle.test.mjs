@@ -1,8 +1,29 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Window } from "happy-dom";
 
 import { withSsrModules } from "../test/ssrHarness.mjs";
+
+test("fast and precise production IPC seams require and forward the exact source token", async () => {
+  const [client, commands] = await Promise.all([
+    readFile(new URL("../api/dashboardClient.ts", import.meta.url), "utf8"),
+    readFile(new URL("../../src-tauri/src/commands/dashboard.rs", import.meta.url), "utf8"),
+  ]);
+  const fastClient = sourceBlock(client, "export function readDashboardSnapshot", "export function readPreciseDashboardSnapshot");
+  const preciseClient = sourceBlock(client, "export function readPreciseDashboardSnapshot", "export function readUsageSummarySnapshot");
+  const fastCommand = sourceBlock(commands, "pub async fn read_dashboard_snapshot", "#[tauri::command]\npub async fn read_precise_dashboard_snapshot");
+  const preciseCommand = sourceBlock(commands, "pub async fn read_precise_dashboard_snapshot", "async fn run_source_bound_dashboard_read_with");
+
+  assert.match(fastClient, /sourceToken: CodexHomeSourceToken/);
+  assert.match(fastClient, /callCommand\("read_dashboard_snapshot", emptyDashboardSnapshot\(\), \{ sourceToken \}\)/);
+  assert.match(preciseClient, /sourceToken: CodexHomeSourceToken/);
+  assert.match(preciseClient, /callCommandOptional\("read_precise_dashboard_snapshot", \{ sourceToken \}, 30_000\)/);
+  assert.match(fastCommand, /source_token: CodexHomeSourceToken/);
+  assert.match(fastCommand, /run_source_bound_dashboard_read\(&app, source_token,/);
+  assert.match(preciseCommand, /source_token: CodexHomeSourceToken/);
+  assert.match(preciseCommand, /run_source_bound_dashboard_read\(&app, source_token,/);
+});
 
 test("mounted main forwards exact tokens and never publishes a delayed snapshot from source A", async () => {
   await withMountedDashboard(async ({ React, container, load, render }) => {
@@ -151,6 +172,38 @@ test("StrictMode cleanup invalidates late authoritative reads and subscription r
   });
 });
 
+test("late resolved listener failure after unmount never schedules reconciliation", async () => {
+  await withMountedDashboard(async ({ React, load, render }) => {
+    const { emptyDashboardSnapshot, fallbackPlatformCapabilities } = await load("/src/api/fallback.ts");
+    const subscription = deferred();
+    let subscribeCalls = 0;
+    let scheduleCalls = 0;
+    const source = dashboardSource({
+      emptyDashboardSnapshot,
+      fallbackPlatformCapabilities,
+      getCodexHome: () => Promise.resolve(sourceEnvelope("physical-a", 1)),
+      readDashboardSnapshot: (token) => Promise.resolve(snapshot(emptyDashboardSnapshot, token.physicalHomeKey)),
+    });
+    const root = await render(source, {
+      subscribeToSourceChanges() {
+        subscribeCalls += 1;
+        return subscription.promise;
+      },
+      scheduleSourceReconcile() {
+        scheduleCalls += 1;
+        return () => {};
+      },
+    });
+    await waitForAct(React, () => subscribeCalls === 1);
+    await React.act(async () => root.unmount());
+    await React.act(async () => {
+      subscription.resolve({ ok: false, error: "late failure" });
+      await tick();
+    });
+    assert.equal(scheduleCalls, 0);
+  });
+});
+
 async function withMountedDashboard(run) {
   const window = new Window({ url: "http://localhost/" });
   const restore = installDomGlobals(window);
@@ -259,4 +312,12 @@ function installDomGlobals(window) {
       else delete globalThis[name];
     }
   };
+}
+
+function sourceBlock(source, start, end) {
+  const startIndex = source.indexOf(start);
+  const endIndex = source.indexOf(end, startIndex + start.length);
+  assert.notEqual(startIndex, -1, `missing source block start: ${start}`);
+  assert.notEqual(endIndex, -1, `missing source block end: ${end}`);
+  return source.slice(startIndex, endIndex);
 }
