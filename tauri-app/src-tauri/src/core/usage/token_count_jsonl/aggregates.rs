@@ -40,8 +40,12 @@ impl TokenAccumulator {
     }
 }
 
-pub(super) fn activity_days(events: &[TokenEvent], local_offset: UtcOffset) -> Vec<ActivityDay> {
-    let today = OffsetDateTime::now_utc().to_offset(local_offset).date();
+pub(super) fn activity_days_at(
+    events: &[TokenEvent],
+    now_utc: OffsetDateTime,
+    local_offset: UtcOffset,
+) -> Vec<ActivityDay> {
+    let today = now_utc.to_offset(local_offset).date();
     let start = today - Duration::days(364);
     let mut grouped: HashMap<Date, TokenAccumulator> = HashMap::new();
 
@@ -139,7 +143,11 @@ fn usage_series(
         .collect()
 }
 
-pub(super) fn stats(events: &[TokenEvent], days: &[ActivityDay]) -> DashboardStats {
+pub(super) fn stats_at(
+    events: &[TokenEvent],
+    days: &[ActivityDay],
+    today: Date,
+) -> DashboardStats {
     let total_tokens = events.iter().map(|event| event.tokens).sum();
     let peak_day_tokens = days.iter().map(|day| day.tokens).max().unwrap_or(0);
     let mut by_session: HashMap<&str, u64> = HashMap::new();
@@ -154,7 +162,7 @@ pub(super) fn stats(events: &[TokenEvent], days: &[ActivityDay]) -> DashboardSta
         total_tokens,
         peak_day_tokens,
         peak_thread_tokens: by_session.values().copied().max().unwrap_or(0),
-        current_streak_days: current_streak_days(days),
+        current_streak_days: current_streak_days_at(days, today),
         longest_streak_days: longest_streak_days(days),
         total_calls: u32::try_from(events.len()).unwrap_or(u32::MAX),
         total_threads: u32::try_from(sessions.len()).unwrap_or(u32::MAX),
@@ -165,14 +173,29 @@ fn floor_to_bin(timestamp: i64, interval_seconds: i64) -> i64 {
     timestamp - timestamp.rem_euclid(interval_seconds)
 }
 
-fn current_streak_days(days: &[ActivityDay]) -> u32 {
-    let mut streak = 0;
-    for day in days.iter().rev() {
-        if day.tokens > 0 {
-            streak += 1;
-        } else if streak > 0 {
-            break;
+fn current_streak_days_at(days: &[ActivityDay], today: Date) -> u32 {
+    let mut active = HashSet::new();
+    for day in days {
+        let Ok(date) = Date::parse(&day.date, format_description!("[year]-[month]-[day]")) else {
+            continue;
+        };
+        if date <= today && day.tokens > 0 {
+            active.insert(date);
         }
+    }
+
+    let yesterday = today - Duration::days(1);
+    let mut cursor = if active.contains(&today) {
+        today
+    } else if active.contains(&yesterday) {
+        yesterday
+    } else {
+        return 0;
+    };
+    let mut streak = 0_u32;
+    while active.contains(&cursor) {
+        streak = streak.saturating_add(1);
+        cursor -= Duration::days(1);
     }
     streak
 }
@@ -199,4 +222,85 @@ fn format_date(date: Date) -> String {
 fn format_time(date: OffsetDateTime) -> String {
     date.format(format_description!("[hour]:[minute]"))
         .unwrap_or_else(|_| "00:00".into())
+}
+
+#[cfg(test)]
+mod current_streak_tests {
+    use super::*;
+
+    fn day(date: &str, tokens: u64) -> ActivityDay {
+        ActivityDay {
+            date: date.into(),
+            tokens,
+            calls: u32::from(tokens > 0),
+            cache_hit_rate: 0.0,
+            five_hour_remaining_percent: None,
+            seven_day_remaining_percent: None,
+        }
+    }
+
+    #[test]
+    fn current_streak_is_anchored_to_injected_local_today() {
+        let today = Date::from_calendar_date(2026, time::Month::July, 11).unwrap();
+        let cases = [
+            ("today active", vec![day("2026-07-11", 1)], 1),
+            ("yesterday grace", vec![day("2026-07-10", 1)], 1),
+            (
+                "two empty",
+                vec![day("2026-07-10", 0), day("2026-07-11", 0)],
+                0,
+            ),
+            (
+                "today minus two plus today",
+                vec![day("2026-07-09", 1), day("2026-07-11", 1)],
+                1,
+            ),
+            (
+                "duplicate date merged",
+                vec![day("2026-07-11", 0), day("2026-07-11", 1)],
+                1,
+            ),
+            ("stale only", vec![day("2026-07-09", 1)], 0),
+            (
+                "future ignored",
+                vec![day("2026-07-11", 1), day("2026-07-12", 1)],
+                1,
+            ),
+            (
+                "history gap",
+                vec![
+                    day("2026-07-07", 1),
+                    day("2026-07-09", 1),
+                    day("2026-07-10", 1),
+                ],
+                2,
+            ),
+        ];
+
+        for (name, days, expected) in cases {
+            assert_eq!(current_streak_days_at(&days, today), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn activity_days_and_stats_share_the_same_injected_local_today() {
+        let now = OffsetDateTime::from_unix_timestamp(1_783_785_599).unwrap();
+        let offset = UtcOffset::from_hms(8, 0, 0).unwrap();
+        let event = TokenEvent {
+            timestamp: now,
+            session_id: "shared-now".into(),
+            tokens: 7,
+            input_tokens: 7,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            user_prompt: String::new(),
+            assistant_response: String::new(),
+        };
+
+        let (days, stats) = super::super::activity_days_and_stats_at(&[event], now, offset);
+
+        assert_eq!(days.last().unwrap().date, "2026-07-11");
+        assert_eq!(days.last().unwrap().tokens, 7);
+        assert_eq!(stats.current_streak_days, 1);
+    }
 }

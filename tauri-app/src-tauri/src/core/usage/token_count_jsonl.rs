@@ -28,7 +28,7 @@ mod cache_version_tests;
 mod tests;
 mod token_event_cache;
 
-use aggregates::{activity_days, recent_usage, recent_usage_30d, recent_usage_7d, stats};
+use aggregates::{activity_days_at, recent_usage, recent_usage_30d, recent_usage_7d, stats_at};
 use event_loader::load_token_events_from_files;
 use ranking::{cache_hit_ranking, cache_usage, sanitize_cache_usage_for_persistence};
 use session_files::jsonl_files_for_codex_home;
@@ -86,16 +86,16 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     }
 
     record_dashboard_aggregate_build_for_testing(codex_home);
+    let now_utc = OffsetDateTime::now_utc();
     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-    let summary = usage_summary_from_events(&events, local_offset);
-    let generated_at = OffsetDateTime::now_utc()
+    let summary = usage_summary_from_events_at(&events, now_utc, local_offset);
+    let generated_at = now_utc
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
-    let activity_days = activity_days(&events, local_offset);
+    let (activity_days, stats) = activity_days_and_stats_at(&events, now_utc, local_offset);
     let recent_usage_24h = recent_usage(&events, local_offset);
     let recent_usage_7d = recent_usage_7d(&events, local_offset);
     let recent_usage_30d = recent_usage_30d(&events, local_offset);
-    let stats = stats(&events, &activity_days);
     let cache_hit_ranking = cache_hit_ranking(&events, codex_home, local_offset, &mut warnings);
     let cache_usage = cache_usage(&events, codex_home, local_offset, &mut warnings);
 
@@ -119,6 +119,16 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     store_dashboard_aggregate(signature, Some(snapshot.clone()), summary);
     cache_lifecycle::mark_usage_cache_ready_after_success();
     Ok(snapshot)
+}
+
+fn activity_days_and_stats_at(
+    events: &[TokenEvent],
+    now_utc: OffsetDateTime,
+    local_offset: UtcOffset,
+) -> (Vec<crate::models::ActivityDay>, crate::models::DashboardStats) {
+    let days = activity_days_at(events, now_utc, local_offset);
+    let stats = stats_at(events, &days, now_utc.to_offset(local_offset).date());
+    (days, stats)
 }
 
 #[cfg(test)]
@@ -181,8 +191,17 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
     cached_dashboard_snapshot(&signature).map(snapshot_with_generated_at)
 }
 
+#[cfg(test)]
 fn usage_summary_from_events(events: &[TokenEvent], local_offset: UtcOffset) -> TokenUsageSummary {
-    let today = OffsetDateTime::now_utc().to_offset(local_offset).date();
+    usage_summary_from_events_at(events, OffsetDateTime::now_utc(), local_offset)
+}
+
+fn usage_summary_from_events_at(
+    events: &[TokenEvent],
+    now_utc: OffsetDateTime,
+    local_offset: UtcOffset,
+) -> TokenUsageSummary {
+    let today = now_utc.to_offset(local_offset).date();
     let mut summary = TokenUsageSummary::default();
 
     for event in events {
