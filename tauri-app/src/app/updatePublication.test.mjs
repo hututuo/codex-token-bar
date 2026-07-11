@@ -35,9 +35,9 @@ test("manual check keeps publication ownership when an automatic trigger joins",
   })();
 
   const automatic = (async () => {
-    const token = publication.beginAutomatic();
+    const subscriber = publication.subscribeAutomatic();
     const outcome = await scheduler.runAutomatic();
-    if (outcome.kind === "completed" && token !== null && publication.settle(token)) {
+    if (outcome.kind === "completed" && subscriber?.settle()) {
       publications.push("automatic-available");
     }
   })();
@@ -56,13 +56,49 @@ test("manual check keeps publication ownership when an automatic trigger joins",
 
 test("a newer manual generation invalidates an older automatic publication", () => {
   const publication = createUpdatePublicationGate();
-  const automatic = publication.beginAutomatic();
+  const automatic = publication.subscribeAutomatic();
   const manual = publication.beginManual();
 
   assert.notEqual(automatic, null);
-  assert.equal(publication.settle(automatic), false);
+  assert.equal(automatic.settle(), false);
   assert.equal(publication.isCurrent(manual), true);
-  assert.ok(manual.generation > automatic.generation);
+  assert.ok(manual.generation > automatic.token.generation);
+});
+
+test("canceling one automatic subscriber preserves the shared generation for an active subscriber", async () => {
+  const checked = deferred();
+  let checks = 0;
+  const publications = [];
+  const scheduler = createUpdateCheckScheduler({
+    check: () => {
+      checks += 1;
+      return checked.promise;
+    },
+    now: () => 1_000,
+    storageKey: "test:automatic-subscriber-leases",
+  });
+  const publication = createUpdatePublicationGate();
+  const subscribe = (name) => {
+    const subscriber = publication.subscribeAutomatic();
+    const result = scheduler.runAutomatic().then((outcome) => {
+      if (outcome.kind === "completed" && subscriber?.settle()) {
+        publications.push(name);
+      }
+    });
+    return { result, subscriber };
+  };
+
+  const oldEffect = subscribe("old-effect");
+  oldEffect.subscriber.cancel();
+  const activeEffect = subscribe("active-effect");
+  assert.equal(checks, 1);
+  assert.equal(oldEffect.subscriber.token.generation, activeEffect.subscriber.token.generation);
+
+  checked.resolve({ status: "available", version: "0.8.0" });
+  await Promise.all([oldEffect.result, activeEffect.result]);
+
+  assert.deepEqual(publications, ["active-effect"]);
+  assert.equal(activeEffect.subscriber.settle(), false);
 });
 
 function deferred() {

@@ -15,11 +15,12 @@ import {
   createUpdateCheckScheduler,
   type UpdateCheckScheduler,
 } from "./updateCheckScheduler";
+import { installPendingUpdate } from "./updateInstallation";
 import { automaticUpdateNotice } from "./updateCheckPresentation";
 import {
   createUpdatePublicationGate,
   type UpdatePublicationGate,
-  type UpdatePublicationToken,
+  type UpdatePublicationSubscriber,
 } from "./updatePublication";
 
 const UPDATE_CHECK_ATTEMPT_STORAGE_KEY = "codex-token-bar:update-check-attempt-v1";
@@ -189,18 +190,24 @@ function useAutomaticUpdateChecks(
 ) {
   useEffect(() => {
     let cancelled = false;
+    const subscribers = new Set<UpdatePublicationSubscriber>();
     const trigger = () => {
-      const token = publication.beginAutomatic();
+      const subscriber = publication.subscribeAutomatic();
+      if (subscriber !== null) {
+        subscribers.add(subscriber);
+      }
       void scheduler.runAutomatic().then((outcome) => {
         const notice = automaticUpdateNotice(outcome);
-        if (token === null) {
+        if (subscriber === null) {
           return;
         }
+        subscribers.delete(subscriber);
         if (cancelled) {
-          publication.finish(token);
+          subscriber.cancel();
+          subscriber.settle();
           return;
         }
-        if (!publication.settle(token) || notice === null) {
+        if (!subscriber.settle() || notice === null) {
           return;
         }
         setAppUpdateState(notice);
@@ -220,6 +227,10 @@ function useAutomaticUpdateChecks(
 
     return () => {
       cancelled = true;
+      for (const subscriber of subscribers) {
+        subscriber.cancel();
+      }
+      subscribers.clear();
       window.clearInterval(wakeTimer);
       window.removeEventListener("focus", trigger);
       window.removeEventListener("pageshow", trigger);
@@ -244,7 +255,13 @@ async function handleCheckForUpdate(
       publication.finish(token);
       return;
     }
-    await installPendingUpdate(appUpdateState.update, token, publication, setAppUpdateState);
+    await installPendingUpdate({
+      install: installAppUpdate,
+      publication,
+      publish: setAppUpdateState,
+      token,
+      update: appUpdateState.update,
+    });
     return;
   }
 
@@ -263,7 +280,13 @@ async function handleCheckForUpdate(
       });
       const confirmed = window.confirm(`发现 Codex Token Bar ${result.version}。现在下载并安装吗？`);
       if (confirmed) {
-        await installPendingUpdate(result, token, publication, setAppUpdateState);
+        await installPendingUpdate({
+          install: installAppUpdate,
+          publication,
+          publish: setAppUpdateState,
+          token,
+          update: result,
+        });
       } else {
         publication.finish(token);
       }
@@ -285,44 +308,6 @@ async function handleCheckForUpdate(
     });
   }
   publication.finish(token);
-}
-
-async function installPendingUpdate(
-  update: UpdateAvailability & { status: "available" },
-  token: UpdatePublicationToken,
-  publication: UpdatePublicationGate,
-  setAppUpdateState: (state: AppUpdateState) => void,
-) {
-  if (!publication.isCurrent(token)) {
-    return;
-  }
-  setAppUpdateState({
-    kind: "installing",
-    message: "正在下载更新...",
-    update,
-  });
-  try {
-    await installAppUpdate(update.update, (message) => {
-      if (!publication.isCurrent(token)) {
-        return;
-      }
-      setAppUpdateState({
-        kind: "installing",
-        message,
-        update,
-      });
-    });
-  } catch {
-    if (!publication.isCurrent(token)) {
-      return;
-    }
-    setAppUpdateState({
-      kind: "error",
-      message: "更新未完成，请稍后重试",
-      update: null,
-    });
-    publication.finish(token);
-  }
 }
 
 function useDashboardHydration(setDashboardHydrated: (hydrated: boolean) => void) {
