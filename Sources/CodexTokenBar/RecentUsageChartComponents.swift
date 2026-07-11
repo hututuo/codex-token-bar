@@ -1,4 +1,83 @@
+import AppKit
 import SwiftUI
+
+struct RecentChartAccessibilityButtonPresentation: Equatable {
+    let label: String
+    let value: String?
+    let isEnabled: Bool
+}
+
+struct RecentChartAccessibilityButtonRepresentation: NSViewRepresentable {
+    let presentation: RecentChartAccessibilityButtonPresentation
+    let action: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(action: action)
+    }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = Self.makeButton(presentation: presentation)
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.performAction)
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.action = action
+        Self.configure(button, presentation: presentation)
+    }
+
+    @MainActor
+    static func makeButton(presentation: RecentChartAccessibilityButtonPresentation) -> NSButton {
+        let button = NSButton(title: presentation.label, target: nil, action: nil)
+        configure(button, presentation: presentation)
+        return button
+    }
+
+    @MainActor
+    private static func configure(
+        _ button: NSButton,
+        presentation: RecentChartAccessibilityButtonPresentation
+    ) {
+        button.title = presentation.label
+        button.isEnabled = presentation.isEnabled
+        button.setAccessibilityLabel(presentation.label)
+        button.setAccessibilityValue(presentation.value)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var action: () -> Void
+
+        init(action: @escaping () -> Void) {
+            self.action = action
+        }
+
+        @objc func performAction() {
+            action()
+        }
+    }
+}
+
+struct RecentChartRangeOptionPresentation: Equatable {
+    let visibleTitle: String
+    let accessibilityLabel: String
+    let accessibilityValue: String
+
+    init(range: RecentChartRange, isSelected: Bool) {
+        visibleTitle = range.label
+        accessibilityLabel = "曲线范围 \(range.title)"
+        accessibilityValue = isSelected ? "已选择" : "未选择"
+    }
+
+    var accessibilityButton: RecentChartAccessibilityButtonPresentation {
+        RecentChartAccessibilityButtonPresentation(
+            label: accessibilityLabel,
+            value: accessibilityValue,
+            isEnabled: true
+        )
+    }
+}
 
 struct RecentChartRangeSelector: View {
     @Binding var selection: RecentChartRange
@@ -6,21 +85,34 @@ struct RecentChartRangeSelector: View {
     var body: some View {
         HStack(spacing: 3) {
             ForEach(RecentChartRange.allCases) { range in
+                let presentation = RecentChartRangeOptionPresentation(
+                    range: range,
+                    isSelected: selection == range
+                )
                 Button {
                     selection = range
                 } label: {
-                    Text(range.label)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(selection == range ? AppTheme.accentBlue : .secondary)
-                        .frame(width: 34, height: 22)
-                        .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(selection == range ? AppTheme.accentBlue.opacity(0.12) : Color.clear)
-                        )
+                    Label {
+                        Text(presentation.accessibilityLabel)
+                    } icon: {
+                        Text(presentation.visibleTitle)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(selection == range ? AppTheme.accentBlue : .secondary)
+                            .frame(width: 34, height: 22)
+                            .background(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(selection == range ? AppTheme.accentBlue.opacity(0.12) : Color.clear)
+                            )
+                    }
+                    .labelStyle(.iconOnly)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("曲线范围 \(range.title)")
-                .accessibilityValue(selection == range ? "已选择" : "未选择")
+                .accessibilityRepresentation {
+                    RecentChartAccessibilityButtonRepresentation(
+                        presentation: presentation.accessibilityButton,
+                        action: { selection = range }
+                    )
+                }
             }
         }
         .padding(3)

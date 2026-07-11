@@ -268,9 +268,17 @@ enum RecentChartScrollDirection {
 
     var accessibilityLabel: String {
         switch self {
-        case .backward: "向左滚动曲线图"
-        case .forward: "向右滚动曲线图"
+        case .backward: "上一时间窗口"
+        case .forward: "下一时间窗口"
         }
+    }
+
+    func accessibilityButton(isEnabled: Bool) -> RecentChartAccessibilityButtonPresentation {
+        RecentChartAccessibilityButtonPresentation(
+            label: accessibilityLabel,
+            value: nil,
+            isEnabled: isEnabled
+        )
     }
 }
 
@@ -973,7 +981,8 @@ private struct RecentChartScrollButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: direction.systemImage)
+            Label(direction.accessibilityLabel, systemImage: direction.systemImage)
+                .labelStyle(.iconOnly)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(isDisabled ? .secondary.opacity(0.45) : AppTheme.accentBlue)
                 .frame(width: 24, height: 54)
@@ -990,7 +999,12 @@ private struct RecentChartScrollButton: View {
         .disabled(isDisabled)
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
-        .accessibilityLabel(direction.accessibilityLabel)
+        .accessibilityRepresentation {
+            RecentChartAccessibilityButtonRepresentation(
+                presentation: direction.accessibilityButton(isEnabled: !isDisabled),
+                action: action
+            )
+        }
     }
 }
 

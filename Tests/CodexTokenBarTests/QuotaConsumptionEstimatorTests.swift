@@ -492,6 +492,48 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(movedRightFromOldest.targetWindowIndex(for: .backward), 0)
     }
 
+    func testChartNavigationAccessibilityPresentationsAreDistinctAndStateful() {
+        let presentations = RecentChartRange.allCases.map { range in
+            RecentChartRangeOptionPresentation(range: range, isSelected: range == .sevenDays)
+        }
+
+        XCTAssertEqual(presentations.map(\.visibleTitle), ["24h", "7d", "30d"])
+        XCTAssertEqual(
+            presentations.map(\.accessibilityLabel),
+            ["曲线范围 24 小时窗口", "曲线范围 7 天窗口", "曲线范围 30 天窗口"]
+        )
+        XCTAssertEqual(presentations.map(\.accessibilityValue), ["未选择", "已选择", "未选择"])
+        XCTAssertEqual(RecentChartScrollDirection.backward.accessibilityLabel, "上一时间窗口")
+        XCTAssertEqual(RecentChartScrollDirection.forward.accessibilityLabel, "下一时间窗口")
+    }
+
+    @MainActor
+    func testNativeChartNavigationAccessibilityRepresentationsExposeSemanticAX() {
+        let selectedRange = RecentChartRangeOptionPresentation(
+            range: .sevenDays,
+            isSelected: true
+        ).accessibilityButton
+        let rangeButton = RecentChartAccessibilityButtonRepresentation.makeButton(
+            presentation: selectedRange
+        )
+        XCTAssertEqual(rangeButton.accessibilityLabel(), "曲线范围 7 天窗口")
+        XCTAssertEqual(rangeButton.accessibilityValue() as? String, "已选择")
+        XCTAssertTrue(rangeButton.isEnabled)
+
+        let backwardButton = RecentChartAccessibilityButtonRepresentation.makeButton(
+            presentation: RecentChartScrollDirection.backward.accessibilityButton(isEnabled: true)
+        )
+        let forwardButton = RecentChartAccessibilityButtonRepresentation.makeButton(
+            presentation: RecentChartScrollDirection.forward.accessibilityButton(isEnabled: false)
+        )
+        XCTAssertEqual(backwardButton.accessibilityLabel(), "上一时间窗口")
+        XCTAssertEqual(forwardButton.accessibilityLabel(), "下一时间窗口")
+        XCTAssertNotEqual(backwardButton.accessibilityLabel(), "chevron.left")
+        XCTAssertNotEqual(forwardButton.accessibilityLabel(), "chevron.right")
+        XCTAssertTrue(backwardButton.isEnabled)
+        XCTAssertFalse(forwardButton.isEnabled)
+    }
+
     @MainActor
     func testHostedScrollOffsetReaderTracksBridgeUpdatesAndDetachesCleanly() throws {
         var callbacks: [HostedScrollCallback] = []
