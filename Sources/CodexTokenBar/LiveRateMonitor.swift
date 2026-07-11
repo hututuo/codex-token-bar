@@ -23,6 +23,7 @@ final class LiveRateMonitor: ObservableObject {
 
     private let resolver = CodexDataSourceResolver()
     let logReaderFactory: LiveRateLogReaderMaking
+    private let recentThreadsLoader: @Sendable (String) throws -> [ThreadRow]
     var dataSource: CodexDataSource?
     var compositionDataSourceBound = false
     var sourceGeneration = 0
@@ -49,6 +50,9 @@ final class LiveRateMonitor: ObservableObject {
     private var lastLogID = 0
     private var lastGlobalLogID = 0
     private var lastLogsSignature: LogStoreSignature?
+    private var lastThreadOptionsSignature: LogStoreSignature?
+    private var lastThreadOptionsRefreshAt: TimeInterval = 0
+    private let threadOptionsRefreshTTL: TimeInterval = 5
     private var lastPollProcessedRows = false
     private var lastSnapshotPublishAt: TimeInterval = 0
     private var lastFallbackPollAt: TimeInterval = 0
@@ -72,21 +76,39 @@ final class LiveRateMonitor: ObservableObject {
     var countedRolloutVisibleFingerprints = RecentFingerprintSet(limit: 4_096)
     var tokenEncoder: CoreBpe?
 
+    struct FileStoreSignature: Equatable {
+        let device: UInt64?
+        let inode: UInt64?
+        let size: UInt64
+        let modifiedAt: TimeInterval
+
+        var physicalIdentity: String? {
+            guard let device, let inode else { return nil }
+            return "\(device):\(inode)"
+        }
+    }
+
     struct LogStoreSignature: Equatable {
-        let databaseSize: UInt64
-        let databaseModifiedAt: TimeInterval
-        let walSize: UInt64
-        let walModifiedAt: TimeInterval
+        let database: FileStoreSignature
+        let wal: FileStoreSignature
+
+        func isPhysicalDatabaseReplacement(comparedTo previous: LogStoreSignature) -> Bool {
+            database.physicalIdentity != previous.database.physicalIdentity
+        }
     }
 
     init(
         preciseTokenCountingEnabled: Bool = LiveRateMonitor.defaultPreciseTokenCountingEnabled(),
         monitoringEnabled: Bool = LiveRateMonitor.defaultMonitoringEnabled(),
-        logReaderFactory: LiveRateLogReaderMaking = DefaultLiveRateLogReaderFactory()
+        logReaderFactory: LiveRateLogReaderMaking = DefaultLiveRateLogReaderFactory(),
+        recentThreadsLoader: @escaping @Sendable (String) throws -> [ThreadRow] = { stateDB in
+            try LiveRateMonitor.recentThreads(stateDB: stateDB)
+        }
     ) {
         self.preciseTokenCountingEnabled = preciseTokenCountingEnabled
         self.monitoringEnabled = monitoringEnabled
         self.logReaderFactory = logReaderFactory
+        self.recentThreadsLoader = recentThreadsLoader
         Task {
             updateTokenCountingLabel()
             if monitoringEnabled {
@@ -213,6 +235,8 @@ final class LiveRateMonitor: ObservableObject {
         lastLogID = 0
         lastGlobalLogID = 0
         lastLogsSignature = nil
+        lastThreadOptionsSignature = nil
+        lastThreadOptionsRefreshAt = 0
         lastPollProcessedRows = false
         lastSnapshotPublishAt = 0
         lastFallbackPollAt = 0
@@ -337,12 +361,14 @@ final class LiveRateMonitor: ObservableObject {
         do {
             let stateDB = source.stateDatabase.path
             let threads = try await Task.detached(priority: .utility) {
-                try Self.recentThreads(stateDB: stateDB)
+                try self.recentThreadsLoader(stateDB)
             }.value
             guard isCurrentSource(generation: generation, bindingGeneration: bindingGeneration) else { return }
             threadOptions = threads.map {
                 LiveThreadOption(id: $0.id, title: $0.title, updatedAtMS: $0.updatedAtMS, rolloutPath: $0.rolloutPath)
             }
+            lastThreadOptionsSignature = Self.logStoreSignature(logsDB: stateDB)
+            lastThreadOptionsRefreshAt = Date().timeIntervalSince1970
             guard let thread = threads.first else {
                 snapshot.status = "未找到活动会话"
                 return
@@ -457,6 +483,16 @@ final class LiveRateMonitor: ObservableObject {
         do {
             let logsDB = cachedLogsDatabasePath
             let now = Date().timeIntervalSince1970
+            if refreshLogStoreSignature(logsDB: logsDB) {
+                logChangePending = true
+            }
+            await refreshThreadOptionsIfNeeded(
+                source: dataSource,
+                now: now,
+                generation: generation,
+                bindingGeneration: bindingGeneration
+            )
+            guard isCurrentSource(generation: generation, bindingGeneration: bindingGeneration) else { return }
             let hasLogChangeSignal = logChangePending
             let readPlan = LiveRatePollReadPlan(
                 now: now,
@@ -513,6 +549,100 @@ final class LiveRateMonitor: ObservableObject {
             guard isCurrentSource(generation: generation, bindingGeneration: bindingGeneration) else { return }
             snapshot.status = "读取日志失败：\(error.localizedDescription)"
         }
+    }
+
+    @discardableResult
+    private func refreshLogStoreSignature(logsDB: String) -> Bool {
+        let current = Self.logStoreSignature(logsDB: logsDB)
+        defer { lastLogsSignature = current }
+        guard let previous = lastLogsSignature,
+              current.isPhysicalDatabaseReplacement(comparedTo: previous)
+        else {
+            return false
+        }
+
+        logReader = nil
+        lastLogID = 0
+        lastGlobalLogID = 0
+        selectedRate.clear()
+        totalRate.clear()
+        totalSessionRates.removeAll()
+        selectedSmoothedTokensPerSecond = 0
+        totalSmoothedTokensPerSecond = 0
+        lastSnapshotPublishAt = 0
+        clearStreamState()
+        updateSnapshots(now: Date().timeIntervalSince1970)
+        return true
+    }
+
+    nonisolated static func shouldRefreshThreads(
+        current: LogStoreSignature,
+        previous: LogStoreSignature?,
+        now: TimeInterval,
+        lastRefreshAt: TimeInterval,
+        ttl: TimeInterval
+    ) -> Bool {
+        previous != current || now - lastRefreshAt >= ttl
+    }
+
+    private func refreshThreadOptionsIfNeeded(
+        source: CodexDataSource?,
+        now: TimeInterval,
+        generation: Int,
+        bindingGeneration: Int
+    ) async {
+        guard let source else { return }
+        let stateDB = source.stateDatabase.path
+        let signature = Self.logStoreSignature(logsDB: stateDB)
+        guard Self.shouldRefreshThreads(
+            current: signature,
+            previous: lastThreadOptionsSignature,
+            now: now,
+            lastRefreshAt: lastThreadOptionsRefreshAt,
+            ttl: threadOptionsRefreshTTL
+        ) else { return }
+        lastThreadOptionsSignature = signature
+        lastThreadOptionsRefreshAt = now
+        do {
+            let threads = try await Task.detached(priority: .utility) {
+                try self.recentThreadsLoader(stateDB)
+            }.value
+            guard isCurrentSource(generation: generation, bindingGeneration: bindingGeneration) else { return }
+            reconcileThreadOptions(threads)
+        } catch {
+            guard isCurrentSource(generation: generation, bindingGeneration: bindingGeneration) else { return }
+            snapshot.status = "刷新活动会话失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func reconcileThreadOptions(_ threads: [ThreadRow]) {
+        let previousOffsets = rolloutOffsets
+        let options = threads.map {
+            LiveThreadOption(id: $0.id, title: $0.title, updatedAtMS: $0.updatedAtMS, rolloutPath: $0.rolloutPath)
+        }
+        threadOptions = options
+        rolloutOffsets = Dictionary(uniqueKeysWithValues: options.map { option in
+            (option.rolloutPath, previousOffsets[option.rolloutPath] ?? Self.fileSize(path: option.rolloutPath))
+        })
+
+        if options.contains(where: { $0.id == threadID }) {
+            selectedThreadID = threadID
+            return
+        }
+        guard let replacement = options.first else {
+            threadID = ""
+            selectedThreadID = ""
+            snapshot.threadID = ""
+            snapshot.threadTitle = "等待会话"
+            return
+        }
+        threadID = replacement.id
+        selectedThreadID = replacement.id
+        lastLogID = 0
+        selectedRate.clear()
+        selectedSmoothedTokensPerSecond = 0
+        snapshot.threadID = replacement.id
+        snapshot.threadTitle = replacement.displayTitle
     }
 
     private func loadRolloutUpdates(now: TimeInterval) async throws -> [RolloutRead] {
@@ -997,6 +1127,41 @@ extension LiveRateMonitor {
 
     nonisolated static func testLogRows(logsDB: String, threadID: String, afterID: Int) throws -> [LogRow] {
         try logRows(logsDB: logsDB, threadID: threadID, afterID: afterID)
+    }
+
+    func testPrimeLogStore(logsDB: String, lastGlobalLogID: Int) {
+        lastLogsSignature = Self.logStoreSignature(logsDB: logsDB)
+        self.lastGlobalLogID = lastGlobalLogID
+    }
+
+    func testReadGlobalRows(logsDB: String) throws -> [LogRow] {
+        try logReader(for: logsDB).globalLogRows(afterID: lastGlobalLogID)
+    }
+
+    @discardableResult
+    func testRefreshLogStoreSignature(logsDB: String) -> Bool {
+        refreshLogStoreSignature(logsDB: logsDB)
+    }
+
+    func testSetRolloutOffset(_ offset: UInt64, path: String) {
+        rolloutOffsets[path] = offset
+    }
+
+    func testRolloutOffset(path: String) -> UInt64? {
+        rolloutOffsets[path]
+    }
+
+    func testReconcileThreadOptions(_ threads: [ThreadRow]) {
+        reconcileThreadOptions(threads)
+    }
+
+    func testRefreshThreadOptionsIfNeeded(now: TimeInterval) async {
+        await refreshThreadOptionsIfNeeded(
+            source: dataSource,
+            now: now,
+            generation: sourceGeneration,
+            bindingGeneration: sourceBindingGeneration
+        )
     }
 }
 #endif

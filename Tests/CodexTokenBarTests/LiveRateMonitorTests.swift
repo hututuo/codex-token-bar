@@ -12,6 +12,110 @@ final class LiveRateMonitorTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    @MainActor
+    func testPhysicalLogReplacementRecreatesReaderAndAllowsLowIDs() throws {
+        let databaseURL = try makeDatabaseURL()
+        try Data("old".utf8).write(to: databaseURL)
+        let factory = CountingLiveRateLogReaderFactory(rowsByReader: [[], [
+            LiveRateMonitor.LogRow(
+                id: 1,
+                threadID: "thread-1",
+                ts: 1_001,
+                tsNanos: 0,
+                target: "codex_api::sse::responses",
+                feedbackLogBody: #"SSE event: {"type":"response.output_text.delta","delta":"new","item_id":"new-1","sequence_number":1}"#
+            )
+        ]])
+        let monitor = LiveRateMonitor(monitoringEnabled: false, logReaderFactory: factory)
+        monitor.testPrimeLogStore(logsDB: databaseURL.path, lastGlobalLogID: 100)
+        _ = try monitor.testReadGlobalRows(logsDB: databaseURL.path)
+
+        let replacementURL = databaseURL.deletingLastPathComponent().appendingPathComponent("replacement.sqlite")
+        try Data("replacement".utf8).write(to: replacementURL)
+        try FileManager.default.removeItem(at: databaseURL)
+        try FileManager.default.moveItem(at: replacementURL, to: databaseURL)
+
+        XCTAssertTrue(monitor.testRefreshLogStoreSignature(logsDB: databaseURL.path))
+        let rows = try monitor.testReadGlobalRows(logsDB: databaseURL.path)
+
+        XCTAssertEqual(factory.makeCount, 2)
+        XCTAssertEqual(factory.afterIDs, [100, 0])
+        XCTAssertEqual(rows.map(\.id), [1])
+    }
+
+    func testWalRevisionDoesNotCountAsPhysicalDatabaseReplacement() throws {
+        let databaseURL = try makeDatabaseURL()
+        try Data("db".utf8).write(to: databaseURL)
+        let walURL = URL(fileURLWithPath: databaseURL.path + "-wal")
+        try Data("wal-a".utf8).write(to: walURL)
+        let before = LiveRateMonitor.logStoreSignature(logsDB: databaseURL.path)
+
+        try Data("wal-a-more".utf8).write(to: walURL)
+        let after = LiveRateMonitor.logStoreSignature(logsDB: databaseURL.path)
+
+        XCTAssertNotEqual(before, after)
+        XCTAssertFalse(after.isPhysicalDatabaseReplacement(comparedTo: before))
+    }
+
+    @MainActor
+    func testThreadRefreshPolicyAndReconciliationPreserveSelectionAndStartNewRolloutAtEOF() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LiveRateThreads-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        temporaryDirectories.append(directory)
+        let oldRollout = directory.appendingPathComponent("old.jsonl")
+        let newRollout = directory.appendingPathComponent("new.jsonl")
+        try Data("old-data".utf8).write(to: oldRollout)
+        try Data("existing-new-data".utf8).write(to: newRollout)
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(
+            selectedThreadID: "thread-old",
+            threadOptions: [LiveThreadOption(id: "thread-old", title: "Old", updatedAtMS: 1, rolloutPath: oldRollout.path)]
+        )
+        monitor.testSetRolloutOffset(3, path: oldRollout.path)
+
+        monitor.testReconcileThreadOptions([
+            LiveRateMonitor.ThreadRow(id: "thread-new", title: "New", updatedAtMS: 2, rolloutPath: newRollout.path),
+            LiveRateMonitor.ThreadRow(id: "thread-old", title: "Old", updatedAtMS: 1, rolloutPath: oldRollout.path)
+        ])
+
+        XCTAssertEqual(monitor.selectedThreadID, "thread-old")
+        XCTAssertEqual(monitor.threadOptions.map(\.id), ["thread-new", "thread-old"])
+        XCTAssertEqual(monitor.testRolloutOffset(path: oldRollout.path), 3)
+        XCTAssertEqual(monitor.testRolloutOffset(path: newRollout.path), UInt64(try Data(contentsOf: newRollout).count))
+
+        let signature = LiveRateMonitor.logStoreSignature(logsDB: directory.appendingPathComponent("state_5.sqlite").path)
+        XCTAssertFalse(LiveRateMonitor.shouldRefreshThreads(current: signature, previous: signature, now: 101, lastRefreshAt: 100, ttl: 5))
+        XCTAssertTrue(LiveRateMonitor.shouldRefreshThreads(current: signature, previous: signature, now: 106, lastRefreshAt: 100, ttl: 5))
+    }
+
+    @MainActor
+    func testThreadRefreshWiringSkipsRapidUnchangedQueriesAndReloadsOnWalRevision() async throws {
+        let source = try makeCodexDataSource(named: "thread-refresh")
+        try Data("state".utf8).write(to: source.stateDatabase)
+        let rollout = source.codexHome.appendingPathComponent("new.jsonl")
+        try Data("existing".utf8).write(to: rollout)
+        let loader = CountingRecentThreadsLoader(rows: [
+            LiveRateMonitor.ThreadRow(id: "thread-new", title: "New", updatedAtMS: 2, rolloutPath: rollout.path)
+        ])
+        let monitor = LiveRateMonitor(
+            monitoringEnabled: false,
+            recentThreadsLoader: { path in try loader.load(path: path) }
+        )
+        monitor.setDataSource(source)
+
+        await monitor.testRefreshThreadOptionsIfNeeded(now: 100)
+        await monitor.testRefreshThreadOptionsIfNeeded(now: 101)
+        XCTAssertEqual(loader.loadCount, 1)
+
+        try Data("wal-change".utf8).write(to: URL(fileURLWithPath: source.stateDatabase.path + "-wal"))
+        await monitor.testRefreshThreadOptionsIfNeeded(now: 101.1)
+
+        XCTAssertEqual(loader.loadCount, 2)
+        XCTAssertEqual(monitor.threadOptions.map(\.id), ["thread-new"])
+        XCTAssertEqual(monitor.testRolloutOffset(path: rollout.path), UInt64(try Data(contentsOf: rollout).count))
+    }
+
     func testLogRowsFilterThreadIDWithQuotesUsingBindings() throws {
         let databaseURL = try makeDatabaseURL()
         let driver = SQLiteDatabaseDriver(url: databaseURL)
@@ -1116,5 +1220,61 @@ final class LiveRateMonitorTests: XCTestCase {
     private func jsonLine(_ object: [String: Any]) -> String {
         let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         return String(data: data, encoding: .utf8)!
+    }
+}
+
+private final class CountingLiveRateLogReaderFactory: LiveRateLogReaderMaking, @unchecked Sendable {
+    private let lock = NSLock()
+    private var rowsByReader: [[LiveRateMonitor.LogRow]]
+    private(set) var makeCount = 0
+    private(set) var afterIDs: [Int] = []
+
+    init(rowsByReader: [[LiveRateMonitor.LogRow]]) {
+        self.rowsByReader = rowsByReader
+    }
+
+    func makeLiveRateLogReader(path: String) -> LiveRateLogReading {
+        lock.lock()
+        let index = makeCount
+        makeCount += 1
+        let rows = index < rowsByReader.count ? rowsByReader[index] : []
+        lock.unlock()
+        return CountingLiveRateLogReader(path: path, rows: rows) { [weak self] afterID in
+            self?.lock.lock()
+            self?.afterIDs.append(afterID)
+            self?.lock.unlock()
+        }
+    }
+}
+
+private struct CountingLiveRateLogReader: LiveRateLogReading, @unchecked Sendable {
+    let path: String
+    let rows: [LiveRateMonitor.LogRow]
+    let recordAfterID: (Int) -> Void
+
+    func globalLogRows(afterID: Int) throws -> [LiveRateMonitor.LogRow] {
+        recordAfterID(afterID)
+        return rows.filter { $0.id > afterID }
+    }
+
+    func globalLogRows(since timestamp: TimeInterval) throws -> [LiveRateMonitor.LogRow] {
+        rows
+    }
+}
+
+private final class CountingRecentThreadsLoader: @unchecked Sendable {
+    private let lock = NSLock()
+    private let rows: [LiveRateMonitor.ThreadRow]
+    private(set) var loadCount = 0
+
+    init(rows: [LiveRateMonitor.ThreadRow]) {
+        self.rows = rows
+    }
+
+    func load(path: String) throws -> [LiveRateMonitor.ThreadRow] {
+        lock.lock()
+        loadCount += 1
+        lock.unlock()
+        return rows
     }
 }

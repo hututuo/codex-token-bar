@@ -158,19 +158,21 @@ extension LiveRateMonitor {
         let database = fileSignaturePart(path: logsDB)
         let wal = fileSignaturePart(path: logsDB + "-wal")
         return LogStoreSignature(
-            databaseSize: database.size,
-            databaseModifiedAt: database.modifiedAt,
-            walSize: wal.size,
-            walModifiedAt: wal.modifiedAt
+            database: database,
+            wal: wal
         )
     }
 
-    nonisolated static func fileSignaturePart(path: String) -> (size: UInt64, modifiedAt: TimeInterval) {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else {
-            return (0, 0)
+    nonisolated static func fileSignaturePart(path: String) -> FileStoreSignature {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              attrs[.type] as? FileAttributeType == .typeRegular
+        else {
+            return FileStoreSignature(device: nil, inode: nil, size: 0, modifiedAt: 0)
         }
         let size = attrs[.size] as? UInt64 ?? 0
         let modifiedAt = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        return (size, modifiedAt)
+        let device = (attrs[.systemNumber] as? NSNumber)?.uint64Value
+        let inode = (attrs[.systemFileNumber] as? NSNumber)?.uint64Value
+        return FileStoreSignature(device: device, inode: inode, size: size, modifiedAt: modifiedAt)
     }
 }
