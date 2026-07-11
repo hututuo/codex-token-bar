@@ -24,10 +24,10 @@ struct FloatingUnreadShimmerOverlay: NSViewRepresentable {
 }
 
 final class FloatingUnreadShimmerView: NSView {
-    private struct RenderRequest {
+    private struct RenderRequest: Sendable {
         let size: CGSize
         let backingScale: CGFloat
-        let color: NSColor
+        let color: FloatingUnreadRenderColor
         let cornerRadius: CGFloat
         let scale: CGFloat
     }
@@ -35,11 +35,11 @@ final class FloatingUnreadShimmerView: NSView {
     private static let animationKey = "floatingUnreadShimmerFrames"
 
     private let imageLayer = CALayer()
+    private let renderCoordinator = FloatingUnreadRenderRequestCoordinator()
     private var cachedFrames: [CGImage] = []
     private var pendingRenderWorkItem: DispatchWorkItem?
-    private var renderGeneration: UInt64 = 0
     private var animationStartLayerTime: CFTimeInterval?
-    private var currentColor = NSColor.systemBlue
+    private var currentColor = FloatingUnreadRenderColor(red: 0, green: 0.48, blue: 1, alpha: 1)
     private var currentCornerRadius: CGFloat = 14
     private var currentScale: CGFloat = 1
     private var lastBounds: CGRect = .zero
@@ -76,9 +76,9 @@ final class FloatingUnreadShimmerView: NSView {
     }
 
     func configure(color: NSColor, cornerRadius: CGFloat, scale: CGFloat) {
-        let nextColor = FloatingPanelColorTools.deviceRGB(color)
+        let nextColor = FloatingUnreadRenderColor(color)
         let nextScale = max(scale, 0.1)
-        let needsLayout = !sameColor(nextColor, currentColor)
+        let needsLayout = !nextColor.isApproximatelyEqual(to: currentColor)
             || abs(currentScale - nextScale) > 0.001
             || abs(currentCornerRadius - cornerRadius) > 0.001
         currentColor = nextColor
@@ -151,37 +151,55 @@ final class FloatingUnreadShimmerView: NSView {
     }
 
     private func requestFrameRender(_ request: RenderRequest, immediate: Bool) {
-        renderGeneration &+= 1
-        let generation = renderGeneration
-        cancelPendingRender(advanceGeneration: false)
         let cycleDuration = cycleDuration
         let targetFramesPerSecond = targetFramesPerSecond
-
-        if immediate {
-            let frames = Self.renderFrames(
-                request: request,
-                cycleDuration: cycleDuration,
-                targetFramesPerSecond: targetFramesPerSecond
-            )
-            applyRenderedFrames(frames, request: request, generation: generation)
-            return
-        }
+        let descriptor = Self.frameDescriptor(
+            request: request,
+            cycleDuration: cycleDuration,
+            targetFramesPerSecond: targetFramesPerSecond
+        )
+        guard let token = renderCoordinator.begin(descriptor: descriptor) else { return }
+        cancelPendingRender(invalidateRequest: false)
 
         let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            let frames = Self.renderFrames(
-                request: request,
-                cycleDuration: cycleDuration,
-                targetFramesPerSecond: targetFramesPerSecond
+            guard let self, self.renderCoordinator.accepts(token) else { return }
+            guard self.window != nil else {
+                self.renderCoordinator.invalidate()
+                return
+            }
+            let cached = FloatingUnreadFrameCache.requestFrames(
+                descriptor: descriptor,
+                render: {
+                    Self.renderUncachedFrames(
+                        request: request,
+                        cycleDuration: cycleDuration,
+                        targetFramesPerSecond: targetFramesPerSecond
+                    )
+                },
+                completion: { [weak self] frames in
+                    self?.applyRenderedFrames(frames, request: request, token: token)
+                }
             )
-            self.applyRenderedFrames(frames, request: request, generation: generation)
+            if let cached {
+                self.applyRenderedFrames(cached, request: request, token: token)
+            }
         }
         pendingRenderWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + resizeRenderDebounce, execute: workItem)
+        if immediate {
+            workItem.perform()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + resizeRenderDebounce, execute: workItem)
+        }
     }
 
-    private func applyRenderedFrames(_ frames: [CGImage], request: RenderRequest, generation: UInt64) {
-        guard generation == renderGeneration, window != nil, !frames.isEmpty else { return }
+    private func applyRenderedFrames(
+        _ frames: [CGImage],
+        request: RenderRequest,
+        token: FloatingUnreadRenderRequestToken
+    ) {
+        guard renderCoordinator.accepts(token), window != nil else { return }
+        pendingRenderWorkItem = nil
+        guard !frames.isEmpty else { return }
         let phaseOffset = currentAnimationPhaseOffset()
         stopAnimations()
         CATransaction.begin()
@@ -196,12 +214,12 @@ final class FloatingUnreadShimmerView: NSView {
         startAnimations(phaseOffset: phaseOffset)
     }
 
-    private static nonisolated func renderFrames(
+    private static nonisolated func frameDescriptor(
         request: RenderRequest,
         cycleDuration: CFTimeInterval,
         targetFramesPerSecond: Int
-    ) -> [CGImage] {
-        let descriptor = FloatingUnreadFrameCacheDescriptor(
+    ) -> FloatingUnreadFrameCacheDescriptor {
+        FloatingUnreadFrameCacheDescriptor(
             effect: "shimmer",
             size: request.size,
             backingScale: request.backingScale,
@@ -212,13 +230,6 @@ final class FloatingUnreadShimmerView: NSView {
             activeFraction: 1,
             framesPerSecond: targetFramesPerSecond
         )
-        return FloatingUnreadFrameCache.frames(descriptor: descriptor) {
-            renderUncachedFrames(
-                request: request,
-                cycleDuration: cycleDuration,
-                targetFramesPerSecond: targetFramesPerSecond
-            )
-        }
     }
 
     private static nonisolated func renderUncachedFrames(
@@ -265,7 +276,7 @@ final class FloatingUnreadShimmerView: NSView {
         context.clip()
 
         let pulse = (sin(phase * .pi * 4) + 1) / 2
-        context.setFillColor(request.color.withAlphaComponent(0.026 + 0.020 * pulse).cgColor)
+        context.setFillColor(request.color.cgColor(alpha: 0.026 + 0.020 * pulse))
         context.fill(rect)
         context.setBlendMode(.screen)
 
@@ -283,11 +294,11 @@ final class FloatingUnreadShimmerView: NSView {
             height: bandHeight,
             angle: -0.20,
             colors: [
-                NSColor.clear,
-                request.color.withAlphaComponent(0.28),
-                NSColor.white.withAlphaComponent(0.46),
-                request.color.withAlphaComponent(0.22),
-                NSColor.clear
+                FloatingUnreadRenderColor.clear.cgColor(),
+                request.color.cgColor(alpha: 0.28),
+                FloatingUnreadRenderColor.white.cgColor(alpha: 0.46),
+                request.color.cgColor(alpha: 0.22),
+                FloatingUnreadRenderColor.clear.cgColor()
             ],
             locations: [0.0, 0.30, 0.50, 0.70, 1.0]
         )
@@ -299,10 +310,10 @@ final class FloatingUnreadShimmerView: NSView {
             height: bandHeight,
             angle: -0.20,
             colors: [
-                NSColor.clear,
-                NSColor.white.withAlphaComponent(0.00),
-                NSColor.white.withAlphaComponent(0.28),
-                NSColor.clear
+                FloatingUnreadRenderColor.clear.cgColor(),
+                FloatingUnreadRenderColor.white.cgColor(alpha: 0),
+                FloatingUnreadRenderColor.white.cgColor(alpha: 0.28),
+                FloatingUnreadRenderColor.clear.cgColor()
             ],
             locations: [0.0, 0.45, 0.55, 1.0]
         )
@@ -315,11 +326,14 @@ final class FloatingUnreadShimmerView: NSView {
         width: CGFloat,
         height: CGFloat,
         angle: CGFloat,
-        colors: [NSColor],
+        colors: [CGColor],
         locations: [CGFloat]
     ) {
-        let cgColors = colors.map { $0.cgColor } as CFArray
-        guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: cgColors, locations: locations) else {
+        guard let gradient = CGGradient(
+            colorsSpace: CGColorSpaceCreateDeviceRGB(),
+            colors: colors as CFArray,
+            locations: locations
+        ) else {
             return
         }
         context.saveGState()
@@ -375,21 +389,11 @@ final class FloatingUnreadShimmerView: NSView {
         lastBackingScale = 0
     }
 
-    private func cancelPendingRender(advanceGeneration: Bool = true) {
-        if advanceGeneration {
-            renderGeneration &+= 1
+    private func cancelPendingRender(invalidateRequest: Bool = true) {
+        if invalidateRequest {
+            renderCoordinator.invalidate()
         }
         pendingRenderWorkItem?.cancel()
         pendingRenderWorkItem = nil
     }
-
-    private func sameColor(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
-        let lhs = FloatingPanelColorTools.deviceRGB(lhs)
-        let rhs = FloatingPanelColorTools.deviceRGB(rhs)
-        return abs(lhs.redComponent - rhs.redComponent) < 0.001
-            && abs(lhs.greenComponent - rhs.greenComponent) < 0.001
-            && abs(lhs.blueComponent - rhs.blueComponent) < 0.001
-            && abs(lhs.alphaComponent - rhs.alphaComponent) < 0.001
-    }
 }
-

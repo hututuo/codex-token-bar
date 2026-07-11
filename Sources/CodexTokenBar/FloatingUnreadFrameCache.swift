@@ -42,7 +42,49 @@ enum FloatingUnreadFrameBudget {
     }
 }
 
-struct FloatingUnreadFrameCacheDescriptor: Hashable {
+struct FloatingUnreadRenderColor: Hashable, Sendable {
+    static let clear = FloatingUnreadRenderColor(red: 0, green: 0, blue: 0, alpha: 0)
+    static let white = FloatingUnreadRenderColor(red: 1, green: 1, blue: 1, alpha: 1)
+
+    let red: CGFloat
+    let green: CGFloat
+    let blue: CGFloat
+    let alpha: CGFloat
+
+    init(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
+        self.red = min(max(red, 0), 1)
+        self.green = min(max(green, 0), 1)
+        self.blue = min(max(blue, 0), 1)
+        self.alpha = min(max(alpha, 0), 1)
+    }
+
+    @MainActor
+    init(_ color: NSColor) {
+        let color = FloatingPanelColorTools.deviceRGB(color)
+        self.init(
+            red: color.redComponent,
+            green: color.greenComponent,
+            blue: color.blueComponent,
+            alpha: color.alphaComponent
+        )
+    }
+
+    func isApproximatelyEqual(to other: Self) -> Bool {
+        abs(red - other.red) < 0.001
+            && abs(green - other.green) < 0.001
+            && abs(blue - other.blue) < 0.001
+            && abs(alpha - other.alpha) < 0.001
+    }
+
+    nonisolated func cgColor(alpha overrideAlpha: CGFloat? = nil) -> CGColor {
+        CGColor(
+            colorSpace: CGColorSpaceCreateDeviceRGB(),
+            components: [red, green, blue, min(max(overrideAlpha ?? alpha, 0), 1)]
+        )!
+    }
+}
+
+struct FloatingUnreadFrameCacheDescriptor: Hashable, Sendable {
     let effect: String
     let pixelWidth: Int
     let pixelHeight: Int
@@ -60,21 +102,20 @@ struct FloatingUnreadFrameCacheDescriptor: Hashable {
         effect: String,
         size: CGSize,
         backingScale: CGFloat,
-        color: NSColor,
+        color: FloatingUnreadRenderColor,
         cornerRadius: CGFloat,
         scale: CGFloat,
         cycleDuration: CFTimeInterval,
         activeFraction: Double,
         framesPerSecond: Int
     ) {
-        let color = FloatingPanelColorTools.deviceRGB(color)
         self.effect = effect
         self.pixelWidth = max(1, Int((size.width * backingScale).rounded(.up)))
         self.pixelHeight = max(1, Int((size.height * backingScale).rounded(.up)))
-        self.red = Self.quantizeColor(color.redComponent)
-        self.green = Self.quantizeColor(color.greenComponent)
-        self.blue = Self.quantizeColor(color.blueComponent)
-        self.alpha = Self.quantizeColor(color.alphaComponent)
+        self.red = Self.quantizeColor(color.red)
+        self.green = Self.quantizeColor(color.green)
+        self.blue = Self.quantizeColor(color.blue)
+        self.alpha = Self.quantizeColor(color.alpha)
         self.cornerRadius = Self.quantize(cornerRadius, multiplier: 100)
         self.scale = Self.quantize(scale, multiplier: 100)
         self.cycleMilliseconds = Self.quantize(CGFloat(cycleDuration), multiplier: 1000)
@@ -118,54 +159,143 @@ private final class FloatingUnreadFrameSequence {
     }
 }
 
-private final class FloatingUnreadFrameCacheStorage: @unchecked Sendable {
+protocol FloatingUnreadFrameRenderExecuting: Sendable {
+    func execute(_ operation: @escaping @Sendable () -> Void)
+}
+
+struct FloatingUnreadSerialRenderExecutor: FloatingUnreadFrameRenderExecuting, @unchecked Sendable {
+    private let queue = DispatchQueue(
+        label: "com.codextokenbar.unread-frame-render",
+        qos: .userInitiated
+    )
+
+    func execute(_ operation: @escaping @Sendable () -> Void) {
+        queue.async(execute: operation)
+    }
+}
+
+protocol FloatingUnreadFrameCompletionDispatching: Sendable {
+    func dispatch(_ operation: @escaping @MainActor @Sendable () -> Void)
+}
+
+struct FloatingUnreadMainCompletionDispatcher: FloatingUnreadFrameCompletionDispatching {
+    func dispatch(_ operation: @escaping @MainActor @Sendable () -> Void) {
+        Task { @MainActor in
+            operation()
+        }
+    }
+}
+
+struct FloatingUnreadRenderRequestToken: Equatable, Sendable {
+    fileprivate let descriptor: FloatingUnreadFrameCacheDescriptor
+    fileprivate let generation: UInt64
+}
+
+@MainActor
+final class FloatingUnreadRenderRequestCoordinator {
+    private var generation: UInt64 = 0
+    private var descriptor: FloatingUnreadFrameCacheDescriptor?
+
+    func begin(descriptor: FloatingUnreadFrameCacheDescriptor) -> FloatingUnreadRenderRequestToken? {
+        guard descriptor != self.descriptor else { return nil }
+        generation &+= 1
+        self.descriptor = descriptor
+        return FloatingUnreadRenderRequestToken(descriptor: descriptor, generation: generation)
+    }
+
+    func accepts(_ token: FloatingUnreadRenderRequestToken) -> Bool {
+        descriptor == token.descriptor && generation == token.generation
+    }
+
+    func invalidate() {
+        generation &+= 1
+        descriptor = nil
+    }
+}
+
+final class FloatingUnreadFrameCacheStorage: @unchecked Sendable {
+    typealias Completion = @MainActor @Sendable ([CGImage]) -> Void
+
     private let cache: NSCache<FloatingUnreadFrameCacheKey, FloatingUnreadFrameSequence>
     private let lock = NSLock()
+    private let renderExecutor: any FloatingUnreadFrameRenderExecuting
+    private let completionDispatcher: any FloatingUnreadFrameCompletionDispatching
+    private var inFlight: [FloatingUnreadFrameCacheDescriptor: [Completion]] = [:]
 
-    init() {
+    init(
+        renderExecutor: any FloatingUnreadFrameRenderExecuting = FloatingUnreadSerialRenderExecutor(),
+        completionDispatcher: any FloatingUnreadFrameCompletionDispatching = FloatingUnreadMainCompletionDispatcher()
+    ) {
         let cache = NSCache<FloatingUnreadFrameCacheKey, FloatingUnreadFrameSequence>()
         cache.totalCostLimit = FloatingUnreadFrameBudget.frameCacheLimitBytes
         cache.countLimit = 6
         self.cache = cache
+        self.renderExecutor = renderExecutor
+        self.completionDispatcher = completionDispatcher
     }
 
-    func frames(
+    func requestFrames(
         descriptor: FloatingUnreadFrameCacheDescriptor,
-        render: () -> [CGImage]
-    ) -> [CGImage] {
+        render: @escaping @Sendable () -> [CGImage],
+        completion: @escaping Completion
+    ) -> [CGImage]? {
         let key = FloatingUnreadFrameCacheKey(descriptor)
         lock.lock()
         if let cached = cache.object(forKey: key) {
             lock.unlock()
             return cached.frames
         }
+        if inFlight[descriptor] != nil {
+            inFlight[descriptor, default: []].append(completion)
+            lock.unlock()
+            return nil
+        }
+        inFlight[descriptor] = [completion]
         lock.unlock()
 
-        let frames = render()
-        guard !frames.isEmpty else { return frames }
-        let byteCost = FloatingUnreadFrameBudget.estimatedBytes(
-            pixelWidth: descriptor.pixelWidth,
-            pixelHeight: descriptor.pixelHeight,
-            frameCount: frames.count
-        )
+        renderExecutor.execute { [weak self] in
+            self?.finish(descriptor: descriptor, frames: render())
+        }
+        return nil
+    }
+
+    private func finish(descriptor: FloatingUnreadFrameCacheDescriptor, frames: [CGImage]) {
+        let key = FloatingUnreadFrameCacheKey(descriptor)
         lock.lock()
-        cache.setObject(
-            FloatingUnreadFrameSequence(frames: frames, byteCost: byteCost),
-            forKey: key,
-            cost: byteCost
-        )
+        if !frames.isEmpty {
+            let byteCost = FloatingUnreadFrameBudget.estimatedBytes(
+                pixelWidth: descriptor.pixelWidth,
+                pixelHeight: descriptor.pixelHeight,
+                frameCount: frames.count
+            )
+            cache.setObject(
+                FloatingUnreadFrameSequence(frames: frames, byteCost: byteCost),
+                forKey: key,
+                cost: byteCost
+            )
+        }
+        let completions = inFlight.removeValue(forKey: descriptor) ?? []
         lock.unlock()
-        return frames
+
+        guard !completions.isEmpty else { return }
+        completionDispatcher.dispatch {
+            completions.forEach { $0(frames) }
+        }
     }
 }
 
 enum FloatingUnreadFrameCache {
     private static let storage = FloatingUnreadFrameCacheStorage()
 
-    static func frames(
+    static func requestFrames(
         descriptor: FloatingUnreadFrameCacheDescriptor,
-        render: () -> [CGImage]
-    ) -> [CGImage] {
-        storage.frames(descriptor: descriptor, render: render)
+        render: @escaping @Sendable () -> [CGImage],
+        completion: @escaping FloatingUnreadFrameCacheStorage.Completion
+    ) -> [CGImage]? {
+        storage.requestFrames(
+            descriptor: descriptor,
+            render: render,
+            completion: completion
+        )
     }
 }

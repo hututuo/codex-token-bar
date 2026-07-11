@@ -31,10 +31,10 @@ final class FloatingUnreadSpriteRippleView: NSView {
         let isDirect: Bool
     }
 
-    private struct RenderRequest {
+    private struct RenderRequest: Sendable {
         let size: CGSize
         let backingScale: CGFloat
-        let color: NSColor
+        let color: FloatingUnreadRenderColor
         let cornerRadius: CGFloat
         let scale: CGFloat
     }
@@ -42,11 +42,11 @@ final class FloatingUnreadSpriteRippleView: NSView {
     private static let animationKey = "floatingUnreadRippleFrames"
 
     private let imageLayer = CALayer()
+    private let renderCoordinator = FloatingUnreadRenderRequestCoordinator()
     private var cachedFrames: [CGImage] = []
     private var pendingRenderWorkItem: DispatchWorkItem?
-    private var renderGeneration: UInt64 = 0
     private var animationStartLayerTime: CFTimeInterval?
-    private var currentColor = NSColor.systemBlue
+    private var currentColor = FloatingUnreadRenderColor(red: 0, green: 0.48, blue: 1, alpha: 1)
     private var currentCornerRadius: CGFloat = 14
     private var currentScale: CGFloat = 1
     private var lastBounds: CGRect = .zero
@@ -84,9 +84,9 @@ final class FloatingUnreadSpriteRippleView: NSView {
     }
 
     func configure(color: NSColor, cornerRadius: CGFloat, scale: CGFloat) {
-        let nextColor = FloatingPanelColorTools.deviceRGB(color)
+        let nextColor = FloatingUnreadRenderColor(color)
         let nextScale = max(scale, 0.1)
-        let needsLayout = !sameColor(nextColor, currentColor)
+        let needsLayout = !nextColor.isApproximatelyEqual(to: currentColor)
             || abs(currentScale - nextScale) > 0.001
             || abs(currentCornerRadius - cornerRadius) > 0.001
         currentColor = nextColor
@@ -158,22 +158,41 @@ final class FloatingUnreadSpriteRippleView: NSView {
     }
 
     private func requestFrameRender(_ request: RenderRequest, immediate: Bool) {
-        renderGeneration &+= 1
-        let generation = renderGeneration
-        cancelPendingRender(advanceGeneration: false)
         let cycleDuration = cycleDuration
         let activeFraction = activeFraction
         let targetFramesPerSecond = targetFramesPerSecond
+        let descriptor = Self.frameDescriptor(
+            request: request,
+            cycleDuration: cycleDuration,
+            activeFraction: activeFraction,
+            targetFramesPerSecond: targetFramesPerSecond
+        )
+        guard let token = renderCoordinator.begin(descriptor: descriptor) else { return }
+        cancelPendingRender(invalidateRequest: false)
 
         let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            let frames = Self.renderFrames(
-                request: request,
-                cycleDuration: cycleDuration,
-                activeFraction: activeFraction,
-                targetFramesPerSecond: targetFramesPerSecond
+            guard let self, self.renderCoordinator.accepts(token) else { return }
+            guard self.window != nil else {
+                self.renderCoordinator.invalidate()
+                return
+            }
+            let cached = FloatingUnreadFrameCache.requestFrames(
+                descriptor: descriptor,
+                render: {
+                    Self.renderUncachedFrames(
+                        request: request,
+                        cycleDuration: cycleDuration,
+                        activeFraction: activeFraction,
+                        targetFramesPerSecond: targetFramesPerSecond
+                    )
+                },
+                completion: { [weak self] frames in
+                    self?.applyRenderedFrames(frames, request: request, token: token)
+                }
             )
-            self.applyRenderedFrames(frames, request: request, generation: generation)
+            if let cached {
+                self.applyRenderedFrames(cached, request: request, token: token)
+            }
         }
         pendingRenderWorkItem = workItem
         if immediate {
@@ -183,8 +202,14 @@ final class FloatingUnreadSpriteRippleView: NSView {
         }
     }
 
-    private func applyRenderedFrames(_ frames: [CGImage], request: RenderRequest, generation: UInt64) {
-        guard generation == renderGeneration, window != nil, !frames.isEmpty else { return }
+    private func applyRenderedFrames(
+        _ frames: [CGImage],
+        request: RenderRequest,
+        token: FloatingUnreadRenderRequestToken
+    ) {
+        guard renderCoordinator.accepts(token), window != nil else { return }
+        pendingRenderWorkItem = nil
+        guard !frames.isEmpty else { return }
         let phaseOffset = currentAnimationPhaseOffset()
         stopAnimations()
         CATransaction.begin()
@@ -199,13 +224,13 @@ final class FloatingUnreadSpriteRippleView: NSView {
         startAnimations(phaseOffset: phaseOffset)
     }
 
-    private static nonisolated func renderFrames(
+    private static nonisolated func frameDescriptor(
         request: RenderRequest,
         cycleDuration: CFTimeInterval,
         activeFraction: Double,
         targetFramesPerSecond: Int
-    ) -> [CGImage] {
-        let descriptor = FloatingUnreadFrameCacheDescriptor(
+    ) -> FloatingUnreadFrameCacheDescriptor {
+        FloatingUnreadFrameCacheDescriptor(
             effect: "ripple",
             size: request.size,
             backingScale: request.backingScale,
@@ -216,14 +241,6 @@ final class FloatingUnreadSpriteRippleView: NSView {
             activeFraction: activeFraction,
             framesPerSecond: targetFramesPerSecond
         )
-        return FloatingUnreadFrameCache.frames(descriptor: descriptor) {
-            renderUncachedFrames(
-                request: request,
-                cycleDuration: cycleDuration,
-                activeFraction: activeFraction,
-                targetFramesPerSecond: targetFramesPerSecond
-            )
-        }
     }
 
     private static nonisolated func renderUncachedFrames(
@@ -280,7 +297,7 @@ final class FloatingUnreadSpriteRippleView: NSView {
         context.clip()
 
         let pulse = (sin(phase * .pi * 2) + 1) / 2
-        context.setFillColor(request.color.withAlphaComponent(0.020 + 0.014 * pulse).cgColor)
+        context.setFillColor(request.color.cgColor(alpha: 0.020 + 0.014 * pulse))
         context.fill(rect)
 
         if phase < activeFraction {
@@ -333,7 +350,7 @@ final class FloatingUnreadSpriteRippleView: NSView {
 
     private static nonisolated func drawCircularRing(
         in context: CGContext,
-        color: NSColor,
+        color: FloatingUnreadRenderColor,
         scale: CGFloat,
         center: CGPoint,
         radius: CGFloat,
@@ -345,12 +362,12 @@ final class FloatingUnreadSpriteRippleView: NSView {
         let innerRadius = max(radius - thickness / 2, 0.1)
 
         context.saveGState()
-        context.setFillColor(color.withAlphaComponent(alpha * 0.54).cgColor)
+        context.setFillColor(color.cgColor(alpha: alpha * 0.54))
         context.addEllipse(in: Self.circleRect(center: center, radius: outerRadius))
         context.addEllipse(in: Self.circleRect(center: center, radius: innerRadius))
         context.drawPath(using: .eoFill)
 
-        context.setStrokeColor(NSColor.white.withAlphaComponent(alpha * 0.17).cgColor)
+        context.setStrokeColor(FloatingUnreadRenderColor.white.cgColor(alpha: alpha * 0.17))
         context.setLineWidth(max(0.18, 0.24 * scale))
         context.addEllipse(in: Self.circleRect(center: center, radius: radius))
         context.strokePath()
@@ -396,9 +413,9 @@ final class FloatingUnreadSpriteRippleView: NSView {
         lastBackingScale = 0
     }
 
-    private func cancelPendingRender(advanceGeneration: Bool = true) {
-        if advanceGeneration {
-            renderGeneration &+= 1
+    private func cancelPendingRender(invalidateRequest: Bool = true) {
+        if invalidateRequest {
+            renderCoordinator.invalidate()
         }
         pendingRenderWorkItem?.cancel()
         pendingRenderWorkItem = nil
@@ -442,12 +459,4 @@ final class FloatingUnreadSpriteRippleView: NSView {
         return exp(-(distance * distance))
     }
 
-    private func sameColor(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
-        let lhs = FloatingPanelColorTools.deviceRGB(lhs)
-        let rhs = FloatingPanelColorTools.deviceRGB(rhs)
-        return abs(lhs.redComponent - rhs.redComponent) < 0.001
-            && abs(lhs.greenComponent - rhs.greenComponent) < 0.001
-            && abs(lhs.blueComponent - rhs.blueComponent) < 0.001
-            && abs(lhs.alphaComponent - rhs.alphaComponent) < 0.001
-    }
 }
