@@ -68,6 +68,7 @@ pub(crate) struct SurfaceSetupStatus {
 static SURFACE_SETUP_STATUS: OnceLock<Mutex<SurfaceSetupStatus>> = OnceLock::new();
 static STATUS_PANEL_INTERACTION: OnceLock<Mutex<StatusPanelInteractionController>> = OnceLock::new();
 static UPDATE_TRAY_FALLBACK_VERSION: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static STATUS_TRAY_LIVE_TITLE: OnceLock<Mutex<String>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct StatusPanelInteractionController {
@@ -636,8 +637,11 @@ pub fn set_status_tray_readout_native(
         return Ok(false);
     };
 
+    if let Ok(mut live_title) = status_tray_live_title().lock() {
+        *live_title = title.clone();
+    }
     let update_version = update_tray_fallback_version().lock().ok().and_then(|version| version.clone());
-    let title = update_version.as_ref().map(|version| format!("{title} ↑v{version}")).unwrap_or(title);
+    let title = status_tray_title(&title, update_version.as_deref());
     let tooltip = update_version.as_ref().map(|version| format!("{tooltip} · 有新版本 v{version}，打开主界面安装")).unwrap_or(tooltip);
     tray.set_title(Some(title))
         .map_err(|error| error.to_string())?;
@@ -653,6 +657,8 @@ pub fn set_update_available_tray_fallback(app: &tauri::AppHandle, version: &str)
     if let Ok(mut cached) = update_tray_fallback_version().lock() {
         *cached = Some(version.to_string());
     }
+    let live_title = status_tray_live_title().lock().map(|title| title.clone()).unwrap_or_else(|_| "0.0/s".into());
+    tray.set_title(Some(status_tray_title(&live_title, Some(version)))).map_err(|error| error.to_string())?;
     tray.set_icon(Some(status_tray_update_icon())).map_err(|error| error.to_string())?;
     tray.set_tooltip(Some(format!("Codex Token Bar · 有新版本 v{version}，打开主界面安装")))
         .map_err(|error| error.to_string())?;
@@ -664,6 +670,8 @@ pub fn set_update_available_tray_fallback(app: &tauri::AppHandle, version: &str)
 pub fn clear_update_available_tray_fallback(app: &tauri::AppHandle) -> Result<bool, String> {
     let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else { return Ok(false); };
     if let Ok(mut cached) = update_tray_fallback_version().lock() { *cached = None; }
+    let live_title = status_tray_live_title().lock().map(|title| title.clone()).unwrap_or_else(|_| "0.0/s".into());
+    tray.set_title(Some(live_title)).map_err(|error| error.to_string())?;
     tray.set_icon(Some(status_tray_icon())).map_err(|error| error.to_string())?;
     tray.set_tooltip(Some("Codex Token Bar")).map_err(|error| error.to_string())?;
     let menu = status_tray_menu(app, None).map_err(|error| error.to_string())?;
@@ -673,6 +681,16 @@ pub fn clear_update_available_tray_fallback(app: &tauri::AppHandle) -> Result<bo
 
 fn update_tray_fallback_version() -> &'static Mutex<Option<String>> {
     UPDATE_TRAY_FALLBACK_VERSION.get_or_init(|| Mutex::new(None))
+}
+
+fn status_tray_live_title() -> &'static Mutex<String> {
+    STATUS_TRAY_LIVE_TITLE.get_or_init(|| Mutex::new("0.0/s".into()))
+}
+
+fn status_tray_title(live_title: &str, update_version: Option<&str>) -> String {
+    update_version
+        .map(|version| format!("{live_title} ↑v{version}"))
+        .unwrap_or_else(|| live_title.to_string())
 }
 
 fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -1319,6 +1337,13 @@ mod tests {
             size: Size::Logical((18.0, 22.0).into()),
         };
         assert_eq!(physical_tray_bounds(rect, 2.0), bounds(20.0, -40.0, 36.0, 44.0));
+    }
+
+    #[test]
+    fn clearing_update_suffix_restores_live_tray_text() {
+        let live = "12.4/s · 42%";
+        assert_eq!(status_tray_title(live, Some("0.8.0")), "12.4/s · 42% ↑v0.8.0");
+        assert_eq!(status_tray_title(live, None), live);
     }
 
     #[test]
