@@ -66,7 +66,7 @@ final class LiveRateMonitorTests: XCTestCase {
         let oldRollout = directory.appendingPathComponent("old.jsonl")
         let newRollout = directory.appendingPathComponent("new.jsonl")
         try Data("old-data".utf8).write(to: oldRollout)
-        try Data("existing-new-data".utf8).write(to: newRollout)
+        try Data("existing-new-data\n".utf8).write(to: newRollout)
         let monitor = LiveRateMonitor(monitoringEnabled: false)
         monitor.testPrepareForLiveRateProcessing(
             selectedThreadID: "thread-old",
@@ -199,7 +199,7 @@ final class LiveRateMonitorTests: XCTestCase {
         let source = try makeCodexDataSource(named: "thread-refresh")
         try Data("state".utf8).write(to: source.stateDatabase)
         let rollout = source.codexHome.appendingPathComponent("new.jsonl")
-        try Data("existing".utf8).write(to: rollout)
+        try Data("existing\n".utf8).write(to: rollout)
         let loader = CountingRecentThreadsLoader(rows: [
             LiveRateMonitor.ThreadRow(id: "thread-new", title: "New", updatedAtMS: 2, rolloutPath: rollout.path)
         ])
@@ -1639,19 +1639,28 @@ final class LiveRateMonitorTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         temporaryDirectories.append(directory)
         let rolloutURL = directory.appendingPathComponent("rollout.jsonl")
-        let contextLine = rolloutTurnContextLine(timestamp: "2026-06-24T13:00:00.000Z", turnID: "turn-1")
-        try (contextLine + "\n").write(to: rolloutURL, atomically: true, encoding: .utf8)
-        let option = LiveThreadOption(
-            id: "thread-1",
-            title: "Thread",
-            updatedAtMS: 0,
-            rolloutPath: rolloutURL.path
+        let historicalLine = rolloutAgentMessageLine(
+            timestamp: "2026-06-24T12:59:59.000Z",
+            message: "historical output"
         )
+        let contextLine = rolloutTurnContextLine(timestamp: "2026-06-24T13:00:00.000Z", turnID: "turn-1")
+        try (historicalLine + "\n" + contextLine + "\n").write(to: rolloutURL, atomically: true, encoding: .utf8)
         let monitor = LiveRateMonitor(monitoringEnabled: false)
         let baseline = LiveRateMonitor(monitoringEnabled: false)
-        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1", threadOptions: [option])
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
         baseline.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
-        monitor.testSetRolloutReadState(offset: 0, currentTurnID: nil, path: rolloutURL.path)
+        monitor.testReconcileThreadOptions([
+            LiveRateMonitor.ThreadRow(
+                id: "thread-1",
+                title: "Thread",
+                updatedAtMS: 0,
+                rolloutPath: rolloutURL.path
+            )
+        ])
+
+        XCTAssertEqual(monitor.testRolloutTurnContext(path: rolloutURL.path), "turn-1")
+        XCTAssertEqual(monitor.snapshot.breakdown, LiveTokenBreakdown())
+        XCTAssertEqual(monitor.totalSnapshot.breakdown, LiveTokenBreakdown())
 
         let firstReads = try monitor.testLoadRolloutReads()
         let firstRead = try XCTUnwrap(firstReads.first)
@@ -1702,6 +1711,77 @@ final class LiveRateMonitorTests: XCTestCase {
     }
 
     @MainActor
+    func testInitialRolloutBackscanIsBoundedAndDoesNotPublishHistoricalEvents() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LiveRateMonitorRolloutBackscan-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        temporaryDirectories.append(directory)
+        let rolloutURL = directory.appendingPathComponent("rollout.jsonl")
+        let oldContext = rolloutTurnContextLine(timestamp: "2026-06-24T13:00:00.000Z", turnID: "outside-window")
+        let padding = String(repeating: "{}\n", count: 24_000)
+        let historicalTail = rolloutAgentMessageLine(
+            timestamp: "2026-06-24T13:00:01.000Z",
+            message: "historical tail output"
+        )
+        let contents = oldContext + "\n" + padding + historicalTail + "\n"
+        try contents.write(to: rolloutURL, atomically: true, encoding: .utf8)
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        monitor.testReconcileThreadOptions([
+            LiveRateMonitor.ThreadRow(id: "thread-1", title: "Thread", updatedAtMS: 0, rolloutPath: rolloutURL.path)
+        ])
+
+        let reads = try monitor.testLoadRolloutReads()
+
+        XCTAssertEqual(LiveRateMonitor.rolloutTurnContextBackscanByteLimit, 64 * 1_024)
+        XCTAssertGreaterThan(UInt64(Data(contents.utf8).count), LiveRateMonitor.rolloutTurnContextBackscanByteLimit)
+        XCTAssertNil(monitor.testRolloutTurnContext(path: rolloutURL.path))
+        XCTAssertTrue(try XCTUnwrap(reads.first).events.isEmpty)
+        XCTAssertEqual(monitor.snapshot.breakdown, LiveTokenBreakdown())
+        XCTAssertEqual(monitor.totalSnapshot.breakdown, LiveTokenBreakdown())
+    }
+
+    @MainActor
+    func testInitialRolloutBackscanIgnoresIncompleteTailAndKeepsCompleteBoundary() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LiveRateMonitorRolloutPartialTail-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        temporaryDirectories.append(directory)
+        let rolloutURL = directory.appendingPathComponent("rollout.jsonl")
+        let completeContext = rolloutTurnContextLine(timestamp: "2026-06-24T13:00:00.000Z", turnID: "complete-turn")
+        let incompleteContext = rolloutTurnContextLine(timestamp: "2026-06-24T13:00:01.000Z", turnID: "incomplete-turn")
+        let completeOffset = UInt64(Data((completeContext + "\n").utf8).count)
+        try (completeContext + "\n" + incompleteContext).write(to: rolloutURL, atomically: true, encoding: .utf8)
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        monitor.testReconcileThreadOptions([
+            LiveRateMonitor.ThreadRow(id: "thread-1", title: "Thread", updatedAtMS: 0, rolloutPath: rolloutURL.path)
+        ])
+
+        XCTAssertEqual(monitor.testRolloutOffset(path: rolloutURL.path), completeOffset)
+        XCTAssertEqual(monitor.testRolloutTurnContext(path: rolloutURL.path), "complete-turn")
+        let initialBoundarySignature = try XCTUnwrap(monitor.testRolloutBoundarySignature(path: rolloutURL.path))
+        let incompleteReads = try monitor.testLoadRolloutReads()
+        let incompleteRead = try XCTUnwrap(incompleteReads.first)
+        XCTAssertEqual(incompleteRead.newOffset, completeOffset)
+        XCTAssertEqual(incompleteRead.boundarySignature, initialBoundarySignature)
+        monitor.testProcessPollInputs(streamRows: [], rolloutReads: incompleteReads, now: 1_000)
+        XCTAssertEqual(monitor.testRolloutBoundarySignature(path: rolloutURL.path), initialBoundarySignature)
+
+        let handle = try FileHandle(forWritingTo: rolloutURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("\n".utf8))
+        try handle.close()
+        let completedReads = try monitor.testLoadRolloutReads()
+        let completedRead = try XCTUnwrap(completedReads.first)
+
+        XCTAssertTrue(completedRead.events.isEmpty)
+        XCTAssertEqual(completedRead.currentTurnID, "incomplete-turn")
+        XCTAssertGreaterThan(completedRead.newOffset, completeOffset)
+        XCTAssertNotEqual(completedRead.boundarySignature, initialBoundarySignature)
+    }
+
+    @MainActor
     func testRolloutTruncationClearsPreviousTurnContext() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("LiveRateMonitorRolloutTruncate-\(UUID().uuidString)", isDirectory: true)
@@ -1735,6 +1815,65 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertNil(replacementRead.events.first?.turnID)
         monitor.testProcessPollInputs(streamRows: [], rolloutReads: replacementReads, now: 1_001)
         XCTAssertNil(monitor.testRolloutTurnContext(path: rolloutURL.path))
+    }
+
+    @MainActor
+    func testSameInodeTruncateAndRegrowRestartsAtZeroWhenBoundaryChanges() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LiveRateMonitorRolloutRegrow-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        temporaryDirectories.append(directory)
+        let rolloutURL = directory.appendingPathComponent("rollout.jsonl")
+        let oldContent = rolloutTurnContextLine(timestamp: "2026-06-24T13:00:00.000Z", turnID: "old-turn")
+            + "\n"
+            + rolloutAgentMessageLine(timestamp: "2026-06-24T13:00:00.010Z", message: "old output")
+            + "\n"
+        try oldContent.write(to: rolloutURL, atomically: true, encoding: .utf8)
+        let oldOffset = UInt64(Data(oldContent.utf8).count)
+        let inodeBefore = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: rolloutURL.path)[.systemFileNumber] as? NSNumber
+        )
+        let option = LiveThreadOption(id: "thread-1", title: "Thread", updatedAtMS: 0, rolloutPath: rolloutURL.path)
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1", threadOptions: [option])
+        monitor.testSetRolloutReadState(offset: oldOffset, currentTurnID: "old-turn", path: rolloutURL.path)
+
+        let newContext = rolloutTurnContextLine(timestamp: "2026-06-24T13:00:01.000Z", turnID: "new-turn")
+        let newAgent = rolloutAgentMessageLine(timestamp: "2026-06-24T13:00:01.010Z", message: "new output")
+        let newResponse = rolloutAssistantResponseItemLine(
+            timestamp: "2026-06-24T13:00:01.020Z",
+            id: "new-message",
+            text: "new output"
+        )
+        let newContent = newContext
+            + "\n"
+            + newAgent
+            + "\n"
+            + newResponse
+            + "\n"
+            + String(repeating: " ", count: Int(oldOffset) + 256)
+            + "\n"
+        let handle = try FileHandle(forWritingTo: rolloutURL)
+        try handle.truncate(atOffset: 0)
+        try handle.seek(toOffset: 0)
+        try handle.write(contentsOf: Data(newContent.utf8))
+        try handle.close()
+        let inodeAfter = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: rolloutURL.path)[.systemFileNumber] as? NSNumber
+        )
+        XCTAssertEqual(inodeAfter, inodeBefore)
+        XCTAssertGreaterThan(UInt64(Data(newContent.utf8).count), oldOffset)
+
+        let reads = try monitor.testLoadRolloutReads()
+        let read = try XCTUnwrap(reads.first)
+
+        XCTAssertEqual(LiveRateMonitor.rolloutBoundarySignatureByteLimit, 256)
+        XCTAssertEqual(read.events.map(\.text), ["new output"])
+        XCTAssertEqual(read.events.first?.turnID, "new-turn")
+        XCTAssertEqual(read.currentTurnID, "new-turn")
+        XCTAssertEqual(read.newOffset, UInt64(Data(newContent.utf8).count))
+        monitor.testProcessPollInputs(streamRows: [], rolloutReads: reads, now: 1_001)
+        XCTAssertEqual(monitor.testRolloutTurnContext(path: rolloutURL.path), "new-turn")
     }
 
     @MainActor

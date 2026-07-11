@@ -1332,11 +1332,10 @@ extension LiveRateMonitor {
     }
 
     func testSetRolloutOffset(_ offset: UInt64, path: String) {
-        let initial = Self.initialRolloutReadState(path: path)
-        rolloutReadStates[path] = RolloutReadState(
+        rolloutReadStates[path] = Self.rolloutReadState(
+            path: path,
             offset: offset,
-            currentTurnID: rolloutReadStates[path]?.currentTurnID,
-            fileIdentity: rolloutReadStates[path]?.fileIdentity ?? initial.fileIdentity
+            currentTurnID: rolloutReadStates[path]?.currentTurnID
         )
     }
 
@@ -1345,15 +1344,19 @@ extension LiveRateMonitor {
     }
 
     func testSetRolloutReadState(offset: UInt64, currentTurnID: String?, path: String) {
-        rolloutReadStates[path] = RolloutReadState(
+        rolloutReadStates[path] = Self.rolloutReadState(
+            path: path,
             offset: offset,
-            currentTurnID: currentTurnID,
-            fileIdentity: Self.initialRolloutReadState(path: path).fileIdentity
+            currentTurnID: currentTurnID
         )
     }
 
     func testRolloutTurnContext(path: String) -> String? {
         rolloutReadStates[path]?.currentTurnID
+    }
+
+    func testRolloutBoundarySignature(path: String) -> RolloutBoundarySignature? {
+        rolloutReadStates[path]?.boundarySignature
     }
 
     func testLoadRolloutReads() throws -> [RolloutRead] {

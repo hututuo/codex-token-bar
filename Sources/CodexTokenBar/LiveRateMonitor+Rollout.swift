@@ -1,7 +1,11 @@
 import Foundation
 import Darwin
+import CryptoKit
 
 extension LiveRateMonitor {
+    nonisolated static let rolloutTurnContextBackscanByteLimit: UInt64 = 64 * 1_024
+    nonisolated static let rolloutBoundarySignatureByteLimit: UInt64 = 256
+
     nonisolated static func rolloutReads(
         options: [LiveThreadOption],
         states: [String: RolloutReadState]
@@ -16,7 +20,9 @@ extension LiveRateMonitor {
                 newOffset: result.state.offset,
                 events: result.events,
                 currentTurnID: result.state.currentTurnID,
-                fileIdentity: result.state.fileIdentity
+                fileIdentity: result.state.fileIdentity,
+                boundarySignature: result.state.boundarySignature,
+                discardLeadingPartialLine: result.state.discardLeadingPartialLine
             )
         }
     }
@@ -32,60 +38,106 @@ extension LiveRateMonitor {
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
         defer { try? handle.close() }
         let metadata = try rolloutFileMetadata(handle: handle)
+        let boundaryChanged: Bool
+        if metadata.size >= state.offset, let expected = state.boundarySignature {
+            boundaryChanged = try rolloutBoundarySignature(handle: handle, endingAt: state.offset) != expected
+        } else {
+            boundaryChanged = false
+        }
         let restarted = metadata.size < state.offset
             || state.fileIdentity.map { $0 != metadata.identity } == true
+            || boundaryChanged
         let readOffset = restarted ? 0 : state.offset
         let previousTurnID = restarted ? nil : state.currentTurnID
+        var discardLeadingPartialLine = restarted ? false : state.discardLeadingPartialLine
         if metadata.size == readOffset {
             return (
-                RolloutReadState(
+                try rolloutReadState(
+                    handle: handle,
                     offset: metadata.size,
                     currentTurnID: previousTurnID,
-                    fileIdentity: metadata.identity
+                    fileIdentity: metadata.identity,
+                    discardLeadingPartialLine: discardLeadingPartialLine
                 ),
                 []
             )
         }
         try handle.seek(toOffset: readOffset)
         let data = try handle.readToEnd() ?? Data()
-        guard !data.isEmpty, var text = String(data: data, encoding: .utf8) else {
+        guard !data.isEmpty else {
             return (
-                RolloutReadState(
+                try rolloutReadState(
+                    handle: handle,
                     offset: readOffset,
                     currentTurnID: previousTurnID,
-                    fileIdentity: metadata.identity
+                    fileIdentity: metadata.identity,
+                    discardLeadingPartialLine: discardLeadingPartialLine
                 ),
                 []
             )
         }
 
-        var consumedText = text
-        if !text.hasSuffix("\n") {
-            guard let lastNewline = text.lastIndex(of: "\n") else {
+        var skippedByteCount = 0
+        if discardLeadingPartialLine {
+            guard let firstNewline = data.firstIndex(of: 0x0A) else {
                 return (
-                    RolloutReadState(
+                    try rolloutReadState(
+                        handle: handle,
                         offset: readOffset,
                         currentTurnID: previousTurnID,
-                        fileIdentity: metadata.identity
+                        fileIdentity: metadata.identity,
+                        discardLeadingPartialLine: true
                     ),
                     []
                 )
             }
-            consumedText = String(text[...lastNewline])
-            text = String(text[..<lastNewline])
+            skippedByteCount = data.distance(from: data.startIndex, to: data.index(after: firstNewline))
+            discardLeadingPartialLine = false
         }
 
-        let consumedBytes = UInt64(consumedText.data(using: .utf8)?.count ?? 0)
-        let newOffset = readOffset + consumedBytes
+        let remaining = data.dropFirst(skippedByteCount)
+        guard let lastNewline = remaining.lastIndex(of: 0x0A) else {
+            let newOffset = readOffset + UInt64(skippedByteCount)
+            return (
+                try rolloutReadState(
+                    handle: handle,
+                    offset: newOffset,
+                    currentTurnID: previousTurnID,
+                    fileIdentity: metadata.identity,
+                    discardLeadingPartialLine: false
+                ),
+                []
+            )
+        }
+        let completeEnd = remaining.index(after: lastNewline)
+        let completeByteCount = remaining.distance(from: remaining.startIndex, to: completeEnd)
+        let completeData = Data(remaining[..<completeEnd])
+        guard let text = String(data: completeData, encoding: .utf8) else {
+            let newOffset = readOffset + UInt64(skippedByteCount)
+            return (
+                try rolloutReadState(
+                    handle: handle,
+                    offset: newOffset,
+                    currentTurnID: previousTurnID,
+                    fileIdentity: metadata.identity,
+                    discardLeadingPartialLine: false
+                ),
+                []
+            )
+        }
+
+        let newOffset = readOffset + UInt64(skippedByteCount + completeByteCount)
         let parsed = rolloutEvents(
             fromLines: text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init),
             previousTurnID: previousTurnID
         )
         return (
-            RolloutReadState(
+            try rolloutReadState(
+                handle: handle,
                 offset: newOffset,
                 currentTurnID: parsed.currentTurnID,
-                fileIdentity: metadata.identity
+                fileIdentity: metadata.identity,
+                discardLeadingPartialLine: false
             ),
             parsed.events
         )
@@ -99,9 +151,31 @@ extension LiveRateMonitor {
         guard let metadata = try? rolloutFileMetadata(handle: handle) else {
             return RolloutReadState(offset: 0, currentTurnID: nil, fileIdentity: nil)
         }
-        return RolloutReadState(
-            offset: metadata.size,
-            currentTurnID: nil,
+        return (try? initialRolloutReadState(handle: handle, metadata: metadata))
+            ?? RolloutReadState(offset: metadata.size, currentTurnID: nil, fileIdentity: metadata.identity)
+    }
+
+    nonisolated static func rolloutReadState(
+        path: String,
+        offset: UInt64,
+        currentTurnID: String?
+    ) -> RolloutReadState {
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else {
+            return RolloutReadState(offset: offset, currentTurnID: currentTurnID, fileIdentity: nil)
+        }
+        defer { try? handle.close() }
+        guard let metadata = try? rolloutFileMetadata(handle: handle), metadata.size >= offset else {
+            return RolloutReadState(offset: offset, currentTurnID: currentTurnID, fileIdentity: nil)
+        }
+        return (try? rolloutReadState(
+            handle: handle,
+            offset: offset,
+            currentTurnID: currentTurnID,
+            fileIdentity: metadata.identity,
+            discardLeadingPartialLine: false
+        )) ?? RolloutReadState(
+            offset: offset,
+            currentTurnID: currentTurnID,
             fileIdentity: metadata.identity
         )
     }
@@ -265,6 +339,100 @@ extension LiveRateMonitor {
            let turnID = metadata["turn_id"] as? String,
            !turnID.isEmpty { return turnID }
         return nil
+    }
+
+    nonisolated private static func initialRolloutReadState(
+        handle: FileHandle,
+        metadata: (size: UInt64, identity: RolloutFileIdentity)
+    ) throws -> RolloutReadState {
+        let tailByteCount = min(metadata.size, rolloutTurnContextBackscanByteLimit)
+        let tailOffset = metadata.size - tailByteCount
+        try handle.seek(toOffset: tailOffset)
+        let tailData = try handle.read(upToCount: Int(tailByteCount)) ?? Data()
+        let bytes = Array(tailData)
+        let completeEnd: Int
+        if bytes.last == 0x0A {
+            completeEnd = bytes.count
+        } else if let lastNewline = bytes.lastIndex(of: 0x0A) {
+            completeEnd = lastNewline + 1
+        } else {
+            completeEnd = 0
+        }
+
+        guard completeEnd > 0 else {
+            let offset = tailOffset == 0 ? 0 : tailOffset
+            return try rolloutReadState(
+                handle: handle,
+                offset: offset,
+                currentTurnID: nil,
+                fileIdentity: metadata.identity,
+                discardLeadingPartialLine: tailOffset > 0
+            )
+        }
+
+        let parseStart: Int
+        if tailOffset == 0 {
+            parseStart = 0
+        } else {
+            parseStart = (bytes.firstIndex(of: 0x0A) ?? -1) + 1
+        }
+        let currentTurnID: String?
+        if parseStart < completeEnd,
+           let text = String(data: Data(bytes[parseStart..<completeEnd]), encoding: .utf8) {
+            currentTurnID = text
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .reversed()
+                .compactMap { rolloutTurnContextID(fromLine: String($0)) }
+                .first
+        } else {
+            currentTurnID = nil
+        }
+        return try rolloutReadState(
+            handle: handle,
+            offset: tailOffset + UInt64(completeEnd),
+            currentTurnID: currentTurnID,
+            fileIdentity: metadata.identity,
+            discardLeadingPartialLine: false
+        )
+    }
+
+    nonisolated private static func rolloutTurnContextID(fromLine line: String) -> String? {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = object["payload"] as? [String: Any],
+              object["type"] as? String == "turn_context"
+                || payload["type"] as? String == "turn_context"
+        else { return nil }
+        return rolloutTurnID(object: object, payload: payload)
+    }
+
+    nonisolated private static func rolloutReadState(
+        handle: FileHandle,
+        offset: UInt64,
+        currentTurnID: String?,
+        fileIdentity: RolloutFileIdentity,
+        discardLeadingPartialLine: Bool
+    ) throws -> RolloutReadState {
+        RolloutReadState(
+            offset: offset,
+            currentTurnID: currentTurnID,
+            fileIdentity: fileIdentity,
+            boundarySignature: try rolloutBoundarySignature(handle: handle, endingAt: offset),
+            discardLeadingPartialLine: discardLeadingPartialLine
+        )
+    }
+
+    nonisolated private static func rolloutBoundarySignature(
+        handle: FileHandle,
+        endingAt offset: UInt64
+    ) throws -> RolloutBoundarySignature {
+        let requestedByteCount = min(offset, rolloutBoundarySignatureByteLimit)
+        try handle.seek(toOffset: offset - requestedByteCount)
+        let data = try handle.read(upToCount: Int(requestedByteCount)) ?? Data()
+        return RolloutBoundarySignature(
+            sampledByteCount: data.count,
+            sha256: Array(SHA256.hash(data: data))
+        )
     }
 
     nonisolated private static func rolloutFileMetadata(

@@ -111,10 +111,31 @@ extension LiveRateMonitor {
         let inode: UInt64
     }
 
+    struct RolloutBoundarySignature: Equatable, Sendable {
+        let sampledByteCount: Int
+        let sha256: [UInt8]
+    }
+
     struct RolloutReadState: Equatable, Sendable {
         let offset: UInt64
         let currentTurnID: String?
         let fileIdentity: RolloutFileIdentity?
+        let boundarySignature: RolloutBoundarySignature?
+        let discardLeadingPartialLine: Bool
+
+        init(
+            offset: UInt64,
+            currentTurnID: String?,
+            fileIdentity: RolloutFileIdentity?,
+            boundarySignature: RolloutBoundarySignature? = nil,
+            discardLeadingPartialLine: Bool = false
+        ) {
+            self.offset = offset
+            self.currentTurnID = currentTurnID
+            self.fileIdentity = fileIdentity
+            self.boundarySignature = boundarySignature
+            self.discardLeadingPartialLine = discardLeadingPartialLine
+        }
     }
 
     struct RolloutRead {
@@ -124,6 +145,8 @@ extension LiveRateMonitor {
         let events: [RolloutMetricEvent]
         let currentTurnID: String?
         let fileIdentity: RolloutFileIdentity?
+        let boundarySignature: RolloutBoundarySignature?
+        let discardLeadingPartialLine: Bool
 
         init(
             threadID: String,
@@ -131,7 +154,9 @@ extension LiveRateMonitor {
             newOffset: UInt64,
             events: [RolloutMetricEvent],
             currentTurnID: String? = nil,
-            fileIdentity: RolloutFileIdentity? = nil
+            fileIdentity: RolloutFileIdentity? = nil,
+            boundarySignature: RolloutBoundarySignature? = nil,
+            discardLeadingPartialLine: Bool = false
         ) {
             self.threadID = threadID
             self.path = path
@@ -139,13 +164,17 @@ extension LiveRateMonitor {
             self.events = events
             self.currentTurnID = currentTurnID
             self.fileIdentity = fileIdentity
+            self.boundarySignature = boundarySignature
+            self.discardLeadingPartialLine = discardLeadingPartialLine
         }
 
         var state: RolloutReadState {
             RolloutReadState(
                 offset: newOffset,
                 currentTurnID: currentTurnID,
-                fileIdentity: fileIdentity
+                fileIdentity: fileIdentity,
+                boundarySignature: boundarySignature,
+                discardLeadingPartialLine: discardLeadingPartialLine
             )
         }
     }
