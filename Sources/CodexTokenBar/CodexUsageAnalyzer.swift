@@ -145,7 +145,8 @@ final class CodexUsageAnalyzer {
         }
 
         trace?.mark("dailyUsage.begin")
-        let daily = dailyUsage(from: events)
+        let aggregationNow = Date()
+        let daily = dailyUsage(from: events, now: aggregationNow, calendar: calendar)
         trace?.mark("dailyUsage.end", metadata: ["count": String(daily.count)])
         trace?.mark("recentBins.begin")
         let recentBins = recentBins(from: events)
@@ -174,7 +175,11 @@ final class CodexUsageAnalyzer {
             totalTokens: totalTokens,
             peakDayTokens: daily.map(\.tokens).max() ?? 0,
             peakThreadTokens: peakThreadTokens,
-            currentStreakDays: currentStreakDays(from: daily),
+            currentStreakDays: currentStreakDays(
+                from: daily,
+                now: aggregationNow,
+                calendar: calendar
+            ),
             longestStreakDays: longestStreakDays(from: daily),
             totalCalls: events.count,
             totalThreads: officialSummary?.totalThreads ?? sessionIDsWithEvents.count,

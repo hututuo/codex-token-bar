@@ -76,6 +76,23 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(analyzer.currentStreakDays(from: daily, now: now, calendar: calendar), 2)
     }
 
+    func testCurrentStreakProductionWrapperAnchorsToRealToday() throws {
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: try makeCodexHome()))
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let twoDaysAgo = calendar.date(byAdding: .day, value: -2, to: today)!
+        let stale = [DayUsage(date: twoDaysAgo, tokens: 10, calls: 1)]
+        let missingYesterday = stale + [DayUsage(date: today, tokens: 20, calls: 1)]
+        let duplicateToday = [
+            DayUsage(date: today, tokens: 10, calls: 1),
+            DayUsage(date: today.addingTimeInterval(60), tokens: 20, calls: 1)
+        ]
+
+        XCTAssertEqual(analyzer.currentStreakDays(from: stale), 0)
+        XCTAssertEqual(analyzer.currentStreakDays(from: missingYesterday), 1)
+        XCTAssertEqual(analyzer.currentStreakDays(from: duplicateToday), 1)
+    }
+
     func testPreciseJSONLScanBuildsUsageSeriesAndCacheBreakdown() throws {
         let codexHome = try makeCodexHome()
         let sessionID = "019eaaaa-bbbb-cccc-dddd-eeeeffffffff"

@@ -184,8 +184,7 @@ extension CodexUsageAnalyzer {
     }
 
     func currentStreakDays(from daily: [DayUsage]) -> Int {
-        guard let anchor = daily.map(\.date).max() else { return 0 }
-        return currentStreakDays(from: daily, now: anchor, calendar: calendar)
+        currentStreakDays(from: daily, now: Date(), calendar: calendar)
     }
 
     func currentStreakDays(from daily: [DayUsage], now: Date, calendar: Calendar) -> Int {

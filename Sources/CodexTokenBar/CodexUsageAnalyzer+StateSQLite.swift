@@ -54,7 +54,7 @@ extension CodexUsageAnalyzer {
             totalTokens: totalTokens,
             peakDayTokens: peakDay,
             peakThreadTokens: 0,
-            currentStreakDays: currentStreakDays(from: daily),
+            currentStreakDays: 0,
             longestStreakDays: longestStreakDays(from: daily),
             totalCalls: recentBins.reduce(0) { $0 + $1.calls },
             totalThreads: totalThreads,
