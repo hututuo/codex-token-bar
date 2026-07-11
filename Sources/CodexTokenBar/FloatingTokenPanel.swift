@@ -4,6 +4,41 @@ import CoreGraphics
 import SwiftUI
 
 @MainActor
+final class FloatingPanelEventSourceLifecycle {
+    private let install: () -> Void
+    private let remove: () -> Void
+    private(set) var isActive = false
+
+    init(install: @escaping () -> Void, remove: @escaping () -> Void) {
+        self.install = install
+        self.remove = remove
+    }
+
+    func activate() {
+        guard !isActive else { return }
+        isActive = true
+        install()
+    }
+
+    func deactivate() {
+        guard isActive else { return }
+        isActive = false
+        remove()
+    }
+}
+
+enum FloatingPanelExternalEventRelevance {
+    static func shouldProcess(
+        isPresented: Bool,
+        isLocked: Bool,
+        hasLockedAnchor: Bool,
+        hasActiveDrag: Bool
+    ) -> Bool {
+        isPresented && (isLocked || hasLockedAnchor || hasActiveDrag)
+    }
+}
+
+@MainActor
 final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDelegate {
     @Published private(set) var isPresented = false
     @Published var lockTargetDescription: String?
@@ -33,6 +68,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     var strictVisibleWindowCache: FloatingPanelWindowListCache?
     var relaxedVisibleWindowCache: FloatingPanelWindowListCache?
     nonisolated(unsafe) private var globalMouseMonitor: Any?
+    nonisolated(unsafe) private var activationObserver: NSObjectProtocol?
+    var externalClickAccessibilityTargetProvider: ((NSPoint) -> FloatingPanelAccessibilityTarget?)?
+    var externalClickVisibleWindowsProvider: (() -> [FloatingPanelTargetWindow])?
     var isProgrammaticPanelMove = false
     var appliedLockState = false
     let recentExternalClickTargetInterval: TimeInterval = 5 * 60
@@ -45,6 +83,10 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     let lockTargetDescriptionKey = "floatingPanelLockTargetDescription"
     let lockedOriginXKey = "floatingPanelLockedOriginX"
     let lockedOriginYKey = "floatingPanelLockedOriginY"
+    private lazy var eventSourceLifecycle = FloatingPanelEventSourceLifecycle(
+        install: { [weak self] in self?.installEventSources() },
+        remove: { [weak self] in self?.removeEventSources() }
+    )
 
     nonisolated static let accessibilityObserverCallback: AXObserverCallback = { _, _, _, refcon in
         guard let refcon else { return }
@@ -57,12 +99,21 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     override init() {
         super.init()
         lastExternalActivePID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(activeApplicationDidChange(_:)),
-            name: NSWorkspace.didActivateApplicationNotification,
-            object: nil
-        )
+    }
+
+    private func installEventSources() {
+        guard globalMouseMonitor == nil, activationObserver == nil else { return }
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            let processIdentifier = app.processIdentifier
+            Task { @MainActor in
+                self?.activeApplicationDidChange(processIdentifier: processIdentifier)
+            }
+        }
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
             let location = NSEvent.mouseLocation
             Task { @MainActor in
@@ -80,10 +131,23 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         }
     }
 
-    deinit {
-        NotificationCenter.default.removeObserver(self)
+    private func removeEventSources() {
         if let globalMouseMonitor {
             NSEvent.removeMonitor(globalMouseMonitor)
+            self.globalMouseMonitor = nil
+        }
+        if let activationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(activationObserver)
+            self.activationObserver = nil
+        }
+    }
+
+    deinit {
+        if let globalMouseMonitor {
+            NSEvent.removeMonitor(globalMouseMonitor)
+        }
+        if let activationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(activationObserver)
         }
     }
 
@@ -116,6 +180,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     }
 
     private func closePanel(destroy: Bool, unregisterActive: Bool) {
+        eventSourceLifecycle.deactivate()
         stopFollowingAnchor()
         let existingPanel = panel
         panel = nil
@@ -227,6 +292,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         updateLockState(isLocked, force: !wasPresented)
         panel?.orderFrontRegardless()
         isPresented = true
+        eventSourceLifecycle.activate()
     }
 
     func updateSize(scale: Double, visibility: FloatingPanelContentVisibility) {
@@ -251,6 +317,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
            closingPanel === panel {
             panel = nil
         }
+        eventSourceLifecycle.deactivate()
         stopFollowingAnchor()
         onClose = nil
         onToggleLock = nil
@@ -269,10 +336,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         }
     }
 
-    @objc private func activeApplicationDidChange(_ notification: Notification) {
-        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-        guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
-        lastExternalActivePID = app.processIdentifier
+    private func activeApplicationDidChange(processIdentifier: pid_t) {
+        guard processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        lastExternalActivePID = processIdentifier
     }
 
 

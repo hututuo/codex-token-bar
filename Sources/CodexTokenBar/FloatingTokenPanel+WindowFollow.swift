@@ -6,13 +6,19 @@ import SwiftUI
 @MainActor
 extension FloatingTokenPanelController {
     func recordExternalMouseClick(at location: NSPoint) {
+        guard shouldProcessExternalMouseEvents else { return }
         if let panel, panel.frame.contains(location) {
             activeLockedTargetDrag = nil
             return
         }
         lastExternalClickLocation = location
         lastExternalClickAt = Date()
-        let clickedAXTarget = accessibilityTarget(at: location)
+        let clickedAXTarget: FloatingPanelAccessibilityTarget?
+        if let externalClickAccessibilityTargetProvider {
+            clickedAXTarget = externalClickAccessibilityTargetProvider(location)
+        } else {
+            clickedAXTarget = accessibilityTarget(at: location)
+        }
         if let target = clickedAXTarget {
             lastExternalClickAXWindow = target.window
             lastExternalClickOwnerPID = target.ownerPID
@@ -20,7 +26,8 @@ extension FloatingTokenPanelController {
         } else {
             lastExternalClickAXWindow = nil
         }
-        let clickedWindow = visibleWindows(relaxed: true, forceRefresh: true).first(where: { windowContainsClick(location, window: $0) })
+        let visibleTargets = externalClickVisibleWindowsProvider?() ?? visibleWindows(relaxed: true, forceRefresh: true)
+        let clickedWindow = visibleTargets.first(where: { windowContainsClick(location, window: $0) })
         if let window = clickedWindow {
             lastExternalClickWindowNumber = window.windowNumber
             lastExternalClickOwnerPID = window.ownerPID
@@ -39,6 +46,7 @@ extension FloatingTokenPanelController {
     }
 
     func recordExternalMouseDrag(at location: NSPoint) {
+        guard shouldProcessExternalMouseEvents else { return }
         guard activeLockedTargetDrag != nil else { return }
         fastFollowUntil = Date().addingTimeInterval(fastFollowGracePeriod)
         scheduleFollowTimer(interval: fastFollowInterval)
@@ -46,10 +54,20 @@ extension FloatingTokenPanelController {
     }
 
     func finishExternalMouseDrag(at location: NSPoint) {
+        guard shouldProcessExternalMouseEvents else { return }
         guard activeLockedTargetDrag != nil else { return }
         followLockedTargetDrag(at: location)
         activeLockedTargetDrag = nil
         refreshLockedAnchorOffsetForCurrentFrame()
+    }
+
+    private var shouldProcessExternalMouseEvents: Bool {
+        FloatingPanelExternalEventRelevance.shouldProcess(
+            isPresented: isPresented,
+            isLocked: appliedLockState,
+            hasLockedAnchor: lockedAnchor != nil,
+            hasActiveDrag: activeLockedTargetDrag != nil
+        )
     }
 
     func beginLockedTargetDragIfNeeded(
