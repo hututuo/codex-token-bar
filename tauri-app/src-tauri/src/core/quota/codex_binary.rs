@@ -768,6 +768,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn macos_codex_binary_resolution_finds_chatgpt_app_bundle_before_brew_fallbacks() {
         let root = std::env::temp_dir().join(format!(
