@@ -1,37 +1,75 @@
 import Foundation
+import Darwin
 
 extension LiveRateMonitor {
-    nonisolated static func rolloutReads(options: [LiveThreadOption], offsets: [String: UInt64]) throws -> [RolloutRead] {
+    nonisolated static func rolloutReads(
+        options: [LiveThreadOption],
+        states: [String: RolloutReadState]
+    ) throws -> [RolloutRead] {
         try options.compactMap { option in
             guard let path = option.normalizedRolloutPath else { return nil }
-            let offset = offsets[path] ?? fileSize(path: path)
-            let result = try rolloutEvents(path: path, afterOffset: offset)
-            return RolloutRead(threadID: option.id, path: path, newOffset: result.offset, events: result.events)
+            let state = states[path] ?? initialRolloutReadState(path: path)
+            let result = try rolloutEvents(path: path, state: state)
+            return RolloutRead(
+                threadID: option.id,
+                path: path,
+                newOffset: result.state.offset,
+                events: result.events,
+                currentTurnID: result.state.currentTurnID,
+                fileIdentity: result.state.fileIdentity
+            )
         }
     }
 
-    nonisolated static func rolloutEvents(path: String, afterOffset: UInt64) throws -> (offset: UInt64, events: [RolloutMetricEvent]) {
+    nonisolated static func rolloutEvents(
+        path: String,
+        state: RolloutReadState
+    ) throws -> (state: RolloutReadState, events: [RolloutMetricEvent]) {
         guard FileManager.default.fileExists(atPath: path) else {
-            return (afterOffset, [])
+            return (RolloutReadState(offset: 0, currentTurnID: nil, fileIdentity: nil), [])
         }
-        let currentSize = fileSize(path: path)
-        if currentSize == afterOffset {
-            return (currentSize, [])
-        }
-        let readOffset: UInt64 = currentSize < afterOffset ? 0 : afterOffset
 
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
         defer { try? handle.close() }
+        let metadata = try rolloutFileMetadata(handle: handle)
+        let restarted = metadata.size < state.offset
+            || state.fileIdentity.map { $0 != metadata.identity } == true
+        let readOffset = restarted ? 0 : state.offset
+        let previousTurnID = restarted ? nil : state.currentTurnID
+        if metadata.size == readOffset {
+            return (
+                RolloutReadState(
+                    offset: metadata.size,
+                    currentTurnID: previousTurnID,
+                    fileIdentity: metadata.identity
+                ),
+                []
+            )
+        }
         try handle.seek(toOffset: readOffset)
         let data = try handle.readToEnd() ?? Data()
         guard !data.isEmpty, var text = String(data: data, encoding: .utf8) else {
-            return (readOffset, [])
+            return (
+                RolloutReadState(
+                    offset: readOffset,
+                    currentTurnID: previousTurnID,
+                    fileIdentity: metadata.identity
+                ),
+                []
+            )
         }
 
         var consumedText = text
         if !text.hasSuffix("\n") {
             guard let lastNewline = text.lastIndex(of: "\n") else {
-                return (readOffset, [])
+                return (
+                    RolloutReadState(
+                        offset: readOffset,
+                        currentTurnID: previousTurnID,
+                        fileIdentity: metadata.identity
+                    ),
+                    []
+                )
             }
             consumedText = String(text[...lastNewline])
             text = String(text[..<lastNewline])
@@ -39,14 +77,46 @@ extension LiveRateMonitor {
 
         let consumedBytes = UInt64(consumedText.data(using: .utf8)?.count ?? 0)
         let newOffset = readOffset + consumedBytes
-        let events = rolloutEvents(fromLines: text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init))
-        return (newOffset, events)
+        let parsed = rolloutEvents(
+            fromLines: text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init),
+            previousTurnID: previousTurnID
+        )
+        return (
+            RolloutReadState(
+                offset: newOffset,
+                currentTurnID: parsed.currentTurnID,
+                fileIdentity: metadata.identity
+            ),
+            parsed.events
+        )
+    }
+
+    nonisolated static func initialRolloutReadState(path: String) -> RolloutReadState {
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else {
+            return RolloutReadState(offset: 0, currentTurnID: nil, fileIdentity: nil)
+        }
+        defer { try? handle.close() }
+        guard let metadata = try? rolloutFileMetadata(handle: handle) else {
+            return RolloutReadState(offset: 0, currentTurnID: nil, fileIdentity: nil)
+        }
+        return RolloutReadState(
+            offset: metadata.size,
+            currentTurnID: nil,
+            fileIdentity: metadata.identity
+        )
     }
 
     nonisolated static func rolloutEvents(fromLines lines: [String]) -> [RolloutMetricEvent] {
+        rolloutEvents(fromLines: lines, previousTurnID: nil).events
+    }
+
+    nonisolated static func rolloutEvents(
+        fromLines lines: [String],
+        previousTurnID: String?
+    ) -> (events: [RolloutMetricEvent], currentTurnID: String?) {
         var callStarts: [String: TimeInterval] = [:]
-        var currentTurnID: String?
-        return suppressDuplicateVisibleMessages(
+        var currentTurnID = previousTurnID
+        let events = suppressDuplicateVisibleMessages(
             lines.enumerated().flatMap { lineIndex, line in
                 if let turnID = rolloutTurnID(fromLine: line) {
                     currentTurnID = turnID
@@ -68,6 +138,7 @@ extension LiveRateMonitor {
                 }
             }
         )
+        return (events, currentTurnID)
     }
 
     nonisolated static func rolloutEvents(fromLine line: String) -> [RolloutMetricEvent] {
@@ -194,6 +265,19 @@ extension LiveRateMonitor {
            let turnID = metadata["turn_id"] as? String,
            !turnID.isEmpty { return turnID }
         return nil
+    }
+
+    nonisolated private static func rolloutFileMetadata(
+        handle: FileHandle
+    ) throws -> (size: UInt64, identity: RolloutFileIdentity) {
+        var info = stat()
+        guard fstat(handle.fileDescriptor, &info) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        return (
+            UInt64(max(0, info.st_size)),
+            RolloutFileIdentity(device: UInt64(info.st_dev), inode: UInt64(info.st_ino))
+        )
     }
 
     nonisolated static func parseTimestamp(_ text: String?) -> TimeInterval? {

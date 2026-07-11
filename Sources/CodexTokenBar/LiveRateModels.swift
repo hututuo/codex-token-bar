@@ -332,12 +332,22 @@ struct RecentVisibleTextAssemblies {
     ) -> [String] {
         let summary = VisibleTextSummary(text: text)
         let hasKnownTurnAssembly: Bool
+        let matchingItemAssemblyCount: Int
         if let itemID, !itemID.isEmpty, let turnID, !turnID.isEmpty {
             hasKnownTurnAssembly = values.values.contains {
                 $0.threadID == threadID && $0.itemID == itemID && $0.turnID?.isEmpty == false
             }
+            matchingItemAssemblyCount = 0
+        } else if let itemID, !itemID.isEmpty {
+            hasKnownTurnAssembly = false
+            matchingItemAssemblyCount = values.values.reduce(into: 0) { count, entry in
+                if entry.threadID == threadID, entry.itemID == itemID {
+                    count += 1
+                }
+            }
         } else {
             hasKnownTurnAssembly = false
+            matchingItemAssemblyCount = 0
         }
         return insertionOrder.filter { key in
             guard let entry = values[key], entry.threadID == threadID, entry.summary == summary else { return false }
@@ -347,7 +357,7 @@ struct RecentVisibleTextAssemblies {
                     if entry.turnID == turnID { return true }
                     return entry.turnID?.isEmpty != false && !hasKnownTurnAssembly
                 }
-                return true
+                return matchingItemAssemblyCount == 1
             }
             guard let turnID else { return false }
             return entry.turnID == turnID

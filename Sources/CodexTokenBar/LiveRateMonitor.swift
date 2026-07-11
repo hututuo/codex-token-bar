@@ -64,7 +64,7 @@ final class LiveRateMonitor: ObservableObject {
     var totalSessionRates: [String: RateAccumulator] = [:]
     private var selectedSmoothedTokensPerSecond: Double = 0
     private var totalSmoothedTokensPerSecond: Double = 0
-    private var rolloutOffsets: [String: UInt64] = [:]
+    private var rolloutReadStates: [String: RolloutReadState] = [:]
     var turnThreadIDs: [String: String] = [:]
     var itemTurnIDs: [String: String] = [:]
     var itemThreadIDs: [String: String] = [:]
@@ -252,7 +252,7 @@ final class LiveRateMonitor: ObservableObject {
         lastSnapshotPublishAt = 0
         lastFallbackPollAt = 0
         lastRolloutReadAt = 0
-        rolloutOffsets.removeAll()
+        rolloutReadStates.removeAll()
         selectedRate.clear()
         totalRate.clear()
         totalSessionRates.removeAll()
@@ -313,12 +313,15 @@ final class LiveRateMonitor: ObservableObject {
                     rolloutPath: Self.rebasedPath(option.rolloutPath, from: oldHome, to: newHome)
                 )
             }
-            var reboundOffsets: [String: UInt64] = [:]
-            for (path, offset) in rolloutOffsets {
+            var reboundStates: [String: RolloutReadState] = [:]
+            for (path, state) in rolloutReadStates {
                 let reboundPath = Self.rebasedPath(path, from: oldHome, to: newHome)
-                reboundOffsets[reboundPath] = max(reboundOffsets[reboundPath] ?? 0, offset)
+                if let current = reboundStates[reboundPath], current.offset > state.offset {
+                    continue
+                }
+                reboundStates[reboundPath] = state
             }
-            rolloutOffsets = reboundOffsets
+            rolloutReadStates = reboundStates
         }
 
         let sourceLabel = source.map { "\($0.displayPath)/logs_2.sqlite" } ?? ""
@@ -453,8 +456,8 @@ final class LiveRateMonitor: ObservableObject {
             selectedRate.clear()
             selectedSmoothedTokensPerSecond = 0
             let option = threadOptions.first { $0.id == id }
-            if let option {
-                rolloutOffsets[option.rolloutPath] = Self.fileSize(path: option.rolloutPath)
+            if let path = option?.normalizedRolloutPath, rolloutReadStates[path] == nil {
+                rolloutReadStates[path] = Self.initialRolloutReadState(path: path)
             }
             snapshot.threadID = id
             snapshot.threadTitle = option?.displayTitle ?? "选中会话"
@@ -657,23 +660,26 @@ final class LiveRateMonitor: ObservableObject {
             }
         }
         let uniqueOwners = optionOrder.compactMap { ownerByKey[$0] }
-        var previousOffsets: [String: UInt64] = [:]
-        for (path, offset) in rolloutOffsets {
+        var previousStates: [String: RolloutReadState] = [:]
+        for (path, state) in rolloutReadStates {
             guard let standardizedPath = LiveThreadOption(
                 id: "",
                 title: "",
                 updatedAtMS: 0,
                 rolloutPath: path
             ).normalizedRolloutPath else { continue }
-            previousOffsets[standardizedPath] = max(previousOffsets[standardizedPath] ?? 0, offset)
+            if let current = previousStates[standardizedPath], current.offset > state.offset {
+                continue
+            }
+            previousStates[standardizedPath] = state
         }
         let options = uniqueOwners.map {
             LiveThreadOption(id: $0.id, title: $0.title, updatedAtMS: $0.updatedAtMS, rolloutPath: $0.rolloutPath)
         }
         threadOptions = options
-        rolloutOffsets = Dictionary(uniqueKeysWithValues: options.compactMap { option in
+        rolloutReadStates = Dictionary(uniqueKeysWithValues: options.compactMap { option in
             guard let path = option.normalizedRolloutPath else { return nil }
-            return (path, previousOffsets[path] ?? Self.fileSize(path: path))
+            return (path, previousStates[path] ?? Self.initialRolloutReadState(path: path))
         })
 
         if options.contains(where: { $0.id == threadID }) {
@@ -710,9 +716,9 @@ final class LiveRateMonitor: ObservableObject {
         guard threadOptions.contains(where: \.hasRolloutPath) else { return [] }
         lastRolloutReadAt = now
         let options = threadOptions
-        let offsets = rolloutOffsets
+        let states = rolloutReadStates
         return try await Task.detached(priority: .utility) {
-            try Self.rolloutReads(options: options, offsets: offsets)
+            try Self.rolloutReads(options: options, states: states)
         }.value
     }
 
@@ -758,7 +764,7 @@ final class LiveRateMonitor: ObservableObject {
         var processedEvents = false
 
         for read in reads {
-            rolloutOffsets[read.path] = read.newOffset
+            rolloutReadStates[read.path] = read.state
             for event in read.events {
                 guard !countedRolloutFingerprints.contains(
                     rolloutFingerprint(event, threadID: read.threadID)
@@ -1236,6 +1242,7 @@ extension LiveRateMonitor {
         totalSessionRates.removeAll()
         selectedSmoothedTokensPerSecond = 0
         totalSmoothedTokensPerSecond = 0
+        rolloutReadStates.removeAll()
         clearStreamState()
     }
 
@@ -1325,11 +1332,32 @@ extension LiveRateMonitor {
     }
 
     func testSetRolloutOffset(_ offset: UInt64, path: String) {
-        rolloutOffsets[path] = offset
+        let initial = Self.initialRolloutReadState(path: path)
+        rolloutReadStates[path] = RolloutReadState(
+            offset: offset,
+            currentTurnID: rolloutReadStates[path]?.currentTurnID,
+            fileIdentity: rolloutReadStates[path]?.fileIdentity ?? initial.fileIdentity
+        )
     }
 
     func testRolloutOffset(path: String) -> UInt64? {
-        rolloutOffsets[path]
+        rolloutReadStates[path]?.offset
+    }
+
+    func testSetRolloutReadState(offset: UInt64, currentTurnID: String?, path: String) {
+        rolloutReadStates[path] = RolloutReadState(
+            offset: offset,
+            currentTurnID: currentTurnID,
+            fileIdentity: Self.initialRolloutReadState(path: path).fileIdentity
+        )
+    }
+
+    func testRolloutTurnContext(path: String) -> String? {
+        rolloutReadStates[path]?.currentTurnID
+    }
+
+    func testLoadRolloutReads() throws -> [RolloutRead] {
+        try Self.rolloutReads(options: threadOptions, states: rolloutReadStates)
     }
 
     func testReconcileThreadOptions(_ threads: [ThreadRow]) {
@@ -1337,7 +1365,7 @@ extension LiveRateMonitor {
     }
 
     var testRolloutPathCount: Int {
-        rolloutOffsets.count
+        rolloutReadStates.count
     }
 
     func testRefreshThreadOptionsIfNeeded(now: TimeInterval) async {

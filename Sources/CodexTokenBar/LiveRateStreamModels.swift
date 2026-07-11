@@ -106,10 +106,47 @@ extension LiveRateMonitor {
         }
     }
 
+    struct RolloutFileIdentity: Equatable, Sendable {
+        let device: UInt64
+        let inode: UInt64
+    }
+
+    struct RolloutReadState: Equatable, Sendable {
+        let offset: UInt64
+        let currentTurnID: String?
+        let fileIdentity: RolloutFileIdentity?
+    }
+
     struct RolloutRead {
         let threadID: String
         let path: String
         let newOffset: UInt64
         let events: [RolloutMetricEvent]
+        let currentTurnID: String?
+        let fileIdentity: RolloutFileIdentity?
+
+        init(
+            threadID: String,
+            path: String,
+            newOffset: UInt64,
+            events: [RolloutMetricEvent],
+            currentTurnID: String? = nil,
+            fileIdentity: RolloutFileIdentity? = nil
+        ) {
+            self.threadID = threadID
+            self.path = path
+            self.newOffset = newOffset
+            self.events = events
+            self.currentTurnID = currentTurnID
+            self.fileIdentity = fileIdentity
+        }
+
+        var state: RolloutReadState {
+            RolloutReadState(
+                offset: newOffset,
+                currentTurnID: currentTurnID,
+                fileIdentity: fileIdentity
+            )
+        }
     }
 }
