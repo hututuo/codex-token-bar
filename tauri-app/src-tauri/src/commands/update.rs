@@ -1032,12 +1032,20 @@ mod tests {
                 let ops = ops.clone();
                 async move { core.check(ops.as_ref(), false, 1).await }
             });
-            loop {
-                if core.state.lock().await.in_flight.is_some() {
-                    break;
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    if core.state.lock().await.in_flight.is_some() {
+                        break;
+                    }
+                    assert!(
+                        !automatic.is_finished(),
+                        "automatic check finished before claiming in_flight"
+                    );
+                    tokio::task::yield_now().await;
                 }
-                tokio::task::yield_now().await;
-            }
+            })
+            .await
+            .expect("automatic check did not claim in_flight within one second");
             let manual = tokio::spawn({
                 let core = core.clone();
                 let ops = ops.clone();
