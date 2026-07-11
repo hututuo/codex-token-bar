@@ -184,9 +184,12 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let cacheDirectory = cacheRoot.appendingPathComponent("CodexTokenBar", isDirectory: true)
         try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
-        let legacyCache = cacheDirectory.appendingPathComponent("session-token-events-v4.json")
-        try #"{"userPrompt":"legacy secret question","assistantResponse":"legacy secret answer"}"#
-            .write(to: legacyCache, atomically: true, encoding: .utf8)
+        let legacyCaches = try [2, 3, 4, 5].map { version in
+            let url = cacheDirectory.appendingPathComponent("session-token-events-v\(version).json")
+            try #"{"userPrompt":"legacy secret question","assistantResponse":"legacy secret answer"}"#
+                .write(to: url, atomically: true, encoding: .utf8)
+            return url
+        }
 
         let codexHome = try makeCodexHome()
         let sessionID = "019eaaaa-bbbb-cccc-dddd-cacheprivacy"
@@ -224,7 +227,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertFalse(cacheText.contains(#""assistantResponse":"#))
         XCTAssertTrue(cacheText.contains("userPromptDigest"))
         XCTAssertTrue(cacheText.contains("assistantResponseDigest"))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyCache.path))
+        XCTAssertTrue(legacyCaches.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
     }
 
     func testFastSnapshotDoesNotUseSQLiteTokenTotals() throws {
@@ -1101,6 +1104,13 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                     .path
             )
         )
+
+        CodexUsageAnalyzer.clearUsageCachesForTesting()
+        let reloaded = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertEqual(reloaded.stats.totalTokens, 140)
+        XCTAssertEqual(reloaded.stats.totalCalls, 1)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
     }
 
     func testOldDiscardableSessionCacheIsIgnoredAndRebuilt() throws {

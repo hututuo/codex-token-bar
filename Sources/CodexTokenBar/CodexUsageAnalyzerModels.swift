@@ -20,13 +20,6 @@ extension CodexUsageAnalyzer {
         static let cacheNamespace = "swift-usage-cache-2026-07-v3"
         private static let cacheDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_DIR"
 
-        private struct LegacyPersistentEntry: Codable {
-            let path: String
-            let size: UInt64
-            let modifiedAt: TimeInterval
-            let events: [PersistentEvent]
-        }
-
         private struct PersistentSessionFile: Codable {
             let version: Int
             let entry: PersistentEntry
@@ -66,9 +59,6 @@ extension CodexUsageAnalyzer {
             let canIncrementFromOffset: Bool
             let forkReplayActive: Bool
             let lastSkippedForkReplayTokenAt: Date?
-            let migratedFromLegacyCache: Bool
-            let persistentEventsForMigration: [PersistentEvent]?
-
             init(
                 key: SessionCacheKey,
                 events: [TokenEvent],
@@ -78,33 +68,7 @@ extension CodexUsageAnalyzer {
                 canIncrementFromOffset: Bool,
                 forkReplayActive: Bool,
                 lastSkippedForkReplayTokenAt: Date?,
-                migratedFromLegacyCache: Bool
-            ) {
-                self.init(
-                    key: key,
-                    events: events,
-                    lastOffset: lastOffset,
-                    endedWithNewline: endedWithNewline,
-                    previousTotalTokens: previousTotalTokens,
-                    canIncrementFromOffset: canIncrementFromOffset,
-                    forkReplayActive: forkReplayActive,
-                    lastSkippedForkReplayTokenAt: lastSkippedForkReplayTokenAt,
-                    migratedFromLegacyCache: migratedFromLegacyCache,
-                    persistentEventsForMigration: nil
-                )
-            }
-
-            private init(
-                key: SessionCacheKey,
-                events: [TokenEvent],
-                lastOffset: UInt64,
-                endedWithNewline: Bool,
-                previousTotalTokens: Int?,
-                canIncrementFromOffset: Bool,
-                forkReplayActive: Bool,
-                lastSkippedForkReplayTokenAt: Date?,
-                migratedFromLegacyCache: Bool,
-                persistentEventsForMigration: [PersistentEvent]?
+                migratedFromLegacyCache _: Bool = false
             ) {
                 self.key = key
                 self.events = events
@@ -114,27 +78,6 @@ extension CodexUsageAnalyzer {
                 self.canIncrementFromOffset = canIncrementFromOffset
                 self.forkReplayActive = forkReplayActive
                 self.lastSkippedForkReplayTokenAt = lastSkippedForkReplayTokenAt
-                self.migratedFromLegacyCache = migratedFromLegacyCache
-                self.persistentEventsForMigration = persistentEventsForMigration
-            }
-
-            static func legacy(
-                key: SessionCacheKey,
-                events: [TokenEvent],
-                persistentEvents: [PersistentEvent]
-            ) -> CachedSession {
-                CachedSession(
-                    key: key,
-                    events: events,
-                    lastOffset: key.size,
-                    endedWithNewline: true,
-                    previousTotalTokens: nil,
-                    canIncrementFromOffset: false,
-                    forkReplayActive: false,
-                    lastSkippedForkReplayTokenAt: nil,
-                    migratedFromLegacyCache: true,
-                    persistentEventsForMigration: persistentEvents
-                )
             }
         }
 
@@ -153,9 +96,7 @@ extension CodexUsageAnalyzer {
             loadPersistentCacheIfNeeded()
             lock.lock()
             defer { lock.unlock() }
-            guard let cached = storage[path],
-                  Self.keysMatch(cached.key, key)
-                    || (cached.migratedFromLegacyCache && cached.key.path == key.path && cached.key.size == key.size) else {
+            guard let cached = storage[path], Self.keysMatch(cached.key, key) else {
                 return nil
             }
             return cached
@@ -339,7 +280,7 @@ extension CodexUsageAnalyzer {
                         canIncrementFromOffset: value.canIncrementFromOffset,
                         forkReplayActive: value.forkReplayActive,
                         lastSkippedForkReplayTokenAt: value.lastSkippedForkReplayTokenAt?.timeIntervalSince1970,
-                        events: value.persistentEventsForMigration ?? value.events.map(Self.persistentEvent)
+                        events: value.events.map(Self.persistentEvent)
                     )
                     let file = PersistentSessionFile(version: Self.persistentCacheVersion, entry: entry)
                     let data = try JSONEncoder().encode(file)
@@ -426,8 +367,7 @@ extension CodexUsageAnalyzer {
                     previousTotalTokens: entry.previousTotalTokens,
                     canIncrementFromOffset: entry.canIncrementFromOffset,
                     forkReplayActive: entry.forkReplayActive,
-                    lastSkippedForkReplayTokenAt: entry.lastSkippedForkReplayTokenAt.map(Date.init(timeIntervalSince1970:)),
-                    migratedFromLegacyCache: false
+                    lastSkippedForkReplayTokenAt: entry.lastSkippedForkReplayTokenAt.map(Date.init(timeIntervalSince1970:))
                 )
             }
             return loaded
@@ -437,61 +377,6 @@ extension CodexUsageAnalyzer {
             lhs.path == rhs.path
                 && lhs.size == rhs.size
                 && abs(lhs.modifiedAt - rhs.modifiedAt) < 0.001
-        }
-
-        private static func loadLegacyV5SessionCache() -> [String: CachedSession] {
-            guard let cacheURL = legacyV5CacheURL,
-                  let data = try? Data(contentsOf: cacheURL),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  intValue(object["version"]) == 5 else {
-                return [:]
-            }
-
-            var loaded: [String: CachedSession] = [:]
-            let entries = (object["entries"] as? [Any])?.compactMap { $0 as? [String: Any] } ?? []
-            for entry in entries {
-                guard let rawPath = entry["path"] as? String else { continue }
-                let path = URL(fileURLWithPath: rawPath).resolvingSymlinksInPath().path
-                let size = uint64Value(entry["size"]) ?? 0
-                let modifiedAt = doubleValue(entry["modifiedAt"]) ?? 0
-                let rawEvents = (entry["events"] as? [Any])?.compactMap { $0 as? [String: Any] } ?? []
-                let key = SessionCacheKey(path: path, size: size, modifiedAt: modifiedAt)
-                let persistentEvents = rawEvents.map(persistentEvent)
-                loaded[path] = CachedSession.legacy(
-                    key: key,
-                    events: rawEvents.map(tokenEvent),
-                    persistentEvents: persistentEvents
-                )
-            }
-            return loaded
-        }
-
-        private static func persistentEvent(_ raw: [String: Any]) -> PersistentEvent {
-            PersistentEvent(
-                timestamp: doubleValue(raw["timestamp"]) ?? 0,
-                sessionID: raw["sessionID"] as? String ?? "",
-                tokens: intValue(raw["tokens"]) ?? 0,
-                inputTokens: intValue(raw["inputTokens"]) ?? 0,
-                cachedInputTokens: intValue(raw["cachedInputTokens"]) ?? 0,
-                outputTokens: intValue(raw["outputTokens"]) ?? 0,
-                reasoningOutputTokens: intValue(raw["reasoningOutputTokens"]) ?? 0,
-                userPromptDigest: raw["userPromptDigest"] as? String,
-                assistantResponseDigest: raw["assistantResponseDigest"] as? String
-            )
-        }
-
-        private static func tokenEvent(_ raw: [String: Any]) -> TokenEvent {
-            TokenEvent(
-                timestamp: Date(timeIntervalSince1970: doubleValue(raw["timestamp"]) ?? 0),
-                sessionID: raw["sessionID"] as? String ?? "",
-                tokens: intValue(raw["tokens"]) ?? 0,
-                inputTokens: intValue(raw["inputTokens"]) ?? 0,
-                cachedInputTokens: intValue(raw["cachedInputTokens"]) ?? 0,
-                outputTokens: intValue(raw["outputTokens"]) ?? 0,
-                reasoningOutputTokens: intValue(raw["reasoningOutputTokens"]) ?? 0,
-                userPrompt: "",
-                assistantResponse: ""
-            )
         }
 
         private static var legacyV5CacheURL: URL? {
@@ -576,31 +461,6 @@ extension CodexUsageAnalyzer {
                 userPrompt: "",
                 assistantResponse: ""
             )
-        }
-
-        private static func intValue(_ value: Any?) -> Int? {
-            if let number = value as? NSNumber { return number.intValue }
-            if let value = value as? Int { return value }
-            if let value = value as? Double { return Int(value) }
-            if let value = value as? String { return Int(value) }
-            return nil
-        }
-
-        private static func uint64Value(_ value: Any?) -> UInt64? {
-            if let number = value as? NSNumber { return number.uint64Value }
-            if let value = value as? UInt64 { return value }
-            if let value = value as? Int { return UInt64(value) }
-            if let value = value as? Double { return UInt64(value) }
-            if let value = value as? String { return UInt64(value) }
-            return nil
-        }
-
-        private static func doubleValue(_ value: Any?) -> Double? {
-            if let number = value as? NSNumber { return number.doubleValue }
-            if let value = value as? Double { return value }
-            if let value = value as? Int { return Double(value) }
-            if let value = value as? String { return Double(value) }
-            return nil
         }
 
         private static func digest(_ value: String) -> String? {
