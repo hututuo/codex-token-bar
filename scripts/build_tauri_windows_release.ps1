@@ -1,6 +1,5 @@
 param(
     [string]$Version = "0.7.2",
-    [string]$GitHubRepo = "hututuo/codex-token-bar",
     [ValidateSet("x64", "arm64", "both")]
     [string]$Arch = "both",
     [switch]$SkipNpmCi
@@ -64,7 +63,10 @@ function Build-Target {
 
     Push-Location $TauriDir
     try {
-        Invoke-Checked "tauri build $RustTarget" { npm run tauri -- build --target $RustTarget }
+        $BuildConfig = '{"bundle":{"createUpdaterArtifacts":false}}'
+        Invoke-Checked "tauri build $RustTarget" {
+            npm run tauri -- build --target $RustTarget --config $BuildConfig
+        }
     } finally {
         Pop-Location
     }
@@ -83,43 +85,26 @@ function Build-Target {
     $OutputName = "CodexTokenBar-v$Version-windows-$Label-setup.exe"
     $OutputPath = Join-Path $ReleaseDir $OutputName
     Copy-Item -Force $Installers[0].FullName $OutputPath
-    $SourceSigPath = "{0}.sig" -f $Installers[0].FullName
-    if (-not (Test-Path $SourceSigPath)) {
-        throw "Updater signature not found for $($Installers[0].Name). Check TAURI_SIGNING_PRIVATE_KEY_PATH / TAURI_SIGNING_PRIVATE_KEY."
-    }
-    $OutputSigName = "$OutputName.sig"
-    $OutputSigPath = Join-Path $ReleaseDir $OutputSigName
-    Copy-Item -Force $SourceSigPath $OutputSigPath
 
     $Size = (Get-Item $OutputPath).Length
     $Hash = (Get-FileHash -Algorithm SHA256 $OutputPath).Hash.ToLowerInvariant()
-    $Signature = (Get-Content -Raw -Path $OutputSigPath).Trim()
     $BuiltAssets.Add([pscustomobject]@{
-        Label = $Label
-        Platform = $UpdaterPlatform
-        Installer = $OutputName
-        Signature = $Signature
+        version = $Version
+        platform = $UpdaterPlatform
+        arch = $Label
+        filename = $OutputName
+        bytes = $Size
+        sha256 = $Hash
     }) | Out-Null
     Write-Host "Built $OutputName"
     Write-Host "  size=$Size"
     Write-Host "  sha256=$Hash"
-    Write-Host "  sig=$OutputSigName"
 }
 
 Assert-Command "node"
 Assert-Command "npm"
 Assert-Command "rustup"
 Assert-Command "cargo"
-
-if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PATH -and -not $env:TAURI_SIGNING_PRIVATE_KEY) {
-    throw "Missing Tauri updater signing key. Set TAURI_SIGNING_PRIVATE_KEY_PATH to the private key file before building Windows updater assets."
-}
-if ($env:TAURI_SIGNING_PRIVATE_KEY_PATH -and -not $env:TAURI_SIGNING_PRIVATE_KEY) {
-    if (-not (Test-Path $env:TAURI_SIGNING_PRIVATE_KEY_PATH)) {
-        throw "Tauri updater signing key file not found: $env:TAURI_SIGNING_PRIVATE_KEY_PATH"
-    }
-    $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw -Path $env:TAURI_SIGNING_PRIVATE_KEY_PATH
-}
 
 Push-Location $TauriDir
 try {
@@ -143,34 +128,19 @@ foreach ($Target in $Targets) {
     Build-Target -Label $Target.Label -RustTarget $Target.RustTarget -UpdaterPlatform $Target.UpdaterPlatform
 }
 
-$Platforms = [ordered]@{}
-foreach ($Asset in $BuiltAssets) {
-    $Platforms[$Asset.Platform] = [ordered]@{
-        signature = $Asset.Signature
-        url = "https://github.com/$GitHubRepo/releases/download/v$Version/$($Asset.Installer)"
-    }
-}
-
-$LatestJsonPath = Join-Path $ReleaseDir "latest-windows.json"
-$UpdateMetadata = [ordered]@{
+$ManifestPath = Join-Path $ReleaseDir "build-manifest.json"
+$Manifest = [ordered]@{
     version = $Version
-    notes = "Codex Token Bar Windows v$Version"
-    pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-    platforms = $Platforms
+    assets = @($BuiltAssets | Sort-Object Platform)
 }
-Write-Utf8NoBom -Path $LatestJsonPath -Content (($UpdateMetadata | ConvertTo-Json -Depth 5) + [Environment]::NewLine)
+$ManifestTempPath = "$ManifestPath.tmp"
+try {
+    Write-Utf8NoBom -Path $ManifestTempPath -Content (($Manifest | ConvertTo-Json -Depth 5) + [Environment]::NewLine)
+    Move-Item -Force $ManifestTempPath $ManifestPath
+} finally {
+    Remove-Item -Force -ErrorAction SilentlyContinue $ManifestTempPath
+}
 
-$ChecksumPath = Join-Path $ReleaseDir ("SHA256SUMS-v{0}-windows.txt" -f $Version)
-$ChecksumLines = Get-ChildItem -Path $ReleaseDir -File |
-    Where-Object { $_.Name -ne (Split-Path -Leaf $ChecksumPath) } |
-    Sort-Object Name |
-    ForEach-Object {
-        $Hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
-        "{0}  {1}" -f $Hash, $_.Name
-    }
-Write-Utf8NoBom -Path $ChecksumPath -Content (($ChecksumLines -join [Environment]::NewLine) + [Environment]::NewLine)
-
-Write-Host "==> Windows release assets ready"
+Write-Host "==> Unsigned Windows installers ready"
 Write-Host "Directory: $ReleaseDir"
-Write-Host "Checksums: $ChecksumPath"
-Write-Host "Updater metadata: $LatestJsonPath"
+Write-Host "Build manifest: $ManifestPath"
