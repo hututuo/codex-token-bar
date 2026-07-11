@@ -602,6 +602,97 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertFalse(interpolatedValues.isEmpty, "quota curve should connect 80% to 78% smoothly across a sleep/no-sample gap")
     }
 
+    func testResetCrossingEmitsOneRecentPointThenStaysUnknownUntilNewSample() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let reset = now.addingTimeInterval(-2 * 60 * 60)
+        let oldSample = reset.addingTimeInterval(-60 * 60)
+        let newSample = reset.addingTimeInterval(30 * 60)
+
+        try database.record(
+            snapshot(usedPercent: 50, reset: reset, planType: "Pro", limitName: "codex", at: oldSample),
+            createdAt: oldSample
+        )
+        try database.record(
+            snapshot(usedPercent: 20, reset: now.addingTimeInterval(5 * 60 * 60), planType: "Pro", limitName: "codex", at: newSample),
+            createdAt: newSample
+        )
+
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
+        let boundary = try XCTUnwrap(loaded.recentBins.firstIndex {
+            $0.start.addingTimeInterval(5 * 60) == reset
+        })
+        let recovered = try XCTUnwrap(loaded.recentBins.firstIndex {
+            $0.start.addingTimeInterval(5 * 60) >= newSample
+        })
+
+        XCTAssertEqual(loaded.recentBins.filter { $0.fiveHourRemainingPercent == 100 }.count, 1)
+        XCTAssertEqual(loaded.recentBins[boundary].fiveHourRemainingPercent, 100)
+        XCTAssertTrue(loaded.recentBins[(boundary + 1)..<recovered].allSatisfy {
+            $0.fiveHourRemainingPercent == nil
+        })
+        XCTAssertEqual(loaded.recentBins[recovered].fiveHourRemainingPercent, 80)
+    }
+
+    func testHourlyResetCrossingEmitsOnePointWithoutExtendingTwoHours() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let reset = now.addingTimeInterval(-2 * 60 * 60)
+        let createdAt = reset.addingTimeInterval(-2 * 60 * 60)
+
+        try database.record(
+            snapshot(usedPercent: 50, reset: reset, planType: "Pro", limitName: "codex", at: createdAt),
+            createdAt: createdAt
+        )
+
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
+        let boundary = try XCTUnwrap(loaded.hourlyBins.firstIndex {
+            $0.start.addingTimeInterval(60 * 60) == reset
+        })
+
+        XCTAssertEqual(loaded.hourlyBins.filter { $0.fiveHourRemainingPercent == 100 }.count, 1)
+        XCTAssertEqual(loaded.hourlyBins[boundary].fiveHourRemainingPercent, 100)
+        XCTAssertNil(loaded.hourlyBins[boundary + 1].fiveHourRemainingPercent)
+        XCTAssertNil(loaded.hourlyBins[boundary + 2].fiveHourRemainingPercent)
+    }
+
+    func testStaleResetUsesNinetyMinuteCarryAndWindowsRemainIndependent() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let createdAt = now.addingTimeInterval(-2 * 60 * 60)
+        let staleFiveHourReset = createdAt.addingTimeInterval(-60)
+        let sevenDayReset = now.addingTimeInterval(-30 * 60)
+
+        try database.record(
+            snapshot(
+                usedPercent: 50,
+                sevenDayUsedPercent: 30,
+                reset: staleFiveHourReset,
+                sevenDayReset: sevenDayReset,
+                planType: "Pro",
+                limitName: "codex",
+                at: createdAt
+            ),
+            createdAt: createdAt
+        )
+
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
+        let sevenBoundary = try XCTUnwrap(loaded.recentBins.firstIndex {
+            $0.start.addingTimeInterval(5 * 60) == sevenDayReset
+        })
+        let carriedFive = loaded.recentBins.filter { $0.fiveHourRemainingPercent == 50 }
+
+        XCTAssertFalse(carriedFive.isEmpty)
+        XCTAssertFalse(loaded.recentBins.contains { $0.fiveHourRemainingPercent == 100 })
+        XCTAssertNil(loaded.recentBins.last?.fiveHourRemainingPercent)
+        XCTAssertEqual(loaded.recentBins[sevenBoundary].sevenDayRemainingPercent, 100)
+        XCTAssertEqual(loaded.recentBins[sevenBoundary].fiveHourRemainingPercent, 50)
+        XCTAssertNil(loaded.recentBins[sevenBoundary + 1].sevenDayRemainingPercent)
+    }
+
     func testRecentHistorySuppressesRecoveredSevenDayFullUsageSpike() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)

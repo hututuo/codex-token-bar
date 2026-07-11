@@ -555,6 +555,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 fiveHourRemainingPercent: quotaRemaining(
                     from: latestRow,
                     to: nextRow,
+                    previousBoundary: binStart,
                     at: sampleDate,
                     maxCarryGap: maxCarryGap,
                     remaining: \.fiveHourRemainingPercent,
@@ -564,6 +565,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 sevenDayRemainingPercent: quotaRemaining(
                     from: latestRow,
                     to: nextRow,
+                    previousBoundary: binStart,
                     at: sampleDate,
                     maxCarryGap: maxCarryGap,
                     remaining: \.sevenDayRemainingPercent,
@@ -577,6 +579,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     private static func quotaRemaining(
         from row: QuotaHistoryRow?,
         to nextRow: QuotaHistoryRow?,
+        previousBoundary: Date,
         at date: Date,
         maxCarryGap: TimeInterval,
         remaining: KeyPath<QuotaHistoryRow, Double?>,
@@ -585,9 +588,12 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     ) -> Double? {
         guard let row, let value = row[keyPath: remaining] else { return nil }
 
-        if let resetDate = row[keyPath: resetsAt] {
-            if date >= resetDate {
+        if let resetDate = row[keyPath: resetsAt], resetDate > row.createdAt {
+            if previousBoundary < resetDate, date >= resetDate {
                 return 100
+            }
+            if date >= resetDate {
+                return nil
             }
             if let interpolated = interpolatedQuotaRemaining(
                 from: row,

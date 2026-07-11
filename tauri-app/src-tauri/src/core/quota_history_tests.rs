@@ -857,19 +857,148 @@ fn overlay_history_matches_points_by_start_unix_not_position() {
 }
 
 #[test]
-fn history_carries_to_reset_as_full_quota() {
-    let path = temp_db_path("reset-carry");
-    let database = QuotaHistoryDatabase { path: path.clone() };
-    let reset = (now_unix() - 60.0) as i64;
+fn reset_crossing_synthesizes_one_full_point_for_five_minute_and_hourly_axes() {
+    for interval in [5 * 60, 60 * 60] {
+        let end = aligned_series_end(interval);
+        let reset = end - 2.0 * interval as f64;
+        let row = history_row(
+            reset - 2.0 * interval as f64,
+            "tester|Pro|codex",
+            "Pro",
+            Some("codex"),
+            50,
+            reset,
+            30,
+            end + 500_000.0,
+        );
 
-    database
-        .record(&bundle("tester", 0.50, reset, 0.30, reset + 500_000))
+        let history = make_interval_history(vec![row], 7, interval);
+        let five_values = history
+            .iter()
+            .map(|point| point.five_hour_remaining_percent)
+            .collect::<Vec<_>>();
+        let reset_index = history
+            .iter()
+            .position(|point| {
+                let sample_end = point.start_unix as f64 + interval as f64;
+                (point.start_unix as f64) < reset && sample_end >= reset
+            })
+            .unwrap();
+
+        assert_eq!(five_values.iter().filter(|value| **value == Some(1.0)).count(), 1);
+        assert_eq!(five_values[reset_index], Some(1.0));
+        assert!(five_values.iter().skip(reset_index + 1).all(Option::is_none));
+    }
+}
+
+#[test]
+fn reset_carry_is_unknown_until_a_post_reset_sample_then_recovers() {
+    let interval = 5 * 60;
+    let end = aligned_series_end(interval);
+    let reset = end - 2.0 * 60.0 * 60.0;
+    let old_row = history_row(
+        reset - 60.0 * 60.0,
+        "tester|Pro|codex",
+        "Pro",
+        Some("codex"),
+        50,
+        reset,
+        30,
+        end + 500_000.0,
+    );
+    let new_row = history_row(
+        reset + 30.0 * 60.0,
+        "tester|Pro|codex",
+        "Pro",
+        Some("codex"),
+        20,
+        end + 5.0 * 60.0 * 60.0,
+        31,
+        end + 500_000.0,
+    );
+
+    let history = make_interval_history(vec![old_row, new_row.clone()], 48, interval);
+    let boundary = history
+        .iter()
+        .position(|point| point.start_unix as f64 + interval as f64 == reset)
+        .unwrap();
+    let recovered = history
+        .iter()
+        .position(|point| point.start_unix as f64 + interval as f64 >= new_row.created_at)
         .unwrap();
 
-    let history = database.recent_five_minute_history(2).unwrap();
-    assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(1.0));
+    assert_eq!(history[boundary].five_hour_remaining_percent, Some(1.0));
+    assert!(history[(boundary + 1)..recovered]
+        .iter()
+        .all(|point| point.five_hour_remaining_percent.is_none()));
+    assert_eq!(history[recovered].five_hour_remaining_percent, Some(0.80));
+}
 
-    let _ = std::fs::remove_file(path);
+#[test]
+fn stale_reset_uses_bounded_carry_and_windows_reset_independently() {
+    let interval = 5 * 60;
+    let end = aligned_series_end(interval);
+    let created_at = end - 2.0 * 60.0 * 60.0;
+    let five_reset = created_at - 60.0;
+    let seven_reset = end - 30.0 * 60.0;
+    let row = history_row(
+        created_at,
+        "tester|Pro|codex",
+        "Pro",
+        Some("codex"),
+        50,
+        five_reset,
+        30,
+        seven_reset,
+    );
+
+    let history = make_interval_history(vec![row], 36, interval);
+    let five_values = history
+        .iter()
+        .map(|point| point.five_hour_remaining_percent)
+        .collect::<Vec<_>>();
+    let seven_boundary = history
+        .iter()
+        .position(|point| point.start_unix as f64 + interval as f64 == seven_reset)
+        .unwrap();
+
+    assert!(!five_values.contains(&Some(1.0)));
+    assert!(five_values.contains(&Some(0.50)));
+    assert!(history.last().unwrap().five_hour_remaining_percent.is_none());
+    assert_eq!(history[seven_boundary].seven_day_remaining_percent, Some(1.0));
+    assert_eq!(history[seven_boundary].five_hour_remaining_percent, Some(0.50));
+    assert!(history[seven_boundary + 1].seven_day_remaining_percent.is_none());
+}
+
+#[test]
+fn six_hour_axis_does_not_expand_reset_boundary_into_continuous_full_quota() {
+    let interval = 6 * 60 * 60;
+    let end = aligned_series_end(interval);
+    let reset = end - 2.0 * interval as f64;
+    let row = history_row(
+        reset - interval as f64,
+        "tester|Pro|codex",
+        "Pro",
+        Some("codex"),
+        50,
+        reset,
+        30,
+        end + 500_000.0,
+    );
+
+    let history = make_interval_history(vec![row], 8, interval);
+    assert_eq!(
+        history
+            .iter()
+            .filter(|point| point.five_hour_remaining_percent == Some(1.0))
+            .count(),
+        1
+    );
+    assert!(history
+        .iter()
+        .skip_while(|point| point.five_hour_remaining_percent != Some(1.0))
+        .skip(1)
+        .all(|point| point.five_hour_remaining_percent.is_none()));
 }
 
 #[test]
@@ -1299,6 +1428,14 @@ fn temp_db_path(label: &str) -> PathBuf {
 fn minutes_since_midnight(label: &str) -> i32 {
     let (hour, minute) = label.split_once(':').unwrap();
     hour.parse::<i32>().unwrap() * 60 + minute.parse::<i32>().unwrap()
+}
+
+fn aligned_series_end(interval_seconds: i64) -> f64 {
+    crate::core::time_series_timeline::aligned_bin_starts(
+        now_unix() as i64,
+        interval_seconds,
+        1,
+    )[0] as f64
 }
 
 fn recent_point(start_unix: i64) -> RecentUsagePoint {

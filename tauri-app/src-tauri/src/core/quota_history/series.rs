@@ -73,12 +73,14 @@ pub(super) fn make_interval_history(
                 start_unix: bin_start.round() as i64,
                 five_hour_remaining_percent: quota_remaining(
                     latest.as_ref(),
+                    bin_start,
                     end,
                     |row| row.five_hour_remaining(),
                     |row| row.five_hour_resets_at,
                 ),
                 seven_day_remaining_percent: quota_remaining(
                     latest.as_ref(),
+                    bin_start,
                     end,
                     |row| row.seven_day_remaining(),
                     |row| row.seven_day_resets_at,
@@ -178,15 +180,19 @@ fn reset_bucket(value: Option<f64>) -> Option<i64> {
 
 fn quota_remaining(
     row: Option<&QuotaHistoryRow>,
+    previous_boundary: f64,
     at: f64,
     remaining: impl Fn(&QuotaHistoryRow) -> Option<f64>,
     resets_at: impl Fn(&QuotaHistoryRow) -> Option<f64>,
 ) -> Option<f64> {
     let row = row?;
     let value = remaining(row)?;
-    if let Some(reset) = resets_at(row) {
-        if at >= reset {
+    if let Some(reset) = resets_at(row).filter(|reset| *reset > row.created_at) {
+        if previous_boundary < reset && at >= reset {
             return Some(1.0);
+        }
+        if at >= reset {
+            return None;
         }
         return Some(value);
     }
