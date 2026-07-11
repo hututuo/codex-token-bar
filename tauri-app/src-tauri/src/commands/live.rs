@@ -112,21 +112,46 @@ const TRAY_ALPHA_DOWN: f64 = 0.18;
 const NATIVE_TRAY_CORRECTION_RETRY_LIMIT: usize = 3;
 const NATIVE_TRAY_CORRECTION_RETRY_DELAY: Duration = Duration::from_millis(250);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeTrayRetryFinish {
+    Stop,
+    Continue(u64),
+}
+
 impl LiveRateMonitorRegistry {
     pub fn sync_status_tray_interest(
         &self,
         app: &AppHandle,
         display: &DisplaySurfaceSettingsSnapshot,
     ) -> Result<(), String> {
-        let generation = self.apply_status_tray_settings_with_writer(
+        let supported = native_tray_live_text_supported();
+        let generation = self.apply_status_tray_interest_with_writer_and_scheduler(
             display,
-            native_tray_live_text_supported(),
+            supported,
             |title, tooltip| platform::set_status_tray_readout_native(app, title, tooltip),
+            || self.schedule_native_tray_correction_retry(app.clone()),
         )?;
         if let Some(generation) = generation {
             self.spawn_stream_loop(app.clone(), generation);
         }
         Ok(())
+    }
+
+    fn apply_status_tray_interest_with_writer_and_scheduler(
+        &self,
+        display: &DisplaySurfaceSettingsSnapshot,
+        supported: bool,
+        writer: impl FnMut(String, String) -> Result<bool, String>,
+        schedule_correction: impl FnOnce(),
+    ) -> Result<Option<u64>, String> {
+        let stream_enabled = native_tray_settings(display, supported).0;
+        let result = self.apply_status_tray_settings_with_writer(display, supported, writer);
+        // A clean/disabled presentation has no live tick to repair a failed write. Its
+        // correction owner is presentation-only and never enables the stream.
+        if result.is_err() && !stream_enabled {
+            schedule_correction();
+        }
+        result
     }
 
     fn apply_status_tray_settings_with_writer(
@@ -627,30 +652,70 @@ impl LiveRateMonitorRegistry {
         self.write_native_presentation_revisioned(revision, readout, &mut writer)
     }
 
-    fn schedule_native_tray_correction_retry(&self, app: AppHandle) {
-        {
-            let Ok(mut stream) = self.stream.lock() else { return; };
-            if stream.native_tray_retry_running {
-                return;
-            }
-            stream.native_tray_retry_running = true;
+    fn claim_native_tray_retry_owner(&self) -> Option<u64> {
+        let mut stream = self.stream.lock().ok()?;
+        let pending = stream.native_tray_desired_readout.is_some()
+            && stream.native_tray_desired_readout != stream.native_tray_last_readout;
+        if stream.native_tray_retry_running || !pending {
+            return None;
         }
-        let registry = self.clone();
-        async_runtime::spawn(async move {
+        stream.native_tray_retry_running = true;
+        Some(stream.native_tray_revision)
+    }
+
+    fn finish_native_tray_retry_cycle(&self, cycle_revision: u64) -> NativeTrayRetryFinish {
+        let Ok(mut stream) = self.stream.lock() else {
+            return NativeTrayRetryFinish::Stop;
+        };
+        let pending = stream.native_tray_desired_readout.is_some()
+            && stream.native_tray_desired_readout != stream.native_tray_last_readout;
+        if pending && stream.native_tray_revision != cycle_revision {
+            // Keep ownership while atomically observing a newer pending revision. This closes
+            // the success-before-teardown lost-wakeup window without creating a second owner.
+            NativeTrayRetryFinish::Continue(stream.native_tray_revision)
+        } else {
+            stream.native_tray_retry_running = false;
+            NativeTrayRetryFinish::Stop
+        }
+    }
+
+    fn run_native_tray_retry_owner_with_writer(
+        &self,
+        mut cycle_revision: u64,
+        mut writer: impl FnMut(String, String) -> Result<bool, String>,
+        mut sleeper: impl FnMut(Duration),
+        mut before_finish: impl FnMut(u64),
+    ) {
+        loop {
             for attempt in 0..NATIVE_TRAY_CORRECTION_RETRY_LIMIT {
-                tokio::time::sleep(NATIVE_TRAY_CORRECTION_RETRY_DELAY * (attempt as u32 + 1)).await;
-                if registry
-                    .retry_native_presentation_with_writer(|title, tooltip| {
-                        platform::set_status_tray_readout_native(&app, title, tooltip)
-                    })
+                sleeper(NATIVE_TRAY_CORRECTION_RETRY_DELAY * (attempt as u32 + 1));
+                if self
+                    .retry_native_presentation_with_writer(&mut writer)
                     .is_ok()
                 {
                     break;
                 }
             }
-            if let Ok(mut stream) = registry.stream.lock() {
-                stream.native_tray_retry_running = false;
+            before_finish(cycle_revision);
+            match self.finish_native_tray_retry_cycle(cycle_revision) {
+                NativeTrayRetryFinish::Stop => return,
+                NativeTrayRetryFinish::Continue(revision) => cycle_revision = revision,
             }
+        }
+    }
+
+    fn schedule_native_tray_correction_retry(&self, app: AppHandle) {
+        let Some(revision) = self.claim_native_tray_retry_owner() else { return; };
+        let registry = self.clone();
+        async_runtime::spawn_blocking(move || {
+            registry.run_native_tray_retry_owner_with_writer(
+                revision,
+                |title, tooltip| {
+                    platform::set_status_tray_readout_native(&app, title, tooltip)
+                },
+                std::thread::sleep,
+                |_| {},
+            );
         });
     }
 
@@ -1415,46 +1480,135 @@ mod tests {
     }
 
     #[test]
-    fn failed_stale_correction_has_bounded_owner_that_restores_ctb_while_disabled() {
+    fn disabled_settings_failure_schedules_presentation_owner_without_stream() {
+        for initial_failure in [Err("setter failed".to_string()), Ok(false)] {
+            let registry = LiveRateMonitorRegistry::default();
+            let enabled = DisplaySurfaceSettingsSnapshot::default();
+            let mut disabled = enabled.clone();
+            disabled.status_tray_live_text_enabled = false;
+            let source = live_source_for_test("source-a", 1).source_token;
+            let generation = registry
+                .apply_status_tray_settings_with_writer(&enabled, true, |_, _| Ok(true))
+                .unwrap()
+                .unwrap();
+            registry.stream.lock().unwrap().native_tray_source = Some(source.clone());
+            registry
+                .publish_native_tray_with_writer(generation, &source, 12.0, |_, _| Ok(true))
+                .unwrap();
+
+            let mut scheduled = false;
+            let mut failure = Some(initial_failure);
+            assert!(registry
+                .apply_status_tray_interest_with_writer_and_scheduler(
+                    &disabled,
+                    true,
+                    |_, _| failure.take().unwrap(),
+                    || scheduled = true,
+                )
+                .is_err());
+            assert!(scheduled);
+            let revision = registry.claim_native_tray_retry_owner().unwrap();
+            let mut writes = 0;
+            let mut sleeps = 0;
+            registry.run_native_tray_retry_owner_with_writer(
+                revision,
+                |title, _| {
+                    writes += 1;
+                    assert_eq!(title, "CTB");
+                    Ok(true)
+                },
+                |_| sleeps += 1,
+                |_| {},
+            );
+            let stream = registry.stream.lock().unwrap();
+            assert_eq!(writes, 1);
+            assert_eq!(sleeps, 1);
+            assert!(!stream.native_tray_enabled);
+            assert!(!stream.running);
+            assert!(!stream.native_tray_retry_running);
+            assert_eq!(stream.native_tray_last_readout.as_ref().map(|value| value.0.as_str()), Some("CTB"));
+        }
+    }
+
+    #[test]
+    fn retry_owner_atomically_hands_off_new_failure_before_teardown() {
         let registry = LiveRateMonitorRegistry::default();
         let enabled = DisplaySurfaceSettingsSnapshot::default();
         let mut disabled = enabled.clone();
         disabled.status_tray_live_text_enabled = false;
-        let source = live_source_for_test("source-a", 1).source_token;
-        let generation = registry.apply_status_tray_settings_with_writer(&enabled, true, |_, _| Ok(true)).unwrap().unwrap();
-        registry.stream.lock().unwrap().native_tray_source = Some(source.clone());
-        let mut writes = 0;
-        assert!(registry.publish_native_tray_with_writer(generation, &source, 12.0, |title, _| {
-            writes += 1;
-            if writes == 1 {
-                registry.apply_status_tray_settings_with_writer(&disabled, true, |_, _| Ok(true)).unwrap();
-                assert_eq!(title, "12.0/s");
+        assert!(registry
+            .apply_status_tray_settings_with_writer(&disabled, true, |_, _| Err("old failure".into()))
+            .is_err());
+        let old_revision = registry.claim_native_tray_retry_owner().unwrap();
+        let mut injected = false;
+        let mut writes = Vec::new();
+        registry.run_native_tray_retry_owner_with_writer(
+            old_revision,
+            |title, _| {
+                writes.push(title);
                 Ok(true)
-            } else {
-                assert_eq!(title, "CTB");
-                Err("first correction failed".into())
-            }
-        }).is_err());
-        assert!(!registry.stream.lock().unwrap().running);
+            },
+            |_| {},
+            |_| {
+                if !injected {
+                    injected = true;
+                    let mut zero = enabled.clone();
+                    zero.live_rate_enabled = false;
+                    assert!(registry
+                        .apply_status_tray_settings_with_writer(&zero, true, |_, _| {
+                            Err("new failure".into())
+                        })
+                        .is_err());
+                    // A concurrent scheduler sees the existing owner; finish must retain it.
+                    assert!(registry.claim_native_tray_retry_owner().is_none());
+                }
+            },
+        );
+        let stream = registry.stream.lock().unwrap();
+        assert_eq!(writes, vec!["CTB", "0.0/s"]);
+        assert_eq!(stream.native_tray_desired_readout, stream.native_tray_last_readout);
+        assert!(!stream.native_tray_retry_running);
+        assert!(!stream.native_tray_enabled);
+        assert!(!stream.running);
+    }
 
+    #[test]
+    fn retry_owner_is_bounded_and_later_event_can_reclaim() {
+        let registry = LiveRateMonitorRegistry::default();
+        let mut disabled = DisplaySurfaceSettingsSnapshot::default();
+        disabled.status_tray_live_text_enabled = false;
+        assert!(registry
+            .apply_status_tray_settings_with_writer(&disabled, true, |_, _| Err("initial".into()))
+            .is_err());
+        let revision = registry.claim_native_tray_retry_owner().unwrap();
         let mut attempts = 0;
-        for _ in 0..NATIVE_TRAY_CORRECTION_RETRY_LIMIT {
-            attempts += 1;
-            let result = registry.retry_native_presentation_with_writer(|title, _| {
-                assert_eq!(title, "CTB");
-                Ok(attempts == 2)
-            });
-            if result.is_ok() { break; }
-        }
-        assert_eq!(attempts, 2);
-        assert_eq!(registry.stream.lock().unwrap().native_tray_last_readout.as_ref().map(|value| value.0.as_str()), Some("CTB"));
+        let mut sleeps = 0;
+        registry.run_native_tray_retry_owner_with_writer(
+            revision,
+            |_, _| {
+                attempts += 1;
+                Err("still failing".into())
+            },
+            |_| sleeps += 1,
+            |_| {},
+        );
+        assert_eq!(attempts, NATIVE_TRAY_CORRECTION_RETRY_LIMIT);
+        assert_eq!(sleeps, NATIVE_TRAY_CORRECTION_RETRY_LIMIT);
+        assert!(!registry.stream.lock().unwrap().native_tray_retry_running);
 
-        let mut bounded_attempts = 0;
-        for _ in 0..NATIVE_TRAY_CORRECTION_RETRY_LIMIT {
-            bounded_attempts += 1;
-            let _ = registry.retry_native_presentation_with_writer(|_, _| Err("still failing".into()));
-        }
-        assert_eq!(bounded_attempts, NATIVE_TRAY_CORRECTION_RETRY_LIMIT);
+        let next_revision = registry.claim_native_tray_retry_owner().unwrap();
+        registry.run_native_tray_retry_owner_with_writer(
+            next_revision,
+            |title, _| {
+                assert_eq!(title, "CTB");
+                Ok(true)
+            },
+            |_| {},
+            |_| {},
+        );
+        let stream = registry.stream.lock().unwrap();
+        assert_eq!(stream.native_tray_desired_readout, stream.native_tray_last_readout);
+        assert!(!stream.native_tray_retry_running);
     }
 
     #[test]
