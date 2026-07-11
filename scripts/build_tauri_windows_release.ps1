@@ -127,7 +127,7 @@ function Build-Target {
     }
     $InstallerPattern = "^Codex Token Bar_" + [regex]::Escape($Version) + "_" + [regex]::Escape($Label) + "-setup\.exe$"
     if ($Installer.Name -notmatch $InstallerPattern) {
-        throw "NSIS installer name does not match version $Version: $($Installer.Name)"
+        throw "NSIS installer name does not match version ${Version}: $($Installer.Name)"
     }
 
     $OutputName = "CodexTokenBar-v$Version-windows-$Label-setup.exe"
