@@ -1,0 +1,97 @@
+{
+  "steps": [
+    {
+      "name": "native-a-visible",
+      "nativeThreadIDs": ["019eaaaa-0000-0000-0000-0000000000aa"],
+      "appendCompletions": [],
+      "action": "observe",
+      "expectedCount": 1
+    },
+    {
+      "name": "ack-native-a",
+      "nativeThreadIDs": ["019eaaaa-0000-0000-0000-0000000000aa"],
+      "appendCompletions": [],
+      "action": "markAllRead",
+      "expectedCount": 0
+    },
+    {
+      "name": "same-native-a-stays-read",
+      "nativeThreadIDs": ["019eaaaa-0000-0000-0000-0000000000aa"],
+      "appendCompletions": [],
+      "action": "observe",
+      "expectedCount": 0
+    },
+    {
+      "name": "new-completion-rearms-a",
+      "nativeThreadIDs": ["019eaaaa-0000-0000-0000-0000000000aa"],
+      "appendCompletions": [
+        {
+          "eventID": "019eaaaa-0000-0000-0000-0000000000aa:turn-1",
+          "threadID": "019eaaaa-0000-0000-0000-0000000000aa",
+          "turnID": "turn-1",
+          "title": "First completion"
+        }
+      ],
+      "action": "observe",
+      "expectedCount": 1,
+      "expectedLatestTitle": "First completion"
+    },
+    {
+      "name": "same-completion-does-not-recount",
+      "nativeThreadIDs": ["019eaaaa-0000-0000-0000-0000000000aa"],
+      "appendCompletions": [],
+      "action": "observe",
+      "expectedCount": 1,
+      "expectedLatestTitle": "First completion"
+    },
+    {
+      "name": "ack-first-completion",
+      "nativeThreadIDs": ["019eaaaa-0000-0000-0000-0000000000aa"],
+      "appendCompletions": [],
+      "action": "markAllRead",
+      "expectedCount": 0
+    },
+    {
+      "name": "multiple-new-events-count-thread-once",
+      "nativeThreadIDs": ["019eaaaa-0000-0000-0000-0000000000aa"],
+      "appendCompletions": [
+        {
+          "eventID": "019eaaaa-0000-0000-0000-0000000000aa:turn-2",
+          "threadID": "019eaaaa-0000-0000-0000-0000000000aa",
+          "turnID": "turn-2",
+          "title": "Second completion"
+        },
+        {
+          "eventID": "019eaaaa-0000-0000-0000-0000000000aa:turn-3",
+          "threadID": "019eaaaa-0000-0000-0000-0000000000aa",
+          "turnID": "turn-3",
+          "title": "Latest completion"
+        }
+      ],
+      "action": "observe",
+      "expectedCount": 1,
+      "expectedLatestTitle": "Latest completion"
+    },
+    {
+      "name": "ack-latest-completions",
+      "nativeThreadIDs": ["019eaaaa-0000-0000-0000-0000000000aa"],
+      "appendCompletions": [],
+      "action": "markAllRead",
+      "expectedCount": 0
+    },
+    {
+      "name": "native-a-leaves",
+      "nativeThreadIDs": [],
+      "appendCompletions": [],
+      "action": "observe",
+      "expectedCount": 0
+    },
+    {
+      "name": "native-a-return-is-visible",
+      "nativeThreadIDs": ["019eaaaa-0000-0000-0000-0000000000aa"],
+      "appendCompletions": [],
+      "action": "observe",
+      "expectedCount": 1
+    }
+  ]
+}

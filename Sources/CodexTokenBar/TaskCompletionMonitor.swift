@@ -22,19 +22,14 @@ struct LiveTaskCompletionPollLoader: TaskCompletionPollLoading {
         let unreadThreadRead = await Task.detached(priority: .utility) {
             CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: dataSource.codexHome)
         }.value
-        let result: TaskCompletionScanResult?
-        if case .available = unreadThreadRead {
-            result = nil
-        } else {
-            result = await Task.detached(priority: .utility) {
-                TaskCompletionScanner.scan(
-                    sessionsRoot: dataSource.sessionsRoot,
-                    previousStates: request.previousStates,
-                    seedMode: request.seedMode,
-                    seedCutoff: request.seedCutoff
-                )
-            }.value
-        }
+        let result = await Task.detached(priority: .utility) {
+            TaskCompletionScanner.scan(
+                sessionsRoot: dataSource.sessionsRoot,
+                previousStates: request.previousStates,
+                seedMode: request.seedMode,
+                seedCutoff: request.seedCutoff
+            )
+        }.value
         return TaskCompletionPollOutput(result: result, unreadThreadRead: unreadThreadRead)
     }
 }
@@ -58,6 +53,7 @@ final class TaskCompletionMonitor: ObservableObject {
     private var completedEventIDs: Set<String> = []
     private var completedEventIDOrder: [String] = []
     private var completedTaskThreadIDs: [String: String] = [:]
+    private var officialUnreadThreadIDs: Set<String> = []
     private var unreadThreadState = CodexUnreadThreadState()
     private var readBaseline = TaskCompletionReadBaseline()
     private var hasCodexUnreadState = false
@@ -110,6 +106,7 @@ final class TaskCompletionMonitor: ObservableObject {
             loadPersistedCompletedEventIDs()
             readBaseline = TaskCompletionReadBaselineStore.load(codexHomePath: newPath, defaults: defaults)
             completedTaskThreadIDs.removeAll()
+            officialUnreadThreadIDs.removeAll()
             unreadThreadState = CodexUnreadThreadState()
             hasCodexUnreadState = false
             setUnreadThreadCount(0)
@@ -139,12 +136,13 @@ final class TaskCompletionMonitor: ObservableObject {
 
         if hasCodexUnreadState {
             completedTaskThreadIDs = completedTaskThreadIDs.filter { _, threadID in
-                unreadThreadState.threadIDs.contains(threadID)
+                officialUnreadThreadIDs.contains(threadID)
             }
         } else {
             completedTaskThreadIDs.removeAll()
         }
         applyReadBaselineToFallbackEvents()
+        refreshActiveOfficialUnreadState()
         recomputeUnreadThreadCount()
         updateStatusText(fileCount: fileStates.count)
     }
@@ -215,11 +213,13 @@ final class TaskCompletionMonitor: ObservableObject {
 
         if hasCodexUnreadState {
             completedTaskThreadIDs = completedTaskThreadIDs.filter { _, threadID in
-                unreadThreadState.threadIDs.contains(threadID)
+                officialUnreadThreadIDs.contains(threadID)
             }
         }
 
         guard let result else {
+            applyReadBaselineToFallbackEvents()
+            refreshActiveOfficialUnreadState()
             recomputeUnreadThreadCount()
             updateStatusText(fileCount: fileStates.isEmpty ? nil : fileStates.count)
             return
@@ -237,12 +237,14 @@ final class TaskCompletionMonitor: ObservableObject {
         var didAddUnread = false
         for event in result.events {
             guard rememberCompletedEventID(event.id) else { continue }
+            guard !hasCodexUnreadState || officialUnreadThreadIDs.contains(event.threadID) else { continue }
             setLastCompletedTitle(event.title)
             completedTaskThreadIDs[event.id] = event.threadID
             didAddUnread = true
         }
 
         applyReadBaselineToFallbackEvents()
+        refreshActiveOfficialUnreadState()
         recomputeUnreadThreadCount()
         if didAddUnread, !hasCodexUnreadState, unreadThreadCount > 0 {
             statusText = "有任务完成"
@@ -263,13 +265,26 @@ final class TaskCompletionMonitor: ObservableObject {
     private func applyCodexUnreadRead(_ result: CodexUnreadThreadReadResult) {
         switch result {
         case let .available(threadIDs):
-            unreadThreadState = CodexUnreadThreadState(threadIDs: readBaseline.activeUnreadThreadIDs(from: threadIDs))
+            officialUnreadThreadIDs = threadIDs
             hasCodexUnreadState = true
-            persistReadBaseline()
+            refreshActiveOfficialUnreadState()
         case .unavailable:
+            officialUnreadThreadIDs.removeAll()
             unreadThreadState = CodexUnreadThreadState()
             hasCodexUnreadState = false
         }
+    }
+
+    private func refreshActiveOfficialUnreadState() {
+        guard hasCodexUnreadState else { return }
+        let completionThreadIDs = Set(completedTaskThreadIDs.values)
+        unreadThreadState = CodexUnreadThreadState(
+            threadIDs: readBaseline.activeUnreadThreadIDs(
+                from: officialUnreadThreadIDs,
+                reactivatedBy: completionThreadIDs
+            )
+        )
+        persistReadBaseline()
     }
 
     private func applyReadBaselineToFallbackEvents() {

@@ -153,6 +153,78 @@ final class TaskCompletionMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.statusText, "有未读会话")
     }
 
+    func testSharedUnreadCorrectnessSequence() throws {
+        let sequence = try unreadCorrectnessSequence()
+        let monitor = TaskCompletionMonitor(defaults: isolatedDefaults())
+
+        for step in sequence.steps {
+            let events = step.appendCompletions.map {
+                TaskCompletionEvent(
+                    id: $0.eventID,
+                    threadID: $0.threadID,
+                    title: $0.title,
+                    body: "Done"
+                )
+            }
+            monitor.applyForTesting(
+                result: scanResult(events: events),
+                unreadThreadRead: .available(Set(step.nativeThreadIDs))
+            )
+            if step.action == "markAllRead" {
+                monitor.markAllRead()
+            }
+
+            XCTAssertEqual(monitor.unreadThreadCount, step.expectedCount, step.name)
+            if let expectedLatestTitle = step.expectedLatestTitle {
+                XCTAssertEqual(monitor.lastCompletedTitle, expectedLatestTitle, step.name)
+            }
+        }
+    }
+
+    func testLiveLoaderScansCompletionsWhileOfficialUnreadIsAvailable() async throws {
+        let codexHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TaskCompletionLiveMerge-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: codexHome) }
+        let sessions = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let threadID = "019eaaaa-0000-0000-0000-0000000000bb"
+        let unreadState: [String: Any] = [
+            "electron-persisted-atom-state": [
+                "unread-thread-ids-by-host-v1": ["local": [threadID]]
+            ]
+        ]
+        try JSONSerialization.data(withJSONObject: unreadState).write(
+            to: codexHome.appendingPathComponent(".codex-global-state.json")
+        )
+        let session = sessions.appendingPathComponent("live.jsonl")
+        let lines = [
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(threadID)\",\"cwd\":\"/tmp\",\"thread_source\":\"user\",\"source\":\"desktop\"}}",
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-06-24T13:00:00.000Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-live\",\"completed_at\":1782306000}}"
+        ]
+        try lines.joined(separator: "\n").appending("\n").write(
+            to: session,
+            atomically: true,
+            encoding: .utf8
+        )
+        let source = CodexDataSource(codexHome: codexHome, origin: .userSelected)
+
+        let output = await LiveTaskCompletionPollLoader().load(
+            request: TaskCompletionPollRequest(
+                dataSource: source,
+                previousStates: [:],
+                seedMode: false,
+                seedCutoff: Date(timeIntervalSince1970: 0)
+            )
+        )
+
+        guard case let .available(threadIDs) = output.unreadThreadRead else {
+            return XCTFail("Expected official unread state")
+        }
+        XCTAssertEqual(threadIDs, [threadID])
+        XCTAssertEqual(output.result?.events.count, 1)
+        XCTAssertEqual(output.result?.events.first?.threadID, threadID)
+    }
+
     private func scanResult(events: [TaskCompletionEvent]) -> TaskCompletionScanResult {
         TaskCompletionScanResult(states: [:], events: events, fileCount: 1)
     }
@@ -162,6 +234,17 @@ final class TaskCompletionMonitorTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         return defaults
+    }
+
+    private func unreadCorrectnessSequence() throws -> UnreadCorrectnessSequence {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let fixture = repositoryRoot
+            .appendingPathComponent("TestFixtures", isDirectory: true)
+            .appendingPathComponent("unread-correctness-sequence.json")
+        return try JSONDecoder().decode(UnreadCorrectnessSequence.self, from: Data(contentsOf: fixture))
     }
 
     private func waitUntil(
@@ -176,6 +259,26 @@ final class TaskCompletionMonitorTests: XCTestCase {
         }
         XCTFail("Timed out waiting for \(label)")
     }
+}
+
+private struct UnreadCorrectnessSequence: Decodable {
+    let steps: [UnreadCorrectnessStep]
+}
+
+private struct UnreadCorrectnessStep: Decodable {
+    let name: String
+    let nativeThreadIDs: [String]
+    let appendCompletions: [UnreadCorrectnessCompletion]
+    let action: String
+    let expectedCount: Int
+    let expectedLatestTitle: String?
+}
+
+private struct UnreadCorrectnessCompletion: Decodable {
+    let eventID: String
+    let threadID: String
+    let turnID: String
+    let title: String
 }
 
 private actor SuspendedTaskCompletionPollLoader: TaskCompletionPollLoading {

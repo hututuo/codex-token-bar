@@ -4,8 +4,12 @@ struct TaskCompletionReadBaseline: Codable, Equatable, Sendable {
     private var acknowledgedUnreadThreadIDs: Set<String> = []
     private var acknowledgedCompletedEventIDs: Set<String> = []
 
-    mutating func activeUnreadThreadIDs(from threadIDs: Set<String>) -> Set<String> {
+    mutating func activeUnreadThreadIDs(
+        from threadIDs: Set<String>,
+        reactivatedBy completedThreadIDs: Set<String> = []
+    ) -> Set<String> {
         acknowledgedUnreadThreadIDs.formIntersection(threadIDs)
+        acknowledgedUnreadThreadIDs.subtract(completedThreadIDs)
         return threadIDs.subtracting(acknowledgedUnreadThreadIDs)
     }
 
