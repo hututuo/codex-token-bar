@@ -26,13 +26,13 @@ pub(crate) fn extended_length_path_from_wide(mut path: Vec<u16>) -> Result<Vec<u
     }
     if has_verbatim_prefix {
         let remainder = &path[4..];
-        let unc_prefix: Vec<u16> = "UNC\\".encode_utf16().collect();
+        let unc_prefix = "UNC\\".encode_utf16().collect::<Vec<_>>();
         let valid_prefixed_drive = remainder.len() >= 3
             && ((u16::from(b'A')..=u16::from(b'Z')).contains(&remainder[0])
                 || (u16::from(b'a')..=u16::from(b'z')).contains(&remainder[0]))
             && remainder[1] == colon
             && remainder[2] == slash;
-        let valid_prefixed_unc = remainder.starts_with(&unc_prefix)
+        let valid_prefixed_unc = starts_with_ascii_case_insensitive(remainder, &unc_prefix)
             && remainder[unc_prefix.len()..]
                 .split(|unit| *unit == slash)
                 .filter(|part| !part.is_empty())
@@ -70,9 +70,48 @@ pub(crate) fn extended_length_path_from_wide(mut path: Vec<u16>) -> Result<Vec<u
     Ok(extended)
 }
 
+#[cfg(any(test, windows))]
+fn starts_with_ascii_case_insensitive(value: &[u16], prefix: &[u16]) -> bool {
+    value.len() >= prefix.len()
+        && value[..prefix.len()]
+            .iter()
+            .zip(prefix)
+            .all(|(left, right)| ascii_uppercase(*left) == ascii_uppercase(*right))
+}
+
+#[cfg(any(test, windows))]
+fn ascii_uppercase(value: u16) -> u16 {
+    if (u16::from(b'a')..=u16::from(b'z')).contains(&value) {
+        value - u16::from(b'a') + u16::from(b'A')
+    } else {
+        value
+    }
+}
+
 #[cfg(windows)]
 pub(crate) fn extended_length_path(path: &std::path::Path) -> Result<Vec<u16>, String> {
     use std::os::windows::ffi::OsStrExt;
     extended_length_path_from_wide(path.as_os_str().encode_wide().collect())
         .map_err(|error| format!("{error}：{}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extended_length_path_from_wide;
+
+    #[test]
+    fn accepts_case_insensitive_extended_unc_prefixes() {
+        for path in [
+            r"\\?\unc\server\share\ack.json",
+            r"\\?\UnC\server\share\ack.json",
+        ] {
+            let converted = extended_length_path_from_wide(path.encode_utf16().collect()).unwrap();
+            assert_eq!(
+                String::from_utf16(&converted[..converted.len() - 1]).unwrap(),
+                path
+            );
+        }
+        assert!(extended_length_path_from_wide(r"\\?\unc\server".encode_utf16().collect())
+            .is_err());
+    }
 }
