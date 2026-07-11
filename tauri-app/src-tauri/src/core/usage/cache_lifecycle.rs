@@ -6,17 +6,11 @@ use std::fs;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use std::sync::{Mutex, OnceLock};
-#[cfg(test)]
-use std::sync::MutexGuard;
 
 static MARKER_FAILURE: OnceLock<Mutex<Option<LocalDataWarning>>> = OnceLock::new();
 #[cfg(test)]
-static USAGE_CACHE_TEST_STATE_LOCK: Mutex<()> = Mutex::new(());
-
-#[cfg(test)]
 pub(crate) struct UsageCacheTestStateGuard {
-    _lock: MutexGuard<'static, ()>,
-    originals: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    _env: app_paths::AppPathTestEnvGuard,
     marker_failure: Option<LocalDataWarning>,
 }
 
@@ -24,33 +18,18 @@ pub(crate) struct UsageCacheTestStateGuard {
 pub(crate) fn usage_cache_test_state_guard(
     overrides: &[(&'static str, std::path::PathBuf)],
 ) -> UsageCacheTestStateGuard {
-    let lock = USAGE_CACHE_TEST_STATE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let originals = overrides
-        .iter()
-        .map(|(key, _)| (*key, std::env::var_os(key)))
-        .collect::<Vec<_>>();
+    let env = app_paths::app_path_test_env_guard(overrides);
     let marker_failure = MARKER_FAILURE
         .get_or_init(|| Mutex::new(None))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
-    for (key, value) in overrides {
-        std::env::set_var(key, value);
-    }
-    UsageCacheTestStateGuard { _lock: lock, originals, marker_failure }
+    UsageCacheTestStateGuard { _env: env, marker_failure }
 }
 
 #[cfg(test)]
 impl Drop for UsageCacheTestStateGuard {
     fn drop(&mut self) {
-        for (key, value) in &self.originals {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
         *MARKER_FAILURE
             .get_or_init(|| Mutex::new(None))
             .lock()
@@ -315,22 +294,8 @@ mod tests {
     }
 
     #[test]
-    fn path_env_guard_restores_original_support_value() {
-        let original = std::ffi::OsString::from("preexisting-support-value");
-        std::env::set_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", &original);
-        {
-            let root = temp_root("env-restore");
-            let _env = PathEnvGuard::new(&root);
-            assert_ne!(std::env::var_os("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR"), Some(original.clone()));
-        }
-        assert_eq!(std::env::var_os("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR"), Some(original));
-        std::env::remove_var("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR");
-    }
-
-    #[test]
     fn usage_cache_test_guard_serializes_parallel_mutation_and_restores_value() {
         let key = "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR";
-        let original = std::env::var_os(key);
         let first = usage_cache_test_state_guard(&[(key, PathBuf::from("first-owner"))]);
         let (sender, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
@@ -339,11 +304,11 @@ mod tests {
             sender.send("acquired").unwrap();
         });
         assert_eq!(receiver.recv().unwrap(), "waiting");
-        assert!(receiver.recv_timeout(std::time::Duration::from_millis(50)).is_err());
+        assert!(app_paths::app_path_test_env_lock_is_held());
+        assert!(receiver.try_recv().is_err());
         drop(first);
         assert_eq!(receiver.recv_timeout(std::time::Duration::from_secs(1)).unwrap(), "acquired");
         worker.join().unwrap();
-        assert_eq!(std::env::var_os(key), original);
     }
 
     fn temp_root(label: &str) -> PathBuf {

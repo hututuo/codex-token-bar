@@ -229,11 +229,8 @@ mod tests {
     use crate::models::AppSettingsSnapshot;
     use std::{
         path::{Path, PathBuf},
-        sync::{Mutex, MutexGuard},
         time::{SystemTime, UNIX_EPOCH},
     };
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn codex_home_status_derives_path_and_source_from_one_snapshot() {
@@ -389,7 +386,7 @@ mod tests {
         ))
     }
 
-    fn lock_env() -> MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    fn lock_env() -> crate::core::app_paths::AppPathTestEnvGuard {
+        crate::core::app_paths::app_path_test_env_guard(&[])
     }
 }

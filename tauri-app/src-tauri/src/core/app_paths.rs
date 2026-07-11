@@ -209,3 +209,45 @@ fn app_cache_base_dir() -> Option<PathBuf> {
             })
     }
 }
+#[cfg(test)]
+static APP_PATH_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) struct AppPathTestEnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    originals: Vec<(&'static str, Option<std::ffi::OsString>)>,
+}
+
+#[cfg(test)]
+pub(crate) fn app_path_test_env_guard(
+    overrides: &[(&'static str, PathBuf)],
+) -> AppPathTestEnvGuard {
+    let lock = APP_PATH_TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let originals = overrides
+        .iter()
+        .map(|(key, _)| (*key, std::env::var_os(key)))
+        .collect::<Vec<_>>();
+    for (key, value) in overrides {
+        std::env::set_var(key, value);
+    }
+    AppPathTestEnvGuard { _lock: lock, originals }
+}
+
+#[cfg(test)]
+pub(crate) fn app_path_test_env_lock_is_held() -> bool {
+    matches!(APP_PATH_TEST_ENV_LOCK.try_lock(), Err(std::sync::TryLockError::WouldBlock))
+}
+
+#[cfg(test)]
+impl Drop for AppPathTestEnvGuard {
+    fn drop(&mut self) {
+        for (key, value) in &self.originals {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
