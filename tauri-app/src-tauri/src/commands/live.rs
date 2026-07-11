@@ -1452,7 +1452,12 @@ mod tests {
 
     #[cfg(unix)]
     fn write_unread_state_for_source_test(home: &std::path::Path, thread_id: &str) {
-        let sessions = home.join("sessions");
+        let date = time::OffsetDateTime::now_utc().date();
+        let sessions = home
+            .join("sessions")
+            .join(format!("{:04}", date.year()))
+            .join(format!("{:02}", u8::from(date.month())))
+            .join(format!("{:02}", date.day()));
         std::fs::create_dir_all(&sessions).unwrap();
         let completed_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

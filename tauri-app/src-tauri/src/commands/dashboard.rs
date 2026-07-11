@@ -28,6 +28,8 @@ static PINNED_SOURCE_SESSION_FILES_COPIED: AtomicU64 = AtomicU64::new(0);
 static PINNED_SOURCE_SNAPSHOTS_CREATED: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static PINNED_SOURCE_DB_FILES_COPIED: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static PINNED_SOURCE_SESSION_ENTRIES_INSPECTED: AtomicU64 = AtomicU64::new(0);
 
 const PINNED_SESSION_FILE_LIMIT: usize = 64;
 const PINNED_SESSION_FIRST_LINE_LIMIT: u64 = 262_144;
@@ -356,6 +358,7 @@ fn snapshot_pinned_unread_source(
     #[cfg(test)]
     PINNED_SOURCE_SNAPSHOTS_CREATED.fetch_add(1, Ordering::Relaxed);
     let result = (|| {
+        evict_other_pinned_db_snapshots(source_scope_key)?;
         copy_optional_pinned_file(
             root,
             ".codex-global-state.json",
@@ -443,20 +446,10 @@ fn materialize_cached_pinned_database(
     snapshot: &Path,
 ) -> Result<(), String> {
     let signature_before = pinned_database_signature(root, state_fingerprint)?;
-    let cache = PINNED_DB_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = pinned_db_snapshot_cache()?;
     let mut cache = cache
         .lock()
         .map_err(|_| "pinned unread DB cache lock was poisoned".to_string())?;
-    let stale_keys = cache
-        .keys()
-        .filter(|key| key.as_str() != source_scope_key)
-        .cloned()
-        .collect::<Vec<_>>();
-    for key in stale_keys {
-        if let Some(stale) = cache.remove(&key) {
-            let _ = std::fs::remove_dir_all(stale.directory);
-        }
-    }
     if let Some(cached) = cache.get(source_scope_key) {
         if cached.signature == signature_before {
             return link_cached_pinned_database(&cached.directory, snapshot);
@@ -485,6 +478,10 @@ fn materialize_cached_pinned_database(
         let _ = std::fs::remove_dir_all(&directory);
         return Err(error);
     }
+    if let Err(error) = link_cached_pinned_database(&directory, snapshot) {
+        let _ = std::fs::remove_dir_all(&directory);
+        return Err(error);
+    }
     if let Some(previous) = cache.insert(
         source_scope_key.to_string(),
         CachedPinnedDbSnapshot {
@@ -494,7 +491,51 @@ fn materialize_cached_pinned_database(
     ) {
         let _ = std::fs::remove_dir_all(previous.directory);
     }
-    link_cached_pinned_database(&directory, snapshot)
+    Ok(())
+}
+
+#[cfg(unix)]
+fn pinned_db_snapshot_cache(
+) -> Result<&'static Mutex<HashMap<String, CachedPinnedDbSnapshot>>, String> {
+    static CLEANUP: OnceLock<Result<(), String>> = OnceLock::new();
+    CLEANUP
+        .get_or_init(clean_stale_pinned_db_snapshots)
+        .clone()?;
+    Ok(PINNED_DB_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(HashMap::new())))
+}
+
+#[cfg(unix)]
+fn clean_stale_pinned_db_snapshots() -> Result<(), String> {
+    let prefix = "codex-token-bar-pinned-db-";
+    let active_prefix = format!("{prefix}{}-", std::process::id());
+    let entries = std::fs::read_dir(std::env::temp_dir())
+        .map_err(|error| format!("failed to inspect pinned DB cache directory: {error}"))?;
+    for entry in entries.flatten().take(64) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(prefix) && !name.starts_with(&active_prefix) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn evict_other_pinned_db_snapshots(source_scope_key: &str) -> Result<(), String> {
+    let cache = pinned_db_snapshot_cache()?;
+    let mut cache = cache
+        .lock()
+        .map_err(|_| "pinned unread DB cache lock was poisoned".to_string())?;
+    let stale_keys = cache
+        .keys()
+        .filter(|key| key.as_str() != source_scope_key)
+        .cloned()
+        .collect::<Vec<_>>();
+    for key in stale_keys {
+        if let Some(stale) = cache.remove(&key) {
+            let _ = std::fs::remove_dir_all(stale.directory);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -587,20 +628,101 @@ fn copy_recent_pinned_sessions(
         Err(rustix::io::Errno::NOENT) => return Ok(()),
         Err(error) => return Err(format!("failed to open pinned sessions: {error}")),
     };
+    validate_canonical_sessions_root(&sessions)?;
+    let now_utc = time::OffsetDateTime::now_utc();
+    let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    let date_paths = recent_session_date_paths(now_utc, local_offset);
     let cutoff = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64 - PINNED_SESSION_LOOKBACK_SECONDS)
         .unwrap_or(i64::MAX);
     let mut candidates = Vec::new();
-    collect_recent_pinned_session_candidates(
-        &sessions,
-        Path::new(""),
-        cutoff,
-        &mut candidates,
-    )?;
+    for date_path in date_paths {
+        let Some(day) = open_pinned_directory_path(&sessions, &date_path)? else {
+            continue;
+        };
+        collect_recent_pinned_session_candidates(
+            &day,
+            &date_path,
+            cutoff,
+            &mut candidates,
+        )?;
+    }
     candidates.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
     for (relative_path, _) in candidates.into_iter().take(PINNED_SESSION_FILE_LIMIT) {
         copy_pinned_session_candidate(&sessions, &relative_path, destination)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn recent_session_date_paths(
+    now_utc: time::OffsetDateTime,
+    local_offset: time::UtcOffset,
+) -> Vec<PathBuf> {
+    let mut dates = std::collections::BTreeSet::new();
+    for current in [now_utc.date(), now_utc.to_offset(local_offset).date()] {
+        dates.insert(current);
+        if let Some(previous) = current.previous_day() {
+            dates.insert(previous);
+        }
+    }
+    dates
+        .into_iter()
+        .map(|date| {
+            PathBuf::from(format!("{:04}", date.year()))
+                .join(format!("{:02}", u8::from(date.month())))
+                .join(format!("{:02}", date.day()))
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn open_pinned_directory_path(
+    root: &impl std::os::fd::AsFd,
+    path: &Path,
+) -> Result<Option<rustix::fd::OwnedFd>, String> {
+    use rustix::fs::{openat, Mode, OFlags};
+
+    let mut current = rustix::io::dup(root)
+        .map_err(|error| format!("failed to duplicate pinned sessions root: {error}"))?;
+    for component in path.components() {
+        current = match openat(
+            &current,
+            component.as_os_str(),
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::DIRECTORY,
+            Mode::empty(),
+        ) {
+            Ok(fd) => fd,
+            Err(rustix::io::Errno::NOENT) => return Ok(None),
+            Err(error) => {
+                return Err(format!("failed to open pinned session date directory: {error}"))
+            }
+        };
+    }
+    Ok(Some(current))
+}
+
+#[cfg(unix)]
+fn validate_canonical_sessions_root(root: &impl std::os::fd::AsFd) -> Result<(), String> {
+    use rustix::fs::{statat, AtFlags, Dir, FileType};
+    let mut directory = Dir::read_from(root)
+        .map_err(|error| format!("failed to enumerate pinned sessions root: {error}"))?;
+    while let Some(entry) = directory.read() {
+        let entry = entry.map_err(|error| format!("failed to enumerate pinned sessions root: {error}"))?;
+        let name = entry.file_name().to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        let text = String::from_utf8_lossy(name);
+        let stat = statat(root, text.as_ref(), AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|error| format!("failed to inspect pinned sessions root: {error}"))?;
+        if text.len() != 4
+            || !text.bytes().all(|byte| byte.is_ascii_digit())
+            || FileType::from_raw_mode(stat.st_mode) != FileType::Directory
+        {
+            return Err("non-canonical sessions layout cannot be observed safely".into());
+        }
     }
     Ok(())
 }
@@ -624,6 +746,8 @@ fn collect_recent_pinned_session_candidates<Fd: std::os::fd::AsFd>(
         if bytes == b"." || bytes == b".." {
             continue;
         }
+        #[cfg(test)]
+        PINNED_SOURCE_SESSION_ENTRIES_INSPECTED.fetch_add(1, Ordering::Relaxed);
         let child_name = OsStr::from_bytes(bytes);
         let child_name_text = child_name.to_string_lossy();
         let stat = statat(&parent, child_name_text.as_ref(), AtFlags::SYMLINK_NOFOLLOW)
@@ -734,6 +858,7 @@ pub(crate) fn reset_pinned_source_copy_count_for_test() {
     PINNED_SOURCE_SESSION_FILES_COPIED.store(0, Ordering::Relaxed);
     PINNED_SOURCE_SNAPSHOTS_CREATED.store(0, Ordering::Relaxed);
     PINNED_SOURCE_DB_FILES_COPIED.store(0, Ordering::Relaxed);
+    PINNED_SOURCE_SESSION_ENTRIES_INSPECTED.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -749,6 +874,11 @@ pub(crate) fn pinned_source_snapshot_count_for_test() -> u64 {
 #[cfg(test)]
 pub(crate) fn pinned_source_db_copy_count_for_test() -> u64 {
     PINNED_SOURCE_DB_FILES_COPIED.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn pinned_source_inspected_count_for_test() -> u64 {
+    PINNED_SOURCE_SESSION_ENTRIES_INSPECTED.load(Ordering::Relaxed)
 }
 
 #[cfg(unix)]
@@ -1653,8 +1783,9 @@ mod tests {
     fn pinned_source_observation_survives_a_to_b_to_a_swap() {
         let home = disposable_source_test_directory("pinned-source-a");
         let displaced = home.with_extension("displaced");
-        std::fs::create_dir(home.join("sessions")).unwrap();
-        std::fs::write(home.join("sessions/observation.jsonl"), "A").unwrap();
+        let session_path = canonical_session_test_directory(&home);
+        std::fs::create_dir_all(&session_path).unwrap();
+        std::fs::write(session_path.join("observation.jsonl"), "A").unwrap();
         let mut transition = CodexHomeTransitionState::default();
         let source_a = resolve_codex_home_source(
             &mut transition,
@@ -1667,13 +1798,20 @@ mod tests {
 
         std::fs::rename(&home, &displaced).expect("replace A with B after pin");
         std::fs::create_dir(&home).expect("install B at the same canonical path");
-        std::fs::create_dir(home.join("sessions")).unwrap();
-        std::fs::write(home.join("sessions/observation.jsonl"), "B").unwrap();
+        let session_path_b = canonical_session_test_directory(&home);
+        std::fs::create_dir_all(&session_path_b).unwrap();
+        std::fs::write(session_path_b.join("observation.jsonl"), "B").unwrap();
         std::fs::remove_dir_all(&home).unwrap();
         std::fs::rename(&displaced, &home).expect("restore A before validation");
 
         assert_eq!(
-            std::fs::read_to_string(pinned.read_path().join("sessions/observation.jsonl")).unwrap(),
+            std::fs::read_to_string(
+                pinned
+                    .read_path()
+                    .join(session_path.strip_prefix(&home).unwrap())
+                    .join("observation.jsonl"),
+            )
+            .unwrap(),
             "A"
         );
         assert!(pinned.source_scope_key.contains(&source_a.physical_home_key));
@@ -1689,8 +1827,9 @@ mod tests {
         let target = disposable_source_test_directory("canonical-target");
         let link = target.with_extension("link");
         symlink(&target, &link).unwrap();
-        std::fs::create_dir(target.join("sessions")).unwrap();
-        std::fs::write(target.join("sessions/observation.jsonl"), "target").unwrap();
+        let session_path = canonical_session_test_directory(&target);
+        std::fs::create_dir_all(&session_path).unwrap();
+        std::fs::write(session_path.join("observation.jsonl"), "target").unwrap();
         let mut transition = CodexHomeTransitionState::default();
         let source = resolve_codex_home_source(
             &mut transition,
@@ -1702,7 +1841,13 @@ mod tests {
 
         let pinned = pin_captured_codex_home_source(&captured).expect("pin canonical target");
         assert_eq!(
-            std::fs::read_to_string(pinned.read_path().join("sessions/observation.jsonl")).unwrap(),
+            std::fs::read_to_string(
+                pinned
+                    .read_path()
+                    .join(session_path.strip_prefix(&target).unwrap())
+                    .join("observation.jsonl"),
+            )
+            .unwrap(),
             "target"
         );
 
@@ -1714,20 +1859,13 @@ mod tests {
     #[test]
     fn pinned_source_copies_only_bounded_recent_session_candidates() {
         let home = disposable_source_test_directory("bounded-pinned-sessions");
-        let sessions = home.join("sessions");
-        std::fs::create_dir(&sessions).unwrap();
-        let old_time = std::fs::FileTimes::new()
-            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1));
-        for index in 0..1_100 {
-            let path = sessions.join(format!("old-{index}.jsonl"));
-            std::fs::write(&path, "old").unwrap();
-            std::fs::File::options()
-                .write(true)
-                .open(path)
-                .unwrap()
-                .set_times(old_time.clone())
-                .unwrap();
+        let old_sessions = home.join("sessions/2000/01/01");
+        std::fs::create_dir_all(&old_sessions).unwrap();
+        for index in 0..10_000 {
+            std::fs::write(old_sessions.join(format!("old-{index}.jsonl")), "old").unwrap();
         }
+        let sessions = canonical_session_test_directory(&home);
+        std::fs::create_dir_all(&sessions).unwrap();
         for index in 0..2 {
             std::fs::write(sessions.join(format!("recent-{index}.jsonl")), "recent").unwrap();
         }
@@ -1744,8 +1882,13 @@ mod tests {
         let pinned = pin_captured_codex_home_source(&captured).unwrap();
 
         assert_eq!(pinned_source_copy_count_for_test(), 2);
+        assert_eq!(pinned_source_inspected_count_for_test(), 2);
         assert_eq!(
-            std::fs::read_dir(pinned.read_path().join("sessions"))
+            std::fs::read_dir(
+                pinned
+                    .read_path()
+                    .join(sessions.strip_prefix(&home).unwrap()),
+            )
                 .unwrap()
                 .count(),
             2
@@ -1757,8 +1900,8 @@ mod tests {
     #[test]
     fn pinned_source_selects_the_newest_sixty_four_recent_sessions() {
         let home = disposable_source_test_directory("newest-pinned-sessions");
-        let sessions = home.join("sessions");
-        std::fs::create_dir(&sessions).unwrap();
+        let sessions = canonical_session_test_directory(&home);
+        std::fs::create_dir_all(&sessions).unwrap();
         let base = std::time::SystemTime::now() - std::time::Duration::from_secs(20);
         for index in 0..70 {
             let path = sessions.join(format!("recent-{index:02}.jsonl"));
@@ -1785,20 +1928,45 @@ mod tests {
         let pinned = pin_captured_codex_home_source(&captured).unwrap();
 
         assert_eq!(
-            std::fs::read_dir(pinned.read_path().join("sessions"))
+            std::fs::read_dir(
+                pinned
+                    .read_path()
+                    .join(sessions.strip_prefix(&home).unwrap()),
+            )
                 .unwrap()
                 .count(),
             64
         );
         assert!(!pinned
             .read_path()
-            .join("sessions/recent-05.jsonl")
+            .join(sessions.strip_prefix(&home).unwrap())
+            .join("recent-05.jsonl")
             .exists());
         assert!(pinned
             .read_path()
-            .join("sessions/recent-69.jsonl")
+            .join(sessions.strip_prefix(&home).unwrap())
+            .join("recent-69.jsonl")
             .exists());
         remove_source_test_directory(home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recent_session_dates_cover_utc_and_local_midnight_boundaries() {
+        let now = time::macros::datetime!(2026-07-11 00:05 UTC);
+        let west = recent_session_date_paths(now, time::UtcOffset::from_hms(-7, 0, 0).unwrap());
+        assert!(west.contains(&PathBuf::from("2026/07/11")));
+        assert!(west.contains(&PathBuf::from("2026/07/10")));
+        assert!(west.contains(&PathBuf::from("2026/07/09")));
+
+        let east_now = time::macros::datetime!(2026-07-11 18:30 UTC);
+        let east = recent_session_date_paths(
+            east_now,
+            time::UtcOffset::from_hms(10, 0, 0).unwrap(),
+        );
+        assert!(east.contains(&PathBuf::from("2026/07/12")));
+        assert!(east.contains(&PathBuf::from("2026/07/11")));
+        assert!(east.contains(&PathBuf::from("2026/07/10")));
     }
 
     #[cfg(unix)]
@@ -1940,6 +2108,96 @@ mod tests {
         remove_source_test_directory(home);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn empty_native_source_evicts_previous_physical_db_cache_and_directory() {
+        let home_a = disposable_source_test_directory("cache-source-a");
+        let thread_id = "019eaaaa-0000-0000-0000-0000000000aa";
+        std::fs::write(
+            home_a.join(".codex-global-state.json"),
+            format!(r#"{{"unread-thread-ids-by-host-v1":{{"localhost":["{thread_id}"]}}}}"#),
+        )
+        .unwrap();
+        let connection = rusqlite::Connection::open(home_a.join("state_5.sqlite")).unwrap();
+        connection
+            .execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY);")
+            .unwrap();
+        drop(connection);
+        let mut transition_a = CodexHomeTransitionState::default();
+        let source_a = resolve_codex_home_source(
+            &mut transition_a,
+            codex_home_status_for_test(home_a.clone(), "manual"),
+        )
+        .unwrap();
+        let captured_a =
+            capture_codex_home_source_from_state(&transition_a, &source_a.source_token()).unwrap();
+        drop(pin_captured_codex_home_source(&captured_a).unwrap());
+        let key_a = format!("{}|{}", source_a.canonical_home_key, source_a.physical_home_key);
+        let cached_directory = {
+            let cache = pinned_db_snapshot_cache().unwrap().lock().unwrap();
+            cache.get(&key_a).unwrap().directory.clone()
+        };
+
+        let home_b = disposable_source_test_directory("cache-source-b-empty");
+        std::fs::write(
+            home_b.join(".codex-global-state.json"),
+            r#"{"unread-thread-ids-by-host-v1":{"localhost":[]}}"#,
+        )
+        .unwrap();
+        let mut transition_b = CodexHomeTransitionState::default();
+        let source_b = resolve_codex_home_source(
+            &mut transition_b,
+            codex_home_status_for_test(home_b.clone(), "manual"),
+        )
+        .unwrap();
+        let captured_b =
+            capture_codex_home_source_from_state(&transition_b, &source_b.source_token()).unwrap();
+        drop(pin_captured_codex_home_source(&captured_b).unwrap());
+
+        assert!(!pinned_db_snapshot_cache()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .contains_key(&key_a));
+        assert!(!cached_directory.exists());
+
+        remove_source_test_directory(home_a);
+        remove_source_test_directory(home_b);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_db_snapshot_creation_leaves_no_task_owned_directory() {
+        let prefix = format!("codex-token-bar-pinned-db-{}-", std::process::id());
+        let count = || {
+            std::fs::read_dir(std::env::temp_dir())
+                .unwrap()
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+                .count()
+        };
+        let before = count();
+        let home = disposable_source_test_directory("failed-db-cache");
+        std::fs::write(
+            home.join(".codex-global-state.json"),
+            r#"{"unread-thread-ids-by-host-v1":{"localhost":["019eaaaa-0000-0000-0000-0000000000aa"]}}"#,
+        )
+        .unwrap();
+        std::fs::write(home.join("state_5.sqlite"), b"not sqlite").unwrap();
+        let mut transition = CodexHomeTransitionState::default();
+        let source = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
+            .unwrap();
+
+        assert!(pin_captured_codex_home_source(&captured).is_err());
+        assert_eq!(count(), before);
+        remove_source_test_directory(home);
+    }
+
     #[test]
     fn account_quota_trace_status_distinguishes_placeholder_bundle_from_real_quota() {
         let mut quota = placeholder_quota_for_test();
@@ -2054,5 +2312,18 @@ mod tests {
 
     fn remove_source_test_directory(path: PathBuf) {
         std::fs::remove_dir_all(path).expect("remove disposable source transition directory");
+    }
+
+    #[cfg(unix)]
+    fn canonical_session_test_directory(home: &Path) -> PathBuf {
+        home.join("sessions").join(
+            recent_session_date_paths(
+                time::OffsetDateTime::now_utc(),
+                time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC),
+            )
+            .into_iter()
+            .next()
+            .unwrap(),
+        )
     }
 }
