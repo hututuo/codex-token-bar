@@ -16,6 +16,11 @@ import {
   type UpdateCheckScheduler,
 } from "./updateCheckScheduler";
 import { automaticUpdateNotice } from "./updateCheckPresentation";
+import {
+  createUpdatePublicationGate,
+  type UpdatePublicationGate,
+  type UpdatePublicationToken,
+} from "./updatePublication";
 
 const UPDATE_CHECK_ATTEMPT_STORAGE_KEY = "codex-token-bar:update-check-attempt-v1";
 const UPDATE_WAKE_POLL_INTERVAL_MS = 60_000;
@@ -37,10 +42,11 @@ export function DashboardApp() {
     update: null,
   });
   const updateCheckScheduler = useAppUpdateCheckScheduler();
+  const updatePublication = useAppUpdatePublicationGate();
 
   useDashboardHydration(setDashboardHydrated);
   useDashboardScrollReset();
-  useAutomaticUpdateChecks(updateCheckScheduler, setAppUpdateState);
+  useAutomaticUpdateChecks(updateCheckScheduler, updatePublication, setAppUpdateState);
 
   const {
     state,
@@ -116,6 +122,7 @@ export function DashboardApp() {
         onCheckForUpdate={() => handleCheckForUpdate(
           appUpdateState,
           updateCheckScheduler,
+          updatePublication,
           setAppUpdateState,
         )}
         onToggleAutostart={shellSettings.toggleAutostart}
@@ -167,16 +174,33 @@ function updateCheckStorage(): Storage | null {
   }
 }
 
+function useAppUpdatePublicationGate(): UpdatePublicationGate {
+  const publicationRef = useRef<UpdatePublicationGate | null>(null);
+  if (publicationRef.current === null) {
+    publicationRef.current = createUpdatePublicationGate();
+  }
+  return publicationRef.current;
+}
+
 function useAutomaticUpdateChecks(
   scheduler: UpdateCheckScheduler<UpdateAvailability>,
+  publication: UpdatePublicationGate,
   setAppUpdateState: (state: AppUpdateState) => void,
 ) {
   useEffect(() => {
     let cancelled = false;
     const trigger = () => {
+      const token = publication.beginAutomatic();
       void scheduler.runAutomatic().then((outcome) => {
         const notice = automaticUpdateNotice(outcome);
-        if (cancelled || notice === null) {
+        if (token === null) {
+          return;
+        }
+        if (cancelled) {
+          publication.finish(token);
+          return;
+        }
+        if (!publication.settle(token) || notice === null) {
           return;
         }
         setAppUpdateState(notice);
@@ -201,25 +225,34 @@ function useAutomaticUpdateChecks(
       window.removeEventListener("pageshow", trigger);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [scheduler, setAppUpdateState]);
+  }, [publication, scheduler, setAppUpdateState]);
 }
 
 async function handleCheckForUpdate(
   appUpdateState: AppUpdateState,
   scheduler: UpdateCheckScheduler<UpdateAvailability>,
+  publication: UpdatePublicationGate,
   setAppUpdateState: (state: AppUpdateState) => void,
 ) {
+  const token = publication.beginManual();
+  if (token === null) {
+    return;
+  }
   if (appUpdateState.kind === "available" && appUpdateState.update) {
     const confirmed = window.confirm(`安装 Codex Token Bar ${appUpdateState.update.version} 更新？安装时应用会自动重启。`);
     if (!confirmed) {
+      publication.finish(token);
       return;
     }
-    await installPendingUpdate(appUpdateState.update, setAppUpdateState);
+    await installPendingUpdate(appUpdateState.update, token, publication, setAppUpdateState);
     return;
   }
 
   setAppUpdateState({ kind: "checking", message: "正在检查更新...", update: null });
   const outcome = await scheduler.runManual();
+  if (!publication.isCurrent(token)) {
+    return;
+  }
   if (outcome.kind === "completed") {
     const result = outcome.value;
     if (result.status === "available") {
@@ -230,7 +263,9 @@ async function handleCheckForUpdate(
       });
       const confirmed = window.confirm(`发现 Codex Token Bar ${result.version}。现在下载并安装吗？`);
       if (confirmed) {
-        await installPendingUpdate(result, setAppUpdateState);
+        await installPendingUpdate(result, token, publication, setAppUpdateState);
+      } else {
+        publication.finish(token);
       }
       return;
     }
@@ -239,6 +274,7 @@ async function handleCheckForUpdate(
       message: result.message,
       update: null,
     });
+    publication.finish(token);
     return;
   }
   if (outcome.kind === "failed") {
@@ -248,12 +284,18 @@ async function handleCheckForUpdate(
       update: null,
     });
   }
+  publication.finish(token);
 }
 
 async function installPendingUpdate(
   update: UpdateAvailability & { status: "available" },
+  token: UpdatePublicationToken,
+  publication: UpdatePublicationGate,
   setAppUpdateState: (state: AppUpdateState) => void,
 ) {
+  if (!publication.isCurrent(token)) {
+    return;
+  }
   setAppUpdateState({
     kind: "installing",
     message: "正在下载更新...",
@@ -261,6 +303,9 @@ async function installPendingUpdate(
   });
   try {
     await installAppUpdate(update.update, (message) => {
+      if (!publication.isCurrent(token)) {
+        return;
+      }
       setAppUpdateState({
         kind: "installing",
         message,
@@ -268,11 +313,15 @@ async function installPendingUpdate(
       });
     });
   } catch {
+    if (!publication.isCurrent(token)) {
+      return;
+    }
     setAppUpdateState({
       kind: "error",
       message: "更新未完成，请稍后重试",
       update: null,
     });
+    publication.finish(token);
   }
 }
 

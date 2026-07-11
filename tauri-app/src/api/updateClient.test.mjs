@@ -14,6 +14,14 @@ test("unsupported macOS updater errors are classified without exposing raw text"
   assert.equal(manualUpdateFailureMessage(new Error(raw)).includes(raw), false);
 });
 
+test("fallback platform mismatch is classified as unsupported without exposing raw text", () => {
+  const raw = "None of the fallback platforms in the updater JSON matched this platform";
+
+  assert.equal(isUnsupportedUpdaterError(new Error(raw)), true);
+  assert.equal(manualUpdateFailureMessage(new Error(raw)), "此平台暂不支持应用内更新");
+  assert.equal(manualUpdateFailureMessage(new Error(raw)).includes(raw), false);
+});
+
 test("supported-platform failures use a short bounded product message", () => {
   const raw = "network request failed with a very long transport and certificate diagnostic";
   const message = manualUpdateFailureMessage(new Error(raw));

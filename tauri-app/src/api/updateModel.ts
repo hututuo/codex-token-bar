@@ -3,7 +3,8 @@ export const UPDATE_CHECK_FAILURE_MESSAGE = "暂时无法检查更新，请稍�
 
 export function isUnsupportedUpdaterError(error: unknown): boolean {
   const message = errorMessage(error).toLowerCase();
-  return /(?:updater|platform|target|darwin|macos)[\s\S]{0,80}(?:unsupported|not supported|not available)/.test(message)
+  return isFallbackPlatformMismatch(message)
+    || /(?:updater|platform|target|darwin|macos)[\s\S]{0,80}(?:unsupported|not supported|not available)/.test(message)
     || /(?:unsupported|not supported)[\s\S]{0,80}(?:updater|platform|target|darwin|macos)/.test(message);
 }
 
@@ -18,4 +19,8 @@ function errorMessage(error: unknown): string {
     return error.message;
   }
   return typeof error === "string" ? error : String(error);
+}
+
+function isFallbackPlatformMismatch(message: string): boolean {
+  return /\bnone of the fallback platforms\b[\s\S]{0,200}\bmatched (?:this|the current) platform\b/.test(message);
 }
