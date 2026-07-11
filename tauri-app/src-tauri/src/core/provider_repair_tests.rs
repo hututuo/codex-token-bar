@@ -1480,6 +1480,13 @@ fn session_backup_rejects_concurrent_append_and_removes_incomplete_publication()
 
 #[test]
 fn session_backup_rejects_atomic_live_path_replacement_with_same_len_and_mtime() {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    #[derive(Debug)]
+    enum ReplacementError {
+        FixtureIo(&'static str, std::io::Error),
+        ProductionReplace(String),
+    }
+
     let fixture = temp_root("provider-session-copy-atomic-replacement");
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
@@ -1502,12 +1509,14 @@ fn session_backup_rejects_atomic_live_path_replacement_with_same_len_and_mtime()
     let replacement_path = fixture.join("replacement.jsonl");
     let replacer = thread::spawn(move || {
         replace_barrier.wait();
-        let replacement_result = (|| -> Result<(), String> {
-            fs::write(&replacement_path, replacement).map_err(|error| error.to_string())?;
+        let replacement_result = (|| -> Result<(), ReplacementError> {
+            fs::write(&replacement_path, replacement)
+                .map_err(|error| ReplacementError::FixtureIo("write replacement", error))?;
             fs::File::open(&replacement_path)
                 .and_then(|file| file.set_modified(original_mtime))
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| ReplacementError::FixtureIo("set replacement mtime", error))?;
             session_files::replace_file_atomically(&replacement_path, &replace_session)
+                .map_err(ReplacementError::ProductionReplace)
         })();
         replace_barrier.wait();
         replacement_result
@@ -1554,10 +1563,13 @@ fn session_backup_rejects_atomic_live_path_replacement_with_same_len_and_mtime()
                 files_before,
             );
         }
-        Err(replacement_error) => {
+        Err(ReplacementError::FixtureIo(stage, error)) => {
+            panic!("Windows replacement fixture failed during {stage}: {error}");
+        }
+        Err(ReplacementError::ProductionReplace(replacement_error)) => {
             assert!(
-                replacement_error.contains("os error 5")
-                    || replacement_error.contains("os error 32"),
+                replacement_error.ends_with("(os error 5)")
+                    || replacement_error.ends_with("(os error 32)"),
                 "unexpected Windows replacement failure: {replacement_error}"
             );
             let backup = backup_result.unwrap();
