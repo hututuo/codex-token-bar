@@ -66,6 +66,7 @@ pub(crate) struct SurfaceSetupStatus {
 
 static SURFACE_SETUP_STATUS: OnceLock<Mutex<SurfaceSetupStatus>> = OnceLock::new();
 static STATUS_PANEL_INTERACTION: OnceLock<Mutex<StatusPanelInteractionController>> = OnceLock::new();
+static UPDATE_TRAY_FALLBACK_VERSION: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct StatusPanelInteractionController {
@@ -634,11 +635,31 @@ pub fn set_status_tray_readout_native(
         return Ok(false);
     };
 
+    let update_version = update_tray_fallback_version().lock().ok().and_then(|version| version.clone());
+    let title = update_version.as_ref().map(|version| format!("{title} ↑v{version}")).unwrap_or(title);
+    let tooltip = update_version.as_ref().map(|version| format!("{tooltip} · 有新版本 v{version}，打开主界面安装")).unwrap_or(tooltip);
     tray.set_title(Some(title))
         .map_err(|error| error.to_string())?;
     tray.set_tooltip(Some(tooltip))
         .map_err(|error| error.to_string())?;
     Ok(true)
+}
+
+pub fn set_update_available_tray_fallback(app: &tauri::AppHandle, version: &str) -> Result<bool, String> {
+    let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else {
+        return Ok(false);
+    };
+    if let Ok(mut cached) = update_tray_fallback_version().lock() {
+        *cached = Some(version.to_string());
+    }
+    tray.set_title(Some(format!("↑v{version}"))).map_err(|error| error.to_string())?;
+    tray.set_tooltip(Some(format!("Codex Token Bar · 有新版本 v{version}，打开主界面安装")))
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+fn update_tray_fallback_version() -> &'static Mutex<Option<String>> {
+    UPDATE_TRAY_FALLBACK_VERSION.get_or_init(|| Mutex::new(None))
 }
 
 fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {

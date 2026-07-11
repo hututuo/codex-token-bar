@@ -5,6 +5,7 @@ pub(crate) mod provider_repair;
 pub(crate) mod settings;
 pub(crate) mod startup;
 pub(crate) mod surface;
+pub(crate) mod update;
 pub(crate) mod window_auth;
 
 use crate::core::dashboard::LocalCodexDataSource;

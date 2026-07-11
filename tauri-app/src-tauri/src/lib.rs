@@ -19,6 +19,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(commands::live::LiveRateMonitorRegistry::default())
+        .manage(commands::update::UpdateMonitorRegistry::default())
         .manage(core::provider_repair::ProviderRecoveryState::default())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_autostart::init(
@@ -33,6 +34,9 @@ pub fn run() {
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
             let settings = platform::read_app_settings().unwrap_or_default();
             platform::setup_desktop_surfaces(app, launch_mode, &settings)?;
+            let update_monitor = app.state::<commands::update::UpdateMonitorRegistry>();
+            update_monitor.initialize(app.handle()).map_err(std::io::Error::other)?;
+            update_monitor.start(app.handle().clone());
             if let Err(error) = app
                 .state::<commands::live::LiveRateMonitorRegistry>()
                 .sync_status_tray_interest(app.handle(), &settings.display_surfaces)
@@ -87,6 +91,9 @@ pub fn run() {
             commands::surface::show_status_panel_window,
             commands::surface::hide_status_panel_window,
             commands::surface::dismiss_status_panel_on_blur,
+            commands::update::read_app_update_state,
+            commands::update::check_app_update,
+            commands::update::install_app_update,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Codex Token Bar");

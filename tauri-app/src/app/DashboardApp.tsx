@@ -1,30 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { recordStartupEvent } from "../api/client";
 import { resetLiveRateMonitor } from "../api/liveClient";
 import {
   checkAppUpdate,
   installAppUpdate,
+  listenForAppUpdateState,
   manualUpdateFailureMessage,
+  readCachedAppUpdate,
   type UpdateAvailability,
 } from "../api/updateClient";
 import { SetupGuide } from "../components/SetupGuide";
 import { DashboardPage } from "../pages/DashboardPage";
 import { useDashboardData } from "../state/useDashboardData";
 import { useDashboardShellSettings } from "./useDashboardShellSettings";
-import {
-  createUpdateCheckScheduler,
-  type UpdateCheckScheduler,
-} from "./updateCheckScheduler";
-import { installPendingUpdate } from "./updateInstallation";
-import { automaticUpdateNotice } from "./updateCheckPresentation";
-import {
-  createUpdatePublicationGate,
-  type UpdatePublicationGate,
-  type UpdatePublicationSubscriber,
-} from "./updatePublication";
-
-const UPDATE_CHECK_ATTEMPT_STORAGE_KEY = "codex-token-bar:update-check-attempt-v1";
-const UPDATE_WAKE_POLL_INTERVAL_MS = 60_000;
 
 type AppUpdateState =
   | { kind: "idle"; message: string; update: null }
@@ -42,12 +30,9 @@ export function DashboardApp() {
     message: "",
     update: null,
   });
-  const updateCheckScheduler = useAppUpdateCheckScheduler();
-  const updatePublication = useAppUpdatePublicationGate();
-
   useDashboardHydration(setDashboardHydrated);
   useDashboardScrollReset();
-  useAutomaticUpdateChecks(updateCheckScheduler, updatePublication, setAppUpdateState);
+  useAppUpdateState(setAppUpdateState);
 
   const {
     state,
@@ -121,8 +106,6 @@ export function DashboardApp() {
         onCustomAccountDisplayNameChange={shellSettings.updateCustomAccountDisplayName}
         onCheckForUpdate={() => handleCheckForUpdate(
           appUpdateState,
-          updateCheckScheduler,
-          updatePublication,
           setAppUpdateState,
         )}
         onToggleAutostart={shellSettings.toggleAutostart}
@@ -154,123 +137,41 @@ async function resetLiveRate() {
   await resetLiveRateMonitor();
 }
 
-function useAppUpdateCheckScheduler(): UpdateCheckScheduler<UpdateAvailability> {
-  const schedulerRef = useRef<UpdateCheckScheduler<UpdateAvailability> | null>(null);
-  if (schedulerRef.current === null) {
-    schedulerRef.current = createUpdateCheckScheduler({
-      check: checkAppUpdate,
-      storage: updateCheckStorage(),
-      storageKey: UPDATE_CHECK_ATTEMPT_STORAGE_KEY,
-    });
-  }
-  return schedulerRef.current;
-}
-
-function updateCheckStorage(): Storage | null {
-  try {
-    return typeof window === "undefined" ? null : window.localStorage;
-  } catch {
-    return null;
-  }
-}
-
-function useAppUpdatePublicationGate(): UpdatePublicationGate {
-  const publicationRef = useRef<UpdatePublicationGate | null>(null);
-  if (publicationRef.current === null) {
-    publicationRef.current = createUpdatePublicationGate();
-  }
-  return publicationRef.current;
-}
-
-function useAutomaticUpdateChecks(
-  scheduler: UpdateCheckScheduler<UpdateAvailability>,
-  publication: UpdatePublicationGate,
+function useAppUpdateState(
   setAppUpdateState: (state: AppUpdateState) => void,
 ) {
   useEffect(() => {
     let cancelled = false;
-    const subscribers = new Set<UpdatePublicationSubscriber>();
-    const trigger = () => {
-      const subscriber = publication.subscribeAutomatic();
-      if (subscriber !== null) {
-        subscribers.add(subscriber);
-      }
-      void scheduler.runAutomatic().then((outcome) => {
-        const notice = automaticUpdateNotice(outcome);
-        if (subscriber === null) {
-          return;
-        }
-        subscribers.delete(subscriber);
-        if (cancelled) {
-          subscriber.cancel();
-          subscriber.settle();
-          return;
-        }
-        if (!subscriber.settle() || notice === null) {
-          return;
-        }
-        setAppUpdateState(notice);
-      });
-    };
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        trigger();
+    let unlisten: (() => void) | null = null;
+    const publish = (result: UpdateAvailability) => {
+      if (!cancelled && result.status === "available") {
+        setAppUpdateState({ kind: "available", message: `发现新版本 ${result.version}`, update: result });
       }
     };
-
-    trigger();
-    const wakeTimer = window.setInterval(trigger, UPDATE_WAKE_POLL_INTERVAL_MS);
-    window.addEventListener("focus", trigger);
-    window.addEventListener("pageshow", trigger);
-    document.addEventListener("visibilitychange", onVisibilityChange);
+    void readCachedAppUpdate().then(publish).then(async () => {
+      if (!cancelled) unlisten = await listenForAppUpdateState(publish);
+    });
 
     return () => {
       cancelled = true;
-      for (const subscriber of subscribers) {
-        subscriber.cancel();
-      }
-      subscribers.clear();
-      window.clearInterval(wakeTimer);
-      window.removeEventListener("focus", trigger);
-      window.removeEventListener("pageshow", trigger);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
+      unlisten?.();
     };
-  }, [publication, scheduler, setAppUpdateState]);
+  }, [setAppUpdateState]);
 }
 
 async function handleCheckForUpdate(
   appUpdateState: AppUpdateState,
-  scheduler: UpdateCheckScheduler<UpdateAvailability>,
-  publication: UpdatePublicationGate,
   setAppUpdateState: (state: AppUpdateState) => void,
 ) {
-  const token = publication.beginManual();
-  if (token === null) {
-    return;
-  }
   if (appUpdateState.kind === "available" && appUpdateState.update) {
     const confirmed = window.confirm(`安装 Codex Token Bar ${appUpdateState.update.version} 更新？安装时应用会自动重启。`);
-    if (!confirmed) {
-      publication.finish(token);
-      return;
-    }
-    await installPendingUpdate({
-      install: installAppUpdate,
-      publication,
-      publish: setAppUpdateState,
-      token,
-      update: appUpdateState.update,
-    });
+    if (confirmed) await installConfirmedUpdate(appUpdateState.update, setAppUpdateState);
     return;
   }
 
   setAppUpdateState({ kind: "checking", message: "正在检查更新...", update: null });
-  const outcome = await scheduler.runManual();
-  if (!publication.isCurrent(token)) {
-    return;
-  }
-  if (outcome.kind === "completed") {
-    const result = outcome.value;
+  try {
+    const result = await checkAppUpdate();
     if (result.status === "available") {
       setAppUpdateState({
         kind: "available",
@@ -278,17 +179,7 @@ async function handleCheckForUpdate(
         update: result,
       });
       const confirmed = window.confirm(`发现 Codex Token Bar ${result.version}。现在下载并安装吗？`);
-      if (confirmed) {
-        await installPendingUpdate({
-          install: installAppUpdate,
-          publication,
-          publish: setAppUpdateState,
-          token,
-          update: result,
-        });
-      } else {
-        publication.finish(token);
-      }
+      if (confirmed) await installConfirmedUpdate(result, setAppUpdateState);
       return;
     }
     setAppUpdateState({
@@ -296,17 +187,27 @@ async function handleCheckForUpdate(
       message: result.message,
       update: null,
     });
-    publication.finish(token);
-    return;
-  }
-  if (outcome.kind === "failed") {
+  } catch (error) {
     setAppUpdateState({
       kind: "error",
-      message: manualUpdateFailureMessage(outcome.error),
+      message: manualUpdateFailureMessage(error),
       update: null,
     });
   }
-  publication.finish(token);
+}
+
+async function installConfirmedUpdate(
+  update: Extract<UpdateAvailability, { status: "available" }>,
+  setAppUpdateState: (state: AppUpdateState) => void,
+) {
+  setAppUpdateState({ kind: "installing", message: "正在下载更新...", update });
+  try {
+    await installAppUpdate(update.version, message => {
+      setAppUpdateState({ kind: "installing", message, update });
+    });
+  } catch {
+    setAppUpdateState({ kind: "error", message: "更新未完成，请稍后重试", update: null });
+  }
 }
 
 function useDashboardHydration(setDashboardHydrated: (hydrated: boolean) => void) {

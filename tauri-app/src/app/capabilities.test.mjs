@@ -5,13 +5,9 @@ import test from "node:test";
 
 const CAPABILITIES_DIR = new URL("../../src-tauri/capabilities/", import.meta.url);
 
-test("Tauri capabilities keep updater and restart permissions main-window only", async () => {
+test("Tauri capabilities expose no direct frontend updater or restart permission", async () => {
   const permissions = await permissionsByWindow();
-
-  assert.ok(permissions.main.has("updater:default"));
-  assert.ok(permissions.main.has("process:allow-restart"));
-
-  for (const surface of ["floating", "status"]) {
+  for (const surface of ["main", "floating", "status"]) {
     assert.ok(permissions[surface], `${surface} capability is present`);
     assert.equal(permissions[surface].has("updater:default"), false, surface);
     assert.equal(permissions[surface].has("process:allow-restart"), false, surface);

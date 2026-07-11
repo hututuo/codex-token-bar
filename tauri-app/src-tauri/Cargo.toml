@@ -21,7 +21,7 @@ serde_json = "1.0"
 sha2 = "0.10"
 tauri = { version = "2.11.3", features = ["macos-private-api", "tray-icon"] }
 time = { version = "0.3.49", features = ["formatting", "local-offset", "macros", "parsing"] }
-tokio = { version = "1.52.3", features = ["time"] }
+tokio = { version = "1.52.3", features = ["sync", "time"] }
 toml = "1.1"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]

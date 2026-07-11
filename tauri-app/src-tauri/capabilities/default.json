@@ -10,8 +10,6 @@
     "core:event:allow-unlisten",
     "core:window:allow-set-position",
     "core:window:allow-set-size",
-    "core:window:allow-start-dragging",
-    "updater:default",
-    "process:allow-restart"
+    "core:window:allow-start-dragging"
   ]
 }
