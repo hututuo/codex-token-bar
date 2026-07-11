@@ -71,7 +71,6 @@ export function DashboardApp() {
   });
   const shellSettings = useDashboardShellSettings({
     dashboardHydrated,
-    liveRate: readyState.liveRate,
     platform: state.platform,
   });
 

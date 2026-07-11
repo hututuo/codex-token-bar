@@ -29,12 +29,3 @@ pub fn hide_status_panel_window(app: tauri::AppHandle) -> Result<bool, String> {
 pub fn dismiss_status_panel_on_blur(app: tauri::AppHandle) -> Result<bool, String> {
     platform::dismiss_status_panel_on_blur(&app)
 }
-
-#[tauri::command]
-pub fn set_status_tray_readout(
-    app: tauri::AppHandle,
-    title: String,
-    tooltip: String,
-) -> Result<bool, String> {
-    platform::set_status_tray_readout(&app, title, tooltip)
-}

@@ -537,7 +537,7 @@ fn create_floating_window_on_main_thread(app: &tauri::AppHandle) -> Result<(), S
         .map_err(|_| "创建悬浮窗超时".to_string())?
 }
 
-pub fn set_status_tray_readout(
+pub fn set_status_tray_readout_native(
     app: &tauri::AppHandle,
     title: String,
     tooltip: String,

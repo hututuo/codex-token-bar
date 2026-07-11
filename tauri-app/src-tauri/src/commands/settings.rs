@@ -57,10 +57,52 @@ pub fn save_floating_position(
 #[tauri::command]
 pub fn save_display_surfaces(
     window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    live_rate: tauri::State<'_, crate::commands::live::LiveRateMonitorRegistry>,
     display: DisplaySurfaceSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_display_surfaces")?;
-    platform::save_display_surfaces(display)
+    save_display_surfaces_with_sync(
+        display,
+        platform::save_display_surfaces,
+        |saved| live_rate.sync_status_tray_interest(&app, &saved.display_surfaces),
+    )
+}
+
+fn save_display_surfaces_with_sync(
+    display: DisplaySurfaceSettingsSnapshot,
+    save: impl FnOnce(DisplaySurfaceSettingsSnapshot) -> Result<AppSettingsSnapshot, String>,
+    sync: impl FnOnce(&AppSettingsSnapshot) -> Result<(), String>,
+) -> Result<AppSettingsSnapshot, String> {
+    let saved = save(display)?;
+    sync(&saved)?;
+    Ok(saved)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn successful_display_save_synchronously_updates_native_runtime() {
+        let display = DisplaySurfaceSettingsSnapshot::default();
+        let mut sync_calls = 0;
+        let saved = save_display_surfaces_with_sync(
+            display.clone(),
+            |display| {
+                let mut settings = AppSettingsSnapshot::default();
+                settings.display_surfaces = display;
+                Ok(settings)
+            },
+            |settings| {
+                sync_calls += 1;
+                assert_eq!(settings.display_surfaces.status_tray_live_text_enabled, display.status_tray_live_text_enabled);
+                Ok(())
+            },
+        ).unwrap();
+        assert_eq!(sync_calls, 1);
+        assert_eq!(saved.display_surfaces.live_rate_enabled, display.live_rate_enabled);
+    }
 }
 
 #[tauri::command]

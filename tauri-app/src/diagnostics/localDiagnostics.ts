@@ -6,7 +6,6 @@ const SILENT_FAILURE_COMMANDS = new Set([
   "platform:command:hide_floating_window",
   "platform:command:show_status_panel_window",
   "platform:command:hide_status_panel_window",
-  "platform:command:set_status_tray_readout",
 ]);
 
 const lastWarningAtByKey = new Map<string, number>();

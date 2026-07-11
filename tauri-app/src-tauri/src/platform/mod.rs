@@ -38,7 +38,7 @@ pub use settings::{
 };
 pub use surfaces::{
     dismiss_status_panel_on_blur, hide_floating_window, hide_status_panel_window,
-    set_status_tray_readout, setup_desktop_surfaces, show_dashboard_window, show_floating_window,
+    set_status_tray_readout_native, setup_desktop_surfaces, show_dashboard_window, show_floating_window,
     show_status_panel_window,
 };
 pub(super) use surfaces::{surface_setup_status, SurfaceSetupStatus};

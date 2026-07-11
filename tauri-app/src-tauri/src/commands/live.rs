@@ -10,6 +10,8 @@ use crate::core::{
     startup_trace, unread,
 };
 use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, UnreadSummary};
+use crate::models::DisplaySurfaceSettingsSnapshot;
+use crate::platform;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -50,6 +52,11 @@ struct LiveRateStreamState {
     next_registration_sequence: u64,
     loop_generation: u64,
     running: bool,
+    native_tray_enabled: bool,
+    native_tray_source: Option<CodexHomeSourceToken>,
+    native_tray_smoothed_rate: Option<f64>,
+    native_tray_last_readout: Option<(String, String)>,
+    native_tray_settings_key: Option<(bool, bool)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -92,9 +99,50 @@ struct LiveRateSubscriptionStart {
 struct LiveRateStreamRequest {
     source: LiveRateSubscriptionSource,
     selected_thread_id: Option<String>,
+    emit_webview: bool,
+    update_native_tray: bool,
 }
 
+const TRAY_RATE_THRESHOLD: f64 = 0.05;
+const TRAY_ALPHA_UP: f64 = 0.28;
+const TRAY_ALPHA_DOWN: f64 = 0.18;
+
 impl LiveRateMonitorRegistry {
+    pub fn sync_status_tray_interest(
+        &self,
+        app: &AppHandle,
+        display: &DisplaySurfaceSettingsSnapshot,
+    ) -> Result<(), String> {
+        let supported = native_tray_live_text_supported();
+        let settings_key = (
+            supported && display.status_tray_live_text_enabled,
+            display.live_rate_enabled,
+        );
+        let (stream_enabled, readout) = native_tray_settings(
+            display,
+            supported,
+        );
+        let mut stream = self.stream.lock().map_err(|error| error.to_string())?;
+        let settings_changed = stream.native_tray_settings_key != Some(settings_key);
+        let should_spawn = configure_native_tray_stream(&mut stream, stream_enabled);
+        if settings_changed {
+            stream.native_tray_source = None;
+            stream.native_tray_smoothed_rate = None;
+            stream.native_tray_last_readout = None;
+            stream.native_tray_settings_key = Some(settings_key);
+        }
+        let generation = stream.loop_generation;
+        drop(stream);
+
+        if settings_changed {
+            platform::set_status_tray_readout_native(app, readout.0, readout.1)?;
+        }
+        if should_spawn {
+            self.spawn_stream_loop(app.clone(), generation);
+        }
+        Ok(())
+    }
+
     fn unread_summary_for_source(
         &self,
         captured: &CapturedCodexHomeSource,
@@ -380,7 +428,7 @@ impl LiveRateMonitorRegistry {
                 controls_selected_thread,
             },
         );
-        let should_spawn = !stream.running && active_subscription_count(&stream) > 0;
+        let should_spawn = !stream.running && stream_interest_count(&stream) > 0;
         if should_spawn {
             stream.running = true;
             stream.loop_generation = stream.loop_generation.saturating_add(1);
@@ -418,7 +466,7 @@ impl LiveRateMonitorRegistry {
                     generation: 0,
                 },
             );
-            if active_subscription_count(&stream) == 0 {
+            if stream_interest_count(&stream) == 0 {
                 stream.running = false;
             }
         }
@@ -428,7 +476,7 @@ impl LiveRateMonitorRegistry {
     fn stop_subscription(&self, lease_id: &str) -> Result<bool, String> {
         let mut stream = self.stream.lock().map_err(|error| error.to_string())?;
         stream.leases.remove(lease_id);
-        if active_subscription_count(&stream) == 0 {
+        if stream_interest_count(&stream) == 0 {
             stream.running = false;
         }
         Ok(stream.running)
@@ -443,23 +491,53 @@ impl LiveRateMonitorRegistry {
         if !stream.running || stream.loop_generation != loop_generation {
             return Err("live rate stream has no active subscribers".into());
         }
-        let selected = match selected_subscription_for_source(&stream, &current_source.source_token)
-            .cloned()
-        {
-            Some(selected) => selected,
-            None => {
+        let selected = selected_subscription_for_source(&stream, &current_source.source_token).cloned();
+        let native_enabled = stream.native_tray_enabled;
+        if selected.is_none() && !native_enabled {
                 stream.running = false;
                 return Err("live rate stream has no current-source subscribers".into());
-            }
-        };
+        }
+        if native_enabled
+            && stream.native_tray_source.as_ref() != Some(&current_source.source_token)
+        {
+            stream.native_tray_source = Some(current_source.source_token.clone());
+            stream.native_tray_smoothed_rate = None;
+            stream.native_tray_last_readout = None;
+        }
+        let emit_webview = selected.is_some();
+        let selected_thread_id = selected.as_ref().and_then(|selected| {
+            selected.controls_selected_thread.then(|| selected.selected_thread_id.clone()).flatten()
+        });
         Ok(LiveRateStreamRequest {
-            source: selected.source,
-            selected_thread_id: if selected.controls_selected_thread {
-                selected.selected_thread_id
-            } else {
-                None
-            },
+            source: selected.as_ref().map(|selected| selected.source.clone()).unwrap_or(
+                LiveRateSubscriptionSource {
+                    source_token: current_source.source_token,
+                    codex_home: current_source.codex_home,
+                },
+            ),
+            selected_thread_id,
+            emit_webview,
+            update_native_tray: native_enabled,
         })
+    }
+
+    fn publish_native_tray_if_current(
+        &self,
+        app: &AppHandle,
+        loop_generation: u64,
+        source: &CodexHomeSourceToken,
+        raw_rate: f64,
+    ) -> Result<(), String> {
+        let mut stream = self.stream.lock().map_err(|error| error.to_string())?;
+        if !stream.running || stream.loop_generation != loop_generation {
+            return Ok(());
+        }
+        let Some(readout) = apply_native_tray_rate(&mut stream, source, raw_rate) else {
+            return Ok(());
+        };
+        drop(stream);
+        platform::set_status_tray_readout_native(app, readout.0, readout.1)?;
+        Ok(())
     }
 
     fn publish_stream_if_current(
@@ -506,8 +584,11 @@ impl LiveRateMonitorRegistry {
                 };
                 let started = Instant::now();
                 let snapshot = async_runtime::spawn_blocking(move || {
-                    let unread_summary = snapshot_registry
-                        .unread_summary_for_source(&captured, false)?;
+                    let unread_summary = if snapshot_needs_unread(request.emit_webview) {
+                        snapshot_registry.unread_summary_for_source(&captured, false)?
+                    } else {
+                        neutral_unread_summary("native tray lightweight snapshot")
+                    };
                     snapshot_registry.snapshot_at_with_unread(
                         captured.source_token.clone(),
                         captured.codex_home.clone(),
@@ -553,10 +634,23 @@ impl LiveRateMonitorRegistry {
                 }
                 let recently_active = last_active_at
                     .is_some_and(|last_active| last_active.elapsed() <= ACTIVE_STREAM_HOLD);
+                let emit_webview = request.emit_webview;
+                let update_native_tray = request.update_native_tray;
                 match with_valid_codex_home_source(&source_token, || {
+                    if update_native_tray {
+                        registry.publish_native_tray_if_current(
+                            &app,
+                            loop_generation,
+                            &source_token,
+                            snapshot.tokens_per_second,
+                        )?;
+                    }
                     registry.publish_stream_if_current(loop_generation, || {
-                        app.emit(LIVE_RATE_SNAPSHOT_EVENT, snapshot)
-                            .map_err(|error| error.to_string())
+                        if emit_webview {
+                            app.emit(LIVE_RATE_SNAPSHOT_EVENT, snapshot)
+                                .map_err(|error| error.to_string())?;
+                        }
+                        Ok(())
                     })
                 }) {
                     Ok(true) => {}
@@ -724,6 +818,84 @@ fn active_subscriptions(
 
 fn active_subscription_count(stream: &LiveRateStreamState) -> usize {
     active_subscriptions(stream).count()
+}
+
+fn stream_interest_count(stream: &LiveRateStreamState) -> usize {
+    active_subscription_count(stream) + usize::from(stream.native_tray_enabled)
+}
+
+fn configure_native_tray_stream(stream: &mut LiveRateStreamState, enabled: bool) -> bool {
+    stream.native_tray_enabled = enabled;
+    let should_spawn = enabled && !stream.running;
+    if should_spawn {
+        stream.running = true;
+        stream.loop_generation = stream.loop_generation.saturating_add(1);
+    } else if !enabled && active_subscription_count(stream) == 0 {
+        stream.running = false;
+    }
+    should_spawn
+}
+
+fn snapshot_needs_unread(emit_webview: bool) -> bool {
+    emit_webview
+}
+
+fn apply_native_tray_rate(
+    stream: &mut LiveRateStreamState,
+    source: &CodexHomeSourceToken,
+    raw_rate: f64,
+) -> Option<(String, String)> {
+    if !stream.native_tray_enabled || stream.native_tray_source.as_ref() != Some(source) {
+        return None;
+    }
+    let smoothed = smooth_native_tray_rate(stream.native_tray_smoothed_rate, raw_rate);
+    stream.native_tray_smoothed_rate = Some(smoothed);
+    let readout = native_tray_readout(smoothed);
+    if stream.native_tray_last_readout.as_ref() == Some(&readout) {
+        return None;
+    }
+    stream.native_tray_last_readout = Some(readout.clone());
+    Some(readout)
+}
+
+fn smooth_native_tray_rate(previous: Option<f64>, raw: f64) -> f64 {
+    if !raw.is_finite() || raw < TRAY_RATE_THRESHOLD {
+        return 0.0;
+    }
+    let Some(previous) = previous.filter(|value| value.is_finite() && *value >= TRAY_RATE_THRESHOLD) else {
+        return raw;
+    };
+    let alpha = if raw > previous { TRAY_ALPHA_UP } else { TRAY_ALPHA_DOWN };
+    previous + (raw - previous) * alpha
+}
+
+fn native_tray_readout(rate: f64) -> (String, String) {
+    let formatted = if rate.is_finite() && rate >= TRAY_RATE_THRESHOLD {
+        format!("{rate:.1}")
+    } else {
+        "0.0".into()
+    };
+    (
+        format!("{formatted}/s"),
+        format!("Codex Token Bar · {formatted} tok/s"),
+    )
+}
+
+fn native_tray_settings(
+    display: &DisplaySurfaceSettingsSnapshot,
+    supported: bool,
+) -> (bool, (String, String)) {
+    if !supported || !display.status_tray_live_text_enabled {
+        return (false, ("CTB".into(), "Codex Token Bar".into()));
+    }
+    (
+        display.live_rate_enabled,
+        native_tray_readout(0.0),
+    )
+}
+
+fn native_tray_live_text_supported() -> bool {
+    cfg!(target_os = "macos")
 }
 
 fn selected_subscription_for_source<'a>(
@@ -1083,6 +1255,89 @@ fn result_status<T>(result: &Result<T, String>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_interest_shares_ui_loop_and_survives_dashboard_stop() {
+        let registry = LiveRateMonitorRegistry::default();
+        {
+            let mut stream = registry.stream.lock().unwrap();
+            assert!(configure_native_tray_stream(&mut stream, true));
+            assert!(stream.running);
+        }
+        let ui = registry.test_start_subscription(
+            live_source_for_test("source-a", 1),
+            "dashboard-owner",
+            1,
+            None,
+            true,
+        );
+        assert!(!ui.should_spawn);
+        assert!(registry.test_stop_subscription(&ui.lease.lease_id));
+        assert!(registry.stream.lock().unwrap().running);
+    }
+
+    #[test]
+    fn native_disable_stops_only_when_no_ui_interest_remains() {
+        let registry = LiveRateMonitorRegistry::default();
+        let ui = registry.test_start_subscription(
+            live_source_for_test("source-a", 1),
+            "dashboard-owner",
+            1,
+            None,
+            true,
+        );
+        {
+            let mut stream = registry.stream.lock().unwrap();
+            configure_native_tray_stream(&mut stream, true);
+            configure_native_tray_stream(&mut stream, false);
+            assert!(stream.running, "UI lease keeps the shared loop alive");
+        }
+        registry.test_stop_subscription(&ui.lease.lease_id);
+        assert!(!registry.stream.lock().unwrap().running);
+    }
+
+    #[test]
+    fn persisted_tray_settings_cover_disabled_zero_and_streaming_modes() {
+        let mut display = DisplaySurfaceSettingsSnapshot::default();
+        display.status_tray_live_text_enabled = false;
+        assert_eq!(native_tray_settings(&display, true), (false, ("CTB".into(), "Codex Token Bar".into())));
+        display.status_tray_live_text_enabled = true;
+        display.live_rate_enabled = false;
+        assert_eq!(native_tray_settings(&display, true), (false, native_tray_readout(0.0)));
+        display.live_rate_enabled = true;
+        assert_eq!(native_tray_settings(&display, true), (true, native_tray_readout(0.0)));
+        assert_eq!(
+            native_tray_settings(&display, false),
+            (false, ("CTB".into(), "Codex Token Bar".into())),
+            "unsupported Windows/Linux targets must ignore the default-enabled setting"
+        );
+    }
+
+    #[test]
+    fn native_source_switch_rejects_late_old_snapshot_and_resets_dedupe() {
+        let mut stream = LiveRateStreamState::default();
+        configure_native_tray_stream(&mut stream, true);
+        let source_a = live_source_for_test("source-a", 1).source_token;
+        let source_b = live_source_for_test("source-b", 2).source_token;
+        stream.native_tray_source = Some(source_a.clone());
+        assert!(apply_native_tray_rate(&mut stream, &source_a, 10.0).is_some());
+        assert!(apply_native_tray_rate(&mut stream, &source_a, 10.0).is_none(), "same formatted readout is deduped");
+        stream.native_tray_source = Some(source_b.clone());
+        stream.native_tray_smoothed_rate = None;
+        stream.native_tray_last_readout = None;
+        assert!(apply_native_tray_rate(&mut stream, &source_a, 99.0).is_none());
+        assert!(apply_native_tray_rate(&mut stream, &source_b, 10.0).is_some());
+    }
+
+    #[test]
+    fn native_only_snapshot_skips_unread_and_formats_smoothed_rate() {
+        assert!(!snapshot_needs_unread(false));
+        assert!(snapshot_needs_unread(true));
+        assert_eq!(smooth_native_tray_rate(Some(10.0), 40.0), 18.4);
+        assert_eq!(smooth_native_tray_rate(Some(40.0), 10.0), 34.6);
+        assert_eq!(native_tray_readout(f64::NAN), native_tray_readout(0.0));
+        assert_eq!(native_tray_readout(9.94).0, "9.9/s");
+    }
 
     #[test]
     fn stream_subscription_refcount_reuses_single_background_loop() {

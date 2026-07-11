@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { withSsrModules } from "../test/ssrHarness.mjs";
 
 test("custom account display-name persistence remains wired through shell settings", async () => {
   const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
@@ -275,20 +276,13 @@ test("status panel controls keep comfortable hit targets", async () => {
   assert.equal(actionButton.includes("min-height: 34px;"), true);
 });
 
-test("status tray live text reuses dashboard live rate instead of polling compact data", async () => {
-  const tray = await readFile(new URL("../tray/useStatusTray.ts", import.meta.url), "utf8");
-  const displaySettings = await readFile(new URL("./useDisplaySurfaceSettings.ts", import.meta.url), "utf8");
-  const shellSettings = await readFile(new URL("./useDashboardShellSettings.ts", import.meta.url), "utf8");
-  const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
-
-  assert.equal(tray.includes("useCompactPanelData"), false);
-  assert.equal(tray.includes("LiveRateSnapshot"), true);
-  assert.equal(displaySettings.includes("liveRate: LiveRateSnapshot"), true);
-  assert.equal(displaySettings.includes("useStatusTray("), true);
-  assert.equal(displaySettings.includes("liveRate,"), true);
-  assert.equal(shellSettings.includes("liveRate: LiveRateSnapshot"), true);
-  assert.equal(shellSettings.includes("useDisplaySurfaceSettings({ platform, liveRate })"), true);
-  assert.equal(dashboardApp.includes("liveRate: readyState.liveRate"), true);
+test("dashboard runtime no longer exposes a tray-title writer", async () => {
+  await withSsrModules(async (load) => {
+    const surfaceCommands = await load("/src/platform/surfaceCommands.ts");
+    const { desktopPlatform } = await load("/src/platform/desktop.ts");
+    assert.equal("setStatusTrayReadout" in surfaceCommands, false);
+    assert.equal("setStatusTrayReadout" in desktopPlatform, false);
+  });
 });
 
 test("live rate switch stops the shared stream and preserves other refreshes", async () => {

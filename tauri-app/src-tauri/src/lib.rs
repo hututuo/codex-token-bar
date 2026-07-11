@@ -26,6 +26,13 @@ pub fn run() {
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
             platform::setup_desktop_surfaces(app)?;
+            let settings = platform::read_app_settings().unwrap_or_default();
+            if let Err(error) = app
+                .state::<commands::live::LiveRateMonitorRegistry>()
+                .sync_status_tray_interest(app.handle(), &settings.display_surfaces)
+            {
+                eprintln!("Codex Token Bar: status tray live text setup failed: {error}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -73,7 +80,6 @@ pub fn run() {
             commands::surface::show_status_panel_window,
             commands::surface::hide_status_panel_window,
             commands::surface::dismiss_status_panel_on_blur,
-            commands::surface::set_status_tray_readout,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Codex Token Bar");

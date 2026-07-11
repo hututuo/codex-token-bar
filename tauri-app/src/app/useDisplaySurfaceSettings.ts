@@ -7,17 +7,14 @@ import {
   INACTIVE_DISPLAY_SURFACES,
   sanitizeDisplaySurfaces,
 } from "../settings/displaySettings";
-import { useStatusTray } from "../tray/useStatusTray";
 import type {
   DisplaySurfaceSettings,
-  LiveRateSnapshot,
   PlatformCapabilities,
 } from "../types/dashboard";
 import { useFloatingWindowSurface } from "./useFloatingWindowSurface";
 
 interface DisplaySurfaceSettingsOptions {
   platform: PlatformCapabilities | null;
-  liveRate: LiveRateSnapshot;
 }
 
 export interface DisplaySurfaceSettingsState {
@@ -30,19 +27,12 @@ export interface DisplaySurfaceSettingsState {
 }
 
 export function useDisplaySurfaceSettings({
-  liveRate,
   platform,
 }: DisplaySurfaceSettingsOptions): DisplaySurfaceSettingsState {
   const [displaySurfaces, setDisplaySurfaces] = useState(INACTIVE_DISPLAY_SURFACES);
   const displaySettingsLoaded = useRef(false);
   const floatingAvailable = canUseFloatingWindow(platform);
   const statusTrayLiveTextAvailable = canUseStatusTrayLiveText(platform);
-
-  useStatusTray(
-    platform,
-    displaySurfaces.statusTrayLiveTextEnabled && statusTrayLiveTextAvailable,
-    liveRate,
-  );
 
   const updateDisplaySurfaces = useCallback((next: Partial<DisplaySurfaceSettings>) => {
     setDisplaySurfaces((current) => {

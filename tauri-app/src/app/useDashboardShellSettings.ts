@@ -17,7 +17,6 @@ import type {
   FloatingContentVisibility,
   FloatingUnreadEffect,
   FloatingWindowSettings,
-  LiveRateSnapshot,
   PlatformCapabilities,
 } from "../types/dashboard";
 import {
@@ -29,7 +28,6 @@ import { useDisplaySurfaceSettings } from "./useDisplaySurfaceSettings";
 
 interface DashboardShellSettingsOptions {
   dashboardHydrated: boolean;
-  liveRate: LiveRateSnapshot;
   platform: PlatformCapabilities | null;
 }
 
@@ -59,7 +57,6 @@ export interface DashboardShellSettingsState {
 
 export function useDashboardShellSettings({
   dashboardHydrated,
-  liveRate,
   platform,
 }: DashboardShellSettingsOptions): DashboardShellSettingsState {
   const [floatingSettings, setFloatingSettings] = useState(DEFAULT_FLOATING_SETTINGS);
@@ -75,7 +72,7 @@ export function useDashboardShellSettings({
     toggleLiveRate: toggleLiveRateSurface,
     toggleFloatingWindow,
     toggleStatusTrayLiveText,
-  } = useDisplaySurfaceSettings({ platform, liveRate });
+  } = useDisplaySurfaceSettings({ platform });
 
   useEffect(() => {
     let cancelled = false;
