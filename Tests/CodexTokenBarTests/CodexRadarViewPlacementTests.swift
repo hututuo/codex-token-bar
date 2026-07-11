@@ -14,8 +14,6 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         let liveRateRange = try XCTUnwrap(source.range(of: "LiveRateView("))
 
         XCTAssertLessThan(radarRange.lowerBound, liveRateRange.lowerBound)
-        XCTAssertTrue(source.contains("@StateObject private var radarStore = CodexRadarStore()"))
-        XCTAssertTrue(source.contains("showingCodexRadarDetails"))
     }
 
     func testRadarStoreDefaultsToTenMinuteRefresh() throws {
