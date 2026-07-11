@@ -61,6 +61,44 @@ pub(crate) struct SurfaceSetupStatus {
 }
 
 static SURFACE_SETUP_STATUS: OnceLock<Mutex<SurfaceSetupStatus>> = OnceLock::new();
+static STATUS_PANEL_INTERACTION: OnceLock<Mutex<StatusPanelInteractionController>> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct StatusPanelInteractionController {
+    tray_press_started_visible: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusPanelBlurAction {
+    HideNow,
+    DeferToTrayRelease,
+}
+
+impl StatusPanelInteractionController {
+    fn begin_tray_press(&mut self, panel_visible: bool) {
+        self.tray_press_started_visible = Some(panel_visible);
+    }
+
+    fn blur(&self) -> StatusPanelBlurAction {
+        if self.tray_press_started_visible.is_some() {
+            StatusPanelBlurAction::DeferToTrayRelease
+        } else {
+            StatusPanelBlurAction::HideNow
+        }
+    }
+
+    fn finish_tray_press(&mut self, panel_visible_now: bool) -> StatusPanelToggleAction {
+        status_panel_toggle_action(
+            self.tray_press_started_visible
+                .take()
+                .unwrap_or(panel_visible_now),
+        )
+    }
+
+    fn cancel(&mut self) {
+        self.tray_press_started_visible = None;
+    }
+}
 
 pub fn setup_desktop_surfaces(app: &tauri::App) -> tauri::Result<()> {
     startup_trace::mark("rust setup start");
@@ -108,6 +146,10 @@ fn set_surface_setup_status(next: SurfaceSetupStatus) {
 
 fn surface_setup_status_cell() -> &'static Mutex<SurfaceSetupStatus> {
     SURFACE_SETUP_STATUS.get_or_init(|| Mutex::new(SurfaceSetupStatus::default()))
+}
+
+fn status_panel_interaction_cell() -> &'static Mutex<StatusPanelInteractionController> {
+    STATUS_PANEL_INTERACTION.get_or_init(|| Mutex::new(StatusPanelInteractionController::default()))
 }
 
 pub fn show_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {
@@ -217,7 +259,11 @@ fn toggle_status_panel_at_tray(app: &tauri::AppHandle, tray_bounds: PhysicalBoun
         .map(|window| window.is_visible().map_err(|error| error.to_string()))
         .transpose()?
         .unwrap_or(false);
-    if status_panel_toggle_action(is_visible) == StatusPanelToggleAction::Hide {
+    let action = status_panel_interaction_cell()
+        .lock()
+        .map(|mut controller| controller.finish_tray_press(is_visible))
+        .unwrap_or_else(|_| status_panel_toggle_action(is_visible));
+    if action == StatusPanelToggleAction::Hide {
         return hide_status_panel_window(app);
     }
     show_status_panel_at_tray(app, Some(tray_bounds))
@@ -352,11 +398,29 @@ fn physical_tray_bounds(rect: tauri::Rect, scale_factor: f64) -> PhysicalBounds 
 }
 
 pub fn hide_status_panel_window(app: &tauri::AppHandle) -> Result<bool, String> {
+    if let Ok(mut controller) = status_panel_interaction_cell().lock() {
+        controller.cancel();
+    }
+    hide_status_panel_window_without_cancelling_interaction(app)
+}
+
+fn hide_status_panel_window_without_cancelling_interaction(app: &tauri::AppHandle) -> Result<bool, String> {
     let Some(window) = app.get_webview_window("status") else {
         return Ok(false);
     };
     window.hide().map_err(|error| error.to_string())?;
     Ok(false)
+}
+
+pub fn dismiss_status_panel_on_blur(app: &tauri::AppHandle) -> Result<bool, String> {
+    let action = status_panel_interaction_cell()
+        .lock()
+        .map(|controller| controller.blur())
+        .unwrap_or(StatusPanelBlurAction::HideNow);
+    match action {
+        StatusPanelBlurAction::HideNow => hide_status_panel_window_without_cancelling_interaction(app),
+        StatusPanelBlurAction::DeferToTrayRelease => Ok(false),
+    }
 }
 
 fn create_floating_window_on_main_thread(app: &tauri::AppHandle) -> Result<(), String> {
@@ -423,18 +487,28 @@ fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
                 position,
                 rect,
                 button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
+                button_state,
                 ..
             } = event
             {
                 let app = tray.app_handle();
-                let scale_factor = app
-                    .monitor_from_point(position.x, position.y)
-                    .ok()
-                    .flatten()
-                    .map(|monitor| monitor.scale_factor())
-                    .unwrap_or(1.0);
-                let _ = toggle_status_panel_at_tray(app, physical_tray_bounds(rect, scale_factor));
+                if button_state == MouseButtonState::Down {
+                    let visible = app
+                        .get_webview_window("status")
+                        .and_then(|window| window.is_visible().ok())
+                        .unwrap_or(false);
+                    if let Ok(mut controller) = status_panel_interaction_cell().lock() {
+                        controller.begin_tray_press(visible);
+                    }
+                } else if button_state == MouseButtonState::Up {
+                    let scale_factor = app
+                        .monitor_from_point(position.x, position.y)
+                        .ok()
+                        .flatten()
+                        .map(|monitor| monitor.scale_factor())
+                        .unwrap_or(1.0);
+                    let _ = toggle_status_panel_at_tray(app, physical_tray_bounds(rect, scale_factor));
+                }
             }
         });
 
@@ -924,5 +998,34 @@ mod tests {
     fn status_panel_toggle_hides_visible_and_shows_hidden_panel() {
         assert_eq!(status_panel_toggle_action(true), StatusPanelToggleAction::Hide);
         assert_eq!(status_panel_toggle_action(false), StatusPanelToggleAction::Show);
+    }
+
+    #[test]
+    fn tray_press_defers_blur_and_closes_panel_that_was_visible_at_mouse_down() {
+        let mut controller = StatusPanelInteractionController::default();
+        let mut panel_visible = true;
+
+        controller.begin_tray_press(panel_visible);
+        assert_eq!(controller.blur(), StatusPanelBlurAction::DeferToTrayRelease);
+        assert!(panel_visible, "blur must not hide before tray release");
+
+        assert_eq!(
+            controller.finish_tray_press(panel_visible),
+            StatusPanelToggleAction::Hide
+        );
+        panel_visible = false;
+        assert!(!panel_visible, "the same tray click must finish hidden");
+    }
+
+    #[test]
+    fn outside_blur_hides_immediately_and_next_tray_click_reopens() {
+        let mut controller = StatusPanelInteractionController::default();
+        assert_eq!(controller.blur(), StatusPanelBlurAction::HideNow);
+
+        controller.begin_tray_press(false);
+        assert_eq!(
+            controller.finish_tray_press(false),
+            StatusPanelToggleAction::Show
+        );
     }
 }

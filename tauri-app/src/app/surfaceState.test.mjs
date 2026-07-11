@@ -238,25 +238,25 @@ test("dashboard and compact quota force refresh after system wake", async () => 
 });
 
 test("hidden status panel starts inactive and verifies window visibility before polling", async () => {
-  const statusPanel = await readFile(new URL("../status/StatusPanelApp.tsx", import.meta.url), "utf8");
+  const statusPanel = await readFile(new URL("../status/useStatusPanelWindowLifecycle.ts", import.meta.url), "utf8");
 
   assert.equal(statusPanel.includes("useState(false)"), true);
   assert.equal(statusPanel.includes("appWindow.isVisible()"), true);
   assert.equal(statusPanel.includes("document.hasFocus()"), true);
   assert.equal(
-    statusPanel.includes("setActive(statusPanelIsActive(Boolean(visible), document.hasFocus()))"),
+    statusPanel.includes("setActive(statusPanelIsActive(Boolean(visible), lifecycle.hasFocus()))"),
     true,
   );
 });
 
 test("status panel hides itself when focus leaves", async () => {
-  const statusPanel = await readFile(new URL("../status/StatusPanelApp.tsx", import.meta.url), "utf8");
+  const statusPanel = await readFile(new URL("../status/useStatusPanelWindowLifecycle.ts", import.meta.url), "utf8");
 
-  assert.equal(statusPanel.includes("const hideWhenBlurred = () => {"), true);
+  assert.equal(statusPanel.includes("const dismissWhenBlurred = () => {"), true);
   assert.equal(statusPanel.includes("setActive(false);"), true);
-  assert.equal(statusPanel.includes("desktopPlatform.hideStatusPanelWindow()"), true);
-  assert.equal(statusPanel.includes('window.addEventListener("blur", hideWhenBlurred)'), true);
-  assert.equal(statusPanel.includes('window.removeEventListener("blur", hideWhenBlurred)'), true);
+  assert.equal(statusPanel.includes("lifecycle.dismissOnBlur()"), true);
+  assert.equal(statusPanel.includes('window.addEventListener("blur", dismissWhenBlurred)'), true);
+  assert.equal(statusPanel.includes('window.removeEventListener("blur", dismissWhenBlurred)'), true);
 });
 
 test("status panel controls keep comfortable hit targets", async () => {

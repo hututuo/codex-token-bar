@@ -37,8 +37,9 @@ pub use settings::{
     save_custom_account_display_name, save_quota_refresh_interval_ms, save_setup_guide_completed,
 };
 pub use surfaces::{
-    hide_floating_window, hide_status_panel_window, set_status_tray_readout, setup_desktop_surfaces,
-    show_dashboard_window, show_floating_window, show_status_panel_window,
+    dismiss_status_panel_on_blur, hide_floating_window, hide_status_panel_window,
+    set_status_tray_readout, setup_desktop_surfaces, show_dashboard_window, show_floating_window,
+    show_status_panel_window,
 };
 pub(super) use surfaces::{surface_setup_status, SurfaceSetupStatus};
 

@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { acknowledgeUnreadSummary, readAppSettings } from "../api/client";
 import { formatLiveRateValue, rateFillStyle } from "../components/liveRate/rateDisplay";
 import {
@@ -14,16 +13,16 @@ import {
   sameCodexHomeSourceToken,
   useCompactPanelSource,
 } from "../surfaces/useCompactPanelSource";
-import { statusPanelIsActive } from "../surfaces/surfaceLifecycle";
 import type {
   CodexHomeSourceToken,
   FloatingWindowSettings,
   UnreadSummary,
 } from "../types/dashboard";
 import { StatusQuotaProjection } from "./StatusQuotaProjection";
+import { useStatusPanelWindowLifecycle } from "./useStatusPanelWindowLifecycle";
 
 export function StatusPanelApp() {
-  const [active, setActive] = useState(false);
+  const active = useStatusPanelWindowLifecycle();
   const [liveRateEnabled, setLiveRateEnabled] = useState(true);
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   const [acknowledgedUnreadSummary, setAcknowledgedUnreadSummary] = useState<UnreadSummary | null>(null);
@@ -132,40 +131,6 @@ export function StatusPanelApp() {
       unlisten?.();
     };
   }, [sourceToken]);
-
-  useEffect(() => {
-    const appWindow = getCurrentWindow();
-    let cancelled = false;
-
-    async function refreshActiveState() {
-      try {
-        const visible = await appWindow.isVisible();
-        if (!cancelled) {
-          setActive(statusPanelIsActive(Boolean(visible), document.hasFocus()));
-        }
-      } catch {
-        if (!cancelled) {
-          setActive(statusPanelIsActive(true, document.hasFocus()));
-        }
-      }
-    }
-
-    const hideWhenBlurred = () => {
-      setActive(false);
-      void desktopPlatform.hideStatusPanelWindow();
-    };
-    const markActive = () => {
-      void refreshActiveState();
-    };
-    window.addEventListener("focus", markActive);
-    window.addEventListener("blur", hideWhenBlurred);
-    void refreshActiveState();
-    return () => {
-      cancelled = true;
-      window.removeEventListener("focus", markActive);
-      window.removeEventListener("blur", hideWhenBlurred);
-    };
-  }, []);
 
   function openDashboard() {
     void desktopPlatform.showDashboardWindow();

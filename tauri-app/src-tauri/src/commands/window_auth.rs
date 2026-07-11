@@ -44,6 +44,7 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "show_dashboard_window",
     "show_status_panel_window",
     "hide_status_panel_window",
+    "dismiss_status_panel_on_blur",
     "set_status_tray_readout",
 ];
 

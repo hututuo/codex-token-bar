@@ -72,6 +72,7 @@ pub fn run() {
             commands::surface::show_dashboard_window,
             commands::surface::show_status_panel_window,
             commands::surface::hide_status_panel_window,
+            commands::surface::dismiss_status_panel_on_blur,
             commands::surface::set_status_tray_readout,
         ])
         .run(tauri::generate_context!())

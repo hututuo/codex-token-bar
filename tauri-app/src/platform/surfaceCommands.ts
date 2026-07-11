@@ -56,6 +56,10 @@ export function hideStatusPanelWindow(): Promise<boolean> {
   return invokePlatformCommand("hide_status_panel_window", true);
 }
 
+export function dismissStatusPanelOnBlur(): Promise<boolean> {
+  return invokePlatformCommand("dismiss_status_panel_on_blur", false);
+}
+
 export function showDashboardWindow(): Promise<boolean> {
   return invokePlatformCommand("show_dashboard_window", false);
 }
