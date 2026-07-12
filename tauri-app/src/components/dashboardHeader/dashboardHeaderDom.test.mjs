@@ -93,6 +93,14 @@ test("DashboardHeader menu implements composite focus and keyboard navigation", 
     await act(async () => after.focus());
     assert.equal(container.querySelector('[role="menu"]'), null);
     assert.equal(document.activeElement, after);
+
+    trigger.focus();
+    await pressKey(act, trigger, "ArrowDown", window);
+    await act(async () => document.activeElement.dispatchEvent(new window.FocusEvent("focusout", {
+      bubbles: true,
+      relatedTarget: null,
+    })));
+    assert.equal(Boolean(container.querySelector('[role="menu"]')), false, "window/document blur closes the menu");
   });
 });
 

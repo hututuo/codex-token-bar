@@ -162,7 +162,7 @@ export function DashboardHeader({
 
   function handleMoreActionsBlur(event: FocusEvent<HTMLDivElement>) {
     const next = event.relatedTarget as Node | null;
-    if (next && !moreActionsRef.current?.contains(next)) setMoreActionsOpen(false);
+    if (!next || !moreActionsRef.current?.contains(next)) setMoreActionsOpen(false);
   }
 
   function beginEditDisplayName() {
