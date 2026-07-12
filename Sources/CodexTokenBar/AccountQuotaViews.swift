@@ -148,10 +148,17 @@ struct AccountQuotaStrip: View {
     let snapshot: AccountQuotaSnapshot
     @Binding var showingResetCreditDetails: Bool
 
+    private var presentation: AccountQuotaStripPresentation {
+        AccountQuotaStripPresentation(snapshot: snapshot)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
-                AccountQuotaAccountLabel(snapshot: snapshot)
+                AccountQuotaAccountLabel(
+                    presentation: presentation.accountLabel,
+                    isAvailable: snapshot.isAvailable
+                )
 
                 HStack(spacing: AccountQuotaSegmentLayout.interSegmentSpacing) {
                     if let fiveHour = snapshot.fiveHour {
@@ -159,12 +166,6 @@ struct AccountQuotaStrip: View {
                     }
                     if let sevenDay = snapshot.sevenDay {
                         AccountQuotaSegment(window: sevenDay, accent: AppTheme.accentBlue)
-                    }
-                    if !snapshot.isAvailable {
-                        Text(AccountQuotaAccountLabelPresentation(snapshot: snapshot).subtitle)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: true, vertical: false)
                     }
                 }
                 .frame(width: AccountQuotaStripLayout.combinedQuotaSegmentsWidth, alignment: .leading)
@@ -228,6 +229,20 @@ struct AccountQuotaResetCreditButtonBoundsKey: PreferenceKey {
     }
 }
 
+struct AccountQuotaStripPresentation: Equatable {
+    let accountLabel: AccountQuotaAccountLabelPresentation
+    let isAvailable: Bool
+
+    init(snapshot: AccountQuotaSnapshot) {
+        accountLabel = AccountQuotaAccountLabelPresentation(snapshot: snapshot)
+        isAvailable = snapshot.isAvailable
+    }
+
+    var visibleCompactStatusTexts: [String] {
+        isAvailable ? [] : [accountLabel.subtitle]
+    }
+}
+
 struct AccountQuotaAccountLabelPresentation: Equatable {
     let title: String
     let subtitle: String
@@ -236,7 +251,8 @@ struct AccountQuotaAccountLabelPresentation: Equatable {
     let help: String
 
     init(snapshot: AccountQuotaSnapshot) {
-        let fullTitle = snapshot.displayName
+        let trimmedFullTitle = snapshot.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fullTitle = trimmedFullTitle.isEmpty ? "账户额度" : trimmedFullTitle
         let planTitle = snapshot.planType?.uppercased()
         title = Self.firstFittingTitle([fullTitle, planTitle, "账户额度"])
         subtitle = snapshot.isAvailable ? "本地账户额度" : Self.compactStatus(snapshot.status)
@@ -250,7 +266,10 @@ struct AccountQuotaAccountLabelPresentation: Equatable {
     }
 
     private static func firstFittingTitle(_ candidates: [String?]) -> String {
-        candidates.compactMap { $0 }.first(where: titleFits) ?? "账户额度"
+        candidates
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .first(where: titleFits) ?? "账户额度"
     }
 
     private static func compactStatus(_ status: String) -> String {
@@ -276,21 +295,41 @@ struct AccountQuotaAccountLabelPresentation: Equatable {
     }
 }
 
-struct AccountQuotaAccountLabel: View {
-    let snapshot: AccountQuotaSnapshot
+enum AccountQuotaAccountAccessibilityRepresentation {
+    static func makeElement(
+        presentation: AccountQuotaAccountLabelPresentation
+    ) -> NSAccessibilityElement {
+        let element = NSAccessibilityElement()
+        element.setAccessibilityRole(.group)
+        element.setAccessibilityLabel(presentation.accessibilityLabel)
+        element.setAccessibilityValue(presentation.accessibilityValue)
+        element.setAccessibilityHelp(presentation.help)
+        return element
+    }
+}
 
-    private var presentation: AccountQuotaAccountLabelPresentation {
-        AccountQuotaAccountLabelPresentation(snapshot: snapshot)
+struct AccountQuotaAccountLabel: View {
+    let presentation: AccountQuotaAccountLabelPresentation
+    let isAvailable: Bool
+
+    init(presentation: AccountQuotaAccountLabelPresentation, isAvailable: Bool) {
+        self.presentation = presentation
+        self.isAvailable = isAvailable
+    }
+
+    init(snapshot: AccountQuotaSnapshot) {
+        presentation = AccountQuotaAccountLabelPresentation(snapshot: snapshot)
+        isAvailable = snapshot.isAvailable
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Label(
                 presentation.title,
-                systemImage: snapshot.isAvailable ? "gauge.with.dots.needle.33percent" : "gauge.with.dots.needle.0percent"
+                systemImage: isAvailable ? "gauge.with.dots.needle.33percent" : "gauge.with.dots.needle.0percent"
             )
             .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(snapshot.isAvailable ? .primary : .secondary)
+            .foregroundStyle(isAvailable ? .primary : .secondary)
             .fixedSize(horizontal: true, vertical: false)
 
             Text(presentation.subtitle)
