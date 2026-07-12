@@ -8,6 +8,7 @@
     "core:event:allow-emit",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "notification:allow-is-permission-granted",
     "core:window:allow-set-position",
     "core:window:allow-set-size",
     "core:window:allow-start-dragging"
