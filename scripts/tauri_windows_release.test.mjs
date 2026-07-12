@@ -130,6 +130,26 @@ writeFileSync(file + ".sig", envelope);
     `#!/bin/sh\nprintf 'called\\n' >> '${path.join(root, "file-calls")}'\nexit 91\n`,
     { mode: 0o755 },
   );
+  if (options.useNpmSigner) {
+    const npmCalls = path.join(root, "npm-calls.jsonl");
+    const npmProgram = path.join(root, "stub-npm.mjs");
+    await writeFile(npmProgram, `
+import { appendFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+const passwordState = !("TAURI_SIGNING_PRIVATE_KEY_PASSWORD" in process.env)
+  ? "unset"
+  : process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD === "" ? "empty" : "nonempty";
+appendFileSync(${JSON.stringify(npmCalls)}, JSON.stringify({ argv: process.argv.slice(2), passwordState }) + "\\n");
+const installer = process.argv.slice(2).find(argument => argument.endsWith(".exe"));
+const result = spawnSync(process.execPath, [${JSON.stringify(signerProgram)}, installer], { stdio: "inherit", env: process.env });
+process.exit(result.status ?? 1);
+`);
+    await writeFile(
+      path.join(binDir, "npm"),
+      `#!/bin/sh\nexec '${process.execPath}' '${npmProgram}' "$@"\n`,
+      { mode: 0o755 },
+    );
+  }
   if (options.swapAfterValidate) {
     await writeFile(
       path.join(binDir, "cp"),
@@ -170,6 +190,10 @@ async function runSignerFixture(options = {}) {
     RELEASE_CONFLICT_DIR: options.finalConflict ? fixture.releaseDir : "",
     RENAME_EXCL_TEST_BARRIER: options.emptyDestinationRace ? path.join(fixture.root, "rename-race") : "",
   };
+  if (options.passwordMode === "unset") delete env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD;
+  if (options.passwordMode === "empty") env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "";
+  if (options.passwordMode === "nonempty") env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "TEST_SECRET_MUST_NOT_ENTER_ARGV";
+  const signerArguments = options.useNpmSigner ? [] : ["--signer", fixture.signer];
   if (options.emptyDestinationRace) {
     const child = spawn("bash", [
       macScript,
@@ -178,7 +202,7 @@ async function runSignerFixture(options = {}) {
       "--build-dir", fixture.buildDir,
       "--release-dir", fixture.releaseDir,
       "--key-path", fixture.key,
-      "--signer", fixture.signer,
+      ...signerArguments,
     ], { env });
     let stdout = "";
     let stderr = "";
@@ -210,7 +234,7 @@ async function runSignerFixture(options = {}) {
       "--build-dir", fixture.buildDir,
       "--release-dir", fixture.releaseDir,
       "--key-path", fixture.key,
-      "--signer", fixture.signer,
+      ...signerArguments,
     ], { env });
     return { ...fixture, ...result, ok: true, buildSnapshot, outputSnapshot };
   } catch (error) {
@@ -253,6 +277,27 @@ test("Mac signing treats installer bytes as opaque while manifest binds x64 and 
 
   const published = await Promise.all(names.map(name => readFile(path.join(result.releaseDir, name), "utf8")));
   assert.doesNotMatch(published.join("") + result.stdout + result.stderr, /TEST_PRIVATE_KEY_DO_NOT_LEAK/);
+});
+
+test("npm signer distinguishes unset, empty, and nonempty password environments without exposing secrets", async () => {
+  for (const passwordMode of ["unset", "empty", "nonempty"]) {
+    const result = await runSignerFixture({ useNpmSigner: true, passwordMode });
+    assert.equal(result.ok, true, `${passwordMode}: ${result.stderr}`);
+    assert.doesNotMatch(result.stdout + result.stderr, /TEST_SECRET_MUST_NOT_ENTER_ARGV/);
+    const calls = (await readFile(path.join(result.root, "npm-calls.jsonl"), "utf8"))
+      .trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      assert.equal(call.passwordState, passwordMode);
+      assert.deepEqual(call.argv.slice(0, 7), ["run", "tauri", "--", "signer", "sign", "-f", result.key]);
+      assert.equal(call.argv.includes("TEST_SECRET_MUST_NOT_ENTER_ARGV"), false);
+      if (passwordMode === "empty") {
+        assert.deepEqual(call.argv.slice(-2), ["--password", ""]);
+      } else {
+        assert.equal(call.argv.includes("--password"), false);
+      }
+    }
+  }
 });
 
 test("Mac signing refuses an existing output directory byte-for-byte", async () => {

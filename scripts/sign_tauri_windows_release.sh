@@ -86,9 +86,15 @@ while IFS=$'\t' read -r platform arch filename sha256; do
       echo "Signer failed for $filename" >&2
       exit 1
     fi
-  elif ! (cd "$ROOT_DIR/tauri-app" && npm run tauri -- signer sign -f "$KEY_PATH" "$STAGING/$filename"); then
-    echo "Signer failed for $filename" >&2
-    exit 1
+  else
+    SIGNER_ARGS=(run tauri -- signer sign -f "$KEY_PATH" "$STAGING/$filename")
+    if [[ ${TAURI_SIGNING_PRIVATE_KEY_PASSWORD+x} && -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]]; then
+      SIGNER_ARGS+=(--password "")
+    fi
+    if ! (cd "$ROOT_DIR/tauri-app" && npm "${SIGNER_ARGS[@]}"); then
+      echo "Signer failed for $filename" >&2
+      exit 1
+    fi
   fi
   [[ -s "$STAGING/$filename.sig" ]] || { echo "Signer failed to create a signature for $filename" >&2; exit 1; }
 done < <(node "$HELPER" print-assets "$ASSET_LIST")
