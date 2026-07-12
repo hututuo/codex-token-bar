@@ -127,9 +127,16 @@ writeFileSync(file + ".sig", envelope);
   }
   await writeFile(
     path.join(binDir, "file"),
-    `#!/bin/sh\n${options.swapAfterValidate ? `case "$2" in *x64*) printf 'tampered-after-validation' > "$2";; esac` : ":"}\ncase "$2" in *arm64*) echo '${options.badArch ? "PE32+ executable x86-64" : "PE32+ executable Aarch64"}';; *) echo 'PE32+ executable x86-64';; esac\n`,
+    "#!/bin/sh\necho 'PE32 executable (GUI) Intel 80386, Nullsoft Installer self-extracting archive'\n",
     { mode: 0o755 },
   );
+  if (options.swapAfterValidate) {
+    await writeFile(
+      path.join(binDir, "cp"),
+      "#!/bin/sh\ncase \"$1\" in *x64*) printf 'tampered-after-validation' > \"$1\";; esac\nexec /bin/cp \"$@\"\n",
+      { mode: 0o755 },
+    );
+  }
   if (options.failMetadata || options.failChecksum) {
     await writeFile(
       path.join(binDir, "node"),
@@ -211,7 +218,7 @@ async function runSignerFixture(options = {}) {
   }
 }
 
-test("Mac signing atomically publishes the complete seven-file release directory", async () => {
+test("Mac signing accepts x64 and ARM64 NSIS installers with the same Intel 80386 outer stub", async () => {
   const result = await runSignerFixture();
   assert.equal(result.ok, true, result.stderr);
   assert.deepEqual(await snapshotDirectory(result.buildDir), result.buildSnapshot);
@@ -284,7 +291,6 @@ for (const [name, options, expectedError] of [
   ["missing installer", { missingFile: true }, /Installer .* not found/],
   ["hash mismatch", { badHash: true }, /SHA-256 mismatch/],
   ["missing architecture", { missingArch: true }, /exactly x64 and arm64/],
-  ["PE architecture mismatch", { badArch: true }, /PE architecture mismatch/],
   ["signer failure", { failSign: true }, /Signer failed/],
   ["single-byte signature corruption", { corruptSignature: true }, /Invalid Tauri signature envelope/],
   ["metadata generation failure", { failMetadata: true }, /Metadata generation failed/],

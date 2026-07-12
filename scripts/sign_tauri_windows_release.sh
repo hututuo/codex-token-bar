@@ -38,7 +38,6 @@ if [[ -e "$RELEASE_DIR" || -L "$RELEASE_DIR" ]]; then
 fi
 [[ -f "$KEY_PATH" ]] || { echo "Signing key file not found" >&2; exit 1; }
 command -v node >/dev/null || { echo "Missing required command: node" >&2; exit 1; }
-command -v file >/dev/null || { echo "Missing required command: file" >&2; exit 1; }
 command -v cc >/dev/null || { echo "Missing required command: cc (install Xcode Command Line Tools)" >&2; exit 1; }
 [[ "$(uname -s)" == "Darwin" ]] || { echo "Darwin is required for atomic RENAME_EXCL publication" >&2; exit 1; }
 
@@ -76,13 +75,6 @@ node "$HELPER" validate-build "$MANIFEST" "$BUILD_DIR" "$VERSION" "$ASSET_LIST"
 cp "$MANIFEST" "$STAGING/build-manifest.json"
 
 while IFS=$'\t' read -r platform arch filename sha256; do
-  description=$(file -b "$BUILD_DIR/$filename")
-  normalized_description=$(printf '%s' "$description" | tr '[:upper:]' '[:lower:]')
-  case "$arch:$normalized_description" in
-    x64:*x86-64*|x64:*x86_64*|x64:*amd64*) ;;
-    arm64:*arm64*|arm64:*aarch64*) ;;
-    *) echo "PE architecture mismatch for $filename: $description" >&2; exit 1 ;;
-  esac
   cp "$BUILD_DIR/$filename" "$STAGING/$filename"
 done < <(node "$HELPER" print-assets "$ASSET_LIST")
 
