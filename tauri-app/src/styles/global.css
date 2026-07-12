@@ -893,10 +893,17 @@ button.quota-side-card:hover {
 
 .quota-pace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 132px;
   align-items: center;
   align-content: center;
   gap: 7px;
+}
+
+.quota-pace--with-cadence {
+  grid-template-columns: minmax(0, 1fr) 132px;
+}
+
+.quota-pace--without-cadence {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .quota-pace-copy {
@@ -4792,6 +4799,10 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 @media (max-width: 960px) {
+  .app-shell {
+    padding-inline: 14px;
+  }
+
   .dashboard {
     width: min(100%, calc(100vw - 28px));
   }

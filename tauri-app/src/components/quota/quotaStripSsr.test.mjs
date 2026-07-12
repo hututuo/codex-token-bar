@@ -121,6 +121,20 @@ test("QuotaStrip renders each quota as a complete header above a full-width valu
   });
 });
 
+test("QuotaStrip derives used percent when the measured snapshot omits it", async () => {
+  await withSsrModules(async (load) => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    const { usedPercent: _omitted, ...fiveHourWithoutUsed } = quotaSnapshot.fiveHour;
+    const html = renderComponent(QuotaStrip, {
+      snapshot: { ...quotaSnapshot, fiveHour: fiveHourWithoutUsed },
+      warnings: [],
+    });
+
+    assert.match(html, /aria-label="5h 剩 62%，已用 38%，重置 2h"/);
+    assert.match(html, /<b>剩 62%<\/b><em>已用 38%<\/em>/);
+  });
+});
+
 const quotaWarnings = [
   { source: "account_quota", message: "账户额度读取失败" },
   { source: "usage_cache", message: "缓存还在初始化" },
@@ -162,7 +176,7 @@ test("QuotaStrip renders the shared quota refresh cadence control", async () => 
     });
 
     assert.match(html, /额度刷新/);
-    assert.match(html, /class="quota-side-card quota-pace"[\s\S]*class="quota-refresh-cadence"/);
+    assert.match(html, /class="quota-side-card quota-pace quota-pace--with-cadence"[\s\S]*class="quota-refresh-cadence"/);
     assert.doesNotMatch(html, /class="quota-refresh-row"/);
     assert.match(html, /aria-label="刷新频率"/);
     assert.match(html, /<option value="30000">额度刷新 30 秒<\/option>/);
@@ -170,6 +184,16 @@ test("QuotaStrip renders the shared quota refresh cadence control", async () => 
     assert.match(html, /<option value="180000" selected="">额度刷新 3 分钟<\/option>/);
     assert.match(html, /<option value="300000">额度刷新 5 分钟<\/option>/);
     assert.match(html, /<option value="600000">额度刷新 10 分钟<\/option>/);
+  });
+});
+
+test("QuotaStrip releases cadence space when no save handler is provided", async () => {
+  await withSsrModules(async (load) => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    const html = renderComponent(QuotaStrip, { snapshot: quotaSnapshot, warnings: [] });
+
+    assert.match(html, /class="quota-side-card quota-pace quota-pace--without-cadence"/);
+    assert.doesNotMatch(html, /class="quota-refresh-cadence"|<select/);
   });
 });
 
@@ -199,12 +223,38 @@ test("QuotaStrip CSS source guard locks the single-row grid and long-track budge
   assert.match(css, /\.quota-strip\s*{[^}]*gap:\s*4px/s);
   assert.match(css, /\.quota-bar\s*{[^}]*grid-template-rows:\s*auto 1fr/s);
   assert.match(css, /\.quota-track\s*{[^}]*width:\s*100%/s);
-  assert.match(css, /\.quota-pace\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 132px/s);
+  assert.match(css, /\.quota-pace--with-cadence\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 132px/s);
+  assert.match(css, /\.quota-pace--without-cadence\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);
   assert.match(css, /\.quota-refresh-cadence select\s*{[^}]*width:\s*132px/s);
   assert.match(css, /\.quota-refresh-cadence select\s*{[^}]*height:\s*28px/s);
   assert.match(css, /\.quota-pace-title strong\s*{[^}]*white-space:\s*nowrap/s);
   assert.doesNotMatch(css, /\.quota-pace-title strong\s*{[^}]*(?:overflow|text-overflow):/s);
   assert.doesNotMatch(css, /\.quota-refresh-row\s*{/);
+});
+
+test("QuotaStrip CSS box-model budget fits the reachable 960px viewport", async () => {
+  const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
+  const quotaGroup = css.slice(css.indexOf(".quota-strip,"), css.indexOf(".quota-strip {"));
+  const quotaBlock = css.slice(css.indexOf(".quota-strip {"), css.indexOf(".quota-strip--details-open"));
+  const media960Start = css.indexOf("@media (max-width: 960px)");
+  const media960 = css.slice(media960Start, css.indexOf("@media (", media960Start + 1));
+  const grid = quotaBlock.match(/grid-template-columns:\s*(\d+)px minmax\((\d+)px,[^)]+\) minmax\((\d+)px,[^)]+\) minmax\((\d+)px,[^)]+\) minmax\((\d+)px,[^)]+\)/);
+  assert.ok(grid);
+
+  const viewport = 960;
+  const shellPadding = Number(media960.match(/\.app-shell\s*{[^}]*padding-inline:\s*(\d+)px/s)?.[1]);
+  const dashboardGutter = Number(media960.match(/\.dashboard\s*{[^}]*100vw - (\d+)px/s)?.[1]);
+  const quotaBorder = Number(quotaGroup.match(/border:\s*(\d+)px/)?.[1]);
+  const quotaPadding = Number(quotaBlock.match(/padding:\s*\d+px\s+(\d+)px/)?.[1]);
+  const gap = Number(quotaBlock.match(/gap:\s*(\d+)px/)?.[1]);
+  const dashboardWidth = Math.min(980, viewport - shellPadding * 2, viewport - dashboardGutter);
+  const quotaContentWidth = dashboardWidth - quotaBorder * 2 - quotaPadding * 2;
+  const minimumGridWidth = grid.slice(1).map(Number).reduce((sum, value) => sum + value, 0) + gap * 4;
+
+  assert.equal(dashboardWidth, 932);
+  assert.equal(quotaContentWidth, 914);
+  assert.equal(minimumGridWidth, 906);
+  assert.ok(quotaContentWidth >= minimumGridWidth);
 });
 
 test("QuotaStrip omits the retry button when no retry handler is provided", async () => {
