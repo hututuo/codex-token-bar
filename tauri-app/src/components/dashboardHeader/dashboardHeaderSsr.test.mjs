@@ -16,20 +16,28 @@ test("DashboardHeader renders restrained provider repair entry", async () => {
     const button = findButton(html, "会话消失修复");
     assert.match(button.attrs, /class="toolbar-button/);
     assert.match(button.attrs, /title="找回消失的历史会话"/);
+    assert.match(html, /class="header-context"/);
+    assert.match(html, /class="header-primary-actions" aria-label="常用操作"/);
+    assert.match(html, /立即刷新/);
+    assert.match(html, /更改目录/);
+    assert.doesNotMatch(html, /导出 CSV|导出 PNG|开机自启：/);
   });
 });
 
-test("DashboardHeader reserves one bounded update status slot", async () => {
+test("DashboardHeader exposes restrained update attention on the more-actions trigger", async () => {
   await withSsrModules(async (load) => {
     const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
-    const idle = renderComponent(DashboardHeader, headerProps());
+    const available = renderComponent(DashboardHeader, headerProps({
+      appUpdateState: { kind: "available", message: "发现新版本 v0.7.4" },
+    }));
     const failed = renderComponent(DashboardHeader, headerProps({
       appUpdateState: { kind: "error", message: "暂时无法检查更新，请稍后重试" },
     }));
 
-    assert.match(idle, /class="update-status-slot update-status--idle"/);
-    assert.match(failed, /class="update-status-slot update-status--error"/);
-    assert.match(failed, /暂时无法检查更新，请稍后重试/);
+    assert.match(available, /aria-label="更多操作，发现新版本 v0.7.4"/);
+    assert.match(available, /more-actions-indicator--available/);
+    assert.match(failed, /aria-label="更多操作，暂时无法检查更新，请稍后重试"/);
+    assert.match(failed, /more-actions-indicator--error/);
   });
 });
 
