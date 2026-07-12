@@ -178,7 +178,10 @@ function QuotaStripView({
           <b aria-hidden="true">{showResetDetails ? "⌃" : "⌄"}</b>
         </em>
       </button>
-      <div className="quota-side-card quota-pace">
+      <div className={onQuotaRefreshIntervalChange
+        ? "quota-side-card quota-pace quota-pace--with-cadence"
+        : "quota-side-card quota-pace quota-pace--without-cadence"}
+      >
         <div className="quota-pace-copy">
           <div className="quota-pace-title">
             <strong>{snapshot.paceLabel}</strong>
