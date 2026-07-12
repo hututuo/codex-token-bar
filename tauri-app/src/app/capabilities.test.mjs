@@ -17,10 +17,14 @@ test("Tauri capabilities expose no direct frontend updater or restart permission
 test("every WebView can satisfy notification plugin initialization without notification ownership", async () => {
   const permissions = await permissionsByWindow();
   for (const surface of ["main", "floating", "status"]) {
-    assert.ok(permissions[surface].has("notification:allow-is-permission-granted"), surface);
-    assert.equal(permissions[surface].has("notification:default"), false, surface);
-    assert.equal(permissions[surface].has("notification:allow-request-permission"), false, surface);
-    assert.equal(permissions[surface].has("notification:allow-notify"), false, surface);
+    const notificationPermissions = [...permissions[surface]]
+      .filter((permission) => permission.startsWith("notification:"))
+      .sort();
+    assert.deepEqual(
+      notificationPermissions,
+      ["notification:allow-is-permission-granted"],
+      surface,
+    );
   }
 });
 
