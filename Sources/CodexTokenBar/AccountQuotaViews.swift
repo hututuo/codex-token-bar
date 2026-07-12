@@ -569,12 +569,12 @@ struct AccountQuotaPaceInsight: View {
                 Text(insight?.title ?? "等待额度")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(insight == nil ? .secondary : .primary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 Text(insight?.detail ?? "读取后计算均速")
                     .font(.system(size: 8, weight: .medium))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
-                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .frame(width: AccountQuotaPaceInsightLayout.textWidth, alignment: .leading)
 

@@ -193,6 +193,34 @@ struct AccountQuotaPaceStatus: Equatable {
     let deltaPercent: Int
 }
 
+enum AccountQuotaPaceDetailText {
+    static func make(
+        remainingPercent: Int,
+        expectedRemainingPercent: Int,
+        roundedRemainingHours: Int?
+    ) -> String {
+        let delta = remainingPercent - expectedRemainingPercent
+        let deltaText: String
+        if delta < 0 {
+            deltaText = "低\(abs(delta))%"
+        } else if delta > 0 {
+            deltaText = "高\(delta)%"
+        } else {
+            deltaText = "贴线"
+        }
+
+        var parts = [
+            "7d余\(remainingPercent)%",
+            "均\(expectedRemainingPercent)%",
+            deltaText,
+        ]
+        if let roundedRemainingHours {
+            parts.append("\(roundedRemainingHours)h")
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
 struct AccountQuotaSnapshot: Equatable, Sendable {
     var fiveHour: AccountQuotaWindow?
     var sevenDay: AccountQuotaWindow?
@@ -365,8 +393,11 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
         } else {
             deltaText = "正好贴线"
         }
-        let resetText = remainingHours <= 36 ? " · 还剩 \(roundedHours)h" : ""
-        let detail = "7d 剩 \(remaining)% · 均速应剩 \(expectedRemaining)% · \(deltaText)\(resetText)"
+        let detail = AccountQuotaPaceDetailText.make(
+            remainingPercent: remaining,
+            expectedRemainingPercent: expectedRemaining,
+            roundedRemainingHours: remainingHours <= 36 ? roundedHours : nil
+        )
 
         if remaining <= 3 {
             return AccountQuotaPaceStatus(
