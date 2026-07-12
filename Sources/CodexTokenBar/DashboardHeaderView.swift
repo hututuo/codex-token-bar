@@ -55,6 +55,14 @@ struct DashboardMarkAllReadPresentation: Equatable {
     }
 }
 
+enum DashboardHeaderContextLayout {
+    static let contextRowCount = 2
+    static let dataSourceWidth: CGFloat = 240
+    static let badgeHorizontalPadding: CGFloat = 9
+    static let iconWidth: CGFloat = 14
+    static let badgeSpacing: CGFloat = 5
+}
+
 struct InitialLoadingOverlay: View {
     let status: String
 
@@ -126,10 +134,6 @@ struct HeaderView: View {
     private var accountDisplayName: String {
         let trimmed = customAccountDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? quotaSnapshot.accountDisplayName : trimmed
-    }
-
-    private var planDisplayName: String {
-        "Codex Token Bar"
     }
 
     private var markAllReadPresentation: DashboardMarkAllReadPresentation {
@@ -205,97 +209,100 @@ struct HeaderView: View {
                         .frame(maxWidth: 360)
                 }
 
-                HStack(spacing: 9) {
-                    Text(planDisplayName)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(width: 132, alignment: .leading)
+                VStack(spacing: 7) {
+                    HStack(spacing: 9) {
+                        if presentationMode.showsActions {
+                            InterfaceScaleMenuButton(
+                                isPresented: $showingInterfaceScaleMenu,
+                                autoEnabled: $interfaceScaleAutoEnabled,
+                                manualMultiplier: $interfaceScaleManualMultiplier
+                            )
+                        }
+                        Text("Local")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule()
+                                    .stroke(AppTheme.borderStrong, lineWidth: 1)
+                            )
+                        DataSourceBadge(path: dataSourceLabel, origin: dataSourceOrigin)
+                        Text(status)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                     if presentationMode.showsActions {
-                        InterfaceScaleMenuButton(
-                            isPresented: $showingInterfaceScaleMenu,
-                            autoEnabled: $interfaceScaleAutoEnabled,
-                            manualMultiplier: $interfaceScaleManualMultiplier
-                        )
-                    }
-                    Text("Local")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .stroke(AppTheme.borderStrong, lineWidth: 1)
-                        )
-                    DataSourceBadge(path: dataSourceLabel, origin: dataSourceOrigin)
-                    Text(status)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                        HStack(spacing: 9) {
+                            Spacer(minLength: 0)
 
-                    Spacer(minLength: 8)
+                            if actions.contains(.markAllRead) {
+                                Button(action: markAllRead) {
+                                    Label("全部已读", systemImage: "checkmark.circle")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(
+                                            markAllReadPresentation.tone == .active
+                                                ? AppTheme.accentBlue
+                                                : Color.secondary
+                                        )
+                                        .frame(minWidth: 76)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 5)
+                                        .background(
+                                            markAllReadPresentation.tone == .active
+                                                ? AppTheme.selectedControlBackground
+                                                : AppTheme.solidControlBackground,
+                                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        )
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                                .stroke(AppTheme.borderStrong, lineWidth: 1)
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(!markAllReadPresentation.isEnabled)
+                                .accessibilityLabel(markAllReadPresentation.accessibilityLabel)
+                                .accessibilityValue(markAllReadPresentation.accessibilityValue)
+                                .accessibilityHint(markAllReadPresentation.accessibilityHint)
+                            }
 
-                    if actions.contains(.markAllRead) {
-                        Button(action: markAllRead) {
-                            Label("全部已读", systemImage: "checkmark.circle")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(
-                                    markAllReadPresentation.tone == .active
-                                        ? AppTheme.accentBlue
-                                        : Color.secondary
-                                )
-                                .frame(minWidth: 76)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
-                                .background(
-                                    markAllReadPresentation.tone == .active
-                                        ? AppTheme.selectedControlBackground
-                                        : AppTheme.solidControlBackground,
-                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .stroke(AppTheme.borderStrong, lineWidth: 1)
-                                )
+                            if actions.contains(.refresh) {
+                                Button(action: onRefresh) {
+                                    Label(isRefreshing ? "刷新中" : "立即刷新", systemImage: "arrow.clockwise")
+                                        .font(.system(size: 13, weight: .medium))
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(isRefreshing)
+                                .accessibilityLabel(isRefreshing ? "刷新中" : "立即刷新")
+                            }
+
+                            if actions.contains(.changeDirectory) {
+                                Button(action: onChangeDirectory) {
+                                    Label("更改目录", systemImage: "folder")
+                                        .font(.system(size: 13, weight: .medium))
+                                }
+                                .buttonStyle(.bordered)
+                                .accessibilityLabel("更改目录")
+                            }
+
+                            if actions.contains(.providerRepair) {
+                                Button(action: onOpenProviderSync) {
+                                    Label("会话消失修复", systemImage: "wrench.and.screwdriver")
+                                        .font(.system(size: 13, weight: .medium))
+                                }
+                                .buttonStyle(.bordered)
+                                .accessibilityLabel("会话消失修复")
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .disabled(!markAllReadPresentation.isEnabled)
-                        .accessibilityLabel(markAllReadPresentation.accessibilityLabel)
-                        .accessibilityValue(markAllReadPresentation.accessibilityValue)
-                        .accessibilityHint(markAllReadPresentation.accessibilityHint)
-
-                    }
-
-                    if actions.contains(.refresh) {
-                        Button(action: onRefresh) {
-                            Label(isRefreshing ? "刷新中" : "立即刷新", systemImage: "arrow.clockwise")
-                                .font(.system(size: 13, weight: .medium))
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(isRefreshing)
-                        .accessibilityLabel(isRefreshing ? "刷新中" : "立即刷新")
-                    }
-
-                    if actions.contains(.changeDirectory) {
-                        Button(action: onChangeDirectory) {
-                            Label("更改目录", systemImage: "folder")
-                                .font(.system(size: 13, weight: .medium))
-                        }
-                        .buttonStyle(.bordered)
-                        .accessibilityLabel("更改目录")
-                    }
-
-                    if actions.contains(.providerRepair) {
-                        Button(action: onOpenProviderSync) {
-                            Label("会话消失修复", systemImage: "wrench.and.screwdriver")
-                                .font(.system(size: 13, weight: .medium))
-                        }
-                        .buttonStyle(.bordered)
-                        .accessibilityLabel("会话消失修复")
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                 }
                 .font(.system(size: 14))
-                .padding(.leading, 12)
                 .frame(maxWidth: 980)
 
                 AccountQuotaStrip(
@@ -336,6 +343,7 @@ struct DataSourceBadge: View {
             HStack(spacing: 5) {
                 Text(origin)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: true, vertical: false)
                 Text(path)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
@@ -356,8 +364,9 @@ struct DataSourceBadge: View {
             Capsule()
                 .stroke(AppTheme.border, lineWidth: 1)
         )
-        .frame(maxWidth: 260)
+        .frame(width: DashboardHeaderContextLayout.dataSourceWidth)
         .help(path)
+        .accessibilityLabel("数据源 \(origin) \(path)")
     }
 }
 

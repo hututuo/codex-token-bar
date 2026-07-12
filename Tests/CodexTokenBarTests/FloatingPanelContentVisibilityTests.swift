@@ -677,6 +677,9 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(dashboardSource.contains("floatingPanelVisibility: floatingPanelContentVisibility"))
         XCTAssertTrue(liveRateControls.contains("DisplaySurfaceToggleButton(\n                    title: \"精确 token 统计\""))
         XCTAssertTrue(liveRateControls.contains("FloatingPanelContentSettingsButton("))
+        XCTAssertFalse(liveRateControls.contains("AccountQuotaRefreshCadencePicker"))
+        XCTAssertTrue(settingsSource.contains("if group == .usageStatus"))
+        XCTAssertTrue(settingsSource.contains("AccountQuotaRefreshCadencePicker()"))
     }
 
     func testFloatingPanelSettingsExposeTextWhiteSlider() throws {
@@ -707,16 +710,19 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let liveRateView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateView.swift")
+        let settingsView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelAppearanceSettingsView.swift")
         let quotaStore = projectRoot.appendingPathComponent("Sources/CodexTokenBar/AccountQuotaStore.swift")
         let tokenDisplaySurface = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurface.swift")
         let liveRateSource = try String(contentsOf: liveRateView, encoding: .utf8)
+        let settingsSource = try String(contentsOf: settingsView, encoding: .utf8)
         let quotaStoreSource = try String(contentsOf: quotaStore, encoding: .utf8)
         let tokenDisplaySource = try String(contentsOf: tokenDisplaySurface, encoding: .utf8)
 
         XCTAssertTrue(quotaStoreSource.contains("AccountQuotaRefreshCadence.storedValue"))
         XCTAssertTrue(quotaStoreSource.contains("setAutomaticRefreshInterval"))
-        XCTAssertTrue(liveRateSource.contains("@AppStorage(AccountQuotaRefreshCadence.storageKey)"))
-        XCTAssertTrue(liveRateSource.contains("AccountQuotaRefreshCadencePicker"))
+        XCTAssertFalse(liveRateSource.contains("AccountQuotaRefreshCadencePicker"))
+        XCTAssertTrue(settingsSource.contains("@AppStorage(AccountQuotaRefreshCadence.storageKey)"))
+        XCTAssertTrue(settingsSource.contains("AccountQuotaRefreshCadencePicker"))
         XCTAssertEqual(
             AccountQuotaRefreshCadenceMenuPresentation(selectionRaw: "60").accessibilityLabel,
             "额度刷新"

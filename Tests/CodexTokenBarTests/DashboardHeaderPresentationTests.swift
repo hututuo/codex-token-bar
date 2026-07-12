@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 @testable import CodexTokenBar
 
@@ -44,5 +46,34 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         controller.complete()
         XCTAssertTrue(controller.trigger { calls += 1 })
         XCTAssertEqual(calls, 2)
+    }
+
+    func testHeaderLayoutReservesReadableWidthForCommonAutomaticSource() {
+        let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        let originWidth = ("自动发现" as NSString).size(withAttributes: [.font: font]).width
+        let pathWidth = ("~/.codex" as NSString).size(withAttributes: [.font: font]).width
+        let requiredWidth = DashboardHeaderContextLayout.badgeHorizontalPadding * 2
+            + DashboardHeaderContextLayout.iconWidth
+            + DashboardHeaderContextLayout.badgeSpacing * 2
+            + ceil(originWidth)
+            + ceil(pathWidth)
+
+        XCTAssertGreaterThanOrEqual(DashboardHeaderContextLayout.dataSourceWidth, requiredWidth)
+        XCTAssertEqual(DashboardHeaderContextLayout.contextRowCount, 2)
+    }
+
+    @MainActor
+    func testHostedAutomaticSourceBadgeKeepsStableSingleLineFrame() {
+        let hostingView = NSHostingView(
+            rootView: DataSourceBadge(path: "~/.codex", origin: "自动发现")
+        )
+        hostingView.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(
+            hostingView.fittingSize.width,
+            DashboardHeaderContextLayout.dataSourceWidth,
+            accuracy: 0.5
+        )
+        XCTAssertLessThanOrEqual(hostingView.fittingSize.height, 28)
     }
 }

@@ -26,6 +26,103 @@ struct FloatingPanelContentSettingsButtonBoundsKey: PreferenceKey {
     }
 }
 
+struct AccountQuotaRefreshCadencePicker: View {
+    @AppStorage(AccountQuotaRefreshCadence.storageKey) private var selectionRaw: String = AccountQuotaRefreshCadence.defaultRawValue
+
+    private var selection: Binding<String> {
+        Binding(
+            get: {
+                AccountQuotaRefreshCadence.value(for: selectionRaw).rawValue
+            },
+            set: { newValue in
+                selectionRaw = AccountQuotaRefreshCadence.value(for: newValue).rawValue
+            }
+        )
+    }
+
+    var body: some View {
+        AccountQuotaRefreshCadenceMenu(selectionRaw: selection)
+    }
+}
+
+struct AccountQuotaRefreshCadenceMenuPresentation: Equatable {
+    let visibleLabel: String
+    let accessibilityLabel = "额度刷新"
+    let accessibilityValue: String
+
+    init(selectionRaw: String) {
+        let cadence = AccountQuotaRefreshCadence.value(for: selectionRaw)
+        visibleLabel = "额度刷新 \(cadence.label)"
+        accessibilityValue = cadence.label
+    }
+}
+
+enum AccountQuotaRefreshCadenceMenuLayout {
+    static let controlWidth: CGFloat = 132
+    static let controlHeight: CGFloat = 28
+    static let horizontalPadding: CGFloat = 6
+    static let iconWidth: CGFloat = 12
+    static let spacing: CGFloat = 4
+}
+
+struct AccountQuotaRefreshCadenceMenu: View {
+    @Binding var selectionRaw: String
+
+    private var presentation: AccountQuotaRefreshCadenceMenuPresentation {
+        AccountQuotaRefreshCadenceMenuPresentation(selectionRaw: selectionRaw)
+    }
+
+    var body: some View {
+        Menu {
+            ForEach(AccountQuotaRefreshCadence.allCases) { cadence in
+                Button {
+                    selectionRaw = cadence.rawValue
+                } label: {
+                    if cadence.rawValue == AccountQuotaRefreshCadence.value(for: selectionRaw).rawValue {
+                        Label(cadence.label, systemImage: "checkmark")
+                    } else {
+                        Text(cadence.label)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: AccountQuotaRefreshCadenceMenuLayout.spacing) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: AccountQuotaRefreshCadenceMenuLayout.iconWidth)
+                Text(presentation.visibleLabel)
+                    .font(.system(size: 11, weight: .medium))
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .padding(.horizontal, AccountQuotaRefreshCadenceMenuLayout.horizontalPadding)
+            .frame(
+                width: AccountQuotaRefreshCadenceMenuLayout.controlWidth,
+                height: AccountQuotaRefreshCadenceMenuLayout.controlHeight
+            )
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .frame(
+            width: AccountQuotaRefreshCadenceMenuLayout.controlWidth,
+            height: AccountQuotaRefreshCadenceMenuLayout.controlHeight
+        )
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(AppTheme.raisedBackground.opacity(0.72))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(AppTheme.border.opacity(0.55), lineWidth: 1)
+        )
+        .help("设置额度自动刷新频率")
+        .accessibilityLabel(presentation.accessibilityLabel)
+        .accessibilityValue(presentation.accessibilityValue)
+    }
+}
+
 struct FloatingPanelAppearanceSettings: View {
     @Binding var floatingPanelOpacity: Double
     @Binding var floatingPanelScale: Double
@@ -283,6 +380,10 @@ private struct FloatingPanelContentSettingsRow: View {
             }
 
             Spacer(minLength: 8)
+
+            if group == .usageStatus {
+                AccountQuotaRefreshCadencePicker()
+            }
 
             Toggle("", isOn: $isOn)
                 .labelsHidden()
