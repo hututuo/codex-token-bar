@@ -7,12 +7,23 @@ enum AccountQuotaStripLayout {
     static let accountLabelWidth: CGFloat = 84
     static let resetCreditWidth: CGFloat = 154
     static let itemSpacing: CGFloat = 8
+    static let accountIconAndSpacingWidth: CGFloat = 16
+    static let noResetSpacerMinimumWidth = resetCreditWidth
     static let combinedQuotaSegmentsWidth = controlWidth
         - horizontalPadding * 2
         - accountLabelWidth
         - resetCreditWidth
         - AccountQuotaPaceInsightLayout.controlWidth
         - itemSpacing * 3
+
+    static func trailingEdge(hasResetCredit: Bool) -> CGFloat {
+        horizontalPadding
+            + accountLabelWidth
+            + combinedQuotaSegmentsWidth
+            + (hasResetCredit ? resetCreditWidth : noResetSpacerMinimumWidth)
+            + AccountQuotaPaceInsightLayout.controlWidth
+            + itemSpacing * 3
+    }
 }
 
 enum AccountQuotaSegmentLayout {
@@ -23,6 +34,7 @@ enum AccountQuotaSegmentLayout {
     static let progressTextSpacing: CGFloat = 4
     static let controlHeight: CGFloat = 35
     static let twoSegmentWidth = (AccountQuotaStripLayout.combinedQuotaSegmentsWidth - interSegmentSpacing) / 2
+    static let singleSegmentWidth = AccountQuotaStripLayout.combinedQuotaSegmentsWidth
     static let progressBarWidth = twoSegmentWidth
 }
 
@@ -139,21 +151,7 @@ struct AccountQuotaStrip: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Label(
-                        snapshot.displayName,
-                        systemImage: snapshot.isAvailable ? "gauge.with.dots.needle.33percent" : "gauge.with.dots.needle.0percent"
-                    )
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(snapshot.isAvailable ? .primary : .secondary)
-                    .fixedSize(horizontal: true, vertical: false)
-
-                    Text(snapshot.isAvailable ? "本地账户额度" : snapshot.status)
-                        .font(.system(size: 8, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-                .frame(width: AccountQuotaStripLayout.accountLabelWidth, alignment: .leading)
+                AccountQuotaAccountLabel(snapshot: snapshot)
 
                 HStack(spacing: AccountQuotaSegmentLayout.interSegmentSpacing) {
                     if let fiveHour = snapshot.fiveHour {
@@ -163,10 +161,10 @@ struct AccountQuotaStrip: View {
                         AccountQuotaSegment(window: sevenDay, accent: AppTheme.accentBlue)
                     }
                     if !snapshot.isAvailable {
-                        Text(snapshot.status)
+                        Text(AccountQuotaAccountLabelPresentation(snapshot: snapshot).subtitle)
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                 }
                 .frame(width: AccountQuotaStripLayout.combinedQuotaSegmentsWidth, alignment: .leading)
@@ -176,6 +174,8 @@ struct AccountQuotaStrip: View {
                         snapshot: snapshot,
                         isPresented: $showingResetCreditDetails
                     )
+                } else {
+                    Spacer(minLength: AccountQuotaStripLayout.noResetSpacerMinimumWidth)
                 }
 
                 AccountQuotaPaceInsight(snapshot: snapshot)
@@ -225,6 +225,84 @@ struct AccountQuotaResetCreditButtonBoundsKey: PreferenceKey {
 
     static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
         value = nextValue() ?? value
+    }
+}
+
+struct AccountQuotaAccountLabelPresentation: Equatable {
+    let title: String
+    let subtitle: String
+    let accessibilityLabel: String
+    let accessibilityValue: String
+    let help: String
+
+    init(snapshot: AccountQuotaSnapshot) {
+        let fullTitle = snapshot.displayName
+        let planTitle = snapshot.planType?.uppercased()
+        title = Self.firstFittingTitle([fullTitle, planTitle, "账户额度"])
+        subtitle = snapshot.isAvailable ? "本地账户额度" : Self.compactStatus(snapshot.status)
+        accessibilityLabel = fullTitle
+        accessibilityValue = snapshot.status
+        help = "\(fullTitle) · \(snapshot.status)"
+    }
+
+    var visibleTextFitsBudget: Bool {
+        Self.titleFits(title) && Self.subtitleFits(subtitle)
+    }
+
+    private static func firstFittingTitle(_ candidates: [String?]) -> String {
+        candidates.compactMap { $0 }.first(where: titleFits) ?? "账户额度"
+    }
+
+    private static func compactStatus(_ status: String) -> String {
+        if status.contains("失败") { return "读取失败" }
+        if status.contains("未读取") { return "额度未读取" }
+        if status.contains("不可用") { return "额度不可用" }
+        return "额度未读取"
+    }
+
+    private static func titleFits(_ text: String) -> Bool {
+        measuredWidth(text, font: .systemFont(ofSize: 10, weight: .semibold))
+            + AccountQuotaStripLayout.accountIconAndSpacingWidth
+            <= AccountQuotaStripLayout.accountLabelWidth
+    }
+
+    private static func subtitleFits(_ text: String) -> Bool {
+        measuredWidth(text, font: .systemFont(ofSize: 8, weight: .medium))
+            <= AccountQuotaStripLayout.accountLabelWidth
+    }
+
+    private static func measuredWidth(_ text: String, font: NSFont) -> CGFloat {
+        ceil((text as NSString).size(withAttributes: [.font: font]).width)
+    }
+}
+
+struct AccountQuotaAccountLabel: View {
+    let snapshot: AccountQuotaSnapshot
+
+    private var presentation: AccountQuotaAccountLabelPresentation {
+        AccountQuotaAccountLabelPresentation(snapshot: snapshot)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(
+                presentation.title,
+                systemImage: snapshot.isAvailable ? "gauge.with.dots.needle.33percent" : "gauge.with.dots.needle.0percent"
+            )
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(snapshot.isAvailable ? .primary : .secondary)
+            .fixedSize(horizontal: true, vertical: false)
+
+            Text(presentation.subtitle)
+                .font(.system(size: 8, weight: .medium))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .frame(width: AccountQuotaStripLayout.accountLabelWidth, alignment: .leading)
+        .help(presentation.help)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(presentation.accessibilityLabel)
+        .accessibilityValue(presentation.accessibilityValue)
     }
 }
 
