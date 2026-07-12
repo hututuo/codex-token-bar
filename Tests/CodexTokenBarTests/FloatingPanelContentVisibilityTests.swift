@@ -641,10 +641,12 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let visibilityModel = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelContentVisibility.swift")
         let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
         let liveRateView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateView.swift")
+        let quotaViews = projectRoot.appendingPathComponent("Sources/CodexTokenBar/AccountQuotaViews.swift")
         let settingsSource = try String(contentsOf: settingsView, encoding: .utf8)
         let visibilitySource = try String(contentsOf: visibilityModel, encoding: .utf8)
         let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
         let liveRateSource = try String(contentsOf: liveRateView, encoding: .utf8)
+        let quotaViewsSource = try String(contentsOf: quotaViews, encoding: .utf8)
         let liveRateControls = try XCTUnwrap(sourceBlock(
             named: "LiveRateControls",
             in: liveRateSource,
@@ -678,8 +680,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(liveRateControls.contains("DisplaySurfaceToggleButton(\n                    title: \"精确 token 统计\""))
         XCTAssertTrue(liveRateControls.contains("FloatingPanelContentSettingsButton("))
         XCTAssertFalse(liveRateControls.contains("AccountQuotaRefreshCadencePicker"))
-        XCTAssertTrue(settingsSource.contains("if group == .usageStatus"))
-        XCTAssertTrue(settingsSource.contains("AccountQuotaRefreshCadencePicker()"))
+        XCTAssertFalse(settingsSource.contains("AccountQuotaRefreshCadencePicker"))
+        XCTAssertTrue(quotaViewsSource.contains("AccountQuotaRefreshCadencePicker()"))
     }
 
     func testFloatingPanelSettingsExposeTextWhiteSlider() throws {
@@ -711,18 +713,21 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             .deletingLastPathComponent()
         let liveRateView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateView.swift")
         let settingsView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelAppearanceSettingsView.swift")
+        let quotaViews = projectRoot.appendingPathComponent("Sources/CodexTokenBar/AccountQuotaViews.swift")
         let quotaStore = projectRoot.appendingPathComponent("Sources/CodexTokenBar/AccountQuotaStore.swift")
         let tokenDisplaySurface = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurface.swift")
         let liveRateSource = try String(contentsOf: liveRateView, encoding: .utf8)
         let settingsSource = try String(contentsOf: settingsView, encoding: .utf8)
+        let quotaViewsSource = try String(contentsOf: quotaViews, encoding: .utf8)
         let quotaStoreSource = try String(contentsOf: quotaStore, encoding: .utf8)
         let tokenDisplaySource = try String(contentsOf: tokenDisplaySurface, encoding: .utf8)
 
         XCTAssertTrue(quotaStoreSource.contains("AccountQuotaRefreshCadence.storedValue"))
         XCTAssertTrue(quotaStoreSource.contains("setAutomaticRefreshInterval"))
         XCTAssertFalse(liveRateSource.contains("AccountQuotaRefreshCadencePicker"))
-        XCTAssertTrue(settingsSource.contains("@AppStorage(AccountQuotaRefreshCadence.storageKey)"))
-        XCTAssertTrue(settingsSource.contains("AccountQuotaRefreshCadencePicker"))
+        XCTAssertFalse(settingsSource.contains("AccountQuotaRefreshCadencePicker"))
+        XCTAssertTrue(quotaViewsSource.contains("@AppStorage(AccountQuotaRefreshCadence.storageKey)"))
+        XCTAssertTrue(quotaViewsSource.contains("AccountQuotaRefreshCadencePicker"))
         XCTAssertEqual(
             AccountQuotaRefreshCadenceMenuPresentation(selectionRaw: "60").accessibilityLabel,
             "额度刷新"
