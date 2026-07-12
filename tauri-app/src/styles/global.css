@@ -767,10 +767,10 @@ button {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: 90px minmax(132px, 0.9fr) minmax(132px, 0.9fr) minmax(116px, 0.76fr) minmax(166px, 1.12fr);
-  gap: 6px;
+  grid-template-columns: 74px minmax(190px, 1.35fr) minmax(190px, 1.35fr) minmax(116px, 0.72fr) minmax(320px, 1.45fr);
+  gap: 4px;
   align-items: center;
-  min-height: 45px;
+  min-height: 52px;
   padding: 5px 8px;
   background: var(--panel-inset);
   font-size: 10px;
@@ -788,48 +788,42 @@ button {
   min-width: 0;
 }
 
-.quota-refresh-row {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  min-height: 24px;
-  padding-top: 2px;
-  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
-}
-
 .quota-refresh-cadence {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  white-space: nowrap;
+  display: block;
+  width: 132px;
+  height: 28px;
+  flex: 0 0 132px;
 }
 
 .quota-refresh-cadence select {
-  min-width: 92px;
-  max-width: 116px;
+  width: 132px;
+  height: 28px;
   border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line));
-  border-radius: 6px;
+  border-radius: 7px;
   background: color-mix(in srgb, var(--panel-solid) 88%, var(--panel-soft));
   color: var(--text);
-  padding: 2px 6px;
+  padding: 3px 7px;
   font-size: 10px;
+  cursor: pointer;
 }
 
-.quota-plan strong,
-.quota-pace-title strong {
-  overflow: hidden;
+.quota-plan strong {
   color: var(--text);
   font-size: 10px;
   font-weight: 570;
-  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quota-pace-title strong {
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 570;
   white-space: nowrap;
 }
 
 .quota-side-card {
   min-width: 0;
-  height: 34px;
+  height: 40px;
   border: 1px solid color-mix(in srgb, var(--accent) 13%, var(--line));
   border-radius: 10px;
   background: color-mix(in srgb, var(--panel-solid) 82%, var(--panel-soft));
@@ -899,7 +893,15 @@ button.quota-side-card:hover {
 
 .quota-pace {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px;
+  align-items: center;
   align-content: center;
+  gap: 7px;
+}
+
+.quota-pace-copy {
+  display: grid;
+  min-width: 0;
   gap: 3px;
 }
 
@@ -979,11 +981,18 @@ button.quota-side-card:hover {
 
 .quota-bar {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto auto;
-  gap: 3px;
-  align-items: center;
+  grid-template-rows: auto 1fr;
+  gap: 4px;
   min-width: 0;
   font-size: 9.5px;
+}
+
+.quota-bar-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 8px;
 }
 
 .quota-label {
@@ -991,19 +1000,17 @@ button.quota-side-card:hover {
   font-weight: 560;
 }
 
-.quota-bar strong,
-.quota-bar em {
+.quota-bar-header em {
   font-size: 9.2px;
+  font-style: normal;
   font-weight: 540;
   white-space: nowrap;
 }
 
 .quota-plan span,
 .quota-pace span {
-  overflow: hidden;
   font-size: 8.8px;
   font-weight: 510;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -1015,11 +1022,46 @@ button.quota-side-card:hover {
   background: color-mix(in srgb, var(--panel-soft) 78%, transparent);
 }
 
-.quota-track span {
-  display: block;
-  height: 100%;
+.quota-track {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  height: 17px;
+}
+
+.quota-track-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--green) 38%, var(--accent)));
+  opacity: 0.28;
+}
+
+.quota-track-copy,
+.quota-track-pending {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 7px;
+  color: var(--text);
+  font-size: 9px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.quota-track-copy b,
+.quota-track-copy em {
+  font-style: normal;
+  font-weight: 650;
+}
+
+.quota-track-pending {
+  justify-content: center;
+  color: var(--muted);
 }
 
 .hit-meter span {
@@ -4754,7 +4796,6 @@ html:not(.floating-document):not(.status-document) .brand-mark {
     width: min(100%, calc(100vw - 28px));
   }
 
-  .quota-strip,
   .live-grid,
   .ranking-row {
     grid-template-columns: 1fr;
@@ -4778,6 +4819,18 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
   .heatmap-grid {
     grid-template-columns: repeat(21, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .quota-strip {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .quota-plan,
+  .quota-pace,
+  .quota-read-warning {
+    grid-column: 1 / -1;
   }
 }
 
