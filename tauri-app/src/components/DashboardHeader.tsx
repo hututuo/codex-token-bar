@@ -5,7 +5,7 @@ import {
   resolveAccountDisplayName,
   shouldCommitDisplayNameOnKey,
 } from "./dashboardHeader/model";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
 
 interface DashboardHeaderProps {
   account: AccountInfo;
@@ -51,6 +51,10 @@ export function DashboardHeader({
   const [editingDisplayName, setEditingDisplayName] = useState(false);
   const [moreActionsOpen, setMoreActionsOpen] = useState(false);
   const moreActionsRef = useRef<HTMLDivElement>(null);
+  const moreActionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const moreActionsMenuRef = useRef<HTMLDivElement>(null);
+  const pendingMenuFocusRef = useRef<"first" | "last" | null>(null);
+  const autostartHelpId = useId();
   const resolvedDisplayName = resolveAccountDisplayName(
     account.displayName,
     customAccountDisplayName,
@@ -71,7 +75,15 @@ export function DashboardHeader({
   const updatedLabel = refreshing ? "同步中" : timeLabel;
   const sourceLabel = codexHome.source === "manual" ? "手动目录" : codexHome.exists ? "自动发现" : "等待选择";
   const updateBusy = appUpdateState.kind === "checking" || appUpdateState.kind === "installing";
-  const updateButtonLabel = appUpdateState.kind === "available" ? "安装更新" : "检查更新";
+  const updateButtonLabel = appUpdateState.kind === "checking"
+    ? "检查中…"
+    : appUpdateState.kind === "installing"
+      ? "安装中…"
+      : appUpdateState.kind === "available"
+        ? "安装更新"
+        : appUpdateState.kind === "error"
+          ? "重试更新检查"
+          : appUpdateState.message || "检查更新";
   const updateNeedsAttention = appUpdateState.kind === "available" || appUpdateState.kind === "error";
 
   useEffect(() => {
@@ -79,16 +91,79 @@ export function DashboardHeader({
     function closeOnOutsidePointer(event: PointerEvent) {
       if (!moreActionsRef.current?.contains(event.target as Node)) setMoreActionsOpen(false);
     }
-    function closeOnEscape(event: globalThis.KeyboardEvent) {
-      if (event.key === "Escape") setMoreActionsOpen(false);
-    }
     document.addEventListener("pointerdown", closeOnOutsidePointer);
-    document.addEventListener("keydown", closeOnEscape);
     return () => {
       document.removeEventListener("pointerdown", closeOnOutsidePointer);
-      document.removeEventListener("keydown", closeOnEscape);
     };
   }, [moreActionsOpen]);
+
+  useEffect(() => {
+    if (!moreActionsOpen || !pendingMenuFocusRef.current) return;
+    const items = enabledMenuItems();
+    const target = pendingMenuFocusRef.current === "last" ? items.at(-1) : items[0];
+    pendingMenuFocusRef.current = null;
+    target?.focus();
+  }, [moreActionsOpen]);
+
+  function enabledMenuItems() {
+    return [...(moreActionsMenuRef.current?.querySelectorAll<HTMLElement>(
+      '[role="menuitem"], [role="menuitemcheckbox"]',
+    ) ?? [])].filter((item) => !item.hasAttribute("disabled"));
+  }
+
+  function openMoreActions(focus: "first" | "last" = "first") {
+    pendingMenuFocusRef.current = focus;
+    setMoreActionsOpen(true);
+  }
+
+  function closeMoreActionsAndRestoreFocus() {
+    setMoreActionsOpen(false);
+    moreActionsTriggerRef.current?.focus();
+  }
+
+  function handleMoreActionsTriggerKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === "Enter" || event.key === " " || event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      openMoreActions(event.key === "ArrowUp" ? "last" : "first");
+    }
+  }
+
+  function focusOutsideMenu(backward: boolean) {
+    const focusable = [...document.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )].filter((element) => !moreActionsMenuRef.current?.contains(element));
+    const triggerIndex = focusable.indexOf(moreActionsTriggerRef.current as HTMLElement);
+    const target = focusable[triggerIndex + (backward ? -1 : 1)];
+    setMoreActionsOpen(false);
+    target?.focus();
+  }
+
+  function handleMoreActionsMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const items = enabledMenuItems();
+    if (!items.length) return;
+    const activeIndex = items.indexOf(document.activeElement as HTMLElement);
+    let target: HTMLElement | undefined;
+    if (event.key === "ArrowDown") target = items[(activeIndex + 1 + items.length) % items.length];
+    else if (event.key === "ArrowUp") target = items[(activeIndex - 1 + items.length) % items.length];
+    else if (event.key === "Home") target = items[0];
+    else if (event.key === "End") target = items.at(-1);
+    else if (event.key === "Escape") {
+      event.preventDefault();
+      closeMoreActionsAndRestoreFocus();
+      return;
+    } else if (event.key === "Tab") {
+      event.preventDefault();
+      focusOutsideMenu(event.shiftKey);
+      return;
+    } else return;
+    event.preventDefault();
+    target?.focus();
+  }
+
+  function handleMoreActionsBlur(event: FocusEvent<HTMLDivElement>) {
+    const next = event.relatedTarget as Node | null;
+    if (next && !moreActionsRef.current?.contains(next)) setMoreActionsOpen(false);
+  }
 
   function beginEditDisplayName() {
     setDisplayNameDraft(resolvedDisplayName);
@@ -142,7 +217,6 @@ export function DashboardHeader({
       </div>
       <div className="header-toolbar">
         <div className="header-context">
-          <span className="app-name">Codex Token Bar</span>
           <span className="plan-badge">{account.planLabel}</span>
           <span className={codexHome.exists ? "status-dot status-dot--ok" : "status-dot"} />
           <span className="source-label">{sourceLabel}</span>
@@ -153,6 +227,31 @@ export function DashboardHeader({
           <button className="toolbar-button" disabled={refreshing} onClick={onRefresh} type="button">
             立即刷新
           </button>
+          <span aria-live={appUpdateState.message ? "polite" : "off"} className="header-update-action">
+            <button
+              className={updateNeedsAttention ? `toolbar-button update-action update-action--${appUpdateState.kind}` : "toolbar-button update-action"}
+              disabled={updateBusy}
+              onClick={onCheckForUpdate}
+              title={appUpdateState.message || undefined}
+              type="button"
+            >
+              {updateButtonLabel}
+            </button>
+          </span>
+          <span className="header-autostart-action">
+            <button
+              aria-describedby={autostartStatus.message ? autostartHelpId : undefined}
+              aria-pressed={autostartStatus.enabled}
+              className={autostartStatus.enabled ? "toolbar-button is-active" : "toolbar-button"}
+              disabled={!autostartStatus.available}
+              onClick={onToggleAutostart}
+              title={autostartStatus.message}
+              type="button"
+            >
+              开机自启：{autostartStatus.enabled ? "开" : "关"}
+            </button>
+            {autostartStatus.message ? <span className="visually-hidden" id={autostartHelpId}>{autostartStatus.message}</span> : null}
+          </span>
           <button className="toolbar-button" onClick={() => setEditingPath((value) => !value)} type="button">
             {editingPath ? "收起目录" : "更改目录"}
           </button>
@@ -168,44 +267,31 @@ export function DashboardHeader({
             <button
               aria-expanded={moreActionsOpen}
               aria-haspopup="menu"
-              aria-label={updateNeedsAttention ? `更多操作，${appUpdateState.message || "更新状态需要关注"}` : "更多操作"}
-              className={updateNeedsAttention ? "toolbar-button more-actions-trigger has-update-state" : "toolbar-button more-actions-trigger"}
-              onClick={() => setMoreActionsOpen((value) => !value)}
+              aria-label="更多操作"
+              className="toolbar-button more-actions-trigger"
+              onClick={() => moreActionsOpen ? closeMoreActionsAndRestoreFocus() : openMoreActions()}
+              onKeyDown={handleMoreActionsTriggerKeyDown}
+              ref={moreActionsTriggerRef}
               type="button"
             >
               <span aria-hidden="true">•••</span>
               <span>更多操作</span>
-              {updateNeedsAttention ? <span aria-hidden="true" className={`more-actions-indicator more-actions-indicator--${appUpdateState.kind}`} /> : null}
             </button>
             {moreActionsOpen ? (
-              <div aria-label="更多操作" className="more-actions-menu" role="menu">
-                <button disabled={updateBusy} onClick={onCheckForUpdate} role="menuitem" type="button">
-                  {updateButtonLabel}
-                </button>
-                <span
-                  aria-live={appUpdateState.message ? "polite" : "off"}
-                  className={`update-status-slot update-status--${appUpdateState.kind}`}
-                  title={appUpdateState.message || undefined}
-                >
-                  {appUpdateState.message || "尚未检查更新"}
-                </span>
-                <button onClick={() => { onExportCsv(); setMoreActionsOpen(false); }} role="menuitem" type="button">
+              <div
+                aria-label="更多操作"
+                className="more-actions-menu"
+                onBlur={handleMoreActionsBlur}
+                onKeyDown={handleMoreActionsMenuKeyDown}
+                ref={moreActionsMenuRef}
+                role="menu"
+              >
+                <button onClick={() => { onExportCsv(); closeMoreActionsAndRestoreFocus(); }} role="menuitem" tabIndex={-1} type="button">
                   导出 CSV
                 </button>
-                <button onClick={() => { onExportPng(); setMoreActionsOpen(false); }} role="menuitem" type="button">
+                <button onClick={() => { onExportPng(); closeMoreActionsAndRestoreFocus(); }} role="menuitem" tabIndex={-1} type="button">
                   导出 PNG
                 </button>
-                <button
-                  aria-checked={autostartStatus.enabled}
-                  disabled={!autostartStatus.available}
-                  onClick={() => { onToggleAutostart(); setMoreActionsOpen(false); }}
-                  role="menuitemcheckbox"
-                  title={autostartStatus.message}
-                  type="button"
-                >
-                  开机自启：{autostartStatus.enabled ? "开" : "关"}
-                </button>
-                {autostartStatus.message ? <span className="more-actions-help">{autostartStatus.message}</span> : null}
               </div>
             ) : null}
           </div>
