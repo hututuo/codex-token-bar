@@ -5,13 +5,16 @@ import XCTest
 
 final class AccountQuotaSegmentTests: XCTestCase {
     func testAccountLabelPresentationNeverSelectsBlankTitle() {
-        let cases: [(limitName: String?, planType: String?, expected: String)] = [
-            (nil, nil, "账户额度"),
-            ("", "", "账户额度"),
-            (" \n\t ", "   ", "账户额度"),
-            ("GPT-5.3-Codex-Spark", " \n pro \t", "PRO"),
-            ("  TEAM  ", nil, "TEAM"),
-            (nil, " plus ", "PLUS"),
+        let cases: [(limitName: String?, planType: String?, visual: String, semantic: String)] = [
+            (nil, nil, "账户额度", "账户额度"),
+            ("", "", "账户额度", "账户额度"),
+            (" \n\t ", "   ", "账户额度", "账户额度"),
+            ("   ", "pro", "PRO", "PRO"),
+            ("\n", " plus ", "PLUS", "PLUS"),
+            ("\t", "Team", "TEAM", "TEAM"),
+            ("GPT-5.3-Codex-Spark", " \n pro \t", "PRO", "GPT-5.3-Codex-Spark"),
+            ("  TEAM  ", nil, "TEAM", "TEAM"),
+            (nil, " plus ", "PLUS", "PLUS"),
         ]
 
         for item in cases {
@@ -22,7 +25,8 @@ final class AccountQuotaSegmentTests: XCTestCase {
             )
             let presentation = AccountQuotaAccountLabelPresentation(snapshot: snapshot)
 
-            XCTAssertEqual(presentation.title, item.expected)
+            XCTAssertEqual(presentation.title, item.visual)
+            XCTAssertEqual(presentation.accessibilityLabel, item.semantic)
             XCTAssertFalse(presentation.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             XCTAssertFalse(presentation.accessibilityLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             XCTAssertTrue(presentation.visibleTextFitsBudget)
