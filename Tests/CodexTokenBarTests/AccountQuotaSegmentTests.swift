@@ -4,6 +4,46 @@ import XCTest
 @testable import CodexTokenBar
 
 final class AccountQuotaSegmentTests: XCTestCase {
+    func testAccountLabelPresentationFallsBackWithin84PointsAndPreservesFullSemantics() {
+        let available = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: nil),
+            planType: "pro",
+            limitName: "GPT-5.3-Codex-Spark",
+            status: "额度已读取"
+        )
+        let unavailable = AccountQuotaSnapshot(
+            planType: "enterprise-plan-name-that-does-not-fit",
+            limitName: "GPT-5.3-Codex-Spark",
+            status: "读取账户额度失败：网络连接已中断，请稍后重试"
+        )
+        let availablePresentation = AccountQuotaAccountLabelPresentation(snapshot: available)
+        let unavailablePresentation = AccountQuotaAccountLabelPresentation(snapshot: unavailable)
+
+        XCTAssertEqual(availablePresentation.title, "PRO")
+        XCTAssertEqual(availablePresentation.subtitle, "本地账户额度")
+        XCTAssertEqual(unavailablePresentation.title, "账户额度")
+        XCTAssertEqual(unavailablePresentation.subtitle, "读取失败")
+        XCTAssertEqual(unavailablePresentation.accessibilityLabel, "GPT-5.3-Codex-Spark")
+        XCTAssertEqual(unavailablePresentation.accessibilityValue, unavailable.status)
+        XCTAssertTrue(unavailablePresentation.help.contains("GPT-5.3-Codex-Spark"))
+        XCTAssertTrue(unavailablePresentation.help.contains(unavailable.status))
+        XCTAssertTrue([availablePresentation, unavailablePresentation].allSatisfy(\.visibleTextFitsBudget))
+    }
+
+    @MainActor
+    func testHostedLongAccountNameAndFailureStatusStayInsideAccountColumn() {
+        let snapshot = AccountQuotaSnapshot(
+            planType: "enterprise-plan-name-that-does-not-fit",
+            limitName: "GPT-5.3-Codex-Spark",
+            status: "读取账户额度失败：网络连接已中断，请稍后重试"
+        )
+        let hostingView = NSHostingView(rootView: AccountQuotaAccountLabel(snapshot: snapshot))
+        hostingView.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(hostingView.fittingSize.width, AccountQuotaStripLayout.accountLabelWidth, accuracy: 0.5)
+        XCTAssertLessThanOrEqual(hostingView.fittingSize.height, AccountQuotaSegmentLayout.controlHeight)
+    }
+
     func testTwoSegmentStripBudgetGivesEachProgressBarAtLeast160Points() {
         let accountTitleWidth = ("PRO" as NSString).size(
             withAttributes: [.font: NSFont.systemFont(ofSize: 10, weight: .semibold)]
@@ -17,6 +57,34 @@ final class AccountQuotaSegmentTests: XCTestCase {
         XCTAssertEqual(AccountQuotaSegmentLayout.twoSegmentWidth, 170)
         XCTAssertEqual(AccountQuotaSegmentLayout.progressBarWidth, AccountQuotaSegmentLayout.twoSegmentWidth)
         XCTAssertGreaterThanOrEqual(AccountQuotaSegmentLayout.progressBarWidth, 160)
+    }
+
+    func testNoResetLayoutKeepsPaceAtTrailingEdgeWithoutSplittingQuotaBars() {
+        XCTAssertEqual(AccountQuotaStripLayout.noResetSpacerMinimumWidth, AccountQuotaStripLayout.resetCreditWidth)
+        XCTAssertEqual(AccountQuotaStripLayout.trailingEdge(hasResetCredit: true), AccountQuotaStripLayout.controlWidth - AccountQuotaStripLayout.horizontalPadding)
+        XCTAssertEqual(AccountQuotaStripLayout.trailingEdge(hasResetCredit: false), AccountQuotaStripLayout.controlWidth - AccountQuotaStripLayout.horizontalPadding)
+        XCTAssertEqual(AccountQuotaSegmentLayout.twoSegmentWidth, 170)
+        XCTAssertEqual(AccountQuotaSegmentLayout.singleSegmentWidth, AccountQuotaStripLayout.combinedQuotaSegmentsWidth)
+    }
+
+    @MainActor
+    func testHostedUnavailableAndSingleQuotaStripsKeepFull980PointFrame() {
+        let unavailable = AccountQuotaSnapshot(status: "额度暂时不可用：网络连接已中断，请稍后重试")
+        let singleQuota = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: nil),
+            planType: "pro",
+            status: "额度已读取"
+        )
+
+        for snapshot in [unavailable, singleQuota] {
+            let hostingView = NSHostingView(
+                rootView: AccountQuotaStrip(snapshot: snapshot, showingResetCreditDetails: .constant(false))
+            )
+            hostingView.layoutSubtreeIfNeeded()
+
+            XCTAssertEqual(hostingView.fittingSize.width, AccountQuotaStripLayout.controlWidth, accuracy: 0.5)
+        }
+        XCTAssertEqual(AccountQuotaSegmentLayout.singleSegmentWidth, 346)
     }
 
     func testWorstCaseSegmentCopyFitsNativeFontBudgetWithoutEllipsis() {
