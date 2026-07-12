@@ -127,7 +127,7 @@ writeFileSync(file + ".sig", envelope);
   }
   await writeFile(
     path.join(binDir, "file"),
-    "#!/bin/sh\necho 'PE32 executable (GUI) Intel 80386, Nullsoft Installer self-extracting archive'\n",
+    `#!/bin/sh\nprintf 'called\\n' >> '${path.join(root, "file-calls")}'\nexit 91\n`,
     { mode: 0o755 },
   );
   if (options.swapAfterValidate) {
@@ -218,9 +218,10 @@ async function runSignerFixture(options = {}) {
   }
 }
 
-test("Mac signing accepts x64 and ARM64 NSIS installers with the same Intel 80386 outer stub", async () => {
+test("Mac signing treats installer bytes as opaque while manifest binds x64 and ARM64 targets", async () => {
   const result = await runSignerFixture();
   assert.equal(result.ok, true, result.stderr);
+  await assert.rejects(access(path.join(result.root, "file-calls")), error => error?.code === "ENOENT");
   assert.deepEqual(await snapshotDirectory(result.buildDir), result.buildSnapshot);
   const names = (await readdir(result.releaseDir)).sort();
   const checksumName = `SHA256SUMS-v${version}-windows.txt`;
