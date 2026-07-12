@@ -1,13 +1,133 @@
 import AppKit
 import SwiftUI
 
+enum AccountQuotaStripLayout {
+    static let controlWidth: CGFloat = 980
+    static let horizontalPadding: CGFloat = 12
+    static let accountLabelWidth: CGFloat = 104
+    static let resetCreditWidth: CGFloat = 154
+    static let itemSpacing: CGFloat = 10
+    static let combinedQuotaSegmentsWidth = controlWidth
+        - horizontalPadding * 2
+        - accountLabelWidth
+        - resetCreditWidth
+        - AccountQuotaPaceInsightLayout.controlWidth
+        - itemSpacing * 3
+}
+
+enum AccountQuotaPaceInsightLayout {
+    static let controlWidth: CGFloat = 348
+    static let horizontalPadding: CGFloat = 9
+    static let iconWidth: CGFloat = 18
+    static let itemSpacing: CGFloat = 7
+    static let cadenceWidth = AccountQuotaRefreshCadenceMenuLayout.controlWidth
+    static let textWidth = controlWidth
+        - horizontalPadding * 2
+        - iconWidth
+        - cadenceWidth
+        - itemSpacing * 2
+}
+
+struct AccountQuotaRefreshCadencePicker: View {
+    @AppStorage(AccountQuotaRefreshCadence.storageKey) private var selectionRaw: String = AccountQuotaRefreshCadence.defaultRawValue
+
+    private var selection: Binding<String> {
+        Binding(
+            get: { AccountQuotaRefreshCadence.value(for: selectionRaw).rawValue },
+            set: { selectionRaw = AccountQuotaRefreshCadence.value(for: $0).rawValue }
+        )
+    }
+
+    var body: some View {
+        AccountQuotaRefreshCadenceMenu(selectionRaw: selection)
+    }
+}
+
+struct AccountQuotaRefreshCadenceMenuPresentation: Equatable {
+    let visibleLabel: String
+    let accessibilityLabel = "额度刷新"
+    let accessibilityValue: String
+
+    init(selectionRaw: String) {
+        let cadence = AccountQuotaRefreshCadence.value(for: selectionRaw)
+        visibleLabel = "额度刷新 \(cadence.label)"
+        accessibilityValue = cadence.label
+    }
+}
+
+enum AccountQuotaRefreshCadenceMenuLayout {
+    static let controlWidth: CGFloat = 132
+    static let controlHeight: CGFloat = 28
+    static let horizontalPadding: CGFloat = 6
+    static let iconWidth: CGFloat = 12
+    static let spacing: CGFloat = 4
+}
+
+struct AccountQuotaRefreshCadenceMenu: View {
+    @Binding var selectionRaw: String
+
+    private var presentation: AccountQuotaRefreshCadenceMenuPresentation {
+        AccountQuotaRefreshCadenceMenuPresentation(selectionRaw: selectionRaw)
+    }
+
+    var body: some View {
+        Menu {
+            ForEach(AccountQuotaRefreshCadence.allCases) { cadence in
+                Button {
+                    selectionRaw = cadence.rawValue
+                } label: {
+                    if cadence.rawValue == AccountQuotaRefreshCadence.value(for: selectionRaw).rawValue {
+                        Label(cadence.label, systemImage: "checkmark")
+                    } else {
+                        Text(cadence.label)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: AccountQuotaRefreshCadenceMenuLayout.spacing) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: AccountQuotaRefreshCadenceMenuLayout.iconWidth)
+                Text(presentation.visibleLabel)
+                    .font(.system(size: 11, weight: .medium))
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .padding(.horizontal, AccountQuotaRefreshCadenceMenuLayout.horizontalPadding)
+            .frame(
+                width: AccountQuotaRefreshCadenceMenuLayout.controlWidth,
+                height: AccountQuotaRefreshCadenceMenuLayout.controlHeight
+            )
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .frame(
+            width: AccountQuotaRefreshCadenceMenuLayout.controlWidth,
+            height: AccountQuotaRefreshCadenceMenuLayout.controlHeight
+        )
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(AppTheme.insetBackground.opacity(0.82))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(AppTheme.border.opacity(0.55), lineWidth: 1)
+        )
+        .help("设置额度自动刷新频率")
+        .accessibilityLabel(presentation.accessibilityLabel)
+        .accessibilityValue(presentation.accessibilityValue)
+    }
+}
+
 struct AccountQuotaStrip: View {
     let snapshot: AccountQuotaSnapshot
     @Binding var showingResetCreditDetails: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 10) {
+            HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
                 VStack(alignment: .leading, spacing: 2) {
                     Label(
                         snapshot.displayName,
@@ -22,7 +142,7 @@ struct AccountQuotaStrip: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                .frame(width: 104, alignment: .leading)
+                .frame(width: AccountQuotaStripLayout.accountLabelWidth, alignment: .leading)
 
                 HStack(spacing: 8) {
                     if let fiveHour = snapshot.fiveHour {
@@ -48,7 +168,6 @@ struct AccountQuotaStrip: View {
                 }
 
                 AccountQuotaPaceInsight(snapshot: snapshot)
-                    .padding(.leading, 10)
             }
 
             if shouldShowRetryHint {
@@ -59,16 +178,15 @@ struct AccountQuotaStrip: View {
                     .padding(.leading, 122)
             }
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 12)
+        .padding(.horizontal, AccountQuotaStripLayout.horizontalPadding)
         .padding(.vertical, shouldShowRetryHint ? 6 : 7)
-        .frame(maxWidth: 980, minHeight: shouldShowRetryHint ? 66 : 54)
+        .frame(maxWidth: AccountQuotaStripLayout.controlWidth, minHeight: shouldShowRetryHint ? 66 : 54)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(AppTheme.insetBackground)
         )
         .help(helpText)
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("账户额度")
         .accessibilityValue(helpText)
         .zIndex(showingResetCreditDetails ? 10_000 : 0)
@@ -159,7 +277,7 @@ private struct AccountQuotaResetCreditButton: View {
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 6)
-            .frame(width: 154, alignment: .leading)
+            .frame(width: AccountQuotaStripLayout.resetCreditWidth, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(AppTheme.calloutBackground)
@@ -441,11 +559,11 @@ struct AccountQuotaPaceInsight: View {
     }
 
     var body: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: AccountQuotaPaceInsightLayout.itemSpacing) {
             Image(systemName: insight?.iconName ?? "clock.badge.questionmark")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(accent)
-                .frame(width: 18)
+                .frame(width: AccountQuotaPaceInsightLayout.iconWidth)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(insight?.title ?? "等待额度")
@@ -458,11 +576,13 @@ struct AccountQuotaPaceInsight: View {
                     .monospacedDigit()
                     .lineLimit(1)
             }
-            Spacer(minLength: 0)
+            .frame(width: AccountQuotaPaceInsightLayout.textWidth, alignment: .leading)
+
+            AccountQuotaRefreshCadencePicker()
         }
-        .padding(.horizontal, 9)
+        .padding(.horizontal, AccountQuotaPaceInsightLayout.horizontalPadding)
         .padding(.vertical, 7)
-        .frame(width: 232, alignment: .leading)
+        .frame(width: AccountQuotaPaceInsightLayout.controlWidth, alignment: .leading)
         .frame(maxHeight: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
