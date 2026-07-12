@@ -717,7 +717,10 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(quotaStoreSource.contains("setAutomaticRefreshInterval"))
         XCTAssertTrue(liveRateSource.contains("@AppStorage(AccountQuotaRefreshCadence.storageKey)"))
         XCTAssertTrue(liveRateSource.contains("AccountQuotaRefreshCadencePicker"))
-        XCTAssertTrue(liveRateSource.contains("Text(\"额度刷新\")"))
+        XCTAssertEqual(
+            AccountQuotaRefreshCadenceMenuPresentation(selectionRaw: "60").accessibilityLabel,
+            "额度刷新"
+        )
         XCTAssertTrue(tokenDisplaySource.contains("static func make(store: CodexUsageStore, monitor: LiveRateMonitor, quota: AccountQuotaStore)"))
         XCTAssertFalse(tokenDisplaySource.contains("@AppStorage(AccountQuotaRefreshCadence.storageKey)"))
     }
