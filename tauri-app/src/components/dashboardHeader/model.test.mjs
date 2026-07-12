@@ -40,7 +40,7 @@ test("DashboardHeader edit mode keeps a narrow blur and Enter wiring guard", asy
   );
   const keyHandler = source.slice(
     source.indexOf("function handleDisplayNameKeyDown"),
-    source.indexOf("return ("),
+    source.indexOf("return (", source.indexOf("function handleDisplayNameKeyDown")),
   );
   const buttonBlock = source.slice(
     source.indexOf("<button"),
