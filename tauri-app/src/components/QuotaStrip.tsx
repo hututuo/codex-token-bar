@@ -32,17 +32,29 @@ function QuotaBar({ quota }: { quota: QuotaLimit }) {
   const remainingPercent = typeof quota.remainingPercent === "number" ? quota.remainingPercent : null;
   const measured = quota.availability === "measured" && remainingPercent !== null;
   const measuredLabel = remainingPercent === null ? "" : formatPercent(remainingPercent);
+  const usedPercent = typeof quota.usedPercent === "number"
+    ? quota.usedPercent
+    : remainingPercent === null ? null : Math.max(0, 1 - remainingPercent);
+  const usedLabel = usedPercent === null ? "" : formatPercent(usedPercent);
   return (
     <div
-      aria-label={measured ? `${quota.label} 剩 ${measuredLabel}` : `${quota.label} 额度待读取`}
+      aria-label={measured
+        ? `${quota.label} 剩 ${measuredLabel}，已用 ${usedLabel}，重置 ${quota.resetsAt}`
+        : `${quota.label} 额度待读取，重置 ${quota.resetsAt}`}
       className={measured ? "quota-bar" : "quota-bar quota-bar--unavailable"}
     >
-      <span className="quota-label">{quota.label}</span>
-      <div className="quota-track" aria-hidden="true">
-        {measured && remainingPercent !== null ? <span style={{ width: `${Math.round(remainingPercent * 100)}%` }} /> : null}
+      <div className="quota-bar-header">
+        <span className="quota-label">{quota.label}</span>
+        <em>{quota.resetsAt}</em>
       </div>
-      <strong>{measured ? `剩 ${measuredLabel}` : "待读取"}</strong>
-      <em>{quota.resetsAt}</em>
+      <div className="quota-track" aria-hidden="true">
+        {measured && remainingPercent !== null ? (
+          <>
+            <i className="quota-track-fill" style={{ width: `${Math.round(remainingPercent * 100)}%` }} />
+            <span className="quota-track-copy"><b>剩 {measuredLabel}</b><em>已用 {usedLabel}</em></span>
+          </>
+        ) : <span className="quota-track-pending">待读取</span>}
+      </div>
     </div>
   );
 }
@@ -167,29 +179,28 @@ function QuotaStripView({
         </em>
       </button>
       <div className="quota-side-card quota-pace">
-        <div className="quota-pace-title">
-          <strong>{snapshot.paceLabel}</strong>
+        <div className="quota-pace-copy">
+          <div className="quota-pace-title">
+            <strong>{snapshot.paceLabel}</strong>
+          </div>
+          <span>7d 均速比较</span>
         </div>
-        <span>7d 均速比较</span>
-      </div>
-      {onQuotaRefreshIntervalChange ? (
-        <div className="quota-refresh-row">
+        {onQuotaRefreshIntervalChange ? (
           <label className="quota-refresh-cadence">
-            <span>额度刷新</span>
             <select
-              aria-label="额度刷新频率"
+              aria-label="刷新频率"
               onChange={(event) => {
                 void onQuotaRefreshIntervalChange(Number(event.currentTarget.value));
               }}
               value={selectedQuotaRefreshIntervalMs}
             >
               {QUOTA_REFRESH_CADENCE_OPTIONS.map((option) => (
-                <option key={option.valueMs} value={option.valueMs}>{option.label}</option>
+                <option key={option.valueMs} value={option.valueMs}>额度刷新 {option.label}</option>
               ))}
             </select>
           </label>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
       {quotaWarnings.length > 0 ? (
         <div className="quota-read-warning" role="status">
           <div className="quota-read-warning-main">
