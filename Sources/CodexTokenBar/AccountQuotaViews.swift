@@ -4,15 +4,26 @@ import SwiftUI
 enum AccountQuotaStripLayout {
     static let controlWidth: CGFloat = 980
     static let horizontalPadding: CGFloat = 12
-    static let accountLabelWidth: CGFloat = 104
+    static let accountLabelWidth: CGFloat = 84
     static let resetCreditWidth: CGFloat = 154
-    static let itemSpacing: CGFloat = 10
+    static let itemSpacing: CGFloat = 8
     static let combinedQuotaSegmentsWidth = controlWidth
         - horizontalPadding * 2
         - accountLabelWidth
         - resetCreditWidth
         - AccountQuotaPaceInsightLayout.controlWidth
         - itemSpacing * 3
+}
+
+enum AccountQuotaSegmentLayout {
+    static let interSegmentSpacing: CGFloat = 6
+    static let topRowSpacing: CGFloat = 5
+    static let progressBarHeight: CGFloat = 20
+    static let progressHorizontalPadding: CGFloat = 8
+    static let progressTextSpacing: CGFloat = 4
+    static let controlHeight: CGFloat = 35
+    static let twoSegmentWidth = (AccountQuotaStripLayout.combinedQuotaSegmentsWidth - interSegmentSpacing) / 2
+    static let progressBarWidth = twoSegmentWidth
 }
 
 enum AccountQuotaPaceInsightLayout {
@@ -135,16 +146,16 @@ struct AccountQuotaStrip: View {
                     )
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(snapshot.isAvailable ? .primary : .secondary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
 
                     Text(snapshot.isAvailable ? "本地账户额度" : snapshot.status)
                         .font(.system(size: 8, weight: .medium))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 .frame(width: AccountQuotaStripLayout.accountLabelWidth, alignment: .leading)
 
-                HStack(spacing: 8) {
+                HStack(spacing: AccountQuotaSegmentLayout.interSegmentSpacing) {
                     if let fiveHour = snapshot.fiveHour {
                         AccountQuotaSegment(window: fiveHour, accent: AppTheme.accentCyan)
                     }
@@ -158,7 +169,7 @@ struct AccountQuotaStrip: View {
                             .lineLimit(1)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(width: AccountQuotaStripLayout.combinedQuotaSegmentsWidth, alignment: .leading)
 
                 if shouldShowResetCredits {
                     AccountQuotaResetCreditButton(
@@ -476,23 +487,27 @@ struct AccountQuotaSegment: View {
     let window: AccountQuotaWindow
     let accent: Color
 
+    private var presentation: AccountQuotaSegmentPresentation {
+        AccountQuotaSegmentPresentation(window: window)
+    }
+
     private var remainingFraction: CGFloat {
         CGFloat(Double(window.remainingPercent) / 100.0)
     }
 
     var body: some View {
-        HStack(spacing: 7) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(window.displayLabel)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: AccountQuotaSegmentLayout.topRowSpacing) {
+                Text(presentation.title)
                     .font(.system(size: 10, weight: .bold))
-                    .lineLimit(1)
-                Text("重置 \(window.detailedResetText)")
+                    .fixedSize(horizontal: true, vertical: false)
+                Text(presentation.resetText)
                     .font(.system(size: 8, weight: .medium))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
-                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 0)
             }
-            .frame(width: 72, alignment: .leading)
 
             GeometryReader { proxy in
                 let clampedFraction = min(max(remainingFraction, 0), 1)
@@ -516,27 +531,47 @@ struct AccountQuotaSegment: View {
                     }
                     .clipShape(Capsule())
 
-                    HStack(spacing: 4) {
-                        Text("剩 \(window.remainingPercent)%")
+                    HStack(spacing: AccountQuotaSegmentLayout.progressTextSpacing) {
+                        Text(presentation.remainingText)
                             .fontWeight(.semibold)
-                        Text("已用 \(window.usedPercent)%")
+                            .fixedSize(horizontal: true, vertical: false)
+                        Spacer(minLength: 0)
+                        Text(presentation.usedText)
                             .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                     .font(.system(size: 10, weight: .medium))
                     .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, AccountQuotaSegmentLayout.progressHorizontalPadding)
                 }
             }
-            .frame(height: 20)
+            .frame(height: AccountQuotaSegmentLayout.progressBarHeight)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, minHeight: AccountQuotaSegmentLayout.controlHeight, maxHeight: AccountQuotaSegmentLayout.controlHeight)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(window.displayLabel)额度")
         .accessibilityValue("剩余 \(window.remainingPercent)%，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
     }
 }
+
+struct AccountQuotaSegmentPresentation: Equatable {
+    let title: String
+    let resetText: String
+    let remainingText: String
+    let usedText: String
+
+    init(window: AccountQuotaWindow) {
+        title = window.displayLabel
+        resetText = "重置 \(window.detailedResetText)"
+        remainingText = "剩 \(window.remainingPercent)%"
+        usedText = "已用 \(window.usedPercent)%"
+    }
+
+    var allVisibleText: [String] {
+        [title, resetText, remainingText, usedText]
+    }
+}
+
 struct AccountQuotaPaceInsight: View {
     let snapshot: AccountQuotaSnapshot
 
