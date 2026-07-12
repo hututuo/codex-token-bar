@@ -375,7 +375,10 @@ struct LiveRateControls: View {
                 .frame(maxWidth: .infinity, minHeight: 24)
 
                 AccountQuotaRefreshCadencePicker()
-                    .frame(maxWidth: .infinity, minHeight: 24)
+                    .frame(
+                        width: AccountQuotaRefreshCadenceMenuLayout.controlWidth,
+                        height: AccountQuotaRefreshCadenceMenuLayout.controlHeight
+                    )
             }
 
             FloatingPanelAppearanceSettings(
@@ -420,25 +423,74 @@ private struct AccountQuotaRefreshCadencePicker: View {
     }
 
     var body: some View {
-        Picker(selection: selection) {
+        AccountQuotaRefreshCadenceMenu(selectionRaw: selection)
+    }
+}
+
+struct AccountQuotaRefreshCadenceMenuPresentation: Equatable {
+    let visibleLabel: String
+    let accessibilityLabel = "额度刷新"
+    let accessibilityValue: String
+
+    init(selectionRaw: String) {
+        let cadence = AccountQuotaRefreshCadence.value(for: selectionRaw)
+        visibleLabel = cadence.label
+        accessibilityValue = cadence.label
+    }
+}
+
+enum AccountQuotaRefreshCadenceMenuLayout {
+    static let controlWidth: CGFloat = 78
+    static let controlHeight: CGFloat = 24
+    static let horizontalPadding: CGFloat = 6
+    static let iconWidth: CGFloat = 12
+    static let spacing: CGFloat = 4
+}
+
+struct AccountQuotaRefreshCadenceMenu: View {
+    @Binding var selectionRaw: String
+
+    private var presentation: AccountQuotaRefreshCadenceMenuPresentation {
+        AccountQuotaRefreshCadenceMenuPresentation(selectionRaw: selectionRaw)
+    }
+
+    var body: some View {
+        Menu {
             ForEach(AccountQuotaRefreshCadence.allCases) { cadence in
-                Text(cadence.label).tag(cadence.rawValue)
+                Button {
+                    selectionRaw = cadence.rawValue
+                } label: {
+                    if cadence.rawValue == AccountQuotaRefreshCadence.value(for: selectionRaw).rawValue {
+                        Label(cadence.label, systemImage: "checkmark")
+                    } else {
+                        Text(cadence.label)
+                    }
+                }
             }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: AccountQuotaRefreshCadenceMenuLayout.spacing) {
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.system(size: 10, weight: .semibold))
-                Text("额度刷新")
-                    .font(.system(size: 9, weight: .bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
+                    .frame(width: AccountQuotaRefreshCadenceMenuLayout.iconWidth)
+                Text(presentation.visibleLabel)
+                    .font(.system(size: 11, weight: .medium))
+                    .fixedSize(horizontal: true, vertical: false)
             }
+            .padding(.horizontal, AccountQuotaRefreshCadenceMenuLayout.horizontalPadding)
+            .frame(
+                width: AccountQuotaRefreshCadenceMenuLayout.controlWidth,
+                height: AccountQuotaRefreshCadenceMenuLayout.controlHeight
+            )
+            .contentShape(Rectangle())
         }
-        .pickerStyle(.menu)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
-        .padding(.horizontal, 6)
-        .frame(height: 24)
+        .frame(
+            width: AccountQuotaRefreshCadenceMenuLayout.controlWidth,
+            height: AccountQuotaRefreshCadenceMenuLayout.controlHeight
+        )
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(AppTheme.raisedBackground.opacity(0.72))
@@ -448,8 +500,8 @@ private struct AccountQuotaRefreshCadencePicker: View {
                 .stroke(AppTheme.border.opacity(0.55), lineWidth: 1)
         )
         .help("设置额度自动刷新频率")
-        .accessibilityLabel("额度刷新")
-        .accessibilityValue(AccountQuotaRefreshCadence.value(for: selectionRaw).label)
+        .accessibilityLabel(presentation.accessibilityLabel)
+        .accessibilityValue(presentation.accessibilityValue)
     }
 }
 
