@@ -167,7 +167,12 @@ DMG_STAGING="$(mktemp -d "$RELEASE_DIR/dmg-staging.XXXXXX")"
 DMG_DEVICE=""
 DMG_MOUNT=""
 RW_CHECK_MOUNT=""
+FINAL_CHECK_MOUNT=""
 cleanup() {
+  if [[ -n "$FINAL_CHECK_MOUNT" ]]; then
+    hdiutil detach "$FINAL_CHECK_MOUNT" >/dev/null 2>&1 || true
+    rmdir "$FINAL_CHECK_MOUNT" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$RW_CHECK_MOUNT" ]]; then
     hdiutil detach "$RW_CHECK_MOUNT" >/dev/null 2>&1 || true
     rmdir "$RW_CHECK_MOUNT" >/dev/null 2>&1 || true
@@ -191,6 +196,23 @@ detach_existing_volume() {
   ' | while read -r device; do
     [[ -n "$device" ]] && hdiutil detach "$device" >/dev/null 2>&1 || true
   done
+}
+
+finder_background_is_persisted() {
+  local ds_store="$1"
+  local ds_strings
+  ds_strings="$(LC_ALL=C strings -a "$ds_store")"
+
+  if grep -Fq "backgroundImageAlias" <<<"$ds_strings"; then
+    grep -Fq "dmg-background.png" <<<"$ds_strings"
+    return
+  fi
+
+  # Newer Finder versions store the picture in pBB0/pBBk bookmark records
+  # instead of embedding the old backgroundImageAlias key in the icvp plist.
+  grep -Fq "pBB0blob" <<<"$ds_strings" &&
+    grep -Fq "pBBkblob" <<<"$ds_strings" &&
+    grep -Fq "dmg-background.png" <<<"$ds_strings"
 }
 
 ditto "$APP_DIR" "$DMG_STAGING/$APP_NAME.app"
@@ -224,9 +246,9 @@ func roundedPanel(_ rect: NSRect, alpha: CGFloat) {
     path.stroke()
 }
 
-roundedPanel(NSRect(x: 80, y: 170, width: 170, height: 170), alpha: 0.52)
-roundedPanel(NSRect(x: 510, y: 170, width: 170, height: 170), alpha: 0.52)
-roundedPanel(NSRect(x: 74, y: 42, width: 612, height: 102), alpha: 0.48)
+roundedPanel(NSRect(x: 80, y: 180, width: 170, height: 155), alpha: 0.52)
+roundedPanel(NSRect(x: 510, y: 180, width: 170, height: 155), alpha: 0.52)
+roundedPanel(NSRect(x: 74, y: 342, width: 612, height: 74), alpha: 0.48)
 
 let arrowPath = NSBezierPath()
 arrowPath.move(to: NSPoint(x: 306, y: 255))
@@ -259,25 +281,25 @@ let warningStyle: [NSAttributedString.Key: Any] = [
 
 let title = "安装 \(appName)"
 title.draw(
-    in: NSRect(x: 0, y: 410, width: size.width, height: 34),
+    in: NSRect(x: 0, y: 455, width: size.width, height: 34),
     withAttributes: titleStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 
 "拖动左侧 App 到右侧 Applications 文件夹".draw(
-    in: NSRect(x: 0, y: 378, width: size.width, height: 24),
+    in: NSRect(x: 0, y: 425, width: size.width, height: 24),
     withAttributes: bodyStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 
 "提示“未知开发者”时不要删除 App".draw(
-    in: NSRect(x: 98, y: 110, width: 564, height: 22),
+    in: NSRect(x: 98, y: 390, width: 564, height: 20),
     withAttributes: warningStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 "系统设置 -> 隐私与安全 -> 滑到最底下找到 \(appName)".draw(
-    in: NSRect(x: 96, y: 82, width: 568, height: 22),
+    in: NSRect(x: 96, y: 367, width: 568, height: 20),
     withAttributes: smallStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 "点“仍要打开”，再确认“打开”".draw(
-    in: NSRect(x: 96, y: 58, width: 568, height: 22),
+    in: NSRect(x: 96, y: 345, width: 568, height: 20),
     withAttributes: smallStyle.merging([.paragraphStyle: centeredParagraph()]) { $1 }
 )
 
@@ -324,7 +346,9 @@ if [[ -z "$DMG_DEVICE" || -z "$DMG_MOUNT" ]]; then
   exit 1
 fi
 
-/usr/bin/osascript <<APPLESCRIPT >/dev/null
+apply_finder_dmg_style() {
+  local osascript_status=0
+  /usr/bin/osascript <<APPLESCRIPT >/dev/null || osascript_status=$?
 set bgFile to POSIX file "$DMG_MOUNT/.background/dmg-background.png" as alias
 set dmgFolder to POSIX file "$DMG_MOUNT" as alias
 tell application "Finder"
@@ -338,30 +362,46 @@ tell application "Finder"
   try
     set statusbar visible of dmgWindow to false
   end try
-  set bounds of dmgWindow to {120, 120, 920, 680}
+  set bounds of dmgWindow to {120, 120, 1120, 680}
   set viewOptions to icon view options of dmgWindow
   set arrangement of viewOptions to not arranged
   set icon size of viewOptions to 96
   set background picture of viewOptions to bgFile
-  set position of item "$APP_NAME.app" of dmgFolder to {165, 255}
-  set position of item "Applications" of dmgFolder to {595, 255}
+  set position of item "$APP_NAME.app" of dmgFolder to {165, 235}
+  set position of item "Applications" of dmgFolder to {595, 235}
   update dmgFolder without registering applications
   delay 2
   try
     close dmgWindow
   end try
-  delay 1
-  quit
+  delay 3
 end tell
 APPLESCRIPT
 
-sync
-sleep 2
+  sync
+  sleep 2
+  return "$osascript_status"
+}
+
+FINDER_STYLE_PERSISTED=0
+for attempt in 1 2 3; do
+  if ! apply_finder_dmg_style; then
+    echo "Finder DMG styling attempt $attempt failed; retrying." >&2
+  fi
+  if [[ -f "$DMG_MOUNT/.DS_Store" ]] && finder_background_is_persisted "$DMG_MOUNT/.DS_Store"; then
+    FINDER_STYLE_PERSISTED=1
+    break
+  fi
+  if [[ "$attempt" != "3" ]]; then
+    echo "Finder did not persist the DMG background on attempt $attempt; retrying." >&2
+  fi
+done
+
 if [[ ! -f "$DMG_MOUNT/.DS_Store" ]]; then
   echo "Finder DMG styling did not create .DS_Store; refusing to ship an unstyled DMG." >&2
   exit 1
 fi
-if ! strings -a "$DMG_MOUNT/.DS_Store" | grep -q "backgroundImageAlias"; then
+if [[ "$FINDER_STYLE_PERSISTED" != "1" ]]; then
   echo "Finder DMG styling did not persist a background image; refusing to ship an unstyled DMG." >&2
   exit 1
 fi
@@ -375,12 +415,8 @@ if [[ ! -f "$RW_CHECK_MOUNT/.DS_Store" ]]; then
   echo "Finder DMG styling was not persisted after remount; .DS_Store missing." >&2
   exit 1
 fi
-if ! strings -a "$RW_CHECK_MOUNT/.DS_Store" | grep -q "backgroundImageAlias"; then
+if ! finder_background_is_persisted "$RW_CHECK_MOUNT/.DS_Store"; then
   echo "Finder DMG styling was not persisted after remount; background image missing." >&2
-  exit 1
-fi
-if ! strings -a "$RW_CHECK_MOUNT/.DS_Store" | grep -q "dmg-background.png"; then
-  echo "Finder DMG styling was not persisted after remount; background path missing." >&2
   exit 1
 fi
 hdiutil detach "$RW_CHECK_MOUNT" >/dev/null
@@ -396,6 +432,25 @@ hdiutil convert \
 rm -f "$RW_DMG"
 
 hdiutil verify "$RELEASE_DIR/$DMG_NAME" >/dev/null
+
+FINAL_CHECK_MOUNT="$(mktemp -d "${TMPDIR:-/tmp}/codex-token-bar-final-check.XXXXXX")"
+hdiutil attach -readonly -noverify -noautoopen -mountpoint "$FINAL_CHECK_MOUNT" \
+  "$RELEASE_DIR/$DMG_NAME" >/dev/null
+if [[ ! -d "$FINAL_CHECK_MOUNT/$APP_NAME.app" || ! -L "$FINAL_CHECK_MOUNT/Applications" ]]; then
+  echo "Final DMG is missing the app or Applications link." >&2
+  exit 1
+fi
+if [[ ! -f "$FINAL_CHECK_MOUNT/.background/dmg-background.png" || ! -f "$FINAL_CHECK_MOUNT/.DS_Store" ]]; then
+  echo "Final DMG is missing its Finder background assets." >&2
+  exit 1
+fi
+if ! finder_background_is_persisted "$FINAL_CHECK_MOUNT/.DS_Store"; then
+  echo "Final DMG did not preserve its Finder background after compression." >&2
+  exit 1
+fi
+hdiutil detach "$FINAL_CHECK_MOUNT" >/dev/null
+rmdir "$FINAL_CHECK_MOUNT" >/dev/null 2>&1 || true
+FINAL_CHECK_MOUNT=""
 
 if notary_available; then
   notarize_artifact "$RELEASE_DIR/$DMG_NAME"
