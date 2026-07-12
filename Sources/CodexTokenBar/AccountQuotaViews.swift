@@ -251,14 +251,14 @@ struct AccountQuotaAccountLabelPresentation: Equatable {
     let help: String
 
     init(snapshot: AccountQuotaSnapshot) {
-        let trimmedFullTitle = snapshot.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let fullTitle = trimmedFullTitle.isEmpty ? "账户额度" : trimmedFullTitle
-        let planTitle = snapshot.planType?.uppercased()
-        title = Self.firstFittingTitle([fullTitle, planTitle, "账户额度"])
+        let limitTitle = Self.meaningful(snapshot.limitName)
+        let planTitle = Self.meaningful(snapshot.planType)?.uppercased()
+        let semanticTitle = limitTitle ?? planTitle ?? "账户额度"
+        title = Self.firstFittingTitle([limitTitle, planTitle, "账户额度"])
         subtitle = snapshot.isAvailable ? "本地账户额度" : Self.compactStatus(snapshot.status)
-        accessibilityLabel = fullTitle
+        accessibilityLabel = semanticTitle
         accessibilityValue = snapshot.status
-        help = "\(fullTitle) · \(snapshot.status)"
+        help = "\(semanticTitle) · \(snapshot.status)"
     }
 
     var visibleTextFitsBudget: Bool {
@@ -267,9 +267,17 @@ struct AccountQuotaAccountLabelPresentation: Equatable {
 
     private static func firstFittingTitle(_ candidates: [String?]) -> String {
         candidates
-            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+            .compactMap { $0 }
             .first(where: titleFits) ?? "账户额度"
+    }
+
+    private static func meaningful(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else {
+            return nil
+        }
+        return trimmed
     }
 
     private static func compactStatus(_ status: String) -> String {
