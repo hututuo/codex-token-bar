@@ -4,6 +4,31 @@ import XCTest
 @testable import CodexTokenBar
 
 final class AccountQuotaSegmentTests: XCTestCase {
+    func testAccountLabelPresentationNeverSelectsBlankTitle() {
+        let cases: [(limitName: String?, planType: String?, expected: String)] = [
+            (nil, nil, "账户额度"),
+            ("", "", "账户额度"),
+            (" \n\t ", "   ", "账户额度"),
+            ("GPT-5.3-Codex-Spark", " \n pro \t", "PRO"),
+            ("  TEAM  ", nil, "TEAM"),
+            (nil, " plus ", "PLUS"),
+        ]
+
+        for item in cases {
+            let snapshot = AccountQuotaSnapshot(
+                planType: item.planType,
+                limitName: item.limitName,
+                status: "额度未读取"
+            )
+            let presentation = AccountQuotaAccountLabelPresentation(snapshot: snapshot)
+
+            XCTAssertEqual(presentation.title, item.expected)
+            XCTAssertFalse(presentation.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            XCTAssertFalse(presentation.accessibilityLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            XCTAssertTrue(presentation.visibleTextFitsBudget)
+        }
+    }
+
     func testAccountLabelPresentationFallsBackWithin84PointsAndPreservesFullSemantics() {
         let available = AccountQuotaSnapshot(
             fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: nil),
@@ -38,10 +63,29 @@ final class AccountQuotaSegmentTests: XCTestCase {
             status: "读取账户额度失败：网络连接已中断，请稍后重试"
         )
         let hostingView = NSHostingView(rootView: AccountQuotaAccountLabel(snapshot: snapshot))
+        hostingView.frame = NSRect(x: 0, y: 0, width: AccountQuotaStripLayout.accountLabelWidth, height: 35)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
         hostingView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let presentation = AccountQuotaAccountLabelPresentation(snapshot: snapshot)
+        let accessibilityElement = AccountQuotaAccountAccessibilityRepresentation.makeElement(
+            presentation: presentation
+        )
 
         XCTAssertEqual(hostingView.fittingSize.width, AccountQuotaStripLayout.accountLabelWidth, accuracy: 0.5)
         XCTAssertLessThanOrEqual(hostingView.fittingSize.height, AccountQuotaSegmentLayout.controlHeight)
+        XCTAssertEqual(accessibilityElement.accessibilityLabel(), snapshot.displayName)
+        XCTAssertEqual(accessibilityElement.accessibilityValue() as? String, snapshot.status)
+        XCTAssertEqual(accessibilityElement.accessibilityHelp(), presentation.help)
+        XCTAssertEqual(presentation.subtitle, "读取失败")
     }
 
     func testTwoSegmentStripBudgetGivesEachProgressBarAtLeast160Points() {
@@ -65,6 +109,20 @@ final class AccountQuotaSegmentTests: XCTestCase {
         XCTAssertEqual(AccountQuotaStripLayout.trailingEdge(hasResetCredit: false), AccountQuotaStripLayout.controlWidth - AccountQuotaStripLayout.horizontalPadding)
         XCTAssertEqual(AccountQuotaSegmentLayout.twoSegmentWidth, 170)
         XCTAssertEqual(AccountQuotaSegmentLayout.singleSegmentWidth, AccountQuotaStripLayout.combinedQuotaSegmentsWidth)
+    }
+
+    func testUnavailableStripHasOneCompactStatusOwnerWithCompleteAccountSemantics() {
+        let snapshot = AccountQuotaSnapshot(
+            planType: "pro",
+            limitName: "GPT-5.3-Codex-Spark",
+            status: "读取账户额度失败：网络连接已中断，请稍后重试"
+        )
+        let presentation = AccountQuotaStripPresentation(snapshot: snapshot)
+
+        XCTAssertEqual(presentation.visibleCompactStatusTexts, ["读取失败"])
+        XCTAssertEqual(presentation.accountLabel.accessibilityLabel, snapshot.displayName)
+        XCTAssertEqual(presentation.accountLabel.accessibilityValue, snapshot.status)
+        XCTAssertTrue(presentation.accountLabel.help.contains(snapshot.status))
     }
 
     @MainActor
