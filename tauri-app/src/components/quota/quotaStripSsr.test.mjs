@@ -109,15 +109,38 @@ test("QuotaStrip preserves a measured full 100 percent", async () => {
   });
 });
 
-test("QuotaStrip renders each quota as a complete header above a full-width value track", async () => {
+test("QuotaStrip keeps each quota label beside the track with complete metadata below", async () => {
   await withSsrModules(async (load) => {
     const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
     const html = renderComponent(QuotaStrip, { snapshot: quotaSnapshot, warnings: [] });
 
-    assert.match(html, /class="quota-bar-header"><span class="quota-label">5h<\/span><em>2h<\/em><\/div>/);
-    assert.match(html, /class="quota-track"[^>]*><i class="quota-track-fill" style="width:62%"><\/i><span class="quota-track-copy"><b>剩 62%<\/b><em>已用 38%<\/em><\/span>/);
+    assert.match(html, /<span class="quota-label">5h<\/span><div class="quota-track"[^>]*><i class="quota-track-fill"/);
+    assert.match(html, /class="quota-bar-meta"><span><b>剩 62%<\/b><em>已用 38%<\/em><\/span><em>2h<\/em><\/div>/);
     assert.match(html, /aria-label="5h 剩 62%，已用 38%，重置 2h"/);
     assert.match(html, /aria-label="7d 剩 81%，已用 19%，重置 3天"/);
+  });
+});
+
+test("QuotaStrip shifts the fill continuously from red risk toward deep blue", async () => {
+  await withSsrModules(async (load) => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    const low = renderComponent(QuotaStrip, {
+      snapshot: {
+        ...quotaSnapshot,
+        fiveHour: { ...quotaSnapshot.fiveHour, remainingPercent: 0.1, usedPercent: 0.9 },
+      },
+      warnings: [],
+    });
+    const high = renderComponent(QuotaStrip, {
+      snapshot: {
+        ...quotaSnapshot,
+        fiveHour: { ...quotaSnapshot.fiveHour, remainingPercent: 0.9, usedPercent: 0.1 },
+      },
+      warnings: [],
+    });
+
+    assert.match(low, /class="quota-track-fill" style="width:10%;--quota-risk:90%"/);
+    assert.match(high, /class="quota-track-fill" style="width:90%;--quota-risk:10%"/);
   });
 });
 
@@ -221,8 +244,11 @@ test("QuotaStrip CSS source guard locks the single-row grid and long-track budge
 
   assert.match(css, /\.quota-strip\s*{[^}]*grid-template-columns:\s*74px minmax\(190px, 1\.35fr\) minmax\(190px, 1\.35fr\) minmax\(116px, 0\.72fr\) minmax\(320px, 1\.45fr\)/s);
   assert.match(css, /\.quota-strip\s*{[^}]*gap:\s*4px/s);
-  assert.match(css, /\.quota-bar\s*{[^}]*grid-template-rows:\s*auto 1fr/s);
-  assert.match(css, /\.quota-track\s*{[^}]*width:\s*100%/s);
+  assert.match(css, /\.quota-bar\s*{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\)/s);
+  assert.match(css, /\.quota-track\s*{[^}]*grid-column:\s*2[^}]*width:\s*100%/s);
+  assert.match(css, /\.quota-bar-meta\s*{[^}]*grid-column:\s*2/s);
+  assert.match(css, /\.quota-track-fill\s*{[^}]*--quota-risk[^}]*color-mix\([^}]*#c32649[^}]*#07488f/s);
+  assert.doesNotMatch(css, /\.quota-track-fill\s*{[^}]*opacity:/s);
   assert.match(css, /\.quota-pace--with-cadence\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 132px/s);
   assert.match(css, /\.quota-pace--without-cadence\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);
   assert.match(css, /\.quota-refresh-cadence select\s*{[^}]*width:\s*132px/s);

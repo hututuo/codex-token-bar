@@ -988,29 +988,19 @@ button.quota-side-card:hover {
 
 .quota-bar {
   display: grid;
-  grid-template-rows: auto 1fr;
-  gap: 4px;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: 17px auto;
+  gap: 3px 5px;
+  align-items: center;
   min-width: 0;
   font-size: 9.5px;
 }
 
-.quota-bar-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  min-width: 0;
-  gap: 8px;
-}
-
 .quota-label {
+  grid-column: 1;
+  grid-row: 1;
   font-size: 9.2px;
-  font-weight: 560;
-}
-
-.quota-bar-header em {
-  font-size: 9.2px;
-  font-style: normal;
-  font-weight: 540;
+  font-weight: 680;
   white-space: nowrap;
 }
 
@@ -1031,20 +1021,27 @@ button.quota-side-card:hover {
 
 .quota-track {
   position: relative;
+  grid-column: 2;
+  grid-row: 1;
   width: 100%;
   min-width: 0;
   height: 17px;
+  border: 1px solid color-mix(in srgb, #0a5eae 24%, var(--line));
+  background: color-mix(in srgb, #0a5eae 18%, var(--panel-soft));
 }
 
 .quota-track-fill {
+  --quota-risk: 0%;
   position: absolute;
   inset: 0 auto 0 0;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--green) 38%, var(--accent)));
-  opacity: 0.28;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, #c32649 var(--quota-risk), #07488f),
+    color-mix(in srgb, #3e4f9f var(--quota-risk), #0a6fc9)
+  );
 }
 
-.quota-track-copy,
 .quota-track-pending {
   position: relative;
   z-index: 1;
@@ -1060,10 +1057,30 @@ button.quota-side-card:hover {
   white-space: nowrap;
 }
 
-.quota-track-copy b,
-.quota-track-copy em {
+.quota-bar-meta {
+  grid-column: 2;
+  grid-row: 2;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 8.8px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.quota-bar-meta span {
+  display: flex;
+  min-width: 0;
+  gap: 6px;
+}
+
+.quota-bar-meta b,
+.quota-bar-meta em {
   font-style: normal;
-  font-weight: 650;
+  font-weight: 620;
 }
 
 .quota-track-pending {

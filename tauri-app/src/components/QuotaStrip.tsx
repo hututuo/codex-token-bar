@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo, useState, type CSSProperties } from "react";
 import type {
   LocalDataWarning,
   QuotaDiagnostic,
@@ -36,6 +36,11 @@ function QuotaBar({ quota }: { quota: QuotaLimit }) {
     ? quota.usedPercent
     : remainingPercent === null ? null : Math.max(0, 1 - remainingPercent);
   const usedLabel = usedPercent === null ? "" : formatPercent(usedPercent);
+  const boundedRemaining = remainingPercent === null ? null : Math.min(1, Math.max(0, remainingPercent));
+  const fillStyle = boundedRemaining === null ? undefined : {
+    width: `${Math.round(boundedRemaining * 100)}%`,
+    "--quota-risk": `${Math.round((1 - boundedRemaining) * 100)}%`,
+  } as CSSProperties;
   return (
     <div
       aria-label={measured
@@ -43,17 +48,15 @@ function QuotaBar({ quota }: { quota: QuotaLimit }) {
         : `${quota.label} 额度待读取，重置 ${quota.resetsAt}`}
       className={measured ? "quota-bar" : "quota-bar quota-bar--unavailable"}
     >
-      <div className="quota-bar-header">
-        <span className="quota-label">{quota.label}</span>
-        <em>{quota.resetsAt}</em>
-      </div>
+      <span className="quota-label">{quota.label}</span>
       <div className="quota-track" aria-hidden="true">
-        {measured && remainingPercent !== null ? (
-          <>
-            <i className="quota-track-fill" style={{ width: `${Math.round(remainingPercent * 100)}%` }} />
-            <span className="quota-track-copy"><b>剩 {measuredLabel}</b><em>已用 {usedLabel}</em></span>
-          </>
-        ) : <span className="quota-track-pending">待读取</span>}
+        {measured && fillStyle ? <i className="quota-track-fill" style={fillStyle} /> : (
+          <span className="quota-track-pending">待读取</span>
+        )}
+      </div>
+      <div className="quota-bar-meta">
+        {measured ? <span><b>剩 {measuredLabel}</b><em>已用 {usedLabel}</em></span> : <span>额度待读取</span>}
+        <em>{quota.resetsAt}</em>
       </div>
     </div>
   );
