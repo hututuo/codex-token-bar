@@ -86,8 +86,8 @@ if (${Boolean(options.finalConflict)} && file.includes("arm64")) {
 if (${Boolean(options.failSign)} && file.includes("arm64")) process.exit(42);
 const name = path.basename(file);
 const seed = createHash("sha256").update(name).digest();
-const fileSignature = Buffer.alloc(74);
-fileSignature.write("Ed", 0, "ascii");
+const fileSignature = Buffer.alloc(${options.badSignatureLength ? 73 : 74});
+fileSignature.write(${JSON.stringify(options.badSignatureMagic ? "Ed" : options.unknownSignatureMagic ? "XX" : "ED")}, 0, "ascii");
 for (let i = 2; i < fileSignature.length; i += 1) fileSignature[i] = seed[i % seed.length];
 const trustedSignature = Buffer.alloc(64);
 for (let i = 0; i < trustedSignature.length; i += 1) trustedSignature[i] = seed[(i + 7) % seed.length];
@@ -338,6 +338,9 @@ for (const [name, options, expectedError] of [
   ["hash mismatch", { badHash: true }, /SHA-256 mismatch/],
   ["missing architecture", { missingArch: true }, /exactly x64 and arm64/],
   ["signer failure", { failSign: true }, /Signer failed/],
+  ["non-prehashed signature magic", { badSignatureMagic: true }, /Invalid Tauri signature envelope/],
+  ["unknown signature magic", { unknownSignatureMagic: true }, /Invalid Tauri signature envelope/],
+  ["invalid file signature length", { badSignatureLength: true }, /Invalid Tauri signature envelope/],
   ["single-byte signature corruption", { corruptSignature: true }, /Invalid Tauri signature envelope/],
   ["metadata generation failure", { failMetadata: true }, /Metadata generation failed/],
   ["checksum generation failure", { failChecksum: true }, /Checksum generation failed/],

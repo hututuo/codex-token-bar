@@ -36,7 +36,7 @@ function validateSignatureEnvelope(envelope, filename) {
     if (lines.length !== 4) fail("minisign line count");
     if (lines[0] !== "untrusted comment: signature from tauri secret key") fail("untrusted comment");
     const fileSignature = canonicalBase64(lines[1], "minisign file signature");
-    if (fileSignature.length !== 74 || fileSignature.subarray(0, 2).toString("ascii") !== "Ed") fail("file signature shape");
+    if (fileSignature.length !== 74 || fileSignature.subarray(0, 2).toString("ascii") !== "ED") fail("file signature shape");
     const trustedPrefix = "trusted comment: timestamp:";
     const trustedSuffix = `\tfile:${filename}`;
     if (!lines[2].startsWith(trustedPrefix) || !lines[2].endsWith(trustedSuffix)) fail("trusted comment");
