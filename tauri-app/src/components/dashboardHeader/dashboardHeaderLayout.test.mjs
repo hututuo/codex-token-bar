@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("DashboardHeader CSS keeps the 960px product toolbar on one shrink-safe row", async () => {
+test("DashboardHeader CSS source guard locks grid minmax and nowrap primitives", async () => {
   const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
   const toolbar = css.slice(css.indexOf(".header-toolbar {"), css.indexOf(".header-context,"));
   const actions = css.slice(css.indexOf(".header-context,"), css.indexOf(".source-label,"));

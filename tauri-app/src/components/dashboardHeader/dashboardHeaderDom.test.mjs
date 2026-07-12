@@ -6,21 +6,20 @@ import { withSsrModules } from "../../test/ssrHarness.mjs";
 
 test("DashboardHeader more-actions menu preserves behavior and keyboard dismissal", async () => {
   await withMountedHeader(async ({ act, container, document, render, window, calls }) => {
-    assert.deepEqual(visibleButtonNames(container), ["立即刷新", "更改目录", "会话消失修复", "更多操作"]);
-
-    await click(act, buttonByName(container, "更多操作"), window);
-    assert.equal(buttonByName(container, "更多操作").getAttribute("aria-expanded"), "true");
-    assert.deepEqual(menuButtonNames(container), ["检查更新", "导出 CSV", "导出 PNG", "开机自启：关"]);
+    assert.deepEqual(visibleButtonNames(container), ["立即刷新", "检查更新", "开机自启：关", "更改目录", "会话消失修复", "更多操作"]);
 
     await click(act, buttonByName(container, "检查更新"), window);
     assert.equal(calls.update, 1);
-    assert.ok(container.querySelector('[role="menu"]'), "update check keeps the menu open");
+
+    await click(act, buttonByName(container, "更多操作"), window);
+    assert.equal(buttonByName(container, "更多操作").getAttribute("aria-expanded"), "true");
+    assert.deepEqual(menuButtonNames(container), ["导出 CSV", "导出 PNG"]);
 
     await render({ appUpdateState: { kind: "available", message: "发现新版本 v0.7.4" } });
-    assert.equal(container.querySelector('[aria-live="polite"]')?.textContent, "发现新版本 v0.7.4");
-    assert.match(buttonByName(container, /更多操作/).getAttribute("aria-label"), /发现新版本 v0.7.4/);
+    assert.equal(buttonByName(container, "安装更新").title, "发现新版本 v0.7.4");
+    assert.ok(container.querySelector('[role="menu"]'), "update state rerender keeps the export menu open");
 
-    await act(async () => document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await pressKey(act, document.activeElement, "Escape", window);
     assert.equal(container.querySelector('[role="menu"]'), null);
 
     await click(act, buttonByName(container, /更多操作/), window);
@@ -31,29 +30,69 @@ test("DashboardHeader more-actions menu preserves behavior and keyboard dismissa
     await click(act, buttonByName(container, "导出 CSV"), window);
     assert.equal(calls.csv, 1);
     assert.equal(container.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement, buttonByName(container, /更多操作/));
 
     await click(act, buttonByName(container, /更多操作/), window);
     await click(act, buttonByName(container, "导出 PNG"), window);
     assert.equal(calls.png, 1);
     assert.equal(container.querySelector('[role="menu"]'), null);
-
-    await click(act, buttonByName(container, /更多操作/), window);
-    await click(act, buttonByName(container, "开机自启：关"), window);
-    assert.equal(calls.autostart, 1);
-    assert.equal(container.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement, buttonByName(container, /更多操作/));
   });
 });
 
-test("DashboardHeader keeps unavailable autostart visible, disabled, and explained", async () => {
-  await withMountedHeader(async ({ act, container, window }) => {
-    await click(act, buttonByName(container, "更多操作"), window);
+test("DashboardHeader keeps primary autostart visible, disabled, and explained", async () => {
+  await withMountedHeader(async ({ container }) => {
     const autostart = buttonByName(container, "开机自启：关");
     assert.equal(autostart.disabled, true);
-    assert.equal(autostart.getAttribute("aria-checked"), "false");
+    assert.equal(autostart.getAttribute("aria-pressed"), "false");
     assert.equal(autostart.title, "当前平台不支持开机自启");
-    assert.match(container.querySelector(".more-actions-help")?.textContent, /当前平台不支持/);
+    const help = container.querySelector(`#${autostart.getAttribute("aria-describedby")}`);
+    assert.match(help?.textContent, /当前平台不支持/);
   }, {
     autostartStatus: { available: false, enabled: false, message: "当前平台不支持开机自启" },
+  });
+});
+
+test("DashboardHeader menu implements composite focus and keyboard navigation", async () => {
+  await withMountedHeader(async ({ act, after, container, document, window }) => {
+    const trigger = buttonByName(container, "更多操作");
+    trigger.focus();
+    await pressKey(act, trigger, "Enter", window);
+    assert.equal(document.activeElement.textContent.trim(), "导出 CSV");
+    assert.equal(menuItems(container).filter((item) => item.tabIndex === 0).length, 0);
+
+    await pressKey(act, document.activeElement, "ArrowDown", window);
+    assert.equal(document.activeElement.textContent.trim(), "导出 PNG");
+    await pressKey(act, document.activeElement, "End", window);
+    assert.equal(document.activeElement.textContent.trim(), "导出 PNG");
+    await pressKey(act, document.activeElement, "ArrowDown", window);
+    assert.equal(document.activeElement.textContent.trim(), "导出 CSV");
+    await pressKey(act, document.activeElement, "ArrowUp", window);
+    assert.equal(document.activeElement.textContent.trim(), "导出 PNG");
+    await pressKey(act, document.activeElement, "Home", window);
+    assert.equal(document.activeElement.textContent.trim(), "导出 CSV");
+
+    await pressKey(act, document.activeElement, "Escape", window);
+    assert.equal(container.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement, trigger);
+
+    await pressKey(act, trigger, " ", window);
+    await pressKey(act, document.activeElement, "Tab", window);
+    assert.equal(container.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement, after);
+
+    trigger.focus();
+    await pressKey(act, trigger, "ArrowUp", window);
+    assert.equal(document.activeElement.textContent.trim(), "导出 PNG");
+    await pressKey(act, document.activeElement, "Tab", window, { shiftKey: true });
+    assert.equal(container.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement.textContent.trim(), "会话消失修复");
+
+    trigger.focus();
+    await pressKey(act, trigger, "ArrowDown", window);
+    await act(async () => after.focus());
+    assert.equal(container.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement, after);
   });
 });
 
@@ -67,7 +106,11 @@ async function withMountedHeader(run, initialOverrides = {}) {
     await withSsrModules(async (load) => {
       const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
       const container = window.document.createElement("div");
-      window.document.body.append(container);
+      const before = window.document.createElement("button");
+      before.textContent = "before header";
+      const after = window.document.createElement("button");
+      after.textContent = "after header";
+      window.document.body.append(before, container, after);
       const root = createRoot(container);
       const calls = { autostart: 0, csv: 0, png: 0, update: 0 };
       let overrides = initialOverrides;
@@ -77,7 +120,7 @@ async function withMountedHeader(run, initialOverrides = {}) {
       };
       try {
         await render();
-        await run({ act: React.act, calls, container, document: window.document, render, window });
+        await run({ act: React.act, after, before, calls, container, document: window.document, render, window });
       } finally {
         await React.act(async () => root.unmount());
       }
@@ -144,6 +187,15 @@ async function click(act, target, window) {
   await act(async () => target.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true })));
 }
 
+async function pressKey(act, target, key, window, options = {}) {
+  await act(async () => target.dispatchEvent(new window.KeyboardEvent("keydown", {
+    bubbles: true,
+    cancelable: true,
+    key,
+    ...options,
+  })));
+}
+
 function buttonByName(container, name) {
   const button = [...container.querySelectorAll("button")].find((candidate) => (
     typeof name === "string"
@@ -155,11 +207,15 @@ function buttonByName(container, name) {
 }
 
 function visibleButtonNames(container) {
-  return [...container.querySelectorAll(".header-primary-actions > button, .more-actions-trigger")]
+  return [...container.querySelectorAll(".header-primary-actions button")]
     .map((button) => button.getAttribute("aria-label") || button.textContent.trim());
 }
 
 function menuButtonNames(container) {
   return [...container.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"]')]
     .map((button) => button.textContent.trim());
+}
+
+function menuItems(container) {
+  return [...container.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"]')];
 }

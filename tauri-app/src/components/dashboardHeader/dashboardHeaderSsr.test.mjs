@@ -19,12 +19,14 @@ test("DashboardHeader renders restrained provider repair entry", async () => {
     assert.match(html, /class="header-context"/);
     assert.match(html, /class="header-primary-actions" aria-label="常用操作"/);
     assert.match(html, /立即刷新/);
+    assert.match(html, /检查更新/);
+    assert.match(html, /开机自启：关/);
     assert.match(html, /更改目录/);
-    assert.doesNotMatch(html, /导出 CSV|导出 PNG|开机自启：/);
+    assert.doesNotMatch(html, /Codex Token Bar|导出 CSV|导出 PNG/);
   });
 });
 
-test("DashboardHeader exposes restrained update attention on the more-actions trigger", async () => {
+test("DashboardHeader exposes complete update states on the primary action", async () => {
   await withSsrModules(async (load) => {
     const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
     const available = renderComponent(DashboardHeader, headerProps({
@@ -34,10 +36,9 @@ test("DashboardHeader exposes restrained update attention on the more-actions tr
       appUpdateState: { kind: "error", message: "暂时无法检查更新，请稍后重试" },
     }));
 
-    assert.match(available, /aria-label="更多操作，发现新版本 v0.7.4"/);
-    assert.match(available, /more-actions-indicator--available/);
-    assert.match(failed, /aria-label="更多操作，暂时无法检查更新，请稍后重试"/);
-    assert.match(failed, /more-actions-indicator--error/);
+    assert.match(available, /class="toolbar-button update-action update-action--available"[^>]*title="发现新版本 v0.7.4"[^>]*>安装更新<\/button>/);
+    assert.match(failed, /class="toolbar-button update-action update-action--error"[^>]*title="暂时无法检查更新，请稍后重试"[^>]*>重试更新检查<\/button>/);
+    assert.match(failed, /aria-live="polite"/);
   });
 });
 
