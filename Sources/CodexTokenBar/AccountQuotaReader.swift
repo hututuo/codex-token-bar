@@ -1206,8 +1206,18 @@ enum AccountQuotaReader {
     }
 
     private static func parseLimitCard(_ raw: [String: Any], limitID: String) -> AccountQuotaLimitCard? {
-        let fiveHour = parseWindow(raw["primary"] as? [String: Any], label: "5h")
-        let sevenDay = parseWindow(raw["secondary"] as? [String: Any], label: "7d")
+        var fiveHour: AccountQuotaWindow?
+        var sevenDay: AccountQuotaWindow?
+        for window in [
+            parseWindow(raw["primary"] as? [String: Any], fallbackLabel: "5h"),
+            parseWindow(raw["secondary"] as? [String: Any], fallbackLabel: "7d")
+        ].compactMap({ $0 }) {
+            if window.label == "7d" {
+                if sevenDay == nil { sevenDay = window }
+            } else if fiveHour == nil {
+                fiveHour = window
+            }
+        }
         guard fiveHour != nil || sevenDay != nil else { return nil }
         return AccountQuotaLimitCard(
             id: limitID,
@@ -1494,14 +1504,23 @@ enum AccountQuotaReader {
         return payload
     }
 
-    private static func parseWindow(_ raw: [String: Any]?, label: String) -> AccountQuotaWindow? {
+    private static func parseWindow(_ raw: [String: Any]?, fallbackLabel: String) -> AccountQuotaWindow? {
         guard let raw, let usedPercent = raw["usedPercent"] as? NSNumber else { return nil }
         let resetsAtSeconds = raw["resetsAt"] as? NSNumber
         return AccountQuotaWindow(
-            label: label,
+            label: quotaWindowLabel(raw, fallback: fallbackLabel),
             usedPercent: usedPercent.intValue,
             resetsAt: resetsAtSeconds.map { Date(timeIntervalSince1970: $0.doubleValue) }
         )
+    }
+
+    private static func quotaWindowLabel(_ raw: [String: Any], fallback: String) -> String {
+        guard let durationMinutes = (raw["windowDurationMins"] as? NSNumber)?.doubleValue else {
+            return fallback
+        }
+        if durationMinutes >= 24 * 60 { return "7d" }
+        if durationMinutes <= 6 * 60 { return "5h" }
+        return fallback
     }
 }
 

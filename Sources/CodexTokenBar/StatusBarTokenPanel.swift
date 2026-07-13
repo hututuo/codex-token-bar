@@ -376,8 +376,14 @@ struct StatusBarTokenPopoverView: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                StatusBarQuotaLine(title: "5h", window: snapshot.quota.fiveHour)
-                StatusBarQuotaLine(title: "7d", window: snapshot.quota.sevenDay)
+                ForEach(StatusBarQuotaPresentation.items(for: snapshot.quota)) { item in
+                    StatusBarQuotaLine(title: item.title, window: item.window)
+                }
+                if StatusBarQuotaPresentation.items(for: snapshot.quota).isEmpty {
+                    Text("额度待读取")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if taskCompletionMonitor.unreadThreadCount > 0 {
@@ -489,6 +495,22 @@ private struct StatusBarMetricTile: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
         .accessibilityValue(value)
+    }
+}
+
+struct StatusBarQuotaPresentationItem: Identifiable {
+    let title: String
+    let window: AccountQuotaWindow
+
+    var id: String { title }
+}
+
+enum StatusBarQuotaPresentation {
+    static func items(for quota: AccountQuotaSnapshot) -> [StatusBarQuotaPresentationItem] {
+        [
+            quota.fiveHour.map { StatusBarQuotaPresentationItem(title: "5h", window: $0) },
+            quota.sevenDay.map { StatusBarQuotaPresentationItem(title: "7d", window: $0) }
+        ].compactMap { $0 }
     }
 }
 

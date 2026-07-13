@@ -865,7 +865,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
         XCTAssertTrue(surfaceSource.contains("TokenDisplayRadarStrip(presentation: radarPresentation)"))
         XCTAssertTrue(componentsSource.contains("struct TokenDisplayRadarStrip"))
-        XCTAssertTrue(componentsSource.contains("动作 \\(snapshot?.recommendedAction"))
+        XCTAssertTrue(componentsSource.contains("动作 \\(CodexRadarPresentationText.action(snapshot?.recommendedAction))"))
         XCTAssertTrue(componentsSource.contains("24h \\(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))  48h \\(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))"))
         XCTAssertTrue(componentsSource.contains("alignment: .leading, spacing: 2.scaled(by: displayScale)"))
         XCTAssertTrue(componentsSource.contains("alignment: .leading, spacing: 1.scaled(by: displayScale)"))
@@ -878,7 +878,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             in: componentsSource,
             endingBefore: "private func tokenDisplayRadarProbabilityText"
         ))
-        XCTAssertTrue(radarStrip.contains("Text(\"动作 \\(snapshot?.recommendedAction ?? \"--\")\")"))
+        XCTAssertTrue(radarStrip.contains("Text(\"动作 \\(CodexRadarPresentationText.action(snapshot?.recommendedAction))\")"))
         XCTAssertTrue(radarStrip.contains("presentation.compactMarkerText"))
         XCTAssertTrue(radarStrip.contains("presentation.compactAccessibilityText"))
         XCTAssertTrue(radarStrip.contains(".foregroundStyle(actionPalette.primaryColor)"))
@@ -910,6 +910,32 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(failedModel.standaloneUsageStatus, "读取失败")
         XCTAssertFalse(pendingModel.standaloneUsageStatus?.contains("卡") ?? true)
         XCTAssertFalse(failedModel.standaloneUsageStatus?.contains("到期") ?? true)
+    }
+
+    func testFloatingPanelPresentationShowsOnlySevenDayQuotaWhenFiveHourIsAbsent() {
+        let quota = AccountQuotaSnapshot(
+            fiveHour: nil,
+            sevenDay: AccountQuotaWindow(
+                label: "7d",
+                usedPercent: 0,
+                resetsAt: Date(timeIntervalSince1970: 20_000)
+            ),
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        let model = FloatingPanelPresentationModel(
+            snapshot: makeTokenDisplaySnapshot(quota: quota),
+            visibility: FloatingPanelContentVisibility(
+                showRateAndBar: false,
+                showUsageStatus: false,
+                showMetrics: false,
+                showQuota: true,
+                showRadar: false
+            )
+        )
+
+        XCTAssertFalse(model.accessibilityParts.contains { $0.contains("5 小时额度") })
+        XCTAssertTrue(model.accessibilityParts.contains { $0.contains("7 天额度剩余 100%") })
     }
 
     func testStandaloneUsageStatusLineKeepsPlainTextStyleWithoutBackground() throws {

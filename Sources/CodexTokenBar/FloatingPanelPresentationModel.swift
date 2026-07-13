@@ -49,7 +49,7 @@ struct FloatingPanelPresentationModel: Equatable {
         }
         if visibility.showRadar {
             if let radarSnapshot = radarPresentation.snapshot {
-                parts.append("雷达建议 \(radarSnapshot.recommendedAction)")
+                parts.append("雷达建议 \(CodexRadarPresentationText.action(radarSnapshot.recommendedAction))")
                 parts.append(radarSnapshot.modelIQ.primaryModelRow.point.scoreDisplayText)
                 if let compactAccessibility = radarPresentation.compactAccessibilityText {
                     parts.append(compactAccessibility)

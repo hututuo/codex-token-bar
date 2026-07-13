@@ -167,6 +167,7 @@ final class QuotaHistoryStore: ObservableObject {
 
 private struct QuotaHistoryRow {
     fileprivate static let resetGraceInterval: TimeInterval = 2 * 60
+    fileprivate static let legacyFiveHourMaxResetSpan: TimeInterval = 6 * 60 * 60
 
     let createdAt: Date
     let accountKey: String
@@ -225,7 +226,12 @@ private struct QuotaHistoryRow {
         )
     }
 
-    func replacing(fiveHourUsedPercent: Int? = nil, sevenDayUsedPercent: Int? = nil) -> QuotaHistoryRow {
+    func replacing(
+        fiveHourUsedPercent: Int? = nil,
+        fiveHourResetsAt: Date? = nil,
+        sevenDayUsedPercent: Int? = nil,
+        sevenDayResetsAt: Date? = nil
+    ) -> QuotaHistoryRow {
         QuotaHistoryRow(
             createdAt: createdAt,
             accountKey: accountKey,
@@ -234,9 +240,37 @@ private struct QuotaHistoryRow {
             limitName: limitName,
             accountName: accountName,
             fiveHourUsedPercent: fiveHourUsedPercent ?? self.fiveHourUsedPercent,
-            fiveHourResetsAt: fiveHourResetsAt,
+            fiveHourResetsAt: fiveHourResetsAt ?? self.fiveHourResetsAt,
             sevenDayUsedPercent: sevenDayUsedPercent ?? self.sevenDayUsedPercent,
-            sevenDayResetsAt: sevenDayResetsAt,
+            sevenDayResetsAt: sevenDayResetsAt ?? self.sevenDayResetsAt,
+            status: status,
+            identityVersion: identityVersion,
+            homeIdentity: homeIdentity,
+            stableAccountKey: stableAccountKey,
+            identityPlanType: identityPlanType,
+            identityLimitID: identityLimitID
+        )
+    }
+
+    func reclassifyingLegacySevenDayOnlyWindow() -> QuotaHistoryRow {
+        let looksLikeSevenDay = sevenDayUsedPercent == nil
+            && sevenDayResetsAt == nil
+            && fiveHourUsedPercent != nil
+            && fiveHourResetsAt.map {
+                $0.timeIntervalSince(createdAt) > Self.legacyFiveHourMaxResetSpan
+            } == true
+        guard looksLikeSevenDay else { return self }
+        return QuotaHistoryRow(
+            createdAt: createdAt,
+            accountKey: accountKey,
+            source: source,
+            planType: planType,
+            limitName: limitName,
+            accountName: accountName,
+            fiveHourUsedPercent: nil,
+            fiveHourResetsAt: nil,
+            sevenDayUsedPercent: fiveHourUsedPercent,
+            sevenDayResetsAt: fiveHourResetsAt,
             status: status,
             identityVersion: identityVersion,
             homeIdentity: homeIdentity,
@@ -269,6 +303,13 @@ private struct QuotaHistoryRow {
 private struct QuotaHistorySpikeEntry {
     let index: Int
     let usedPercent: Int
+}
+
+private struct QuotaHistoryWindowObservation {
+    let rowIndex: Int
+    let createdAt: Date
+    let usedPercent: Int
+    let resetsAt: Date?
 }
 
 final class QuotaHistoryDatabase: @unchecked Sendable {
@@ -417,11 +458,103 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
 
     private static func sanitizedRows(_ rows: [QuotaHistoryRow]) -> [QuotaHistoryRow] {
         var lastByAccount: [String: QuotaHistoryRow] = [:]
-        return suppressRecoveredFullUsageSpikes(rows).map { row in
+        let reclassified = rows.map { $0.reclassifyingLegacySevenDayOnlyWindow() }
+        let withoutFullRemainingJumps = suppressRecoveredFullRemainingJumps(reclassified)
+        return suppressRecoveredFullUsageSpikes(withoutFullRemainingJumps).map { row in
             let normalized = row.normalized(after: lastByAccount[row.accountKey])
             lastByAccount[row.accountKey] = normalized
             return normalized
         }
+    }
+
+    private static func suppressRecoveredFullRemainingJumps(_ rows: [QuotaHistoryRow]) -> [QuotaHistoryRow] {
+        var adjusted = rows
+        suppressRecoveredFullRemainingJumps(
+            in: &adjusted,
+            usedPercent: \.fiveHourUsedPercent,
+            resetDate: \.fiveHourResetsAt,
+            replacing: { row, used, reset in
+                row.replacing(fiveHourUsedPercent: used, fiveHourResetsAt: reset)
+            }
+        )
+        suppressRecoveredFullRemainingJumps(
+            in: &adjusted,
+            usedPercent: \.sevenDayUsedPercent,
+            resetDate: \.sevenDayResetsAt,
+            replacing: { row, used, reset in
+                row.replacing(sevenDayUsedPercent: used, sevenDayResetsAt: reset)
+            }
+        )
+        return adjusted
+    }
+
+    private static func suppressRecoveredFullRemainingJumps(
+        in rows: inout [QuotaHistoryRow],
+        usedPercent: KeyPath<QuotaHistoryRow, Int?>,
+        resetDate: KeyPath<QuotaHistoryRow, Date?>,
+        replacing: (QuotaHistoryRow, Int, Date?) -> QuotaHistoryRow
+    ) {
+        let maxGlitchDuration: TimeInterval = 30 * 60
+        var groups: [String: [QuotaHistoryWindowObservation]] = [:]
+        for (rowIndex, row) in rows.enumerated() {
+            guard let used = row[keyPath: usedPercent] else { continue }
+            groups[row.accountKey, default: []].append(
+                QuotaHistoryWindowObservation(
+                    rowIndex: rowIndex,
+                    createdAt: row.createdAt,
+                    usedPercent: used,
+                    resetsAt: row[keyPath: resetDate]
+                )
+            )
+        }
+
+        for observations in groups.values {
+            var position = 1
+            while position + 1 < observations.count {
+                let previous = observations[position - 1]
+                let current = observations[position]
+                guard current.usedPercent <= previous.usedPercent - 20 else {
+                    position += 1
+                    continue
+                }
+
+                var recoveryPosition: Int?
+                var candidatePosition = position + 1
+                while candidatePosition < observations.count {
+                    let candidate = observations[candidatePosition]
+                    if candidate.createdAt.timeIntervalSince(current.createdAt) > maxGlitchDuration {
+                        break
+                    }
+                    if sameReset(previous.resetsAt, candidate.resetsAt),
+                       candidate.usedPercent >= previous.usedPercent - 5 {
+                        recoveryPosition = candidatePosition
+                        break
+                    }
+                    candidatePosition += 1
+                }
+                guard let recoveryPosition, let stableReset = previous.resetsAt else {
+                    position += 1
+                    continue
+                }
+
+                let recoveredFloor = min(previous.usedPercent, observations[recoveryPosition].usedPercent)
+                for observation in observations[position..<recoveryPosition]
+                where observation.usedPercent <= recoveredFloor - 20
+                    && stableReset > observation.createdAt {
+                    rows[observation.rowIndex] = replacing(
+                        rows[observation.rowIndex],
+                        previous.usedPercent,
+                        previous.resetsAt
+                    )
+                }
+                position = recoveryPosition
+            }
+        }
+    }
+
+    private static func sameReset(_ lhs: Date?, _ rhs: Date?) -> Bool {
+        guard let lhs, let rhs else { return false }
+        return abs(lhs.timeIntervalSince(rhs)) <= QuotaHistoryRow.resetGraceInterval
     }
 
     private static func suppressRecoveredFullUsageSpikes(_ rows: [QuotaHistoryRow]) -> [QuotaHistoryRow] {

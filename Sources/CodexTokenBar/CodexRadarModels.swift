@@ -8,6 +8,45 @@ extension JSONDecoder {
     }
 }
 
+enum CodexRadarPresentationText {
+    static func action(_ rawValue: String?) -> String {
+        let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        switch value.lowercased() {
+        case "wait", "waiting":
+            return "等待"
+        case "hold":
+            return "暂缓"
+        case "run":
+            return "运行"
+        case "go":
+            return "可运行"
+        case "open":
+            return "开放"
+        case "closed":
+            return "关闭"
+        default:
+            return value.isEmpty ? "--" : value
+        }
+    }
+
+    static func compactModelName(_ rawValue: String) -> String {
+        let familyNames = ["Sol", "Luna", "Terra"]
+        let tokens = rawValue.components(separatedBy: CharacterSet.alphanumerics.inverted)
+        if let family = familyNames.first(where: { family in
+            tokens.contains(where: { $0.caseInsensitiveCompare(family) == .orderedSame })
+        }) {
+            return family
+        }
+        return rawValue
+            .replacingOccurrences(of: #"^GPT-5\.6[\s-]*"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+max$"#, with: "", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: "GPT-5.5 ", with: "")
+            .replacingOccurrences(of: "GPT-5.4 ", with: "5.4 ")
+            .replacingOccurrences(of: "xhigh", with: "X high")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 struct CodexRadarSnapshot: Decodable, Equatable, Sendable {
     let schemaVersion: String
     let service: String

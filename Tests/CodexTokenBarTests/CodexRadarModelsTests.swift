@@ -2,6 +2,14 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CodexRadarModelsTests: XCTestCase {
+    func testCompactRadarPresentationLocalizesActionsAndKeepsOnlyModelFamilyNames() {
+        XCTAssertEqual(CodexRadarPresentationText.action("wait"), "等待")
+        XCTAssertEqual(CodexRadarPresentationText.action("run"), "运行")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Sol max"), "Sol")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Luna max"), "Luna")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Terra max"), "Terra")
+    }
+
     func testDecodesCurrentStatusPredictionIQAndQuotaRows() throws {
         let data = Data(Self.sampleJSON.utf8)
 

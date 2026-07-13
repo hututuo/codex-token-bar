@@ -711,6 +711,64 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(recentValues.min() ?? 100, 98)
     }
 
+    func testHistoryReclassifiesLegacySevenDayOnlyRowsWrittenIntoFiveHourColumns() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        try database.migrate()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let createdAt = now.addingTimeInterval(-5 * 60)
+        let sevenDayReset = createdAt.addingTimeInterval(7 * 24 * 60 * 60)
+        var legacy = historyContext(at: createdAt)
+        legacy.fiveHour = AccountQuotaWindow(label: "5h", usedPercent: 0, resetsAt: sevenDayReset)
+        legacy.sevenDay = nil
+        try insertStableIdentitySnapshot(
+            databaseURL: url,
+            quota: legacy,
+            source: "swift",
+            createdAt: createdAt
+        )
+
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
+
+        XCTAssertEqual(loaded.recentBins.last?.fiveHourRemainingPercent, nil)
+        XCTAssertEqual(loaded.recentBins.last?.sevenDayRemainingPercent, 100)
+    }
+
+    func testHistorySuppressesRecoveredFullRemainingJumpWhenResetTemporarilyShifts() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        try database.migrate()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let stableFiveReset = now.addingTimeInterval(4 * 60 * 60)
+        let shiftedFiveReset = stableFiveReset.addingTimeInterval(-2 * 60 * 60)
+        let stableSevenReset = now.addingTimeInterval(157 * 60 * 60)
+        let shiftedSevenReset = stableSevenReset.addingTimeInterval(2 * 60 * 60)
+        for (minutes, fiveUsed, fiveReset, sevenUsed, sevenReset) in [
+            (-15.0, 45, stableFiveReset, 32, stableSevenReset),
+            (-11.0, 2, shiftedFiveReset, 1, shiftedSevenReset),
+            (-9.0, 46, stableFiveReset, 33, stableSevenReset)
+        ] {
+            var quota = historyContext(at: now.addingTimeInterval(minutes * 60))
+            quota.fiveHour = AccountQuotaWindow(label: "5h", usedPercent: fiveUsed, resetsAt: fiveReset)
+            quota.sevenDay = AccountQuotaWindow(label: "7d", usedPercent: sevenUsed, resetsAt: sevenReset)
+            try insertStableIdentitySnapshot(
+                databaseURL: url,
+                quota: quota,
+                source: "swift",
+                createdAt: now.addingTimeInterval(minutes * 60)
+            )
+        }
+
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
+        let fiveHourValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
+        let sevenDayValues = loaded.recentBins.compactMap(\.sevenDayRemainingPercent)
+
+        XCTAssertFalse(fiveHourValues.contains(98), "the recovered official reset glitch must not create a 5h full-remaining peak")
+        XCTAssertFalse(sevenDayValues.contains(99), "the recovered official reset glitch must not create a 7d full-remaining peak")
+        XCTAssertEqual(fiveHourValues.last, 54)
+        XCTAssertEqual(sevenDayValues.last, 67)
+    }
+
     func testRecentHistorySuppressesLatestSevenDayFullUsageSpike() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
