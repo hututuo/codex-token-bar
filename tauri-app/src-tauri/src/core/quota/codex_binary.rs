@@ -616,9 +616,12 @@ mod tests {
         let found = find_codex_binary_from(&candidates, None, |path| {
             path == app_binary || path == fallback
         });
+        let expected_fallback = fallback
+            .canonicalize()
+            .unwrap_or_else(|_| fallback.clone());
         let _ = std::fs::remove_dir_all(&root);
 
-        assert_eq!(found, Some(fallback));
+        assert_eq!(found, Some(expected_fallback));
     }
 
     #[cfg(target_os = "macos")]
@@ -651,9 +654,12 @@ mod tests {
         let found = find_codex_binary_from(&candidates, None, |path| {
             path == app_binary || path == fallback
         });
+        let expected_fallback = fallback
+            .canonicalize()
+            .unwrap_or_else(|_| fallback.clone());
         let _ = std::fs::remove_dir_all(&root);
 
-        assert_eq!(found, Some(fallback));
+        assert_eq!(found, Some(expected_fallback));
     }
 
     #[cfg(target_os = "macos")]

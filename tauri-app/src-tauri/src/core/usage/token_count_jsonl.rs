@@ -603,6 +603,7 @@ fn record_dashboard_aggregate_build_for_testing(_codex_home: &Path) {
 
 #[cfg(test)]
 pub(crate) fn reset_dashboard_aggregate_build_count_for_testing() {
+    wait_for_usage_summary_refreshes_for_testing();
     let counts = DASHBOARD_AGGREGATE_BUILD_COUNT.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(mut counts) = counts.lock() {
         counts.clear();
@@ -621,6 +622,22 @@ pub(crate) fn reset_dashboard_aggregate_build_count_for_testing() {
         guard.clear();
     }
     DASHBOARD_SCAN_SIGNATURE_COUNT.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn wait_for_usage_summary_refreshes_for_testing() {
+    let in_flight = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
+    for _ in 0..250 {
+        let is_empty = in_flight
+            .lock()
+            .map(|guard| guard.is_empty())
+            .unwrap_or(false);
+        if is_empty {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("usage summary background refresh did not quiesce before test reset");
 }
 
 #[cfg(test)]

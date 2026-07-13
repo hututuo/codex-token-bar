@@ -76,6 +76,16 @@ mod tests {
     #[test]
     fn fast_dashboard_prefers_precise_cache_over_state_sqlite_token_sums() {
         let root = temp_root();
+        let _test_state = crate::core::app_paths::app_path_test_env_guard(&[
+            (
+                "CODEX_TOKEN_BAR_AGGREGATE_CACHE_PATH",
+                root.join("cache").join("aggregate.json"),
+            ),
+            (
+                "CODEX_TOKEN_BAR_EVENT_CACHE_DIR",
+                root.join("cache").join("events"),
+            ),
+        ]);
         let session_dir = root.join("sessions");
         fs::create_dir_all(&session_dir).unwrap();
         write_lines(
@@ -84,9 +94,6 @@ mod tests {
         );
         create_state_database_with_tokens(&root, 12_982_002_513);
 
-        let _aggregate_cache =
-            AggregateCacheEnvGuard::new(root.join("cache").join("aggregate.json"));
-        let _event_cache = TokenEventCacheEnvGuard::new(&root.join("cache").join("events"));
         let precise = usage::token_count_jsonl::dashboard_snapshot(&root).unwrap();
         assert_eq!(precise.stats.total_tokens, 120);
 
@@ -139,35 +146,4 @@ mod tests {
             .unwrap();
     }
 
-    struct AggregateCacheEnvGuard;
-
-    impl AggregateCacheEnvGuard {
-        fn new(path: PathBuf) -> Self {
-            let _ = fs::remove_file(&path);
-            std::env::set_var("CODEX_TOKEN_BAR_AGGREGATE_CACHE_PATH", path);
-            Self
-        }
-    }
-
-    impl Drop for AggregateCacheEnvGuard {
-        fn drop(&mut self) {
-            std::env::remove_var("CODEX_TOKEN_BAR_AGGREGATE_CACHE_PATH");
-        }
-    }
-
-    struct TokenEventCacheEnvGuard;
-
-    impl TokenEventCacheEnvGuard {
-        fn new(path: &Path) -> Self {
-            let _ = fs::remove_dir_all(path);
-            std::env::set_var("CODEX_TOKEN_BAR_EVENT_CACHE_DIR", path);
-            Self
-        }
-    }
-
-    impl Drop for TokenEventCacheEnvGuard {
-        fn drop(&mut self) {
-            std::env::remove_var("CODEX_TOKEN_BAR_EVENT_CACHE_DIR");
-        }
-    }
 }

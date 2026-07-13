@@ -3,7 +3,7 @@ use rusqlite::{params, Connection};
 use std::fs;
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -185,9 +185,7 @@ fn read_snapshot_keeps_idle_state_with_warning_when_logs_database_is_missing() {
 
 #[test]
 fn read_snapshot_uses_safe_shell_before_precise_cache_exists() {
-    let _guard = precise_summary_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _test_state = crate::core::app_paths::app_path_test_env_guard(&[]);
     let root = temp_root("live-rate-precise-summary");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
@@ -207,9 +205,7 @@ fn read_snapshot_uses_safe_shell_before_precise_cache_exists() {
 
 #[test]
 fn live_rate_ticks_leave_precise_summary_rebuild_to_usage_refresh() {
-    let _guard = precise_summary_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _test_state = crate::core::app_paths::app_path_test_env_guard(&[]);
     let root = temp_root("live-rate-background-precise-summary");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
@@ -279,9 +275,7 @@ fn state_token_summary_is_not_used_for_live_totals() {
 
 #[test]
 fn floating_snapshot_uses_precise_token_summary_when_cached() {
-    let _guard = precise_summary_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _test_state = crate::core::app_paths::app_path_test_env_guard(&[]);
     let root = temp_root("live-rate-cached-precise-summary");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
@@ -303,9 +297,7 @@ fn floating_snapshot_uses_precise_token_summary_when_cached() {
 
 #[test]
 fn floating_snapshot_keeps_same_scope_precise_summary_without_live_tick_rescan() {
-    let _guard = precise_summary_test_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _test_state = crate::core::app_paths::app_path_test_env_guard(&[]);
     let root = temp_root("live-rate-stale-precise-summary");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "旧大会话今天更新", 9_999_999);
@@ -1383,9 +1375,4 @@ fn exact_visible_metric_without_thread(
         distributed: false,
         dedupe_key: None,
     }
-}
-
-fn precise_summary_test_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
 }

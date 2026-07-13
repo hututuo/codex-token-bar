@@ -10,10 +10,11 @@ const stylesSource = readFileSync(join(currentDir, "../../styles/global.css"), "
 test("cache hit ranking keeps quota gradient separate from hit-meter tone styling", () => {
   assert.match(
     stylesSource,
-    /\.quota-track span\s*\{[\s\S]*linear-gradient\(90deg, var\(--accent\), color-mix\(in srgb, var\(--green\) 38%, var\(--accent\)\)\);/m,
+    /\.quota-track-fill\s*\{[\s\S]*--metric-color:[\s\S]*var\(--metric-color\)/m,
   );
   assert.match(
     stylesSource,
     /\.hit-meter span\s*\{[\s\S]*var\(--cache-hit-tone, var\(--accent\)\)/m,
   );
+  assert.doesNotMatch(stylesSource, /\.hit-meter span\s*\{[^}]*var\(--metric-color\)/m);
 });

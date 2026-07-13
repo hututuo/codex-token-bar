@@ -20,6 +20,7 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn parses_token_count_totals_as_deltas() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions").join("2026").join("06").join("18");
     fs::create_dir_all(&session_dir).unwrap();
@@ -87,6 +88,7 @@ fn parses_token_count_totals_as_deltas() {
 
 #[test]
 fn recent_usage_24h_series_keeps_thirty_days_of_five_minute_history() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -178,6 +180,7 @@ fn keeps_fork_replay_active_for_replayed_user_message_near_token_counts() {
 
 #[test]
 fn fork_replay_with_multiple_session_meta_skips_dense_replayed_history_until_later_prompt() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -214,6 +217,7 @@ fn fork_replay_with_multiple_session_meta_skips_dense_replayed_history_until_lat
 
 #[test]
 fn counts_new_call_after_fork_replay_user_message() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -246,6 +250,7 @@ fn counts_new_call_after_fork_replay_user_message() {
 
 #[test]
 fn parent_thread_without_forked_from_id_still_counts() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -266,6 +271,7 @@ fn parent_thread_without_forked_from_id_still_counts() {
 
 #[test]
 fn active_state_rollout_counts_subagent_parent_thread_without_forked_from_id() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let active_dir = root.join("active-rollouts");
     fs::create_dir_all(&active_dir).unwrap();
@@ -293,6 +299,7 @@ fn active_state_rollout_counts_subagent_parent_thread_without_forked_from_id() {
 
 #[test]
 fn usage_summary_counts_today_from_token_events_not_thread_updated_at() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -323,6 +330,7 @@ fn usage_summary_counts_today_from_token_events_not_thread_updated_at() {
 
 #[test]
 fn dashboard_usage_summary_matches_dashboard_snapshot_metrics() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -381,6 +389,7 @@ fn dashboard_scan_signature_changes_when_local_date_changes() {
 
 #[test]
 fn dashboard_snapshot_includes_active_state_rollout_path() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     fs::create_dir_all(root.join("sessions")).unwrap();
     let active_dir = root.join("active-rollouts");
@@ -405,6 +414,7 @@ fn dashboard_snapshot_includes_active_state_rollout_path() {
 
 #[test]
 fn dashboard_snapshot_deduplicates_rollout_path_already_under_sessions() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -428,6 +438,7 @@ fn dashboard_snapshot_deduplicates_rollout_path_already_under_sessions() {
 
 #[test]
 fn ranks_sessions_by_low_cache_hit_rate_with_thread_titles() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -463,6 +474,7 @@ fn ranks_sessions_by_low_cache_hit_rate_with_thread_titles() {
 
 #[test]
 fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -498,6 +510,7 @@ fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
 
 #[test]
 fn cache_usage_keeps_latest_candidates_beyond_low_hit_cutoff() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -561,6 +574,7 @@ fn cache_usage_keeps_latest_candidates_beyond_low_hit_cutoff() {
 
 #[test]
 fn dashboard_snapshot_reuses_cached_aggregate_when_session_signatures_are_unchanged() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -588,6 +602,7 @@ fn dashboard_snapshot_reuses_cached_aggregate_when_session_signatures_are_unchan
 
 #[test]
 fn dashboard_snapshot_cache_ignores_state_database_churn() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -665,6 +680,7 @@ fn token_event_cache_serializes_only_usage_summary() {
 
 #[test]
 fn token_event_cache_persists_sessions_as_sharded_files() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_dir = root.join("token-event-cache-shards");
     let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
@@ -707,6 +723,7 @@ fn token_event_cache_persists_sessions_as_sharded_files() {
 
 #[test]
 fn token_event_cache_ignores_previous_shard_versions() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_dir = root.join("token-event-cache-shards");
     let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
@@ -737,6 +754,7 @@ fn token_event_cache_ignores_previous_shard_versions() {
 
 #[test]
 fn token_event_cache_reparses_pre_grace_window_version_seven_shard() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_dir = root.join("token-event-cache-shards");
     let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
@@ -800,6 +818,7 @@ fn token_event_cache_reparses_pre_grace_window_version_seven_shard() {
 
 #[test]
 fn token_event_cache_removes_deleted_session_shards() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_dir = root.join("token-event-cache-shards");
     let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
@@ -835,6 +854,7 @@ fn token_event_cache_removes_deleted_session_shards() {
 
 #[test]
 fn dashboard_aggregate_cache_does_not_persist_conversation_text() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -868,6 +888,7 @@ fn dashboard_aggregate_cache_does_not_persist_conversation_text() {
 
 #[test]
 fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
     let session_dir = root.join("sessions");
@@ -896,6 +917,7 @@ fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
 
 #[test]
 fn usage_summary_rejects_v10_and_reuses_rebuilt_v11_dashboard_aggregate() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("token-aggregate-cache.json");
     let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
@@ -946,6 +968,7 @@ fn usage_summary_rejects_v10_and_reuses_rebuilt_v11_dashboard_aggregate() {
 
 #[test]
 fn cached_usage_summary_is_scoped_to_codex_home() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
     let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
@@ -991,6 +1014,7 @@ fn cached_usage_summary_is_scoped_to_codex_home() {
 
 #[test]
 fn cached_usage_summary_scope_rejects_date_and_offset_changes() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
     let now = OffsetDateTime::from_unix_timestamp(1_781_715_600).unwrap();
@@ -1031,6 +1055,7 @@ fn cached_usage_summary_scope_rejects_date_and_offset_changes() {
 
 #[test]
 fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
     let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
@@ -1090,7 +1115,7 @@ fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
 
     for _ in 0..100 {
         std::thread::sleep(std::time::Duration::from_millis(20));
-        if usage_summary_snapshot(&root).unwrap().total_tokens == 260 {
+        if usage_summary_snapshot(&root).is_ok_and(|summary| summary.total_tokens == 260) {
             assert_eq!(dashboard_aggregate_build_count_for_testing(&root), 1);
             fs::remove_dir_all(root).unwrap();
             return;
@@ -1102,6 +1127,7 @@ fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
 
 #[test]
 fn dashboard_aggregate_cache_save_does_not_clobber_existing_temp_file() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("token-aggregate-cache.json");
     let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
@@ -1148,6 +1174,7 @@ fn dashboard_aggregate_cache_save_does_not_clobber_existing_temp_file() {
 
 #[test]
 fn aggregate_persistence_failure_keeps_memory_snapshot_with_one_warning() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let blocked_parent = root.join("blocked-parent");
     fs::create_dir_all(&root).unwrap();
@@ -1211,6 +1238,7 @@ fn marker_failure_warning_is_deduplicated_for_fresh_and_cached_snapshots() {
 
 #[test]
 fn usage_summary_snapshot_cache_miss_schedules_one_background_build() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
     let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
@@ -1278,6 +1306,7 @@ fn token_event_cache_partitions_entries_by_codex_home() {
 
 #[test]
 fn token_event_cache_reads_only_appended_session_bytes() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -1384,6 +1413,7 @@ fn token_event_cache_counts_incremental_append_after_fork_replay_ended() {
 
 #[test]
 fn token_event_cache_round_trips_fork_replay_state_before_incremental_append() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
     let session_dir = root.join("sessions");
@@ -1434,6 +1464,7 @@ fn token_event_cache_round_trips_fork_replay_state_before_incremental_append() {
 
 #[test]
 fn token_event_cache_save_does_not_remove_existing_in_flight_temp_directory() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_dir = root.join("event-cache");
     let _event_cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
@@ -1464,6 +1495,7 @@ fn token_event_cache_save_does_not_remove_existing_in_flight_temp_directory() {
 
 #[test]
 fn token_event_cache_reparses_legacy_entries_without_parsed_size() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -1524,6 +1556,7 @@ fn token_event_cache_reparses_legacy_entries_without_parsed_size() {
 
 #[test]
 fn token_event_cache_reads_tail_when_signature_matches_but_parsed_size_lags() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -1581,6 +1614,7 @@ fn token_event_cache_reads_tail_when_signature_matches_but_parsed_size_lags() {
 
 #[test]
 fn token_event_cache_advances_offset_past_zero_delta_lines() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -1629,6 +1663,7 @@ fn token_event_cache_advances_offset_past_zero_delta_lines() {
 
 #[test]
 fn token_event_cache_reparses_implausible_cached_event_even_when_signature_matches() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -1685,6 +1720,7 @@ fn token_event_cache_reparses_implausible_cached_event_even_when_signature_match
 
 #[test]
 fn token_event_cache_reparses_when_incremental_range_overlaps_cached_events() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -1753,6 +1789,7 @@ fn token_event_cache_reparses_when_incremental_range_overlaps_cached_events() {
 
 #[test]
 fn token_event_cache_keeps_incomplete_appended_line_unconsumed() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -1818,6 +1855,7 @@ fn token_event_cache_keeps_incomplete_appended_line_unconsumed() {
 
 #[test]
 fn token_event_cache_reparses_truncated_session_file() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -1882,37 +1920,49 @@ fn write_lines<S: AsRef<str>>(path: &Path, lines: &[S]) {
     }
 }
 
-struct AggregateCacheEnvGuard;
+struct AggregateCacheEnvGuard {
+    original: Option<std::ffi::OsString>,
+}
 
 impl AggregateCacheEnvGuard {
     fn new(path: PathBuf) -> Self {
         reset_dashboard_aggregate_build_count_for_testing();
         let _ = fs::remove_file(&path);
+        let original = std::env::var_os("CODEX_TOKEN_BAR_AGGREGATE_CACHE_PATH");
         std::env::set_var("CODEX_TOKEN_BAR_AGGREGATE_CACHE_PATH", path);
-        Self
+        Self { original }
     }
 }
 
 impl Drop for AggregateCacheEnvGuard {
     fn drop(&mut self) {
-        std::env::remove_var("CODEX_TOKEN_BAR_AGGREGATE_CACHE_PATH");
+        match &self.original {
+            Some(value) => std::env::set_var("CODEX_TOKEN_BAR_AGGREGATE_CACHE_PATH", value),
+            None => std::env::remove_var("CODEX_TOKEN_BAR_AGGREGATE_CACHE_PATH"),
+        }
         reset_dashboard_aggregate_build_count_for_testing();
     }
 }
 
-struct TokenEventCacheEnvGuard;
+struct TokenEventCacheEnvGuard {
+    original: Option<std::ffi::OsString>,
+}
 
 impl TokenEventCacheEnvGuard {
     fn new(path: &Path) -> Self {
         let _ = fs::remove_dir_all(path);
+        let original = std::env::var_os("CODEX_TOKEN_BAR_EVENT_CACHE_DIR");
         std::env::set_var("CODEX_TOKEN_BAR_EVENT_CACHE_DIR", path);
-        Self
+        Self { original }
     }
 }
 
 impl Drop for TokenEventCacheEnvGuard {
     fn drop(&mut self) {
-        std::env::remove_var("CODEX_TOKEN_BAR_EVENT_CACHE_DIR");
+        match &self.original {
+            Some(value) => std::env::set_var("CODEX_TOKEN_BAR_EVENT_CACHE_DIR", value),
+            None => std::env::remove_var("CODEX_TOKEN_BAR_EVENT_CACHE_DIR"),
+        }
     }
 }
 
