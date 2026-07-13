@@ -226,10 +226,16 @@ struct RecentChartQuotaEstimateModelSelector: View {
 
 struct RecentChartQuotaEstimateOverlay: View {
     let selection: QuotaConsumptionSelection
+    let showsFiveHourQuota: Bool
+    let showsSevenDayQuota: Bool
     let onClose: () -> Void
 
     var body: some View {
-        let presentation = QuotaConsumptionEstimatorOverlayPresentation(selection: selection)
+        let presentation = QuotaConsumptionEstimatorOverlayPresentation(
+            selection: selection,
+            showsFiveHourQuota: showsFiveHourQuota,
+            showsSevenDayQuota: showsSevenDayQuota
+        )
 
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 7) {
@@ -252,31 +258,37 @@ struct RecentChartQuotaEstimateOverlay: View {
                     Text(presentation.estimateTitle)
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
-                    QuotaEstimateChip(presentation: presentation.fiveHourChip, color: .purple)
-                    QuotaEstimateChip(presentation: presentation.sevenDayChip, color: .green)
-                }
-
-                HStack(spacing: 6) {
-                    Text(presentation.ratioTitle)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Text(presentation.budgetRatioText)
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(presentation.showsRatioWarning ? .orange : .primary)
-                    Text(presentation.ratioHelpText)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    if let ratioWarningText = presentation.ratioWarningText {
-                        Text(ratioWarningText)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.orange)
+                    if showsFiveHourQuota {
+                        QuotaEstimateChip(presentation: presentation.fiveHourChip, color: .purple)
+                    }
+                    if showsSevenDayQuota {
+                        QuotaEstimateChip(presentation: presentation.sevenDayChip, color: .green)
                     }
                 }
 
-                if let ratioWarningDetailText = presentation.ratioWarningDetailText {
-                    Text(ratioWarningDetailText)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary)
+                if showsFiveHourQuota && showsSevenDayQuota {
+                    HStack(spacing: 6) {
+                        Text(presentation.ratioTitle)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Text(presentation.budgetRatioText)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(presentation.showsRatioWarning ? .orange : .primary)
+                        Text(presentation.ratioHelpText)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        if let ratioWarningText = presentation.ratioWarningText {
+                            Text(ratioWarningText)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.orange)
+                        }
+                    }
+
+                    if let ratioWarningDetailText = presentation.ratioWarningDetailText {
+                        Text(ratioWarningDetailText)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
@@ -389,8 +401,8 @@ struct ChartHoverBubble: View {
                     .font(.system(size: 10))
                     .foregroundStyle(AppTheme.accentCyan)
             }
-            if fiveHourRemaining != nil || sevenDayRemaining != nil {
-                Text("额度 5h \(percentText(fiveHourRemaining)) · 7d \(percentText(sevenDayRemaining))")
+            if let quotaSummary {
+                Text("额度 \(quotaSummary)")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
@@ -417,6 +429,14 @@ struct ChartHoverBubble: View {
         bin.calls > 0 ? bin.tokens / bin.calls : 0
     }
 
+    private var quotaSummary: String? {
+        let parts = [
+            fiveHourRemaining.map { "5h \(percentText($0))" },
+            sevenDayRemaining.map { "7d \(percentText($0))" },
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     private var accessibilitySummary: String {
         var parts = [
             timeRange,
@@ -428,10 +448,8 @@ struct ChartHoverBubble: View {
             parts.append("缓存命中率 \(cacheBreakdown.cacheHitRate.percentString)")
             parts.append("命中 \(cacheBreakdown.cachedInputTokens.abbreviatedTokens)")
         }
-        if fiveHourRemaining != nil || sevenDayRemaining != nil {
-            parts.append("5 小时额度 \(percentText(fiveHourRemaining))")
-            parts.append("7 天额度 \(percentText(sevenDayRemaining))")
-        }
+        if let fiveHourRemaining { parts.append("5 小时额度 \(percentText(fiveHourRemaining))") }
+        if let sevenDayRemaining { parts.append("7 天额度 \(percentText(sevenDayRemaining))") }
         if isHovering {
             parts.append(RecentChartQuotaEstimateAffordancePresentation.hoverAccessibilityPrompt)
         }

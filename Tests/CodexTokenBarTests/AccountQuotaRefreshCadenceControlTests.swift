@@ -26,6 +26,7 @@ final class AccountQuotaRefreshCadenceControlTests: XCTestCase {
             presentations.map(\.accessibilityValue),
             ["30 秒", "1 分钟", "3 分钟", "5 分钟", "10 分钟"]
         )
+        XCTAssertEqual(Set(presentations.map(\.disclosureSystemImage)), ["chevron.down"])
     }
 
     func testLongestCadenceLabelFitsStableControlWidth() {
@@ -33,6 +34,8 @@ final class AccountQuotaRefreshCadenceControlTests: XCTestCase {
         let labelWidth = ("额度刷新 10 分钟" as NSString).size(withAttributes: [.font: font]).width
         let requiredWidth = AccountQuotaRefreshCadenceMenuLayout.horizontalPadding * 2
             + AccountQuotaRefreshCadenceMenuLayout.iconWidth
+            + AccountQuotaRefreshCadenceMenuLayout.spacing
+            + AccountQuotaRefreshCadenceMenuLayout.disclosureWidth
             + AccountQuotaRefreshCadenceMenuLayout.spacing
             + ceil(labelWidth)
 

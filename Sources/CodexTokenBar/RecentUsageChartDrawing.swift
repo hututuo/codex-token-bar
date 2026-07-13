@@ -26,7 +26,7 @@ extension RecentUsageChart {
         for point in points {
             guard let point else {
                 if !segment.isEmpty {
-                    appendSmoothPolyline(segment, to: &path)
+                    appendOptionalSegment(segment, to: &path)
                     segment.removeAll(keepingCapacity: true)
                 }
                 continue
@@ -35,9 +35,18 @@ extension RecentUsageChart {
         }
 
         if !segment.isEmpty {
-            appendSmoothPolyline(segment, to: &path)
+            appendOptionalSegment(segment, to: &path)
         }
         return path
+    }
+
+    private func appendOptionalSegment(_ points: [CGPoint], to path: inout Path) {
+        guard points.count == 1, let point = points.first else {
+            appendSmoothPolyline(points, to: &path)
+            return
+        }
+        path.move(to: point)
+        path.addLine(to: CGPoint(x: point.x + 0.01, y: point.y))
     }
 
     private func appendSmoothPolyline(_ points: [CGPoint], to path: inout Path, moveToStart: Bool = true) {

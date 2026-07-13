@@ -70,7 +70,11 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
     let ratioWarningDetailText: String?
     let accessibilityValue: String
 
-    init(selection: QuotaConsumptionSelection) {
+    init(
+        selection: QuotaConsumptionSelection,
+        showsFiveHourQuota: Bool = true,
+        showsSevenDayQuota: Bool = true
+    ) {
         costText = selection.breakdown.quotaEstimatorCostText(selection.priceCard)
         timeRangeText = selection.quotaEstimatorTimeRangeText
         cacheHitText = "命中 \(selection.breakdown.cacheHitRate.percentString)"
@@ -82,7 +86,11 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
         ratioWarningDetailText = selection.hasDivergentBudgetRatio
             ? "可能因 7d 下降太少、颗粒度太低或其他误差。"
             : nil
-        accessibilityValue = "本段消耗 \(costText)，5 小时 \(fiveHourChip.accessibilityText)，7 天 \(sevenDayChip.accessibilityText)，倍率 \(budgetRatioText)"
+        var accessibilityParts = ["本段消耗 \(costText)"]
+        if showsFiveHourQuota { accessibilityParts.append("5 小时 \(fiveHourChip.accessibilityText)") }
+        if showsSevenDayQuota { accessibilityParts.append("7 天 \(sevenDayChip.accessibilityText)") }
+        if showsFiveHourQuota && showsSevenDayQuota { accessibilityParts.append("倍率 \(budgetRatioText)") }
+        accessibilityValue = accessibilityParts.joined(separator: "，")
     }
 }
 

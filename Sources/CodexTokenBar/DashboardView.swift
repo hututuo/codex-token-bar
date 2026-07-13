@@ -453,7 +453,9 @@ struct DashboardView: View {
                 cacheRecentBins: store.snapshot.cacheUsage.recentBins,
                 cacheHourlyBins: store.snapshot.cacheUsage.hourly,
                 quotaRecentBins: quotaHistoryStore.snapshot.recentBins,
-                quotaHourlyBins: quotaHistoryStore.snapshot.hourlyBins
+                quotaHourlyBins: quotaHistoryStore.snapshot.hourlyBins,
+                currentFiveHourQuotaPresent: quotaStore.snapshot.fiveHour != nil,
+                currentSevenDayQuotaPresent: quotaStore.snapshot.sevenDay != nil
             )
 
             CacheHitRankingSection(cacheUsage: store.snapshot.cacheUsage)
