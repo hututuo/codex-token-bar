@@ -7,6 +7,7 @@ pub mod quota;
 pub mod quota_history;
 pub mod sqlite;
 pub mod startup_trace;
+pub mod thread_delete;
 pub(crate) mod time_series_timeline;
 pub mod unread;
 pub mod usage;

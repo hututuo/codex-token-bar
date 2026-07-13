@@ -6,6 +6,7 @@ import {
   shouldCommitDisplayNameOnKey,
 } from "./dashboardHeader/model";
 import { useEffect, useId, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
+import type { ThreadDeleteBridgeStatus } from "../api/threadDeleteClient";
 
 interface DashboardHeaderProps {
   account: AccountInfo;
@@ -21,12 +22,14 @@ interface DashboardHeaderProps {
   onExportPng: () => void;
   onOpenProviderRepair: () => void;
   onRefresh: () => Promise<void>;
+  onReconnectThreadDelete: () => Promise<void>;
   onToggleAutostart: () => void;
   refreshing: boolean;
   appUpdateState: {
     kind: "idle" | "checking" | "available" | "installing" | "error";
     message: string;
   };
+  threadDeleteBridgeStatus: ThreadDeleteBridgeStatus;
 }
 
 export function DashboardHeader({
@@ -43,9 +46,11 @@ export function DashboardHeader({
   onExportPng,
   onOpenProviderRepair,
   onRefresh,
+  onReconnectThreadDelete,
   onToggleAutostart,
   refreshing,
   appUpdateState,
+  threadDeleteBridgeStatus,
 }: DashboardHeaderProps) {
   const [editingPath, setEditingPath] = useState(false);
   const [editingDisplayName, setEditingDisplayName] = useState(false);
@@ -291,6 +296,25 @@ export function DashboardHeader({
                 </button>
                 <button onClick={() => { onExportPng(); closeMoreActionsAndRestoreFocus(); }} role="menuitem" tabIndex={-1} type="button">
                   导出 PNG
+                </button>
+                <button
+                  aria-label={`重新连接 Codex 删除按钮。${threadDeleteBridgeStatus.message}`}
+                  onClick={() => {
+                    void onReconnectThreadDelete();
+                    closeMoreActionsAndRestoreFocus();
+                  }}
+                  role="menuitem"
+                  tabIndex={-1}
+                  title={threadDeleteBridgeStatus.message}
+                  type="button"
+                >
+                  <span
+                    aria-hidden="true"
+                    className={threadDeleteBridgeStatus.connected
+                      ? "thread-delete-menu-dot thread-delete-menu-dot--connected"
+                      : "thread-delete-menu-dot"}
+                  />
+                  Codex 删除按钮：{threadDeleteBridgeStatus.connected ? "已连接" : "重连"}
                 </button>
               </div>
             ) : null}

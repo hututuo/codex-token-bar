@@ -41,7 +41,7 @@ const QUOTA_CHILD_ENV_REMOVE: &[&str] = &[
 ];
 
 mod auth;
-mod codex_binary;
+pub(crate) mod codex_binary;
 mod rate_limits;
 mod reset_credit;
 

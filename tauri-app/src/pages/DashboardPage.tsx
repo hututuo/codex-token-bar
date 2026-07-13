@@ -17,6 +17,7 @@ import { DashboardSummarySection } from "./dashboard/DashboardSummarySection";
 import { ProviderRepairPanel } from "./dashboard/ProviderRepairPanel";
 import { useDashboardPageLifecycle } from "./dashboard/useDashboardPageLifecycle";
 import { downloadDashboardCsv, downloadDashboardPng } from "../utils/dashboardExport";
+import type { ThreadDeleteBridgeStatus } from "../api/threadDeleteClient";
 
 interface AppUpdateViewState {
   kind: "idle" | "checking" | "available" | "installing" | "error";
@@ -56,6 +57,7 @@ interface DashboardPageProps {
   onQuotaRefreshIntervalChange: (intervalMs: number) => Promise<void>;
   onToggleLiveRate: () => void;
   onRefresh: () => Promise<void>;
+  onReconnectThreadDelete: () => Promise<void>;
   onToggleAutostart: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
@@ -68,6 +70,7 @@ interface DashboardPageProps {
   appUpdateState: AppUpdateViewState;
   liveRateEnabled: boolean;
   selectedLiveThreadId: string;
+  threadDeleteBridgeStatus: ThreadDeleteBridgeStatus;
 }
 
 export function DashboardPage({
@@ -103,6 +106,7 @@ export function DashboardPage({
   onQuotaRefreshIntervalChange,
   onToggleLiveRate,
   onRefresh,
+  onReconnectThreadDelete,
   onToggleAutostart,
   onToggleFloating,
   onToggleStatusTray,
@@ -115,6 +119,7 @@ export function DashboardPage({
   appUpdateState,
   liveRateEnabled,
   selectedLiveThreadId,
+  threadDeleteBridgeStatus,
 }: DashboardPageProps) {
   const { analyticsReady, summaryReady } = useDashboardPageLifecycle();
 
@@ -137,9 +142,11 @@ export function DashboardPage({
           }}
           onOpenProviderRepair={onProviderRepairOpen}
           onRefresh={onRefresh}
+          onReconnectThreadDelete={onReconnectThreadDelete}
           onToggleAutostart={onToggleAutostart}
           refreshing={refreshing}
           appUpdateState={appUpdateState}
+          threadDeleteBridgeStatus={threadDeleteBridgeStatus}
         />
 
         {usageCacheInitializing ? <UsageCacheInitializationNotice /> : null}

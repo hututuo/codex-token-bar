@@ -82,8 +82,14 @@ function headerProps(overrides = {}) {
     onExportPng: () => {},
     onOpenProviderRepair: () => {},
     onRefresh: async () => {},
+    onReconnectThreadDelete: async () => {},
     onToggleAutostart: () => {},
     refreshing: false,
+    threadDeleteBridgeStatus: {
+      connected: false,
+      debugPort: null,
+      message: "等待 Codex 调试连接（需以调试模式启动 Codex）",
+    },
     ...overrides,
   };
 }

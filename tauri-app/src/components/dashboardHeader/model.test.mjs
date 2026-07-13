@@ -129,8 +129,14 @@ function headerProps(overrides = {}) {
     onExportCsv: () => {},
     onExportPng: () => {},
     onRefresh: async () => {},
+    onReconnectThreadDelete: async () => {},
     onToggleAutostart: () => {},
     refreshing: false,
+    threadDeleteBridgeStatus: {
+      connected: false,
+      debugPort: null,
+      message: "等待 Codex 调试连接（需以调试模式启动 Codex）",
+    },
     ...overrides,
   };
 }

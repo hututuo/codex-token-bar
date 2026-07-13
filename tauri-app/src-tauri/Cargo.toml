@@ -23,6 +23,7 @@ tauri = { version = "2.11.3", features = ["macos-private-api", "tray-icon"] }
 time = { version = "0.3.49", features = ["formatting", "local-offset", "macros", "parsing"] }
 tokio = { version = "1.52.3", features = ["rt", "sync", "time"] }
 toml = "1.1"
+tungstenite = "0.30"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-autostart = "2.5.1"

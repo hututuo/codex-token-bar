@@ -131,6 +131,8 @@ if [[ -f "$ROOT_DIR/Assets/ResetCreditIcon.png" ]]; then
   cp "$ROOT_DIR/Assets/ResetCreditIcon.png" "$RESOURCES_DIR/ResetCreditIcon.png"
 fi
 
+cp "$ROOT_DIR/Resources/CodexThreadDeleteInjection.js" "$RESOURCES_DIR/CodexThreadDeleteInjection.js"
+
 if [[ -d "$SPARKLE_FRAMEWORK_SRC" ]]; then
   ditto "$SPARKLE_FRAMEWORK_SRC" "$FRAMEWORKS_DIR/Sparkle.framework"
   install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/$PRODUCT_NAME" >/dev/null 2>&1 || true

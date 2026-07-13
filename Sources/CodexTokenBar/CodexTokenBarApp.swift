@@ -8,6 +8,7 @@ struct CodexTokenBarApp: App {
     @StateObject private var floatingPanel: FloatingTokenPanelController
     @StateObject private var statusBarPanel: StatusBarTokenController
     @StateObject private var dashboardRuntime: DashboardRuntime
+    @StateObject private var threadDeleteBridge: CodexThreadDeleteBridgeController
     private let updaterController: SPUStandardUpdaterController
 
     init() {
@@ -18,15 +19,20 @@ struct CodexTokenBarApp: App {
         )
         let floatingPanel = FloatingTokenPanelController()
         let statusBarPanel = StatusBarTokenController()
+        let threadDeleteBridge = CodexThreadDeleteBridgeController()
         self.updaterController = updaterController
         _updateSettingsStore = StateObject(wrappedValue: AppUpdateSettingsStore(updater: updaterController.updater))
         _floatingPanel = StateObject(wrappedValue: floatingPanel)
         _statusBarPanel = StateObject(wrappedValue: statusBarPanel)
+        _threadDeleteBridge = StateObject(wrappedValue: threadDeleteBridge)
         _dashboardRuntime = StateObject(wrappedValue: DashboardRuntime(
             floatingPanel: floatingPanel,
             statusBarPanel: statusBarPanel
         ))
         StartupPresentation.configureInitialActivationPolicy()
+        Task { @MainActor in
+            threadDeleteBridge.start()
+        }
     }
 
     var body: some Scene {
@@ -88,6 +94,14 @@ struct CodexTokenBarApp: App {
                 }
 
                 Divider()
+
+                Button("重新连接 Codex 删除按钮") {
+                    threadDeleteBridge.reconnect()
+                }
+
+                Text(threadDeleteBridge.status.message)
+
+                Divider()
             }
         }
 
@@ -95,7 +109,8 @@ struct CodexTokenBarApp: App {
             DashboardMenuBarExtra(
                 loginItemStore: loginItemStore,
                 updateSettingsStore: updateSettingsStore,
-                updater: updaterController.updater
+                updater: updaterController.updater,
+                threadDeleteBridge: threadDeleteBridge
             )
         }
         .menuBarExtraStyle(.menu)

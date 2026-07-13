@@ -387,6 +387,9 @@ button {
 }
 
 .more-actions-menu button {
+  align-items: center;
+  display: flex;
+  gap: 7px;
   width: 100%;
   min-height: 32px;
   border: 0;
@@ -396,6 +399,18 @@ button {
   cursor: pointer;
   padding: 6px 9px;
   text-align: left;
+}
+
+.thread-delete-menu-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.thread-delete-menu-dot--connected {
+  background: var(--green);
 }
 
 .more-actions-menu button:hover,

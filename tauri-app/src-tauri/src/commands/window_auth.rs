@@ -22,6 +22,8 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "read_provider_operation_status",
     "discover_provider_operation_ownership",
     "read_codex_radar_full_snapshot",
+    "read_thread_delete_bridge_status",
+    "reconnect_thread_delete_bridge",
 ];
 
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[

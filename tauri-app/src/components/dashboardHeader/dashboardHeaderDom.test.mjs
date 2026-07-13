@@ -13,7 +13,7 @@ test("DashboardHeader more-actions menu preserves behavior and keyboard dismissa
 
     await click(act, buttonByName(container, "更多操作"), window);
     assert.equal(buttonByName(container, "更多操作").getAttribute("aria-expanded"), "true");
-    assert.deepEqual(menuButtonNames(container), ["导出 CSV", "导出 PNG"]);
+    assert.deepEqual(menuButtonNames(container), ["导出 CSV", "导出 PNG", "Codex 删除按钮：重连"]);
 
     await render({ appUpdateState: { kind: "available", message: "发现新版本 v0.7.4" } });
     assert.equal(buttonByName(container, "安装更新").title, "发现新版本 v0.7.4");
@@ -35,6 +35,14 @@ test("DashboardHeader more-actions menu preserves behavior and keyboard dismissa
     await click(act, buttonByName(container, /更多操作/), window);
     await click(act, buttonByName(container, "导出 PNG"), window);
     assert.equal(calls.png, 1);
+    assert.equal(container.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement, buttonByName(container, /更多操作/));
+
+    await click(act, buttonByName(container, /更多操作/), window);
+    const reconnect = buttonByName(container, /重新连接 Codex 删除按钮/);
+    assert.equal(reconnect.title, "等待 Codex 调试连接（需以调试模式启动 Codex）");
+    await click(act, reconnect, window);
+    assert.equal(calls.threadDeleteReconnect, 1);
     assert.equal(container.querySelector('[role="menu"]'), null);
     assert.equal(document.activeElement, buttonByName(container, /更多操作/));
   });
@@ -64,11 +72,11 @@ test("DashboardHeader menu implements composite focus and keyboard navigation", 
     await pressKey(act, document.activeElement, "ArrowDown", window);
     assert.equal(document.activeElement.textContent.trim(), "导出 PNG");
     await pressKey(act, document.activeElement, "End", window);
-    assert.equal(document.activeElement.textContent.trim(), "导出 PNG");
+    assert.equal(document.activeElement.textContent.trim(), "Codex 删除按钮：重连");
     await pressKey(act, document.activeElement, "ArrowDown", window);
     assert.equal(document.activeElement.textContent.trim(), "导出 CSV");
     await pressKey(act, document.activeElement, "ArrowUp", window);
-    assert.equal(document.activeElement.textContent.trim(), "导出 PNG");
+    assert.equal(document.activeElement.textContent.trim(), "Codex 删除按钮：重连");
     await pressKey(act, document.activeElement, "Home", window);
     assert.equal(document.activeElement.textContent.trim(), "导出 CSV");
 
@@ -83,7 +91,7 @@ test("DashboardHeader menu implements composite focus and keyboard navigation", 
 
     trigger.focus();
     await pressKey(act, trigger, "ArrowUp", window);
-    assert.equal(document.activeElement.textContent.trim(), "导出 PNG");
+    assert.equal(document.activeElement.textContent.trim(), "Codex 删除按钮：重连");
     await pressKey(act, document.activeElement, "Tab", window, { shiftKey: true });
     assert.equal(container.querySelector('[role="menu"]'), null);
     assert.equal(document.activeElement.textContent.trim(), "会话消失修复");
@@ -120,7 +128,7 @@ async function withMountedHeader(run, initialOverrides = {}) {
       after.textContent = "after header";
       window.document.body.append(before, container, after);
       const root = createRoot(container);
-      const calls = { autostart: 0, csv: 0, png: 0, update: 0 };
+      const calls = { autostart: 0, csv: 0, png: 0, threadDeleteReconnect: 0, update: 0 };
       let overrides = initialOverrides;
       const render = async (nextOverrides = {}) => {
         overrides = { ...overrides, ...nextOverrides };
@@ -156,8 +164,14 @@ function headerProps(calls, overrides) {
     onExportPng: () => { calls.png += 1; },
     onOpenProviderRepair: () => {},
     onRefresh: async () => {},
+    onReconnectThreadDelete: async () => { calls.threadDeleteReconnect += 1; },
     onToggleAutostart: () => { calls.autostart += 1; },
     refreshing: false,
+    threadDeleteBridgeStatus: {
+      connected: false,
+      debugPort: null,
+      message: "等待 Codex 调试连接（需以调试模式启动 Codex）",
+    },
     ...overrides,
   };
 }

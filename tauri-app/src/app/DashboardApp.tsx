@@ -14,6 +14,7 @@ import { DashboardPage } from "../pages/DashboardPage";
 import { useDashboardData } from "../state/useDashboardData";
 import { useDashboardShellSettings } from "./useDashboardShellSettings";
 import { mountUpdateStateReconciler } from "./updateStateReconciler";
+import { useThreadDeleteBridge } from "./useThreadDeleteBridge";
 
 type AppUpdateState =
   | { kind: "idle"; message: string; update: null }
@@ -59,6 +60,7 @@ export function DashboardApp() {
     dashboardHydrated,
     platform: state.platform,
   });
+  const threadDeleteBridge = useThreadDeleteBridge();
 
   useEffect(() => {
     setLiveRateEnabled(shellSettings.displaySurfaces.liveRateEnabled);
@@ -110,8 +112,10 @@ export function DashboardApp() {
           setAppUpdateState,
         )}
         onToggleAutostart={shellSettings.toggleAutostart}
+        onReconnectThreadDelete={threadDeleteBridge.reconnect}
         refreshing={refreshing}
         appUpdateState={appUpdateState}
+        threadDeleteBridgeStatus={threadDeleteBridge.status}
         liveRateEnabled={shellSettings.displaySurfaces.liveRateEnabled}
         selectedLiveThreadId={selectedLiveThreadId}
       />

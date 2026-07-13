@@ -44,6 +44,7 @@ pub fn run() {
                 eprintln!("Codex Token Bar: status tray live text setup failed: {error}");
             }
             platform::start_instance_activation_listener(app.handle().clone());
+            core::thread_delete::start_supervisor();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -94,6 +95,8 @@ pub fn run() {
             commands::update::read_app_update_state,
             commands::update::check_app_update,
             commands::update::install_app_update,
+            commands::thread_delete::read_thread_delete_bridge_status,
+            commands::thread_delete::reconnect_thread_delete_bridge,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Codex Token Bar");

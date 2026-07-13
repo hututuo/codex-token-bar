@@ -7,6 +7,7 @@ struct DashboardMenuBarExtra: View {
     @ObservedObject var loginItemStore: LoginItemStore
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
     let updater: SPUUpdater
+    @ObservedObject var threadDeleteBridge: CodexThreadDeleteBridgeController
 
     var body: some View {
         Button("打开主界面") {
@@ -44,6 +45,14 @@ struct DashboardMenuBarExtra: View {
                 loginItemStore.openLoginItemsSettings()
             }
         }
+
+        Divider()
+
+        Button("重新连接 Codex 删除按钮") {
+            threadDeleteBridge.reconnect()
+        }
+
+        Text(threadDeleteBridge.status.message)
 
         Divider()
 
