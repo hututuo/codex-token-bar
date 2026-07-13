@@ -1,11 +1,12 @@
 # Codex Token Bar v0.7.3 大优化报告
 
-状态：**源码候选已集成并通过本地全套测试；发布资产正在按最终源码重建，尚未发布**
+状态：**最终源码与本地发布包已完成；尚未发布**
 
 - 日期：2026-07-13
 - 分支：`release/v0.7.3`
 - 上一正式版本：`v0.7.2`
-当前报告基线：`bbdcf5e 稳定集成测试状态边界`
+- 资产源码提交：`0c4977461db54d99e0a94ee6203d5053dd4c40c3`
+- 当前完整证据：`release-ledger/v0.7.3.md`
 
 ## 1. 总结
 
@@ -127,7 +128,7 @@ Swift 在主界面隐藏、悬浮窗关闭、状态栏关闭时：
 - destroyed main 先创建隐藏 WebView，等待 PageLoad finished 后再显示与聚焦，避免灰白空窗。
 - CreateEvent/CreateMutex/SetEvent 的关键失败不会回退成第二个 primary，而是可见地失败关闭。
 
-上述单实例、自启动、destroyed-main 与重复唤醒行为已在 Windows x64 安装态通过；最终 v0.7.3 新源码仍需重新生成双架构安装器并重跑发布身份门禁。
+上述单实例、自启动、destroyed-main 与重复唤醒行为已在 Windows x64 安装态通过。最终源码重新生成的 x64/ARM64 安装器也已通过版本、PE machine、manifest 与签名门禁；最终 x64 release exe 另在真实交互用户会话完成主窗口和 manual secondary 单实例 smoke，且没有替换用户现有安装。
 
 ## 10. 更新系统
 
@@ -152,7 +153,7 @@ Windows：
 - NSIS 外层按 opaque bytes 处理，不再用通用 80386 stub 推断 payload 架构。
 - Tauri updater 签名明确区分密码 unset/empty/nonempty；非空 secret 不进入 argv 或日志。
 - 签名 envelope 严格接受当前 prehashed `ED` 链，并拒绝 `Ed`、未知 magic 和错误长度。
-- 发布前仍需对最终双架构 `.sig` 用内嵌公钥执行真实验证。
+- 最终双架构 `.sig` 已用内嵌公钥和真实 `minisign-verify 0.2.5` 执行流式验证，x64 与 ARM64 均通过。
 
 ## 12. 本地验证结果
 
@@ -181,11 +182,10 @@ Windows：
 
 ## 14. 发布前剩余硬门禁
 
-1. 基于当前最终 commit 重新构建 macOS DMG、Sparkle zip、appcast 和 checksum。
-2. 基于同一 commit 重新构建 Windows x64/ARM64 安装器、签名、`latest-windows.json` 和统一 checksum。
-3. 重跑 Windows 安装后 payload 架构、单实例、自启动和更新提醒最小发布 smoke。
-4. 打开实际最终 DMG，由用户目视确认 Finder 布局和 App 内容。
-5. 展示完整上传审阅包后，等待用户另行明确说“确认上传/现在上传”。在此之前不 push、不打 tag、不创建 Release、不上传资产、不推进远端 appcast 或 latest metadata。
+1. 打开实际最终 DMG，由用户目视确认 Finder 布局和 App 内容。
+2. 展示完整上传审阅包后，等待用户另行明确说“确认上传/现在上传”。在此之前不 push、不打 tag、不创建 Release、不上传资产、不推进远端 appcast 或 latest metadata。
+
+macOS DMG/Sparkle zip/appcast、Windows x64/ARM64 安装器与签名、`latest-windows.json`、统一 checksum，以及最终 Windows release-exe smoke 均已完成。精确资产字节数与 SHA256 见 `release-ledger/v0.7.3.md`。
 
 ## 15. 回滚与追溯
 
@@ -203,4 +203,4 @@ Codex Token Bar v0.7.3 is a broad reliability, data-correctness, performance, ac
 
 The release adapts to the quota windows that Codex actually returns, including seven-day-only accounts; fixes quota-history mapping and isolated near-100% spikes; removes low-activity cache-hit stair steps; keeps Radar and model-IQ ranking on one shared snapshot; preserves model reasoning effort in compact surfaces; improves header, quota-strip, menu, and accessibility behavior; suspends expensive Swift owners while all surfaces are hidden; hardens source generations and cache ownership; closes Provider Repair copy and recovery races; adds reliable hidden Windows autostart and single-instance activation; and moves update checking to persistent app-level owners with user-confirmed installation.
 
-The integrated source currently passes 579 Swift tests, 501 Rust tests, and 387 Node tests, plus Swift, Rust, and Tauri builds. Final macOS and Windows release assets must still be rebuilt from the reviewed commit and inspected before any remote publication.
+The integrated source passes 579 Swift tests, 501 Rust tests, and 387 Node tests, plus Swift, Rust, and Tauri builds. Final macOS and Windows assets have been rebuilt from commit `0c4977461db54d99e0a94ee6203d5053dd4c40c3`; the remaining gates are the user's visual inspection of the actual DMG and a separate explicit upload authorization before any remote publication.
