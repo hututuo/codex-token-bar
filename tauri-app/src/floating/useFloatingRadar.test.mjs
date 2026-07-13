@@ -27,12 +27,19 @@ test("floating Radar pauses hidden, refreshes once on show, and retains its last
       window.document.body.append(container);
       const root = createRoot(container);
       let reads = 0;
+      let sharedListener = null;
       const readRadar = async () => {
         reads += 1;
         return { snapshot: { testLabel: `radar-${reads}` } };
       };
+      const subscribeRadar = (listener) => {
+        sharedListener = listener;
+        return () => {
+          sharedListener = null;
+        };
+      };
       function Probe({ active }) {
-        const snapshot = useFloatingRadar(active, readRadar);
+        const snapshot = useFloatingRadar(active, readRadar, subscribeRadar);
         return React.createElement("output", null, snapshot?.testLabel ?? "none");
       }
       const render = async (active) => {
@@ -50,13 +57,19 @@ test("floating Radar pauses hidden, refreshes once on show, and retains its last
         assert.equal(reads, 1);
         assert.equal(intervals.size, 1);
 
+        await React.act(async () => {
+          sharedListener?.({ snapshot: { testLabel: "radar-shared" } });
+        });
+        assert.equal(container.textContent, "radar-shared");
+        assert.equal(reads, 1);
+
         await render(true);
         assert.equal(reads, 1);
         assert.equal(intervals.size, 1);
 
         await render(false);
         assert.equal(intervals.size, 0);
-        assert.equal(container.textContent, "radar-1");
+        assert.equal(container.textContent, "radar-shared");
 
         await render(true);
         await waitFor(() => container.textContent === "radar-2");

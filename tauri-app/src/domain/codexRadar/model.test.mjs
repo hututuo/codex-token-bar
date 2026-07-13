@@ -76,12 +76,46 @@ const snapshot = {
   },
 };
 
-test("compact Radar presentation localizes actions and keeps only model family names", () => {
+test("compact Radar presentation localizes actions and keeps model reasoning effort", () => {
   assert.equal(radarActionDisplayText("wait"), "等待");
   assert.equal(radarActionDisplayText("run"), "运行");
-  assert.equal(compactRadarModelName("GPT-5.6 Sol max"), "Sol");
-  assert.equal(compactRadarModelName("GPT-5.6 Luna max"), "Luna");
-  assert.equal(compactRadarModelName("GPT-5.6 Terra max"), "Terra");
+  assert.equal(compactRadarModelName("GPT-5.6 Sol max"), "Sol max");
+  assert.equal(compactRadarModelName("GPT-5.6 Luna max"), "Luna max");
+  assert.equal(compactRadarModelName("GPT-5.6 Terra max"), "Terra max");
+  assert.equal(compactRadarModelName("GPT-5.6 Sol xhigh"), "Sol xhigh");
+});
+
+test("current Sol max score outranks older Terra and keeps its effort in the compact label", () => {
+  const current = {
+    latest: {
+      ...snapshot.modelIq.latest,
+      score: 150,
+      model: "gpt-5.6-sol",
+      reasoningEffort: "max",
+      costUsd: 35,
+    },
+    recentDays: [],
+    comparisons: {
+      terra: {
+        label: "GPT-5.6 Terra max",
+        model: "gpt-5.6-terra",
+        reasoningEffort: "max",
+        latest: {
+          ...snapshot.modelIq.latest,
+          score: 135,
+          model: "gpt-5.6-terra",
+          reasoningEffort: "max",
+          costUsd: 30,
+        },
+        recentDays: [],
+      },
+    },
+  };
+
+  const primary = primaryModelRow(current);
+  assert.equal(primary.point.score, 150);
+  assert.equal(primary.point.model, "gpt-5.6-sol");
+  assert.equal(compactRadarModelName(primary.label), "Sol max");
 });
 
 test("primaryModelRow chooses the strongest score and cheaper equal-score model", () => {

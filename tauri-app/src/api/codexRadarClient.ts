@@ -14,6 +14,15 @@ const CODEX_RADAR_CACHE_MS = 600_000;
 
 let cachedSnapshot: { snapshot: CodexRadarSnapshot; readAt: number } | null = null;
 let inFlightStateRead: Promise<CodexRadarReadState> | null = null;
+const stateListeners = new Set<(state: CodexRadarReadState) => void>();
+
+export function subscribeCodexRadarState(listener: (state: CodexRadarReadState) => void): () => void {
+  stateListeners.add(listener);
+  if (cachedSnapshot) {
+    listener(stateFromSnapshot(cachedSnapshot.snapshot));
+  }
+  return () => stateListeners.delete(listener);
+}
 
 export async function readCodexRadarSnapshot(options: { force?: boolean } = {}): Promise<CodexRadarSnapshot> {
   const state = await readCodexRadarState(cachedSnapshot?.snapshot ?? null, options);
@@ -31,7 +40,7 @@ export async function readCodexRadarState(
   if (!options.force && cachedSnapshot && now - cachedSnapshot.readAt < CODEX_RADAR_CACHE_MS) {
     return stateFromSnapshot(cachedSnapshot.snapshot);
   }
-  if (!options.force && inFlightStateRead) {
+  if (inFlightStateRead) {
     return inFlightStateRead;
   }
 
@@ -58,7 +67,7 @@ async function fetchCodexRadarState(previousSnapshot: CodexRadarSnapshot | null)
       snapshot,
       readAt: Date.now(),
     };
-    return stateFromSnapshot(snapshot);
+    return publishState(stateFromSnapshot(snapshot));
   } catch (error) {
     const diagnostic = diagnosticFromError(error, "root");
     if (previousSnapshot) {
@@ -80,9 +89,9 @@ async function fetchCodexRadarState(previousSnapshot: CodexRadarSnapshot | null)
         snapshot,
         readAt: Date.now(),
       };
-      return stateFromSnapshot(snapshot);
+      return publishState(stateFromSnapshot(snapshot));
     }
-    return {
+    return publishState({
       snapshot: null,
       diagnostics: [diagnostic],
       statusText: diagnostic.message,
@@ -90,8 +99,15 @@ async function fetchCodexRadarState(previousSnapshot: CodexRadarSnapshot | null)
       lastFailureAt: refreshedAt,
       staleDataDisplayed: false,
       feedStaleDataDisplayed: false,
-    };
+    });
   }
+}
+
+function publishState(state: CodexRadarReadState): CodexRadarReadState {
+  for (const listener of [...stateListeners]) {
+    listener(state);
+  }
+  return state;
 }
 
 async function fetchCodexRadarRootSnapshot(): Promise<CodexRadarSnapshot> {
@@ -256,4 +272,5 @@ function stringRecordValue(record: Record<string, unknown>, ...keys: string[]): 
 export function __resetCodexRadarCacheForTests(): void {
   cachedSnapshot = null;
   inFlightStateRead = null;
+  stateListeners.clear();
 }
