@@ -23,6 +23,7 @@ test("floating quota projection distinguishes unavailable compatibility zero fro
       } else {
         assert.match(html, /role="meter"/);
         assert.match(html, new RegExp(`aria-valuenow="${fixture.remainingPercent * 100}"`));
+        assert.match(html, /--metric-color:rgb\(/);
       }
     }
   });

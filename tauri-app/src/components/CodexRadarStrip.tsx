@@ -1,4 +1,4 @@
-import { memo, startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, startTransition, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { readCodexRadarFullSnapshot } from "../api/codexRadarDetailClient";
 import {
   CODEX_RADAR_DETAIL_ATTEMPT_STORAGE_KEY,
@@ -29,6 +29,7 @@ import {
   shortDateLabel,
   type CodexRadarSnapshot,
 } from "../domain/codexRadar/model";
+import { radarActionAccent, radarScoreAccent } from "../styles/semanticColors";
 
 const RADAR_REFRESH_INTERVAL_MS = 600_000;
 const RADAR_CHART_COLORS = ["#18a7f2", "#ff8a2c", "#2f7df6", "#32b85f", "#a65af5"];
@@ -219,24 +220,30 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       <CodexRadarDiagnosticsNotice diagnostics={diagnostics} snapshot={snapshot} />
 
       <div className="codex-radar-grid">
-        <RadarBlock icon="W" title="速蹬窗口">
+        <RadarBlock accentColor={radarActionAccent(snapshot?.recommendedAction)} icon="W" title="速蹬窗口">
           <strong>{snapshot?.window.message ?? "等待 Codex 雷达"}</strong>
           <div className="radar-mini-row">
-            <RadarMini label="建议" value={radarActionDisplayText(snapshot?.recommendedAction)} />
+            <RadarMini accentColor={radarActionAccent(snapshot?.recommendedAction)} label="建议" value={radarActionDisplayText(snapshot?.recommendedAction)} />
             <RadarMini label="24h" value={percentText(probability24h)} />
             <RadarMini label="48h" value={percentText(probability48h)} />
           </div>
         </RadarBlock>
 
-        <RadarBlock icon="IQ" title="今日主模型">
-          <div className="radar-score-row">
+        <RadarBlock accentColor={primary ? radarScoreAccent(primary.point) : undefined} icon="IQ" title="今日主模型">
+          <div
+            className="radar-score-row"
+            style={primary ? { "--radar-score-color": radarScoreAccent(primary.point) } as CSSProperties : undefined}
+          >
             <strong>{primary ? `IQ ${displayRadarNumber(primary.point.score)}` : "IQ --"}</strong>
             <span>{primary ? compactRadarModelName(modelDisplayName(primary.point)) : "待读取"}</span>
           </div>
           <div className="radar-model-row">
             {secondary.length > 0
               ? secondary.map((row) => (
-                  <span key={row.label}>
+                  <span
+                    key={row.label}
+                    style={{ "--radar-score-color": radarScoreAccent(row.point) } as CSSProperties}
+                  >
                     {compactRadarModelName(row.label)} {displayRadarNumber(row.point.score)}
                   </span>
                 ))
@@ -659,9 +666,12 @@ export function CodexRadarDiagnosticsNotice({
   );
 }
 
-function RadarBlock({ children, icon, title }: { children: ReactNode; icon: string; title: string }) {
+function RadarBlock({ accentColor, children, icon, title }: { accentColor?: string; children: ReactNode; icon: string; title: string }) {
   return (
-    <article className="codex-radar-block">
+    <article
+      className="codex-radar-block"
+      style={accentColor ? { "--radar-accent": accentColor } as CSSProperties : undefined}
+    >
       <span className="radar-block-title">
         <i aria-hidden="true">{icon}</i>
         {title}
@@ -671,9 +681,9 @@ function RadarBlock({ children, icon, title }: { children: ReactNode; icon: stri
   );
 }
 
-function RadarMini({ label, value }: { label: string; value: string }) {
+function RadarMini({ accentColor, label, value }: { accentColor?: string; label: string; value: string }) {
   return (
-    <span>
+    <span style={accentColor ? { "--radar-mini-color": accentColor } as CSSProperties : undefined}>
       <em>{label}</em>
       <b>{value}</b>
     </span>

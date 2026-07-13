@@ -90,6 +90,9 @@ test("floating Radar row preserves stale snapshot and shows a restrained marker"
 
     assert.match(html, /雷达旧数据 · 动作 等待/);
     assert.match(html, /IQ 100/);
+    assert.match(html, /--radar-action-color:rgb\(204 139 38\)/);
+    assert.match(html, /--radar-score-color:rgb\(100 150 72\)/);
+    assert.match(html, /class="floating-radar-dot"/);
     assert.doesNotMatch(html, /Radar 待读取/);
   });
 });
