@@ -1,11 +1,13 @@
 # Codex Token Bar v0.7.3 大优化报告
 
-状态：**最终源码与本地发布包已完成；尚未发布**
+状态：**已发布**
 
 - 日期：2026-07-13
 - 分支：`release/v0.7.3`
 - 上一正式版本：`v0.7.2`
 - 资产源码提交：`0c4977461db54d99e0a94ee6203d5053dd4c40c3`
+- 发布 tag 提交：`820a7e72cf4a5801331d07dcab43a7ab0cff917a`
+- GitHub Release：`https://github.com/hututuo/codex-token-bar/releases/tag/v0.7.3`
 - 当前完整证据：`release-ledger/v0.7.3.md`
 
 ## 1. 总结
@@ -180,20 +182,23 @@ Windows：
 - Windows 安装器没有商业 Authenticode 证书，SmartScreen 可能显示未知发布者。
 - Windows updater `.sig` 只用于应用更新真实性校验，不等价于 Authenticode。
 
-## 14. 发布前剩余硬门禁
+## 14. 发布结果
 
-1. 打开实际最终 DMG，由用户目视确认 Finder 布局和 App 内容。
-2. 展示完整上传审阅包后，等待用户另行明确说“确认上传/现在上传”。在此之前不 push、不打 tag、不创建 Release、不上传资产、不推进远端 appcast 或 latest metadata。
+- 用户在最终 DMG 已打开、双端额度窗口自适应行为重新核实后明确授权发布。
+- `release/v0.7.3` 与 annotated tag `v0.7.3` 已推送；tag 解引用到 `820a7e72cf4a5801331d07dcab43a7ab0cff917a`。
+- GitHub Release 已发布为 latest，九项资产先在 draft 阶段回下载逐字节核对，公开后又从稳定 `v0.7.3` URL 回下载复验。
+- 公开 `SHA256SUMS-v0.7.3.txt` 通过 8/8；公开 Windows metadata 的双平台签名与 detached `.sig` 一致。
+- 远端 `main` 已在 Release 资产存在后快进，公开 Sparkle appcast 与本地最终 appcast 字节一致。
 
-macOS DMG/Sparkle zip/appcast、Windows x64/ARM64 安装器与签名、`latest-windows.json`、统一 checksum，以及最终 Windows release-exe smoke 均已完成。精确资产字节数与 SHA256 见 `release-ledger/v0.7.3.md`。
+精确资产字节数、SHA256、公开时间和远端验证记录见 `release-ledger/v0.7.3.md`。
 
 ## 15. 回滚与追溯
 
-- 上一个公开稳定点：tag `v0.7.2`。
+- 当前公开稳定点：tag `v0.7.3`；上一稳定点为 `v0.7.2`。
 - 当前工作分支：`release/v0.7.3`。
 - 源码回滚可按功能提交逐项 revert；发布资产不会进入 Git。
 - 旧 v0.7.3 本地资产属于更早源码候选，不能复用于当前候选。
-- 发布后的 GitHub Release、tag、appcast 与 Windows metadata 必须共同指向同一 reviewed commit。
+- GitHub Release、tag、appcast 与 Windows metadata 已按同一 reviewed candidate 发布并完成公开回读验证。
 
 ---
 
@@ -203,4 +208,4 @@ Codex Token Bar v0.7.3 is a broad reliability, data-correctness, performance, ac
 
 The release adapts to the quota windows that Codex actually returns, including seven-day-only accounts; fixes quota-history mapping and isolated near-100% spikes; removes low-activity cache-hit stair steps; keeps Radar and model-IQ ranking on one shared snapshot; preserves model reasoning effort in compact surfaces; improves header, quota-strip, menu, and accessibility behavior; suspends expensive Swift owners while all surfaces are hidden; hardens source generations and cache ownership; closes Provider Repair copy and recovery races; adds reliable hidden Windows autostart and single-instance activation; and moves update checking to persistent app-level owners with user-confirmed installation.
 
-The integrated source passes 579 Swift tests, 501 Rust tests, and 387 Node tests, plus Swift, Rust, and Tauri builds. Final macOS and Windows assets have been rebuilt from commit `0c4977461db54d99e0a94ee6203d5053dd4c40c3`; the remaining gates are the user's visual inspection of the actual DMG and a separate explicit upload authorization before any remote publication.
+The integrated source passes 579 Swift tests, 501 Rust tests, and 387 Node tests, plus Swift, Rust, and Tauri builds. Final macOS and Windows assets were rebuilt from commit `0c4977461db54d99e0a94ee6203d5053dd4c40c3`, published under tag `v0.7.3`, downloaded again from the public Release, and verified byte-for-byte together with both updater channels.
