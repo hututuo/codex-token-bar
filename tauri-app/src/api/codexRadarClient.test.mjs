@@ -93,6 +93,36 @@ test("public Codex Radar summary fetch uses current.json without authorization",
   });
 });
 
+test("successful Radar refreshes publish one shared snapshot to every surface", async () => {
+  await withSsrModules(async (load) => {
+    const {
+      __resetCodexRadarCacheForTests,
+      readCodexRadarState,
+      subscribeCodexRadarState,
+    } = await load("/src/api/codexRadarClient.ts");
+    __resetCodexRadarCacheForTests();
+    withFetchQueue([
+      jsonResponse(snapshotFixture({ monitored_at: "2026-07-13T08:00:00+08:00" })),
+      textResponse(feedFixture("radar-old")),
+      jsonResponse(snapshotFixture({ monitored_at: "2026-07-13T08:10:00+08:00" })),
+      textResponse(feedFixture("radar-current")),
+    ]);
+    const observed = [];
+    const unsubscribe = subscribeCodexRadarState((state) => {
+      observed.push(state.snapshot?.monitoredAt ?? null);
+    });
+
+    await readCodexRadarState(null, { force: true });
+    await readCodexRadarState(null, { force: true });
+    unsubscribe();
+
+    assert.deepEqual(observed, [
+      "2026-07-13T08:00:00+08:00",
+      "2026-07-13T08:10:00+08:00",
+    ]);
+  });
+});
+
 
 test("Codex Radar root failure after success preserves prior snapshot and marks stale data", async () => {
   await withSsrModules(async (load) => {

@@ -7,7 +7,7 @@ import {
   millisecondsUntilNextCodexRadarDetailSlot,
   shouldRefreshCodexRadarDetail,
 } from "../api/codexRadarDetailRefreshPlan";
-import { readCodexRadarState } from "../api/codexRadarClient";
+import { readCodexRadarState, subscribeCodexRadarState } from "../api/codexRadarClient";
 import {
   codexRadarDiagnosticLabel,
   codexRadarSurfaceStatus,
@@ -130,9 +130,20 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   }
 
   useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(false), RADAR_REFRESH_INTERVAL_MS);
-    return () => window.clearInterval(timer);
+    const unsubscribe = subscribeCodexRadarState((next) => {
+      snapshotRef.current = next.snapshot;
+      startTransition(() => {
+        setSnapshot(next.snapshot);
+        setDiagnostics(next.diagnostics);
+        setStatus(next.statusText);
+      });
+    });
+    void refresh(true);
+    const timer = window.setInterval(() => void refresh(true), RADAR_REFRESH_INTERVAL_MS);
+    return () => {
+      unsubscribe();
+      window.clearInterval(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

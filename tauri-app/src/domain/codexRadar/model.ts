@@ -515,11 +515,12 @@ export function radarActionDisplayText(action: string | null | undefined): strin
 export function compactRadarModelName(label: string): string {
   const family = label.match(/\b(sol|luna|terra)\b/i)?.[1];
   if (family) {
-    return family.charAt(0).toUpperCase() + family.slice(1).toLowerCase();
+    const familyName = family.charAt(0).toUpperCase() + family.slice(1).toLowerCase();
+    const effort = label.match(/\b(max|xhigh|high|medium|low|minimal)\b/i)?.[1]?.toLowerCase();
+    return effort ? `${familyName} ${effort}` : familyName;
   }
   return label
     .replace(/^GPT-5\.6[\s-]*/i, "")
-    .replace(/\s+max$/i, "")
     .replace(/^GPT-5\.5\s+/i, "")
     .replace(/^GPT-5\.4\s+/i, "5.4 ")
     .replace(/\bxhigh\b/i, "X high")
