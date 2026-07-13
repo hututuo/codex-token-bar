@@ -153,6 +153,8 @@ test("floating radar shows multiple sorted model IQ scores", () => {
   assert.match(stylesSource, /\.floating-radar\s*{[\s\S]*?grid-template-columns: minmax\(0, 0\.74fr\) minmax\(0, 1\.26fr\);/);
   assert.match(previewSource, /className="floating-radar-dot"/);
   assert.match(stylesSource, /\.floating-radar strong\s*{[\s\S]*?display: grid;[\s\S]*?grid-template-columns: calc\(4px \* var\(--floating-scale\)\) max-content minmax\(0, 1fr\);/);
+  assert.match(stylesSource, /\.floating-radar-action > span\s*{[\s\S]*?color: var\(--floating-primary\);/);
+  assert.match(stylesSource, /\.floating-radar-iq strong > span\s*{[\s\S]*?color: var\(--floating-primary\);/);
 });
 
 test("clickable disclosure arrows are right aligned and vertically centered", () => {

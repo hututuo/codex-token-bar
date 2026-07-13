@@ -4448,7 +4448,8 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   display: flex;
   align-items: center;
   gap: calc(4px * var(--floating-scale));
-  color: color-mix(in srgb, var(--floating-primary) 62%, var(--radar-action-color) 38%);
+  color: var(--floating-primary);
+  font-weight: 760;
 }
 
 .floating-radar-dot {
@@ -4491,7 +4492,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-radar-iq strong > span {
-  color: color-mix(in srgb, var(--floating-primary) 58%, var(--radar-score-color) 42%);
+  color: var(--floating-primary);
 }
 
 .floating-radar strong em {
