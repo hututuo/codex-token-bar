@@ -70,6 +70,7 @@ struct AccountQuotaRefreshCadenceMenuPresentation: Equatable {
     let visibleLabel: String
     let accessibilityLabel = "额度刷新"
     let accessibilityValue: String
+    let disclosureSystemImage = "chevron.down"
 
     init(selectionRaw: String) {
         let cadence = AccountQuotaRefreshCadence.value(for: selectionRaw)
@@ -83,6 +84,7 @@ enum AccountQuotaRefreshCadenceMenuLayout {
     static let controlHeight: CGFloat = 28
     static let horizontalPadding: CGFloat = 6
     static let iconWidth: CGFloat = 12
+    static let disclosureWidth: CGFloat = 8
     static let spacing: CGFloat = 4
 }
 
@@ -114,6 +116,10 @@ struct AccountQuotaRefreshCadenceMenu: View {
                 Text(presentation.visibleLabel)
                     .font(.system(size: 11, weight: .medium))
                     .fixedSize(horizontal: true, vertical: false)
+                Image(systemName: presentation.disclosureSystemImage)
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: AccountQuotaRefreshCadenceMenuLayout.disclosureWidth)
             }
             .padding(.horizontal, AccountQuotaRefreshCadenceMenuLayout.horizontalPadding)
             .frame(

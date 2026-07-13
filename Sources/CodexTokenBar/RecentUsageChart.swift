@@ -309,7 +309,7 @@ struct RecentChartPreparedData {
     let callTotal: Int
     let recentCacheBreakdown: TokenCacheBreakdown
     let cacheBreakdowns: [TokenCacheBreakdown]
-    let carriedCacheHitRates: [Double]
+    let observedCacheHitRates: [Double?]
     let fiveHourRemainingPercents: [Double?]
     let sevenDayRemainingPercents: [Double?]
     let latestFiveHourRemaining: Double?
@@ -329,7 +329,7 @@ struct RecentChartPreparedData {
         callTotal: 0,
         recentCacheBreakdown: .empty,
         cacheBreakdowns: [],
-        carriedCacheHitRates: [],
+        observedCacheHitRates: [],
         fiveHourRemainingPercents: [],
         sevenDayRemainingPercents: [],
         latestFiveHourRemaining: nil,
@@ -344,7 +344,7 @@ struct RecentChartPreparedData {
 private struct RecentChartPlotData {
     let tokenPoints: [CGPoint]
     let callPoints: [CGPoint]
-    let cachePoints: [CGPoint]
+    let cachePoints: [CGPoint?]
     let fiveHourQuotaPoints: [CGPoint?]
     let sevenDayQuotaPoints: [CGPoint?]
 
@@ -361,7 +361,7 @@ private struct RecentChartPlotData {
         }
         cachePoints = bins.indices.map { index in
             let x = plot.minX + CGFloat(index) * step
-            let rate = prepared.carriedCacheHitRates[safe: index] ?? 0
+            guard let rate = prepared.observedCacheHitRates[safe: index] ?? nil else { return nil }
             let y = plot.maxY - CGFloat(rate) * plot.height
             return CGPoint(x: x, y: y)
         }
@@ -384,6 +384,32 @@ private struct RecentChartPlotData {
 
 let recentChartHoverBubbleVerticalOffset: CGFloat = 50
 
+struct RecentChartQuotaSeriesVisibility: Equatable {
+    let showsFiveHour: Bool
+    let showsSevenDay: Bool
+    let drawsFiveHour: Bool
+    let drawsSevenDay: Bool
+
+    init(
+        currentFiveHourPresent: Bool,
+        currentSevenDayPresent: Bool,
+        historyHasFiveHour: Bool,
+        historyHasSevenDay: Bool
+    ) {
+        showsFiveHour = currentFiveHourPresent
+        showsSevenDay = currentSevenDayPresent
+        drawsFiveHour = currentFiveHourPresent && historyHasFiveHour
+        drawsSevenDay = currentSevenDayPresent && historyHasSevenDay
+    }
+
+    var accessibilityLabels: [String] {
+        [
+            showsFiveHour ? "5 小时额度" : nil,
+            showsSevenDay ? "7 天额度" : nil,
+        ].compactMap { $0 }
+    }
+}
+
 struct RecentUsageChart: View {
     let bins: [BinUsage]
     let hourlyBins: [BinUsage]
@@ -391,6 +417,8 @@ struct RecentUsageChart: View {
     let cacheHourlyBins: [TokenCacheBucket]
     let quotaRecentBins: [QuotaHistoryRecentBucket]
     let quotaHourlyBins: [QuotaHistoryRecentBucket]
+    let currentFiveHourQuotaPresent: Bool
+    let currentSevenDayQuotaPresent: Bool
     private static let dataLineWidth: CGFloat = 1.55
     private static let hoverRingLineWidth: CGFloat = 1.55
     @AppStorage("recentChartRange") private var selectedRangeRaw = RecentChartRange.twentyFourHours.rawValue
@@ -411,7 +439,9 @@ struct RecentUsageChart: View {
         cacheRecentBins: [TokenCacheBucket],
         cacheHourlyBins: [TokenCacheBucket],
         quotaRecentBins: [QuotaHistoryRecentBucket],
-        quotaHourlyBins: [QuotaHistoryRecentBucket]
+        quotaHourlyBins: [QuotaHistoryRecentBucket],
+        currentFiveHourQuotaPresent: Bool = true,
+        currentSevenDayQuotaPresent: Bool = true
     ) {
         self.bins = bins
         self.hourlyBins = hourlyBins
@@ -419,7 +449,18 @@ struct RecentUsageChart: View {
         self.cacheHourlyBins = cacheHourlyBins
         self.quotaRecentBins = quotaRecentBins
         self.quotaHourlyBins = quotaHourlyBins
+        self.currentFiveHourQuotaPresent = currentFiveHourQuotaPresent
+        self.currentSevenDayQuotaPresent = currentSevenDayQuotaPresent
         _preparedData = State(initialValue: .empty)
+    }
+
+    private var quotaSeriesVisibility: RecentChartQuotaSeriesVisibility {
+        RecentChartQuotaSeriesVisibility(
+            currentFiveHourPresent: currentFiveHourQuotaPresent,
+            currentSevenDayPresent: currentSevenDayQuotaPresent,
+            historyHasFiveHour: preparedData.hasFiveHourQuota,
+            historyHasSevenDay: preparedData.hasSevenDayQuota
+        )
     }
 
     private var selectedRange: RecentChartRange {
@@ -474,16 +515,24 @@ struct RecentUsageChart: View {
                     ChartLegend(color: .blue, label: "Token", value: preparedData.tokenTotal.abbreviatedTokens)
                     ChartLegend(color: .orange, label: "调用", value: "\(preparedData.callTotal)")
                     ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: preparedData.recentCacheBreakdown.cacheHitRate.percentString)
-                    ChartLegend(color: .purple, label: "5h", value: Self.percentText(preparedData.latestFiveHourRemaining))
-                    ChartLegend(color: .green, label: "7d", value: Self.percentText(preparedData.latestSevenDayRemaining))
+                    if quotaSeriesVisibility.showsFiveHour {
+                        ChartLegend(color: .purple, label: "5h", value: Self.percentText(preparedData.latestFiveHourRemaining))
+                    }
+                    if quotaSeriesVisibility.showsSevenDay {
+                        ChartLegend(color: .green, label: "7d", value: Self.percentText(preparedData.latestSevenDayRemaining))
+                    }
                 }
 
                 HStack(spacing: 5) {
                     ChartLineToggle(title: "Token", color: .blue, isOn: $showTokens)
                     ChartLineToggle(title: "调用", color: .orange, isOn: $showCalls)
                     ChartLineToggle(title: "命中率", color: AppTheme.accentCyan, isOn: $showCacheHitRate)
-                    ChartLineToggle(title: "5h", color: .purple, isOn: $showFiveHourQuota)
-                    ChartLineToggle(title: "7d", color: .green, isOn: $showSevenDayQuota)
+                    if quotaSeriesVisibility.showsFiveHour {
+                        ChartLineToggle(title: "5h", color: .purple, isOn: $showFiveHourQuota)
+                    }
+                    if quotaSeriesVisibility.showsSevenDay {
+                        ChartLineToggle(title: "7d", color: .green, isOn: $showSevenDayQuota)
+                    }
                 }
             }
         }
@@ -677,6 +726,8 @@ struct RecentUsageChart: View {
 
                 RecentChartQuotaEstimateOverlay(
                     selection: consumptionSelection,
+                    showsFiveHourQuota: quotaSeriesVisibility.showsFiveHour,
+                    showsSevenDayQuota: quotaSeriesVisibility.showsSevenDay,
                     onClose: {
                         consumptionSelectionState.reset()
                     }
@@ -714,16 +765,16 @@ struct RecentUsageChart: View {
             }
 
             if showCacheHitRate && preparedData.hasCacheCalls {
-                linePath(points: plotData.cachePoints)
+                optionalLinePath(points: plotData.cachePoints)
                     .stroke(AppTheme.accentCyan, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [5, 5]))
             }
 
-            if showFiveHourQuota && preparedData.hasFiveHourQuota {
+            if showFiveHourQuota && quotaSeriesVisibility.drawsFiveHour {
                 optionalLinePath(points: plotData.fiveHourQuotaPoints)
                     .stroke(.purple.opacity(0.92), style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [3, 6]))
             }
 
-            if showSevenDayQuota && preparedData.hasSevenDayQuota {
+            if showSevenDayQuota && quotaSeriesVisibility.drawsSevenDay {
                 optionalLinePath(points: plotData.sevenDayQuotaPoints)
                     .stroke(.green.opacity(0.88), style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [7, 5]))
             }
@@ -731,7 +782,7 @@ struct RecentUsageChart: View {
             if let activeIndex {
                 let tokenPoint = plotData.tokenPoints[safe: activeIndex] ?? .zero
                 let callPoint = plotData.callPoints[safe: activeIndex] ?? .zero
-                let cachePoint = plotData.cachePoints[safe: activeIndex] ?? .zero
+                let cachePoint = plotData.cachePoints[safe: activeIndex] ?? nil
                 let fiveHourPoint = plotData.fiveHourQuotaPoints[safe: activeIndex] ?? nil
                 let sevenDayPoint = plotData.sevenDayQuotaPoints[safe: activeIndex] ?? nil
 
@@ -757,7 +808,9 @@ struct RecentUsageChart: View {
                         .position(callPoint)
                 }
 
-                if showCacheHitRate && preparedData.cacheBreakdowns[safe: activeIndex]?.calls ?? 0 > 0 {
+                if showCacheHitRate,
+                   preparedData.cacheBreakdowns[safe: activeIndex]?.calls ?? 0 > 0,
+                   let cachePoint {
                     Circle()
                         .fill(AppTheme.pageBackground)
                         .frame(width: 8, height: 8)
@@ -765,7 +818,7 @@ struct RecentUsageChart: View {
                         .position(cachePoint)
                 }
 
-                if showFiveHourQuota, let fiveHourPoint {
+                if showFiveHourQuota, quotaSeriesVisibility.drawsFiveHour, let fiveHourPoint {
                     Circle()
                         .fill(AppTheme.pageBackground)
                         .frame(width: 7, height: 7)
@@ -773,7 +826,7 @@ struct RecentUsageChart: View {
                         .position(fiveHourPoint)
                 }
 
-                if showSevenDayQuota, let sevenDayPoint {
+                if showSevenDayQuota, quotaSeriesVisibility.drawsSevenDay, let sevenDayPoint {
                     Circle()
                         .fill(AppTheme.pageBackground)
                         .frame(width: 7, height: 7)
@@ -784,8 +837,12 @@ struct RecentUsageChart: View {
                 ChartHoverBubble(
                     bin: chartBins[activeIndex],
                     cacheBreakdown: preparedData.cacheBreakdowns[safe: activeIndex],
-                    fiveHourRemaining: preparedData.fiveHourRemainingPercents[safe: activeIndex] ?? nil,
-                    sevenDayRemaining: preparedData.sevenDayRemainingPercents[safe: activeIndex] ?? nil,
+                    fiveHourRemaining: quotaSeriesVisibility.showsFiveHour
+                        ? preparedData.fiveHourRemainingPercents[safe: activeIndex] ?? nil
+                        : nil,
+                    sevenDayRemaining: quotaSeriesVisibility.showsSevenDay
+                        ? preparedData.sevenDayRemainingPercents[safe: activeIndex] ?? nil
+                        : nil,
                     bucketInterval: preparedData.bucketInterval,
                     isHovering: true
                 )
@@ -911,18 +968,23 @@ struct RecentUsageChart: View {
         if showTokens { visibleSeries.append("Token") }
         if showCalls { visibleSeries.append("调用") }
         if showCacheHitRate, preparedData.hasCacheCalls { visibleSeries.append("命中率") }
-        if showFiveHourQuota, preparedData.hasFiveHourQuota { visibleSeries.append("5 小时额度") }
-        if showSevenDayQuota, preparedData.hasSevenDayQuota { visibleSeries.append("7 天额度") }
+        if showFiveHourQuota, quotaSeriesVisibility.drawsFiveHour { visibleSeries.append("5 小时额度") }
+        if showSevenDayQuota, quotaSeriesVisibility.drawsSevenDay { visibleSeries.append("7 天额度") }
 
-        return [
+        var parts = [
             "\(preparedData.bins.count) 个时间点",
             "Token 总量 \(preparedData.tokenTotal.abbreviatedTokens)",
             "调用 \(preparedData.callTotal) 次",
             "缓存命中率 \(preparedData.recentCacheBreakdown.cacheHitRate.percentString)",
-            "5 小时额度 \(Self.percentText(preparedData.latestFiveHourRemaining))",
-            "7 天额度 \(Self.percentText(preparedData.latestSevenDayRemaining))",
-            "已显示 \(visibleSeries.isEmpty ? "无曲线" : visibleSeries.joined(separator: "、"))"
-        ].joined(separator: "；")
+        ]
+        if quotaSeriesVisibility.showsFiveHour {
+            parts.append("5 小时额度 \(Self.percentText(preparedData.latestFiveHourRemaining))")
+        }
+        if quotaSeriesVisibility.showsSevenDay {
+            parts.append("7 天额度 \(Self.percentText(preparedData.latestSevenDayRemaining))")
+        }
+        parts.append("已显示 \(visibleSeries.isEmpty ? "无曲线" : visibleSeries.joined(separator: "、"))")
+        return parts.joined(separator: "；")
     }
 
     private func refreshPreparedData() {

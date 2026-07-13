@@ -4,6 +4,69 @@ import XCTest
 @testable import CodexTokenBar
 
 final class QuotaConsumptionEstimatorTests: XCTestCase {
+    func testQuotaSeriesVisibilityUsesCurrentOfficialWindowsInsteadOfHistoricalColumns() {
+        let visibility = RecentChartQuotaSeriesVisibility(
+            currentFiveHourPresent: false,
+            currentSevenDayPresent: true,
+            historyHasFiveHour: true,
+            historyHasSevenDay: true
+        )
+
+        XCTAssertFalse(visibility.showsFiveHour)
+        XCTAssertTrue(visibility.showsSevenDay)
+        XCTAssertEqual(visibility.accessibilityLabels, ["7 天额度"])
+    }
+
+    @MainActor
+    func testOptionalChartPathKeepsAnIsolatedObservedSampleVisible() {
+        let chart = RecentUsageChart(
+            bins: [],
+            hourlyBins: [],
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: []
+        )
+
+        let path = chart.optionalLinePath(points: [CGPoint(x: 4, y: 6), nil])
+
+        XCTAssertGreaterThan(path.boundingRect.width, 0)
+    }
+
+    @MainActor
+    func testPreparedDataKeepsLowActivityCacheGapsUnknownInsteadOfCarryingStaleRates() throws {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let bins = [
+            BinUsage(start: start, tokens: 1, calls: 1),
+            BinUsage(start: start.addingTimeInterval(300), tokens: 0, calls: 0),
+            BinUsage(start: start.addingTimeInterval(600), tokens: 1, calls: 1),
+        ]
+        let cacheRecentBins = [
+            TokenCacheBucket(
+                start: bins[0].start,
+                breakdown: TokenCacheBreakdown(inputTokens: 100, cachedInputTokens: 51, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 100, calls: 1)
+            ),
+            TokenCacheBucket(
+                start: bins[2].start,
+                breakdown: TokenCacheBreakdown(inputTokens: 100, cachedInputTokens: 91, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 100, calls: 1)
+            ),
+        ]
+
+        let prepared = RecentUsageChart.prepare(
+            range: .twentyFourHours,
+            recentBins: bins,
+            hourlyBins: [],
+            cacheRecentBins: cacheRecentBins,
+            cacheHourlyBins: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: []
+        )
+
+        XCTAssertEqual(try XCTUnwrap(prepared.observedCacheHitRates[0]), 0.51, accuracy: 0.0001)
+        XCTAssertNil(prepared.observedCacheHitRates[1])
+        XCTAssertEqual(try XCTUnwrap(prepared.observedCacheHitRates[2]), 0.91, accuracy: 0.0001)
+    }
+
     func testOfficialAPIPriceComputesSelectedWindowCostFromCacheAwareTokens() {
         let breakdown = TokenCacheBreakdown(
             inputTokens: 1_000_000,
@@ -67,7 +130,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             callTotal: 3,
             recentCacheBreakdown: cache.combined,
             cacheBreakdowns: cache,
-            carriedCacheHitRates: [0.2, 0.4, 0.4],
+            observedCacheHitRates: [0.2, 0.4, 0.4],
             fiveHourRemainingPercents: [80, 75, 70],
             sevenDayRemainingPercents: [90, 88, 86],
             latestFiveHourRemaining: 70,
@@ -123,7 +186,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             callTotal: 4,
             recentCacheBreakdown: cache.combined,
             cacheBreakdowns: cache,
-            carriedCacheHitRates: [0, 0, 0, 0],
+            observedCacheHitRates: [0, 0, 0, 0],
             fiveHourRemainingPercents: [80, 75, 78, 70],
             sevenDayRemainingPercents: [90, 88, 89, 86],
             latestFiveHourRemaining: 70,
@@ -168,7 +231,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             callTotal: 4,
             recentCacheBreakdown: cache.combined,
             cacheBreakdowns: cache,
-            carriedCacheHitRates: [0, 0, 0, 0],
+            observedCacheHitRates: [0, 0, 0, 0],
             fiveHourRemainingPercents: [100, 0, 99, 98],
             sevenDayRemainingPercents: [100, 0, 99, 98],
             latestFiveHourRemaining: 98,
@@ -212,7 +275,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
                 callTotal: 3,
                 recentCacheBreakdown: cache.combined,
                 cacheBreakdowns: cache,
-                carriedCacheHitRates: [0.2, 0.2, 0.2],
+                observedCacheHitRates: [0.2, 0.2, 0.2],
                 fiveHourRemainingPercents: [80, 75, 70],
                 sevenDayRemainingPercents: [90, 88, 86],
                 latestFiveHourRemaining: 70,

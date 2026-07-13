@@ -17,7 +17,7 @@ extension RecentUsageChart {
             cacheRecentBins: cacheRecentBins,
             cacheHourlyBins: cacheHourlyBins
         )
-        let carriedRates = carriedCacheHitRates(cacheBreakdowns: cacheBreakdowns)
+        let observedRates = observedCacheHitRates(cacheBreakdowns: cacheBreakdowns)
         let quotaBuckets = quotaBuckets(
             for: range,
             bins: bins,
@@ -38,7 +38,7 @@ extension RecentUsageChart {
             callTotal: bins.reduce(0) { $0 + $1.calls },
             recentCacheBreakdown: cacheBreakdowns.combined,
             cacheBreakdowns: cacheBreakdowns,
-            carriedCacheHitRates: carriedRates,
+            observedCacheHitRates: observedRates,
             fiveHourRemainingPercents: fiveHourRemaining,
             sevenDayRemainingPercents: sevenDayRemaining,
             latestFiveHourRemaining: fiveHourRemaining.reversed().compactMap { $0 }.first,
@@ -197,14 +197,9 @@ extension RecentUsageChart {
         return "\(Int(value.rounded()))%"
     }
 
-    private static func carriedCacheHitRates(cacheBreakdowns: [TokenCacheBreakdown]) -> [Double] {
-        var carriedRate = cacheBreakdowns.first(where: { $0.calls > 0 })?.cacheHitRate ?? 0
-        return cacheBreakdowns.map { breakdown in
-            if breakdown.calls > 0 {
-                carriedRate = breakdown.cacheHitRate
-                return breakdown.cacheHitRate
-            }
-            return carriedRate
+    private static func observedCacheHitRates(cacheBreakdowns: [TokenCacheBreakdown]) -> [Double?] {
+        cacheBreakdowns.map { breakdown in
+            breakdown.calls > 0 ? breakdown.cacheHitRate : nil
         }
     }
 }
