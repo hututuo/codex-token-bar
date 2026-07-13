@@ -65,7 +65,7 @@ struct TokenQuotaMiniSegment: View {
                         .fill(floatingTrackColor)
                     if fillWidth > 0 {
                         quotaSegmentShape
-                            .fill(AppTheme.accentBlue.opacity(0.78))
+                            .fill(AppTheme.quotaRemainingColor(percent: Double(window.remainingPercent)).opacity(0.78))
                             .frame(width: min(proxy.size.width, max(proxy.size.height, fillWidth)), height: proxy.size.height)
                     }
                 }
@@ -141,9 +141,16 @@ struct TokenDisplayRadarStrip: View {
         let primary = snapshot?.modelIQ.primaryModelRow.point
         let actionPalette = actionTextPalette ?? textPalette
         let modelPalette = modelTextPalette ?? textPalette
+        let actionAccent = AppTheme.radarActionColor(snapshot?.recommendedAction)
+        let primaryAccent = primary.map {
+            AppTheme.radarScoreColor(passed: $0.passed, tasks: $0.tasks, score: $0.score)
+        } ?? AppTheme.accentBlue
         HStack(spacing: 7.scaled(by: displayScale)) {
             VStack(alignment: .leading, spacing: 2.scaled(by: displayScale)) {
                 HStack(alignment: .firstTextBaseline, spacing: 3.scaled(by: displayScale)) {
+                    Circle()
+                        .fill(actionAccent)
+                        .frame(width: 4.scaled(by: displayScale), height: 4.scaled(by: displayScale))
                     Text("动作 \(CodexRadarPresentationText.action(snapshot?.recommendedAction))")
                         .font(.system(size: 9.3.scaled(by: displayScale), weight: .bold))
                         .foregroundStyle(actionPalette.primaryColor)
@@ -173,6 +180,9 @@ struct TokenDisplayRadarStrip: View {
 
             VStack(alignment: .leading, spacing: 1.scaled(by: displayScale)) {
                 HStack(alignment: .lastTextBaseline, spacing: 3.scaled(by: displayScale)) {
+                    Circle()
+                        .fill(primaryAccent)
+                        .frame(width: 4.scaled(by: displayScale), height: 4.scaled(by: displayScale))
                     Text(primary?.scoreDisplayText ?? "IQ --")
                         .font(.system(size: 11.8.scaled(by: displayScale), weight: .bold, design: .rounded))
                         .foregroundStyle(modelPalette.primaryColor)

@@ -1,6 +1,19 @@
 import AppKit
 import SwiftUI
 
+struct SemanticAccentRGB: Equatable {
+    let red: Int
+    let green: Int
+    let blue: Int
+}
+
+enum SemanticAccentRole: Equatable {
+    case red
+    case amber
+    case green
+    case blue
+}
+
 enum AppTheme {
     static let pageBackground = adaptive(
         light: rgba(0.955, 0.965, 0.980),
@@ -54,6 +67,9 @@ enum AppTheme {
         light: rgba(0.880, 0.430, 0.100),
         dark: rgba(1.000, 0.620, 0.260)
     )
+    static let accentRed = accentColor(for: .red)
+    static let accentAmber = accentColor(for: .amber)
+    static let accentGreen = accentColor(for: .green)
     static let hoverBubble = adaptive(
         light: rgba(1.000, 1.000, 1.000, 0.960),
         dark: rgba(0.080, 0.100, 0.135, 0.960)
@@ -110,15 +126,100 @@ enum AppTheme {
     }
 
     static func quotaRemainingColor(percent: Double) -> Color {
-        switch percent {
-        case 0..<20:
-            return accentOrange
-        case 20..<45:
-            return adaptive(light: rgba(0.900, 0.620, 0.050), dark: rgba(1.000, 0.720, 0.180))
-        case 45..<70:
-            return accentCyan
+        semanticMetricColor(percent: percent)
+    }
+
+    static func semanticMetricRGB(percent: Double) -> SemanticAccentRGB {
+        let stops: [(percent: Double, color: SemanticAccentRGB)] = [
+            (0, .init(red: 202, green: 60, blue: 73)),
+            (35, .init(red: 204, green: 139, blue: 38)),
+            (70, .init(red: 31, green: 158, blue: 94)),
+            (100, .init(red: 20, green: 105, blue: 204))
+        ]
+        let value = percent.isFinite ? min(100, max(0, percent)) : 0
+        guard let upperIndex = stops.firstIndex(where: { value <= $0.percent }), upperIndex > 0 else {
+            return stops[0].color
+        }
+        let lower = stops[upperIndex - 1]
+        let upper = stops[upperIndex]
+        let progress = (value - lower.percent) / (upper.percent - lower.percent)
+        return SemanticAccentRGB(
+            red: interpolateChannel(lower.color.red, upper.color.red, progress: progress),
+            green: interpolateChannel(lower.color.green, upper.color.green, progress: progress),
+            blue: interpolateChannel(lower.color.blue, upper.color.blue, progress: progress)
+        )
+    }
+
+    static func semanticMetricColor(percent: Double) -> Color {
+        let rgb = semanticMetricRGB(percent: percent)
+        return Color(
+            red: Double(rgb.red) / 255,
+            green: Double(rgb.green) / 255,
+            blue: Double(rgb.blue) / 255
+        )
+    }
+
+    static func radarScorePercent(passed: Int, tasks: Int, score: Double) -> Double {
+        if tasks > 0 {
+            return min(100, max(0, Double(passed) / Double(tasks) * 100))
+        }
+        return min(100, max(0, score / 1.5))
+    }
+
+    static func radarScoreColor(passed: Int, tasks: Int, score: Double) -> Color {
+        let rgb = radarScoreRGB(passed: passed, tasks: tasks, score: score)
+        return Color(
+            red: Double(rgb.red) / 255,
+            green: Double(rgb.green) / 255,
+            blue: Double(rgb.blue) / 255
+        )
+    }
+
+    static func radarScoreRGB(passed: Int, tasks: Int, score: Double) -> SemanticAccentRGB {
+        semanticMetricRGB(percent: radarScorePercent(passed: passed, tasks: tasks, score: score) * 0.7)
+    }
+
+    static func radarActionRole(_ action: String?) -> SemanticAccentRole {
+        switch action?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "wait", "waiting", "hold", "等待", "暂缓":
+            return .amber
+        case "run", "go", "open", "运行", "可运行", "开放":
+            return .green
+        case "closed", "关闭":
+            return .red
         default:
-            return accentBlue
+            return .blue
+        }
+    }
+
+    static func radarActionColor(_ action: String?) -> Color {
+        accentColor(for: radarActionRole(action))
+    }
+
+    static func quotaPaceRole(_ label: String?) -> SemanticAccentRole {
+        let value = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if value.range(of: "太快|先省|省着|别梭哈|告急|紧张|余量低|很低|不够烧|掉太快", options: .regularExpression) != nil {
+            return .red
+        }
+        if value.range(of: "偏快|稍快|用得快", options: .regularExpression) != nil {
+            return .amber
+        }
+        if value.range(of: "稳定|节奏很好|节奏稳|贴线|稳稳收官", options: .regularExpression) != nil {
+            return .green
+        }
+        return .blue
+    }
+
+    static func accentColor(for role: SemanticAccentRole) -> Color {
+        switch role {
+        case .red:
+            return semanticMetricColor(percent: 0)
+        case .amber:
+            return semanticMetricColor(percent: 35)
+        case .green:
+            return semanticMetricColor(percent: 70)
+        case .blue:
+            return semanticMetricColor(percent: 100)
         }
     }
 
@@ -134,5 +235,9 @@ enum AppTheme {
 
     private static func rgba(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat, _ alpha: CGFloat = 1) -> NSColor {
         NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
+    }
+
+    private static func interpolateChannel(_ lower: Int, _ upper: Int, progress: Double) -> Int {
+        Int((Double(lower) + Double(upper - lower) * progress).rounded())
     }
 }
