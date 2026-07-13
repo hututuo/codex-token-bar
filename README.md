@@ -15,7 +15,7 @@
   </tr>
 </table>
 
-Codex Token Bar 是一个本地优先的 Codex 用量仪表盘。它读取本机 Codex 日志、账号接口和 Codex 雷达站，显示 token 用量、实时输出速度、缓存命中率、5h / 7d 额度、推荐模型、IQ 趋势和重置卡详情。
+Codex Token Bar 是一个本地优先的 Codex 用量仪表盘。它读取本机 Codex 日志、账号接口和 Codex 雷达站，显示 token 用量、实时输出速度、缓存命中率、官方实际提供的额度窗口、推荐模型、IQ 趋势和重置卡详情。
 
 当前有两条正式实现线：
 
@@ -40,9 +40,9 @@ Codex Token Bar 是一个本地优先的 Codex 用量仪表盘。它读取本机
 
 - 全会话实时 token 速率，支持主界面、悬浮窗和状态栏/托盘读数。
 - 接入 Codex 雷达站：显示建议动作、24h / 48h 概率、今日主模型、IQ 分数、模型对比和环境压力。
-- 速蹬窗口：把雷达建议、模型 IQ、5h / 7d 额度和本地实时速度放进一个可配置的小窗口。
+- 速蹬窗口：把雷达建议、模型 IQ、当前可用额度窗口和本地实时速度放进一个可配置的小窗口。
 - 年度 token 热力图、最近 24 小时 5 分钟粒度曲线、缓存命中率曲线和缓存排行。
-- Codex 5h / 7d 额度显示、本地轻量历史记录、雷达站额度预估和节奏提示。
+- Codex 额度按官方实际窗口自适应：只提供 7d 时只显示 7d，同时提供 5h / 7d 时才显示两条，并保留本地轻量历史、雷达站额度预估和节奏提示。
 - 重置卡详情：显示可用重置机会、每张卡的来源、关联用户、到期时间、剩余时间和卡片编号。
 - 本地优先：读取 `~/.codex` 本地数据，不上传 prompt、输出、日志或账号额度。
 
@@ -148,7 +148,7 @@ sessions/
 state_5.sqlite
 ```
 
-`sessions/` 用于精确 token_count、缓存命中率和会话轮次统计。`state_5.sqlite` 在可用时用于补充会话元数据。账号额度通过本地 Codex 账户接口读取，并只把轻量额度百分比历史写入应用自己的本地数据目录。
+`sessions/` 用于精确 token_count、缓存命中率和会话轮次统计。`state_5.sqlite` 在可用时用于补充会话元数据。账号额度通过本地 Codex 账户接口读取，按窗口时长识别 5h / 7d 身份，并只把轻量额度百分比历史写入应用自己的本地数据目录。
 
 ## 从源码运行
 
@@ -204,7 +204,7 @@ MIT
 
 ## English
 
-Codex Token Bar is a local-first Codex usage dashboard. It reads local Codex logs, account endpoints, and the Codex Radar feed to show token usage, live output speed, cache hit rates, 5h / 7d quota, recommended models, IQ trends, and reset-credit details.
+Codex Token Bar is a local-first Codex usage dashboard. It reads local Codex logs, account endpoints, and the Codex Radar feed to show token usage, live output speed, cache hit rates, the quota windows Codex actually provides, recommended models, IQ trends, and reset-credit details.
 
 There are now two official implementation lines:
 
@@ -229,9 +229,9 @@ There are now two official implementation lines:
 
 - Live all-session token speed across the dashboard, floating panel, and status/tray surfaces.
 - Codex Radar integration: suggested action, 24h / 48h probabilities, today's primary model, IQ score, model comparison, and environment pressure.
-- Floating pace panel: combines Radar action, model IQ, 5h / 7d quota, and local live speed in a configurable compact window.
+- Floating pace panel: combines Radar action, model IQ, the currently available quota windows, and local live speed in a configurable compact window.
 - Yearly token heatmap, 5-minute recent activity chart, cache hit-rate curve, and cache hit ranking.
-- Codex 5h / 7d quota display with lightweight local history, Radar quota estimates, and compact pace hints.
+- Adaptive Codex quota display: a 7-day-only account shows only 7d, while 5h and 7d appear together only when both are available, with lightweight local history, Radar estimates, and compact pace hints.
 - Reset credit details: see available reset credits, grant reason, linked user, expiry time, remaining time, and card ID.
 - Local-first: reads local `~/.codex` data and does not upload prompts, outputs, logs, or quota data.
 
@@ -335,7 +335,7 @@ sessions/
 state_5.sqlite
 ```
 
-`sessions/` powers precise token_count, cache hit-rate, and turn-level statistics. `state_5.sqlite` supplements session metadata. Account quota history stores only lightweight percentage samples in the app's local data directory.
+`sessions/` powers precise token_count, cache hit-rate, and turn-level statistics. `state_5.sqlite` supplements session metadata. Account quota windows are identified by their actual duration, and the app stores only lightweight percentage history in its local data directory.
 
 ## Run From Source
 
