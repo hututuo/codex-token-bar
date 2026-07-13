@@ -36,20 +36,20 @@ function localUnix(year, monthIndex, day, hour = 0, minute = 0) {
   return Math.floor(new Date(year, monthIndex, day, hour, minute).getTime() / 1_000);
 }
 
-test("prepareRecentChartData selects range-specific points and carries cache hit rate", () => {
+test("prepareRecentChartData keeps low-activity cache gaps unknown instead of carrying stale rates", () => {
   const data = prepareRecentChartData("7d", {
     recentUsage24h: [point(0, { tokens: 10 })],
     recentUsage7d: [
-      point(0, { calls: 1, inputTokens: 100, cachedInputTokens: 80, cacheHitRate: 0.8, fiveHourRemainingPercent: 0.7 }),
+      point(0, { calls: 1, inputTokens: 100, cachedInputTokens: 51, cacheHitRate: 0.51, fiveHourRemainingPercent: 0.7 }),
       point(3600, { calls: 0, cacheHitRate: null }),
-      point(7200, { calls: 1, inputTokens: 100, cachedInputTokens: 90, cacheHitRate: 0.9, sevenDayRemainingPercent: 0.6 }),
+      point(7200, { calls: 1, inputTokens: 100, cachedInputTokens: 91, cacheHitRate: 0.91, sevenDayRemainingPercent: 0.6 }),
     ],
     recentUsage30d: [point(0, { tokens: 30 })],
   });
 
   assert.equal(data.title, "最近 7 天");
   assert.equal(data.points.length, 3);
-  assert.deepEqual(data.carriedCacheHitRates, [0.8, 0.8, 0.9]);
+  assert.deepEqual(data.observedCacheHitRates, [0.51, null, 0.91]);
   assert.equal(data.latestFiveHourRemaining, 0.7);
   assert.equal(data.latestSevenDayRemaining, 0.6);
   assert.equal(data.markerIndices.at(-1), 2);
@@ -109,7 +109,7 @@ test("recent chart normalizes malformed cache inputs at the model boundary", () 
     ],
   );
   assert.ok(data.cacheHitRate >= 0 && data.cacheHitRate <= 1);
-  assert.deepEqual(data.carriedCacheHitRates, [1, 0, 0]);
+  assert.deepEqual(data.observedCacheHitRates, [1, 0, null]);
   assert.ok(selection.cachedInputTokens <= selection.inputTokens);
   assert.equal(data.cacheHitRate, 1);
   assert.equal(selection.cacheHitRate, 1);
@@ -159,6 +159,7 @@ test("smoothPath uses cubic commands and optionalSmoothPath breaks at missing qu
       .length,
     2,
   );
+  assert.match(optionalSmoothPath([{ x: 4, y: 6 }, null]), /^M 4 6 L /);
 });
 
 test("smoothPath falls back to a full polyline when x positions are not increasing", () => {

@@ -29,6 +29,8 @@ interface RecentUsageChartProps {
   recentUsage24h: RecentUsagePoint[];
   recentUsage7d: RecentUsagePoint[];
   recentUsage30d: RecentUsagePoint[];
+  fiveHourQuotaPresent?: boolean;
+  sevenDayQuotaPresent?: boolean;
 }
 
 const CHART_WIDTH = 980;
@@ -49,6 +51,8 @@ export function RecentUsageChart({
   recentUsage24h,
   recentUsage7d,
   recentUsage30d,
+  fiveHourQuotaPresent = true,
+  sevenDayQuotaPresent = true,
 }: RecentUsageChartProps) {
   const [range, setRange] = useState<RecentChartRange>(() => readStoredRange());
   const [visibility, setVisibility] = useState<SeriesVisibility>(() => readStoredVisibility());
@@ -179,8 +183,8 @@ export function RecentUsageChart({
             <LegendDot className="legend-dot--token" label="Token" value={formatTokens(data.tokenTotal)} />
             <LegendDot className="legend-dot--calls" label="调用" value={`${data.callTotal}`} />
             <LegendDot className="legend-dot--hit" label="命中率" value={percentText(data.cacheHitRate)} />
-            <LegendDot className="legend-dot--five" label="5h" value={percentText(data.latestFiveHourRemaining)} />
-            <LegendDot className="legend-dot--seven" label="7d" value={percentText(data.latestSevenDayRemaining)} />
+            {fiveHourQuotaPresent ? <LegendDot className="legend-dot--five" label="5h" value={percentText(data.latestFiveHourRemaining)} /> : null}
+            {sevenDayQuotaPresent ? <LegendDot className="legend-dot--seven" label="7d" value={percentText(data.latestSevenDayRemaining)} /> : null}
           </div>
           <div className="chart-line-toggles" aria-label="曲线显示">
             <LineToggle active={visibility.tokens} className="toggle-token" label="Token" onClick={() => updateVisibility("tokens")} />
@@ -191,8 +195,8 @@ export function RecentUsageChart({
               label="命中率"
               onClick={() => updateVisibility("cacheHitRate")}
             />
-            <LineToggle active={visibility.fiveHourQuota} className="toggle-five" label="5h" onClick={() => updateVisibility("fiveHourQuota")} />
-            <LineToggle active={visibility.sevenDayQuota} className="toggle-seven" label="7d" onClick={() => updateVisibility("sevenDayQuota")} />
+            {fiveHourQuotaPresent ? <LineToggle active={visibility.fiveHourQuota} className="toggle-five" label="5h" onClick={() => updateVisibility("fiveHourQuota")} /> : null}
+            {sevenDayQuotaPresent ? <LineToggle active={visibility.sevenDayQuota} className="toggle-seven" label="7d" onClick={() => updateVisibility("sevenDayQuota")} /> : null}
           </div>
         </div>
       </div>
@@ -218,7 +222,7 @@ export function RecentUsageChart({
               role="img"
               viewBox={`0 0 ${chartWidth} ${CHART_HEIGHT}`}
             >
-              <title>{chartAccessibility(data, visibility)}</title>
+              <title>{chartAccessibility(data, visibility, fiveHourQuotaPresent, sevenDayQuotaPresent)}</title>
               <rect className="chart-plot-bg" x="0" y={PLOT_TOP} width={chartWidth} height={PLOT_HEIGHT} rx="8" />
               {consumptionSelection ? <SelectionRange chartWidth={chartWidth} pointCount={data.points.length} selection={consumptionSelection} /> : null}
               {[0, 1, 2, 3].map((line) => {
@@ -235,19 +239,21 @@ export function RecentUsageChart({
                 <path className="chart-line chart-line--calls" d={offsetPath(smoothPath(plotData.callPoints))} />
               ) : null}
               {visibility.cacheHitRate && data.hasCacheCalls ? (
-                <path className="chart-line chart-line--hit" d={offsetPath(smoothPath(plotData.cachePoints))} />
+                <path className="chart-line chart-line--hit" d={offsetPath(optionalSmoothPath(plotData.cachePoints))} />
               ) : null}
-              {visibility.fiveHourQuota && data.hasFiveHourQuota ? (
+              {fiveHourQuotaPresent && visibility.fiveHourQuota && data.hasFiveHourQuota ? (
                 <path className="chart-line chart-line--five" d={offsetPath(optionalSmoothPath(plotData.fiveHourQuotaPoints))} />
               ) : null}
-              {visibility.sevenDayQuota && data.hasSevenDayQuota ? (
+              {sevenDayQuotaPresent && visibility.sevenDayQuota && data.hasSevenDayQuota ? (
                 <path className="chart-line chart-line--seven" d={offsetPath(optionalSmoothPath(plotData.sevenDayQuotaPoints))} />
               ) : null}
               {activeIndex !== null && activeTokenPoint ? (
                 <HoverGuides
                   data={data}
+                  fiveHourQuotaPresent={fiveHourQuotaPresent}
                   index={activeIndex}
                   plotData={plotData}
+                  sevenDayQuotaPresent={sevenDayQuotaPresent}
                   visibility={visibility}
                 />
               ) : null}
@@ -263,16 +269,18 @@ export function RecentUsageChart({
             <HoverBubble
               bucketSeconds={data.bucketSeconds}
               cacheVisible={visibility.cacheHitRate}
-              fiveHourRemaining={activePoint.fiveHourRemainingPercent}
+              fiveHourRemaining={fiveHourQuotaPresent ? activePoint.fiveHourRemainingPercent : null}
               point={activePoint}
-              sevenDayRemaining={activePoint.sevenDayRemainingPercent}
+              sevenDayRemaining={sevenDayQuotaPresent ? activePoint.sevenDayRemainingPercent : null}
               viewportWidth={chartViewportWidth}
               x={activeTokenPoint.x - chartScrollLeft}
             />
           ) : null}
           {consumptionSelection ? (
             <RecentChartQuotaEstimateOverlay
+              fiveHourQuotaPresent={fiveHourQuotaPresent}
               selection={consumptionSelection}
+              sevenDayQuotaPresent={sevenDayQuotaPresent}
               onClose={() => setQuotaSelectionState({ startIndex: null, fixedEndIndex: null })}
             />
           ) : null}
@@ -300,13 +308,17 @@ function SelectionRange({ chartWidth, pointCount, selection }: { chartWidth: num
 
 function HoverGuides({
   data,
+  fiveHourQuotaPresent,
   index,
   plotData,
+  sevenDayQuotaPresent,
   visibility,
 }: {
   data: ReturnType<typeof prepareRecentChartData>;
+  fiveHourQuotaPresent: boolean;
   index: number;
   plotData: ReturnType<typeof plotChartPoints>;
+  sevenDayQuotaPresent: boolean;
   visibility: SeriesVisibility;
 }) {
   const tokenPoint = plotData.tokenPoints[index];
@@ -321,11 +333,11 @@ function HoverGuides({
       <line className="chart-hover-line" x1={tokenPoint.x} x2={tokenPoint.x} y1={PLOT_TOP} y2={PLOT_TOP + PLOT_HEIGHT} />
       {visibility.tokens ? <HoverRing className="hover-token" point={offsetPoint(tokenPoint)} radius={4.5} /> : null}
       {visibility.calls ? <HoverRing className="hover-calls" point={offsetPoint(callPoint)} radius={4} /> : null}
-      {visibility.cacheHitRate && point.calls > 0 && point.cacheHitRate !== null ? (
+      {visibility.cacheHitRate && point.calls > 0 && point.cacheHitRate !== null && cachePoint ? (
         <HoverRing className="hover-hit" point={offsetPoint(cachePoint)} radius={4} />
       ) : null}
-      {visibility.fiveHourQuota && fiveHourPoint ? <HoverRing className="hover-five" point={offsetPoint(fiveHourPoint)} radius={3.5} /> : null}
-      {visibility.sevenDayQuota && sevenDayPoint ? <HoverRing className="hover-seven" point={offsetPoint(sevenDayPoint)} radius={3.5} /> : null}
+      {fiveHourQuotaPresent && visibility.fiveHourQuota && fiveHourPoint ? <HoverRing className="hover-five" point={offsetPoint(fiveHourPoint)} radius={3.5} /> : null}
+      {sevenDayQuotaPresent && visibility.sevenDayQuota && sevenDayPoint ? <HoverRing className="hover-seven" point={offsetPoint(sevenDayPoint)} radius={3.5} /> : null}
     </g>
   );
 }
@@ -353,6 +365,10 @@ function HoverBubble({
 }) {
   const left = Math.min(Math.max(x, 92), Math.max(92, viewportWidth - 92));
   const average = point.calls > 0 ? Math.round(point.tokens / point.calls) : 0;
+  const quotaParts = [
+    fiveHourRemaining !== null ? `5h ${percentText(fiveHourRemaining)}` : null,
+    sevenDayRemaining !== null ? `7d ${percentText(sevenDayRemaining)}` : null,
+  ].filter(Boolean);
 
   return (
     <div className="chart-hover-bubble" style={{ left: `${left}px` }}>
@@ -365,19 +381,21 @@ function HoverBubble({
       {cacheVisible && point.calls > 0 && point.cacheHitRate !== null ? (
         <em>缓存命中 {percentText(point.cacheHitRate)}</em>
       ) : null}
-      {fiveHourRemaining !== null || sevenDayRemaining !== null ? (
-        <span>额度 5h {percentText(fiveHourRemaining)} · 7d {percentText(sevenDayRemaining)}</span>
-      ) : null}
+      {quotaParts.length > 0 ? <span>额度 {quotaParts.join(" · ")}</span> : null}
       <em>点击起点/终点可估算额度</em>
     </div>
   );
 }
 
 function RecentChartQuotaEstimateOverlay({
+  fiveHourQuotaPresent,
   selection,
+  sevenDayQuotaPresent,
   onClose,
 }: {
+  fiveHourQuotaPresent: boolean;
   selection: QuotaConsumptionSelection;
+  sevenDayQuotaPresent: boolean;
   onClose: () => void;
 }) {
   return (
@@ -391,17 +409,19 @@ function RecentChartQuotaEstimateOverlay({
         </div>
         <div className="quota-estimate-row">
           <span>反推总额度</span>
-          <QuotaEstimateChip title="5h" estimate={selection.fiveHour} className="quota-chip--five" />
-          <QuotaEstimateChip title="7d" estimate={selection.sevenDay} className="quota-chip--seven" />
+          {fiveHourQuotaPresent ? <QuotaEstimateChip title="5h" estimate={selection.fiveHour} className="quota-chip--five" /> : null}
+          {sevenDayQuotaPresent ? <QuotaEstimateChip title="7d" estimate={selection.sevenDay} className="quota-chip--seven" /> : null}
         </div>
-        <div className="quota-estimate-row">
-          <span>倍率</span>
-          <strong className={selection.hasDivergentBudgetRatio ? "is-warning" : ""}>
-            {selection.sevenDayToFiveHourBudgetRatio === null ? "--" : `${selection.sevenDayToFiveHourBudgetRatio.toFixed(1)}x`}
-          </strong>
-          <em>7d/5h，正常约 6x</em>
-          {selection.hasDivergentBudgetRatio ? <b className="is-warning">偏离 6x，误差可能较大</b> : null}
-        </div>
+        {fiveHourQuotaPresent && sevenDayQuotaPresent ? (
+          <div className="quota-estimate-row">
+            <span>倍率</span>
+            <strong className={selection.hasDivergentBudgetRatio ? "is-warning" : ""}>
+              {selection.sevenDayToFiveHourBudgetRatio === null ? "--" : `${selection.sevenDayToFiveHourBudgetRatio.toFixed(1)}x`}
+            </strong>
+            <em>7d/5h，正常约 6x</em>
+            {selection.hasDivergentBudgetRatio ? <b className="is-warning">偏离 6x，误差可能较大</b> : null}
+          </div>
+        ) : null}
       </div>
       <button aria-label="关闭额度估算" onClick={onClose} type="button">×</button>
     </div>
@@ -521,13 +541,18 @@ function readStoredQuotaModel(): OfficialAPIPriceModel {
   return stored === "gpt54" || stored === "gpt54Mini" || stored === "gpt55" ? stored : "gpt55";
 }
 
-function chartAccessibility(data: ReturnType<typeof prepareRecentChartData>, visibility: SeriesVisibility): string {
+function chartAccessibility(
+  data: ReturnType<typeof prepareRecentChartData>,
+  visibility: SeriesVisibility,
+  fiveHourQuotaPresent: boolean,
+  sevenDayQuotaPresent: boolean,
+): string {
   const visible = [
     visibility.tokens ? "Token" : null,
     visibility.calls ? "调用" : null,
     visibility.cacheHitRate && data.hasCacheCalls ? "命中率" : null,
-    visibility.fiveHourQuota && data.hasFiveHourQuota ? "5 小时额度" : null,
-    visibility.sevenDayQuota && data.hasSevenDayQuota ? "7 天额度" : null,
+    fiveHourQuotaPresent && visibility.fiveHourQuota && data.hasFiveHourQuota ? "5 小时额度" : null,
+    sevenDayQuotaPresent && visibility.sevenDayQuota && data.hasSevenDayQuota ? "7 天额度" : null,
   ].filter(Boolean);
 
   return `${data.title}，${data.points.length} 个时间点，Token 总量 ${formatTokens(data.tokenTotal)}，调用 ${data.callTotal} 次，已显示 ${visible.join("、") || "无曲线"}`;

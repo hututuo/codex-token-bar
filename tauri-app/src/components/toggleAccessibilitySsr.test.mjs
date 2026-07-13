@@ -40,6 +40,8 @@ test("recent usage range and line toggles expose selected state with aria-presse
         recentUsage24h: [],
         recentUsage7d: [],
         recentUsage30d: [],
+        fiveHourQuotaPresent: false,
+        sevenDayQuotaPresent: true,
       }));
 
       assertButtonPressed(html, "24h", false);
@@ -48,7 +50,8 @@ test("recent usage range and line toggles expose selected state with aria-presse
       assertButtonPressed(html, "Token", true);
       assertButtonPressed(html, "调用", false);
       assertButtonPressed(html, "命中率", true);
-      assertButtonPressed(html, "5h", false);
+      assert.equal(html.includes(">5h<"), false);
+      assertButtonPressed(html, "7d", true);
     });
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
