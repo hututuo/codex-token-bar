@@ -170,13 +170,21 @@ private struct CodexRadarWindowBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            CodexRadarBlockTitle("速蹬窗口", systemImage: "bolt.badge.clock")
+            CodexRadarBlockTitle(
+                "速蹬窗口",
+                systemImage: "bolt.badge.clock",
+                accent: AppTheme.radarActionColor(snapshot?.recommendedAction)
+            )
             Text(snapshot?.window.message ?? "等待 Codex 雷达")
                 .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
                 .truncationMode(.tail)
             HStack(spacing: 10) {
-                CodexRadarTinyMetric(label: "建议动作", value: CodexRadarPresentationText.action(snapshot?.recommendedAction))
+                CodexRadarTinyMetric(
+                    label: "建议动作",
+                    value: CodexRadarPresentationText.action(snapshot?.recommendedAction),
+                    valueColor: AppTheme.radarActionColor(snapshot?.recommendedAction)
+                )
                 CodexRadarTinyMetric(label: "24h", value: probabilityText(snapshot?.prediction.probability24hPercent))
                 CodexRadarTinyMetric(label: "48h", value: probabilityText(snapshot?.prediction.probability48hPercent))
             }
@@ -191,10 +199,19 @@ private struct CodexRadarModelIQBlock: View {
     var body: some View {
         let primary = snapshot?.modelIQ.primaryModelRow.point
         VStack(alignment: .leading, spacing: 6) {
-            CodexRadarBlockTitle("今日主模型", systemImage: "brain.head.profile")
+            CodexRadarBlockTitle(
+                "今日主模型",
+                systemImage: "brain.head.profile",
+                accent: primary.map {
+                    AppTheme.radarScoreColor(passed: $0.passed, tasks: $0.tasks, score: $0.score)
+                }
+            )
             HStack(alignment: .lastTextBaseline, spacing: 8) {
                 Text(primary?.scoreDisplayText ?? "IQ --")
                     .font(.system(size: 20, weight: .semibold, design: .rounded))
+                    .foregroundStyle(primary.map {
+                        AppTheme.radarScoreColor(passed: $0.passed, tasks: $0.tasks, score: $0.score)
+                    } ?? .primary)
                     .monospacedDigit()
                 Text(primary.map { CodexRadarPresentationText.compactModelName($0.modelDisplayName) } ?? "待读取")
                     .font(.system(size: 11, weight: .medium))
@@ -205,7 +222,11 @@ private struct CodexRadarModelIQBlock: View {
                 ForEach((snapshot?.modelIQ.secondaryModelRows ?? []).prefix(3), id: \.label) { row in
                     Text("\(CodexRadarPresentationText.compactModelName(row.label)) \(CodexRadarModelIQPoint.display(row.point.score))")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(color(for: row.point.status))
+                        .foregroundStyle(AppTheme.radarScoreColor(
+                            passed: row.point.passed,
+                            tasks: row.point.tasks,
+                            score: row.point.score
+                        ))
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                 }
@@ -721,23 +742,30 @@ private struct CodexRadarEnvironmentDetail: View {
 private struct CodexRadarBlockTitle: View {
     let title: String
     let systemImage: String
+    let accent: Color?
 
-    init(_ title: String, systemImage: String) {
+    init(_ title: String, systemImage: String, accent: Color? = nil) {
         self.title = title
         self.systemImage = systemImage
+        self.accent = accent
     }
 
     var body: some View {
-        Label(title, systemImage: systemImage)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .foregroundStyle(accent ?? .secondary)
+            Text(title)
+                .foregroundStyle(.secondary)
+        }
+        .font(.system(size: 11, weight: .semibold))
+        .lineLimit(1)
     }
 }
 
 private struct CodexRadarTinyMetric: View {
     let label: String
     let value: String
+    var valueColor: Color = .primary
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -746,6 +774,7 @@ private struct CodexRadarTinyMetric: View {
                 .foregroundStyle(.secondary)
             Text(value)
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(valueColor)
                 .monospacedDigit()
                 .lineLimit(1)
         }
@@ -1326,11 +1355,11 @@ private func probabilityText(_ percent: Int?) -> String {
 private func color(for status: String) -> Color {
     switch status {
     case "green":
-        return .green
+        return AppTheme.accentGreen
     case "yellow":
         return AppTheme.accentOrange
     case "red":
-        return .red
+        return AppTheme.accentRed
     default:
         return .secondary
     }

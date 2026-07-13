@@ -168,10 +168,16 @@ struct AccountQuotaStrip: View {
 
                 HStack(spacing: AccountQuotaSegmentLayout.interSegmentSpacing) {
                     if let fiveHour = snapshot.fiveHour {
-                        AccountQuotaSegment(window: fiveHour, accent: AppTheme.accentCyan)
+                        AccountQuotaSegment(
+                            window: fiveHour,
+                            accent: AppTheme.quotaRemainingColor(percent: Double(fiveHour.remainingPercent))
+                        )
                     }
                     if let sevenDay = snapshot.sevenDay {
-                        AccountQuotaSegment(window: sevenDay, accent: AppTheme.accentBlue)
+                        AccountQuotaSegment(
+                            window: sevenDay,
+                            accent: AppTheme.quotaRemainingColor(percent: Double(sevenDay.remainingPercent))
+                        )
                     }
                 }
                 .frame(width: AccountQuotaStripLayout.combinedQuotaSegmentsWidth, alignment: .leading)
@@ -712,16 +718,7 @@ struct AccountQuotaPaceInsight: View {
 
     private var accent: Color {
         guard let insight else { return .secondary }
-        switch insight.severity {
-        case .urgent:
-            return AppTheme.accentOrange
-        case .fast:
-            return AppTheme.accentCyan
-        case .slightlyFast:
-            return Color.orange
-        case .steady, .roomy:
-            return AppTheme.accentBlue
-        }
+        return AppTheme.accentColor(for: AppTheme.quotaPaceRole(insight.title))
     }
 
     var body: some View {
