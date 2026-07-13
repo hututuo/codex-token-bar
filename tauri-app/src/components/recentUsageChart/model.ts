@@ -43,7 +43,7 @@ export interface PreparedRecentChartData {
   tokenTotal: number;
   callTotal: number;
   cacheHitRate: number;
-  carriedCacheHitRates: number[];
+  observedCacheHitRates: Array<number | null>;
   latestFiveHourRemaining: number | null;
   latestSevenDayRemaining: number | null;
   hasCacheCalls: boolean;
@@ -171,7 +171,7 @@ export function prepareRecentChartData(
   const tokenTotal = points.reduce((total, point) => total + point.tokens, 0);
   const callTotal = points.reduce((total, point) => total + point.calls, 0);
   const inputWeightedCacheHit = weightedCacheHitRate(points);
-  const carriedCacheHitRates = carriedCacheRates(points);
+  const observedCacheHitRates = observedCacheRates(points);
   const fiveHourValues = points.map((point) => point.fiveHourRemainingPercent);
   const sevenDayValues = points.map((point) => point.sevenDayRemainingPercent);
   const last = points.length - 1;
@@ -187,7 +187,7 @@ export function prepareRecentChartData(
     tokenTotal,
     callTotal,
     cacheHitRate: inputWeightedCacheHit,
-    carriedCacheHitRates,
+    observedCacheHitRates,
     latestFiveHourRemaining: latestPresent(fiveHourValues),
     latestSevenDayRemaining: latestPresent(sevenDayValues),
     hasCacheCalls: points.some((point) => point.calls > 0 && point.cacheHitRate !== null),
@@ -211,10 +211,12 @@ export function plotChartPoints(data: PreparedRecentChartData, width: number, pl
       x: index * step,
       y: plotHeight - (point.calls / data.maxCalls) * plotHeight,
     })),
-    cachePoints: data.points.map((_, index) => ({
-      x: index * step,
-      y: plotHeight - (data.carriedCacheHitRates[index] ?? 0) * plotHeight,
-    })),
+    cachePoints: data.points.map((_, index) => {
+      const rate = data.observedCacheHitRates[index];
+      return rate === null || rate === undefined
+        ? null
+        : { x: index * step, y: plotHeight - rate * plotHeight };
+    }),
     fiveHourQuotaPoints: optionalQuotaPoints(data.points, "fiveHourRemainingPercent", width, plotHeight),
     sevenDayQuotaPoints: optionalQuotaPoints(data.points, "sevenDayRemainingPercent", width, plotHeight),
   };
@@ -334,7 +336,7 @@ export function optionalSmoothPath(points: Array<Point | null>): string {
   for (const point of points) {
     if (point === null) {
       if (segment.length > 0) {
-        segments.push(smoothPath(segment));
+        segments.push(optionalSegmentPath(segment));
         segment = [];
       }
       continue;
@@ -342,9 +344,17 @@ export function optionalSmoothPath(points: Array<Point | null>): string {
     segment.push(point);
   }
   if (segment.length > 0) {
-    segments.push(smoothPath(segment));
+    segments.push(optionalSegmentPath(segment));
   }
   return segments.join(" ");
+}
+
+function optionalSegmentPath(points: Point[]): string {
+  if (points.length !== 1) {
+    return smoothPath(points);
+  }
+  const point = points[0];
+  return `M ${formatNumber(point.x)} ${formatNumber(point.y)} L ${formatNumber(point.x + 0.01)} ${formatNumber(point.y)}`;
 }
 
 export function tokenAreaPath(points: Point[], width: number, plotHeight: number): string {
@@ -508,14 +518,8 @@ function optionalQuotaPoints(
   });
 }
 
-function carriedCacheRates(points: RecentUsagePoint[]): number[] {
-  let carried = points.find((point) => point.calls > 0 && point.cacheHitRate !== null)?.cacheHitRate ?? 0;
-  return points.map((point) => {
-    if (point.calls > 0 && point.cacheHitRate !== null) {
-      carried = point.cacheHitRate;
-    }
-    return carried;
-  });
+function observedCacheRates(points: RecentUsagePoint[]): Array<number | null> {
+  return points.map((point) => point.calls > 0 ? point.cacheHitRate : null);
 }
 
 function weightedCacheHitRate(points: RecentUsagePoint[]): number {
