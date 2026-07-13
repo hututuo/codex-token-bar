@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  enableThreadDeleteBridge,
   idleThreadDeleteBridgeStatus,
   readThreadDeleteBridgeStatus,
   reconnectThreadDeleteBridge,
@@ -27,17 +28,20 @@ export function useThreadDeleteBridge() {
     };
   }, []);
 
-  const reconnect = useCallback(async () => {
+  const activate = useCallback(async () => {
+    const requiresCodexRelaunch = !status.connected && status.debugPort === null;
     try {
-      setStatus(await reconnectThreadDeleteBridge());
+      setStatus(requiresCodexRelaunch
+        ? await enableThreadDeleteBridge()
+        : await reconnectThreadDeleteBridge());
     } catch (error) {
       setStatus({
         connected: false,
         debugPort: null,
-        message: `重连失败：${error instanceof Error ? error.message : String(error)}`,
+        message: `${requiresCodexRelaunch ? "启用" : "重连"}失败：${error instanceof Error ? error.message : String(error)}`,
       });
     }
-  }, []);
+  }, [status.connected, status.debugPort]);
 
-  return { reconnect, status };
+  return { activate, status };
 }

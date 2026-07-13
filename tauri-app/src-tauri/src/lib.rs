@@ -97,6 +97,7 @@ pub fn run() {
             commands::update::install_app_update,
             commands::thread_delete::read_thread_delete_bridge_status,
             commands::thread_delete::reconnect_thread_delete_bridge,
+            commands::thread_delete::enable_thread_delete_bridge,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Codex Token Bar");

@@ -55,15 +55,26 @@ export function DashboardHeader({
   const [editingPath, setEditingPath] = useState(false);
   const [editingDisplayName, setEditingDisplayName] = useState(false);
   const [moreActionsOpen, setMoreActionsOpen] = useState(false);
+  const [threadDeleteConfirmationOpen, setThreadDeleteConfirmationOpen] = useState(false);
   const moreActionsRef = useRef<HTMLDivElement>(null);
   const moreActionsTriggerRef = useRef<HTMLButtonElement>(null);
   const moreActionsMenuRef = useRef<HTMLDivElement>(null);
+  const threadDeleteDialogRef = useRef<HTMLDivElement>(null);
+  const threadDeleteCancelRef = useRef<HTMLButtonElement>(null);
   const pendingMenuFocusRef = useRef<"first" | "last" | null>(null);
   const autostartHelpId = useId();
+  const threadDeleteDialogTitleId = useId();
+  const threadDeleteDialogDescriptionId = useId();
   const resolvedDisplayName = resolveAccountDisplayName(
     account.displayName,
     customAccountDisplayName,
   );
+  const threadDeleteActionLabel = threadDeleteBridgeStatus.connected
+    ? "已连接"
+    : threadDeleteBridgeStatus.debugPort === null ? "启用" : "重连";
+  const threadDeleteActionDescription = threadDeleteBridgeStatus.debugPort === null
+    ? "重启 Codex 并启用删除按钮"
+    : "重新连接 Codex 删除按钮";
   const [displayNameDraft, setDisplayNameDraft] = useState(resolvedDisplayName);
 
   useEffect(() => {
@@ -71,6 +82,36 @@ export function DashboardHeader({
       setDisplayNameDraft(resolvedDisplayName);
     }
   }, [editingDisplayName, resolvedDisplayName]);
+
+  useEffect(() => {
+    if (threadDeleteConfirmationOpen) {
+      threadDeleteCancelRef.current?.focus();
+    }
+  }, [threadDeleteConfirmationOpen]);
+
+  const closeThreadDeleteConfirmation = () => {
+    setThreadDeleteConfirmationOpen(false);
+    window.requestAnimationFrame(() => moreActionsTriggerRef.current?.focus());
+  };
+
+  const handleThreadDeleteDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeThreadDeleteConfirmation();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const buttons = [...(threadDeleteDialogRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
+    if (buttons.length === 0) return;
+    const currentIndex = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.shiftKey && currentIndex <= 0) {
+      event.preventDefault();
+      buttons.at(-1)?.focus();
+    } else if (!event.shiftKey && currentIndex === buttons.length - 1) {
+      event.preventDefault();
+      buttons[0]?.focus();
+    }
+  };
 
   const timeLabel = new Intl.DateTimeFormat("zh-CN", {
     hour: "2-digit",
@@ -298,10 +339,15 @@ export function DashboardHeader({
                   导出 PNG
                 </button>
                 <button
-                  aria-label={`重新连接 Codex 删除按钮。${threadDeleteBridgeStatus.message}`}
+                  aria-label={`${threadDeleteActionDescription}。${threadDeleteBridgeStatus.message}`}
                   onClick={() => {
-                    void onReconnectThreadDelete();
-                    closeMoreActionsAndRestoreFocus();
+                    if (threadDeleteBridgeStatus.debugPort === null) {
+                      setMoreActionsOpen(false);
+                      setThreadDeleteConfirmationOpen(true);
+                    } else {
+                      void onReconnectThreadDelete();
+                      closeMoreActionsAndRestoreFocus();
+                    }
                   }}
                   role="menuitem"
                   tabIndex={-1}
@@ -314,7 +360,7 @@ export function DashboardHeader({
                       ? "thread-delete-menu-dot thread-delete-menu-dot--connected"
                       : "thread-delete-menu-dot"}
                   />
-                  Codex 删除按钮：{threadDeleteBridgeStatus.connected ? "已连接" : "重连"}
+                  Codex 删除按钮：{threadDeleteActionLabel}
                 </button>
               </div>
             ) : null}
@@ -328,6 +374,45 @@ export function DashboardHeader({
           onCodexHomeReset={onCodexHomeReset}
           onDone={() => setEditingPath(false)}
         />
+      ) : null}
+      {threadDeleteConfirmationOpen ? (
+        <div
+          className="thread-delete-confirmation-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeThreadDeleteConfirmation();
+          }}
+        >
+          <div
+            aria-describedby={threadDeleteDialogDescriptionId}
+            aria-labelledby={threadDeleteDialogTitleId}
+            aria-modal="true"
+            className="thread-delete-confirmation-dialog"
+            onKeyDown={handleThreadDeleteDialogKeyDown}
+            ref={threadDeleteDialogRef}
+            role="alertdialog"
+          >
+            <h2 id={threadDeleteDialogTitleId}>重启 Codex 并启用会话删除按钮？</h2>
+            <p id={threadDeleteDialogDescriptionId}>
+              Codex 会关闭后立即以仅限本机的调试端口重新打开。当前任务不会被删除，但界面会短暂中断。
+            </p>
+            <div className="thread-delete-confirmation-actions">
+              <button onClick={closeThreadDeleteConfirmation} ref={threadDeleteCancelRef} type="button">
+                取消
+              </button>
+              <button
+                className="thread-delete-confirmation-primary"
+                onClick={() => {
+                  setThreadDeleteConfirmationOpen(false);
+                  window.requestAnimationFrame(() => moreActionsTriggerRef.current?.focus());
+                  void onReconnectThreadDelete();
+                }}
+                type="button"
+              >
+                重启并启用
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </header>
   );

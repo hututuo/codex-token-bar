@@ -112,7 +112,7 @@ export function DashboardApp() {
           setAppUpdateState,
         )}
         onToggleAutostart={shellSettings.toggleAutostart}
-        onReconnectThreadDelete={threadDeleteBridge.reconnect}
+        onReconnectThreadDelete={threadDeleteBridge.activate}
         refreshing={refreshing}
         appUpdateState={appUpdateState}
         threadDeleteBridgeStatus={threadDeleteBridge.status}

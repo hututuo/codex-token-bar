@@ -3,6 +3,35 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CodexThreadDeleteBridgeTests: XCTestCase {
+    @MainActor
+    func testMissingDebugPortOffersLoopbackOnlyCodexRelaunch() {
+        XCTAssertTrue(CodexThreadDeleteBridgeStatus.idle.requiresCodexRelaunch)
+        XCTAssertEqual(
+            CodexThreadDeleteBridgeStatus.idle.connectionActionTitle,
+            "重启 Codex 并启用删除按钮"
+        )
+        XCTAssertEqual(
+            CodexThreadDeleteDesktopLauncher.openCommandArguments(
+                applicationPath: "/Applications/ChatGPT.app"
+            ),
+            [
+                "-na",
+                "/Applications/ChatGPT.app",
+                "--args",
+                "--remote-debugging-address=127.0.0.1",
+                "--remote-debugging-port=9229",
+            ]
+        )
+
+        let interrupted = CodexThreadDeleteBridgeStatus(
+            connected: false,
+            debugPort: 9229,
+            message: "连接中断"
+        )
+        XCTAssertFalse(interrupted.requiresCodexRelaunch)
+        XCTAssertEqual(interrupted.connectionActionTitle, "重新连接 Codex 删除按钮")
+    }
+
     func testSharedInjectionTemplateRendersSwiftOwner() throws {
         let script = try CodexThreadDeleteInjectionScript.render(
             owner: "swift",

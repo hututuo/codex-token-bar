@@ -22,3 +22,7 @@ export async function readThreadDeleteBridgeStatus(): Promise<ThreadDeleteBridge
 export async function reconnectThreadDeleteBridge(): Promise<ThreadDeleteBridgeStatus> {
   return callCommandStrict("reconnect_thread_delete_bridge");
 }
+
+export async function enableThreadDeleteBridge(): Promise<ThreadDeleteBridgeStatus> {
+  return callCommandStrict("enable_thread_delete_bridge");
+}

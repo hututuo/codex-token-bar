@@ -424,6 +424,68 @@ button {
   opacity: 0.5;
 }
 
+.thread-delete-confirmation-overlay {
+  position: fixed;
+  z-index: 52;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--page) 68%, transparent);
+}
+
+.thread-delete-confirmation-dialog {
+  display: grid;
+  gap: 10px;
+  width: min(420px, calc(100vw - 48px));
+  padding: 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel-solid);
+  color: var(--text);
+}
+
+.thread-delete-confirmation-dialog h2,
+.thread-delete-confirmation-dialog p {
+  margin: 0;
+}
+
+.thread-delete-confirmation-dialog h2 {
+  font-size: 17px;
+  font-weight: 760;
+}
+
+.thread-delete-confirmation-dialog p {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 580;
+  line-height: 1.55;
+}
+
+.thread-delete-confirmation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.thread-delete-confirmation-actions button {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-soft);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.thread-delete-confirmation-actions .thread-delete-confirmation-primary {
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--line));
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-solid));
+  color: var(--accent);
+}
+
 .toolbar-button:disabled {
   cursor: default;
   opacity: 0.55;

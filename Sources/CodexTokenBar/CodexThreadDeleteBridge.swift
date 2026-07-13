@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 struct CodexThreadDeleteBridgeStatus: Equatable, Sendable {
@@ -10,6 +11,16 @@ struct CodexThreadDeleteBridgeStatus: Equatable, Sendable {
         debugPort: nil,
         message: "等待 Codex 调试连接（需以调试模式启动 Codex）"
     )
+
+    var requiresCodexRelaunch: Bool {
+        !connected && debugPort == nil
+    }
+
+    var connectionActionTitle: String {
+        requiresCodexRelaunch
+            ? "重启 Codex 并启用删除按钮"
+            : "重新连接 Codex 删除按钮"
+    }
 }
 
 @MainActor
@@ -18,6 +29,7 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
 
     private let service: CodexThreadDeleteBridgeService
     private var task: Task<Void, Never>?
+    private var relaunchTask: Task<Void, Never>?
 
     init(service: CodexThreadDeleteBridgeService = CodexThreadDeleteBridgeService()) {
         self.service = service
@@ -36,7 +48,11 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
 
     func reconnect() {
         task?.cancel()
-        status = .idle
+        status = CodexThreadDeleteBridgeStatus(
+            connected: false,
+            debugPort: status.debugPort,
+            message: "正在重新连接 Codex 删除按钮"
+        )
         task = Task { [weak self, service] in
             await service.cancelActiveSession()
             await service.run { status in
@@ -44,6 +60,116 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
                     self?.status = status
                 }
             }
+        }
+    }
+
+    func performConnectionAction() {
+        guard status.requiresCodexRelaunch else {
+            reconnect()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "重启 Codex 并启用会话删除按钮？"
+        alert.informativeText = "Codex 会关闭后立即以仅限本机的调试端口重新打开。当前任务不会被删除，但界面会短暂中断。"
+        alert.addButton(withTitle: "重启并启用")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        relaunchCodexWithDebugPort()
+    }
+
+    private func relaunchCodexWithDebugPort() {
+        guard relaunchTask == nil else { return }
+        task?.cancel()
+        task = nil
+        status = CodexThreadDeleteBridgeStatus(
+            connected: false,
+            debugPort: nil,
+            message: "正在重启 Codex 并启用删除按钮"
+        )
+        relaunchTask = Task { [weak self, service] in
+            await service.cancelActiveSession()
+            do {
+                try await CodexThreadDeleteDesktopLauncher.relaunch()
+                guard !Task.isCancelled, let self else { return }
+                self.relaunchTask = nil
+                self.status = CodexThreadDeleteBridgeStatus(
+                    connected: false,
+                    debugPort: 9229,
+                    message: "正在等待 Codex 调试连接"
+                )
+                self.reconnect()
+            } catch {
+                guard let self else { return }
+                self.relaunchTask = nil
+                self.status = CodexThreadDeleteBridgeStatus(
+                    connected: false,
+                    debugPort: nil,
+                    message: "启用 Codex 删除按钮失败：\(error.localizedDescription)"
+                )
+                self.start()
+            }
+        }
+    }
+}
+
+@MainActor
+enum CodexThreadDeleteDesktopLauncher {
+    static let bundleIdentifier = "com.openai.codex"
+    static let debugArguments = [
+        "--remote-debugging-address=127.0.0.1",
+        "--remote-debugging-port=9229",
+    ]
+
+    static func openCommandArguments(applicationPath: String) -> [String] {
+        ["-na", applicationPath, "--args"] + debugArguments
+    }
+
+    static func relaunch() async throws {
+        let runningApplications = NSRunningApplication.runningApplications(
+            withBundleIdentifier: bundleIdentifier
+        )
+        let applicationURL = runningApplications.compactMap(\.bundleURL).first
+            ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+        guard let applicationURL else {
+            throw CodexThreadDeleteError.desktopAppMissing
+        }
+
+        for application in runningApplications where !application.isTerminated {
+            guard application.terminate() else {
+                throw CodexThreadDeleteError.desktopTerminationRejected
+            }
+        }
+
+        let deadline = Date().addingTimeInterval(10)
+        while runningApplications.contains(where: { !$0.isTerminated }) {
+            guard Date() < deadline else {
+                throw CodexThreadDeleteError.desktopTerminationTimeout
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+
+        let arguments = openCommandArguments(applicationPath: applicationURL.path)
+        let result = try await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            process.arguments = arguments
+            let stderr = Pipe()
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = stderr
+            process.standardInput = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            let message = String(
+                decoding: stderr.fileHandleForReading.readDataToEndOfFile(),
+                as: UTF8.self
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            return (process.terminationStatus, message)
+        }.value
+        guard result.0 == 0 else {
+            throw CodexThreadDeleteError.desktopRelaunchFailed(result.1)
         }
     }
 }
@@ -405,6 +531,10 @@ final class FoundationCodexThreadDeleteExecutor: CodexThreadDeleteExecuting, @un
 
 enum CodexThreadDeleteError: LocalizedError {
     case commandFailed(String)
+    case desktopAppMissing
+    case desktopRelaunchFailed(String)
+    case desktopTerminationRejected
+    case desktopTerminationTimeout
     case injectionResourceMissing
     case invalidThreadID
     case timeout
@@ -413,6 +543,14 @@ enum CodexThreadDeleteError: LocalizedError {
         switch self {
         case let .commandFailed(message):
             return "Codex 删除失败：\(message)"
+        case .desktopAppMissing:
+            return "没有找到 Codex 桌面应用"
+        case let .desktopRelaunchFailed(message):
+            return message.isEmpty ? "重新打开 Codex 失败" : "重新打开 Codex 失败：\(message)"
+        case .desktopTerminationRejected:
+            return "Codex 拒绝退出，请先保存正在编辑的内容后重试"
+        case .desktopTerminationTimeout:
+            return "等待 Codex 退出超时"
         case .injectionResourceMissing:
             return "缺少 Codex 删除按钮脚本"
         case .invalidThreadID:

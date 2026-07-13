@@ -34,7 +34,7 @@ mod surfaces;
 pub use startup::{SingleInstanceLaunchOutcome, StartupLaunchMode};
 
 pub use capabilities::platform_capabilities;
-pub(crate) use provider_app::codex_desktop_is_running;
+pub(crate) use provider_app::{codex_desktop_is_running, relaunch_codex_with_debug_port};
 pub use settings::{
     read_app_settings, save_display_surfaces, save_floating_position, save_floating_settings,
     save_custom_account_display_name, save_quota_refresh_interval_ms, save_setup_guide_completed,

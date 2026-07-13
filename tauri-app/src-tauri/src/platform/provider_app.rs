@@ -1,5 +1,9 @@
 const CODEX_BUNDLE_IDENTIFIER: &str = "com.openai.codex";
 const LEGACY_APPLICATION_NAMES: &[&str] = &["Codex", "ChatGPT"];
+const CODEX_DEBUG_ARGUMENTS: &[&str] = &[
+    "--remote-debugging-address=127.0.0.1",
+    "--remote-debugging-port=9229",
+];
 #[cfg(any(test, windows))]
 const WINDOWS_PROCESS_NAMES: &[&str] = &["Codex.exe", "ChatGPT.exe"];
 #[cfg(windows)]
@@ -7,6 +11,14 @@ const MAX_WINDOWS_PROCESSES: usize = 4096;
 
 pub(crate) fn codex_desktop_is_running() -> Result<bool, String> {
     platform_codex_desktop_is_running()
+}
+
+pub(crate) fn relaunch_codex_with_debug_port() -> Result<(), String> {
+    platform_relaunch_codex_with_debug_port()
+}
+
+fn codex_debug_arguments() -> &'static [&'static str] {
+    CODEX_DEBUG_ARGUMENTS
 }
 
 fn macos_application_matches(
@@ -86,9 +98,82 @@ fn platform_codex_desktop_is_running() -> Result<bool, String> {
             let bundle_identifier = application
                 .bundleIdentifier()
                 .map(|value| value.to_string());
-            let localized_name = application.localizedName().map(|value| value.to_string());
+            let localized_name = application
+                .localizedName()
+                .map(|value| value.to_string());
             macos_application_matches(bundle_identifier.as_deref(), localized_name.as_deref())
         }))
+}
+
+#[cfg(target_os = "macos")]
+fn platform_relaunch_codex_with_debug_port() -> Result<(), String> {
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::NSString;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    let workspace = NSWorkspace::sharedWorkspace();
+    let running = workspace
+        .runningApplications()
+        .iter()
+        .filter(|application| {
+            if application.isTerminated() {
+                return false;
+            }
+            let bundle_identifier = application
+                .bundleIdentifier()
+                .map(|value| value.to_string());
+            let localized_name = application.localizedName().map(|value| value.to_string());
+            macos_application_matches(bundle_identifier.as_deref(), localized_name.as_deref())
+        })
+        .collect::<Vec<_>>();
+    let application_url = running
+        .iter()
+        .find_map(|application| application.bundleURL())
+        .or_else(|| {
+            workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(
+                CODEX_BUNDLE_IDENTIFIER,
+            ))
+        })
+        .ok_or_else(|| "没有找到 Codex 桌面应用".to_string())?;
+    let application_path = application_url
+        .path()
+        .map(|path| path.to_string())
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "Codex 桌面应用路径无效".to_string())?;
+
+    for application in &running {
+        if !application.terminate() {
+            return Err("Codex 拒绝退出，请先保存正在编辑的内容后重试".into());
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while running.iter().any(|application| !application.isTerminated()) {
+        if Instant::now() >= deadline {
+            return Err("等待 Codex 退出超时".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let output = Command::new("/usr/bin/open")
+        .args(["-na", application_path.as_str(), "--args"])
+        .args(codex_debug_arguments())
+        .output()
+        .map_err(|error| format!("重新打开 Codex 失败：{error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if detail.is_empty() {
+        "重新打开 Codex 失败".into()
+    } else {
+        format!("重新打开 Codex 失败：{detail}")
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_relaunch_codex_with_debug_port() -> Result<(), String> {
+    Err("当前平台暂不支持自动重启 Codex；请以 --remote-debugging-port=9229 启动 Codex".into())
 }
 
 #[cfg(windows)]
@@ -163,6 +248,17 @@ fn platform_codex_desktop_is_running() -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_launch_is_bound_to_the_loopback_interface() {
+        assert_eq!(
+            codex_debug_arguments(),
+            [
+                "--remote-debugging-address=127.0.0.1",
+                "--remote-debugging-port=9229",
+            ]
+        );
+    }
 
     #[test]
     fn macos_matcher_prefers_bundle_identity_and_uses_exact_name_only_without_identity() {

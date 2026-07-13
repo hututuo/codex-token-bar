@@ -85,6 +85,17 @@ pub fn request_reconnect() -> ThreadDeleteBridgeStatus {
     bridge_status()
 }
 
+pub fn enable_with_codex_restart() -> Result<ThreadDeleteBridgeStatus, String> {
+    set_status(false, None, "正在重启 Codex 并启用删除按钮");
+    if let Err(error) = crate::platform::relaunch_codex_with_debug_port() {
+        set_status(false, None, format!("启用 Codex 删除按钮失败：{error}"));
+        return Err(error);
+    }
+    RECONNECT_REQUESTED.store(true, Ordering::Release);
+    set_status(false, Some(9229), "正在等待 Codex 调试连接");
+    Ok(bridge_status())
+}
+
 fn supervisor_loop() {
     let client = match reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_millis(400))

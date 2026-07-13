@@ -95,8 +95,8 @@ struct CodexTokenBarApp: App {
 
                 Divider()
 
-                Button("重新连接 Codex 删除按钮") {
-                    threadDeleteBridge.reconnect()
+                Button(threadDeleteBridge.status.connectionActionTitle) {
+                    threadDeleteBridge.performConnectionAction()
                 }
 
                 Text(threadDeleteBridge.status.message)
