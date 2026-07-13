@@ -152,7 +152,7 @@ test("QuotaStrip renders only the supported seven-day window", async () => {
   });
 });
 
-test("QuotaStrip shifts the fill continuously from red risk toward deep blue", async () => {
+test("QuotaStrip uses the shared continuous semantic color for quota remaining", async () => {
   await withSsrModules(async (load) => {
     const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
     const low = renderComponent(QuotaStrip, {
@@ -170,8 +170,8 @@ test("QuotaStrip shifts the fill continuously from red risk toward deep blue", a
       warnings: [],
     });
 
-    assert.match(low, /class="quota-track-fill" style="width:10%;--quota-risk:90%"/);
-    assert.match(high, /class="quota-track-fill" style="width:90%;--quota-risk:10%"/);
+    assert.match(low, /class="quota-track-fill" style="width:10%;--metric-color:rgb\(203 83 63\)"/);
+    assert.match(high, /class="quota-track-fill" style="width:90%;--metric-color:rgb\(24 123 167\)"/);
   });
 });
 
@@ -278,7 +278,7 @@ test("QuotaStrip CSS source guard locks the single-row grid and long-track budge
   assert.match(css, /\.quota-bar\s*{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\)/s);
   assert.match(css, /\.quota-track\s*{[^}]*grid-column:\s*2[^}]*width:\s*100%/s);
   assert.match(css, /\.quota-bar-meta\s*{[^}]*grid-column:\s*2/s);
-  assert.match(css, /\.quota-track-fill\s*{[^}]*--quota-risk[^}]*color-mix\([^}]*#c32649[^}]*#07488f/s);
+  assert.match(css, /\.quota-track-fill\s*{[^}]*--metric-color[^}]*color-mix\([^}]*var\(--metric-color\)/s);
   assert.doesNotMatch(css, /\.quota-track-fill\s*{[^}]*opacity:/s);
   assert.match(css, /\.quota-pace--with-cadence\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 132px/s);
   assert.match(css, /\.quota-pace--without-cadence\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);

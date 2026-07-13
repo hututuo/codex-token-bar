@@ -1035,15 +1035,19 @@ button.quota-side-card:hover {
 }
 
 .quota-track-fill {
-  --quota-risk: 0%;
+  --metric-color: var(--accent);
   position: absolute;
   inset: 0 auto 0 0;
   border-radius: inherit;
   background: linear-gradient(
     90deg,
-    color-mix(in srgb, #c32649 var(--quota-risk), #07488f),
-    color-mix(in srgb, #3e4f9f var(--quota-risk), #0a6fc9)
+    color-mix(in srgb, white 14%, var(--metric-color)),
+    var(--metric-color)
   );
+}
+
+.quota-pace-title strong {
+  color: var(--pace-accent, var(--text));
 }
 
 .quota-track-pending {
@@ -2145,8 +2149,8 @@ button.quota-side-card:hover {
   min-width: 18px;
   height: 18px;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--accent) 12%, var(--panel-solid));
-  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--radar-accent, var(--accent)) 13%, var(--panel-solid));
+  color: var(--radar-accent, var(--accent-strong));
   font-size: 9px;
   font-style: normal;
   font-weight: 800;
@@ -2173,6 +2177,7 @@ button.quota-side-card:hover {
 .radar-score-row strong {
   font-size: 19px;
   font-weight: 740;
+  color: var(--radar-score-color, var(--text));
 }
 
 .radar-score-row span,
@@ -2184,6 +2189,10 @@ button.quota-side-card:hover {
   font-weight: 610;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.radar-model-row span {
+  color: var(--radar-score-color, var(--muted));
 }
 
 .radar-mini-row,
@@ -2208,7 +2217,7 @@ button.quota-side-card:hover {
 }
 
 .radar-mini-row b {
-  color: var(--text);
+  color: var(--radar-mini-color, var(--text));
   font-size: 11px;
   font-weight: 720;
 }
@@ -4435,6 +4444,22 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   min-width: 0;
 }
 
+.floating-radar-action > span {
+  display: flex;
+  align-items: center;
+  gap: calc(4px * var(--floating-scale));
+  color: color-mix(in srgb, var(--floating-primary) 62%, var(--radar-action-color) 38%);
+}
+
+.floating-radar-dot {
+  display: block;
+  width: calc(4px * var(--floating-scale));
+  height: calc(4px * var(--floating-scale));
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--radar-action-color);
+}
+
 .floating-radar-iq {
   border-left: 1px solid var(--floating-divider);
   padding-left: calc(6px * var(--floating-scale));
@@ -4452,13 +4477,21 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-radar strong {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: calc(4px * var(--floating-scale)) max-content minmax(0, 1fr);
   gap: calc(4px * var(--floating-scale));
   align-items: baseline;
   color: var(--floating-primary);
   font-size: calc(11.6px * var(--floating-scale));
   font-variant-numeric: tabular-nums;
   line-height: 1;
+}
+
+.floating-radar-iq strong > .floating-radar-dot {
+  background: var(--radar-score-color);
+}
+
+.floating-radar-iq strong > span {
+  color: color-mix(in srgb, var(--floating-primary) 58%, var(--radar-score-color) 42%);
 }
 
 .floating-radar strong em {
@@ -4480,7 +4513,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-radar p {
   margin: 0;
-  color: var(--floating-muted);
+  color: color-mix(in srgb, var(--floating-muted) 68%, var(--radar-secondary-color) 32%);
   font-size: calc(8.1px * var(--floating-scale));
   font-weight: 650;
 }
@@ -4555,7 +4588,11 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   max-width: 100%;
   min-width: 0;
   border-radius: inherit;
-  background: linear-gradient(90deg, #1f6ed2 0%, #3d8fe8 58%, #6ebaff 100%);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, white 18%, var(--metric-color, #1f6ed2)),
+    var(--metric-color, #1f6ed2)
+  );
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.36),
     inset 0 -1px 0 rgba(26, 80, 157, 0.22);

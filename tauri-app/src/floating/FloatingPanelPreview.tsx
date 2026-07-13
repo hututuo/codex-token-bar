@@ -14,6 +14,7 @@ import type { FloatingContentGroup, FloatingPanelSnapshot, FloatingUnreadEffect,
 import { embedsUsageStatusInRateRow, layoutFloatingContentGroups } from "./floatingContent";
 import { floatingRateBarStatusText, floatingStandaloneStatusText } from "./floatingPanelLabels";
 import { floatingTextPaletteForGroup } from "./floatingTextPalette";
+import { radarActionAccent, radarScoreAccent, semanticMetricColor } from "../styles/semanticColors";
 
 interface FloatingPanelSurfaceProps {
   settings: FloatingWindowSettings;
@@ -59,7 +60,10 @@ function FloatingQuotaBar({
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(fillPercent)}
-      style={{ "--quota-fill": `${fillPercent}%` } as CSSProperties}
+      style={{
+        "--quota-fill": `${fillPercent}%`,
+        "--metric-color": semanticMetricColor(fillPercent),
+      } as CSSProperties}
     >
       <span className="floating-quota-track" aria-hidden="true">
         <span className="floating-quota-fill" />
@@ -280,16 +284,24 @@ function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot |
   const diagnosticLabel = codexRadarDiagnosticLabel(snapshot);
   const probability = snapshot.prediction.probability24H ?? snapshot.prediction.probability24h;
   const probability48 = snapshot.prediction.probability48H ?? snapshot.prediction.probability48h;
+  const secondaryAccentPoint = uniqueFloatingRadarRows(secondaryModelRows(snapshot.modelIq), 2)[0]?.point ?? primary.point;
+  const radarStyle = {
+    ...style,
+    "--radar-action-color": radarActionAccent(snapshot.recommendedAction),
+    "--radar-score-color": radarScoreAccent(primary.point),
+    "--radar-secondary-color": radarScoreAccent(secondaryAccentPoint),
+  } as CSSProperties;
 
   return (
-    <div className="floating-row floating-radar" style={style}>
+    <div className="floating-row floating-radar" style={radarStyle}>
       <div className="floating-radar-action">
-        <span>{diagnosticLabel ? `${diagnosticLabel} · ` : ""}动作 {radarActionDisplayText(snapshot.recommendedAction)}</span>
+        <span><i className="floating-radar-dot" aria-hidden="true" />{diagnosticLabel ? `${diagnosticLabel} · ` : ""}动作 {radarActionDisplayText(snapshot.recommendedAction)}</span>
         <em>24h {percentText(probability)} · 48h {percentText(probability48)}</em>
       </div>
       <div className="floating-radar-iq">
         <strong>
-          IQ {displayRadarNumber(primary.point.score, 1)}
+          <i className="floating-radar-dot" aria-hidden="true" />
+          <span>IQ {displayRadarNumber(primary.point.score, 1)}</span>
           <em>{compactRadarModelName(primary.label)}</em>
         </strong>
         <p className="floating-radar-models">{secondaryText}</p>

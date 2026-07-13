@@ -18,6 +18,7 @@ import {
   type ResetCreditDisplayItem,
 } from "./quota/resetCredits";
 import { quotaReadWarnings } from "./quota/quotaWarnings";
+import { quotaPaceAccent, semanticMetricColor } from "../styles/semanticColors";
 
 interface QuotaStripProps {
   onQuotaRefreshIntervalChange?: (intervalMs: number) => void | Promise<void>;
@@ -39,7 +40,7 @@ function QuotaBar({ quota }: { quota: QuotaLimit }) {
   const boundedRemaining = remainingPercent === null ? null : Math.min(1, Math.max(0, remainingPercent));
   const fillStyle = boundedRemaining === null ? undefined : {
     width: `${Math.round(boundedRemaining * 100)}%`,
-    "--quota-risk": `${Math.round((1 - boundedRemaining) * 100)}%`,
+    "--metric-color": semanticMetricColor(boundedRemaining * 100),
   } as CSSProperties;
   return (
     <div
@@ -190,6 +191,7 @@ function QuotaStripView({
       <div className={onQuotaRefreshIntervalChange
         ? "quota-side-card quota-pace quota-pace--with-cadence"
         : "quota-side-card quota-pace quota-pace--without-cadence"}
+        style={{ "--pace-accent": quotaPaceAccent(snapshot.paceLabel) } as CSSProperties}
       >
         <div className="quota-pace-copy">
           <div className="quota-pace-title">
