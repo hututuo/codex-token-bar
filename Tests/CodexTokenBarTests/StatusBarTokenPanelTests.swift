@@ -2,6 +2,24 @@ import XCTest
 @testable import CodexTokenBar
 
 final class StatusBarTokenPanelTests: XCTestCase {
+    func testStatusBarQuotaPresentationShowsOnlySevenDayWhenFiveHourIsAbsent() {
+        let quota = AccountQuotaSnapshot(
+            fiveHour: nil,
+            sevenDay: AccountQuotaWindow(
+                label: "7d",
+                usedPercent: 0,
+                resetsAt: Date(timeIntervalSince1970: 20_000)
+            ),
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 1_000)
+        )
+
+        let items = StatusBarQuotaPresentation.items(for: quota)
+
+        XCTAssertEqual(items.map(\.title), ["7d"])
+        XCTAssertEqual(items.first?.window.usedPercent, 0)
+    }
+
     func testClosedStatusItemRefreshUsesOneSecondCadence() {
         XCTAssertEqual(StatusBarRefreshCadence.statusItem, 1.0)
     }

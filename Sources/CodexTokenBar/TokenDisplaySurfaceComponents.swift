@@ -144,7 +144,7 @@ struct TokenDisplayRadarStrip: View {
         HStack(spacing: 7.scaled(by: displayScale)) {
             VStack(alignment: .leading, spacing: 2.scaled(by: displayScale)) {
                 HStack(alignment: .firstTextBaseline, spacing: 3.scaled(by: displayScale)) {
-                    Text("动作 \(snapshot?.recommendedAction ?? "--")")
+                    Text("动作 \(CodexRadarPresentationText.action(snapshot?.recommendedAction))")
                         .font(.system(size: 9.3.scaled(by: displayScale), weight: .bold))
                         .foregroundStyle(actionPalette.primaryColor)
                     if let marker = presentation.compactMarkerText {
@@ -177,7 +177,7 @@ struct TokenDisplayRadarStrip: View {
                         .font(.system(size: 11.8.scaled(by: displayScale), weight: .bold, design: .rounded))
                         .foregroundStyle(modelPalette.primaryColor)
                         .monospacedDigit()
-                    Text(primary?.modelDisplayName ?? "模型 --")
+                    Text(primary.map { CodexRadarPresentationText.compactModelName($0.modelDisplayName) } ?? "模型 --")
                         .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
                         .foregroundStyle(modelPalette.primaryColor)
                         .lineLimit(1)
@@ -204,7 +204,7 @@ struct TokenDisplayRadarStrip: View {
         guard let snapshot = presentation.snapshot else {
             return presentation.compactAccessibilityText ?? "等待读取"
         }
-        let base = "建议 \(snapshot.recommendedAction)，24 小时概率 \(snapshot.prediction.probability24hPercent)%，48 小时概率 \(snapshot.prediction.probability48hPercent)%，\(snapshot.modelIQ.primaryModelRow.point.scoreDisplayText)"
+        let base = "建议 \(CodexRadarPresentationText.action(snapshot.recommendedAction))，24 小时概率 \(snapshot.prediction.probability24hPercent)%，48 小时概率 \(snapshot.prediction.probability48hPercent)%，\(snapshot.modelIQ.primaryModelRow.point.scoreDisplayText)"
         guard let compactAccessibility = presentation.compactAccessibilityText else {
             return base
         }
@@ -226,10 +226,7 @@ private func tokenDisplayRadarSecondaryIQText(_ snapshot: CodexRadarSnapshot?) -
 }
 
 private func tokenDisplayRadarShortModelLabel(_ label: String) -> String {
-    label
-        .replacingOccurrences(of: "GPT-5.5 ", with: "")
-        .replacingOccurrences(of: "GPT-5.4 ", with: "5.4 ")
-        .replacingOccurrences(of: "xhigh", with: "X high")
+    CodexRadarPresentationText.compactModelName(label)
 }
 
 struct TokenDisplayRateBar: View {

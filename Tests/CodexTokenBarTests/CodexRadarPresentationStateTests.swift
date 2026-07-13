@@ -145,7 +145,7 @@ final class CodexRadarPresentationStateTests: XCTestCase {
             radarPresentation: state
         )
 
-        XCTAssertTrue(model.accessibilityParts.contains("雷达建议 \(snapshot.recommendedAction)"))
+        XCTAssertTrue(model.accessibilityParts.contains("雷达建议 \(CodexRadarPresentationText.action(snapshot.recommendedAction))"))
         XCTAssertTrue(model.accessibilityParts.contains(snapshot.modelIQ.primaryModelRow.point.scoreDisplayText))
         XCTAssertNil(state.compactMarkerText)
     }
@@ -177,7 +177,7 @@ final class CodexRadarPresentationStateTests: XCTestCase {
             radarPresentation: CodexRadarPresentationState(snapshot: snapshot)
         )
 
-        XCTAssertTrue(model.accessibilityParts.contains("雷达建议 wait"))
+        XCTAssertTrue(model.accessibilityParts.contains("雷达建议 等待"))
         XCTAssertTrue(model.accessibilityParts.contains("IQ 100"))
         XCTAssertFalse(model.accessibilityParts.contains { $0.contains("环境压力") })
         XCTAssertFalse(model.accessibilityParts.contains { $0.contains("recent") })

@@ -176,7 +176,7 @@ private struct CodexRadarWindowBlock: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             HStack(spacing: 10) {
-                CodexRadarTinyMetric(label: "建议动作", value: snapshot?.recommendedAction ?? "--")
+                CodexRadarTinyMetric(label: "建议动作", value: CodexRadarPresentationText.action(snapshot?.recommendedAction))
                 CodexRadarTinyMetric(label: "24h", value: probabilityText(snapshot?.prediction.probability24hPercent))
                 CodexRadarTinyMetric(label: "48h", value: probabilityText(snapshot?.prediction.probability48hPercent))
             }
@@ -196,14 +196,14 @@ private struct CodexRadarModelIQBlock: View {
                 Text(primary?.scoreDisplayText ?? "IQ --")
                     .font(.system(size: 20, weight: .semibold, design: .rounded))
                     .monospacedDigit()
-                Text(primary?.modelDisplayName ?? "待读取")
+                Text(primary.map { CodexRadarPresentationText.compactModelName($0.modelDisplayName) } ?? "待读取")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             HStack(spacing: 8) {
                 ForEach((snapshot?.modelIQ.secondaryModelRows ?? []).prefix(3), id: \.label) { row in
-                    Text("\(row.label.replacingOccurrences(of: "GPT-", with: "")) \(CodexRadarModelIQPoint.display(row.point.score))")
+                    Text("\(CodexRadarPresentationText.compactModelName(row.label)) \(CodexRadarModelIQPoint.display(row.point.score))")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(color(for: row.point.status))
                         .lineLimit(1)
@@ -422,7 +422,7 @@ private struct CodexRadarDetailOverview: View {
             CodexRadarDetailSubsection(title: "窗口摘要") {
                 CodexRadarKeyValueGrid(rows: [
                     ("窗口状态", snapshot.window.message),
-                    ("建议动作", snapshot.recommendedAction),
+                    ("建议动作", CodexRadarPresentationText.action(snapshot.recommendedAction)),
                     ("24h 概率", probabilityText(snapshot.prediction.probability24hPercent)),
                     ("48h 概率", probabilityText(snapshot.prediction.probability48hPercent)),
                     ("预计窗口", snapshot.prediction.expectedWindow ?? "--"),
