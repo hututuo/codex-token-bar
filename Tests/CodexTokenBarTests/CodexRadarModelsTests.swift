@@ -2,12 +2,48 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CodexRadarModelsTests: XCTestCase {
-    func testCompactRadarPresentationLocalizesActionsAndKeepsOnlyModelFamilyNames() {
+    func testCompactRadarPresentationLocalizesActionsAndKeepsModelReasoningEffort() {
         XCTAssertEqual(CodexRadarPresentationText.action("wait"), "等待")
         XCTAssertEqual(CodexRadarPresentationText.action("run"), "运行")
-        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Sol max"), "Sol")
-        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Luna max"), "Luna")
-        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Terra max"), "Terra")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Sol max"), "Sol max")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Luna max"), "Luna max")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Terra max"), "Terra max")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Sol xhigh"), "Sol xhigh")
+    }
+
+    func testCurrentSolMaxScoreOutranksOlderTerraAndKeepsItsEffortInCompactLabel() {
+        let solMax = Self.modelIQPoint(
+            score: 150,
+            reasoningEffort: "max",
+            costUsd: 35,
+            model: "gpt-5.6-sol"
+        )
+        let terraMax = Self.modelIQPoint(
+            score: 135,
+            reasoningEffort: "max",
+            costUsd: 30,
+            model: "gpt-5.6-terra"
+        )
+        let modelIQ = CodexRadarModelIQ(
+            latest: solMax,
+            recentDays: [solMax],
+            comparisons: [
+                "terra": CodexRadarModelIQComparison(
+                    label: "GPT-5.6 Terra max",
+                    model: "gpt-5.6-terra",
+                    reasoningEffort: "max",
+                    latest: terraMax,
+                    recentDays: [terraMax]
+                )
+            ],
+            quotaCalibration: nil,
+            quotaRadar: nil,
+            quotaCheck: nil
+        )
+
+        XCTAssertEqual(modelIQ.primaryModelRow.point.score, 150)
+        XCTAssertEqual(modelIQ.primaryModelRow.point.model, "gpt-5.6-sol")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName(modelIQ.primaryModelRow.label), "Sol max")
     }
 
     func testDecodesCurrentStatusPredictionIQAndQuotaRows() throws {
@@ -260,7 +296,8 @@ final class CodexRadarModelsTests: XCTestCase {
     private static func modelIQPoint(
         score: Double,
         reasoningEffort: String,
-        costUsd: Double = 10
+        costUsd: Double = 10,
+        model: String = "gpt-5.5"
     ) -> CodexRadarModelIQPoint {
         CodexRadarModelIQPoint(
             date: "2026-06-24-am",
@@ -275,7 +312,7 @@ final class CodexRadarModelsTests: XCTestCase {
             outputTokens: 100_000,
             wallSeconds: 1200,
             wallTimeHuman: "20分钟",
-            model: "gpt-5.5",
+            model: model,
             reasoningEffort: reasoningEffort,
             validTasks: 12,
             costUsd: costUsd
