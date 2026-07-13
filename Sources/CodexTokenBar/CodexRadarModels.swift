@@ -35,11 +35,14 @@ enum CodexRadarPresentationText {
         if let family = familyNames.first(where: { family in
             tokens.contains(where: { $0.caseInsensitiveCompare(family) == .orderedSame })
         }) {
-            return family
+            let effortNames = ["max", "xhigh", "high", "medium", "low", "minimal"]
+            let effort = effortNames.first(where: { effort in
+                tokens.contains(where: { $0.caseInsensitiveCompare(effort) == .orderedSame })
+            })
+            return effort.map { "\(family) \($0)" } ?? family
         }
         return rawValue
             .replacingOccurrences(of: #"^GPT-5\.6[\s-]*"#, with: "", options: .regularExpression)
-            .replacingOccurrences(of: #"\s+max$"#, with: "", options: [.regularExpression, .caseInsensitive])
             .replacingOccurrences(of: "GPT-5.5 ", with: "")
             .replacingOccurrences(of: "GPT-5.4 ", with: "5.4 ")
             .replacingOccurrences(of: "xhigh", with: "X high")
