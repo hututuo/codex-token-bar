@@ -7,10 +7,10 @@ interface StatusQuotaProjectionProps {
 }
 
 export function StatusQuotaProjection({ fiveHour, sevenDay }: StatusQuotaProjectionProps) {
+  const visibleLimits = [fiveHour, sevenDay].filter((limit) => limit.availability !== "absent");
   return (
     <div className="status-panel-quota">
-      <StatusQuotaText limit={fiveHour} />
-      <StatusQuotaText limit={sevenDay} />
+      {visibleLimits.map((limit) => <StatusQuotaText key={limit.label} limit={limit} />)}
     </div>
   );
 }

@@ -88,7 +88,7 @@ test("floating Radar row preserves stale snapshot and shows a restrained marker"
       radarSnapshot,
     });
 
-    assert.match(html, /雷达旧数据 · 动作 wait/);
+    assert.match(html, /雷达旧数据 · 动作 等待/);
     assert.match(html, /IQ 100/);
     assert.doesNotMatch(html, /Radar 待读取/);
   });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, primaryModelRow, quotaChartSeries, secondaryModelRows, selectCodexRadarDetailSnapshot, shortDateLabel } from "./model.ts";
+import { compactRadarModelName, modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, primaryModelRow, quotaChartSeries, radarActionDisplayText, secondaryModelRows, selectCodexRadarDetailSnapshot, shortDateLabel } from "./model.ts";
 
 const snapshot = {
   modelIq: {
@@ -75,6 +75,14 @@ const snapshot = {
     },
   },
 };
+
+test("compact Radar presentation localizes actions and keeps only model family names", () => {
+  assert.equal(radarActionDisplayText("wait"), "等待");
+  assert.equal(radarActionDisplayText("run"), "运行");
+  assert.equal(compactRadarModelName("GPT-5.6 Sol max"), "Sol");
+  assert.equal(compactRadarModelName("GPT-5.6 Luna max"), "Luna");
+  assert.equal(compactRadarModelName("GPT-5.6 Terra max"), "Terra");
+});
 
 test("primaryModelRow chooses the strongest score and cheaper equal-score model", () => {
   const primary = primaryModelRow(snapshot.modelIq);

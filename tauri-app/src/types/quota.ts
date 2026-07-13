@@ -7,7 +7,7 @@ export interface AccountInfo {
 
 export interface QuotaLimit {
   label: string;
-  availability: "measured" | "unavailable";
+  availability: "measured" | "unavailable" | "absent";
   remainingPercent: number | null;
   usedPercent: number | null;
   resetsAt: string;

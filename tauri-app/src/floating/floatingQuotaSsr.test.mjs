@@ -28,6 +28,25 @@ test("floating quota projection distinguishes unavailable compatibility zero fro
   });
 });
 
+test("floating quota projection hides an absent five-hour window and expands seven-day", async () => {
+  await withSsrModules(async (load) => {
+    const { FloatingPanelSurface } = await load("/src/floating/FloatingPanelPreview.tsx");
+    const snapshot = floatingSnapshotFixture("measured", 1);
+    snapshot.fiveHourAvailability = "absent";
+    snapshot.fiveHourRemainingPercent = null;
+
+    const html = renderToStaticMarkup(React.createElement(FloatingPanelSurface, {
+      settings: floatingSettingsFixture(),
+      snapshot,
+    }));
+
+    assert.doesNotMatch(html, />5h</);
+    assert.match(html, />7d</);
+    assert.equal((html.match(/role="meter"/g) ?? []).length, 1);
+    assert.match(html, /floating-quota floating-quota--single-window/);
+  });
+});
+
 function quotaFixtures() {
   return [
     { availability: "unavailable", remainingPercent: 0 },

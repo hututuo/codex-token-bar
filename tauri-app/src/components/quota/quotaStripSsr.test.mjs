@@ -121,6 +121,37 @@ test("QuotaStrip keeps each quota label beside the track with complete metadata 
   });
 });
 
+test("QuotaStrip renders only the supported seven-day window", async () => {
+  await withSsrModules(async (load) => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    const html = renderComponent(QuotaStrip, {
+      snapshot: {
+        ...quotaSnapshot,
+        fiveHour: {
+          label: "5h",
+          availability: "absent",
+          remainingPercent: null,
+          usedPercent: null,
+          resetsAt: "--",
+        },
+        sevenDay: {
+          ...quotaSnapshot.sevenDay,
+          remainingPercent: 1,
+          usedPercent: 0,
+        },
+        paceLabel: "余量很足，使劲蹬",
+      },
+      warnings: [],
+    });
+
+    assert.match(html, /quota-strip quota-strip--single-window/);
+    assert.doesNotMatch(html, />5h</);
+    assert.match(html, />7d</);
+    assert.match(html, /余量很足，使劲蹬/);
+    assert.doesNotMatch(html, /额度待读取/);
+  });
+});
+
 test("QuotaStrip shifts the fill continuously from red risk toward deep blue", async () => {
   await withSsrModules(async (load) => {
     const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");

@@ -27,6 +27,19 @@ test("status quota projection distinguishes unavailable compatibility zero from 
   });
 });
 
+test("status quota projection omits an absent five-hour window", async () => {
+  await withSsrModules(async (load) => {
+    const { StatusQuotaProjection } = await load("/src/status/StatusQuotaProjection.tsx");
+    const html = renderToStaticMarkup(React.createElement(StatusQuotaProjection, {
+      fiveHour: quotaLimit("5h", "absent", null),
+      sevenDay: quotaLimit("7d", "measured", 1),
+    }));
+
+    assert.doesNotMatch(html, /5h/);
+    assert.match(html, /7d 100%/);
+  });
+});
+
 function quotaFixtures() {
   return [
     { availability: "unavailable", remainingPercent: 0 },

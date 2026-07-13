@@ -11,6 +11,7 @@ import { readCodexRadarState } from "../api/codexRadarClient";
 import {
   codexRadarDiagnosticLabel,
   codexRadarSurfaceStatus,
+  compactRadarModelName,
   type CodexRadarChartSeries,
   type CodexRadarDiagnostic,
   type CodexRadarModelIQComparisonRow,
@@ -22,6 +23,7 @@ import {
   percentText,
   primaryModelRow,
   quotaChartSeries,
+  radarActionDisplayText,
   selectCodexRadarDetailSnapshot,
   secondaryModelRows,
   shortDateLabel,
@@ -209,7 +211,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
         <RadarBlock icon="W" title="速蹬窗口">
           <strong>{snapshot?.window.message ?? "等待 Codex 雷达"}</strong>
           <div className="radar-mini-row">
-            <RadarMini label="建议" value={snapshot?.recommendedAction ?? "--"} />
+            <RadarMini label="建议" value={radarActionDisplayText(snapshot?.recommendedAction)} />
             <RadarMini label="24h" value={percentText(probability24h)} />
             <RadarMini label="48h" value={percentText(probability48h)} />
           </div>
@@ -218,13 +220,13 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
         <RadarBlock icon="IQ" title="今日主模型">
           <div className="radar-score-row">
             <strong>{primary ? `IQ ${displayRadarNumber(primary.point.score)}` : "IQ --"}</strong>
-            <span>{primary ? modelDisplayName(primary.point) : "待读取"}</span>
+            <span>{primary ? compactRadarModelName(modelDisplayName(primary.point)) : "待读取"}</span>
           </div>
           <div className="radar-model-row">
             {secondary.length > 0
               ? secondary.map((row) => (
                   <span key={row.label}>
-                    {row.label.replace("GPT-", "")} {displayRadarNumber(row.point.score)}
+                    {compactRadarModelName(row.label)} {displayRadarNumber(row.point.score)}
                   </span>
                 ))
               : <span>等待模型对比</span>}
@@ -437,7 +439,7 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
         <RadarDetailSubsection title="窗口摘要">
           <RadarKeyValueGrid rows={[
             ["窗口状态", snapshot.window.message || "--"],
-            ["建议动作", snapshot.recommendedAction || "--"],
+            ["建议动作", radarActionDisplayText(snapshot.recommendedAction)],
             ["24h 概率", percentText(probability24h)],
             ["48h 概率", percentText(probability48h)],
             ["预计窗口", snapshot.prediction.expectedWindow || "--"],

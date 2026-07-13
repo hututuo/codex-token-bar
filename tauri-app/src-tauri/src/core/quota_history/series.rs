@@ -6,6 +6,9 @@ use time::macros::format_description;
 use time::{OffsetDateTime, UtcOffset};
 
 const MAX_CARRY_GAP_SECONDS: f64 = 90.0 * 60.0;
+const LEGACY_FIVE_HOUR_MAX_RESET_SPAN_SECONDS: f64 = 6.0 * 60.0 * 60.0;
+const TRANSIENT_RESET_GLITCH_MAX_SECONDS: f64 = 30.0 * 60.0;
+const RESET_MATCH_GRACE_SECONDS: f64 = 2.0 * 60.0;
 
 #[derive(Clone, Debug)]
 pub(super) struct DailyQuotaHistory {
@@ -126,6 +129,8 @@ pub(super) fn make_daily_history(
 }
 
 pub(super) fn sanitized_rows(rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow> {
+    let rows = reclassify_legacy_seven_day_only_rows(rows);
+    let rows = suppress_recovered_full_remaining_jumps(rows);
     let rows = suppress_recovered_usage_spikes(rows);
     let mut last_by_account: HashMap<String, QuotaHistoryRow> = HashMap::new();
     rows.into_iter()
@@ -136,6 +141,129 @@ pub(super) fn sanitized_rows(rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow>
             normalized
         })
         .collect()
+}
+
+fn reclassify_legacy_seven_day_only_rows(mut rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow> {
+    for row in &mut rows {
+        let looks_like_seven_day = row.seven_day_used_percent.is_none()
+            && row.seven_day_resets_at.is_none()
+            && row.five_hour_used_percent.is_some()
+            && row
+                .five_hour_resets_at
+                .is_some_and(|reset| reset - row.created_at > LEGACY_FIVE_HOUR_MAX_RESET_SPAN_SECONDS);
+        if looks_like_seven_day {
+            row.seven_day_used_percent = row.five_hour_used_percent.take();
+            row.seven_day_resets_at = row.five_hour_resets_at.take();
+        }
+    }
+    rows
+}
+
+#[derive(Clone, Copy)]
+struct WindowObservation {
+    row_index: usize,
+    created_at: f64,
+    used_percent: i32,
+    resets_at: Option<f64>,
+}
+
+fn suppress_recovered_full_remaining_jumps(mut rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow> {
+    suppress_recovered_full_remaining_jumps_for_window(
+        &mut rows,
+        |row| row.five_hour_used_percent,
+        |row| row.five_hour_resets_at,
+        |row, used, reset| {
+            row.five_hour_used_percent = Some(used);
+            row.five_hour_resets_at = reset;
+        },
+    );
+    suppress_recovered_full_remaining_jumps_for_window(
+        &mut rows,
+        |row| row.seven_day_used_percent,
+        |row| row.seven_day_resets_at,
+        |row, used, reset| {
+            row.seven_day_used_percent = Some(used);
+            row.seven_day_resets_at = reset;
+        },
+    );
+    rows
+}
+
+fn suppress_recovered_full_remaining_jumps_for_window(
+    rows: &mut [QuotaHistoryRow],
+    used: impl Fn(&QuotaHistoryRow) -> Option<i32> + Copy,
+    reset: impl Fn(&QuotaHistoryRow) -> Option<f64> + Copy,
+    mut replace: impl FnMut(&mut QuotaHistoryRow, i32, Option<f64>),
+) {
+    let mut groups: HashMap<String, Vec<WindowObservation>> = HashMap::new();
+    for (row_index, row) in rows.iter().enumerate() {
+        let Some(used_percent) = used(row) else {
+            continue;
+        };
+        groups
+            .entry(row.history_match_key())
+            .or_default()
+            .push(WindowObservation {
+                row_index,
+                created_at: row.created_at,
+                used_percent,
+                resets_at: reset(row),
+            });
+    }
+
+    for observations in groups.values() {
+        let mut position = 1;
+        while position + 1 < observations.len() {
+            let previous = observations[position - 1];
+            let current = observations[position];
+            if current.used_percent > previous.used_percent - 20 {
+                position += 1;
+                continue;
+            }
+
+            let recovery = observations[(position + 1)..]
+                .iter()
+                .copied()
+                .take_while(|candidate| {
+                    candidate.created_at - current.created_at <= TRANSIENT_RESET_GLITCH_MAX_SECONDS
+                })
+                .find(|candidate| {
+                    same_reset(previous.resets_at, candidate.resets_at)
+                        && candidate.used_percent >= previous.used_percent - 5
+                });
+            let Some(recovery) = recovery else {
+                position += 1;
+                continue;
+            };
+            let Some(stable_reset) = previous.resets_at else {
+                position += 1;
+                continue;
+            };
+            let recovered_floor = previous.used_percent.min(recovery.used_percent);
+            for observation in observations[position..]
+                .iter()
+                .take_while(|observation| observation.row_index < recovery.row_index)
+            {
+                if observation.used_percent <= recovered_floor - 20
+                    && stable_reset > observation.created_at
+                {
+                    replace(
+                        &mut rows[observation.row_index],
+                        previous.used_percent,
+                        previous.resets_at,
+                    );
+                }
+            }
+            position = observations
+                .iter()
+                .position(|observation| observation.row_index == recovery.row_index)
+                .unwrap_or(position + 1);
+        }
+    }
+}
+
+fn same_reset(lhs: Option<f64>, rhs: Option<f64>) -> bool {
+    matches!((lhs, rhs), (Some(lhs), Some(rhs)) if (lhs - rhs).abs() <= RESET_MATCH_GRACE_SECONDS)
 }
 
 fn suppress_recovered_usage_spikes(mut rows: Vec<QuotaHistoryRow>) -> Vec<QuotaHistoryRow> {

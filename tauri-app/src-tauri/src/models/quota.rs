@@ -41,6 +41,7 @@ pub struct QuotaLimit {
 pub enum QuotaAvailability {
     Measured,
     Unavailable,
+    Absent,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
