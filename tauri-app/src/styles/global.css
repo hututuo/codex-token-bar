@@ -781,6 +781,10 @@ button {
   z-index: 24;
 }
 
+.quota-strip--single-window {
+  grid-template-columns: 74px minmax(384px, 2.7fr) minmax(116px, 0.72fr) minmax(320px, 1.45fr);
+}
+
 .quota-plan {
   display: flex;
   flex-direction: column;
@@ -4513,6 +4517,10 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.floating-quota--single-window .floating-quota-bar {
+  flex-basis: 100%;
 }
 
 .floating-quota-track {

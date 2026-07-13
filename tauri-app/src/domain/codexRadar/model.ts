@@ -498,6 +498,34 @@ export function modelDisplayName(point: CodexRadarModelIQPoint): string {
   return point.reasoningEffort ? `${model} ${point.reasoningEffort}` : model;
 }
 
+export function radarActionDisplayText(action: string | null | undefined): string {
+  const normalized = action?.trim().toLowerCase() ?? "";
+  const localized: Record<string, string> = {
+    wait: "等待",
+    waiting: "等待",
+    hold: "暂缓",
+    run: "运行",
+    go: "可运行",
+    open: "开放",
+    closed: "关闭",
+  };
+  return localized[normalized] ?? (action?.trim() || "--");
+}
+
+export function compactRadarModelName(label: string): string {
+  const family = label.match(/\b(sol|luna|terra)\b/i)?.[1];
+  if (family) {
+    return family.charAt(0).toUpperCase() + family.slice(1).toLowerCase();
+  }
+  return label
+    .replace(/^GPT-5\.6[\s-]*/i, "")
+    .replace(/\s+max$/i, "")
+    .replace(/^GPT-5\.5\s+/i, "")
+    .replace(/^GPT-5\.4\s+/i, "5.4 ")
+    .replace(/\bxhigh\b/i, "X high")
+    .trim();
+}
+
 export function shortDateLabel(raw: string): string {
   const trimmed = raw
     .replace("2026-06-", "6.")

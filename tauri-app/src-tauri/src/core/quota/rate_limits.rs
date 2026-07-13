@@ -30,6 +30,17 @@ pub(super) fn placeholder_quota() -> QuotaSnapshot {
     }
 }
 
+fn absent_quota(label: &str) -> QuotaLimit {
+    QuotaLimit {
+        label: label.into(),
+        availability: QuotaAvailability::Absent,
+        remaining_percent: None,
+        used_percent: None,
+        resets_at: "未提供".into(),
+        resets_at_unix: None,
+    }
+}
+
 pub(super) struct ParsedRateLimits {
     pub quota: QuotaSnapshot,
     pub plan_label: Option<String>,
@@ -69,11 +80,11 @@ pub(super) fn parse_rate_limits_with_plan(result: &Value) -> Result<ParsedRateLi
     let five_hour = selected_card
         .five_hour
         .clone()
-        .unwrap_or_else(|| placeholder_quota().five_hour);
+        .unwrap_or_else(|| absent_quota("5h"));
     let seven_day = selected_card
         .seven_day
         .clone()
-        .unwrap_or_else(|| placeholder_quota().seven_day);
+        .unwrap_or_else(|| absent_quota("7d"));
 
     Ok(ParsedRateLimits {
         plan_label: parse_plan_label(result),
@@ -158,8 +169,21 @@ fn parse_limit_card(value: &Value, selected_id: &str) -> Option<ParsedLimitCard>
         return None;
     }
     let id = id.to_string();
-    let five_hour = parse_window(value.get("primary"), "5h");
-    let seven_day = parse_window(value.get("secondary"), "7d");
+    let mut five_hour = None;
+    let mut seven_day = None;
+    for window in [
+        parse_window(value.get("primary"), "5h"),
+        parse_window(value.get("secondary"), "7d"),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if window.label == "7d" {
+            seven_day.get_or_insert(window);
+        } else {
+            five_hour.get_or_insert(window);
+        }
+    }
     if five_hour.is_none() && seven_day.is_none() {
         return None;
     }
@@ -187,6 +211,7 @@ fn parse_window(value: Option<&Value>, label: &str) -> Option<QuotaLimit> {
         .and_then(normalized_unix_timestamp_seconds);
     let reset_at =
         reset_at_unix.and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok());
+    let label = window_label(value, label);
     Some(QuotaLimit {
         label: label.into(),
         availability: QuotaAvailability::Measured,
@@ -197,6 +222,19 @@ fn parse_window(value: Option<&Value>, label: &str) -> Option<QuotaLimit> {
             .unwrap_or_else(|| "--:--".into()),
         resets_at_unix: reset_at_unix,
     })
+}
+
+fn window_label<'a>(window: &Value, fallback: &'a str) -> &'a str {
+    let Some(duration_minutes) = window.get("windowDurationMins").and_then(number) else {
+        return fallback;
+    };
+    if duration_minutes >= 24.0 * 60.0 {
+        "7d"
+    } else if duration_minutes <= 6.0 * 60.0 {
+        "5h"
+    } else {
+        fallback
+    }
 }
 
 fn uses_percent_scale(window: &Value, used_percent: &Value) -> bool {
@@ -355,6 +393,29 @@ mod tests {
         assert_eq!(quota.five_hour.label, "5h");
         assert!((quota.five_hour.used_percent.unwrap() - 0.25).abs() < 0.001);
         assert!((quota.seven_day.remaining_percent.unwrap() - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn primary_seven_day_window_is_not_mislabeled_as_five_hour() {
+        let result = json!({
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": {
+                    "usedPercent": 0,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1784502790
+                },
+                "secondary": null
+            }
+        });
+
+        let quota = parse_rate_limits(&result).unwrap();
+
+        assert_eq!(quota.five_hour.availability, QuotaAvailability::Absent);
+        assert_eq!(quota.seven_day.availability, QuotaAvailability::Measured);
+        assert_eq!(quota.seven_day.label, "7d");
+        assert_eq!(quota.seven_day.used_percent, Some(0.0));
+        assert_ne!(quota.pace_label, "额度待读取");
     }
 
     #[test]

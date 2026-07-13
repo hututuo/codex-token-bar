@@ -1,9 +1,11 @@
 import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import {
   codexRadarDiagnosticLabel,
+  compactRadarModelName,
   displayRadarNumber,
   percentText,
   primaryModelRow,
+  radarActionDisplayText,
   secondaryModelRows,
   type CodexRadarSnapshot,
 } from "../domain/codexRadar/model";
@@ -35,7 +37,7 @@ function FloatingQuotaBar({
   label,
   remainingPercent,
 }: {
-  availability: "measured" | "unavailable";
+  availability: "measured" | "unavailable" | "absent";
   label: string;
   remainingPercent: number | null;
 }) {
@@ -229,21 +231,37 @@ function FloatingContentRow({
       );
     case "radar":
       return <FloatingRadarRow snapshot={radarSnapshot} style={style} />;
-    case "quota":
+    case "quota": {
+      const quotaWindows = [
+        {
+          availability: snapshot.fiveHourAvailability,
+          label: snapshot.fiveHourLabel,
+          remainingPercent: snapshot.fiveHourRemainingPercent,
+        },
+        {
+          availability: snapshot.sevenDayAvailability,
+          label: snapshot.sevenDayLabel,
+          remainingPercent: snapshot.sevenDayRemainingPercent,
+        },
+      ].filter((window) => window.availability !== "absent");
       return (
-        <div className="floating-row floating-quota" style={style}>
-          <FloatingQuotaBar
-            availability={snapshot.fiveHourAvailability}
-            label={snapshot.fiveHourLabel}
-            remainingPercent={snapshot.fiveHourRemainingPercent}
-          />
-          <FloatingQuotaBar
-            availability={snapshot.sevenDayAvailability}
-            label={snapshot.sevenDayLabel}
-            remainingPercent={snapshot.sevenDayRemainingPercent}
-          />
+        <div
+          className={quotaWindows.length === 1
+            ? "floating-row floating-quota floating-quota--single-window"
+            : "floating-row floating-quota"}
+          style={style}
+        >
+          {quotaWindows.map((window) => (
+            <FloatingQuotaBar
+              availability={window.availability}
+              key={window.label}
+              label={window.label}
+              remainingPercent={window.remainingPercent}
+            />
+          ))}
         </div>
       );
+    }
   }
 }
 
@@ -266,13 +284,13 @@ function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot |
   return (
     <div className="floating-row floating-radar" style={style}>
       <div className="floating-radar-action">
-        <span>{diagnosticLabel ? `${diagnosticLabel} · ` : ""}动作 {snapshot.recommendedAction || "--"}</span>
+        <span>{diagnosticLabel ? `${diagnosticLabel} · ` : ""}动作 {radarActionDisplayText(snapshot.recommendedAction)}</span>
         <em>24h {percentText(probability)} · 48h {percentText(probability48)}</em>
       </div>
       <div className="floating-radar-iq">
         <strong>
           IQ {displayRadarNumber(primary.point.score, 1)}
-          <em>{floatingRadarPrimaryModelLabel(primary.label)}</em>
+          <em>{compactRadarModelName(primary.label)}</em>
         </strong>
         <p className="floating-radar-models">{secondaryText}</p>
       </div>
@@ -287,7 +305,7 @@ function floatingRadarSecondaryIQText(snapshot: CodexRadarSnapshot): string {
     return `${primary.point.passed}/${primary.point.tasks} 通过`;
   }
   return rows
-    .map((row) => `${floatingRadarShortModelLabel(row.label)} ${displayRadarNumber(row.point.score, 1)}`)
+    .map((row) => `${compactRadarModelName(row.label)} ${displayRadarNumber(row.point.score, 1)}`)
     .join("  ");
 }
 
@@ -295,7 +313,7 @@ function uniqueFloatingRadarRows(rows: ReturnType<typeof secondaryModelRows>, li
   const seen = new Set<string>();
   const result: ReturnType<typeof secondaryModelRows> = [];
   for (const row of rows) {
-    const key = `${floatingRadarShortModelLabel(row.label)}:${row.point.model ?? ""}:${row.point.reasoningEffort ?? ""}`;
+    const key = `${compactRadarModelName(row.label)}:${row.point.model ?? ""}:${row.point.reasoningEffort ?? ""}`;
     if (seen.has(key)) {
       continue;
     }
@@ -306,20 +324,6 @@ function uniqueFloatingRadarRows(rows: ReturnType<typeof secondaryModelRows>, li
     }
   }
   return result;
-}
-
-function floatingRadarPrimaryModelLabel(label: string): string {
-  return label
-    .replace(/\bxhigh\b/i, "X high")
-    .trim();
-}
-
-function floatingRadarShortModelLabel(label: string): string {
-  return label
-    .replace(/^GPT-5\.5\s+/i, "")
-    .replace(/^GPT-5\.4\s+/i, "5.4 ")
-    .replace(/\bxhigh\b/i, "X high")
-    .trim();
 }
 
 const RIPPLE_CYCLE_SECONDS = 3.25;

@@ -811,6 +811,72 @@ fn history_allows_recovery_on_new_reset_window() {
 }
 
 #[test]
+fn history_reclassifies_legacy_seven_day_only_rows_written_into_five_hour_columns() {
+    let created_at = 1_800_000_000.0;
+    let seven_day_reset = created_at + 7.0 * 24.0 * 60.0 * 60.0;
+    let mut legacy = history_row(
+        created_at,
+        "tester|Pro|codex",
+        "Pro",
+        Some("codex"),
+        0,
+        seven_day_reset,
+        0,
+        seven_day_reset,
+    );
+    legacy.seven_day_used_percent = None;
+    legacy.seven_day_resets_at = None;
+
+    let sanitized = super::series::sanitized_rows(vec![legacy]);
+
+    assert_eq!(sanitized[0].five_hour_used_percent, None);
+    assert_eq!(sanitized[0].five_hour_resets_at, None);
+    assert_eq!(sanitized[0].seven_day_used_percent, Some(0));
+    assert_eq!(sanitized[0].seven_day_resets_at, Some(seven_day_reset));
+}
+
+#[test]
+fn history_suppresses_recovered_full_remaining_jump_even_when_reset_temporarily_shifts() {
+    let created_at = 1_800_000_000.0;
+    let stable_five_reset = created_at + 4.0 * 60.0 * 60.0;
+    let shifted_five_reset = stable_five_reset - 2.0 * 60.0 * 60.0;
+    let stable_seven_reset = created_at + 157.0 * 60.0 * 60.0;
+    let shifted_seven_reset = stable_seven_reset + 2.0 * 60.0 * 60.0;
+    let mut previous = history_row(
+        created_at,
+        "tester|Pro|codex",
+        "Pro",
+        Some("codex"),
+        45,
+        stable_five_reset,
+        32,
+        stable_seven_reset,
+    );
+    let mut glitch = previous.clone();
+    glitch.created_at += 4.0 * 60.0;
+    glitch.five_hour_used_percent = Some(2);
+    glitch.five_hour_resets_at = Some(shifted_five_reset);
+    glitch.seven_day_used_percent = Some(1);
+    glitch.seven_day_resets_at = Some(shifted_seven_reset);
+    let mut recovered = previous.clone();
+    recovered.created_at += 6.0 * 60.0;
+    recovered.five_hour_used_percent = Some(46);
+    recovered.seven_day_used_percent = Some(33);
+    previous.status = "stable-before".into();
+    glitch.status = "official-glitch".into();
+    recovered.status = "stable-after".into();
+
+    let sanitized = super::series::sanitized_rows(vec![previous, glitch, recovered]);
+
+    assert_eq!(sanitized[1].five_hour_used_percent, Some(45));
+    assert_eq!(sanitized[1].five_hour_resets_at, Some(stable_five_reset));
+    assert_eq!(sanitized[1].seven_day_used_percent, Some(32));
+    assert_eq!(sanitized[1].seven_day_resets_at, Some(stable_seven_reset));
+    assert_eq!(sanitized[2].five_hour_used_percent, Some(46));
+    assert_eq!(sanitized[2].seven_day_used_percent, Some(33));
+}
+
+#[test]
 fn quota_history_points_include_start_unix_for_time_aligned_merge() {
     let path = temp_db_path("start-unix");
     let database = QuotaHistoryDatabase { path: path.clone() };

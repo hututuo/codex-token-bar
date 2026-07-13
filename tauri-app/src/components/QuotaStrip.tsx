@@ -145,6 +145,13 @@ function QuotaStripView({
   const resetCreditPanel = useMemo(() => resetCreditPanelModel(snapshot.resetCredit), [snapshot.resetCredit]);
   const quotaWarnings = useMemo(() => quotaReadWarnings(warnings, diagnostics), [diagnostics, warnings]);
   const selectedQuotaRefreshIntervalMs = sanitizeQuotaRefreshIntervalMs(quotaRefreshIntervalMs);
+  const visibleQuotaLimits = [snapshot.fiveHour, snapshot.sevenDay]
+    .filter((quota) => quota.availability !== "absent");
+  const quotaStripClassName = [
+    "quota-strip",
+    visibleQuotaLimits.length === 1 ? "quota-strip--single-window" : "",
+    showResetDetails ? "quota-strip--details-open" : "",
+  ].filter(Boolean).join(" ");
 
   function toggleCredit(credit: ResetCreditDetail, index: number) {
     const key = resetCreditDetailKey(credit, index);
@@ -160,13 +167,12 @@ function QuotaStripView({
   }
 
   return (
-    <section className={showResetDetails ? "quota-strip quota-strip--details-open" : "quota-strip"} aria-label="账户额度">
+    <section className={quotaStripClassName} aria-label="账户额度">
       <div className="quota-plan">
         <span>本地账户额度</span>
         <strong>本地读取</strong>
       </div>
-      <QuotaBar quota={snapshot.fiveHour} />
-      <QuotaBar quota={snapshot.sevenDay} />
+      {visibleQuotaLimits.map((quota) => <QuotaBar key={quota.label} quota={quota} />)}
       <button
         type="button"
         className="quota-side-card quota-reset-card"
