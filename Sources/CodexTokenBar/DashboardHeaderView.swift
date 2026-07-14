@@ -242,8 +242,6 @@ struct HeaderView: View {
 
                     if presentationMode.showsActions {
                         HStack(spacing: 9) {
-                            Spacer(minLength: 0)
-
                             if actions.contains(.markAllRead) {
                                 Button(action: markAllRead) {
                                     Label("全部已读", systemImage: "checkmark.circle")
@@ -323,7 +321,7 @@ struct HeaderView: View {
                                 )
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
                 .font(.system(size: 14))

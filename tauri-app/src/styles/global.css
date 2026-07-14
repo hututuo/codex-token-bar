@@ -227,7 +227,7 @@ button {
 
 .header-primary-actions {
   width: 100%;
-  justify-content: end;
+  justify-content: flex-start;
 }
 
 .source-label,
