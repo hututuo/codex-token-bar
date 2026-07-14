@@ -2,6 +2,7 @@ import Foundation
 
 enum CodexUnreadThreadReader {
     private static let stateDatabaseCache = StateDatabaseCache()
+    private static let sessionVisibilityCache = SessionVisibilityCache()
 
     static func readUnreadThreadIDs(codexHome: URL) -> CodexUnreadThreadReadResult {
         let url = codexHome.appendingPathComponent(".codex-global-state.json")
@@ -208,56 +209,208 @@ enum CodexUnreadThreadReader {
         }
     }
 
+    private final class SessionVisibilityCache: @unchecked Sendable {
+        private struct FileFingerprint: Equatable {
+            let deviceID: UInt64?
+            let fileID: UInt64?
+            let size: UInt64
+
+            init(url: URL) {
+                let attributes = (try? FileManager.default.attributesOfItem(atPath: url.path)) ?? [:]
+                deviceID = (attributes[.systemNumber] as? NSNumber)?.uint64Value
+                fileID = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
+                size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+            }
+
+            func identifiesSameFile(as other: FileFingerprint) -> Bool {
+                guard let deviceID, let fileID,
+                      let otherDeviceID = other.deviceID,
+                      let otherFileID = other.fileID else {
+                    return false
+                }
+                return deviceID == otherDeviceID && fileID == otherFileID
+            }
+        }
+
+        private struct SessionMetaSummary {
+            let id: String
+            let isSubagent: Bool
+        }
+
+        private struct CachedFile {
+            let fingerprint: FileFingerprint
+            let summary: SessionMetaSummary?
+            let archived: Bool
+
+            func canReuse(for currentFingerprint: FileFingerprint) -> Bool {
+                guard fingerprint.identifiesSameFile(as: currentFingerprint) else { return false }
+                return summary != nil || fingerprint.size == currentFingerprint.size
+            }
+        }
+
+        private struct HomeEntry {
+            var files: [String: CachedFile] = [:]
+            var parseCount = 0
+            var fullScanCount = 0
+            var negativeThreadIDs = Set<String>()
+            var lastFullScanAt: Date?
+        }
+
+        private let negativeRetryInterval: TimeInterval = 10
+        private let lock = NSLock()
+        private var homes: [String: HomeEntry] = [:]
+
+        func read(threadIDs: Set<String>, codexHome: URL) -> SessionVisibility {
+            lock.withLock {
+                let homePath = codexHome.standardizedFileURL.path
+                var entry = homes[homePath] ?? HomeEntry()
+                let invalidatedRelevantFile = invalidateChangedFiles(
+                    requestedThreadIDs: threadIDs,
+                    entry: &entry
+                )
+                var visibility = makeVisibility(threadIDs: threadIDs, entry: entry)
+                let unresolvedIDs = threadIDs.subtracting(visibility.foundIDs)
+                let now = Date()
+                let negativeCacheExpired = entry.lastFullScanAt.map {
+                    now.timeIntervalSince($0) >= negativeRetryInterval
+                } ?? true
+                let hasNewUnresolvedID = !unresolvedIDs.isSubset(of: entry.negativeThreadIDs)
+
+                if invalidatedRelevantFile || hasNewUnresolvedID || (!unresolvedIDs.isEmpty && negativeCacheExpired) {
+                    scanAllSessions(codexHome: codexHome, entry: &entry)
+                    visibility = makeVisibility(threadIDs: threadIDs, entry: entry)
+                    entry.negativeThreadIDs = threadIDs.subtracting(visibility.foundIDs)
+                    entry.lastFullScanAt = now
+                }
+
+                homes[homePath] = entry
+                return visibility
+            }
+        }
+
+        func reset(codexHome: URL) {
+            _ = lock.withLock {
+                homes.removeValue(forKey: codexHome.standardizedFileURL.path)
+            }
+        }
+
+        func parseCount(codexHome: URL) -> Int {
+            lock.withLock {
+                homes[codexHome.standardizedFileURL.path]?.parseCount ?? 0
+            }
+        }
+
+        func fullScanCount(codexHome: URL) -> Int {
+            lock.withLock {
+                homes[codexHome.standardizedFileURL.path]?.fullScanCount ?? 0
+            }
+        }
+
+        private func invalidateChangedFiles(
+            requestedThreadIDs: Set<String>,
+            entry: inout HomeEntry
+        ) -> Bool {
+            let relevantFiles = entry.files.filter {
+                guard let id = $0.value.summary?.id else { return false }
+                return requestedThreadIDs.contains(id)
+            }
+            var invalidated = false
+            for (path, cached) in relevantFiles {
+                let currentFingerprint = FileFingerprint(url: URL(fileURLWithPath: path))
+                guard cached.canReuse(for: currentFingerprint) else {
+                    entry.files.removeValue(forKey: path)
+                    invalidated = true
+                    continue
+                }
+            }
+            return invalidated
+        }
+
+        private func makeVisibility(threadIDs: Set<String>, entry: HomeEntry) -> SessionVisibility {
+            var visibility = SessionVisibility()
+            for cached in entry.files.values {
+                guard let summary = cached.summary, threadIDs.contains(summary.id) else { continue }
+                visibility.foundIDs.insert(summary.id)
+                if !cached.archived && !summary.isSubagent {
+                    visibility.visibleIDs.insert(summary.id)
+                }
+            }
+            return visibility
+        }
+
+        private func scanAllSessions(codexHome: URL, entry: inout HomeEntry) {
+            var activePaths = Set<String>()
+            scanRoot(
+                root: codexHome.appendingPathComponent("sessions", isDirectory: true),
+                archived: false,
+                entry: &entry,
+                activePaths: &activePaths
+            )
+            scanRoot(
+                root: codexHome.appendingPathComponent("archived_sessions", isDirectory: true),
+                archived: true,
+                entry: &entry,
+                activePaths: &activePaths
+            )
+            entry.files = entry.files.filter { activePaths.contains($0.key) }
+            entry.fullScanCount += 1
+        }
+
+        private func scanRoot(
+            root: URL,
+            archived: Bool,
+            entry: inout HomeEntry,
+            activePaths: inout Set<String>
+        ) {
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                return
+            }
+
+            for item in enumerator {
+                guard let file = item as? URL, file.pathExtension == "jsonl" else { continue }
+                let path = file.standardizedFileURL.path
+                activePaths.insert(path)
+                if let existing = entry.files[path], existing.summary != nil {
+                    continue
+                }
+
+                let fingerprint = FileFingerprint(url: file)
+                if let existing = entry.files[path], existing.canReuse(for: fingerprint) {
+                    continue
+                }
+                entry.parseCount += 1
+                entry.files[path] = CachedFile(
+                    fingerprint: fingerprint,
+                    summary: Self.readSummary(file: file),
+                    archived: archived
+                )
+            }
+        }
+
+        private static func readSummary(file: URL) -> SessionMetaSummary? {
+            guard let payload = CodexUnreadThreadReader.sessionMetaPayload(in: file),
+                  let id = payload["id"] as? String else {
+                return nil
+            }
+            let threadSource = payload["thread_source"] as? String ?? ""
+            let isSubagent = threadSource.localizedCaseInsensitiveContains("subagent")
+                || CodexUnreadThreadReader.valueContainsSubagent(payload["source"])
+            return SessionMetaSummary(id: id, isSubagent: isSubagent)
+        }
+    }
+
     private static func sessionVisibleThreadIDs(from threadIDs: Set<String>, codexHome: URL) -> SessionVisibility {
-        var visibility = SessionVisibility()
-        guard !threadIDs.isEmpty else { return visibility }
-
-        let liveSessions = codexHome.appendingPathComponent("sessions", isDirectory: true)
-        scanSessionMetas(under: liveSessions, archived: false, threadIDs: threadIDs, visibility: &visibility)
-
-        let archivedSessions = codexHome.appendingPathComponent("archived_sessions", isDirectory: true)
-        scanSessionMetas(under: archivedSessions, archived: true, threadIDs: threadIDs, visibility: &visibility)
-        return visibility
+        guard !threadIDs.isEmpty else { return SessionVisibility() }
+        return sessionVisibilityCache.read(threadIDs: threadIDs, codexHome: codexHome)
     }
 
     private static func visibleOrUnresolvedThreadIDs(from threadIDs: Set<String>, codexHome: URL) -> Set<String> {
         let sessionVisibility = sessionVisibleThreadIDs(from: threadIDs, codexHome: codexHome)
         return sessionVisibility.visibleIDs.union(threadIDs.subtracting(sessionVisibility.foundIDs))
-    }
-
-    private static func scanSessionMetas(
-        under root: URL,
-        archived: Bool,
-        threadIDs: Set<String>,
-        visibility: inout SessionVisibility
-    ) {
-        guard visibility.foundIDs.count < threadIDs.count,
-              let enumerator = FileManager.default.enumerator(
-                at: root,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-              ) else {
-            return
-        }
-
-        for item in enumerator {
-            guard visibility.foundIDs.count < threadIDs.count,
-                  let file = item as? URL,
-                  file.pathExtension == "jsonl",
-                  let payload = sessionMetaPayload(in: file),
-                  let id = payload["id"] as? String,
-                  threadIDs.contains(id) else {
-                continue
-            }
-
-            visibility.foundIDs.insert(id)
-            let threadSource = payload["thread_source"] as? String ?? ""
-            let isSubagent = threadSource.localizedCaseInsensitiveContains("subagent")
-                || valueContainsSubagent(payload["source"])
-            if !archived && !isSubagent {
-                visibility.visibleIDs.insert(id)
-            }
-        }
     }
 
     private static func sessionMetaPayload(in file: URL) -> [String: Any]? {
@@ -303,5 +456,17 @@ enum CodexUnreadThreadReader {
             return dictionary.values.contains(where: valueContainsSubagent)
         }
         return false
+    }
+
+    static func resetSessionVisibilityCacheForTesting(codexHome: URL) {
+        sessionVisibilityCache.reset(codexHome: codexHome)
+    }
+
+    static func sessionMetaParseCountForTesting(codexHome: URL) -> Int {
+        sessionVisibilityCache.parseCount(codexHome: codexHome)
+    }
+
+    static func sessionVisibilityFullScanCountForTesting(codexHome: URL) -> Int {
+        sessionVisibilityCache.fullScanCount(codexHome: codexHome)
     }
 }

@@ -6,6 +6,7 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
 
     override func tearDownWithError() throws {
         for url in temporaryDirectories {
+            CodexUnreadThreadReader.resetSessionVisibilityCacheForTesting(codexHome: url)
             try? FileManager.default.removeItem(at: url)
         }
         temporaryDirectories.removeAll()
@@ -37,6 +38,76 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
         XCTAssertEqual(threadIDs, [userID, unresolvedID, vscodeID])
     }
 
+    func testSessionVisibilityIndexOnlyParsesNewOrReplacedSessionMetas() throws {
+        let codexHome = try makeCodexHome()
+        let sessions = codexHome.appendingPathComponent("sessions/2026/07/15", isDirectory: true)
+        let archivedSessions = codexHome.appendingPathComponent("archived_sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: archivedSessions, withIntermediateDirectories: true)
+
+        let userID = "019f6200-1111-7222-8333-aaaaaaaaaaaa"
+        let subagentID = "019f6200-2222-7333-8444-bbbbbbbbbbbb"
+        let secondUserID = "019f6200-3333-7444-8555-cccccccccccc"
+        let unresolvedID = "019f6200-4444-7555-8666-dddddddddddd"
+        let userSession = sessions.appendingPathComponent("rollout-user.jsonl")
+        let subagentSession = sessions.appendingPathComponent("rollout-subagent.jsonl")
+        let secondUserSession = sessions.appendingPathComponent("rollout-second-user.jsonl")
+
+        try writeSessionMeta(id: userID, threadSource: "user", to: userSession)
+        try writeSessionMeta(id: subagentID, threadSource: "subagent", to: subagentSession)
+        try writeUnreadState([userID, subagentID, unresolvedID], to: codexHome)
+        CodexUnreadThreadReader.resetSessionVisibilityCacheForTesting(codexHome: codexHome)
+
+        XCTAssertEqual(
+            availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
+            [userID, unresolvedID]
+        )
+        let initialParseCount = CodexUnreadThreadReader.sessionMetaParseCountForTesting(codexHome: codexHome)
+        XCTAssertEqual(initialParseCount, 2)
+        XCTAssertEqual(CodexUnreadThreadReader.sessionVisibilityFullScanCountForTesting(codexHome: codexHome), 1)
+
+        XCTAssertEqual(
+            availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
+            [userID, unresolvedID]
+        )
+        XCTAssertEqual(
+            CodexUnreadThreadReader.sessionMetaParseCountForTesting(codexHome: codexHome),
+            initialParseCount,
+            "Unchanged session metas should be served from the visibility index"
+        )
+        XCTAssertEqual(
+            CodexUnreadThreadReader.sessionVisibilityFullScanCountForTesting(codexHome: codexHome),
+            1,
+            "An unchanged official unread set should not rescan the session tree"
+        )
+
+        try writeSessionMeta(id: secondUserID, threadSource: "user", to: secondUserSession)
+        try writeUnreadState([userID, subagentID, secondUserID, unresolvedID], to: codexHome)
+        XCTAssertEqual(
+            availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
+            [userID, secondUserID, unresolvedID]
+        )
+        XCTAssertEqual(
+            CodexUnreadThreadReader.sessionMetaParseCountForTesting(codexHome: codexHome),
+            initialParseCount + 1,
+            "Only the newly discovered session should be parsed"
+        )
+        XCTAssertEqual(CodexUnreadThreadReader.sessionVisibilityFullScanCountForTesting(codexHome: codexHome), 2)
+
+        let archivedUserSession = archivedSessions.appendingPathComponent(userSession.lastPathComponent)
+        try FileManager.default.moveItem(at: userSession, to: archivedUserSession)
+        XCTAssertEqual(
+            availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
+            [secondUserID, unresolvedID],
+            "Moving a session into the archive must immediately remove it from visible unread threads"
+        )
+        XCTAssertEqual(
+            CodexUnreadThreadReader.sessionMetaParseCountForTesting(codexHome: codexHome),
+            initialParseCount + 2
+        )
+        XCTAssertEqual(CodexUnreadThreadReader.sessionVisibilityFullScanCountForTesting(codexHome: codexHome), 3)
+    }
+
     private func makeCodexHome() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-unread-reader-\(UUID().uuidString)", isDirectory: true)
@@ -55,6 +126,19 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
         ]
         let data = try JSONSerialization.data(withJSONObject: object)
         try data.write(to: codexHome.appendingPathComponent(".codex-global-state.json"))
+    }
+
+    private func writeSessionMeta(id: String, threadSource: String, to url: URL) throws {
+        let line = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(id)\",\"thread_source\":\"\(threadSource)\",\"source\":\"desktop\"}}\n"
+        try line.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func availableIDs(_ result: CodexUnreadThreadReadResult) -> Set<String> {
+        guard case let .available(ids) = result else {
+            XCTFail("Expected unread state to be readable")
+            return []
+        }
+        return ids
     }
 
     private func seedStateDatabase(
