@@ -495,6 +495,52 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
     }
 
+    func testAutoScrollOnlyFollowsAChangedTimelineFromTheLatestWindow() {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let original = [
+            BinUsage(start: start, tokens: 10, calls: 1),
+            BinUsage(start: start.addingTimeInterval(300), tokens: 20, calls: 2),
+        ]
+        let valueOnlyUpdate = [
+            BinUsage(start: start, tokens: 10, calls: 1),
+            BinUsage(start: start.addingTimeInterval(300), tokens: 50, calls: 3),
+        ]
+        let newBucket = valueOnlyUpdate + [
+            BinUsage(start: start.addingTimeInterval(600), tokens: 1, calls: 1),
+        ]
+
+        XCTAssertFalse(
+            RecentChartAutoScrollPolicy.shouldFollowLatest(
+                previousBins: original,
+                updatedBins: valueOnlyUpdate,
+                wasAtLatest: true
+            ),
+            "Token updates inside the current bucket must not start a new scroll animation"
+        )
+        XCTAssertTrue(
+            RecentChartAutoScrollPolicy.shouldFollowLatest(
+                previousBins: valueOnlyUpdate,
+                updatedBins: newBucket,
+                wasAtLatest: true
+            )
+        )
+        XCTAssertFalse(
+            RecentChartAutoScrollPolicy.shouldFollowLatest(
+                previousBins: valueOnlyUpdate,
+                updatedBins: newBucket,
+                wasAtLatest: false
+            ),
+            "Live updates must not pull a user away from an older history window"
+        )
+        XCTAssertTrue(
+            RecentChartAutoScrollPolicy.shouldFollowLatest(
+                previousBins: [],
+                updatedBins: original,
+                wasAtLatest: nil
+            )
+        )
+    }
+
     func testScrollPresentationClampsOffsetsAndPreservesPartialEndpointMovement() {
         struct Case {
             let offset: CGFloat

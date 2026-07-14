@@ -107,6 +107,20 @@ enum RecentChartScrollMetrics {
     }
 }
 
+enum RecentChartAutoScrollPolicy {
+    static func shouldFollowLatest(
+        previousBins: [BinUsage],
+        updatedBins: [BinUsage],
+        wasAtLatest: Bool?
+    ) -> Bool {
+        guard wasAtLatest != false else { return false }
+        guard previousBins.count == updatedBins.count else { return true }
+        return zip(previousBins, updatedBins).contains { previous, updated in
+            previous.start != updated.start
+        }
+    }
+}
+
 struct RecentChartScrollPresentation: Equatable {
     static let endpointEpsilon: CGFloat = 0.25
 
@@ -299,7 +313,16 @@ struct RecentChartEdgeFadeState: Equatable {
     }
 }
 
-struct RecentChartPreparedData {
+struct RecentChartPreparationInput: Equatable {
+    let bins: [BinUsage]
+    let hourlyBins: [BinUsage]
+    let cacheRecentBins: [TokenCacheBucket]
+    let cacheHourlyBins: [TokenCacheBucket]
+    let quotaRecentBins: [QuotaHistoryRecentBucket]
+    let quotaHourlyBins: [QuotaHistoryRecentBucket]
+}
+
+struct RecentChartPreparedData: Equatable {
     let range: RecentChartRange
     let bins: [BinUsage]
     let bucketInterval: TimeInterval
@@ -477,6 +500,17 @@ struct RecentUsageChart: View {
         )
     }
 
+    private var preparationInput: RecentChartPreparationInput {
+        RecentChartPreparationInput(
+            bins: bins,
+            hourlyBins: hourlyBins,
+            cacheRecentBins: cacheRecentBins,
+            cacheHourlyBins: cacheHourlyBins,
+            quotaRecentBins: quotaRecentBins,
+            quotaHourlyBins: quotaHourlyBins
+        )
+    }
+
     private var chartHeader: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
@@ -637,13 +671,18 @@ struct RecentUsageChart: View {
                     }
                 }
                 .onAppear {
-                    scrollChartToLatestIfNeeded(scrollProxy, windowCount: windowCount)
+                    scrollChartToLatest(scrollProxy)
                 }
                 .onChange(of: selectedRangeRaw) { _, _ in
-                    scrollChartToLatestIfNeeded(scrollProxy, windowCount: windowCount)
+                    scrollChartToLatest(scrollProxy)
                 }
-                .onChange(of: preparedData.bins) { _, _ in
-                    scrollChartToLatestIfNeeded(scrollProxy, windowCount: windowCount)
+                .onChange(of: preparedData.bins) { previousBins, updatedBins in
+                    guard RecentChartAutoScrollPolicy.shouldFollowLatest(
+                        previousBins: previousBins,
+                        updatedBins: updatedBins,
+                        wasAtLatest: scrollPresentation?.isAtLatest
+                    ) else { return }
+                    scrollChartToLatest(scrollProxy)
                 }
             }
         }
@@ -707,6 +746,7 @@ struct RecentUsageChart: View {
                         endPoint: .bottom
                     )
                 )
+                .drawingGroup(opaque: false, colorMode: .nonLinear)
                 .frame(width: plot.width, height: plot.height)
                 .offset(x: plot.minX, y: plot.minY)
 
@@ -754,6 +794,7 @@ struct RecentUsageChart: View {
                             endPoint: .bottom
                         )
                     )
+                    .drawingGroup(opaque: false, colorMode: .nonLinear)
 
                 linePath(points: plotData.tokenPoints)
                     .stroke(AppTheme.accentBlue, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
@@ -903,11 +944,13 @@ struct RecentUsageChart: View {
         }
     }
 
-    private func scrollChartToLatestIfNeeded(_ proxy: ScrollViewProxy, windowCount: Int) {
+    private func scrollChartToLatest(_ proxy: ScrollViewProxy) {
         guard preparedData.bins.count > 1 else { return }
         scrollPresentation = nil
         DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.18)) {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
                 proxy.scrollTo(RecentChartScrollMetrics.trailingAnchorID, anchor: .trailing)
             }
         }
@@ -936,23 +979,8 @@ struct RecentUsageChart: View {
         }
         .frame(maxWidth: 980)
         .onAppear(perform: refreshPreparedData)
-        .onChange(of: bins) { _, _ in
+        .onChange(of: preparationInput) { _, _ in
             clampConsumptionSelection()
-            refreshPreparedData()
-        }
-        .onChange(of: hourlyBins) { _, _ in
-            refreshPreparedData()
-        }
-        .onChange(of: cacheRecentBins) { _, _ in
-            refreshPreparedData()
-        }
-        .onChange(of: cacheHourlyBins) { _, _ in
-            refreshPreparedData()
-        }
-        .onChange(of: quotaRecentBins) { _, _ in
-            refreshPreparedData()
-        }
-        .onChange(of: quotaHourlyBins) { _, _ in
             refreshPreparedData()
         }
         .onChange(of: selectedRangeRaw) { _, _ in
@@ -992,7 +1020,7 @@ struct RecentUsageChart: View {
     }
 
     private func refreshPreparedData(range: RecentChartRange) {
-        preparedData = Self.prepare(
+        let updatedData = Self.prepare(
             range: range,
             recentBins: bins,
             hourlyBins: hourlyBins,
@@ -1001,6 +1029,8 @@ struct RecentUsageChart: View {
             quotaRecentBins: quotaRecentBins,
             quotaHourlyBins: quotaHourlyBins
         )
+        guard updatedData != preparedData else { return }
+        preparedData = updatedData
         clampConsumptionSelection()
     }
 
