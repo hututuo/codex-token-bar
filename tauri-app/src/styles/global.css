@@ -412,7 +412,6 @@ button {
 .thread-delete-menu-dot--connected {
   background: var(--green);
 }
-
 .more-actions-menu button:hover,
 .more-actions-menu button:focus-visible {
   background: var(--panel-soft);
@@ -485,7 +484,6 @@ button {
   background: color-mix(in srgb, var(--accent) 14%, var(--panel-solid));
   color: var(--accent);
 }
-
 .toolbar-button:disabled {
   cursor: default;
   opacity: 0.55;
@@ -4525,8 +4523,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   display: flex;
   align-items: center;
   gap: calc(4px * var(--floating-scale));
-  color: var(--floating-primary);
-  font-weight: 760;
+  color: color-mix(in srgb, var(--floating-primary) 62%, var(--radar-action-color) 38%);
 }
 
 .floating-radar-dot {
@@ -4569,7 +4566,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-radar-iq strong > span {
-  color: var(--floating-primary);
+  color: color-mix(in srgb, var(--floating-primary) 58%, var(--radar-score-color) 42%);
 }
 
 .floating-radar strong em {
