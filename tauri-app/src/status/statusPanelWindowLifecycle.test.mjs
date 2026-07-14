@@ -4,7 +4,7 @@ import { Window } from "happy-dom";
 
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
-test("status lifecycle dismisses outside blur and becomes active after the next focused show", async () => {
+test("status lifecycle dismisses outside blur or Escape and becomes active after the next focused show", async () => {
   const dom = new Window({ url: "http://localhost/?surface=status" });
   const restoreGlobals = installDomGlobals(dom);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -49,6 +49,12 @@ test("status lifecycle dismisses outside blur and becomes active after the next 
         await React.act(async () => dom.dispatchEvent(new dom.Event("focus")));
         await waitForAct(React, () => container.textContent === "true");
         assert.equal(container.textContent, "true", "a tray show followed by focus reactivates StatusPanelApp");
+
+        const escape = new dom.KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" });
+        await React.act(async () => dom.dispatchEvent(escape));
+        assert.equal(escape.defaultPrevented, true);
+        assert.equal(container.textContent, "false");
+        assert.equal(blurDismissals, 2, "Escape crosses the same native dismiss seam");
       } finally {
         await React.act(async () => root.unmount());
       }
@@ -68,6 +74,7 @@ function installDomGlobals(dom) {
     navigator: dom.navigator,
     HTMLElement: dom.HTMLElement,
     Event: dom.Event,
+    KeyboardEvent: dom.KeyboardEvent,
   })) {
     previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { configurable: true, value, writable: true });

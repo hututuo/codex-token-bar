@@ -44,16 +44,25 @@ export function useStatusPanelWindowLifecycle(
       setActive(false);
       void lifecycle.dismissOnBlur();
     };
+    const dismissForEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      dismissWhenBlurred();
+    };
     const markActive = () => {
       void refreshActiveState();
     };
     window.addEventListener("focus", markActive);
     window.addEventListener("blur", dismissWhenBlurred);
+    window.addEventListener("keydown", dismissForEscape);
     void refreshActiveState();
     return () => {
       cancelled = true;
       window.removeEventListener("focus", markActive);
       window.removeEventListener("blur", dismissWhenBlurred);
+      window.removeEventListener("keydown", dismissForEscape);
     };
   }, [lifecycle]);
 

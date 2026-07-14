@@ -90,6 +90,20 @@ export function LiveRateSettingsPanel({
     maxHeight: `${calloutFrame.maxHeight}px`,
   } as CSSProperties : undefined;
 
+  function calloutTrigger(callout: SettingsCallout | null = openCallout) {
+    if (callout === "palette") return paletteButtonRef.current;
+    if (callout === "unread") return unreadButtonRef.current;
+    if (callout === "content") return contentButtonRef.current;
+    return null;
+  }
+
+  function closeCallout(restoreTriggerFocus = false) {
+    if (restoreTriggerFocus) {
+      calloutTrigger()?.focus();
+    }
+    setOpenCallout(null);
+  }
+
   useLayoutEffect(() => {
     if (!openCallout) {
       setCalloutFrame(null);
@@ -149,7 +163,9 @@ export function LiveRateSettingsPanel({
     };
     const closeForEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setOpenCallout(null);
+        event.preventDefault();
+        event.stopPropagation();
+        closeCallout(true);
       }
     };
     const closeForWindowBlur = () => {
@@ -170,10 +186,10 @@ export function LiveRateSettingsPanel({
 
   return (
     <div className="settings-panel">
-      <div className="settings-topline">
-        <span className="settings-label">显示设置</span>
-        <div className="settings-actions">
+      <div className="settings-topline settings-surface-row">
+        <div className="settings-actions" aria-label="显示面开关">
           <button
+            aria-pressed={floatingEnabled}
             className="live-toggle-button"
             disabled={!floatingAvailable}
             onClick={onToggleFloating}
@@ -183,6 +199,7 @@ export function LiveRateSettingsPanel({
             {floatingButtonLabel}
           </button>
           <button
+            aria-pressed={statusTrayLiveTextEnabled}
             className="live-toggle-button"
             disabled={!statusTrayLiveTextAvailable}
             onClick={onToggleStatusTray}
@@ -259,7 +276,7 @@ export function LiveRateSettingsPanel({
           calloutRef={calloutRef}
           calloutStyle={calloutStyle}
           floatingSettings={floatingSettings}
-          onClose={() => setOpenCallout(null)}
+          onClose={() => closeCallout(true)}
           onFloatingGradientChange={onFloatingGradientChange}
         />
       ) : null}
@@ -270,9 +287,9 @@ export function LiveRateSettingsPanel({
           selected={floatingSettings.unreadEffect}
           onChange={(effect) => {
             onFloatingUnreadEffectChange(effect);
-            setOpenCallout(null);
+            closeCallout(true);
           }}
-          onClose={() => setOpenCallout(null)}
+          onClose={() => closeCallout(true)}
         />
       ) : null}
       {openCallout === "content" ? (
@@ -283,7 +300,7 @@ export function LiveRateSettingsPanel({
           textToneFill={textToneFill}
           textToneLabel={textToneLabel}
           textToneValue={textToneValue}
-          onClose={() => setOpenCallout(null)}
+          onClose={() => closeCallout(true)}
           onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
           onFloatingTextToneChange={onFloatingTextToneChange}
         />
@@ -302,14 +319,41 @@ interface SettingsCalloutShellProps {
 }
 
 function SettingsCalloutShell({ children, calloutRef, calloutStyle, title, subtitle, onClose }: SettingsCalloutShellProps) {
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useLayoutEffect(() => {
+    closeButtonRef.current?.focus();
+  }, []);
+
   return (
-    <div className="settings-callout" role="dialog" aria-label={title} ref={calloutRef} style={calloutStyle}>
+    <div
+      className="settings-callout"
+      role="dialog"
+      aria-label={title}
+      ref={calloutRef}
+      style={calloutStyle}
+      onKeyDown={(event) => {
+        if (event.key !== "Tab") return;
+        const focusable = [...(calloutRef.current?.querySelectorAll<HTMLElement>(
+          "button:not(:disabled), input:not(:disabled), select:not(:disabled)",
+        ) ?? [])];
+        if (focusable.length === 0) return;
+        const currentIndex = focusable.indexOf(document.activeElement as HTMLElement);
+        if (event.shiftKey && currentIndex <= 0) {
+          event.preventDefault();
+          focusable.at(-1)?.focus();
+        } else if (!event.shiftKey && currentIndex === focusable.length - 1) {
+          event.preventDefault();
+          focusable[0]?.focus();
+        }
+      }}
+    >
       <div className="settings-callout-head">
         <div>
           <strong>{title}</strong>
           {subtitle ? <span>{subtitle}</span> : null}
         </div>
-        <button aria-label="关闭" onClick={onClose} type="button">×</button>
+        <button aria-label="关闭" onClick={onClose} ref={closeButtonRef} type="button">×</button>
       </div>
       {children}
     </div>

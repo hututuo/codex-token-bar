@@ -48,6 +48,7 @@ struct AppSettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .help("关闭总体设置")
+                .accessibilityLabel("关闭总体设置")
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 14)
@@ -151,6 +152,8 @@ struct AppSettingsView: View {
             Text(title).font(.system(size: 11.5, weight: .medium))
             Spacer(minLength: 10)
             Toggle("", isOn: isOn).labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                .accessibilityLabel(title)
+                .accessibilityValue(isOn.wrappedValue ? "已开启" : "已关闭")
         }
         .padding(.horizontal, 11)
         .frame(minHeight: 38)
@@ -189,6 +192,7 @@ struct AppSettingsView: View {
             .labelsHidden()
             .pickerStyle(.menu)
             .frame(width: 170, alignment: .trailing)
+            .accessibilityLabel(title)
         }
         .padding(.horizontal, 11)
         .frame(minHeight: 38)
@@ -202,6 +206,7 @@ struct AppSettingsView: View {
             Spacer(minLength: 10)
             ColorPicker("", selection: colorBinding(hex: hex, fallback: fallback), supportsOpacity: false)
                 .labelsHidden()
+                .accessibilityLabel(title)
         }
         .padding(.horizontal, 11)
         .frame(minHeight: 38)
@@ -229,9 +234,12 @@ struct AppSettingsView: View {
             Spacer(minLength: 10)
             Button { move(group, by: -1) } label: { Image(systemName: "arrow.up") }
                 .disabled(index == 0)
+                .accessibilityLabel("向上移动\(group.title)")
             Button { move(group, by: 1) } label: { Image(systemName: "arrow.down") }
                 .disabled(index == order.count - 1)
+                .accessibilityLabel("向下移动\(group.title)")
             Toggle("", isOn: visibilityBinding(for: group)).labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                .accessibilityLabel("显示\(group.title)")
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 11)

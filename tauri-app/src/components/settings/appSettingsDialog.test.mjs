@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Window } from "happy-dom";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { withSsrModules } from "../../test/ssrHarness.mjs";
@@ -37,6 +38,54 @@ test("global settings stays unmounted while closed", async () => {
   });
 });
 
+test("nested settings callout owns focus and Escape closes only the current layer", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { AppSettingsDialog } = await load("/src/components/settings/AppSettingsDialog.tsx");
+      const { DEFAULT_FLOATING_SETTINGS } = await load("/src/floating/floatingSettings.ts");
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+      let closeCalls = 0;
+      try {
+        await React.act(async () => root.render(React.createElement(AppSettingsDialog, {
+          ...settingsProps(DEFAULT_FLOATING_SETTINGS),
+          onClose: () => { closeCalls += 1; },
+        })));
+
+        const paletteButton = buttonWithText(container, "调色盘");
+        await click(React.act, paletteButton, window);
+        assert.ok(container.querySelector('[role="dialog"][aria-label="悬浮窗样式"]'));
+        assert.equal(window.document.activeElement?.getAttribute("aria-label"), "关闭");
+
+        await pressKey(React.act, window.document.activeElement, "Tab", window, { shiftKey: true });
+        assert.equal(window.document.activeElement?.textContent?.trim(), "恢复默认");
+        await pressKey(React.act, window.document.activeElement, "Tab", window);
+        assert.equal(window.document.activeElement?.getAttribute("aria-label"), "关闭");
+
+        await pressKey(React.act, window.document.activeElement, "Escape", window);
+        assert.equal(container.querySelector('[role="dialog"][aria-label="悬浮窗样式"]'), null);
+        assert.ok(container.querySelector('[role="dialog"][aria-label="总体设置"]'));
+        assert.equal(closeCalls, 0);
+        assert.equal(window.document.activeElement, paletteButton);
+
+        await pressKey(React.act, paletteButton, "Escape", window);
+        assert.equal(closeCalls, 1);
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreGlobals();
+    window.close();
+  }
+});
+
 function settingsProps(floatingSettings) {
   const noop = () => {};
   return {
@@ -68,4 +117,55 @@ function settingsProps(floatingSettings) {
     onToggleLiveRate: noop,
     onToggleStatusTray: noop,
   };
+}
+
+function buttonWithText(container, text) {
+  const matches = [...container.querySelectorAll("button")]
+    .filter((button) => button.textContent?.includes(text));
+  assert.equal(matches.length, 1, `expected one button containing ${text}`);
+  return matches[0];
+}
+
+function installDomGlobals(window) {
+  const values = {
+    document: window.document,
+    window,
+    navigator: window.navigator,
+    Node: window.Node,
+    Element: window.Element,
+    HTMLElement: window.HTMLElement,
+    HTMLButtonElement: window.HTMLButtonElement,
+    Event: window.Event,
+    FocusEvent: window.FocusEvent,
+    KeyboardEvent: window.KeyboardEvent,
+    MouseEvent: window.MouseEvent,
+    PointerEvent: window.PointerEvent,
+    MutationObserver: window.MutationObserver,
+    getComputedStyle: window.getComputedStyle.bind(window),
+  };
+  const previous = new Map();
+  for (const [name, value] of Object.entries(values)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, { configurable: true, value, writable: true });
+  }
+  return () => {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  };
+}
+
+async function click(act, target, window) {
+  await act(async () => target.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true })));
+}
+
+async function pressKey(act, target, key, window, options = {}) {
+  assert.ok(target);
+  await act(async () => target.dispatchEvent(new window.KeyboardEvent("keydown", {
+    bubbles: true,
+    cancelable: true,
+    key,
+    ...options,
+  })));
 }
