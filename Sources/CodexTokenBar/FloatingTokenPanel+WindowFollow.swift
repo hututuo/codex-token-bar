@@ -203,7 +203,8 @@ extension FloatingTokenPanelController {
 
     func updateLockState(_ isLocked: Bool, force: Bool = false) {
         guard let panel else { return }
-        panel.isMovableByWindowBackground = !isLocked
+        panel.isMovableByWindowBackground = false
+        (panel as? FloatingTokenPanelWindow)?.allowsBackgroundDrag = !isLocked
 
         guard force || appliedLockState != isLocked else {
             if isLocked, lockedAnchor != nil, followTimer == nil {

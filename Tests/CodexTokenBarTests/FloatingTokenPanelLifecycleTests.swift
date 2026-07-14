@@ -4,6 +4,73 @@ import XCTest
 
 @MainActor
 final class FloatingTokenPanelLifecycleTests: XCTestCase {
+    func testFloatingPanelCannotBecomeKeyOrMain() {
+        let panel = makePanel()
+        defer { panel.close() }
+
+        XCTAssertFalse(panel.canBecomeKey)
+        XCTAssertFalse(panel.canBecomeMain)
+        XCTAssertTrue(panel.becomesKeyOnlyIfNeeded)
+        XCTAssertTrue(panel.isFloatingPanel)
+        XCTAssertFalse(panel.isMovableByWindowBackground)
+    }
+
+    func testPanelMousePolicySeparatesDragDoubleClickAndControls() {
+        let panel = makePanel()
+        defer { panel.close() }
+        panel.allowsBackgroundDrag = true
+        panel.controlExclusionSize = 24
+
+        XCTAssertEqual(
+            panel.mouseDownAction(clickCount: 1, location: NSPoint(x: 120, y: 40)),
+            .dragPanel
+        )
+        XCTAssertEqual(
+            panel.mouseDownAction(clickCount: 2, location: NSPoint(x: 120, y: 40)),
+            .openDashboard
+        )
+        XCTAssertEqual(
+            panel.mouseDownAction(clickCount: 2, location: NSPoint(x: 8, y: 88)),
+            .passThrough
+        )
+        XCTAssertEqual(
+            panel.mouseDownAction(clickCount: 2, location: NSPoint(x: 250, y: 88)),
+            .passThrough
+        )
+
+        panel.allowsBackgroundDrag = false
+        XCTAssertEqual(
+            panel.mouseDownAction(clickCount: 1, location: NSPoint(x: 120, y: 40)),
+            .passThrough
+        )
+        XCTAssertEqual(
+            panel.mouseDownAction(clickCount: 2, location: NSPoint(x: 120, y: 40)),
+            .openDashboard
+        )
+    }
+
+    func testProductionPanelEventOnlyOpensDashboardOnDoubleClick() throws {
+        let panel = makePanel()
+        defer { panel.close() }
+        var openCount = 0
+        panel.onOpenDashboard = { openCount += 1 }
+        let doubleClick = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 120, y: 40),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: panel.windowNumber,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 2,
+            pressure: 1
+        ))
+
+        panel.sendEvent(doubleClick)
+
+        XCTAssertEqual(openCount, 1)
+    }
+
     func testEventSourcesInstallOncePerPresentationAndAreRemovedOnClose() {
         var installs = 0
         var removals = 0
@@ -121,5 +188,14 @@ final class FloatingTokenPanelLifecycleTests: XCTestCase {
 
         XCTAssertEqual(controller.lastExternalClickLocation, originalLocation)
         XCTAssertEqual(controller.lastExternalClickAt, originalDate)
+    }
+
+    private func makePanel() -> FloatingTokenPanelWindow {
+        FloatingTokenPanelWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 258, height: 97),
+            styleMask: [.borderless, .fullSizeContentView, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
     }
 }
