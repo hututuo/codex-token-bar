@@ -27,6 +27,19 @@ enum FloatingTokenPanelMetrics {
             + CGFloat(metricRequestsReferenceDigits - digits) * metricRequestsDigitCompensation
     }
 
+    static func metricTotalOffset(hasPreciseTokenUsage: Bool) -> CGFloat {
+        hasPreciseTokenUsage ? -metricOutset : 0
+    }
+
+    static func metricTodayOffset(hasPreciseTokenUsage: Bool) -> CGFloat {
+        hasPreciseTokenUsage ? metricTodayNudge : 0
+    }
+
+    static func metricRequestsOffset(requestCount: Int, hasPreciseTokenUsage: Bool) -> CGFloat {
+        guard hasPreciseTokenUsage else { return 0 }
+        return metricOutset + metricRequestsNudge(for: requestCount)
+    }
+
     static func clampedScale(_ scale: Double) -> CGFloat {
         CGFloat(min(max(scale, scaleRange.lowerBound), scaleRange.upperBound))
     }

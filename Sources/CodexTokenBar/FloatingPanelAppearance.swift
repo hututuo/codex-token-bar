@@ -502,7 +502,8 @@ struct FloatingPanelAppearance: Equatable {
         scale: CGFloat,
         opacity: Double = 0.88,
         automaticStrength: Double = 1,
-        visibility: FloatingPanelContentVisibility
+        visibility: FloatingPanelContentVisibility,
+        hasPreciseTokenUsage: Bool = true
     ) -> FloatingPanelTextPaletteSet {
         let cacheKey = FloatingPanelTextPaletteCacheKey(
             appearance: self,
@@ -510,7 +511,8 @@ struct FloatingPanelAppearance: Equatable {
             scale: scale,
             opacity: opacity,
             automaticStrength: automaticStrength,
-            visibility: visibility
+            visibility: visibility,
+            hasPreciseTokenUsage: hasPreciseTokenUsage
         )
         if let cached = Self.textPaletteCache.value(for: cacheKey) {
             return cached
@@ -544,7 +546,14 @@ struct FloatingPanelAppearance: Equatable {
         let metricRegionPalettes = rows
             .first { group, _ in group == .metrics }
             .map { _, rect in
-                metricPalettes(in: rect, panelSize: panelRect.size, scale: scale, opacity: opacity, automaticStrength: automaticStrength)
+                metricPalettes(
+                    in: rect,
+                    panelSize: panelRect.size,
+                    scale: scale,
+                    opacity: opacity,
+                    automaticStrength: automaticStrength,
+                    hasPreciseTokenUsage: hasPreciseTokenUsage
+                )
             } ?? [:]
         let embeddedStatusPalette: FloatingPanelReadableTextPalette?
         if visibility.embedsUsageStatusInRateRow,
@@ -689,17 +698,22 @@ struct FloatingPanelAppearance: Equatable {
         panelSize: CGSize,
         scale: CGFloat,
         opacity: Double,
-        automaticStrength: Double
+        automaticStrength: Double,
+        hasPreciseTokenUsage: Bool
     ) -> [FloatingPanelMetricTextRegion: FloatingPanelReadableTextPalette] {
         let scale = max(scale, 0.1)
         let spacing = 6 * scale
         let slotWidth = max(1, (rect.width - spacing * 2) / 3)
         let offsets: [FloatingPanelMetricTextRegion: CGFloat] = [
-            .total: -FloatingTokenPanelMetrics.metricOutset * scale,
-            .today: FloatingTokenPanelMetrics.metricTodayNudge * scale,
-            .requests: (
-                FloatingTokenPanelMetrics.metricOutset
-                + FloatingTokenPanelMetrics.metricRequestsNudge(for: 100)
+            .total: FloatingTokenPanelMetrics.metricTotalOffset(
+                hasPreciseTokenUsage: hasPreciseTokenUsage
+            ) * scale,
+            .today: FloatingTokenPanelMetrics.metricTodayOffset(
+                hasPreciseTokenUsage: hasPreciseTokenUsage
+            ) * scale,
+            .requests: FloatingTokenPanelMetrics.metricRequestsOffset(
+                requestCount: 100,
+                hasPreciseTokenUsage: hasPreciseTokenUsage
             ) * scale,
         ]
         return Dictionary(uniqueKeysWithValues: FloatingPanelMetricTextRegion.allCases.enumerated().map { index, region in
@@ -973,6 +987,7 @@ private struct FloatingPanelTextPaletteCacheKey: Equatable {
     let showMetrics: Bool
     let showQuota: Bool
     let showRadar: Bool
+    let hasPreciseTokenUsage: Bool
     let groupOrder: [FloatingPanelContentGroup]
 
     init(
@@ -981,7 +996,8 @@ private struct FloatingPanelTextPaletteCacheKey: Equatable {
         scale: CGFloat,
         opacity: Double,
         automaticStrength: Double,
-        visibility: FloatingPanelContentVisibility
+        visibility: FloatingPanelContentVisibility,
+        hasPreciseTokenUsage: Bool
     ) {
         startHex = appearance.startHex
         endHex = appearance.endHex
@@ -997,6 +1013,7 @@ private struct FloatingPanelTextPaletteCacheKey: Equatable {
         showMetrics = visibility.showMetrics
         showQuota = visibility.showQuota
         showRadar = visibility.showRadar
+        self.hasPreciseTokenUsage = hasPreciseTokenUsage
         groupOrder = visibility.groupOrder
     }
 

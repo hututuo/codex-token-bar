@@ -482,13 +482,15 @@ struct FloatingTokenPanelView: View {
             directionRaw: floatingPanelGradientDirection,
             styleRaw: floatingPanelGradientStyle
         )
+        let displaySnapshot = TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota)
         let textTone = FloatingPanelTextTonePreference.mode(for: floatingPanelTextWhiteOverride)
         let automaticTextPalettes = appearance.textPalettes(
             panelSize: size,
             scale: scale,
             opacity: floatingPanelOpacity,
             automaticStrength: textTone.automaticStrength,
-            visibility: visibility
+            visibility: visibility,
+            hasPreciseTokenUsage: displaySnapshot.hasPreciseTokenUsage
         )
         let overridePalette = textTone.manualWhite.map(FloatingPanelReadableTextPalette.init(fixedWhite:))
         let baseTextPalette = overridePalette ?? automaticTextPalettes.controlPalette
@@ -520,7 +522,7 @@ struct FloatingTokenPanelView: View {
                 .transition(.opacity)
             }
             TokenDisplayCard(
-                snapshot: TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota),
+                snapshot: displaySnapshot,
                 radarSnapshot: radar.snapshot,
                 radarPresentation: CodexRadarPresentationState(
                     snapshot: radar.snapshot,

@@ -222,6 +222,26 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertFalse(model.accessibilityValue.contains("7890"))
     }
 
+    func testPendingMetricLabelsStayCenteredInsideTheirEqualWidthSlots() {
+        XCTAssertEqual(FloatingTokenPanelMetrics.metricTotalOffset(hasPreciseTokenUsage: false), 0)
+        XCTAssertEqual(FloatingTokenPanelMetrics.metricTodayOffset(hasPreciseTokenUsage: false), 0)
+        XCTAssertEqual(
+            FloatingTokenPanelMetrics.metricRequestsOffset(requestCount: 0, hasPreciseTokenUsage: false),
+            0
+        )
+
+        let rowWidth = FloatingTokenPanelMetrics.rowWidth(for: .metrics)
+        let slotWidth = (rowWidth - 2 * 6) / 3
+        let labelWidth = ("次" as NSString).size(withAttributes: [
+            .font: NSFont.systemFont(ofSize: 9.4, weight: .medium),
+        ]).width
+        let valueWidth = ("待读取" as NSString).size(withAttributes: [
+            .font: NSFont.systemFont(ofSize: 9.4, weight: .semibold),
+        ]).width
+
+        XCTAssertLessThanOrEqual(labelWidth + 3 + valueWidth, slotWidth)
+    }
+
     func testFloatingPanelAccessibilityUsesPreciseMetricLabelsWhenAvailable() {
         let snapshot = makeTokenDisplaySnapshot()
         let visibility = FloatingPanelContentVisibility(
@@ -1071,8 +1091,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(metricsSource.contains("static let metricTodayNudge: CGFloat = -4.5"))
         XCTAssertTrue(metricsSource.contains("static let metricRequestsNudge: CGFloat = 8"))
         XCTAssertTrue(metricsSource.contains("static func metricRequestsNudge(for requestCount: Int) -> CGFloat"))
-        XCTAssertTrue(metricRow.contains("FloatingTokenPanelMetrics.metricTodayNudge.scaled(by: displayScale)"))
-        XCTAssertTrue(metricRow.contains("FloatingTokenPanelMetrics.metricRequestsNudge(for: snapshot.todayRequests).scaled(by: displayScale)"))
+        XCTAssertTrue(metricRow.contains("FloatingTokenPanelMetrics.metricTodayOffset("))
+        XCTAssertTrue(metricRow.contains("FloatingTokenPanelMetrics.metricRequestsOffset("))
         XCTAssertEqual(
             FloatingTokenPanelMetrics.metricRequestsNudge(for: 99),
             FloatingTokenPanelMetrics.metricRequestsNudge + FloatingTokenPanelMetrics.metricRequestsDigitCompensation,

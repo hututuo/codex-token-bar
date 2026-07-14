@@ -434,15 +434,25 @@ struct TokenDisplayCard: View {
         HStack(spacing: 6.scaled(by: displayScale)) {
             TokenDisplayMetric(label: "总", value: snapshot.consumedTokensText)
                 .environment(\.tokenDisplayTextPalette, metricPalette(for: .total))
-                .offset(x: -FloatingTokenPanelMetrics.metricOutset.scaled(by: displayScale))
+                .offset(
+                    x: FloatingTokenPanelMetrics.metricTotalOffset(
+                        hasPreciseTokenUsage: snapshot.hasPreciseTokenUsage
+                    ).scaled(by: displayScale)
+                )
             TokenDisplayMetric(label: "今", value: snapshot.todayTokensText)
                 .environment(\.tokenDisplayTextPalette, metricPalette(for: .today))
-                .offset(x: FloatingTokenPanelMetrics.metricTodayNudge.scaled(by: displayScale))
+                .offset(
+                    x: FloatingTokenPanelMetrics.metricTodayOffset(
+                        hasPreciseTokenUsage: snapshot.hasPreciseTokenUsage
+                    ).scaled(by: displayScale)
+                )
             TokenDisplayMetric(label: "次", value: snapshot.todayRequestsText)
                 .environment(\.tokenDisplayTextPalette, metricPalette(for: .requests))
                 .offset(
-                    x: FloatingTokenPanelMetrics.metricOutset.scaled(by: displayScale)
-                        + FloatingTokenPanelMetrics.metricRequestsNudge(for: snapshot.todayRequests).scaled(by: displayScale)
+                    x: FloatingTokenPanelMetrics.metricRequestsOffset(
+                        requestCount: snapshot.todayRequests,
+                        hasPreciseTokenUsage: snapshot.hasPreciseTokenUsage
+                    ).scaled(by: displayScale)
                 )
         }
         .frame(maxWidth: .infinity, alignment: .center)
