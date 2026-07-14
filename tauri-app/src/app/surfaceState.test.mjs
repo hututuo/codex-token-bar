@@ -304,7 +304,7 @@ test("live rate switch stops the shared stream and preserves other refreshes", a
   assert.equal(apiClient.includes("readUsageSummarySnapshot"), true);
   assert.equal(dashboardClient.includes("read_usage_summary_snapshot"), true);
   assert.equal(liveFeed.includes("stopLiveRateStream"), true);
-  assert.equal(liveFeed.includes("resetLiveRateMonitor"), true);
+  assert.equal(liveFeed.includes("resetLiveRateMonitor"), false);
   assert.equal(compactData.includes("active: sourceActive"), true);
   assert.equal(compactData.includes("sourceToken,"), true);
   assert.equal(compactData.includes("liveRateEnabled,"), true);

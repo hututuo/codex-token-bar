@@ -1,10 +1,9 @@
 import { useEffect, useRef } from "react";
-import { resetLiveRateMonitor } from "../api/liveClient";
+import { readLiveRateSnapshotStrict } from "../api/liveClient";
 import {
   liveRateDisplayBucket,
   smoothLiveRateSnapshot,
 } from "../components/liveRate/rateDisplay";
-import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type { PlatformCommandResult } from "../platform/desktopBridge";
 import { desktopPlatform } from "../platform/desktop";
 import type { LiveRateSnapshot } from "../types/dashboard";
@@ -19,20 +18,32 @@ import { liveRateStreamFailureSnapshot } from "./liveRateStreamFailure";
 interface LiveRateFeedOptions {
   active: boolean;
   selectedThreadId: string;
-  source: Pick<DashboardDataSource, "readLiveRateSnapshot">;
   sourceToken: DashboardSourceToken | null;
   onSnapshot: (snapshot: LiveRateSnapshot) => void;
   retryGeneration?: number;
 }
 
+interface LiveRateFeedDependencies {
+  platform: Pick<typeof desktopPlatform,
+    | "claimLiveRateOwnerSession"
+    | "onLiveRateSnapshot"
+    | "startLiveRateStreamCommand"
+    | "stopLiveRateStream"
+  >;
+  readInitialLiveRate: typeof readLiveRateSnapshotStrict;
+}
+
 export function useLiveRateFeed({
   active,
   selectedThreadId,
-  source,
   sourceToken,
   onSnapshot,
   retryGeneration = 0,
-}: LiveRateFeedOptions) {
+}: LiveRateFeedOptions,
+dependencies: Partial<LiveRateFeedDependencies> = {},
+) {
+  const platform = dependencies.platform ?? desktopPlatform;
+  const readInitialLiveRate = dependencies.readInitialLiveRate ?? readLiveRateSnapshotStrict;
   const lastSmoothedSnapshotRef = useRef<LiveRateSnapshot | null>(null);
   const lastDisplayBucketRef = useRef("");
   const previousSourceTokenRef = useRef<DashboardSourceToken | null>(null);
@@ -43,7 +54,7 @@ export function useLiveRateFeed({
     leaseController = ownerSession === null
       ? null
       : createLiveRateLeaseController((leaseId) => {
-          void desktopPlatform.stopLiveRateStream(leaseId);
+          void platform.stopLiveRateStream(leaseId);
         }, ownerSession);
     leaseControllerRef.current = leaseController;
   }
@@ -63,6 +74,7 @@ export function useLiveRateFeed({
 
     let cancelled = false;
     let unlisten: (() => void) | null = null;
+    let externalEventGeneration = 0;
     const selected = selectedThreadId || null;
 
     const publishSnapshot = (liveRate: LiveRateSnapshot) => {
@@ -85,8 +97,9 @@ export function useLiveRateFeed({
     }
     const leaseRequest = leaseController.begin();
 
-    void desktopPlatform.onLiveRateSnapshot((liveRate) => {
+    void platform.onLiveRateSnapshot((liveRate) => {
       if (!cancelled) {
+        externalEventGeneration += 1;
         publishSnapshot(liveRate);
       }
     }).then((listener) => {
@@ -97,54 +110,63 @@ export function useLiveRateFeed({
       }
     });
 
-    void desktopPlatform.claimLiveRateOwnerSession(
-      leaseRequest.ownerToken,
-      leaseRequest.ownerSessionEpoch,
-      sourceToken,
-    ).then(async (claimed) => {
-      if (cancelled || !claimed) {
-        return null;
-      }
-      await resetLiveRateMonitor();
-      if (cancelled) {
-        return null;
-      }
-      const startResult = await desktopPlatform.startLiveRateStreamCommand({
-        selectedThreadId: selected,
-        controlsSelectedThread: true,
-        subscriberOwnerToken: leaseRequest.ownerToken,
-        ownerSessionEpoch: leaseRequest.ownerSessionEpoch,
-        ownerGeneration: leaseRequest.ownerGeneration,
-        sourceToken,
-      });
-      if (!startResult.ok || startResult.value === null) {
-        if (!cancelled) {
-          publishSnapshot(liveRateStreamFailureSnapshot(selected, startResult));
+    void (async () => {
+      let accepted = false;
+      try {
+        const claimed = await platform.claimLiveRateOwnerSession(
+          leaseRequest.ownerToken,
+          leaseRequest.ownerSessionEpoch,
+          sourceToken,
+        );
+        if (cancelled || !claimed) {
+          return;
         }
-        return null;
-      }
-      if (!leaseRequest.accept(startResult.value)) {
-        return null;
-      }
-      return source.readLiveRateSnapshot(selected);
-    }).then((liveRate) => {
-      if (!cancelled) {
-        if (liveRate !== null) {
+        const startResult = await platform.startLiveRateStreamCommand({
+          selectedThreadId: selected,
+          controlsSelectedThread: true,
+          subscriberOwnerToken: leaseRequest.ownerToken,
+          ownerSessionEpoch: leaseRequest.ownerSessionEpoch,
+          ownerGeneration: leaseRequest.ownerGeneration,
+          sourceToken,
+        });
+        if (!startResult.ok || startResult.value === null) {
+          if (!cancelled) {
+            publishSnapshot(liveRateStreamFailureSnapshot(selected, startResult));
+          }
+          return;
+        }
+        accepted = leaseRequest.accept(startResult.value);
+        if (!accepted) {
+          return;
+        }
+        const liveRate = await readInitialLiveRate(selected, sourceToken);
+        if (!cancelled && externalEventGeneration === 0) {
           publishSnapshot(liveRate);
         }
+      } catch (error) {
+        if (!cancelled && (!accepted || externalEventGeneration === 0)) {
+          publishSnapshot(liveRateStreamFailureSnapshot(
+            selected,
+            failedLiveRateStartResult(error),
+          ));
+        }
       }
-    }).catch((error) => {
-      if (!cancelled) {
-        publishSnapshot(liveRateStreamFailureSnapshot(selected, failedLiveRateStartResult(error)));
-      }
-    });
+    })();
 
     return () => {
       cancelled = true;
       unlisten?.();
       leaseRequest.cancel();
     };
-  }, [active, onSnapshot, retryGeneration, selectedThreadId, source, sourceToken]);
+  }, [
+    active,
+    onSnapshot,
+    platform,
+    readInitialLiveRate,
+    retryGeneration,
+    selectedThreadId,
+    sourceToken,
+  ]);
 }
 
 function sameSourceToken(
