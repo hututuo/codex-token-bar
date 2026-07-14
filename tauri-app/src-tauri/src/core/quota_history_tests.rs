@@ -129,6 +129,140 @@ fn shared_quota_history_identity_fixture_is_strict_and_fail_closed() {
 }
 
 #[test]
+fn legacy_shared_quota_history_is_copied_to_tauri_support_on_first_use() {
+    let root = temp_dir_path("legacy-migration");
+    let _env = app_paths::app_path_test_env_guard(&[
+        ("CODEX_TOKEN_BAR_SUPPORT_BASE_DIR", root.join("support")),
+        (
+            "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",
+            root.join("support").join("CodexTokenBarTauri"),
+        ),
+    ]);
+    let legacy_path = app_paths::legacy_shared_quota_history_database_path().unwrap();
+    std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+    let connection = rusqlite::Connection::open(&legacy_path).unwrap();
+    ensure_schema(&connection).unwrap();
+    insert_history_row_with_source(
+        &connection,
+        &history_row(
+            now_unix() - 600.0,
+            "legacy-user|Pro|codex",
+            "Pro",
+            Some("codex"),
+            24,
+            now_unix() + 3_600.0,
+            41,
+            now_unix() + 500_000.0,
+        ),
+        Some("swift"),
+    );
+    drop(connection);
+
+    let tauri_path = app_paths::quota_history_database_path().unwrap();
+    assert!(legacy_path.ends_with("CodexTokenBar/quota-history.sqlite"));
+    assert!(tauri_path.ends_with("CodexTokenBarTauri/quota-history.sqlite"));
+    assert!(!tauri_path.exists());
+
+    let database = QuotaHistoryDatabase::default().unwrap();
+    assert_eq!(database.path, tauri_path);
+    assert!(legacy_path.exists());
+    assert!(database.path.exists());
+
+    let migrated = rusqlite::Connection::open(&database.path).unwrap();
+    let stored = migrated
+        .query_row(
+            "SELECT source, five_hour_used_percent, seven_day_used_percent FROM quota_snapshots WHERE account_key = 'legacy-user|Pro|codex';",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<i32>>(1)?,
+                    row.get::<_, Option<i32>>(2)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(stored.0.as_deref(), Some("swift"));
+    assert_eq!(stored.1, Some(24));
+    assert_eq!(stored.2, Some(41));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn existing_tauri_quota_history_is_not_overwritten_by_legacy_migration() {
+    let root = temp_dir_path("legacy-migration-existing-target");
+    let _env = app_paths::app_path_test_env_guard(&[
+        ("CODEX_TOKEN_BAR_SUPPORT_BASE_DIR", root.join("support")),
+        (
+            "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",
+            root.join("support").join("CodexTokenBarTauri"),
+        ),
+    ]);
+    let legacy_path = app_paths::legacy_shared_quota_history_database_path().unwrap();
+    std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+    let legacy = rusqlite::Connection::open(&legacy_path).unwrap();
+    ensure_schema(&legacy).unwrap();
+    insert_history_row_with_source(
+        &legacy,
+        &history_row(
+            now_unix() - 600.0,
+            "legacy-user|Pro|codex",
+            "Pro",
+            Some("codex"),
+            80,
+            now_unix() + 3_600.0,
+            81,
+            now_unix() + 500_000.0,
+        ),
+        Some("swift"),
+    );
+    drop(legacy);
+
+    let tauri_path = app_paths::quota_history_database_path().unwrap();
+    std::fs::create_dir_all(tauri_path.parent().unwrap()).unwrap();
+    let tauri = rusqlite::Connection::open(&tauri_path).unwrap();
+    ensure_schema(&tauri).unwrap();
+    insert_history_row_with_source(
+        &tauri,
+        &history_row(
+            now_unix() - 300.0,
+            "tauri-user|Plus|codex",
+            "Plus",
+            Some("codex"),
+            12,
+            now_unix() + 3_600.0,
+            13,
+            now_unix() + 500_000.0,
+        ),
+        Some("tauri"),
+    );
+    drop(tauri);
+
+    let database = QuotaHistoryDatabase::default().unwrap();
+    assert_eq!(database.path, tauri_path);
+    let retained = rusqlite::Connection::open(&database.path).unwrap();
+    let tauri_count: i64 = retained
+        .query_row(
+            "SELECT count(*) FROM quota_snapshots WHERE account_key = 'tauri-user|Plus|codex';",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let legacy_count: i64 = retained
+        .query_row(
+            "SELECT count(*) FROM quota_snapshots WHERE account_key = 'legacy-user|Pro|codex';",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tauri_count, 1);
+    assert_eq!(legacy_count, 0);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn record_normalizes_same_reset_window_regressions() {
     let path = temp_db_path("normalize");
     let database = QuotaHistoryDatabase { path: path.clone() };
@@ -1564,6 +1698,17 @@ fn insert_history_row_with_source(
 fn temp_db_path(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "codex-token-bar-quota-history-{label}-{}-{}.sqlite",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
+fn temp_dir_path(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "codex-token-bar-quota-history-{label}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
