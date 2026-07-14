@@ -349,6 +349,10 @@ export function optionalSmoothPath(points: Array<Point | null>): string {
   return segments.join(" ");
 }
 
+export function bridgedOptionalSmoothPath(points: Array<Point | null>): string {
+  return optionalSegmentPath(points.filter((point): point is Point => point !== null));
+}
+
 function optionalSegmentPath(points: Point[]): string {
   if (points.length !== 1) {
     return smoothPath(points);

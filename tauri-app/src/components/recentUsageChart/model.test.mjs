@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  bridgedOptionalSmoothPath,
   clickQuotaSelection,
   hoverIndexForX,
   optionalSmoothPath,
@@ -160,6 +161,18 @@ test("smoothPath uses cubic commands and optionalSmoothPath breaks at missing qu
     2,
   );
   assert.match(optionalSmoothPath([{ x: 4, y: 6 }, null]), /^M 4 6 L /);
+});
+
+test("cache hit path bridges unknown buckets without inventing samples", () => {
+  const path = bridgedOptionalSmoothPath([
+    { x: 0, y: 20 },
+    null,
+    null,
+    { x: 30, y: 10 },
+  ]);
+
+  assert.equal(path, "M 0 20 L 30 10");
+  assert.equal(path.match(/(?:^| )M /g)?.length, 1);
 });
 
 test("smoothPath falls back to a full polyline when x positions are not increasing", () => {

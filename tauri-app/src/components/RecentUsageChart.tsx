@@ -3,6 +3,7 @@ import type { RecentUsagePoint } from "../types/dashboard";
 import { formatTokens } from "../utils/format";
 import {
   activeQuotaSelectionEndIndex,
+  bridgedOptionalSmoothPath,
   clickQuotaSelection,
   clampQuotaSelection,
   DEFAULT_SERIES_VISIBILITY,
@@ -239,7 +240,7 @@ export function RecentUsageChart({
                 <path className="chart-line chart-line--calls" d={offsetPath(smoothPath(plotData.callPoints))} />
               ) : null}
               {visibility.cacheHitRate && data.hasCacheCalls ? (
-                <path className="chart-line chart-line--hit" d={offsetPath(optionalSmoothPath(plotData.cachePoints))} />
+                <path className="chart-line chart-line--hit" d={offsetPath(bridgedOptionalSmoothPath(plotData.cachePoints))} />
               ) : null}
               {fiveHourQuotaPresent && visibility.fiveHourQuota && data.hasFiveHourQuota ? (
                 <path className="chart-line chart-line--five" d={offsetPath(optionalSmoothPath(plotData.fiveHourQuotaPoints))} />

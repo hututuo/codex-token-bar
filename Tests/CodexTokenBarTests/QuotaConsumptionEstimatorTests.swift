@@ -34,6 +34,35 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     @MainActor
+    func testCacheHitPathBridgesUnknownBucketsWithoutInventingSamples() {
+        let chart = RecentUsageChart(
+            bins: [],
+            hourlyBins: [],
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: []
+        )
+
+        let path = chart.bridgedOptionalLinePath(points: [
+            CGPoint(x: 0, y: 20),
+            nil,
+            nil,
+            CGPoint(x: 30, y: 10),
+        ])
+        var moveCount = 0
+        path.forEach { element in
+            if case .move = element {
+                moveCount += 1
+            }
+        }
+
+        XCTAssertEqual(moveCount, 1)
+        XCTAssertEqual(path.boundingRect.minX, 0, accuracy: 0.0001)
+        XCTAssertEqual(path.boundingRect.maxX, 30, accuracy: 0.0001)
+    }
+
+    @MainActor
     func testPreparedDataKeepsLowActivityCacheGapsUnknownInsteadOfCarryingStaleRates() throws {
         let start = Date(timeIntervalSince1970: 1_800)
         let bins = [

@@ -40,6 +40,12 @@ extension RecentUsageChart {
         return path
     }
 
+    func bridgedOptionalLinePath(points: [CGPoint?]) -> Path {
+        var path = Path()
+        appendOptionalSegment(points.compactMap { $0 }, to: &path)
+        return path
+    }
+
     private func appendOptionalSegment(_ points: [CGPoint], to path: inout Path) {
         guard points.count == 1, let point = points.first else {
             appendSmoothPolyline(points, to: &path)

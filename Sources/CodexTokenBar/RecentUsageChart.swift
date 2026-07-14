@@ -806,7 +806,7 @@ struct RecentUsageChart: View {
             }
 
             if showCacheHitRate && preparedData.hasCacheCalls {
-                optionalLinePath(points: plotData.cachePoints)
+                bridgedOptionalLinePath(points: plotData.cachePoints)
                     .stroke(AppTheme.accentCyan, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [5, 5]))
             }
 
