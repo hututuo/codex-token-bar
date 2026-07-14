@@ -19,7 +19,7 @@ export function sanitizeRateFullScale(value: number): number {
 export function rateFillScale(tokensPerSecond: number, fullScale: number): number {
   const scaleLimit = sanitizeRateFullScale(fullScale);
   if (!Number.isFinite(tokensPerSecond) || tokensPerSecond <= 0) {
-    return 0;
+    return MIN_VISIBLE_FILL;
   }
   const rawScale = Math.min(1, Math.max(0, tokensPerSecond / scaleLimit));
   return rawScale > 0 ? Math.max(MIN_VISIBLE_FILL, rawScale) : 0;
@@ -45,11 +45,9 @@ export function smoothLiveRateValue(previous: number, raw: number): number {
   if (!Number.isFinite(raw) || raw < ZERO_THRESHOLD) {
     return 0;
   }
-  if (!Number.isFinite(previous) || previous < ZERO_THRESHOLD) {
-    return raw;
-  }
-  const alpha = raw > previous ? ALPHA_UP : ALPHA_DOWN;
-  return previous + (raw - previous) * alpha;
+  const normalizedPrevious = Number.isFinite(previous) ? Math.max(0, previous) : 0;
+  const alpha = raw >= normalizedPrevious ? ALPHA_UP : ALPHA_DOWN;
+  return normalizedPrevious + (raw - normalizedPrevious) * alpha;
 }
 
 export function smoothLiveRateSnapshot(

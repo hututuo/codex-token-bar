@@ -36,14 +36,15 @@ function snapshot(overrides = {}) {
 }
 
 test("rate fill uses a transform-friendly 0-1 scale with a small visible floor", () => {
-  assert.equal(rateFillScale(0, 200), 0);
+  assert.equal(rateFillScale(0, 200), 0.03);
   assert.equal(rateFillScale(1, 200), 0.03);
   assert.equal(rateFillScale(40, 200), 0.2);
   assert.equal(rateFillScale(999, 200), 1);
 });
 
-test("live rate display uses EMA and drops idle values to zero quickly", () => {
+test("live rate display matches Swift EMA from the idle floor", () => {
   assert.equal(smoothLiveRateValue(10, 0.01), 0);
+  assert.equal(Number(smoothLiveRateValue(0, 40).toFixed(1)), 11.2);
   assert.equal(smoothLiveRateValue(10, 40), 18.4);
   assert.equal(Number(smoothLiveRateValue(40, 10).toFixed(1)), 34.6);
 
@@ -64,8 +65,8 @@ test("selected session display is capped without capping global rate", () => {
     snapshot({ tokensPerSecond: 220, selectedTokensPerSecond: 220 }),
     snapshot({ tokensPerSecond: 0, selectedTokensPerSecond: 0 }),
   );
-  assert.equal(smoothed.tokensPerSecond, 220);
-  assert.equal(smoothed.selectedTokensPerSecond, 80);
+  assert.equal(Number(smoothed.tokensPerSecond.toFixed(1)), 61.6);
+  assert.equal(Number(smoothed.selectedTokensPerSecond.toFixed(1)), 22.4);
 });
 
 test("live rate display buckets match visible precision", () => {

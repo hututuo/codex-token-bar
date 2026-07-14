@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { emptyFloatingPanelSnapshot } from "../api/fallback";
 import { readUsageSummarySnapshot } from "../api/dashboardClient";
 import { readLiveRateSnapshotStrict } from "../api/liveClient";
+import { smoothLiveRateSnapshot } from "../components/liveRate/rateDisplay";
 import { desktopPlatform } from "../platform/desktop";
 import {
   createLiveRateLeaseController,
@@ -74,6 +75,7 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
   const [rawSnapshot, setRawSnapshot] = useState<FloatingPanelSnapshot>(emptyFloatingPanelSnapshot);
   const [lastLiveActivityAtMs, setLastLiveActivityAtMs] = useState(0);
   const lastLiveActivityAtMsRef = useRef(0);
+  const lastSmoothedLiveRateRef = useRef<LiveRateSnapshot | null>(null);
   const usageSummaryRef = useRef<UsageSummarySnapshot | null>(null);
   const sourceKeyRef = useRef<string | null>(sourceKey);
   const leaseControllerRef = useRef<LiveRateLeaseController | null | undefined>(undefined);
@@ -108,6 +110,7 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
     if (sourceKeyRef.current !== sourceKey) {
       sourceKeyRef.current = sourceKey;
       usageSummaryRef.current = null;
+      lastSmoothedLiveRateRef.current = null;
       lastLiveActivityAtMsRef.current = 0;
       setLastLiveActivityAtMs(0);
       setRawSnapshot(emptyFloatingPanelSnapshot);
@@ -188,6 +191,7 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
       return;
     }
     if (!liveRateEnabled) {
+      lastSmoothedLiveRateRef.current = null;
       lastLiveActivityAtMsRef.current = 0;
       setLastLiveActivityAtMs(0);
       setRawSnapshot((current) => compactSnapshotForSurfaceActivity(
@@ -204,11 +208,16 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
     const sourceIsCurrent = () => (
       !cancelled && sourceKeyRef.current === requestSourceKey
     );
+    const publishLiveRate = (liveRate: LiveRateSnapshot) => {
+      const smoothed = smoothLiveRateSnapshot(liveRate, lastSmoothedLiveRateRef.current);
+      lastSmoothedLiveRateRef.current = smoothed;
+      markLiveUsageActivity(smoothed);
+      setRawSnapshot(floatingSnapshotForLiveRate(smoothed, usageSummaryRef.current));
+    };
 
     if (leaseController === null) {
-      setRawSnapshot(floatingSnapshotForLiveRate(
-        liveRateStreamStartFailureSnapshot("Live-rate owner epoch storage is unavailable"),
-        usageSummaryRef.current,
+      publishLiveRate(liveRateStreamStartFailureSnapshot(
+        "Live-rate owner epoch storage is unavailable",
       ));
       return;
     }
@@ -218,8 +227,7 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
     void dependencies.platform.onLiveRateSnapshot((liveRate) => {
       if (sourceIsCurrent()) {
         attempt?.noteExternalSuccess();
-        markLiveUsageActivity(liveRate);
-        setRawSnapshot(floatingSnapshotForLiveRate(liveRate, usageSummaryRef.current));
+        publishLiveRate(liveRate);
       }
     }).then((listener) => {
       if (cancelled) {
@@ -266,17 +274,13 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
         if (!sourceIsCurrent()) {
           return;
         }
-        markLiveUsageActivity(liveRate);
-        setRawSnapshot(floatingSnapshotForLiveRate(liveRate, usageSummaryRef.current));
+        publishLiveRate(liveRate);
       },
       publishFailure(message) {
         if (!sourceIsCurrent()) {
           return;
         }
-        setRawSnapshot(floatingSnapshotForLiveRate(
-          liveRateStreamStartFailureSnapshot(message),
-          usageSummaryRef.current,
-        ));
+        publishLiveRate(liveRateStreamStartFailureSnapshot(message));
       },
     });
 

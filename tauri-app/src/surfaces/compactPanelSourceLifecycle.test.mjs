@@ -116,13 +116,13 @@ test("hidden compact surface evicts physical source A and rejects every delayed 
         });
         assert.deepEqual(output(), {
           physical: "physical-a",
-          rate: 41,
+          rate: 11.48,
           total: "总 待读取",
           unread: true,
         });
 
         await render(false);
-        assert.equal(output().rate, 41);
+        assert.equal(output().rate, 11.48);
         await React.act(async () => {
           currentSource = sourceB;
           sourceListener(sourceB);
@@ -159,7 +159,7 @@ test("hidden compact surface evicts physical source A and rejects every delayed 
           startedWith.length === 2
           && claimedWith.length === 2
           && output().physical === "physical-b"
-          && output().rate === 7
+          && output().rate === 1.9600000000000002
           && output().total === "总 200"
         ));
         assert.equal(startedWith[1].physicalHomeKey, "physical-b");
