@@ -248,6 +248,8 @@ struct ExportSnapshotView: View {
                     onMarkAllRead: {},
                     onChangeDirectory: {},
                     onOpenProviderSync: {},
+                    threadDeleteStatus: .idle,
+                    onThreadDeleteConnectionAction: {},
                     showingInterfaceScaleMenu: .constant(false),
                     interfaceScaleAutoEnabled: .constant(InterfaceScaleSettings.defaultAutoEnabled),
                     interfaceScaleManualMultiplier: .constant(InterfaceScaleSettings.defaultManualMultiplier),

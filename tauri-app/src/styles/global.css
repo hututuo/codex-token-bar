@@ -206,9 +206,10 @@ button {
   display: grid;
   width: 100%;
   min-width: 0;
-  grid-template-columns: minmax(0, 1fr) max-content;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto;
   align-items: center;
-  gap: 12px;
+  gap: 7px;
 }
 
 .header-context,
@@ -225,6 +226,7 @@ button {
 }
 
 .header-primary-actions {
+  width: 100%;
   justify-content: end;
 }
 
@@ -401,16 +403,26 @@ button {
   text-align: left;
 }
 
-.thread-delete-menu-dot {
+.thread-delete-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-color: color-mix(in srgb, var(--red) 38%, var(--line));
+  color: var(--red);
+  white-space: nowrap;
+}
+
+.thread-delete-action-dot {
   width: 7px;
   height: 7px;
   flex: 0 0 7px;
   border-radius: 50%;
-  background: var(--muted);
+  background: currentColor;
 }
 
-.thread-delete-menu-dot--connected {
-  background: var(--green);
+.thread-delete-action--connected {
+  border-color: color-mix(in srgb, var(--green) 42%, var(--line));
+  color: var(--green);
 }
 .more-actions-menu button:hover,
 .more-actions-menu button:focus-visible {

@@ -10,6 +10,7 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
             CodexThreadDeleteBridgeStatus.idle.connectionActionTitle,
             "重启 Codex 并启用删除按钮"
         )
+        XCTAssertEqual(CodexThreadDeleteBridgeStatus.idle.dashboardActionTitle, "启用会话删除")
         XCTAssertEqual(
             CodexThreadDeleteDesktopLauncher.openCommandArguments(
                 applicationPath: "/Applications/ChatGPT.app"
@@ -30,6 +31,14 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
         )
         XCTAssertFalse(interrupted.requiresCodexRelaunch)
         XCTAssertEqual(interrupted.connectionActionTitle, "重新连接 Codex 删除按钮")
+        XCTAssertEqual(interrupted.dashboardActionTitle, "重连会话删除")
+
+        let connected = CodexThreadDeleteBridgeStatus(
+            connected: true,
+            debugPort: 9229,
+            message: "Codex 会话删除按钮已连接"
+        )
+        XCTAssertEqual(connected.dashboardActionTitle, "会话删除已启用")
     }
 
     func testSharedInjectionTemplateRendersSwiftOwner() throws {

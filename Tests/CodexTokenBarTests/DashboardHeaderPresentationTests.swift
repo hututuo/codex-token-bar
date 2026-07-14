@@ -28,7 +28,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         XCTAssertTrue(DashboardHeaderPresentationMode.dashboard.showsActions)
         XCTAssertEqual(
             DashboardHeaderPresentationMode.dashboard.actions(unreadCount: 0),
-            [.markAllRead, .refresh, .changeDirectory, .providerRepair]
+            [.markAllRead, .refresh, .changeDirectory, .providerRepair, .threadDelete]
         )
         XCTAssertFalse(DashboardHeaderPresentationMode.export.showsActions)
         XCTAssertTrue(DashboardHeaderPresentationMode.export.actions(unreadCount: 3).isEmpty)

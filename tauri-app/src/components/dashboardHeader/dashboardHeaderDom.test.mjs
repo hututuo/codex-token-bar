@@ -6,14 +6,22 @@ import { withSsrModules } from "../../test/ssrHarness.mjs";
 
 test("DashboardHeader more-actions menu preserves behavior and keyboard dismissal", async () => {
   await withMountedHeader(async ({ act, container, document, render, window, calls }) => {
-    assert.deepEqual(visibleButtonNames(container), ["立即刷新", "检查更新", "开机自启：关", "更改目录", "会话消失修复", "更多操作"]);
+    assert.deepEqual(visibleButtonNames(container), [
+      "立即刷新",
+      "检查更新",
+      "开机自启：关",
+      "更改目录",
+      "会话消失修复",
+      "启用会话删除",
+      "更多操作",
+    ]);
 
     await click(act, buttonByName(container, "检查更新"), window);
     assert.equal(calls.update, 1);
 
     await click(act, buttonByName(container, "更多操作"), window);
     assert.equal(buttonByName(container, "更多操作").getAttribute("aria-expanded"), "true");
-    assert.deepEqual(menuButtonNames(container), ["导出 CSV", "导出 PNG", "Codex 删除按钮：启用"]);
+    assert.deepEqual(menuButtonNames(container), ["导出 CSV", "导出 PNG"]);
 
     await render({ appUpdateState: { kind: "available", message: "发现新版本 v0.7.4" } });
     assert.equal(buttonByName(container, "安装更新").title, "发现新版本 v0.7.4");
@@ -38,8 +46,7 @@ test("DashboardHeader more-actions menu preserves behavior and keyboard dismissa
     assert.equal(container.querySelector('[role="menu"]'), null);
     assert.equal(document.activeElement, buttonByName(container, /更多操作/));
 
-    await click(act, buttonByName(container, /更多操作/), window);
-    const reconnect = buttonByName(container, /重启 Codex 并启用删除按钮/);
+    const reconnect = buttonByName(container, "启用会话删除");
     assert.equal(reconnect.title, "等待 Codex 调试连接（需以调试模式启动 Codex）");
     await click(act, reconnect, window);
     assert.ok(container.querySelector('[role="alertdialog"]'));
@@ -51,16 +58,14 @@ test("DashboardHeader more-actions menu preserves behavior and keyboard dismissa
     assert.equal(document.activeElement.textContent.trim(), "取消");
     await pressKey(act, document.activeElement, "Escape", window);
     assert.equal(container.querySelector('[role="alertdialog"]'), null);
-    assert.equal(document.activeElement, buttonByName(container, /更多操作/));
+    assert.equal(document.activeElement, reconnect);
 
-    await click(act, buttonByName(container, /更多操作/), window);
-    await click(act, buttonByName(container, /重启 Codex 并启用删除按钮/), window);
+    await click(act, reconnect, window);
     await click(act, buttonByName(container, "取消"), window);
     assert.equal(container.querySelector('[role="alertdialog"]'), null);
-    assert.equal(document.activeElement, buttonByName(container, /更多操作/));
+    assert.equal(document.activeElement, reconnect);
 
-    await click(act, buttonByName(container, /更多操作/), window);
-    await click(act, buttonByName(container, /重启 Codex 并启用删除按钮/), window);
+    await click(act, reconnect, window);
     await click(act, buttonByName(container, "重启并启用"), window);
     assert.equal(calls.threadDeleteReconnect, 1);
     assert.equal(container.querySelector('[role="alertdialog"]'), null);
@@ -92,11 +97,11 @@ test("DashboardHeader menu implements composite focus and keyboard navigation", 
     await pressKey(act, document.activeElement, "ArrowDown", window);
     assert.equal(document.activeElement.textContent.trim(), "导出 PNG");
     await pressKey(act, document.activeElement, "End", window);
-    assert.equal(document.activeElement.textContent.trim(), "Codex 删除按钮：启用");
+    assert.equal(document.activeElement.textContent.trim(), "导出 PNG");
     await pressKey(act, document.activeElement, "ArrowDown", window);
     assert.equal(document.activeElement.textContent.trim(), "导出 CSV");
     await pressKey(act, document.activeElement, "ArrowUp", window);
-    assert.equal(document.activeElement.textContent.trim(), "Codex 删除按钮：启用");
+    assert.equal(document.activeElement.textContent.trim(), "导出 PNG");
     await pressKey(act, document.activeElement, "Home", window);
     assert.equal(document.activeElement.textContent.trim(), "导出 CSV");
 
@@ -111,10 +116,10 @@ test("DashboardHeader menu implements composite focus and keyboard navigation", 
 
     trigger.focus();
     await pressKey(act, trigger, "ArrowUp", window);
-    assert.equal(document.activeElement.textContent.trim(), "Codex 删除按钮：启用");
+    assert.equal(document.activeElement.textContent.trim(), "导出 PNG");
     await pressKey(act, document.activeElement, "Tab", window, { shiftKey: true });
     assert.equal(container.querySelector('[role="menu"]'), null);
-    assert.equal(document.activeElement.textContent.trim(), "会话消失修复");
+    assert.equal(document.activeElement.textContent.trim(), "启用会话删除");
 
     trigger.focus();
     await pressKey(act, trigger, "ArrowDown", window);

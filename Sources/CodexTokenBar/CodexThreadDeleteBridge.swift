@@ -21,6 +21,11 @@ struct CodexThreadDeleteBridgeStatus: Equatable, Sendable {
             ? "重启 Codex 并启用删除按钮"
             : "重新连接 Codex 删除按钮"
     }
+
+    var dashboardActionTitle: String {
+        if connected { return "会话删除已启用" }
+        return requiresCodexRelaunch ? "启用会话删除" : "重连会话删除"
+    }
 }
 
 @MainActor

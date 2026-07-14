@@ -5,6 +5,7 @@ struct DashboardView: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var loginItemStore: LoginItemStore
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
+    @ObservedObject var threadDeleteBridge: CodexThreadDeleteBridgeController
     private let runtime: DashboardRuntime
     @State private var runtimeConsumerID = UUID()
     @ObservedObject private var store: CodexUsageStore
@@ -52,10 +53,12 @@ struct DashboardView: View {
     init(
         loginItemStore: LoginItemStore,
         updateSettingsStore: AppUpdateSettingsStore,
+        threadDeleteBridge: CodexThreadDeleteBridgeController,
         runtime: DashboardRuntime
     ) {
         self.loginItemStore = loginItemStore
         self.updateSettingsStore = updateSettingsStore
+        self.threadDeleteBridge = threadDeleteBridge
         self.runtime = runtime
         let composition = runtime.composition
         _store = ObservedObject(wrappedValue: composition.usageStore)
@@ -402,6 +405,10 @@ struct DashboardView: View {
                 onOpenProviderSync: {
                     showingProviderSync = true
                     providerSyncStore.scan(dataSource: providerSyncStore.currentDataSource)
+                },
+                threadDeleteStatus: threadDeleteBridge.status,
+                onThreadDeleteConnectionAction: {
+                    threadDeleteBridge.performConnectionAction()
                 },
                 showingInterfaceScaleMenu: $showingInterfaceScaleMenu,
                 interfaceScaleAutoEnabled: $interfaceScaleAutoEnabled,

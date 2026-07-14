@@ -10,6 +10,7 @@ enum DashboardHeaderAction: Equatable {
     case refresh
     case changeDirectory
     case providerRepair
+    case threadDelete
 }
 
 enum DashboardHeaderPresentationMode: Equatable {
@@ -20,7 +21,7 @@ enum DashboardHeaderPresentationMode: Equatable {
 
     func actions(unreadCount: Int) -> [DashboardHeaderAction] {
         guard showsActions else { return [] }
-        return [.markAllRead, .refresh, .changeDirectory, .providerRepair]
+        return [.markAllRead, .refresh, .changeDirectory, .providerRepair, .threadDelete]
     }
 }
 
@@ -120,6 +121,8 @@ struct HeaderView: View {
     let onMarkAllRead: () -> Void
     let onChangeDirectory: () -> Void
     let onOpenProviderSync: () -> Void
+    let threadDeleteStatus: CodexThreadDeleteBridgeStatus
+    let onThreadDeleteConnectionAction: () -> Void
     @Binding var showingInterfaceScaleMenu: Bool
     @Binding var interfaceScaleAutoEnabled: Bool
     @Binding var interfaceScaleManualMultiplier: Double
@@ -297,6 +300,27 @@ struct HeaderView: View {
                                 }
                                 .buttonStyle(.bordered)
                                 .accessibilityLabel("会话消失修复")
+                            }
+
+                            if actions.contains(.threadDelete) {
+                                Button(action: onThreadDeleteConnectionAction) {
+                                    Label(threadDeleteStatus.dashboardActionTitle, systemImage: "trash")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(
+                                            threadDeleteStatus.connected
+                                                ? AppTheme.accentGreen
+                                                : AppTheme.accentRed
+                                        )
+                                }
+                                .buttonStyle(.bordered)
+                                .help(threadDeleteStatus.message)
+                                .accessibilityLabel(threadDeleteStatus.dashboardActionTitle)
+                                .accessibilityValue(threadDeleteStatus.message)
+                                .accessibilityHint(
+                                    threadDeleteStatus.connected
+                                        ? "重新连接 Codex 会话删除按钮"
+                                        : "启用 Codex 会话删除按钮"
+                                )
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .trailing)

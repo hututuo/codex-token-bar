@@ -40,6 +40,7 @@ struct CodexTokenBarApp: App {
             DashboardView(
                 loginItemStore: loginItemStore,
                 updateSettingsStore: updateSettingsStore,
+                threadDeleteBridge: threadDeleteBridge,
                 runtime: dashboardRuntime
             )
                 .frame(minWidth: 1080, minHeight: 760)

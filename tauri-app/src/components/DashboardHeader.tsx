@@ -59,10 +59,12 @@ export function DashboardHeader({
   const moreActionsRef = useRef<HTMLDivElement>(null);
   const moreActionsTriggerRef = useRef<HTMLButtonElement>(null);
   const moreActionsMenuRef = useRef<HTMLDivElement>(null);
+  const threadDeleteTriggerRef = useRef<HTMLButtonElement>(null);
   const threadDeleteDialogRef = useRef<HTMLDivElement>(null);
   const threadDeleteCancelRef = useRef<HTMLButtonElement>(null);
   const pendingMenuFocusRef = useRef<"first" | "last" | null>(null);
   const autostartHelpId = useId();
+  const threadDeleteHelpId = useId();
   const threadDeleteDialogTitleId = useId();
   const threadDeleteDialogDescriptionId = useId();
   const resolvedDisplayName = resolveAccountDisplayName(
@@ -70,8 +72,8 @@ export function DashboardHeader({
     customAccountDisplayName,
   );
   const threadDeleteActionLabel = threadDeleteBridgeStatus.connected
-    ? "已连接"
-    : threadDeleteBridgeStatus.debugPort === null ? "启用" : "重连";
+    ? "会话删除已启用"
+    : threadDeleteBridgeStatus.debugPort === null ? "启用会话删除" : "重连会话删除";
   const threadDeleteActionDescription = threadDeleteBridgeStatus.debugPort === null
     ? "重启 Codex 并启用删除按钮"
     : "重新连接 Codex 删除按钮";
@@ -91,7 +93,7 @@ export function DashboardHeader({
 
   const closeThreadDeleteConfirmation = () => {
     setThreadDeleteConfirmationOpen(false);
-    window.requestAnimationFrame(() => moreActionsTriggerRef.current?.focus());
+    window.requestAnimationFrame(() => threadDeleteTriggerRef.current?.focus());
   };
 
   const handleThreadDeleteDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -309,6 +311,29 @@ export function DashboardHeader({
           >
             会话消失修复
           </button>
+          <button
+            aria-describedby={threadDeleteHelpId}
+            aria-label={threadDeleteActionLabel}
+            className={threadDeleteBridgeStatus.connected
+              ? "toolbar-button thread-delete-action thread-delete-action--connected"
+              : "toolbar-button thread-delete-action"}
+            onClick={() => {
+              if (threadDeleteBridgeStatus.debugPort === null) {
+                setThreadDeleteConfirmationOpen(true);
+              } else {
+                void onReconnectThreadDelete();
+              }
+            }}
+            ref={threadDeleteTriggerRef}
+            title={threadDeleteBridgeStatus.message}
+            type="button"
+          >
+            <span aria-hidden="true" className="thread-delete-action-dot" />
+            {threadDeleteActionLabel}
+          </button>
+          <span className="visually-hidden" id={threadDeleteHelpId}>
+            {threadDeleteActionDescription}。{threadDeleteBridgeStatus.message}
+          </span>
           <div className="more-actions" ref={moreActionsRef}>
             <button
               aria-expanded={moreActionsOpen}
@@ -337,30 +362,6 @@ export function DashboardHeader({
                 </button>
                 <button onClick={() => { onExportPng(); closeMoreActionsAndRestoreFocus(); }} role="menuitem" tabIndex={-1} type="button">
                   导出 PNG
-                </button>
-                <button
-                  aria-label={`${threadDeleteActionDescription}。${threadDeleteBridgeStatus.message}`}
-                  onClick={() => {
-                    if (threadDeleteBridgeStatus.debugPort === null) {
-                      setMoreActionsOpen(false);
-                      setThreadDeleteConfirmationOpen(true);
-                    } else {
-                      void onReconnectThreadDelete();
-                      closeMoreActionsAndRestoreFocus();
-                    }
-                  }}
-                  role="menuitem"
-                  tabIndex={-1}
-                  title={threadDeleteBridgeStatus.message}
-                  type="button"
-                >
-                  <span
-                    aria-hidden="true"
-                    className={threadDeleteBridgeStatus.connected
-                      ? "thread-delete-menu-dot thread-delete-menu-dot--connected"
-                      : "thread-delete-menu-dot"}
-                  />
-                  Codex 删除按钮：{threadDeleteActionLabel}
                 </button>
               </div>
             ) : null}
@@ -403,7 +404,7 @@ export function DashboardHeader({
                 className="thread-delete-confirmation-primary"
                 onClick={() => {
                   setThreadDeleteConfirmationOpen(false);
-                  window.requestAnimationFrame(() => moreActionsTriggerRef.current?.focus());
+                  window.requestAnimationFrame(() => threadDeleteTriggerRef.current?.focus());
                   void onReconnectThreadDelete();
                 }}
                 type="button"
