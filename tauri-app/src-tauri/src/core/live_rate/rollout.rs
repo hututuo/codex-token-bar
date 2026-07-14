@@ -1,5 +1,7 @@
 use super::state::read_recent_rollout_threads;
-use super::stream::{LiveMetricEvent, LiveTokenCategory, WINDOW_SECONDS};
+use super::stream::{
+    latest_scheduled_timestamp, LiveMetricEvent, LiveTokenCategory, WINDOW_SECONDS,
+};
 use super::LiveRateSourceScope;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -105,8 +107,11 @@ pub(super) fn read_rollout_metrics(
     if state.scope_generations.get(source_scope) != Some(&generation) {
         return Ok(Vec::new());
     }
-    let retained = state.retained_metrics.entry(source_scope.clone()).or_default();
-    retained.retain(|metric| now - metric.timestamp <= WINDOW_SECONDS);
+    let retained = state
+        .retained_metrics
+        .entry(source_scope.clone())
+        .or_default();
+    retained.retain(|metric| now - latest_scheduled_timestamp(metric) <= WINDOW_SECONDS);
     let mut fingerprints = retained
         .iter()
         .map(LiveMetricEvent::fingerprint)
@@ -117,32 +122,6 @@ pub(super) fn read_rollout_metrics(
             .filter(|metric| fingerprints.insert(metric.fingerprint())),
     );
     Ok(retained.clone())
-}
-
-pub(super) fn sync_rollout_offsets_to_current(
-    codex_home: &Path,
-    source_scope: &LiveRateSourceScope,
-) {
-    let Ok((threads, generation)) = recent_rollout_threads(codex_home, source_scope) else {
-        return;
-    };
-    let observed = threads
-        .into_iter()
-        .map(|thread| (thread.rollout_path.clone(), file_size(&thread.rollout_path)))
-        .collect::<Vec<_>>();
-    let mut state = rollout_state();
-    if state.scope_generations.get(source_scope) != Some(&generation) {
-        return;
-    }
-    state.retained_metrics.remove(source_scope);
-    for (path, size) in observed {
-        let key = (source_scope.clone(), path);
-        if let Some(size) = size {
-            state.offsets.insert(key, size);
-        } else {
-            state.offsets.remove(&key);
-        }
-    }
 }
 
 pub(super) fn rollout_file_signatures(
@@ -632,6 +611,7 @@ fn metric_with_dedupe(
         exact_tokens,
         start_timestamp,
         distributed,
+        spreads_forward: start_timestamp.is_none(),
         dedupe_key: Some(dedupe_key),
     }
 }

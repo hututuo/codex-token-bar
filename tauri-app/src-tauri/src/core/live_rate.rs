@@ -7,7 +7,7 @@ use crate::models::{
 use logs::read_recent_log_rows;
 pub use monitor::LiveRateMonitorService;
 use rusqlite::Result;
-use rollout::{read_rollout_metrics, sync_rollout_offsets_to_current};
+use rollout::read_rollout_metrics;
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
@@ -165,8 +165,21 @@ fn read_snapshot_result(
     source_scope: &LiveRateSourceScope,
     selected_thread_id: Option<&str>,
 ) -> Result<LiveRateSnapshot> {
+    read_snapshot_result_at(
+        codex_home,
+        source_scope,
+        selected_thread_id,
+        current_time_seconds(),
+    )
+}
+
+fn read_snapshot_result_at(
+    codex_home: &Path,
+    source_scope: &LiveRateSourceScope,
+    selected_thread_id: Option<&str>,
+    now: f64,
+) -> Result<LiveRateSnapshot> {
     let mut warnings = Vec::new();
-    let now = current_time_seconds();
     let rows = match read_recent_log_rows(codex_home, now - LOOKBACK_SECONDS) {
         Ok(rows) => rows,
         Err(error) => {
@@ -182,26 +195,30 @@ fn read_snapshot_result(
     let stream_selected_rollup = selected_thread_id
         .map(|thread_id| rollup_stream_rows(&rows, now, Some(thread_id)))
         .unwrap_or_default();
-    let (rollup, selected_rollup) = if stream_rollup.tokens_per_second <= 0.0 {
-        let metrics = match read_rollout_metrics(codex_home, source_scope, now) {
-            Ok(metrics) => metrics,
-            Err(error) => {
-                warnings.push(live_rate_warning(format!(
-                    "读取新版 rollout 会话索引失败：{}（{}）",
-                    codex_home.join("state_5.sqlite").display(),
-                    error
-                )));
-                Vec::new()
-            }
-        };
-        let rollup = rollup_metric_events(&metrics, now, None);
-        let selected_rollup = selected_thread_id
-            .map(|thread_id| rollup_metric_events(&metrics, now, Some(thread_id)))
-            .unwrap_or_default();
-        (rollup, selected_rollup)
+    let rollout_metrics = match read_rollout_metrics(codex_home, source_scope, now) {
+        Ok(metrics) => metrics,
+        Err(error) => {
+            warnings.push(live_rate_warning(format!(
+                "读取新版 rollout 会话索引失败：{}（{}）",
+                codex_home.join("state_5.sqlite").display(),
+                error
+            )));
+            Vec::new()
+        }
+    };
+    let rollout_rollup = rollup_metric_events(&rollout_metrics, now, None);
+    let rollout_selected_rollup = selected_thread_id
+        .map(|thread_id| rollup_metric_events(&rollout_metrics, now, Some(thread_id)))
+        .unwrap_or_default();
+    let rollup = if stream_rollup.tokens_per_second > 0.0 {
+        stream_rollup
     } else {
-        sync_rollout_offsets_to_current(codex_home, source_scope);
-        (stream_rollup, stream_selected_rollup)
+        rollout_rollup
+    };
+    let selected_rollup = if stream_selected_rollup.tokens_per_second > 0.0 {
+        stream_selected_rollup
+    } else {
+        rollout_selected_rollup
     };
     let summary = read_precise_usage_summary_or_fallback(codex_home, &mut warnings);
     let _observed_live_source_tokens = rollup.breakdown.observed_total();

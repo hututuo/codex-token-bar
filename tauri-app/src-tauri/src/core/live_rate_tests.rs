@@ -714,6 +714,192 @@ fn stale_stream_rows_do_not_block_current_rollout_fallback() {
 }
 
 #[test]
+fn live_rate_unstarted_rollout_completion_stays_active_through_forward_schedule_window() {
+    let root = temp_root("live-rate-unstarted-completion-window");
+    fs::create_dir_all(&root).unwrap();
+    let rollout_path = root.join("sessions/rollout-thread-a.jsonl");
+    create_state_database(&root, "thread-a", "forward completion", 300);
+    set_thread_rollout_path(&root, "thread-a", &rollout_path);
+    fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+    fs::File::create(&rollout_path).unwrap();
+    let scope = LiveRateSourceScope::new(root.display().to_string(), "forward-window");
+    let event_time = fixed_rollout_time();
+    let t0 = event_time.unix_timestamp() as f64;
+
+    let _ = rollout::read_rollout_metrics(&root, &scope, t0 - 1.0).unwrap();
+    let completion = "x".repeat(650);
+    append_rollout_line_at(
+        &rollout_path,
+        event_time,
+        "response_item",
+        &format!(
+            r#"{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"{completion}"}}]}}"#
+        ),
+    );
+
+    for offset in [0.5, 2.75, 5.25] {
+        let metrics = rollout::read_rollout_metrics(&root, &scope, t0 + offset).unwrap();
+        let rollup = stream::rollup_metric_events(&metrics, t0 + offset, None);
+        assert_eq!(rollup.breakdown.visible_text, 155);
+        assert_eq!(rollup.latest_thread_id.as_deref(), Some("thread-a"));
+        assert!(
+            rollup.tokens_per_second > 0.0,
+            "155-token completion should remain active at t0+{offset:.2}s"
+        );
+    }
+
+    let expired = rollout::read_rollout_metrics(&root, &scope, t0 + 5.5).unwrap();
+    assert_eq!(
+        stream::rollup_metric_events(&expired, t0 + 5.5, None).tokens_per_second,
+        0.0
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn live_rate_two_completion_timeline_has_at_most_two_consecutive_zero_samples() {
+    let root = temp_root("live-rate-two-completion-timeline");
+    fs::create_dir_all(&root).unwrap();
+    let rollout_path = root.join("sessions/rollout-thread-a.jsonl");
+    create_state_database(&root, "thread-a", "completion timeline", 300);
+    set_thread_rollout_path(&root, "thread-a", &rollout_path);
+    fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+    fs::File::create(&rollout_path).unwrap();
+    let scope = LiveRateSourceScope::new(root.display().to_string(), "completion-timeline");
+    let first_time = fixed_rollout_time();
+    let t0 = first_time.unix_timestamp() as f64;
+
+    let _ = rollout::read_rollout_metrics(&root, &scope, t0 - 1.0).unwrap();
+    let first_completion = "x".repeat(650);
+    append_rollout_line_at(
+        &rollout_path,
+        first_time,
+        "response_item",
+        &format!(
+            r#"{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"{first_completion}"}}]}}"#
+        ),
+    );
+
+    let mut consecutive_zero_samples = 0;
+    let mut maximum_consecutive_zero_samples = 0;
+    for sample in 0..=43 {
+        if sample == 22 {
+            let second_completion = "y".repeat(650);
+            append_rollout_line_at(
+                &rollout_path,
+                first_time + time::Duration::milliseconds(5_500),
+                "response_item",
+                &format!(
+                    r#"{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"{second_completion}"}}]}}"#
+                ),
+            );
+        }
+        let now = t0 + f64::from(sample) * 0.25;
+        let metrics = rollout::read_rollout_metrics(&root, &scope, now).unwrap();
+        let rate = stream::rollup_metric_events(&metrics, now, None).tokens_per_second;
+        if rate > 0.0 {
+            consecutive_zero_samples = 0;
+        } else {
+            consecutive_zero_samples += 1;
+            maximum_consecutive_zero_samples =
+                maximum_consecutive_zero_samples.max(consecutive_zero_samples);
+        }
+    }
+
+    assert!(
+        maximum_consecutive_zero_samples <= 2,
+        "250ms timeline contained {maximum_consecutive_zero_samples} consecutive zero samples"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn live_rate_explicit_start_completion_still_ends_at_event_time() {
+    let t0 = fixed_rollout_time().unix_timestamp() as f64;
+    let metric = stream::LiveMetricEvent {
+        event_type: "test.explicit-start".into(),
+        timestamp: t0,
+        thread_id: Some("thread-a".into()),
+        item_id: "item-a".into(),
+        sequence_number: None,
+        category: stream::LiveTokenCategory::VisibleText,
+        delta: String::new(),
+        exact_tokens: Some(155),
+        start_timestamp: Some(t0 - 4.0),
+        distributed: true,
+        spreads_forward: false,
+        dedupe_key: None,
+    };
+
+    assert!(
+        stream::rollup_metric_events(&[metric.clone()], t0 - 1.0, None).tokens_per_second > 0.0
+    );
+    assert!(
+        stream::rollup_metric_events(&[metric.clone()], t0 + 2.5, None).tokens_per_second > 0.0
+    );
+    assert_eq!(
+        stream::rollup_metric_events(&[metric], t0 + 2.75, None).tokens_per_second,
+        0.0
+    );
+}
+
+#[test]
+fn live_rate_stream_tick_keeps_rollout_warm_for_selected_and_empty_handoff() {
+    let root = temp_root("live-rate-stream-rollout-warm-handoff");
+    fs::create_dir_all(&root).unwrap();
+    let rollout_path = root.join("sessions/rollout-thread-a.jsonl");
+    create_state_database(&root, "thread-a", "rollout selected", 300);
+    insert_state_thread(&root, "thread-b", "stream global", 200);
+    set_thread_rollout_path(&root, "thread-a", &rollout_path);
+    create_logs_database(&root, |_connection, _now| {});
+    fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+    fs::File::create(&rollout_path).unwrap();
+    let scope = LiveRateSourceScope::new(root.display().to_string(), "warm-handoff");
+    let event_time = fixed_rollout_time();
+    let t0 = event_time.unix_timestamp() as f64;
+
+    let _ = read_snapshot_result_at(&root, &scope, Some("thread-a"), t0 - 1.0).unwrap();
+    let completion = "x".repeat(650);
+    append_rollout_line_at(
+        &rollout_path,
+        event_time,
+        "response_item",
+        &format!(
+            r#"{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"{completion}"}}]}}"#
+        ),
+    );
+    let connection = Connection::open(root.join("logs_2.sqlite")).unwrap();
+    insert_log(
+        &connection,
+        1,
+        "thread-b",
+        t0 as i64,
+        "codex_api::sse::responses",
+        r#"SSE event: {"type":"response.output_text.delta","delta":"stream source stays globally preferred","item_id":"item-b","sequence_number":1}"#,
+    );
+
+    let stream_tick = read_snapshot_result_at(&root, &scope, Some("thread-a"), t0 + 0.5).unwrap();
+    assert!(stream_tick.tokens_per_second > 0.0);
+    assert!(
+        stream_tick.selected_tokens_per_second > 0.0,
+        "selected thread should independently fall back to its rollout"
+    );
+
+    connection.execute("DELETE FROM logs", []).unwrap();
+    let handoff = read_snapshot_result_at(&root, &scope, Some("thread-a"), t0 + 0.75).unwrap();
+    assert!(
+        handoff.tokens_per_second > 0.0,
+        "empty stream should hand off to the rollout retained during the positive stream tick"
+    );
+    assert!(handoff.selected_tokens_per_second > 0.0);
+
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn rollout_fallback_retains_recent_metrics_across_poll_ticks() {
     let root = temp_root("live-rate-rollout-retained-window");
     fs::create_dir_all(&root).unwrap();
@@ -1421,17 +1607,36 @@ fn mark_thread_source(root: &Path, thread_id: &str, thread_source: &str) {
 }
 
 fn append_rollout_line(path: &Path, record_type: &str, payload_json: &str) {
+    // Existing fallback tests sample after the first forward-scheduled chunk without sleeping.
+    append_rollout_line_at(
+        path,
+        OffsetDateTime::now_utc() - time::Duration::seconds(1),
+        record_type,
+        payload_json,
+    );
+}
+
+fn append_rollout_line_at(
+    path: &Path,
+    timestamp: OffsetDateTime,
+    record_type: &str,
+    payload_json: &str,
+) {
     let mut output = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .unwrap();
-    let timestamp = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
+    let timestamp = timestamp.format(&Rfc3339).unwrap();
     writeln!(
         output,
         r#"{{"timestamp":"{timestamp}","type":"{record_type}","payload":{payload_json}}}"#
     )
     .unwrap();
+}
+
+fn fixed_rollout_time() -> OffsetDateTime {
+    OffsetDateTime::parse("2026-07-15T00:00:00Z", &Rfc3339).unwrap()
 }
 
 fn insert_state_thread(root: &Path, thread_id: &str, title: &str, tokens: i64) {
@@ -1550,6 +1755,7 @@ fn exact_visible_metric(
         exact_tokens: Some(tokens),
         start_timestamp: None,
         distributed: false,
+        spreads_forward: false,
         dedupe_key: None,
     }
 }
@@ -1570,6 +1776,7 @@ fn exact_visible_metric_without_thread(
         exact_tokens: Some(tokens),
         start_timestamp: None,
         distributed: false,
+        spreads_forward: false,
         dedupe_key: None,
     }
 }

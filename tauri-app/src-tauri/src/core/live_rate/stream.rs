@@ -66,14 +66,19 @@ pub(super) fn rollup_metric_events(
                 .exact_tokens
                 .unwrap_or_else(|| estimate_token_count(&metric.delta, metric.category));
             breakdown.add(metric.category, tokens);
-            for (time, delta_tokens) in
-                distributed_deltas(tokens, metric.start_timestamp, metric.timestamp)
-            {
+            let mut has_visible_delta = false;
+            for (time, delta_tokens) in distributed_deltas(
+                tokens,
+                metric.start_timestamp,
+                metric.timestamp,
+                metric.spreads_forward,
+            ) {
                 if delta_tokens > 0 && time >= window_start && time <= now + 0.25 {
                     rolling_deltas.push((thread_rate_key(metric), time, delta_tokens));
+                    has_visible_delta = true;
                 }
             }
-            if tokens > 0 && metric.timestamp >= window_start && metric.timestamp <= now + 0.25 {
+            if has_visible_delta {
                 if let Some(thread_id) = metric.thread_id.clone() {
                     latest_thread_id = Some(thread_id);
                 }
@@ -136,16 +141,17 @@ pub(super) fn rollup_metric_events(
     }
 }
 
-fn distributed_deltas(tokens: u32, start_timestamp: Option<f64>, ending_at: f64) -> Vec<(f64, u32)> {
+fn distributed_deltas(
+    tokens: u32,
+    start_timestamp: Option<f64>,
+    ending_at: f64,
+    spreads_forward: bool,
+) -> Vec<(f64, u32)> {
     if tokens == 0 {
         return Vec::new();
     }
-    let estimated_duration = (f64::from(tokens) / COMPLETION_PAYLOAD_TOKENS_PER_SECOND)
-        .clamp(MINIMUM_COMPLETION_PAYLOAD_SECONDS, MAXIMUM_COMPLETION_PAYLOAD_SECONDS);
-    let start = start_timestamp
-        .map(|start| start.min(ending_at))
-        .unwrap_or(ending_at - estimated_duration);
-    let duration = (ending_at - start).max(estimated_duration).max(0.25);
+    let (start, duration) =
+        distribution_bounds(tokens, start_timestamp, ending_at, spreads_forward);
     let chunk_count = tokens
         .min((duration / DISTRIBUTION_STEP_SECONDS).ceil().max(1.0) as u32)
         .max(1);
@@ -164,6 +170,47 @@ fn distributed_deltas(tokens: u32, start_timestamp: Option<f64>, ending_at: f64)
         deltas.push((start + duration * ratio, chunk_tokens));
     }
     deltas
+}
+
+fn distribution_bounds(
+    tokens: u32,
+    start_timestamp: Option<f64>,
+    ending_at: f64,
+    spreads_forward: bool,
+) -> (f64, f64) {
+    let estimated_duration = (f64::from(tokens) / COMPLETION_PAYLOAD_TOKENS_PER_SECOND).clamp(
+        MINIMUM_COMPLETION_PAYLOAD_SECONDS,
+        MAXIMUM_COMPLETION_PAYLOAD_SECONDS,
+    );
+    if let Some(start_timestamp) = start_timestamp {
+        let actual_duration = ending_at - start_timestamp.min(ending_at);
+        let duration = actual_duration.max(estimated_duration).max(0.25);
+        return (ending_at - duration, duration);
+    }
+    if spreads_forward {
+        (ending_at, estimated_duration)
+    } else {
+        (ending_at - estimated_duration, estimated_duration)
+    }
+}
+
+pub(super) fn latest_scheduled_timestamp(metric: &LiveMetricEvent) -> f64 {
+    if !metric.distributed || !metric.category.contributes_to_live_rate() {
+        return metric.timestamp;
+    }
+    let tokens = metric
+        .exact_tokens
+        .unwrap_or_else(|| estimate_token_count(&metric.delta, metric.category));
+    if tokens == 0 {
+        return metric.timestamp;
+    }
+    let (start, duration) = distribution_bounds(
+        tokens,
+        metric.start_timestamp,
+        metric.timestamp,
+        metric.spreads_forward,
+    );
+    start + duration
 }
 
 fn stream_event(row: &LogRow) -> Option<ResponseStreamEvent> {
@@ -220,6 +267,7 @@ fn metric_event(event: ResponseStreamEvent, row: &LogRow) -> Option<LiveMetricEv
             category,
             LiveTokenCategory::ToolArguments | LiveTokenCategory::PatchInput
         ),
+        spreads_forward: false,
         dedupe_key,
     })
 }
@@ -408,6 +456,7 @@ pub(super) struct LiveMetricEvent {
     pub(super) exact_tokens: Option<u32>,
     pub(super) start_timestamp: Option<f64>,
     pub(super) distributed: bool,
+    pub(super) spreads_forward: bool,
     pub(super) dedupe_key: Option<String>,
 }
 
