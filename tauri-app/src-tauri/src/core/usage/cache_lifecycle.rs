@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_removes_old_discardable_caches_without_touching_current_or_quota_history() {
+    fn cleanup_removes_old_discardable_caches_without_touching_current_or_swift_quota_history() {
         let root = temp_root("cleanup");
         let _env = PathEnvGuard::new(&root);
         let cache_base = root.join("cache");
@@ -282,13 +282,17 @@ mod tests {
     }
 
     #[test]
-    fn quota_history_stays_in_original_app_support_directory() {
+    fn tauri_runtime_paths_do_not_reuse_swift_app_support_files() {
         let root = temp_root("quota-path");
         let _env = PathEnvGuard::new(&root);
 
-        let path = app_paths::quota_history_database_path().unwrap();
-        assert!(path.ends_with("CodexTokenBar/quota-history.sqlite"));
-        assert!(!path.to_string_lossy().contains("CodexTokenBarTauri"));
+        let quota_path = app_paths::quota_history_database_path().unwrap();
+        let startup_trace_path = app_paths::startup_trace_log_path().unwrap();
+        let performance_trace_path = app_paths::performance_trace_log_path().unwrap();
+        assert!(quota_path.ends_with("CodexTokenBarTauri/quota-history.sqlite"));
+        assert!(startup_trace_path.ends_with("CodexTokenBarTauri/startup-trace.log"));
+        assert!(performance_trace_path.ends_with("CodexTokenBarTauri/performance-trace.log"));
+        assert!(!quota_path.ends_with("CodexTokenBar/quota-history.sqlite"));
 
         let _ = fs::remove_dir_all(root);
     }

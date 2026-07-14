@@ -7,6 +7,7 @@ use crate::models::{
 };
 #[cfg(test)]
 use crate::models::RecentUsagePoint;
+use rusqlite::backup::Backup;
 use rusqlite::{Connection, Result as SqlResult};
 #[cfg(test)]
 use std::collections::HashMap;
@@ -156,9 +157,11 @@ struct QuotaHistoryDatabase {
 
 impl QuotaHistoryDatabase {
     fn default() -> Result<Self, String> {
-        database_path()
-            .map(|path| Self { path })
-            .ok_or_else(|| "无法定位系统应用支持目录，不能读取额度历史".into())
+        let path = database_path()
+            .ok_or_else(|| "无法定位系统应用支持目录，不能读取额度历史".to_string())?;
+        migrate_legacy_quota_history_if_needed(&path)
+            .map_err(|error| format!("迁移 Tauri 额度历史失败：{error}"))?;
+        Ok(Self { path })
     }
 
     fn record_for_identity(
@@ -639,6 +642,30 @@ fn quota_history_database_guard() -> std::sync::MutexGuard<'static, ()> {
 
 fn database_path() -> Option<PathBuf> {
     app_paths::quota_history_database_path()
+}
+
+fn migrate_legacy_quota_history_if_needed(path: &Path) -> SqlResult<()> {
+    let _database_guard = quota_history_database_guard();
+    if path.exists() {
+        return Ok(());
+    }
+    let Some(legacy_path) = app_paths::legacy_shared_quota_history_database_path() else {
+        return Ok(());
+    };
+    if legacy_path == path || !legacy_path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let source = sqlite::open_read_only(&legacy_path, Duration::from_secs(3))?;
+    let mut target = sqlite::open_wal(path, Duration::from_secs(3))?;
+    {
+        let backup = Backup::new(&source, &mut target)?;
+        backup.run_to_completion(128, Duration::from_millis(5), None)?;
+    }
+    sqlite::checkpoint_wal_full(&target);
+    Ok(())
 }
 
 #[cfg(test)]
