@@ -56,6 +56,10 @@ private struct TokenDisplayStandaloneUsageStatusTextPaletteKey: EnvironmentKey {
     static let defaultValue: FloatingPanelReadableTextPalette? = nil
 }
 
+private struct TokenDisplayQuotaColorStyleKey: EnvironmentKey {
+    static let defaultValue = FloatingQuotaColorStyle.default
+}
+
 extension EnvironmentValues {
     var tokenDisplayScale: CGFloat {
         get { self[TokenDisplayScaleKey.self] }
@@ -95,6 +99,11 @@ extension EnvironmentValues {
     var tokenDisplayStandaloneUsageStatusTextPalette: FloatingPanelReadableTextPalette? {
         get { self[TokenDisplayStandaloneUsageStatusTextPaletteKey.self] }
         set { self[TokenDisplayStandaloneUsageStatusTextPaletteKey.self] = newValue }
+    }
+
+    var tokenDisplayQuotaColorStyle: FloatingQuotaColorStyle {
+        get { self[TokenDisplayQuotaColorStyleKey.self] }
+        set { self[TokenDisplayQuotaColorStyleKey.self] = newValue }
     }
 }
 

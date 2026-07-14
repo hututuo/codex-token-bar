@@ -49,6 +49,7 @@ struct TokenQuotaMiniSegment: View {
     let window: AccountQuotaWindow
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
+    @Environment(\.tokenDisplayQuotaColorStyle) private var quotaColorStyle
 
     private var fillFraction: CGFloat {
         CGFloat(Double(window.remainingPercent) / 100.0)
@@ -65,7 +66,8 @@ struct TokenQuotaMiniSegment: View {
                         .fill(floatingTrackColor)
                     if fillWidth > 0 {
                         quotaSegmentShape
-                            .fill(AppTheme.quotaRemainingColor(percent: Double(window.remainingPercent)).opacity(0.78))
+                            .fill(quotaColorStyle.fillStyle(remainingPercent: Double(window.remainingPercent)))
+                            .opacity(0.78)
                             .frame(width: min(proxy.size.width, max(proxy.size.height, fillWidth)), height: proxy.size.height)
                     }
                 }

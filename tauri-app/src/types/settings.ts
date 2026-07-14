@@ -7,6 +7,8 @@ export interface FloatingWindowSettings {
   gradientEnd: string;
   gradientDirection: FloatingGradientDirection;
   gradientType: FloatingGradientType;
+  quotaColorMode: FloatingQuotaColorMode;
+  quotaFixedColor: string;
   textTone: number;
   contentVisibility: FloatingContentVisibility;
 }
@@ -14,6 +16,11 @@ export interface FloatingWindowSettings {
 export type FloatingUnreadEffect = "off" | "ripple" | "shimmer";
 export type FloatingGradientDirection = "135deg" | "90deg" | "180deg" | "45deg";
 export type FloatingGradientType = "linear" | "radial" | "conic";
+export type FloatingQuotaColorMode = "adaptive" | "fixed" | "panelGradient";
+export type FloatingPalettePatch = Partial<Pick<
+  FloatingWindowSettings,
+  "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType" | "quotaColorMode" | "quotaFixedColor"
+>>;
 export type FloatingContentGroup = "rateAndBar" | "usageStatus" | "metrics" | "quota" | "radar";
 
 export interface FloatingContentVisibility {

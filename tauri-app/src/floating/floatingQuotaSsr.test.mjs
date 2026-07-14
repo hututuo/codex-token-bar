@@ -23,9 +23,42 @@ test("floating quota projection distinguishes unavailable compatibility zero fro
       } else {
         assert.match(html, /role="meter"/);
         assert.match(html, new RegExp(`aria-valuenow="${fixture.remainingPercent * 100}"`));
-        assert.match(html, /--metric-color:rgb\(/);
+        assert.match(html, /--quota-fill-background:linear-gradient\(90deg, color-mix\(in srgb, white 18%, rgb\(/);
       }
     }
+  });
+});
+
+test("floating quota colors support percentage, fixed, and existing panel gradients", async () => {
+  await withSsrModules(async (load) => {
+    const { floatingQuotaFillBackground } = await load("/src/floating/FloatingPanelPreview.tsx");
+    const adaptiveLow = floatingQuotaFillBackground({
+      ...floatingSettingsFixture(),
+      quotaColorMode: "adaptive",
+    }, 10);
+    const adaptiveHigh = floatingQuotaFillBackground({
+      ...floatingSettingsFixture(),
+      quotaColorMode: "adaptive",
+    }, 90);
+    const fixed = floatingQuotaFillBackground({
+      ...floatingSettingsFixture(),
+      quotaColorMode: "fixed",
+      quotaFixedColor: "#123456",
+    }, 10);
+    const panelGradient = floatingQuotaFillBackground({
+      ...floatingSettingsFixture(),
+      gradientStart: "#102040",
+      gradientEnd: "#40a0ff",
+      gradientDirection: "90deg",
+      gradientType: "linear",
+      quotaColorMode: "panelGradient",
+    }, 10);
+
+    assert.notEqual(adaptiveLow, adaptiveHigh);
+    assert.match(adaptiveLow, /rgb\(/);
+    assert.match(adaptiveHigh, /rgb\(/);
+    assert.equal(fixed, "#123456");
+    assert.equal(panelGradient, "linear-gradient(90deg, #102040, #40a0ff)");
   });
 });
 
@@ -87,6 +120,8 @@ function floatingSettingsFixture() {
     gradientEnd: "#daefff",
     gradientDirection: "135deg",
     gradientType: "linear",
+    quotaColorMode: "adaptive",
+    quotaFixedColor: "#1469cc",
     textTone: -1,
     contentVisibility: {
       showRateAndBar: false,

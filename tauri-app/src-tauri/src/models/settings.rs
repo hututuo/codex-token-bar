@@ -56,6 +56,10 @@ pub struct FloatingWindowSettingsSnapshot {
     pub gradient_direction: String,
     #[serde(default = "default_floating_gradient_type")]
     pub gradient_type: String,
+    #[serde(default = "default_floating_quota_color_mode")]
+    pub quota_color_mode: String,
+    #[serde(default = "default_floating_quota_fixed_color")]
+    pub quota_fixed_color: String,
     #[serde(default = "default_floating_text_tone")]
     pub text_tone: f64,
     #[serde(default)]
@@ -73,6 +77,8 @@ impl Default for FloatingWindowSettingsSnapshot {
             gradient_end: default_floating_gradient_end(),
             gradient_direction: default_floating_gradient_direction(),
             gradient_type: default_floating_gradient_type(),
+            quota_color_mode: default_floating_quota_color_mode(),
+            quota_fixed_color: default_floating_quota_fixed_color(),
             text_tone: default_floating_text_tone(),
             content_visibility: FloatingContentVisibilitySnapshot::default(),
         }
@@ -109,6 +115,14 @@ fn default_floating_gradient_direction() -> String {
 
 fn default_floating_gradient_type() -> String {
     "linear".into()
+}
+
+fn default_floating_quota_color_mode() -> String {
+    "adaptive".into()
+}
+
+fn default_floating_quota_fixed_color() -> String {
+    "#1469cc".into()
 }
 
 fn default_floating_text_tone() -> f64 {

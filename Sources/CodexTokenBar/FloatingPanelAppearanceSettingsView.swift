@@ -483,8 +483,8 @@ struct FloatingPanelPaletteControl: View {
             anchor
         }
         .zIndex(isPresented ? 22 : 0)
-        .help("调整悬浮窗背景渐变")
+        .help("调整悬浮窗背景与额度条配色")
         .accessibilityLabel("调色盘")
-        .accessibilityHint("调整悬浮窗背景渐变颜色、方向和类型")
+        .accessibilityHint("调整悬浮窗背景和额度条颜色方案")
     }
 }

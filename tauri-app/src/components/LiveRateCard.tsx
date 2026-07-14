@@ -1,5 +1,6 @@
 import type {
   FloatingContentVisibility,
+  FloatingPalettePatch,
   FloatingUnreadEffect,
   LiveRateSnapshot,
   PlatformCapabilities,
@@ -16,7 +17,7 @@ interface LiveRateCardProps {
   onFloatingScaleChange: (scale: number) => void;
   onTokenRateFullScaleChange: (fullScale: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
-  onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
+  onFloatingGradientChange: (patch: FloatingPalettePatch) => void;
   onFloatingTextToneChange: (textTone: number) => void;
   onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
   onLiveRateReset: () => Promise<void>;

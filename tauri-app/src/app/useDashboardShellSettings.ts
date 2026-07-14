@@ -15,6 +15,7 @@ import type {
   AutostartStatus,
   DisplaySurfaceSettings,
   FloatingContentVisibility,
+  FloatingPalettePatch,
   FloatingUnreadEffect,
   FloatingWindowSettings,
   PlatformCapabilities,
@@ -48,7 +49,7 @@ export interface DashboardShellSettingsState {
   updateFloatingScale: (scale: number) => void;
   updateTokenRateFullScale: (fullScale: number) => void;
   updateFloatingUnreadEffect: (unreadEffect: FloatingUnreadEffect) => void;
-  updateFloatingGradient: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
+  updateFloatingGradient: (patch: FloatingPalettePatch) => void;
   updateFloatingTextTone: (textTone: number) => void;
   updateFloatingContentVisibility: (contentVisibility: FloatingContentVisibility) => void;
   updateCustomAccountDisplayName: (displayName: string) => Promise<void>;
@@ -119,7 +120,7 @@ export function useDashboardShellSettings({
   }
 
   function updateFloatingGradient(
-    patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>,
+    patch: FloatingPalettePatch,
   ) {
     setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, ...patch }));
   }

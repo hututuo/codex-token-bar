@@ -2320,6 +2320,8 @@ fn sanitize_floating_settings(
         gradient_end: sanitize_hex_color(&settings.gradient_end, "#daefff").into(),
         gradient_direction: sanitize_gradient_direction(&settings.gradient_direction).into(),
         gradient_type: sanitize_gradient_type(&settings.gradient_type).into(),
+        quota_color_mode: sanitize_floating_quota_color_mode(&settings.quota_color_mode).into(),
+        quota_fixed_color: sanitize_hex_color(&settings.quota_fixed_color, "#1469cc").into(),
         text_tone: clamp_f64(settings.text_tone, -1.0, 1.0, -1.0),
         content_visibility: sanitize_floating_content_visibility(settings.content_visibility),
     }
@@ -2400,6 +2402,15 @@ fn sanitize_gradient_type(value: &str) -> String {
     }
 }
 
+fn sanitize_floating_quota_color_mode(value: &str) -> &'static str {
+    match value {
+        "adaptive" => "adaptive",
+        "fixed" => "fixed",
+        "panelGradient" => "panelGradient",
+        _ => "adaptive",
+    }
+}
+
 fn sanitize_floating_position(
     position: Option<FloatingWindowPositionSnapshot>,
 ) -> Option<FloatingWindowPositionSnapshot> {
@@ -2449,6 +2460,8 @@ mod tests {
                 "gradientEnd": "#12",
                 "gradientDirection": "270deg",
                 "gradientType": "mesh",
+                "quotaColorMode": "rainbow",
+                "quotaFixedColor": "navy",
                 "textTone": 4,
                 "contentVisibility": {
                     "showRadar": false,
@@ -2471,6 +2484,8 @@ mod tests {
         assert_eq!(sanitized.floating_window.gradient_end, "#daefff");
         assert_eq!(sanitized.floating_window.gradient_direction, "135deg");
         assert_eq!(sanitized.floating_window.gradient_type, "linear");
+        assert_eq!(sanitized.floating_window.quota_color_mode, "adaptive");
+        assert_eq!(sanitized.floating_window.quota_fixed_color, "#1469cc");
         assert_eq!(sanitized.floating_window.text_tone, 1.0);
         assert!(!sanitized.floating_window.content_visibility.show_radar);
         assert_eq!(
@@ -2520,6 +2535,8 @@ mod tests {
                 "gradientEnd": "#123456",
                 "gradientDirection": "90deg",
                 "gradientType": "conic",
+                "quotaColorMode": "fixed",
+                "quotaFixedColor": "#ABCDEF",
                 "textTone": -0.5,
                 "contentVisibility": {
                     "showUsageStatus": false,
@@ -2542,6 +2559,8 @@ mod tests {
         assert_eq!(settings.floating_window.gradient_end, "#123456");
         assert_eq!(settings.floating_window.gradient_direction, "90deg");
         assert_eq!(settings.floating_window.gradient_type, "conic");
+        assert_eq!(settings.floating_window.quota_color_mode, "fixed");
+        assert_eq!(settings.floating_window.quota_fixed_color, "#ABCDEF");
         assert_eq!(settings.floating_window.text_tone, -0.5);
         assert!(
             !settings

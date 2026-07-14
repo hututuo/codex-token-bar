@@ -6,24 +6,34 @@ struct FloatingPanelPaletteMenu: View {
     @Binding var endHex: String
     @Binding var directionRaw: String
     @Binding var styleRaw: String
+    @Binding var quotaModeRaw: String
+    @Binding var quotaFixedHex: String
     let closeAction: () -> Void
     @State private var startColorDraft: Color
     @State private var endColorDraft: Color
+    @State private var quotaFixedColorDraft: Color
 
     init(
         startHex: Binding<String>,
         endHex: Binding<String>,
         directionRaw: Binding<String>,
         styleRaw: Binding<String>,
+        quotaModeRaw: Binding<String>,
+        quotaFixedHex: Binding<String>,
         closeAction: @escaping () -> Void
     ) {
         _startHex = startHex
         _endHex = endHex
         _directionRaw = directionRaw
         _styleRaw = styleRaw
+        _quotaModeRaw = quotaModeRaw
+        _quotaFixedHex = quotaFixedHex
         self.closeAction = closeAction
         _startColorDraft = State(initialValue: Self.color(from: startHex.wrappedValue, fallbackHex: FloatingPanelAppearance.defaultStartHex))
         _endColorDraft = State(initialValue: Self.color(from: endHex.wrappedValue, fallbackHex: FloatingPanelAppearance.defaultEndHex))
+        _quotaFixedColorDraft = State(
+            initialValue: Self.color(from: quotaFixedHex.wrappedValue, fallbackHex: FloatingQuotaColorStyle.defaultFixedHex)
+        )
     }
 
     var body: some View {
@@ -81,6 +91,36 @@ struct FloatingPanelPaletteMenu: View {
                 }
             }
 
+            SettingsCalloutSection("额度条") {
+                VStack(spacing: 0) {
+                    FloatingStyleControlRow(title: "配色", systemImage: "chart.bar.fill") {
+                        Picker("", selection: normalizedQuotaModeBinding) {
+                            ForEach(FloatingQuotaColorMode.allCases) { mode in
+                                Text(mode.label).tag(mode.rawValue)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(width: 202)
+                        .accessibilityLabel("额度条配色")
+                    }
+
+                    if normalizedQuotaMode == .fixed {
+                        FloatingStyleDivider()
+
+                        FloatingStyleControlRow(title: "固定色", systemImage: "circle.fill") {
+                            ColorPicker(
+                                "",
+                                selection: draftColorBinding($quotaFixedColorDraft, hex: $quotaFixedHex),
+                                supportsOpacity: false
+                            )
+                            .labelsHidden()
+                            .accessibilityLabel("额度条固定颜色")
+                        }
+                    }
+                }
+            }
+
             Button {
                 let defaultStartHex = FloatingPanelAppearance.defaultStartHex
                 let defaultEndHex = FloatingPanelAppearance.defaultEndHex
@@ -90,6 +130,12 @@ struct FloatingPanelPaletteMenu: View {
                 endColorDraft = Self.color(from: defaultEndHex, fallbackHex: defaultEndHex)
                 directionRaw = FloatingPanelAppearance.defaultDirection
                 styleRaw = FloatingPanelAppearance.defaultStyle
+                quotaModeRaw = FloatingQuotaColorStyle.defaultMode
+                quotaFixedHex = FloatingQuotaColorStyle.defaultFixedHex
+                quotaFixedColorDraft = Self.color(
+                    from: FloatingQuotaColorStyle.defaultFixedHex,
+                    fallbackHex: FloatingQuotaColorStyle.defaultFixedHex
+                )
             } label: {
                 Label("恢复默认", systemImage: "arrow.counterclockwise")
                     .font(.system(size: 11, weight: .semibold))
@@ -126,6 +172,17 @@ struct FloatingPanelPaletteMenu: View {
                     ?? FloatingPanelAppearance.defaultStyle
             },
             set: { styleRaw = $0 }
+        )
+    }
+
+    private var normalizedQuotaMode: FloatingQuotaColorMode {
+        FloatingQuotaColorMode(rawValue: quotaModeRaw) ?? .adaptive
+    }
+
+    private var normalizedQuotaModeBinding: Binding<String> {
+        Binding(
+            get: { normalizedQuotaMode.rawValue },
+            set: { quotaModeRaw = $0 }
         )
     }
 

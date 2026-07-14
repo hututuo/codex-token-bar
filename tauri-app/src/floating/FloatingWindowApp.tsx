@@ -14,6 +14,7 @@ import { floatingContentHeight } from "./floatingContent";
 import {
   FLOATING_BASE_WIDTH,
   DEFAULT_FLOATING_SETTINGS,
+  floatingGradientBackground,
   sanitizeFloatingSettings,
   type FloatingWindowSettings,
 } from "./floatingSettings";
@@ -198,12 +199,7 @@ export function FloatingWindowApp() {
     void desktopPlatform.startFloatingWindowDrag();
   }
 
-  const gradientBackground =
-    settings.gradientType === "radial"
-      ? `radial-gradient(circle at 18% 10%, ${settings.gradientStart}, ${settings.gradientEnd})`
-      : settings.gradientType === "conic"
-        ? `conic-gradient(from ${settings.gradientDirection} at 50% 50%, ${settings.gradientStart}, ${settings.gradientEnd}, ${settings.gradientStart})`
-      : `linear-gradient(${settings.gradientDirection}, ${settings.gradientStart}, ${settings.gradientEnd})`;
+  const gradientBackground = floatingGradientBackground(settings);
   const effectColor = effectColorFromGradient(settings.gradientStart, settings.gradientEnd);
   const shellStyle = {
     "--floating-card-opacity": settings.opacity.toFixed(2),

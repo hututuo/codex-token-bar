@@ -37,6 +37,8 @@ export const DEFAULT_FLOATING_SETTINGS: FloatingWindowSettings = {
   gradientEnd: "#daefff",
   gradientDirection: "135deg",
   gradientType: "linear",
+  quotaColorMode: "adaptive",
+  quotaFixedColor: "#1469cc",
   textTone: -1,
   contentVisibility: DEFAULT_FLOATING_CONTENT_VISIBILITY,
 };
@@ -53,9 +55,23 @@ export function sanitizeFloatingSettings(
     gradientEnd: sanitizeHexColor(settings.gradientEnd, DEFAULT_FLOATING_SETTINGS.gradientEnd),
     gradientDirection: sanitizeGradientDirection(settings.gradientDirection),
     gradientType: sanitizeGradientType(settings.gradientType),
+    quotaColorMode: sanitizeQuotaColorMode(settings.quotaColorMode),
+    quotaFixedColor: sanitizeHexColor(settings.quotaFixedColor, DEFAULT_FLOATING_SETTINGS.quotaFixedColor),
     textTone: clampNumber(settings.textTone, -1, 1, DEFAULT_FLOATING_SETTINGS.textTone),
     contentVisibility: sanitizeFloatingContentVisibility(settings.contentVisibility),
   };
+}
+
+export function floatingGradientBackground(
+  settings: Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">,
+): string {
+  if (settings.gradientType === "radial") {
+    return `radial-gradient(circle at 18% 10%, ${settings.gradientStart}, ${settings.gradientEnd})`;
+  }
+  if (settings.gradientType === "conic") {
+    return `conic-gradient(from ${settings.gradientDirection} at 50% 50%, ${settings.gradientStart}, ${settings.gradientEnd}, ${settings.gradientStart})`;
+  }
+  return `linear-gradient(${settings.gradientDirection}, ${settings.gradientStart}, ${settings.gradientEnd})`;
 }
 
 export function sanitizeUnreadEffect(value: unknown): FloatingUnreadEffect {
@@ -93,6 +109,13 @@ function sanitizeGradientType(value: unknown): FloatingWindowSettings["gradientT
     return value;
   }
   return DEFAULT_FLOATING_SETTINGS.gradientType;
+}
+
+function sanitizeQuotaColorMode(value: unknown): FloatingWindowSettings["quotaColorMode"] {
+  if (value === "adaptive" || value === "fixed" || value === "panelGradient") {
+    return value;
+  }
+  return DEFAULT_FLOATING_SETTINGS.quotaColorMode;
 }
 
 function sanitizeFloatingContentVisibility(value: Partial<FloatingContentVisibility> | undefined): FloatingContentVisibility {

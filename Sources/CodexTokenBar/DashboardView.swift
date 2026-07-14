@@ -32,6 +32,8 @@ struct DashboardView: View {
     @AppStorage(FloatingPanelAppearance.endHexKey) private var floatingPanelGradientEndHex = FloatingPanelAppearance.defaultEndHex
     @AppStorage(FloatingPanelAppearance.directionKey) private var floatingPanelGradientDirection = FloatingPanelAppearance.defaultDirection
     @AppStorage(FloatingPanelAppearance.styleKey) private var floatingPanelGradientStyle = FloatingPanelAppearance.defaultStyle
+    @AppStorage(FloatingQuotaColorStyle.modeKey) private var floatingQuotaColorMode = FloatingQuotaColorStyle.defaultMode
+    @AppStorage(FloatingQuotaColorStyle.fixedHexKey) private var floatingQuotaFixedHex = FloatingQuotaColorStyle.defaultFixedHex
     @AppStorage(FloatingPanelAppearance.unreadEffectKey) private var floatingPanelUnreadEffect = FloatingPanelAppearance.defaultUnreadEffect
     @AppStorage(FloatingPanelContentVisibility.rateAndBarKey) private var floatingPanelShowRateAndBar = FloatingPanelContentVisibility.default.showRateAndBar
     @AppStorage(FloatingPanelContentVisibility.usageStatusKey) private var floatingPanelShowUsageStatus = FloatingPanelContentVisibility.default.showUsageStatus
@@ -173,7 +175,7 @@ struct DashboardView: View {
         .overlayPreferenceValue(FloatingPanelPaletteButtonBoundsKey.self) { anchor in
             GeometryReader { proxy in
                 if showingPaletteMenu {
-                    let cardFrame = floatingSettingsCardFrame(in: proxy, anchor: anchor, width: 338, estimatedHeight: 338)
+                    let cardFrame = floatingSettingsCardFrame(in: proxy, anchor: anchor, width: 338, estimatedHeight: 430)
 
                     ZStack(alignment: .topLeading) {
                         Color.clear
@@ -187,6 +189,8 @@ struct DashboardView: View {
                             endHex: $floatingPanelGradientEndHex,
                             directionRaw: $floatingPanelGradientDirection,
                             styleRaw: $floatingPanelGradientStyle,
+                            quotaModeRaw: $floatingQuotaColorMode,
+                            quotaFixedHex: $floatingQuotaFixedHex,
                             closeAction: closePaletteMenu
                         )
                         .frame(width: cardFrame.width)

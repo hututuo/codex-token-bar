@@ -461,6 +461,8 @@ struct FloatingTokenPanelView: View {
     @AppStorage(FloatingPanelAppearance.endHexKey) private var floatingPanelGradientEndHex = FloatingPanelAppearance.defaultEndHex
     @AppStorage(FloatingPanelAppearance.directionKey) private var floatingPanelGradientDirection = FloatingPanelAppearance.defaultDirection
     @AppStorage(FloatingPanelAppearance.styleKey) private var floatingPanelGradientStyle = FloatingPanelAppearance.defaultStyle
+    @AppStorage(FloatingQuotaColorStyle.modeKey) private var floatingQuotaColorMode = FloatingQuotaColorStyle.defaultMode
+    @AppStorage(FloatingQuotaColorStyle.fixedHexKey) private var floatingQuotaFixedHex = FloatingQuotaColorStyle.defaultFixedHex
     @AppStorage(FloatingPanelAppearance.unreadEffectKey) private var floatingPanelUnreadEffect = FloatingPanelAppearance.defaultUnreadEffect
     @AppStorage(FloatingPanelAppearance.unreadPreviewUntilKey) private var floatingPanelUnreadPreviewUntil = 0.0
     @AppStorage(FloatingPanelAppearance.textWhiteOverrideKey) private var floatingPanelTextWhiteOverride = FloatingPanelAppearance.defaultTextWhiteOverride
@@ -481,6 +483,11 @@ struct FloatingTokenPanelView: View {
             endHex: floatingPanelGradientEndHex,
             directionRaw: floatingPanelGradientDirection,
             styleRaw: floatingPanelGradientStyle
+        )
+        let quotaColorStyle = FloatingQuotaColorStyle(
+            modeRaw: floatingQuotaColorMode,
+            fixedHex: floatingQuotaFixedHex,
+            gradientAppearance: appearance
         )
         let displaySnapshot = TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota)
         let textTone = FloatingPanelTextTonePreference.mode(for: floatingPanelTextWhiteOverride)
@@ -562,6 +569,7 @@ struct FloatingTokenPanelView: View {
         .environment(\.tokenDisplayTextPalette, baseTextPalette)
         .environment(\.tokenDisplayRowTextPalettes, rowTextPalettes)
         .environment(\.tokenDisplayMetricTextPalettes, metricTextPalettes)
+        .environment(\.tokenDisplayQuotaColorStyle, quotaColorStyle)
         .environment(\.tokenDisplayEmbeddedUsageStatusTextPalette, embeddedUsageStatusTextPalette)
         .environment(\.tokenDisplayStandaloneUsageStatusTextPalette, standaloneUsageStatusTextPalette)
         .environment(\.tokenDisplayRadarActionTextPalette, radarActionTextPalette)

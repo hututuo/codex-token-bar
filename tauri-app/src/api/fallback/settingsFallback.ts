@@ -15,6 +15,8 @@ export const fallbackAppSettings: AppSettingsSnapshot = {
     gradientEnd: "#daefff",
     gradientDirection: "135deg",
     gradientType: "linear",
+    quotaColorMode: "adaptive",
+    quotaFixedColor: "#1469cc",
     textTone: -1,
     contentVisibility: DEFAULT_FLOATING_CONTENT_VISIBILITY,
   },

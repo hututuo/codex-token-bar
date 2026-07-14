@@ -15,6 +15,7 @@ import { embedsUsageStatusInRateRow, layoutFloatingContentGroups } from "./float
 import { floatingRateBarStatusText, floatingStandaloneStatusText } from "./floatingPanelLabels";
 import { floatingTextPaletteForGroup } from "./floatingTextPalette";
 import { radarActionAccent, radarScoreAccent, semanticMetricColor } from "../styles/semanticColors";
+import { floatingGradientBackground } from "./floatingSettings";
 
 interface FloatingPanelSurfaceProps {
   settings: FloatingWindowSettings;
@@ -37,10 +38,12 @@ function FloatingQuotaBar({
   availability,
   label,
   remainingPercent,
+  settings,
 }: {
   availability: "measured" | "unavailable" | "absent";
   label: string;
   remainingPercent: number | null;
+  settings: FloatingWindowSettings;
 }) {
   if (availability !== "measured" || typeof remainingPercent !== "number" || !Number.isFinite(remainingPercent)) {
     return (
@@ -62,7 +65,7 @@ function FloatingQuotaBar({
       aria-valuenow={Math.round(fillPercent)}
       style={{
         "--quota-fill": `${fillPercent}%`,
-        "--metric-color": semanticMetricColor(fillPercent),
+        "--quota-fill-background": floatingQuotaFillBackground(settings, fillPercent),
       } as CSSProperties}
     >
       <span className="floating-quota-track" aria-hidden="true">
@@ -71,6 +74,20 @@ function FloatingQuotaBar({
       <span className="floating-quota-label">{label}</span>
     </span>
   );
+}
+
+export function floatingQuotaFillBackground(settings: FloatingWindowSettings, remainingPercent: number): string {
+  switch (settings.quotaColorMode ?? "adaptive") {
+    case "fixed":
+      return settings.quotaFixedColor || "#1469cc";
+    case "panelGradient":
+      return floatingGradientBackground(settings);
+    case "adaptive":
+    default: {
+      const color = semanticMetricColor(remainingPercent);
+      return `linear-gradient(90deg, color-mix(in srgb, white 18%, ${color}), ${color})`;
+    }
+  }
 }
 
 function FloatingRateMeter({
@@ -261,6 +278,7 @@ function FloatingContentRow({
               key={window.label}
               label={window.label}
               remainingPercent={window.remainingPercent}
+              settings={settings}
             />
           ))}
         </div>

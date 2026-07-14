@@ -6,7 +6,7 @@ import {
   sanitizeFloatingContentVisibility,
 } from "../../floating/floatingContent";
 import type { FloatingWindowSettings } from "../../floating/floatingSettings";
-import type { FloatingContentGroup, FloatingContentVisibility, FloatingUnreadEffect, PlatformCapabilities } from "../../types/dashboard";
+import type { FloatingContentGroup, FloatingContentVisibility, FloatingPalettePatch, FloatingUnreadEffect, PlatformCapabilities } from "../../types/dashboard";
 import { computeBoundedSettingsCalloutFrame, type CalloutFrame } from "./calloutPlacement";
 
 const UNREAD_EFFECT_OPTIONS: Array<{ value: FloatingUnreadEffect; label: string }> = [
@@ -23,7 +23,7 @@ const UNREAD_EFFECT_DETAILS: Record<FloatingUnreadEffect, { title: string; subti
 
 type SettingsCallout = "palette" | "unread" | "content";
 const CALLOUT_DIMENSIONS: Record<SettingsCallout, { width: number; estimatedHeight: number }> = {
-  palette: { width: 340, estimatedHeight: 330 },
+  palette: { width: 340, estimatedHeight: 430 },
   unread: { width: 332, estimatedHeight: 260 },
   content: { width: 340, estimatedHeight: 390 },
 };
@@ -31,7 +31,7 @@ const CALLOUT_DIMENSIONS: Record<SettingsCallout, { width: number; estimatedHeig
 interface LiveRateSettingsPanelProps {
   floatingSettings: FloatingWindowSettings;
   floatingEnabled: boolean;
-  onFloatingGradientChange: (patch: Partial<Pick<FloatingWindowSettings, "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType">>) => void;
+  onFloatingGradientChange: (patch: FloatingPalettePatch) => void;
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
   onFloatingTextToneChange: (textTone: number) => void;
@@ -380,6 +380,37 @@ function PaletteSettingsCallout({
           </select>
         </label>
       </div>
+      <div className="settings-callout-section">
+        <span>额度条</span>
+        <div className="segmented floating-quota-color-modes" aria-label="额度条配色">
+          {([
+            ["adaptive", "随百分比"],
+            ["fixed", "固定色"],
+            ["panelGradient", "面板渐变"],
+          ] as const).map(([mode, label]) => (
+            <button
+              aria-pressed={floatingSettings.quotaColorMode === mode}
+              className={floatingSettings.quotaColorMode === mode ? "active" : ""}
+              key={mode}
+              onClick={() => onFloatingGradientChange({ quotaColorMode: mode })}
+              type="button"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {floatingSettings.quotaColorMode === "fixed" ? (
+          <label className="settings-callout-row">
+            <span>固定颜色</span>
+            <input
+              aria-label="额度条固定颜色"
+              onChange={(event) => onFloatingGradientChange({ quotaFixedColor: event.currentTarget.value })}
+              type="color"
+              value={floatingSettings.quotaFixedColor}
+            />
+          </label>
+        ) : null}
+      </div>
       <button
         className="settings-callout-reset"
         onClick={() => onFloatingGradientChange({
@@ -387,6 +418,8 @@ function PaletteSettingsCallout({
           gradientEnd: "#daefff",
           gradientDirection: "135deg",
           gradientType: "linear",
+          quotaColorMode: "adaptive",
+          quotaFixedColor: "#1469cc",
         })}
         type="button"
       >
