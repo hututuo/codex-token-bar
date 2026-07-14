@@ -221,11 +221,12 @@ struct HeaderView: View {
                                 manualMultiplier: $interfaceScaleManualMultiplier
                             )
                         }
-                        Text("Local")
+                        Text("Swift 原生版")
                             .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(AppTheme.accentBlue)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
+                            .background(AppTheme.selectedControlBackground, in: Capsule())
                             .background(
                                 Capsule()
                                     .stroke(AppTheme.borderStrong, lineWidth: 1)
@@ -235,10 +236,8 @@ struct HeaderView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
-
-                        Spacer(minLength: 0)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
 
                     if presentationMode.showsActions {
                         HStack(spacing: 9) {

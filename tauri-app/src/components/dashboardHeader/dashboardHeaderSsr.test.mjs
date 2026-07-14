@@ -17,6 +17,7 @@ test("DashboardHeader renders restrained provider repair entry", async () => {
     assert.match(button.attrs, /class="toolbar-button/);
     assert.match(button.attrs, /title="找回消失的历史会话"/);
     assert.match(html, /class="header-context"/);
+    assert.match(html, /class="platform-badge">跨平台版/);
     assert.match(html, /class="header-primary-actions" aria-label="常用操作"/);
     assert.match(html, /立即刷新/);
     assert.match(html, /检查更新/);

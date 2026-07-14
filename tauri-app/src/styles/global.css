@@ -223,6 +223,7 @@ button {
 
 .header-context {
   overflow: hidden;
+  justify-content: center;
 }
 
 .header-primary-actions {
@@ -232,6 +233,7 @@ button {
 
 .source-label,
 .updated-label,
+.platform-badge,
 .plan-badge {
   flex: 0 0 auto;
 }
@@ -296,6 +298,7 @@ button {
   border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
 }
 
+.platform-badge,
 .plan-badge,
 .path-pill,
 .toolbar-button {
@@ -305,11 +308,18 @@ button {
   color: var(--text);
 }
 
+.platform-badge,
 .plan-badge,
 .path-pill {
   padding: 3px 10px;
   font-size: 12px;
   font-weight: 620;
+}
+
+.platform-badge {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 64%, var(--panel));
+  color: var(--accent-strong);
 }
 
 .path-pill {

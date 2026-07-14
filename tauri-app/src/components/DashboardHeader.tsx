@@ -181,6 +181,7 @@ export function DashboardHeader({
       </div>
       <div className="header-toolbar">
         <div className="header-context">
+          <span className="platform-badge">跨平台版</span>
           <span className="plan-badge">{account.planLabel}</span>
           <span className={codexHome.exists ? "status-dot status-dot--ok" : "status-dot"} />
           <span className="source-label">{sourceLabel}</span>
