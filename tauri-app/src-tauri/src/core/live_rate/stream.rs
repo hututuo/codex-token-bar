@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
-const WINDOW_SECONDS: f64 = 2.5;
+pub(super) const WINDOW_SECONDS: f64 = 2.5;
 const MINIMUM_RATE_SPAN_SECONDS: f64 = 0.4;
 const COMPLETION_PAYLOAD_TOKENS_PER_SECOND: f64 = 55.0;
 const MINIMUM_COMPLETION_PAYLOAD_SECONDS: f64 = 1.0;
@@ -396,7 +396,7 @@ impl LiveTokenCategory {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct LiveMetricEvent {
     pub(super) event_type: String,
     pub(super) timestamp: f64,
@@ -412,7 +412,7 @@ pub(super) struct LiveMetricEvent {
 }
 
 impl LiveMetricEvent {
-    fn fingerprint(&self) -> String {
+    pub(super) fn fingerprint(&self) -> String {
         if let Some(key) = &self.dedupe_key {
             return key.clone();
         }

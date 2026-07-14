@@ -1,8 +1,8 @@
 use super::state::read_recent_rollout_threads;
-use super::stream::{LiveMetricEvent, LiveTokenCategory};
+use super::stream::{LiveMetricEvent, LiveTokenCategory, WINDOW_SECONDS};
 use super::LiveRateSourceScope;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -22,6 +22,7 @@ struct RolloutState {
     next_generation: u64,
     scope_generations: HashMap<LiveRateSourceScope, u64>,
     offsets: HashMap<(LiveRateSourceScope, PathBuf), u64>,
+    retained_metrics: HashMap<LiveRateSourceScope, Vec<LiveMetricEvent>>,
     recent_threads: HashMap<LiveRateSourceScope, CachedRolloutThreads>,
     #[cfg(test)]
     load_counts: HashMap<LiveRateSourceScope, usize>,
@@ -100,7 +101,22 @@ pub(super) fn read_rollout_metrics(
         }
     }
 
-    Ok(metrics)
+    let mut state = rollout_state();
+    if state.scope_generations.get(source_scope) != Some(&generation) {
+        return Ok(Vec::new());
+    }
+    let retained = state.retained_metrics.entry(source_scope.clone()).or_default();
+    retained.retain(|metric| now - metric.timestamp <= WINDOW_SECONDS);
+    let mut fingerprints = retained
+        .iter()
+        .map(LiveMetricEvent::fingerprint)
+        .collect::<HashSet<_>>();
+    retained.extend(
+        metrics
+            .into_iter()
+            .filter(|metric| fingerprints.insert(metric.fingerprint())),
+    );
+    Ok(retained.clone())
 }
 
 pub(super) fn sync_rollout_offsets_to_current(
@@ -118,6 +134,7 @@ pub(super) fn sync_rollout_offsets_to_current(
     if state.scope_generations.get(source_scope) != Some(&generation) {
         return;
     }
+    state.retained_metrics.remove(source_scope);
     for (path, size) in observed {
         let key = (source_scope.clone(), path);
         if let Some(size) = size {
@@ -239,6 +256,7 @@ fn evict_oldest_scope_if_needed(state: &mut RolloutState) {
     };
     state.scope_generations.remove(&scope);
     state.recent_threads.remove(&scope);
+    state.retained_metrics.remove(&scope);
     state.offsets.retain(|(candidate, _), _| candidate != &scope);
     #[cfg(test)]
     state.load_counts.remove(&scope);

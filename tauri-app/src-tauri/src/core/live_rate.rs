@@ -178,7 +178,11 @@ fn read_snapshot_result(
             Vec::new()
         }
     };
-    let (rollup, selected_rollup) = if rows.is_empty() {
+    let stream_rollup = rollup_stream_rows(&rows, now, None);
+    let stream_selected_rollup = selected_thread_id
+        .map(|thread_id| rollup_stream_rows(&rows, now, Some(thread_id)))
+        .unwrap_or_default();
+    let (rollup, selected_rollup) = if stream_rollup.tokens_per_second <= 0.0 {
         let metrics = match read_rollout_metrics(codex_home, source_scope, now) {
             Ok(metrics) => metrics,
             Err(error) => {
@@ -197,11 +201,7 @@ fn read_snapshot_result(
         (rollup, selected_rollup)
     } else {
         sync_rollout_offsets_to_current(codex_home, source_scope);
-        let rollup = rollup_stream_rows(&rows, now, None);
-        let selected_rollup = selected_thread_id
-            .map(|thread_id| rollup_stream_rows(&rows, now, Some(thread_id)))
-            .unwrap_or_default();
-        (rollup, selected_rollup)
+        (stream_rollup, stream_selected_rollup)
     };
     let summary = read_precise_usage_summary_or_fallback(codex_home, &mut warnings);
     let _observed_live_source_tokens = rollup.breakdown.observed_total();

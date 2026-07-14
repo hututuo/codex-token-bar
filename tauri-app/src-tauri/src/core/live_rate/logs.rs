@@ -17,34 +17,34 @@ fn read_recent_log_rows_from_connection(connection: &Connection, since: f64) -> 
     };
     let sql = format!(
         r#"
-        SELECT id, thread_id, ts, ts_nanos, target, COALESCE(feedback_log_body, '')
+        SELECT id, thread_id, ts, ts_nanos, target, feedback_log_body
         FROM (
-          SELECT id, thread_id, ts, ts_nanos, target, feedback_log_body
+          SELECT id, thread_id, ts, ts_nanos, target, COALESCE(feedback_log_body, '') AS feedback_log_body
           FROM logs{index_hint}
           WHERE ts >= ?1
-          ORDER BY ts DESC, ts_nanos DESC, id DESC
-          LIMIT 5000
-        ) recent
-        WHERE
-          (
-            target = 'codex_api::sse::responses'
             AND (
-              feedback_log_body LIKE 'SSE event:%'
-              OR feedback_log_body LIKE '%thread.id=%'
-              OR feedback_log_body LIKE '%thread_id=%'
-              OR feedback_log_body LIKE '%conversation.id=%'
+              (
+                target = 'codex_api::sse::responses'
+                AND feedback_log_body LIKE 'SSE event:%'
+              )
+              OR (
+                target = 'codex_api::endpoint::responses_websocket'
+                AND feedback_log_body LIKE '%websocket event:%'
+              )
+              OR (
+                target = 'log'
+                AND feedback_log_body LIKE 'Received message %'
+              )
             )
-          )
-          OR (
-            target = 'codex_api::endpoint::responses_websocket'
-            AND feedback_log_body LIKE '%websocket event:%'
-          )
-          OR (
-            target = 'log'
-            AND feedback_log_body LIKE 'Received message %'
-          )
-        ORDER BY id ASC
-        LIMIT 2000;
+            AND (
+              feedback_log_body LIKE '%"type":"response.output_text.delta"%'
+              OR feedback_log_body LIKE '%"type":"response.function_call_arguments.delta"%'
+              OR feedback_log_body LIKE '%"type":"response.custom_tool_call_input.delta"%'
+            )
+          ORDER BY id DESC
+          LIMIT 2000
+        ) recent_useful
+        ORDER BY id ASC;
         "#,
     );
     let mut statement = connection.prepare(&sql)?;

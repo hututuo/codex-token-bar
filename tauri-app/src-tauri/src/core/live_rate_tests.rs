@@ -640,6 +640,203 @@ fn read_snapshot_falls_back_to_rollout_assistant_message_when_logs_have_no_new_r
 }
 
 #[test]
+fn trace_only_log_rows_do_not_block_rollout_fallback() {
+    let root = temp_root("live-rate-trace-only-rollout-fallback");
+    fs::create_dir_all(&root).unwrap();
+    let rollout_path = root.join("sessions/rollout-thread-a.jsonl");
+    create_state_database(&root, "thread-a", "trace-only fallback", 300);
+    set_thread_rollout_path(&root, "thread-a", &rollout_path);
+    create_logs_database(&root, |_connection, _now| {});
+    fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+    fs::File::create(&rollout_path).unwrap();
+
+    let _ = read_snapshot(&root, None);
+    let connection = Connection::open(root.join("logs_2.sqlite")).unwrap();
+    let now = current_time_seconds().floor() as i64;
+    insert_log(
+        &connection,
+        1,
+        "thread-a",
+        now,
+        "codex_api::sse::responses",
+        "session_loop{thread.id=thread-a}: unhandled responses event: response.in_progress",
+    );
+    append_rollout_line(
+        &rollout_path,
+        "response_item",
+        r#"{"type":"message","role":"assistant","content":[{"type":"output_text","text":"rollout output must survive trace-only database rows"}]}"#,
+    );
+
+    let snapshot = read_snapshot(&root, None);
+    assert!(
+        snapshot.tokens_per_second > 0.0,
+        "trace-only rows must not suppress the rollout source"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn stale_stream_rows_do_not_block_current_rollout_fallback() {
+    let root = temp_root("live-rate-stale-stream-rollout-fallback");
+    fs::create_dir_all(&root).unwrap();
+    let rollout_path = root.join("sessions/rollout-thread-a.jsonl");
+    create_state_database(&root, "thread-a", "stale stream fallback", 300);
+    set_thread_rollout_path(&root, "thread-a", &rollout_path);
+    create_logs_database(&root, |_connection, _now| {});
+    fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+    fs::File::create(&rollout_path).unwrap();
+
+    let _ = read_snapshot(&root, None);
+    let connection = Connection::open(root.join("logs_2.sqlite")).unwrap();
+    let stale_timestamp = current_time_seconds().floor() as i64 - 4;
+    insert_log(
+        &connection,
+        1,
+        "thread-a",
+        stale_timestamp,
+        "codex_api::sse::responses",
+        r#"SSE event: {"type":"response.output_text.delta","delta":"stale stream output","item_id":"item-old","sequence_number":1}"#,
+    );
+    append_rollout_line(
+        &rollout_path,
+        "response_item",
+        r#"{"type":"message","role":"assistant","content":[{"type":"output_text","text":"current rollout output must win over stale stream rows"}]}"#,
+    );
+
+    let snapshot = read_snapshot(&root, None);
+    assert!(
+        snapshot.tokens_per_second > 0.0,
+        "stream rows outside the rolling window must not suppress current rollout output"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rollout_fallback_retains_recent_metrics_across_poll_ticks() {
+    let root = temp_root("live-rate-rollout-retained-window");
+    fs::create_dir_all(&root).unwrap();
+    let rollout_path = root.join("sessions/rollout-thread-a.jsonl");
+    create_state_database(&root, "thread-a", "retained rollout", 300);
+    set_thread_rollout_path(&root, "thread-a", &rollout_path);
+    create_logs_database(&root, |_connection, _now| {});
+    fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+    fs::File::create(&rollout_path).unwrap();
+
+    let _ = read_snapshot(&root, None);
+    append_rollout_line(
+        &rollout_path,
+        "response_item",
+        r#"{"type":"custom_tool_call","call_id":"call-a","name":"exec","input":"a retained tool input that should keep the speed bar moving"}"#,
+    );
+
+    let first = read_snapshot(&root, None);
+    let second = read_snapshot(&root, None);
+    assert!(first.tokens_per_second > 0.0);
+    assert!(
+        second.tokens_per_second > 0.0,
+        "the next poll must reuse metrics still inside the rolling window"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rollout_fallback_expires_metrics_after_the_rolling_window() {
+    let root = temp_root("live-rate-rollout-expired-window");
+    fs::create_dir_all(&root).unwrap();
+    let rollout_path = root.join("sessions/rollout-thread-a.jsonl");
+    create_state_database(&root, "thread-a", "expired rollout", 300);
+    set_thread_rollout_path(&root, "thread-a", &rollout_path);
+    fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+    fs::File::create(&rollout_path).unwrap();
+    let scope = LiveRateSourceScope::legacy(&root);
+
+    let _ = rollout::read_rollout_metrics(&root, &scope, current_time_seconds()).unwrap();
+    append_rollout_line(
+        &rollout_path,
+        "response_item",
+        r#"{"type":"message","role":"assistant","content":[{"type":"output_text","text":"this retained event must expire"}]}"#,
+    );
+    let now = current_time_seconds();
+    let current = rollout::read_rollout_metrics(&root, &scope, now).unwrap();
+    assert!(!current.is_empty());
+
+    let expired = rollout::read_rollout_metrics(&root, &scope, now + 4.0).unwrap();
+    assert!(expired.is_empty());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn useful_stream_rows_are_not_evicted_by_diagnostic_tail_noise() {
+    let root = temp_root("live-rate-useful-row-before-noise");
+    fs::create_dir_all(&root).unwrap();
+    create_logs_database(&root, |connection, now| {
+        connection
+            .execute_batch(
+                "CREATE INDEX idx_logs_ts ON logs(ts DESC, ts_nanos DESC, id DESC); BEGIN;",
+            )
+            .unwrap();
+        insert_log(
+            connection,
+            1,
+            "thread-a",
+            now,
+            "codex_api::sse::responses",
+            r#"SSE event: {"type":"response.output_text.delta","delta":"useful stream row","item_id":"item-a","sequence_number":1}"#,
+        );
+        for id in 2..=5_001 {
+            insert_log(
+                connection,
+                id,
+                "thread-a",
+                now,
+                "codex_app_server::outgoing_message",
+                "diagnostic noise",
+            );
+        }
+        connection.execute_batch("COMMIT;").unwrap();
+    });
+
+    let rows = logs::read_recent_log_rows(&root, current_time_seconds() - 1.0).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, 1);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn useful_stream_row_limit_keeps_the_newest_activity() {
+    let root = temp_root("live-rate-useful-row-limit");
+    fs::create_dir_all(&root).unwrap();
+    create_logs_database(&root, |connection, now| {
+        connection.execute_batch("BEGIN;").unwrap();
+        for id in 1..=2_500 {
+            insert_log(
+                connection,
+                id,
+                "thread-a",
+                now,
+                "codex_api::sse::responses",
+                &format!(
+                    r#"SSE event: {{"type":"response.output_text.delta","delta":"chunk-{id}","item_id":"item-a","sequence_number":{id}}}"#
+                ),
+            );
+        }
+        connection.execute_batch("COMMIT;").unwrap();
+    });
+
+    let rows = logs::read_recent_log_rows(&root, current_time_seconds() - 1.0).unwrap();
+    assert_eq!(rows.len(), 2_000);
+    assert_eq!(rows.first().map(|row| row.id), Some(501));
+    assert_eq!(rows.last().map(|row| row.id), Some(2_500));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn read_snapshot_counts_agent_message_but_deduplicates_response_item_copy() {
     let root = temp_root("live-rate-rollout-duplicate-message");
     fs::create_dir_all(&root).unwrap();
