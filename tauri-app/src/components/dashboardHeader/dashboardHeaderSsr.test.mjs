@@ -22,7 +22,9 @@ test("DashboardHeader renders restrained provider repair entry", async () => {
     assert.match(html, /检查更新/);
     assert.match(html, /开机自启：关/);
     assert.match(html, /更改目录/);
-    assert.doesNotMatch(html, /Codex Token Bar|导出 CSV|导出 PNG/);
+    assert.match(html, /导出 CSV/);
+    assert.match(html, /导出 PNG/);
+    assert.doesNotMatch(html, /Codex Token Bar|更多操作/);
   });
 });
 

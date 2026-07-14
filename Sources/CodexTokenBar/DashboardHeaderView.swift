@@ -321,7 +321,7 @@ struct HeaderView: View {
                                 )
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .center)
                     }
                 }
                 .font(.system(size: 14))

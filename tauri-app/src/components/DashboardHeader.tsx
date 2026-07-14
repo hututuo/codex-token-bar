@@ -5,7 +5,7 @@ import {
   resolveAccountDisplayName,
   shouldCommitDisplayNameOnKey,
 } from "./dashboardHeader/model";
-import { useEffect, useId, useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { ThreadDeleteBridgeStatus } from "../api/threadDeleteClient";
 
 interface DashboardHeaderProps {
@@ -54,15 +54,10 @@ export function DashboardHeader({
 }: DashboardHeaderProps) {
   const [editingPath, setEditingPath] = useState(false);
   const [editingDisplayName, setEditingDisplayName] = useState(false);
-  const [moreActionsOpen, setMoreActionsOpen] = useState(false);
   const [threadDeleteConfirmationOpen, setThreadDeleteConfirmationOpen] = useState(false);
-  const moreActionsRef = useRef<HTMLDivElement>(null);
-  const moreActionsTriggerRef = useRef<HTMLButtonElement>(null);
-  const moreActionsMenuRef = useRef<HTMLDivElement>(null);
   const threadDeleteTriggerRef = useRef<HTMLButtonElement>(null);
   const threadDeleteDialogRef = useRef<HTMLDivElement>(null);
   const threadDeleteCancelRef = useRef<HTMLButtonElement>(null);
-  const pendingMenuFocusRef = useRef<"first" | "last" | null>(null);
   const autostartHelpId = useId();
   const threadDeleteHelpId = useId();
   const threadDeleteDialogTitleId = useId();
@@ -133,85 +128,6 @@ export function DashboardHeader({
           ? "重试更新检查"
           : appUpdateState.message || "检查更新";
   const updateNeedsAttention = appUpdateState.kind === "available" || appUpdateState.kind === "error";
-
-  useEffect(() => {
-    if (!moreActionsOpen) return;
-    function closeOnOutsidePointer(event: PointerEvent) {
-      if (!moreActionsRef.current?.contains(event.target as Node)) setMoreActionsOpen(false);
-    }
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsidePointer);
-    };
-  }, [moreActionsOpen]);
-
-  useEffect(() => {
-    if (!moreActionsOpen || !pendingMenuFocusRef.current) return;
-    const items = enabledMenuItems();
-    const target = pendingMenuFocusRef.current === "last" ? items.at(-1) : items[0];
-    pendingMenuFocusRef.current = null;
-    target?.focus();
-  }, [moreActionsOpen]);
-
-  function enabledMenuItems() {
-    return [...(moreActionsMenuRef.current?.querySelectorAll<HTMLElement>(
-      '[role="menuitem"], [role="menuitemcheckbox"]',
-    ) ?? [])].filter((item) => !item.hasAttribute("disabled"));
-  }
-
-  function openMoreActions(focus: "first" | "last" = "first") {
-    pendingMenuFocusRef.current = focus;
-    setMoreActionsOpen(true);
-  }
-
-  function closeMoreActionsAndRestoreFocus() {
-    setMoreActionsOpen(false);
-    moreActionsTriggerRef.current?.focus();
-  }
-
-  function handleMoreActionsTriggerKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
-    if (event.key === "Enter" || event.key === " " || event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      openMoreActions(event.key === "ArrowUp" ? "last" : "first");
-    }
-  }
-
-  function focusOutsideMenu(backward: boolean) {
-    const focusable = [...document.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    )].filter((element) => !moreActionsMenuRef.current?.contains(element));
-    const triggerIndex = focusable.indexOf(moreActionsTriggerRef.current as HTMLElement);
-    const target = focusable[triggerIndex + (backward ? -1 : 1)];
-    setMoreActionsOpen(false);
-    target?.focus();
-  }
-
-  function handleMoreActionsMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    const items = enabledMenuItems();
-    if (!items.length) return;
-    const activeIndex = items.indexOf(document.activeElement as HTMLElement);
-    let target: HTMLElement | undefined;
-    if (event.key === "ArrowDown") target = items[(activeIndex + 1 + items.length) % items.length];
-    else if (event.key === "ArrowUp") target = items[(activeIndex - 1 + items.length) % items.length];
-    else if (event.key === "Home") target = items[0];
-    else if (event.key === "End") target = items.at(-1);
-    else if (event.key === "Escape") {
-      event.preventDefault();
-      closeMoreActionsAndRestoreFocus();
-      return;
-    } else if (event.key === "Tab") {
-      event.preventDefault();
-      focusOutsideMenu(event.shiftKey);
-      return;
-    } else return;
-    event.preventDefault();
-    target?.focus();
-  }
-
-  function handleMoreActionsBlur(event: FocusEvent<HTMLDivElement>) {
-    const next = event.relatedTarget as Node | null;
-    if (!next || !moreActionsRef.current?.contains(next)) setMoreActionsOpen(false);
-  }
 
   function beginEditDisplayName() {
     setDisplayNameDraft(resolvedDisplayName);
@@ -334,38 +250,12 @@ export function DashboardHeader({
           <span className="visually-hidden" id={threadDeleteHelpId}>
             {threadDeleteActionDescription}。{threadDeleteBridgeStatus.message}
           </span>
-          <div className="more-actions" ref={moreActionsRef}>
-            <button
-              aria-expanded={moreActionsOpen}
-              aria-haspopup="menu"
-              aria-label="更多操作"
-              className="toolbar-button more-actions-trigger"
-              onClick={() => moreActionsOpen ? closeMoreActionsAndRestoreFocus() : openMoreActions()}
-              onKeyDown={handleMoreActionsTriggerKeyDown}
-              ref={moreActionsTriggerRef}
-              type="button"
-            >
-              <span aria-hidden="true">•••</span>
-              <span>更多操作</span>
-            </button>
-            {moreActionsOpen ? (
-              <div
-                aria-label="更多操作"
-                className="more-actions-menu"
-                onBlur={handleMoreActionsBlur}
-                onKeyDown={handleMoreActionsMenuKeyDown}
-                ref={moreActionsMenuRef}
-                role="menu"
-              >
-                <button onClick={() => { onExportCsv(); closeMoreActionsAndRestoreFocus(); }} role="menuitem" tabIndex={-1} type="button">
-                  导出 CSV
-                </button>
-                <button onClick={() => { onExportPng(); closeMoreActionsAndRestoreFocus(); }} role="menuitem" tabIndex={-1} type="button">
-                  导出 PNG
-                </button>
-              </div>
-            ) : null}
-          </div>
+          <button className="toolbar-button" onClick={onExportCsv} type="button">
+            导出 CSV
+          </button>
+          <button className="toolbar-button" onClick={onExportPng} type="button">
+            导出 PNG
+          </button>
         </div>
       </div>
       {editingPath ? (

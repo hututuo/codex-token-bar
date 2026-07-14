@@ -13,6 +13,6 @@ test("DashboardHeader CSS keeps information and primary actions on separate stab
   assert.match(toolbar, /min-width:\s*0/);
   assert.match(actions, /min-width:\s*0/);
   assert.match(actions, /white-space:\s*nowrap/);
-  assert.match(actions, /justify-content:\s*flex-start/);
+  assert.match(actions, /justify-content:\s*center/);
   assert.doesNotMatch(toolbar + actions, /flex-wrap:\s*wrap/);
 });

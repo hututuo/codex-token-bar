@@ -227,7 +227,7 @@ button {
 
 .header-primary-actions {
   width: 100%;
-  justify-content: flex-start;
+  justify-content: center;
 }
 
 .source-label,
@@ -338,8 +338,7 @@ button {
   cursor: pointer;
 }
 
-.header-primary-actions .toolbar-button,
-.more-actions-trigger {
+.header-primary-actions .toolbar-button {
   min-height: 22px;
   padding: 2px 10px;
   border-radius: 7px;
@@ -363,46 +362,6 @@ button {
   color: var(--red);
 }
 
-.more-actions {
-  position: relative;
-  flex: 0 0 auto;
-}
-
-.more-actions-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  white-space: nowrap;
-}
-
-.more-actions-menu {
-  position: absolute;
-  z-index: 30;
-  top: calc(100% + 6px);
-  right: 0;
-  display: grid;
-  width: 176px;
-  padding: 6px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel);
-}
-
-.more-actions-menu button {
-  align-items: center;
-  display: flex;
-  gap: 7px;
-  width: 100%;
-  min-height: 32px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--text);
-  cursor: pointer;
-  padding: 6px 9px;
-  text-align: left;
-}
-
 .thread-delete-action {
   display: inline-flex;
   align-items: center;
@@ -424,17 +383,6 @@ button {
   border-color: color-mix(in srgb, var(--green) 42%, var(--line));
   color: var(--green);
 }
-.more-actions-menu button:hover,
-.more-actions-menu button:focus-visible {
-  background: var(--panel-soft);
-  outline: none;
-}
-
-.more-actions-menu button:disabled {
-  cursor: default;
-  opacity: 0.5;
-}
-
 .thread-delete-confirmation-overlay {
   position: fixed;
   z-index: 52;
