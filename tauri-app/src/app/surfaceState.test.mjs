@@ -142,7 +142,8 @@ test("live activity temporarily accelerates usage refresh cadence", async () => 
   assert.equal(cadence.includes("usageRefreshIntervalMs"), true);
   assert.equal(dashboardData.includes("markLiveUsageActivity(liveRate)"), true);
   assert.equal(dashboardData.includes("usageRefreshIntervalMs({"), true);
-  assert.equal(compactSnapshot.includes("markLiveUsageActivity(liveRate)"), true);
+  assert.equal(compactSnapshot.includes("smoothLiveRateSnapshot(liveRate"), true);
+  assert.equal(compactSnapshot.includes("markLiveUsageActivity(smoothed)"), true);
   assert.equal(compactSnapshot.includes("usageRefreshIntervalMs({"), true);
 });
 

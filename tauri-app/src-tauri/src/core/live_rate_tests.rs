@@ -846,6 +846,49 @@ fn live_rate_explicit_start_completion_still_ends_at_event_time() {
 }
 
 #[test]
+fn live_rate_rollup_is_independent_of_cross_file_event_order() {
+    let t0 = fixed_rollout_time().unix_timestamp() as f64;
+    let older = stream::LiveMetricEvent {
+        event_type: "test.older".into(),
+        timestamp: t0,
+        thread_id: Some("thread-a".into()),
+        item_id: "item-older".into(),
+        sequence_number: None,
+        category: stream::LiveTokenCategory::VisibleText,
+        delta: String::new(),
+        exact_tokens: Some(10),
+        start_timestamp: None,
+        distributed: false,
+        spreads_forward: false,
+        dedupe_key: Some("older".into()),
+    };
+    let newer = stream::LiveMetricEvent {
+        event_type: "test.newer".into(),
+        timestamp: t0 + 1.9,
+        thread_id: Some("thread-a".into()),
+        item_id: "item-newer".into(),
+        sequence_number: None,
+        category: stream::LiveTokenCategory::VisibleText,
+        delta: String::new(),
+        exact_tokens: Some(10),
+        start_timestamp: None,
+        distributed: false,
+        spreads_forward: false,
+        dedupe_key: Some("newer".into()),
+    };
+
+    let chronological = stream::rollup_metric_events(
+        &[older.clone(), newer.clone()],
+        t0 + 2.0,
+        None,
+    );
+    let reversed = stream::rollup_metric_events(&[newer, older], t0 + 2.0, None);
+
+    assert_eq!(reversed.tokens_per_second, chronological.tokens_per_second);
+    assert_eq!(chronological.tokens_per_second, 10.0);
+}
+
+#[test]
 fn live_rate_stream_tick_keeps_rollout_warm_for_selected_and_empty_handoff() {
     let root = temp_root("live-rate-stream-rollout-warm-handoff");
     fs::create_dir_all(&root).unwrap();

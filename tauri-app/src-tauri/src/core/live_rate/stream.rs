@@ -308,7 +308,11 @@ fn rolling_rate_for_entries(rolling_deltas: &[(f64, u32)], now: f64) -> f64 {
         .copied()
         .filter(|(time, _)| *time <= now && now - *time <= WINDOW_SECONDS)
         .collect();
-    let Some((first_time, _)) = visible.first() else {
+    let Some(first_time) = visible
+        .iter()
+        .map(|(time, _)| *time)
+        .min_by(|left, right| left.total_cmp(right))
+    else {
         return 0.0;
     };
     let span = (now - first_time)
