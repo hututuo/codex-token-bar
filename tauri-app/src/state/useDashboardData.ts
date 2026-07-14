@@ -660,7 +660,6 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   useLiveRateFeed({
     active: fastSnapshotLoaded && liveRateEnabled,
     selectedThreadId: selectedLiveThreadId,
-    source,
     sourceToken,
     onSnapshot: mergeLiveRateSnapshot,
     retryGeneration: liveRateRetryGeneration,
