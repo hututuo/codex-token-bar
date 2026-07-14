@@ -265,6 +265,12 @@ button {
   gap: 2px;
 }
 
+.toolbar-button--settings {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--accent-strong);
+}
+
 .header-rail-divider {
   width: 1px;
   height: 18px;
@@ -2632,6 +2638,188 @@ button.quota-side-card:hover {
   background: var(--panel-soft);
 }
 
+.settings-panel--quick {
+  grid-template-columns: minmax(150px, 0.72fr) minmax(260px, 1.28fr);
+  align-items: center;
+  min-height: 85px;
+  padding: 10px 12px;
+}
+
+.settings-panel--quick > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-panel--quick > div:first-child strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.settings-panel--quick > div:first-child span {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 590;
+  line-height: 1.35;
+}
+
+.quick-surface-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.quick-surface-actions button {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 690;
+  padding: 0 8px;
+}
+
+.quick-surface-actions button[aria-pressed="true"],
+.quick-surface-actions .quick-settings-button {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 11%, var(--panel));
+}
+
+.app-settings-overlay {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--page) 58%, transparent);
+  padding: 24px;
+}
+
+.app-settings-dialog {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(720px, calc(100vw - 48px));
+  max-height: min(720px, calc(100vh - 48px));
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel-solid);
+  color: var(--text);
+}
+
+.app-settings-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 12px;
+  align-items: start;
+  border-bottom: 1px solid var(--line);
+  padding: 14px 16px 12px;
+}
+
+.app-settings-head > div,
+.app-settings-section-head {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.app-settings-head strong {
+  font-size: 17px;
+  font-weight: 760;
+}
+
+.app-settings-head span,
+.app-settings-section-head span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 580;
+}
+
+.app-settings-head > button {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.app-settings-body {
+  overflow: auto;
+  padding: 4px 16px 16px;
+}
+
+.app-settings-section {
+  display: grid;
+  gap: 10px;
+  padding: 14px 0;
+}
+
+.app-settings-section + .app-settings-section {
+  border-top: 1px solid var(--line);
+}
+
+.app-settings-section-head strong {
+  font-size: 13px;
+  font-weight: 740;
+}
+
+.app-settings-general-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.app-setting-toggle,
+.app-setting-select {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 650;
+  padding: 0 10px;
+}
+
+.app-setting-toggle {
+  cursor: pointer;
+}
+
+.app-setting-toggle.is-active {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+.app-setting-toggle strong {
+  color: var(--accent);
+}
+
+.app-setting-select select {
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.app-settings-section > .settings-panel {
+  min-height: 0;
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  padding: 10px;
+}
+
 .session-row {
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr) auto;
@@ -4840,7 +5028,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   height: 100vh;
   place-items: center;
   overflow: hidden;
-  padding: 8px;
+  padding: 7px;
   background: transparent;
 }
 
@@ -4848,12 +5036,13 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   display: grid;
   width: 100%;
   height: 100%;
-  gap: 9px;
-  padding: 14px;
-  border: 1px solid color-mix(in srgb, var(--line-strong) 72%, white);
-  border-radius: 14px;
-  background: #fbfdff;
-  color: #1f2732;
+  align-content: start;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
 }
 
 .status-panel-head,
@@ -4878,7 +5067,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .status-panel-head span,
 .status-panel-status span,
 .status-panel-stats dt {
-  color: #768294;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 670;
 }
@@ -4896,7 +5085,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .status-panel-rate-unit em {
-  color: #667386;
+  color: var(--muted);
   font-size: 12px;
   font-style: normal;
   font-weight: 720;
@@ -4909,8 +5098,8 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   place-items: center;
   border: 0;
   border-radius: 999px;
-  background: color-mix(in srgb, #e9eef6 86%, white);
-  color: #6b7684;
+  background: var(--panel-soft);
+  color: var(--muted);
   cursor: pointer;
   font-size: 16px;
   line-height: 1;
@@ -4920,7 +5109,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   overflow: hidden;
   height: 9px;
   border-radius: 999px;
-  background: #e9eef6;
+  background: var(--panel-soft);
 }
 
 .status-panel-meter i {
@@ -4932,7 +5121,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .status-panel-status strong {
   overflow: hidden;
-  color: #304155;
+  color: color-mix(in srgb, var(--text) 84%, var(--accent));
   font-size: 12px;
   font-weight: 730;
   text-overflow: ellipsis;
@@ -4954,43 +5143,60 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   min-width: 0;
   padding: 8px 9px;
   border-radius: 10px;
-  background: #edf3fa;
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background: var(--panel-soft);
 }
 
 .status-panel-stats dd {
   overflow: hidden;
   margin: 2px 0 0;
-  color: #253142;
+  color: var(--text);
   font-size: 13px;
   font-weight: 760;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.status-panel-quota span {
+.status-panel-quota .floating-quota-bar {
   flex: 1;
-  overflow: hidden;
-  border-radius: 9px;
-  background: #5d95ea;
-  color: #162033;
-  padding: 6px 8px;
+  min-height: 19px;
+  border-color: var(--line);
+  background: var(--panel-soft);
+  box-shadow: none;
+  color: var(--text);
+}
+
+.status-panel-quota .floating-quota-track {
+  background: color-mix(in srgb, var(--panel-soft) 88%, var(--text) 12%);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.status-panel-quota-empty {
+  width: 100%;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 670;
   text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  font-weight: 760;
+}
+
+.status-panel-card > .floating-radar {
+  min-height: 30px;
+  border-top-color: var(--line);
+  padding-top: 4px;
 }
 
 .status-panel-actions button {
   flex: 1;
+  min-width: 0;
   min-height: 34px;
-  border: 1px solid #d7e1ec;
-  border-radius: 9px;
-  background: #eef4fa;
-  color: #223047;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 730;
+  padding: 0 7px;
 }
 
 @media (max-width: 960px) {
@@ -5025,6 +5231,17 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
   .heatmap-grid {
     grid-template-columns: repeat(21, 1fr);
+  }
+}
+
+@media (max-width: 680px) {
+  .app-settings-general-grid,
+  .settings-panel--quick {
+    grid-template-columns: 1fr;
+  }
+
+  .quick-surface-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 

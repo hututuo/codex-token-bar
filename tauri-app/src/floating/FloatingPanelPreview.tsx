@@ -34,7 +34,7 @@ function clampPercent(value: number): number {
   return Math.min(100, Math.max(0, value * 100));
 }
 
-function FloatingQuotaBar({
+export function FloatingQuotaBar({
   availability,
   label,
   remainingPercent,
@@ -287,7 +287,7 @@ function FloatingContentRow({
   }
 }
 
-function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot | null; style: CSSProperties }) {
+export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot | null; style: CSSProperties }) {
   if (!snapshot) {
     return (
       <div className="floating-row floating-radar" style={style}>

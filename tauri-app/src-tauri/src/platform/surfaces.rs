@@ -27,8 +27,8 @@ const DASHBOARD_WINDOW_WIDTH: f64 = 1180.0;
 const DASHBOARD_WINDOW_HEIGHT: f64 = 860.0;
 const DASHBOARD_WINDOW_MIN_WIDTH: f64 = 960.0;
 const DASHBOARD_WINDOW_MIN_HEIGHT: f64 = 720.0;
-const STATUS_PANEL_WIDTH: f64 = 336.0;
-const STATUS_PANEL_HEIGHT: f64 = 236.0;
+const STATUS_PANEL_WIDTH: f64 = 360.0;
+const STATUS_PANEL_HEIGHT: f64 = 282.0;
 const STATUS_TRAY_ID: &str = "codex-token-bar-status";
 const STATUS_TRAY_SHOW_DASHBOARD_ID: &str = "status-tray-show-dashboard";
 const STATUS_TRAY_UPDATE_ID: &str = "status-tray-update";
@@ -1279,22 +1279,22 @@ mod tests {
     #[test]
     fn status_panel_supports_all_taskbar_edges() {
         let work = bounds(0.0, 0.0, 1920.0, 1040.0);
-        let panel = (336.0, 236.0);
+        let panel = (STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT);
         assert_eq!(
             status_panel_position(bounds(900.0, 0.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Below),
-            (744.0, 24.0)
+            (732.0, 24.0)
         );
         assert_eq!(
             status_panel_position(bounds(900.0, 1016.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Above),
-            (744.0, 780.0)
+            (732.0, 734.0)
         );
         assert_eq!(
             status_panel_position(bounds(0.0, 500.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Right),
-            (24.0, 394.0)
+            (24.0, 371.0)
         );
         assert_eq!(
             status_panel_position(bounds(1896.0, 500.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Left),
-            (1560.0, 394.0)
+            (1536.0, 371.0)
         );
     }
 
@@ -1305,10 +1305,10 @@ mod tests {
             status_panel_position(
                 bounds(-20.0, -120.0, 20.0, 20.0),
                 work,
-                (336.0, 236.0),
+                (STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT),
                 StatusPanelAnchor::Below
             ),
-            (-336.0, -100.0)
+            (-360.0, -100.0)
         );
     }
 

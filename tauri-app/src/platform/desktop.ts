@@ -7,10 +7,12 @@ import {
   onFloatingWindowHidden,
   onDisplaySurfacesChanged,
   onLiveRateSnapshot,
+  onOpenAppSettings,
   onUnreadSummaryChanged,
   publishAppSettings,
   publishDisplaySurfaces,
   publishFloatingSettings,
+  publishOpenAppSettings,
   publishUnreadSummaryChanged,
 } from "./desktopEvents";
 import { isDesktopRuntimeAvailable } from "./desktopBridge";
@@ -69,6 +71,8 @@ export const desktopPlatform = {
   startLiveRateStreamCommand,
   stopLiveRateStream,
   onLiveRateSnapshot,
+  publishOpenAppSettings,
+  onOpenAppSettings,
   publishUnreadSummaryChanged,
   onUnreadSummaryChanged,
 };

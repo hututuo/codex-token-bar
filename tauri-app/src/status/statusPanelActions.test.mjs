@@ -11,6 +11,11 @@ test("Status panel can acknowledge the same unread baseline as the main dashboar
   assert.match(source, /publishUnreadSummaryChanged/);
   assert.match(source, /onUnreadSummaryChanged/);
   assert.match(source, /标记已读/);
+  assert.match(source, /useFloatingRadar\(active && sourceReady\)/);
+  assert.match(source, /FloatingRadarRow snapshot=\{radarSnapshot\}/);
+  assert.match(source, /FloatingQuotaBar/);
+  assert.match(source, /publishOpenAppSettings/);
+  assert.match(source, />设置<\/button>/);
 });
 
 test("Unread acknowledgement publishes to the shared compact panel and dashboard listeners", async () => {

@@ -1,7 +1,42 @@
+import SwiftUI
 import XCTest
 @testable import CodexTokenBar
 
 final class StatusBarTokenPanelTests: XCTestCase {
+    @MainActor
+    func testHostedPopoverKeepsDenseFiveGroupSurfaceInsideStableFrame() {
+        let defaults = UserDefaults.standard
+        let previousAuto = defaults.object(forKey: InterfaceScaleSettings.autoEnabledKey)
+        let previousManual = defaults.object(forKey: InterfaceScaleSettings.manualMultiplierKey)
+        defaults.set(false, forKey: InterfaceScaleSettings.autoEnabledKey)
+        defaults.set(1.0, forKey: InterfaceScaleSettings.manualMultiplierKey)
+        defer {
+            restore(previousAuto, key: InterfaceScaleSettings.autoEnabledKey, defaults: defaults)
+            restore(previousManual, key: InterfaceScaleSettings.manualMultiplierKey, defaults: defaults)
+        }
+
+        let host = NSHostingView(rootView: StatusBarTokenPopoverView(
+            store: CodexUsageStore(),
+            monitor: LiveRateMonitor(),
+            quota: AccountQuotaStore(),
+            radar: CodexRadarStore(),
+            taskCompletionMonitor: TaskCompletionMonitor(),
+            onOpenDashboard: {},
+            onOpenSettings: {},
+            onClose: {}
+        ))
+        host.frame = CGRect(
+            x: 0,
+            y: 0,
+            width: StatusBarPopoverMetrics.width,
+            height: StatusBarPopoverMetrics.height
+        )
+        host.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(host.fittingSize.width, StatusBarPopoverMetrics.width, accuracy: 1)
+        XCTAssertEqual(host.fittingSize.height, StatusBarPopoverMetrics.height, accuracy: 1)
+    }
+
     func testStatusBarQuotaPresentationShowsOnlySevenDayWhenFiveHourIsAbsent() {
         let quota = AccountQuotaSnapshot(
             fiveHour: nil,
@@ -22,6 +57,8 @@ final class StatusBarTokenPanelTests: XCTestCase {
 
     func testClosedStatusItemRefreshUsesOneSecondCadence() {
         XCTAssertEqual(StatusBarRefreshCadence.statusItem, 1.0)
+        XCTAssertEqual(StatusBarPopoverMetrics.width, 360)
+        XCTAssertEqual(StatusBarPopoverMetrics.height, 378)
     }
 
     func testClosedPopoverDetachesContentAndReattachesLatestPresentationOnOpen() {
@@ -38,12 +75,13 @@ final class StatusBarTokenPanelTests: XCTestCase {
     }
 
     func testStatusBarLifecycleKeepsTimerAndRootStableForSameOwnersAndTicks() {
-        let owners = [NSObject(), NSObject(), NSObject(), NSObject()]
+        let owners = [NSObject(), NSObject(), NSObject(), NSObject(), NSObject()]
         let identity = StatusBarOwnerIdentity(
             store: owners[0],
             monitor: owners[1],
             quota: owners[2],
-            taskCompletionMonitor: owners[3]
+            radar: owners[3],
+            taskCompletionMonitor: owners[4]
         )
         let lifecycle = StatusBarLifecycleState()
 
@@ -61,12 +99,23 @@ final class StatusBarTokenPanelTests: XCTestCase {
             )
         }
 
+        let radarReplacement = NSObject()
+        let radarChanged = StatusBarOwnerIdentity(
+            store: owners[0],
+            monitor: owners[1],
+            quota: owners[2],
+            radar: radarReplacement,
+            taskCompletionMonitor: owners[4]
+        )
+        XCTAssertEqual(lifecycle.bind(radarChanged), .init(assignRoot: true, startTimer: false))
+
         let replacement = NSObject()
         let changed = StatusBarOwnerIdentity(
             store: replacement,
             monitor: owners[1],
             quota: owners[2],
-            taskCompletionMonitor: owners[3]
+            radar: radarReplacement,
+            taskCompletionMonitor: owners[4]
         )
         XCTAssertEqual(lifecycle.bind(changed), .init(assignRoot: true, startTimer: false))
         XCTAssertTrue(lifecycle.close())
@@ -205,5 +254,13 @@ final class StatusBarTokenPanelTests: XCTestCase {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         XCTAssertTrue(source.contains(#"if snapshot.metadataOnlyStatusText == "仅会话元数据""#))
         XCTAssertFalse(source.contains("if !snapshot.hasPreciseTokenUsage {"))
+    }
+
+    private func restore(_ value: Any?, key: String, defaults: UserDefaults) {
+        if let value {
+            defaults.set(value, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
     }
 }

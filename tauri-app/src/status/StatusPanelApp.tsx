@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { acknowledgeUnreadSummary, readAppSettings } from "../api/client";
 import { formatLiveRateValue, rateFillStyle } from "../components/liveRate/rateDisplay";
 import {
@@ -6,6 +6,8 @@ import {
   sanitizeFloatingSettings,
 } from "../floating/floatingSettings";
 import { floatingStandaloneStatusText } from "../floating/floatingPanelLabels";
+import { FloatingQuotaBar, FloatingRadarRow } from "../floating/FloatingPanelPreview";
+import { useFloatingRadar } from "../floating/useFloatingRadar";
 import { desktopPlatform } from "../platform/desktop";
 import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS, sanitizeQuotaRefreshIntervalMs } from "../settings/quotaRefreshCadence";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
@@ -18,7 +20,6 @@ import type {
   FloatingWindowSettings,
   UnreadSummary,
 } from "../types/dashboard";
-import { StatusQuotaProjection } from "./StatusQuotaProjection";
 import { useStatusPanelWindowLifecycle } from "./useStatusPanelWindowLifecycle";
 
 export function StatusPanelApp() {
@@ -28,8 +29,9 @@ export function StatusPanelApp() {
   const [acknowledgedUnreadSummary, setAcknowledgedUnreadSummary] = useState<UnreadSummary | null>(null);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const { sourceReady, sourceToken } = useCompactPanelSource(active);
+  const radarSnapshot = useFloatingRadar(active && sourceReady);
   const sourceTokenRef = useRef<CodexHomeSourceToken | null>(sourceToken);
-  const { snapshot, quota } = useCompactPanelData({
+  const { snapshot } = useCompactPanelData({
     active: active && sourceReady,
     liveRateEnabled,
     liveRateOwnerToken: "status-live-rate",
@@ -137,6 +139,14 @@ export function StatusPanelApp() {
     void desktopPlatform.hideStatusPanelWindow();
   }
 
+  function openSettings() {
+    window.localStorage.setItem("open-app-settings-requested", "1");
+    void desktopPlatform.showDashboardWindow().then(() => {
+      void desktopPlatform.publishOpenAppSettings();
+    });
+    void desktopPlatform.hideStatusPanelWindow();
+  }
+
   function closePanel() {
     void desktopPlatform.hideStatusPanelWindow();
   }
@@ -167,10 +177,32 @@ export function StatusPanelApp() {
     unread: displayUnreadSummary.active,
     unreadSummary: displayUnreadSummary,
   };
+  const statusQuotaWindows = [
+    {
+      availability: displaySnapshot.fiveHourAvailability,
+      label: displaySnapshot.fiveHourLabel,
+      remainingPercent: displaySnapshot.fiveHourRemainingPercent,
+    },
+    {
+      availability: displaySnapshot.sevenDayAvailability,
+      label: displaySnapshot.sevenDayLabel,
+      remainingPercent: displaySnapshot.sevenDayRemainingPercent,
+    },
+  ].filter((window) => window.availability !== "absent");
 
   return (
     <main className="status-window-shell">
-      <section className="status-panel-card" aria-label="状态栏速率详情">
+      <section
+        className="status-panel-card"
+        aria-label="状态栏速率详情"
+        style={{
+          "--floating-scale": 1,
+          "--floating-primary": "var(--text)",
+          "--floating-secondary": "color-mix(in srgb, var(--text) 80%, var(--muted))",
+          "--floating-muted": "var(--muted)",
+          "--floating-divider": "var(--line)",
+        } as CSSProperties}
+      >
         <header className="status-panel-head">
           <div>
             <span>Codex Token Bar</span>
@@ -206,13 +238,24 @@ export function StatusPanelApp() {
           </div>
         </dl>
 
-        <StatusQuotaProjection
-          fiveHour={quota.quota.fiveHour}
-          sevenDay={quota.quota.sevenDay}
-        />
+        <div className="status-panel-quota" aria-label="账户额度">
+          {statusQuotaWindows.map((window) => (
+            <FloatingQuotaBar
+              availability={window.availability}
+              key={window.label}
+              label={window.label}
+              remainingPercent={window.remainingPercent}
+              settings={settings}
+            />
+          ))}
+          {statusQuotaWindows.length === 0 ? <span className="status-panel-quota-empty">额度待读取</span> : null}
+        </div>
+
+        <FloatingRadarRow snapshot={radarSnapshot} style={{}} />
 
         <footer className="status-panel-actions">
           <button type="button" onClick={openDashboard}>打开主界面</button>
+          <button type="button" onClick={openSettings}>设置</button>
           {displaySnapshot.unreadSummary.active ? (
             <button type="button" onClick={acknowledgeUnread}>标记已读</button>
           ) : null}

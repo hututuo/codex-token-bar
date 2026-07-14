@@ -5,12 +5,14 @@ struct StatusBarOwnerIdentity: Equatable {
     let store: ObjectIdentifier
     let monitor: ObjectIdentifier
     let quota: ObjectIdentifier
+    let radar: ObjectIdentifier
     let taskCompletionMonitor: ObjectIdentifier
 
-    init(store: AnyObject, monitor: AnyObject, quota: AnyObject, taskCompletionMonitor: AnyObject) {
+    init(store: AnyObject, monitor: AnyObject, quota: AnyObject, radar: AnyObject, taskCompletionMonitor: AnyObject) {
         self.store = ObjectIdentifier(store)
         self.monitor = ObjectIdentifier(monitor)
         self.quota = ObjectIdentifier(quota)
+        self.radar = ObjectIdentifier(radar)
         self.taskCompletionMonitor = ObjectIdentifier(taskCompletionMonitor)
     }
 }
@@ -22,6 +24,11 @@ struct StatusBarLifecycleDecision: Equatable {
 
 enum StatusBarRefreshCadence {
     static let statusItem: TimeInterval = 1.0
+}
+
+enum StatusBarPopoverMetrics {
+    static let width: CGFloat = 360
+    static let height: CGFloat = 378
 }
 
 final class StatusBarLifecycleState {
@@ -81,7 +88,10 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
     private weak var store: CodexUsageStore?
     private weak var monitor: LiveRateMonitor?
     private weak var quota: AccountQuotaStore?
+    private weak var radar: CodexRadarStore?
     private weak var taskCompletionMonitor: TaskCompletionMonitor?
+    private var onOpenDashboard: (() -> Void)?
+    private var onOpenSettings: (() -> Void)?
     private var onClose: (() -> Void)?
     private let lifecycle = StatusBarLifecycleState()
     private let popoverContentLifecycle = StatusBarPopoverContentLifecycle()
@@ -90,18 +100,25 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
         store: CodexUsageStore,
         monitor: LiveRateMonitor,
         quota: AccountQuotaStore,
+        radar: CodexRadarStore,
         taskCompletionMonitor: TaskCompletionMonitor,
+        onOpenDashboard: @escaping () -> Void,
+        onOpenSettings: @escaping () -> Void,
         onClose: @escaping () -> Void
     ) {
         self.store = store
         self.monitor = monitor
         self.quota = quota
+        self.radar = radar
         self.taskCompletionMonitor = taskCompletionMonitor
+        self.onOpenDashboard = onOpenDashboard
+        self.onOpenSettings = onOpenSettings
         self.onClose = onClose
         let lifecycleDecision = lifecycle.bind(StatusBarOwnerIdentity(
             store: store,
             monitor: monitor,
             quota: quota,
+            radar: radar,
             taskCompletionMonitor: taskCompletionMonitor
         ))
 
@@ -124,7 +141,7 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
             popover.behavior = .transient
             popover.animates = false
             popover.delegate = self
-            popover.contentSize = NSSize(width: 360, height: 336)
+            popover.contentSize = NSSize(width: StatusBarPopoverMetrics.width, height: StatusBarPopoverMetrics.height)
             self.popover = popover
         } else if lifecycleDecision.assignRoot,
                   popoverContentLifecycle.isContentAttached,
@@ -133,6 +150,7 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
                 store: store,
                 monitor: monitor,
                 quota: quota,
+                radar: radar,
                 taskCompletionMonitor: taskCompletionMonitor
             )
         }
@@ -163,7 +181,10 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
         store = nil
         monitor = nil
         quota = nil
+        radar = nil
         taskCompletionMonitor = nil
+        onOpenDashboard = nil
+        onOpenSettings = nil
         onClose = nil
         isPresented = false
     }
@@ -209,12 +230,13 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
 
     private func attachLatestPopoverContentIfNeeded() {
         guard popoverContentLifecycle.prepareToPresent(),
-              let popover, let store, let monitor, let quota, let taskCompletionMonitor else { return }
+              let popover, let store, let monitor, let quota, let radar, let taskCompletionMonitor else { return }
         popover.contentViewController = NSHostingController(
             rootView: makePopoverView(
                 store: store,
                 monitor: monitor,
                 quota: quota,
+                radar: radar,
                 taskCompletionMonitor: taskCompletionMonitor
             )
         )
@@ -229,16 +251,29 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
         store: CodexUsageStore,
         monitor: LiveRateMonitor,
         quota: AccountQuotaStore,
+        radar: CodexRadarStore,
         taskCompletionMonitor: TaskCompletionMonitor
     ) -> StatusBarTokenPopoverView {
         StatusBarTokenPopoverView(
             store: store,
             monitor: monitor,
             quota: quota,
-            taskCompletionMonitor: taskCompletionMonitor
-        ) { [weak self] in
-            self?.onClose?()
-        }
+            radar: radar,
+            taskCompletionMonitor: taskCompletionMonitor,
+            onOpenDashboard: { [weak self] in self?.openDashboardFromPopover() },
+            onOpenSettings: { [weak self] in self?.openSettingsFromPopover() },
+            onClose: { [weak self] in self?.onClose?() }
+        )
+    }
+
+    private func openDashboardFromPopover() {
+        popover?.performClose(nil)
+        onOpenDashboard?()
+    }
+
+    private func openSettingsFromPopover() {
+        popover?.performClose(nil)
+        onOpenSettings?()
     }
 
     private func statusBarAccessibilityValue(_ snapshot: TokenDisplaySnapshot, unreadThreadCount: Int) -> String {
@@ -292,10 +327,13 @@ struct StatusBarTokenPopoverView: View {
     @ObservedObject var store: CodexUsageStore
     @ObservedObject var monitor: LiveRateMonitor
     @ObservedObject var quota: AccountQuotaStore
+    @ObservedObject var radar: CodexRadarStore
     @ObservedObject var taskCompletionMonitor: TaskCompletionMonitor
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(InterfaceScaleSettings.autoEnabledKey) private var interfaceScaleAutoEnabled = InterfaceScaleSettings.defaultAutoEnabled
     @AppStorage(InterfaceScaleSettings.manualMultiplierKey) private var interfaceScaleManualMultiplier = InterfaceScaleSettings.defaultManualMultiplier
+    let onOpenDashboard: () -> Void
+    let onOpenSettings: () -> Void
     let onClose: () -> Void
 
     private var panelFill: Color {
@@ -319,9 +357,19 @@ struct StatusBarTokenPopoverView: View {
                 screen: InterfaceScaleSettings.activeScreen()
             )
         )
-        let baseSize = CGSize(width: 360, height: 336)
+        let baseSize = CGSize(width: StatusBarPopoverMetrics.width, height: StatusBarPopoverMetrics.height)
+        let radarPresentation = CodexRadarPresentationState(
+            snapshot: radar.snapshot,
+            status: radar.status,
+            diagnostics: radar.diagnostics,
+            staleDataDisplayed: radar.staleDataDisplayed,
+            feedStaleDataDisplayed: radar.feedStaleDataDisplayed
+        )
+        let radarPalette = FloatingPanelReadableTextPalette(
+            backgroundLuminance: colorScheme == .dark ? 0.10 : 0.96
+        )
 
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Codex Token Bar")
@@ -335,12 +383,9 @@ struct StatusBarTokenPopoverView: View {
 
                 Spacer(minLength: 8)
 
-                Button(action: onClose) {
-                    Label("隐藏状态栏", systemImage: "menubar.rectangle")
-                        .font(.system(size: 10, weight: .semibold))
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
+                Text("五组信息同步")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
             }
 
             HStack(alignment: .lastTextBaseline, spacing: 8) {
@@ -386,6 +431,13 @@ struct StatusBarTokenPopoverView: View {
                 }
             }
 
+            TokenDisplayRadarStrip(presentation: radarPresentation)
+                .environment(\.tokenDisplayScale, 1)
+                .environment(\.tokenDisplayTextPalette, radarPalette)
+                .environment(\.tokenDisplayRadarActionTextPalette, radarPalette)
+                .environment(\.tokenDisplayRadarModelTextPalette, radarPalette)
+                .frame(height: 30)
+
             if taskCompletionMonitor.unreadThreadCount > 0 {
                 HStack(spacing: 8) {
                     Label("\(taskCompletionMonitor.unreadThreadCount) 个未读", systemImage: "bell.badge")
@@ -402,27 +454,20 @@ struct StatusBarTokenPopoverView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("实时组成")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 5) {
-                    StatusBarBreakdownChip(label: "可见", value: live.breakdown.visibleText)
-                    StatusBarBreakdownChip(label: "工具", value: live.breakdown.toolArguments)
-                    StatusBarBreakdownChip(label: "编辑", value: live.breakdown.patchInput)
-                    StatusBarBreakdownChip(label: "输出", value: live.breakdown.toolOutput)
-                    Spacer(minLength: 0)
-                }
+            HStack(spacing: 6) {
+                StatusBarActionButton(title: "主界面", systemImage: "rectangle.on.rectangle", action: onOpenDashboard)
+                StatusBarActionButton(title: "设置", systemImage: "gearshape", action: onOpenSettings)
+                StatusBarActionButton(title: "隐藏状态栏", systemImage: "menubar.rectangle", action: onClose)
             }
         }
-        .padding(16)
-        .frame(width: 360, height: 336, alignment: .topLeading)
+        .padding(14)
+        .frame(width: StatusBarPopoverMetrics.width, height: StatusBarPopoverMetrics.height, alignment: .topLeading)
         .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(panelFill)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(panelStroke, lineWidth: 1)
         )
         .scaleEffect(interfaceScale, anchor: .topLeading)
@@ -433,6 +478,32 @@ struct StatusBarTokenPopoverView: View {
         )
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Codex Token Bar 状态栏详情")
+    }
+}
+
+private struct StatusBarActionButton: View {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 9.5, weight: .semibold))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, minHeight: 27)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(0.055))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        )
     }
 }
 
@@ -548,25 +619,5 @@ private struct StatusBarQuotaLine: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title) 额度")
         .accessibilityValue(window.map { "剩余 \($0.remainingPercent)%，已用 \($0.usedPercent)%，\($0.accessibleResetText) 重置" } ?? "读取中")
-    }
-}
-
-private struct StatusBarBreakdownChip: View {
-    let label: String
-    let value: Int
-
-    var body: some View {
-        HStack(spacing: 3) {
-            Text(label)
-                .foregroundStyle(.secondary)
-            Text("\(value)")
-                .fontWeight(.semibold)
-                .foregroundStyle(.primary)
-                .monospacedDigit()
-        }
-        .font(.system(size: 9))
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(Capsule().fill(Color.primary.opacity(0.055)))
     }
 }

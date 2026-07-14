@@ -494,7 +494,13 @@ final class DashboardRuntime: ObservableObject {
                 store: usageStore,
                 monitor: liveMonitor,
                 quota: quotaStore,
+                radar: radarStore,
                 taskCompletionMonitor: taskCompletionMonitor,
+                onOpenDashboard: { [weak self] in self?.dashboardOpenAction?() },
+                onOpenSettings: { [weak self] in
+                    self?.dashboardOpenAction?()
+                    NotificationCenter.default.post(name: .dashboardShowSettings, object: nil)
+                },
                 onClose: { [weak self] in self?.closeStatusBarPanel() }
             )
         } else {

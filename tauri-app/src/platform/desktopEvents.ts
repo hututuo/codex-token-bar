@@ -21,6 +21,7 @@ const LIVE_RATE_SNAPSHOT_EVENT = "live-rate-snapshot";
 const UNREAD_SUMMARY_CHANGED_EVENT = "unread-summary-changed";
 const DISPLAY_SURFACES_EVENT = "display-surfaces-changed";
 const APP_SETTINGS_EVENT = "app-settings-changed";
+const OPEN_APP_SETTINGS_EVENT = "open-app-settings";
 export const CODEX_HOME_SOURCE_CHANGED_EVENT = "codex-home-source-changed";
 
 export function notifyFloatingWindowHidden(): Promise<boolean> {
@@ -73,6 +74,14 @@ export function publishAppSettings(settings: AppSettingsSnapshot): Promise<boole
 
 export function onAppSettingsChanged(handler: (settings: AppSettingsSnapshot) => void): Promise<Unlisten> {
   return listenToEvent<AppSettingsSnapshot>(APP_SETTINGS_EVENT, handler);
+}
+
+export function publishOpenAppSettings(): Promise<boolean> {
+  return emitPlatformEvent(OPEN_APP_SETTINGS_EVENT, "open-app-settings");
+}
+
+export function onOpenAppSettings(handler: () => void): Promise<Unlisten> {
+  return listenToEvent(OPEN_APP_SETTINGS_EVENT, handler);
 }
 
 export function onCodexHomeSourceChanged(
