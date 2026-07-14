@@ -12,7 +12,7 @@ test("DashboardHeader exposes every primary action without a secondary menu", as
       "开机自启：关",
       "更改目录",
       "会话消失修复",
-      "启用会话删除",
+      "启用侧栏删除",
       "导出 CSV",
       "导出 PNG",
     ]);
@@ -29,7 +29,7 @@ test("DashboardHeader exposes every primary action without a secondary menu", as
     await render({ appUpdateState: { kind: "available", message: "发现新版本 v0.7.4" } });
     assert.equal(buttonByName(container, "安装更新").title, "发现新版本 v0.7.4");
 
-    const reconnect = buttonByName(container, "启用会话删除");
+    const reconnect = buttonByName(container, "启用侧栏删除");
     assert.equal(reconnect.title, "等待 Codex 调试连接（需以调试模式启动 Codex）");
     await click(act, reconnect, window);
     assert.ok(container.querySelector('[role="alertdialog"]'));

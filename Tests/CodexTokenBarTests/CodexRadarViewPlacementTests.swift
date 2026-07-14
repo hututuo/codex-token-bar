@@ -123,4 +123,18 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("private struct CodexRadarEnvironmentBlock"))
         XCTAssertTrue(source.contains("Codex 雷达  codexradar.com"))
     }
+
+    func testRadarStripBalancesAccentColorAcrossEverySummaryColumn() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let radarView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexRadarView.swift")
+        let source = try String(contentsOf: radarView, encoding: .utf8)
+
+        XCTAssertTrue(source.contains(".foregroundStyle(primaryAccent ?? .secondary)"))
+        XCTAssertTrue(source.contains("accent: AppTheme.accentCyan"))
+        XCTAssertTrue(source.contains("let environmentAccent"))
+        XCTAssertTrue(source.contains("Text(title)\n                .foregroundStyle(accent ?? .secondary)"))
+    }
 }

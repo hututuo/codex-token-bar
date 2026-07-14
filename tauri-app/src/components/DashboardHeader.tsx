@@ -67,11 +67,11 @@ export function DashboardHeader({
     customAccountDisplayName,
   );
   const threadDeleteActionLabel = threadDeleteBridgeStatus.connected
-    ? "会话删除已启用"
-    : threadDeleteBridgeStatus.debugPort === null ? "启用会话删除" : "重连会话删除";
+    ? "侧栏删除已连接"
+    : threadDeleteBridgeStatus.debugPort === null ? "启用侧栏删除" : "重连侧栏删除";
   const threadDeleteActionDescription = threadDeleteBridgeStatus.debugPort === null
-    ? "重启 Codex 并启用删除按钮"
-    : "重新连接 Codex 删除按钮";
+    ? "重启 Codex 并启用侧栏删除按钮"
+    : "重新连接 Codex 侧栏删除按钮";
   const [displayNameDraft, setDisplayNameDraft] = useState(resolvedDisplayName);
 
   useEffect(() => {
@@ -180,83 +180,101 @@ export function DashboardHeader({
         )}
       </div>
       <div className="header-toolbar">
-        <div className="header-context">
-          <span className="platform-badge">跨平台版</span>
-          <span className="plan-badge">{account.planLabel}</span>
-          <span className={codexHome.exists ? "status-dot status-dot--ok" : "status-dot"} />
-          <span className="source-label">{sourceLabel}</span>
-          <span className="path-pill">{codexHome.path}</span>
-          <span className="muted updated-label">更新于 {updatedLabel}</span>
+        <div aria-label="运行信息" className="header-context">
+          <span className="header-context-group header-context-group--platform">
+            <i aria-hidden="true" className="platform-indicator" />
+            <span className="platform-badge">跨平台版</span>
+            <span className="plan-badge">{account.planLabel}</span>
+          </span>
+          <span aria-hidden="true" className="header-rail-divider" />
+          <span className="header-context-group header-context-group--source">
+            <span className={codexHome.exists ? "status-dot status-dot--ok" : "status-dot"} />
+            <span className="source-label">{sourceLabel}</span>
+            <span className="path-pill" title={codexHome.path}>{codexHome.path}</span>
+          </span>
+          <span aria-hidden="true" className="header-rail-divider" />
+          <span className="header-context-group header-context-group--freshness">
+            <span className="header-data-mode">本地统计</span>
+            <span className="muted updated-label">更新于 {updatedLabel}</span>
+          </span>
         </div>
         <div className="header-primary-actions" aria-label="常用操作">
-          <button className="toolbar-button" disabled={refreshing} onClick={onRefresh} type="button">
-            立即刷新
-          </button>
-          <span aria-live={appUpdateState.message ? "polite" : "off"} className="header-update-action">
+          <span className="header-action-group">
+            <button className="toolbar-button toolbar-button--accent" disabled={refreshing} onClick={onRefresh} type="button">
+              立即刷新
+            </button>
+            <span aria-live={appUpdateState.message ? "polite" : "off"} className="header-update-action">
+              <button
+                className={updateNeedsAttention ? `toolbar-button update-action update-action--${appUpdateState.kind}` : "toolbar-button update-action"}
+                disabled={updateBusy}
+                onClick={onCheckForUpdate}
+                title={appUpdateState.message || undefined}
+                type="button"
+              >
+                {updateButtonLabel}
+              </button>
+            </span>
+            <span className="header-autostart-action">
+              <button
+                aria-describedby={autostartStatus.message ? autostartHelpId : undefined}
+                aria-pressed={autostartStatus.enabled}
+                className={autostartStatus.enabled ? "toolbar-button is-active" : "toolbar-button"}
+                disabled={!autostartStatus.available}
+                onClick={onToggleAutostart}
+                title={autostartStatus.message}
+                type="button"
+              >
+                开机自启：{autostartStatus.enabled ? "开" : "关"}
+              </button>
+              {autostartStatus.message ? <span className="visually-hidden" id={autostartHelpId}>{autostartStatus.message}</span> : null}
+            </span>
+          </span>
+          <span aria-hidden="true" className="header-rail-divider header-rail-divider--actions" />
+          <span className="header-action-group">
+            <button className="toolbar-button" onClick={() => setEditingPath((value) => !value)} type="button">
+              {editingPath ? "收起目录" : "更改目录"}
+            </button>
             <button
-              className={updateNeedsAttention ? `toolbar-button update-action update-action--${appUpdateState.kind}` : "toolbar-button update-action"}
-              disabled={updateBusy}
-              onClick={onCheckForUpdate}
-              title={appUpdateState.message || undefined}
+              className="toolbar-button"
+              onClick={onOpenProviderRepair}
+              title="找回消失的历史会话"
               type="button"
             >
-              {updateButtonLabel}
+              会话消失修复
             </button>
-          </span>
-          <span className="header-autostart-action">
             <button
-              aria-describedby={autostartStatus.message ? autostartHelpId : undefined}
-              aria-pressed={autostartStatus.enabled}
-              className={autostartStatus.enabled ? "toolbar-button is-active" : "toolbar-button"}
-              disabled={!autostartStatus.available}
-              onClick={onToggleAutostart}
-              title={autostartStatus.message}
+              aria-describedby={threadDeleteHelpId}
+              aria-label={threadDeleteActionLabel}
+              className={threadDeleteBridgeStatus.connected
+                ? "toolbar-button thread-delete-action thread-delete-action--connected"
+                : "toolbar-button thread-delete-action"}
+              onClick={() => {
+                if (threadDeleteBridgeStatus.debugPort === null) {
+                  setThreadDeleteConfirmationOpen(true);
+                } else {
+                  void onReconnectThreadDelete();
+                }
+              }}
+              ref={threadDeleteTriggerRef}
+              title={threadDeleteBridgeStatus.message}
               type="button"
             >
-              开机自启：{autostartStatus.enabled ? "开" : "关"}
+              <span aria-hidden="true" className="thread-delete-action-dot" />
+              {threadDeleteActionLabel}
             </button>
-            {autostartStatus.message ? <span className="visually-hidden" id={autostartHelpId}>{autostartStatus.message}</span> : null}
+            <span className="visually-hidden" id={threadDeleteHelpId}>
+              {threadDeleteActionDescription}。{threadDeleteBridgeStatus.message}
+            </span>
           </span>
-          <button className="toolbar-button" onClick={() => setEditingPath((value) => !value)} type="button">
-            {editingPath ? "收起目录" : "更改目录"}
-          </button>
-          <button
-            className="toolbar-button"
-            onClick={onOpenProviderRepair}
-            title="找回消失的历史会话"
-            type="button"
-          >
-            会话消失修复
-          </button>
-          <button
-            aria-describedby={threadDeleteHelpId}
-            aria-label={threadDeleteActionLabel}
-            className={threadDeleteBridgeStatus.connected
-              ? "toolbar-button thread-delete-action thread-delete-action--connected"
-              : "toolbar-button thread-delete-action"}
-            onClick={() => {
-              if (threadDeleteBridgeStatus.debugPort === null) {
-                setThreadDeleteConfirmationOpen(true);
-              } else {
-                void onReconnectThreadDelete();
-              }
-            }}
-            ref={threadDeleteTriggerRef}
-            title={threadDeleteBridgeStatus.message}
-            type="button"
-          >
-            <span aria-hidden="true" className="thread-delete-action-dot" />
-            {threadDeleteActionLabel}
-          </button>
-          <span className="visually-hidden" id={threadDeleteHelpId}>
-            {threadDeleteActionDescription}。{threadDeleteBridgeStatus.message}
+          <span aria-hidden="true" className="header-rail-divider header-rail-divider--actions" />
+          <span className="header-action-group">
+            <button className="toolbar-button" onClick={onExportCsv} type="button">
+              导出 CSV
+            </button>
+            <button className="toolbar-button" onClick={onExportPng} type="button">
+              导出 PNG
+            </button>
           </span>
-          <button className="toolbar-button" onClick={onExportCsv} type="button">
-            导出 CSV
-          </button>
-          <button className="toolbar-button" onClick={onExportPng} type="button">
-            导出 PNG
-          </button>
         </div>
       </div>
       {editingPath ? (
@@ -283,7 +301,7 @@ export function DashboardHeader({
             ref={threadDeleteDialogRef}
             role="alertdialog"
           >
-            <h2 id={threadDeleteDialogTitleId}>重启 Codex 并启用会话删除按钮？</h2>
+            <h2 id={threadDeleteDialogTitleId}>重启 Codex 并启用侧栏删除按钮？</h2>
             <p id={threadDeleteDialogDescriptionId}>
               Codex 会关闭后立即以仅限本机的调试端口重新打开。当前任务不会被删除，但界面会短暂中断。
             </p>

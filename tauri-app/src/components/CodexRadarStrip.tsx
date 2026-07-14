@@ -29,7 +29,7 @@ import {
   shortDateLabel,
   type CodexRadarSnapshot,
 } from "../domain/codexRadar/model";
-import { radarActionAccent, radarScoreAccent } from "../styles/semanticColors";
+import { radarActionAccent, radarScoreAccent, semanticMetricColor } from "../styles/semanticColors";
 
 const RADAR_REFRESH_INTERVAL_MS = 600_000;
 const RADAR_CHART_COLORS = ["#18a7f2", "#ff8a2c", "#2f7df6", "#32b85f", "#a65af5"];
@@ -251,7 +251,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
           </div>
         </RadarBlock>
 
-        <RadarBlock icon="$" title="预估额度">
+        <RadarBlock accentColor={semanticMetricColor(86)} icon="$" title="预估额度">
           {quotaRows.slice(0, 3).map((row) => (
             <div className="radar-quota-row" key={row.tier}>
               <b>{row.tier}</b>
@@ -262,8 +262,19 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
           {snapshot?.modelIq.quotaRadar ? null : <span className="radar-muted">暂无额度雷达数据</span>}
         </RadarBlock>
 
-        <RadarBlock icon="E" title="环境压力">
-          <div className="radar-score-row">
+        <RadarBlock
+          accentColor={environmentCount(environment, "issueOrLimitAnomalies") > 0 ? semanticMetricColor(35) : semanticMetricColor(70)}
+          icon="E"
+          title="环境压力"
+        >
+          <div
+            className="radar-score-row"
+            style={{
+              "--radar-score-color": environmentCount(environment, "issueOrLimitAnomalies") > 0
+                ? semanticMetricColor(35)
+                : semanticMetricColor(70),
+            } as CSSProperties}
+          >
             <strong>{environment?.complaintPressure ?? "--"}</strong>
             <span>异常 {environmentCount(environment, "issueOrLimitAnomalies")}</span>
           </div>

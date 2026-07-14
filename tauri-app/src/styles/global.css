@@ -209,7 +209,7 @@ button {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
 }
 
 .header-context,
@@ -224,11 +224,72 @@ button {
 .header-context {
   overflow: hidden;
   justify-content: center;
+  min-height: 34px;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-soft) 78%, var(--panel));
 }
 
 .header-primary-actions {
   width: 100%;
   justify-content: center;
+  min-height: 36px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-soft) 78%, var(--panel));
+}
+
+.header-context-group,
+.header-action-group {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.header-context-group {
+  gap: 7px;
+  padding-inline: 7px;
+}
+
+.header-context-group--source {
+  flex: 0 1 360px;
+}
+
+.header-context-group--freshness {
+  flex: 0 0 auto;
+}
+
+.header-action-group {
+  gap: 2px;
+}
+
+.header-rail-divider {
+  width: 1px;
+  height: 18px;
+  flex: 0 0 1px;
+  margin-inline: 4px;
+  background: var(--line-strong);
+}
+
+.header-rail-divider--actions {
+  height: 20px;
+  margin-inline: 3px;
+}
+
+.platform-indicator {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.header-data-mode {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 680;
 }
 
 .source-label,
@@ -300,31 +361,29 @@ button {
 
 .platform-badge,
 .plan-badge,
-.path-pill,
 .toolbar-button {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--panel-soft) 74%, white);
   color: var(--text);
 }
 
 .platform-badge,
 .plan-badge,
 .path-pill {
-  padding: 3px 10px;
   font-size: 12px;
   font-weight: 620;
 }
 
 .platform-badge {
-  border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
-  background: color-mix(in srgb, var(--accent-soft) 64%, var(--panel));
   color: var(--accent-strong);
+}
+
+.plan-badge {
+  color: var(--text);
 }
 
 .path-pill {
   overflow: hidden;
-  max-width: 210px;
+  min-width: 0;
+  max-width: 260px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -342,18 +401,34 @@ button {
 
 .toolbar-button {
   min-height: 28px;
-  padding: 4px 12px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   font-size: 12px;
   font-weight: 620;
   cursor: pointer;
 }
 
 .header-primary-actions .toolbar-button {
-  min-height: 22px;
-  padding: 2px 10px;
-  border-radius: 7px;
+  min-height: 28px;
+  padding: 3px 9px;
+  border-radius: 6px;
   font-size: 11.5px;
   line-height: 1.1;
+}
+
+.header-primary-actions .toolbar-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.header-primary-actions .toolbar-button--accent {
+  color: var(--accent-strong);
+}
+
+.header-primary-actions .toolbar-button.is-active {
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  color: var(--accent-strong);
 }
 
 .header-update-action,
@@ -363,12 +438,12 @@ button {
 }
 
 .update-action--available {
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
   color: var(--accent-strong);
 }
 
 .update-action--error {
-  border-color: color-mix(in srgb, var(--red) 38%, var(--line));
+  background: color-mix(in srgb, var(--red) 9%, transparent);
   color: var(--red);
 }
 
@@ -376,8 +451,7 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border-color: color-mix(in srgb, var(--red) 38%, var(--line));
-  color: var(--red);
+  color: var(--accent-strong);
   white-space: nowrap;
 }
 
@@ -390,7 +464,7 @@ button {
 }
 
 .thread-delete-action--connected {
-  border-color: color-mix(in srgb, var(--green) 42%, var(--line));
+  background: color-mix(in srgb, var(--green) 10%, transparent);
   color: var(--green);
 }
 .thread-delete-confirmation-overlay {
@@ -2182,7 +2256,7 @@ button.quota-side-card:hover {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: var(--muted);
+  color: var(--radar-accent, var(--muted));
   font-size: 11px;
   font-weight: 680;
   line-height: 1;
@@ -2236,6 +2310,10 @@ button.quota-side-card:hover {
   white-space: nowrap;
 }
 
+.radar-score-row span {
+  color: var(--radar-score-color, var(--muted));
+}
+
 .radar-model-row span {
   color: var(--radar-score-color, var(--muted));
 }
@@ -2287,6 +2365,7 @@ button.quota-side-card:hover {
 
 .radar-quota-row span {
   overflow: hidden;
+  color: var(--radar-accent, var(--muted));
   text-overflow: ellipsis;
   white-space: nowrap;
 }

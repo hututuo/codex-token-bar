@@ -62,6 +62,47 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         XCTAssertEqual(DashboardHeaderContextLayout.contextRowCount, 2)
     }
 
+    func testHeaderFreshnessSeparatesSyncFailureAndSuccessfulTimestamp() {
+        let generatedAt = Date(timeIntervalSince1970: 1_720_000_000)
+
+        let syncing = DashboardHeaderFreshnessPresentation(
+            status: "读取完成",
+            isRefreshing: true,
+            generatedAt: generatedAt
+        )
+        XCTAssertEqual(syncing.text, "正在同步")
+        XCTAssertFalse(syncing.needsAttention)
+
+        let failed = DashboardHeaderFreshnessPresentation(
+            status: "额度读取失败，继续显示旧数据",
+            isRefreshing: false,
+            generatedAt: generatedAt
+        )
+        XCTAssertEqual(failed.text, "额度读取失败，继续显示旧数据")
+        XCTAssertTrue(failed.needsAttention)
+
+        let current = DashboardHeaderFreshnessPresentation(
+            status: "读取完成",
+            isRefreshing: false,
+            generatedAt: generatedAt
+        )
+        XCTAssertTrue(current.text.hasPrefix("更新于 "))
+        XCTAssertFalse(current.needsAttention)
+    }
+
+    func testThreadDeleteHeaderEntryUsesConnectionSemanticsInsteadOfTrashIcon() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let headerFile = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardHeaderView.swift")
+        let source = try String(contentsOf: headerFile, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("link.badge.plus"))
+        XCTAssertTrue(source.contains("link.circle.fill"))
+        XCTAssertFalse(source.contains("systemImage: \"trash\""))
+    }
+
     @MainActor
     func testHostedAutomaticSourceBadgeKeepsStableSingleLineFrame() {
         let hostingView = NSHostingView(

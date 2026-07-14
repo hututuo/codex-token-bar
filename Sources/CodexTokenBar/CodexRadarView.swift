@@ -198,6 +198,9 @@ private struct CodexRadarModelIQBlock: View {
 
     var body: some View {
         let primary = snapshot?.modelIQ.primaryModelRow.point
+        let primaryAccent = primary.map {
+            AppTheme.radarScoreColor(passed: $0.passed, tasks: $0.tasks, score: $0.score)
+        }
         VStack(alignment: .leading, spacing: 6) {
             CodexRadarBlockTitle(
                 "今日主模型",
@@ -209,13 +212,11 @@ private struct CodexRadarModelIQBlock: View {
             HStack(alignment: .lastTextBaseline, spacing: 8) {
                 Text(primary?.scoreDisplayText ?? "IQ --")
                     .font(.system(size: 20, weight: .semibold, design: .rounded))
-                    .foregroundStyle(primary.map {
-                        AppTheme.radarScoreColor(passed: $0.passed, tasks: $0.tasks, score: $0.score)
-                    } ?? .primary)
+                    .foregroundStyle(primaryAccent ?? .primary)
                     .monospacedDigit()
                 Text(primary.map { CodexRadarPresentationText.compactModelName($0.modelDisplayName) } ?? "待读取")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(primaryAccent ?? .secondary)
                     .lineLimit(1)
             }
             HStack(spacing: 8) {
@@ -241,11 +242,16 @@ private struct CodexRadarQuotaBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            CodexRadarBlockTitle("预估额度", systemImage: "gauge.with.dots.needle.67percent")
+            CodexRadarBlockTitle(
+                "预估额度",
+                systemImage: "gauge.with.dots.needle.67percent",
+                accent: AppTheme.accentCyan
+            )
             ForEach(snapshot?.modelIQ.quotaRadar?.rowsForDisplay ?? []) { row in
                 HStack(spacing: 8) {
                     Text(row.tier)
                         .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(AppTheme.accentCyan)
                         .frame(width: 44, alignment: .leading)
                     Text("5h \(row.fiveHourDisplayText)")
                     Text("7d \(row.sevenDayDisplayText)")
@@ -265,11 +271,19 @@ private struct CodexRadarEnvironmentBlock: View {
 
     var body: some View {
         let environment = snapshot?.codexEnvironment
+        let environmentAccent = (environment?.issueOrLimitAnomalies24h ?? 0) > 0
+            ? AppTheme.accentAmber
+            : AppTheme.accentGreen
         VStack(alignment: .leading, spacing: 6) {
-            CodexRadarBlockTitle("环境压力", systemImage: "waveform.path.ecg")
+            CodexRadarBlockTitle(
+                "环境压力",
+                systemImage: "waveform.path.ecg",
+                accent: environmentAccent
+            )
             HStack(alignment: .lastTextBaseline, spacing: 8) {
                 Text(environment?.complaintPressure ?? "--")
                     .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .foregroundStyle(environmentAccent)
                 Text("异常 \(environment.map { "\($0.issueOrLimitAnomalies24h)" } ?? "--")")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -755,7 +769,7 @@ private struct CodexRadarBlockTitle: View {
             Image(systemName: systemImage)
                 .foregroundStyle(accent ?? .secondary)
             Text(title)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(accent ?? .secondary)
         }
         .font(.system(size: 11, weight: .semibold))
         .lineLimit(1)

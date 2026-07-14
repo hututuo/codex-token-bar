@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -185,6 +186,18 @@ test("Codex Radar chart toggles expose enabled series with aria-pressed", async 
     assert.match(toggles[1].groups.attrs, /aria-pressed="true"/);
     assert.match(toggles[2].groups.attrs, /aria-pressed="false"/);
   });
+});
+
+test("Codex Radar summary carries accent color through labels and right-side values", async () => {
+  const component = await readFile(new URL("../CodexRadarStrip.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
+
+  assert.match(component, /accentColor=\{semanticMetricColor\(86\)\} icon="\$" title="预估额度"/);
+  assert.match(component, /title="环境压力"/);
+  assert.match(component, /--radar-score-color/);
+  assert.match(css, /\.radar-block-title\s*\{[^}]*color:\s*var\(--radar-accent, var\(--muted\)\)/s);
+  assert.match(css, /\.radar-score-row span\s*\{[^}]*color:\s*var\(--radar-score-color, var\(--muted\)\)/s);
+  assert.match(css, /\.radar-quota-row span\s*\{[^}]*color:\s*var\(--radar-accent, var\(--muted\)\)/s);
 });
 
 function comparisonFixture(latest, label, reasoningEffort, model = "gpt-5.5") {

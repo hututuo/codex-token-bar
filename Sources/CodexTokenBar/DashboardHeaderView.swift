@@ -58,10 +58,33 @@ struct DashboardMarkAllReadPresentation: Equatable {
 
 enum DashboardHeaderContextLayout {
     static let contextRowCount = 2
-    static let dataSourceWidth: CGFloat = 240
-    static let badgeHorizontalPadding: CGFloat = 9
+    static let dataSourceWidth: CGFloat = 280
+    static let badgeHorizontalPadding: CGFloat = 7
     static let iconWidth: CGFloat = 14
     static let badgeSpacing: CGFloat = 5
+}
+
+struct DashboardHeaderFreshnessPresentation: Equatable {
+    let text: String
+    let needsAttention: Bool
+
+    init(status: String, isRefreshing: Bool, generatedAt: Date) {
+        if isRefreshing {
+            text = "正在同步"
+            needsAttention = false
+            return
+        }
+
+        let trimmed = status.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.contains("失败") || trimmed.contains("陈旧") {
+            text = trimmed
+            needsAttention = true
+            return
+        }
+
+        text = "更新于 \(DateFormatter.statusString(from: generatedAt))"
+        needsAttention = false
+    }
 }
 
 struct InitialLoadingOverlay: View {
@@ -147,6 +170,23 @@ struct HeaderView: View {
         presentationMode.actions(unreadCount: unreadThreadCount)
     }
 
+    private var headerPlanLabel: String {
+        let plan = quotaSnapshot.planType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return plan.isEmpty ? "套餐待读取" : plan.uppercased()
+    }
+
+    private var headerPrecisionLabel: String {
+        snapshot.hasPreciseTokenUsage ? "精确统计" : "元数据"
+    }
+
+    private var freshnessPresentation: DashboardHeaderFreshnessPresentation {
+        DashboardHeaderFreshnessPresentation(
+            status: status,
+            isRefreshing: isRefreshing,
+            generatedAt: snapshot.generatedAt
+        )
+    }
+
     var body: some View {
         VStack(spacing: 8) {
             ZStack {
@@ -212,114 +252,151 @@ struct HeaderView: View {
                         .frame(maxWidth: 360)
                 }
 
-                VStack(spacing: 7) {
-                    HStack(spacing: 9) {
+                VStack(spacing: 8) {
+                    HStack(spacing: 0) {
                         if presentationMode.showsActions {
                             InterfaceScaleMenuButton(
                                 isPresented: $showingInterfaceScaleMenu,
                                 autoEnabled: $interfaceScaleAutoEnabled,
                                 manualMultiplier: $interfaceScaleManualMultiplier
                             )
+                            DashboardHeaderRailDivider()
                         }
-                        Text("Swift 原生版")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(AppTheme.accentBlue)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(AppTheme.selectedControlBackground, in: Capsule())
-                            .background(
-                                Capsule()
-                                    .stroke(AppTheme.borderStrong, lineWidth: 1)
-                            )
+
+                        HStack(spacing: 7) {
+                            Circle()
+                                .fill(AppTheme.accentBlue)
+                                .frame(width: 7, height: 7)
+                            Text("Swift 原生版")
+                                .foregroundStyle(AppTheme.accentBlue)
+                            Text(headerPlanLabel)
+                                .foregroundStyle(.primary)
+                        }
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 10)
+
+                        DashboardHeaderRailDivider()
                         DataSourceBadge(path: dataSourceLabel, origin: dataSourceOrigin)
-                        Text(status)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+
+                        DashboardHeaderRailDivider()
+                        HStack(spacing: 7) {
+                            Text(headerPrecisionLabel)
+                                .foregroundStyle(snapshot.hasPreciseTokenUsage ? AppTheme.accentGreen : .secondary)
+                            Text(freshnessPresentation.text)
+                                .foregroundStyle(freshnessPresentation.needsAttention ? AppTheme.accentRed : .secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                        .padding(.horizontal, 10)
                     }
+                    .padding(4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(AppTheme.solidControlBackground)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(AppTheme.border, lineWidth: 1)
+                    )
                     .frame(maxWidth: .infinity, alignment: .center)
 
                     if presentationMode.showsActions {
-                        HStack(spacing: 9) {
-                            if actions.contains(.markAllRead) {
-                                Button(action: markAllRead) {
-                                    Label("全部已读", systemImage: "checkmark.circle")
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(
-                                            markAllReadPresentation.tone == .active
+                        HStack(spacing: 4) {
+                            HStack(spacing: 2) {
+                                if actions.contains(.markAllRead) {
+                                    Button(action: markAllRead) {
+                                        DashboardHeaderCommandLabel(
+                                            title: "全部已读",
+                                            systemImage: "checkmark.circle",
+                                            color: markAllReadPresentation.tone == .active
                                                 ? AppTheme.accentBlue
-                                                : Color.secondary
+                                                : .secondary,
+                                            highlighted: markAllReadPresentation.tone == .active
                                         )
-                                        .frame(minWidth: 76)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 5)
-                                        .background(
-                                            markAllReadPresentation.tone == .active
-                                                ? AppTheme.selectedControlBackground
-                                                : AppTheme.solidControlBackground,
-                                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        )
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                                .stroke(AppTheme.borderStrong, lineWidth: 1)
-                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(!markAllReadPresentation.isEnabled)
+                                    .accessibilityLabel(markAllReadPresentation.accessibilityLabel)
+                                    .accessibilityValue(markAllReadPresentation.accessibilityValue)
+                                    .accessibilityHint(markAllReadPresentation.accessibilityHint)
                                 }
-                                .buttonStyle(.plain)
-                                .disabled(!markAllReadPresentation.isEnabled)
-                                .accessibilityLabel(markAllReadPresentation.accessibilityLabel)
-                                .accessibilityValue(markAllReadPresentation.accessibilityValue)
-                                .accessibilityHint(markAllReadPresentation.accessibilityHint)
+
+                                if actions.contains(.refresh) {
+                                    Button(action: onRefresh) {
+                                        DashboardHeaderCommandLabel(
+                                            title: isRefreshing ? "刷新中" : "立即刷新",
+                                            systemImage: "arrow.clockwise",
+                                            color: AppTheme.accentBlue
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(isRefreshing)
+                                    .accessibilityLabel(isRefreshing ? "刷新中" : "立即刷新")
+                                }
                             }
 
-                            if actions.contains(.refresh) {
-                                Button(action: onRefresh) {
-                                    Label(isRefreshing ? "刷新中" : "立即刷新", systemImage: "arrow.clockwise")
-                                        .font(.system(size: 13, weight: .medium))
+                            DashboardHeaderRailDivider(height: 20)
+
+                            HStack(spacing: 2) {
+                                if actions.contains(.changeDirectory) {
+                                    Button(action: onChangeDirectory) {
+                                        DashboardHeaderCommandLabel(
+                                            title: "更改目录",
+                                            systemImage: "folder",
+                                            color: .primary
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("更改目录")
                                 }
-                                .buttonStyle(.bordered)
-                                .disabled(isRefreshing)
-                                .accessibilityLabel(isRefreshing ? "刷新中" : "立即刷新")
+
+                                if actions.contains(.providerRepair) {
+                                    Button(action: onOpenProviderSync) {
+                                        DashboardHeaderCommandLabel(
+                                            title: "会话消失修复",
+                                            systemImage: "wrench.and.screwdriver",
+                                            color: .primary
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("会话消失修复")
+                                }
                             }
 
-                            if actions.contains(.changeDirectory) {
-                                Button(action: onChangeDirectory) {
-                                    Label("更改目录", systemImage: "folder")
-                                        .font(.system(size: 13, weight: .medium))
-                                }
-                                .buttonStyle(.bordered)
-                                .accessibilityLabel("更改目录")
-                            }
-
-                            if actions.contains(.providerRepair) {
-                                Button(action: onOpenProviderSync) {
-                                    Label("会话消失修复", systemImage: "wrench.and.screwdriver")
-                                        .font(.system(size: 13, weight: .medium))
-                                }
-                                .buttonStyle(.bordered)
-                                .accessibilityLabel("会话消失修复")
-                            }
+                            DashboardHeaderRailDivider(height: 20)
 
                             if actions.contains(.threadDelete) {
                                 Button(action: onThreadDeleteConnectionAction) {
-                                    Label(threadDeleteStatus.dashboardActionTitle, systemImage: "trash")
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(
-                                            threadDeleteStatus.connected
-                                                ? AppTheme.accentGreen
-                                                : AppTheme.accentRed
-                                        )
+                                    DashboardHeaderCommandLabel(
+                                        title: threadDeleteStatus.dashboardActionTitle,
+                                        systemImage: threadDeleteStatus.connected ? "link.circle.fill" : "link.badge.plus",
+                                        color: threadDeleteStatus.connected
+                                            ? AppTheme.accentGreen
+                                            : AppTheme.accentBlue,
+                                        highlighted: threadDeleteStatus.connected
+                                    )
                                 }
-                                .buttonStyle(.bordered)
+                                .buttonStyle(.plain)
                                 .help(threadDeleteStatus.message)
                                 .accessibilityLabel(threadDeleteStatus.dashboardActionTitle)
                                 .accessibilityValue(threadDeleteStatus.message)
                                 .accessibilityHint(
                                     threadDeleteStatus.connected
-                                        ? "重新连接 Codex 会话删除按钮"
-                                        : "启用 Codex 会话删除按钮"
+                                        ? "重新连接 Codex 侧栏删除按钮"
+                                        : "启用 Codex 侧栏删除按钮"
                                 )
                             }
                         }
+                        .padding(4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(AppTheme.solidControlBackground)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(AppTheme.border, lineWidth: 1)
+                        )
                         .frame(maxWidth: .infinity, alignment: .center)
                     }
                 }
@@ -372,22 +449,44 @@ struct DataSourceBadge: View {
             }
         } icon: {
             Image(systemName: "externaldrive")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(AppTheme.accentCyan)
         }
         .font(.system(size: 12, weight: .medium))
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4)
-        .background(
-            Capsule()
-                .fill(AppTheme.raisedBackground)
-        )
-        .overlay(
-            Capsule()
-                .stroke(AppTheme.border, lineWidth: 1)
-        )
+        .padding(.horizontal, DashboardHeaderContextLayout.badgeHorizontalPadding)
         .frame(width: DashboardHeaderContextLayout.dataSourceWidth)
         .help(path)
         .accessibilityLabel("数据源 \(origin) \(path)")
+    }
+}
+
+private struct DashboardHeaderRailDivider: View {
+    var height: CGFloat = 18
+
+    var body: some View {
+        Rectangle()
+            .fill(AppTheme.borderStrong)
+            .frame(width: 1, height: height)
+            .padding(.horizontal, 4)
+    }
+}
+
+private struct DashboardHeaderCommandLabel: View {
+    let title: String
+    let systemImage: String
+    let color: Color
+    var highlighted = false
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 9)
+            .frame(minHeight: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(highlighted ? AppTheme.selectedControlBackground : Color.clear)
+            )
+            .contentShape(Rectangle())
     }
 }
 

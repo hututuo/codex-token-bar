@@ -18,13 +18,13 @@ struct CodexThreadDeleteBridgeStatus: Equatable, Sendable {
 
     var connectionActionTitle: String {
         requiresCodexRelaunch
-            ? "重启 Codex 并启用删除按钮"
-            : "重新连接 Codex 删除按钮"
+            ? "重启 Codex 并连接侧栏删除"
+            : "重新连接 Codex 侧栏删除"
     }
 
     var dashboardActionTitle: String {
-        if connected { return "会话删除已启用" }
-        return requiresCodexRelaunch ? "启用会话删除" : "重连会话删除"
+        if connected { return "侧栏删除已连接" }
+        return requiresCodexRelaunch ? "启用侧栏删除" : "重连侧栏删除"
     }
 }
 
@@ -56,7 +56,7 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
         status = CodexThreadDeleteBridgeStatus(
             connected: false,
             debugPort: status.debugPort,
-            message: "正在重新连接 Codex 删除按钮"
+            message: "正在重新连接 Codex 侧栏删除"
         )
         task = Task { [weak self, service] in
             await service.cancelActiveSession()
@@ -76,7 +76,7 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
 
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "重启 Codex 并启用会话删除按钮？"
+        alert.messageText = "重启 Codex 并启用侧栏删除按钮？"
         alert.informativeText = "Codex 会关闭后立即以仅限本机的调试端口重新打开。当前任务不会被删除，但界面会短暂中断。"
         alert.addButton(withTitle: "重启并启用")
         alert.addButton(withTitle: "取消")
@@ -92,7 +92,7 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
         status = CodexThreadDeleteBridgeStatus(
             connected: false,
             debugPort: nil,
-            message: "正在重启 Codex 并启用删除按钮"
+            message: "正在重启 Codex 并连接侧栏删除"
         )
         relaunchTask = Task { [weak self, service] in
             await service.cancelActiveSession()
@@ -112,7 +112,7 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
                 self.status = CodexThreadDeleteBridgeStatus(
                     connected: false,
                     debugPort: nil,
-                    message: "启用 Codex 删除按钮失败：\(error.localizedDescription)"
+                    message: "连接 Codex 侧栏删除失败：\(error.localizedDescription)"
                 )
                 self.start()
             }
