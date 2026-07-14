@@ -42,6 +42,82 @@ enum FloatingPanelExternalEventRelevance {
     }
 }
 
+enum FloatingPanelMouseDownAction: Equatable {
+    case passThrough
+    case dragPanel
+    case openDashboard
+}
+
+@MainActor
+final class FloatingTokenPanelWindow: NSPanel {
+    var allowsBackgroundDrag = true
+    var controlExclusionSize: CGFloat = 24
+    var onOpenDashboard: (() -> Void)?
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+
+    override init(
+        contentRect: NSRect,
+        styleMask style: NSWindow.StyleMask,
+        backing backingStoreType: NSWindow.BackingStoreType,
+        defer flag: Bool
+    ) {
+        super.init(
+            contentRect: contentRect,
+            styleMask: style,
+            backing: backingStoreType,
+            defer: flag
+        )
+        configureInteractionIsolation()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("FloatingTokenPanelWindow does not support coder initialization")
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        guard event.type == .leftMouseDown else {
+            super.sendEvent(event)
+            return
+        }
+
+        switch mouseDownAction(clickCount: event.clickCount, location: event.locationInWindow) {
+        case .openDashboard:
+            onOpenDashboard?()
+        case .dragPanel:
+            performDrag(with: event)
+        case .passThrough:
+            super.sendEvent(event)
+        }
+    }
+
+    func mouseDownAction(clickCount: Int, location: NSPoint) -> FloatingPanelMouseDownAction {
+        guard !isInControlCorner(location) else { return .passThrough }
+        if clickCount == 2 {
+            return .openDashboard
+        }
+        if clickCount == 1, allowsBackgroundDrag {
+            return .dragPanel
+        }
+        return .passThrough
+    }
+
+    private func configureInteractionIsolation() {
+        becomesKeyOnlyIfNeeded = true
+        isFloatingPanel = true
+        isMovableByWindowBackground = false
+    }
+
+    private func isInControlCorner(_ location: NSPoint) -> Bool {
+        let bounds = contentView?.bounds ?? NSRect(origin: .zero, size: frame.size)
+        let size = min(max(controlExclusionSize, 0), bounds.width / 2)
+        guard size > 0, location.y >= bounds.maxY - size else { return false }
+        return location.x <= bounds.minX + size || location.x >= bounds.maxX - size
+    }
+}
+
 @MainActor
 final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDelegate {
     @Published private(set) var isPresented = false
@@ -53,6 +129,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     var panel: NSPanel?
     private var onClose: (() -> Void)?
     private var onToggleLock: (() -> Void)?
+    private var onOpenDashboard: (() -> Void)?
     var lastExternalActivePID: pid_t?
     var lastExternalClickLocation: NSPoint?
     var lastExternalClickAt: Date?
@@ -191,6 +268,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         panel = nil
         onClose = nil
         onToggleLock = nil
+        onOpenDashboard = nil
         isPresented = false
         appliedLockState = false
 
@@ -218,12 +296,14 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         scale: FloatingTokenPanelScale,
         visibility: FloatingPanelContentVisibility,
         isLocked: Bool,
+        onOpenDashboard: @escaping () -> Void,
         onToggleLock: @escaping () -> Void,
         onClose: @escaping () -> Void
     ) {
         Self.claimActiveController(self)
         self.onClose = onClose
         self.onToggleLock = onToggleLock
+        self.onOpenDashboard = onOpenDashboard
         let layout = FloatingTokenPanelLayout(scale: scale, visibility: visibility)
 
         if panel == nil {
@@ -250,7 +330,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             hostingController.view.frame = NSRect(origin: .zero, size: initialSize)
             hostingController.view.autoresizingMask = [.width, .height]
 
-            let panel = NSPanel(
+            let panel = FloatingTokenPanelWindow(
                 contentRect: NSRect(origin: .zero, size: initialSize),
                 styleMask: [.borderless, .fullSizeContentView, .nonactivatingPanel],
                 backing: .buffered,
@@ -261,7 +341,11 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             panel.backgroundColor = .clear
             panel.isOpaque = false
             panel.hasShadow = false
-            panel.isMovableByWindowBackground = !isLocked
+            panel.allowsBackgroundDrag = !isLocked
+            panel.controlExclusionSize = 24 * layout.effectiveScale
+            panel.onOpenDashboard = { [weak self] in
+                self?.onOpenDashboard?()
+            }
             panel.hidesOnDeactivate = false
             panel.level = .statusBar
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
@@ -274,6 +358,14 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             self.panel = panel
         }
         Self.closeStrayPanels(except: panel)
+
+        if let panel = panel as? FloatingTokenPanelWindow {
+            panel.allowsBackgroundDrag = !isLocked
+            panel.controlExclusionSize = 24 * layout.effectiveScale
+            panel.onOpenDashboard = { [weak self] in
+                self?.onOpenDashboard?()
+            }
+        }
 
         if let hostingController = panel?.contentViewController as? NSHostingController<FloatingTokenPanelView> {
             hostingController.rootView = FloatingTokenPanelView(
@@ -329,6 +421,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         stopFollowingAnchor()
         onClose = nil
         onToggleLock = nil
+        onOpenDashboard = nil
         isPresented = false
         Self.unregisterActiveController(self)
     }

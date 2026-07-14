@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct DashboardView: View {
+    @Environment(\.openWindow) private var openWindow
     @ObservedObject var loginItemStore: LoginItemStore
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
     private let runtime: DashboardRuntime
@@ -250,6 +251,11 @@ struct DashboardView: View {
             showingInterfaceScaleMenu = false
         }
         .onAppear {
+            runtime.setDashboardOpenAction {
+                StartupPresentation.showDashboardWindow {
+                    openWindow(id: "dashboard")
+                }
+            }
             applyDisplaySurfaceDefaultsIfNeeded()
             runtime.acquireConsumer(
                 runtimeConsumerID,

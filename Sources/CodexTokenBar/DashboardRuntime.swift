@@ -179,6 +179,7 @@ final class DashboardRuntime: ObservableObject {
     private var cadenceRecoveryTask: Task<Void, Never>?
     private var isCorrectingFloatingPanelScale = false
     private var expensiveOwnersActive: Bool?
+    private var dashboardOpenAction: (() -> Void)?
     private(set) var configuration: DashboardRuntimeConfiguration?
     private(set) var isStarted = false
 
@@ -283,6 +284,10 @@ final class DashboardRuntime: ObservableObject {
 
     func releaseConsumer(_ id: UUID) {
         sideEffects.release(id)
+    }
+
+    func setDashboardOpenAction(_ action: @escaping () -> Void) {
+        dashboardOpenAction = action
     }
 
     func reportConfiguration(_ configuration: DashboardRuntimeConfiguration, for id: UUID) {
@@ -474,6 +479,7 @@ final class DashboardRuntime: ObservableObject {
                 scale: configuration.floatingPanelScale,
                 visibility: configuration.floatingPanelVisibility,
                 isLocked: configuration.floatingPanelLocked,
+                onOpenDashboard: { [weak self] in self?.dashboardOpenAction?() },
                 onToggleLock: { [weak self] in self?.toggleFloatingPanelLock() },
                 onClose: { [weak self] in self?.closeFloatingPanel() }
             )
