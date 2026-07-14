@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
+import { AppSettingsDialog } from "../components/settings/AppSettingsDialog";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import type {
   AutostartStatus,
@@ -19,6 +21,7 @@ import { ProviderRepairPanel } from "./dashboard/ProviderRepairPanel";
 import { useDashboardPageLifecycle } from "./dashboard/useDashboardPageLifecycle";
 import { downloadDashboardCsv, downloadDashboardPng } from "../utils/dashboardExport";
 import type { ThreadDeleteBridgeStatus } from "../api/threadDeleteClient";
+import { desktopPlatform } from "../platform/desktop";
 
 interface AppUpdateViewState {
   kind: "idle" | "checking" | "available" | "installing" | "error";
@@ -123,6 +126,25 @@ export function DashboardPage({
   threadDeleteBridgeStatus,
 }: DashboardPageProps) {
   const { analyticsReady, summaryReady } = useDashboardPageLifecycle();
+  const [settingsOpen, setSettingsOpen] = useState(consumePendingSettingsRequest);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void desktopPlatform.onOpenAppSettings(() => {
+      if (!disposed) {
+        window.localStorage.removeItem("open-app-settings-requested");
+        setSettingsOpen(true);
+      }
+    }).then((handler) => {
+      if (disposed) handler();
+      else unlisten = handler;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   return (
     <main className="app-shell">
@@ -142,6 +164,7 @@ export function DashboardPage({
             void downloadDashboardPng(dashboard);
           }}
           onOpenProviderRepair={onProviderRepairOpen}
+          onOpenSettings={() => setSettingsOpen(true)}
           onRefresh={onRefresh}
           onReconnectThreadDelete={onReconnectThreadDelete}
           onToggleAutostart={onToggleAutostart}
@@ -161,13 +184,8 @@ export function DashboardPage({
               quotaRefreshIntervalMs={quotaRefreshIntervalMs}
               liveRate={liveRate}
               liveThreadOptions={liveThreadOptions}
-              onFloatingOpacityChange={onFloatingOpacityChange}
-              onFloatingScaleChange={onFloatingScaleChange}
               onTokenRateFullScaleChange={onTokenRateFullScaleChange}
-              onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
-              onFloatingGradientChange={onFloatingGradientChange}
-              onFloatingTextToneChange={onFloatingTextToneChange}
-              onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
+              onOpenSettings={() => setSettingsOpen(true)}
               onLiveRateReset={onLiveRateReset}
               onLiveRateRetry={onLiveRateRetry}
               onAcknowledgeUnread={onAcknowledgeUnread}
@@ -205,8 +223,35 @@ export function DashboardPage({
         providerSourceKey={providerSourceKey}
         snapshot={providerRepairSnapshot}
       />
+      <AppSettingsDialog
+        autostartStatus={autostartStatus}
+        displaySurfaces={displaySurfaces}
+        floatingSettings={floatingSettings}
+        liveRateEnabled={liveRateEnabled}
+        onClose={() => setSettingsOpen(false)}
+        onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
+        onFloatingGradientChange={onFloatingGradientChange}
+        onFloatingOpacityChange={onFloatingOpacityChange}
+        onFloatingScaleChange={onFloatingScaleChange}
+        onFloatingTextToneChange={onFloatingTextToneChange}
+        onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
+        onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
+        onToggleAutostart={onToggleAutostart}
+        onToggleFloating={onToggleFloating}
+        onToggleLiveRate={onToggleLiveRate}
+        onToggleStatusTray={onToggleStatusTray}
+        open={settingsOpen}
+        platform={platform}
+        quotaRefreshIntervalMs={quotaRefreshIntervalMs}
+      />
     </main>
   );
+}
+
+function consumePendingSettingsRequest(): boolean {
+  const pending = window.localStorage.getItem("open-app-settings-requested") === "1";
+  if (pending) window.localStorage.removeItem("open-app-settings-requested");
+  return pending;
 }
 
 function UsageCacheInitializationNotice() {

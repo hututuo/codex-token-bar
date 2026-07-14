@@ -16,6 +16,15 @@ struct DashboardMenuBarExtra: View {
             }
         }
 
+        Button("设置…") {
+            StartupPresentation.showDashboardWindow {
+                openWindow(id: "dashboard")
+            }
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .dashboardShowSettings, object: nil)
+            }
+        }
+
         Divider()
 
         CheckForUpdatesMenuItem(updater: updater)

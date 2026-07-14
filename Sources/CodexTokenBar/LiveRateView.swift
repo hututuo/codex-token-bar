@@ -12,18 +12,8 @@ struct LiveRateView: View {
     @Binding var statusBarPanelEnabled: Bool
     @Binding var liveRateMonitoringEnabled: Bool
     @Binding var floatingPanelShowRateAndBar: Bool
-    @Binding var preciseTokenCountingEnabled: Bool
-    @Binding var floatingPanelOpacity: Double
-    @Binding var floatingPanelScale: Double
     @Binding var tokenRateFullScale: Double
-    @Binding var floatingPanelGradientStartHex: String
-    @Binding var floatingPanelGradientEndHex: String
-    @Binding var floatingPanelGradientDirection: String
-    @Binding var floatingPanelGradientStyle: String
-    @Binding var floatingPanelUnreadEffect: String
-    @Binding var showingPaletteMenu: Bool
-    @Binding var showingUnreadEffectMenu: Bool
-    @Binding var showingContentSettingsMenu: Bool
+    let onOpenSettings: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -44,17 +34,7 @@ struct LiveRateView: View {
                     LiveRateControls(
                         floatingPanelEnabled: $floatingPanelEnabled,
                         statusBarPanelEnabled: $statusBarPanelEnabled,
-                        preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
-                        floatingPanelOpacity: $floatingPanelOpacity,
-                        floatingPanelScale: $floatingPanelScale,
-                        floatingPanelGradientStartHex: $floatingPanelGradientStartHex,
-                        floatingPanelGradientEndHex: $floatingPanelGradientEndHex,
-                        floatingPanelGradientDirection: $floatingPanelGradientDirection,
-                        floatingPanelGradientStyle: $floatingPanelGradientStyle,
-                        floatingPanelUnreadEffect: $floatingPanelUnreadEffect,
-                        showingPaletteMenu: $showingPaletteMenu,
-                        showingUnreadEffectMenu: $showingUnreadEffectMenu,
-                        showingContentSettingsMenu: $showingContentSettingsMenu
+                        onOpenSettings: onOpenSettings
                     )
                     .frame(width: columnWidth, height: LiveRatePanelLayout.contentHeight)
                 }
@@ -329,64 +309,50 @@ private struct RateFullScaleSlider: View {
 struct LiveRateControls: View {
     @Binding var floatingPanelEnabled: Bool
     @Binding var statusBarPanelEnabled: Bool
-    @Binding var preciseTokenCountingEnabled: Bool
-    @Binding var floatingPanelOpacity: Double
-    @Binding var floatingPanelScale: Double
-    @Binding var floatingPanelGradientStartHex: String
-    @Binding var floatingPanelGradientEndHex: String
-    @Binding var floatingPanelGradientDirection: String
-    @Binding var floatingPanelGradientStyle: String
-    @Binding var floatingPanelUnreadEffect: String
-    @Binding var showingPaletteMenu: Bool
-    @Binding var showingUnreadEffectMenu: Bool
-    @Binding var showingContentSettingsMenu: Bool
+    let onOpenSettings: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Label("显示面", systemImage: "rectangle.3.group")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text("常用开关留在这里，其他选项集中到总体设置。")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 7) {
                 DisplaySurfaceToggleButton(
                     title: "悬浮窗",
                     systemImage: "rectangle.on.rectangle",
                     isOn: $floatingPanelEnabled
                 )
-                .frame(maxWidth: .infinity, minHeight: 24)
+                .frame(maxWidth: .infinity, minHeight: 34)
 
                 DisplaySurfaceToggleButton(
                     title: "状态栏",
                     systemImage: "menubar.rectangle",
                     isOn: $statusBarPanelEnabled
                 )
-                .frame(maxWidth: .infinity, minHeight: 24)
+                .frame(maxWidth: .infinity, minHeight: 34)
 
-                DisplaySurfaceToggleButton(
-                    title: "精确 token 统计",
-                    systemImage: "number",
-                    isOn: $preciseTokenCountingEnabled
-                )
-                .frame(maxWidth: .infinity, minHeight: 24)
-
-                FloatingPanelContentSettingsButton(
-                    isPresented: $showingContentSettingsMenu,
-                    willOpen: {
-                        showingPaletteMenu = false
-                        showingUnreadEffectMenu = false
-                    }
-                )
-                .frame(maxWidth: .infinity, minHeight: 24)
-
+                Button(action: onOpenSettings) {
+                    Label("总体设置", systemImage: "gearshape")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(maxWidth: .infinity, minHeight: 34)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(AppTheme.accentBlue)
+                .background(AppTheme.accentBlue.opacity(0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(AppTheme.accentBlue.opacity(0.26), lineWidth: 1))
             }
 
-            FloatingPanelAppearanceSettings(
-                floatingPanelOpacity: $floatingPanelOpacity,
-                floatingPanelScale: $floatingPanelScale,
-                startHex: $floatingPanelGradientStartHex,
-                endHex: $floatingPanelGradientEndHex,
-                directionRaw: $floatingPanelGradientDirection,
-                styleRaw: $floatingPanelGradientStyle,
-                unreadEffectRaw: $floatingPanelUnreadEffect,
-                isPaletteMenuPresented: $showingPaletteMenu,
-                isUnreadEffectMenuPresented: $showingUnreadEffectMenu
-            )
+            Text("悬浮窗外观、额度配色、未读提醒、信息顺序、精确统计和界面大小都已移入总体设置。")
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .controlSize(.small)
         .font(.system(size: 11, weight: .medium))

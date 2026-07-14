@@ -13,6 +13,7 @@ test("DashboardHeader exposes every primary action without a secondary menu", as
       "更改目录",
       "会话消失修复",
       "启用侧栏删除",
+      "设置",
       "导出 CSV",
       "导出 PNG",
     ]);
@@ -21,6 +22,8 @@ test("DashboardHeader exposes every primary action without a secondary menu", as
 
     await click(act, buttonByName(container, "检查更新"), window);
     assert.equal(calls.update, 1);
+    await click(act, buttonByName(container, "设置"), window);
+    assert.equal(calls.settings, 1);
     await click(act, buttonByName(container, "导出 CSV"), window);
     await click(act, buttonByName(container, "导出 PNG"), window);
     assert.equal(calls.csv, 1);
@@ -84,7 +87,7 @@ async function withMountedHeader(run, initialOverrides = {}) {
       after.textContent = "after header";
       window.document.body.append(before, container, after);
       const root = createRoot(container);
-      const calls = { autostart: 0, csv: 0, png: 0, threadDeleteReconnect: 0, update: 0 };
+      const calls = { autostart: 0, csv: 0, png: 0, settings: 0, threadDeleteReconnect: 0, update: 0 };
       let overrides = initialOverrides;
       const render = async (nextOverrides = {}) => {
         overrides = { ...overrides, ...nextOverrides };
@@ -119,6 +122,7 @@ function headerProps(calls, overrides) {
     onExportCsv: () => { calls.csv += 1; },
     onExportPng: () => { calls.png += 1; },
     onOpenProviderRepair: () => {},
+    onOpenSettings: () => { calls.settings += 1; },
     onRefresh: async () => {},
     onReconnectThreadDelete: async () => { calls.threadDeleteReconnect += 1; },
     onToggleAutostart: () => { calls.autostart += 1; },

@@ -1,25 +1,13 @@
-import type {
-  FloatingContentVisibility,
-  FloatingPalettePatch,
-  FloatingUnreadEffect,
-  LiveRateSnapshot,
-  PlatformCapabilities,
-} from "../types/dashboard";
+import type { LiveRateSnapshot, PlatformCapabilities } from "../types/dashboard";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { LiveRateMeter } from "./liveRate/LiveRateMeter";
-import { LiveRateSettingsPanel } from "./liveRate/LiveRateSettingsPanel";
 import { liveRateNotice } from "./liveRate/liveRateNotice";
 
 interface LiveRateCardProps {
   floatingSettings: FloatingWindowSettings;
   floatingEnabled: boolean;
-  onFloatingOpacityChange: (opacity: number) => void;
-  onFloatingScaleChange: (scale: number) => void;
   onTokenRateFullScaleChange: (fullScale: number) => void;
-  onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
-  onFloatingGradientChange: (patch: FloatingPalettePatch) => void;
-  onFloatingTextToneChange: (textTone: number) => void;
-  onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
+  onOpenSettings: () => void;
   onLiveRateReset: () => Promise<void>;
   onLiveRateRetry: () => void;
   onAcknowledgeUnread: () => Promise<void>;
@@ -37,13 +25,8 @@ interface LiveRateCardProps {
 export function LiveRateCard({
   floatingSettings,
   floatingEnabled,
-  onFloatingOpacityChange,
-  onFloatingScaleChange,
   onTokenRateFullScaleChange,
-  onFloatingUnreadEffectChange,
-  onFloatingGradientChange,
-  onFloatingTextToneChange,
-  onFloatingContentVisibilityChange,
+  onOpenSettings,
   onLiveRateReset,
   onLiveRateRetry,
   onAcknowledgeUnread,
@@ -153,20 +136,29 @@ export function LiveRateCard({
           </p>
         </div>
 
-        <LiveRateSettingsPanel
-          floatingEnabled={floatingEnabled}
-          floatingSettings={floatingSettings}
-          onFloatingOpacityChange={onFloatingOpacityChange}
-          onFloatingScaleChange={onFloatingScaleChange}
-          onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
-          onFloatingGradientChange={onFloatingGradientChange}
-          onFloatingTextToneChange={onFloatingTextToneChange}
-          onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
-          onToggleFloating={onToggleFloating}
-          onToggleStatusTray={onToggleStatusTray}
-          platform={platform}
-          statusTrayLiveTextEnabled={statusTrayLiveTextEnabled}
-        />
+        <div className="settings-panel settings-panel--quick" aria-label="快捷显示设置">
+          <div>
+            <strong>显示面</strong>
+            <span>常用开关留在这里，其他选项集中到总体设置。</span>
+          </div>
+          <div className="quick-surface-actions">
+            <button
+              aria-pressed={floatingEnabled}
+              disabled={!platform.floatingWindow.available}
+              onClick={onToggleFloating}
+              title={platform.floatingWindow.note}
+              type="button"
+            >悬浮窗：{floatingEnabled ? "开" : "关"}</button>
+            <button
+              aria-pressed={statusTrayLiveTextEnabled}
+              disabled={!platform.statusTray.available || !platform.statusTrayLiveText.available}
+              onClick={onToggleStatusTray}
+              title={platform.statusTrayLiveText.note || platform.statusTray.note}
+              type="button"
+            >状态栏：{statusTrayLiveTextEnabled ? "开" : "关"}</button>
+            <button className="quick-settings-button" onClick={onOpenSettings} type="button">总体设置</button>
+          </div>
+        </div>
       </div>
     </section>
   );

@@ -27,6 +27,7 @@ test("DashboardHeader renders restrained provider repair entry", async () => {
     assert.match(html, /开机自启：关/);
     assert.match(html, /更改目录/);
     assert.match(html, /启用侧栏删除/);
+    assert.match(html, />设置<\/button>/);
     assert.match(html, /导出 CSV/);
     assert.match(html, /导出 PNG/);
     assert.doesNotMatch(html, /Codex Token Bar|更多操作|启用会话删除/);
@@ -88,6 +89,7 @@ function headerProps(overrides = {}) {
     onExportCsv: () => {},
     onExportPng: () => {},
     onOpenProviderRepair: () => {},
+    onOpenSettings: () => {},
     onRefresh: async () => {},
     onReconnectThreadDelete: async () => {},
     onToggleAutostart: () => {},

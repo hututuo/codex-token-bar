@@ -21,6 +21,7 @@ interface DashboardHeaderProps {
   onExportCsv: () => void;
   onExportPng: () => void;
   onOpenProviderRepair: () => void;
+  onOpenSettings: () => void;
   onRefresh: () => Promise<void>;
   onReconnectThreadDelete: () => Promise<void>;
   onToggleAutostart: () => void;
@@ -45,6 +46,7 @@ export function DashboardHeader({
   onExportCsv,
   onExportPng,
   onOpenProviderRepair,
+  onOpenSettings,
   onRefresh,
   onReconnectThreadDelete,
   onToggleAutostart,
@@ -268,6 +270,9 @@ export function DashboardHeader({
           </span>
           <span aria-hidden="true" className="header-rail-divider header-rail-divider--actions" />
           <span className="header-action-group">
+            <button className="toolbar-button toolbar-button--settings" onClick={onOpenSettings} type="button">
+              设置
+            </button>
             <button className="toolbar-button" onClick={onExportCsv} type="button">
               导出 CSV
             </button>

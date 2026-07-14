@@ -72,11 +72,11 @@ struct DisplaySurfaceToggleButton: View {
                     .padding(.vertical, 5)
                     .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
+            .frame(maxWidth: .infinity, minHeight: 34, maxHeight: 34)
             .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .buttonStyle(.plain)
-        .frame(maxWidth: .infinity, minHeight: 24, maxHeight: 24)
+        .frame(maxWidth: .infinity, minHeight: 34, maxHeight: 34)
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .foregroundStyle(isOn ? AppTheme.accentBlue : .secondary)
         .help(isOn ? "关闭\(title)" : "开启\(title)")

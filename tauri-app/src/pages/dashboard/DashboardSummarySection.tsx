@@ -6,9 +6,6 @@ import type { FloatingWindowSettings } from "../../floating/floatingSettings";
 import type {
   DashboardSnapshot,
   DisplaySurfaceSettings,
-  FloatingContentVisibility,
-  FloatingPalettePatch,
-  FloatingUnreadEffect,
   LiveRateSnapshot,
   LiveThreadOption,
   PlatformCapabilities,
@@ -21,13 +18,8 @@ interface DashboardSummarySectionProps {
   quotaRefreshIntervalMs: number;
   liveRate: LiveRateSnapshot;
   liveThreadOptions: LiveThreadOption[];
-  onFloatingOpacityChange: (opacity: number) => void;
-  onFloatingScaleChange: (scale: number) => void;
   onTokenRateFullScaleChange: (fullScale: number) => void;
-  onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
-  onFloatingGradientChange: (patch: FloatingPalettePatch) => void;
-  onFloatingTextToneChange: (textTone: number) => void;
-  onFloatingContentVisibilityChange: (contentVisibility: FloatingContentVisibility) => void;
+  onOpenSettings: () => void;
   onLiveRateReset: () => Promise<void>;
   onLiveRateRetry: () => void;
   onAcknowledgeUnread: () => Promise<void>;
@@ -52,13 +44,8 @@ export function DashboardSummarySection({
   quotaRefreshIntervalMs,
   liveRate,
   liveThreadOptions,
-  onFloatingOpacityChange,
-  onFloatingScaleChange,
   onTokenRateFullScaleChange,
-  onFloatingUnreadEffectChange,
-  onFloatingGradientChange,
-  onFloatingTextToneChange,
-  onFloatingContentVisibilityChange,
+  onOpenSettings,
   onLiveRateReset,
   onLiveRateRetry,
   onAcknowledgeUnread,
@@ -92,13 +79,8 @@ export function DashboardSummarySection({
         floatingSettings={floatingSettings}
         statusTrayLiveTextEnabled={displaySurfaces.statusTrayLiveTextEnabled}
         liveRateEnabled={liveRateEnabled}
-        onFloatingOpacityChange={onFloatingOpacityChange}
-        onFloatingScaleChange={onFloatingScaleChange}
         onTokenRateFullScaleChange={onTokenRateFullScaleChange}
-        onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
-        onFloatingGradientChange={onFloatingGradientChange}
-        onFloatingTextToneChange={onFloatingTextToneChange}
-        onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
+        onOpenSettings={onOpenSettings}
         onLiveRateReset={onLiveRateReset}
         onLiveRateRetry={onLiveRateRetry}
         onAcknowledgeUnread={onAcknowledgeUnread}

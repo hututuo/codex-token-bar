@@ -144,6 +144,7 @@ struct HeaderView: View {
     let onMarkAllRead: () -> Void
     let onChangeDirectory: () -> Void
     let onOpenProviderSync: () -> Void
+    let onOpenSettings: () -> Void
     let threadDeleteStatus: CodexThreadDeleteBridgeStatus
     let onThreadDeleteConnectionAction: () -> Void
     @Binding var showingInterfaceScaleMenu: Bool
@@ -387,6 +388,18 @@ struct HeaderView: View {
                                         : "启用 Codex 侧栏删除按钮"
                                 )
                             }
+
+                            DashboardHeaderRailDivider(height: 20)
+
+                            Button(action: onOpenSettings) {
+                                DashboardHeaderCommandLabel(
+                                    title: "设置",
+                                    systemImage: "gearshape",
+                                    color: AppTheme.accentBlue
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("总体设置")
                         }
                         .padding(4)
                         .background(

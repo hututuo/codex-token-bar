@@ -35,6 +35,7 @@ struct DashboardView: View {
     @AppStorage(FloatingQuotaColorStyle.modeKey) private var floatingQuotaColorMode = FloatingQuotaColorStyle.defaultMode
     @AppStorage(FloatingQuotaColorStyle.fixedHexKey) private var floatingQuotaFixedHex = FloatingQuotaColorStyle.defaultFixedHex
     @AppStorage(FloatingPanelAppearance.unreadEffectKey) private var floatingPanelUnreadEffect = FloatingPanelAppearance.defaultUnreadEffect
+    @AppStorage(FloatingPanelAppearance.textWhiteOverrideKey) private var floatingPanelTextTone = FloatingPanelAppearance.defaultTextWhiteOverride
     @AppStorage(FloatingPanelContentVisibility.rateAndBarKey) private var floatingPanelShowRateAndBar = FloatingPanelContentVisibility.default.showRateAndBar
     @AppStorage(FloatingPanelContentVisibility.usageStatusKey) private var floatingPanelShowUsageStatus = FloatingPanelContentVisibility.default.showUsageStatus
     @AppStorage(FloatingPanelContentVisibility.metricsKey) private var floatingPanelShowMetrics = FloatingPanelContentVisibility.default.showMetrics
@@ -50,6 +51,7 @@ struct DashboardView: View {
     @State private var showingPaletteMenu = false
     @State private var showingUnreadEffectMenu = false
     @State private var showingContentSettingsMenu = false
+    @State private var showingAppSettings = false
     @State private var exportAlert: DashboardExportAlertPresentation?
 
     init(
@@ -322,6 +324,9 @@ struct DashboardView: View {
             showingContentSettingsMenu = false
             showingInterfaceScaleMenu = false
         }
+        .onReceive(NotificationCenter.default.publisher(for: .dashboardShowSettings)) { _ in
+            showingAppSettings = true
+        }
         .sheet(isPresented: $showingProviderSync) {
             ProviderSyncPage(
                 store: providerSyncStore,
@@ -346,6 +351,36 @@ struct DashboardView: View {
                     }
                 )
             }
+        }
+        .sheet(isPresented: $showingAppSettings) {
+            AppSettingsView(
+                loginItemStore: loginItemStore,
+                updateSettingsStore: updateSettingsStore,
+                floatingPanelEnabled: $floatingPanelEnabled,
+                statusBarPanelEnabled: $statusBarPanelEnabled,
+                liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
+                preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
+                floatingPanelLocked: $floatingPanelLocked,
+                interfaceScaleAutoEnabled: $interfaceScaleAutoEnabled,
+                interfaceScaleManualMultiplier: $interfaceScaleManualMultiplier,
+                floatingPanelOpacity: $floatingPanelOpacity,
+                floatingPanelScale: $floatingPanelScale,
+                floatingPanelTextTone: $floatingPanelTextTone,
+                gradientStartHex: $floatingPanelGradientStartHex,
+                gradientEndHex: $floatingPanelGradientEndHex,
+                gradientDirection: $floatingPanelGradientDirection,
+                gradientStyle: $floatingPanelGradientStyle,
+                quotaColorMode: $floatingQuotaColorMode,
+                quotaFixedHex: $floatingQuotaFixedHex,
+                unreadEffect: $floatingPanelUnreadEffect,
+                showRateAndBar: $floatingPanelShowRateAndBar,
+                showUsageStatus: $floatingPanelShowUsageStatus,
+                showMetrics: $floatingPanelShowMetrics,
+                showQuota: $floatingPanelShowQuota,
+                showRadar: $floatingPanelShowRadar,
+                contentOrderRaw: $floatingPanelContentOrderRaw,
+                onClose: { showingAppSettings = false }
+            )
         }
         .alert(item: $exportAlert) { presentation in
             Alert(
@@ -410,6 +445,9 @@ struct DashboardView: View {
                     showingProviderSync = true
                     providerSyncStore.scan(dataSource: providerSyncStore.currentDataSource)
                 },
+                onOpenSettings: {
+                    showingAppSettings = true
+                },
                 threadDeleteStatus: threadDeleteBridge.status,
                 onThreadDeleteConnectionAction: {
                     threadDeleteBridge.performConnectionAction()
@@ -443,18 +481,8 @@ struct DashboardView: View {
                 statusBarPanelEnabled: $statusBarPanelEnabled,
                 liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
                 floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar,
-                preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
-                floatingPanelOpacity: $floatingPanelOpacity,
-                floatingPanelScale: $floatingPanelScale,
                 tokenRateFullScale: $tokenRateFullScale,
-                floatingPanelGradientStartHex: $floatingPanelGradientStartHex,
-                floatingPanelGradientEndHex: $floatingPanelGradientEndHex,
-                floatingPanelGradientDirection: $floatingPanelGradientDirection,
-                floatingPanelGradientStyle: $floatingPanelGradientStyle,
-                floatingPanelUnreadEffect: $floatingPanelUnreadEffect,
-                showingPaletteMenu: $showingPaletteMenu,
-                showingUnreadEffectMenu: $showingUnreadEffectMenu,
-                showingContentSettingsMenu: $showingContentSettingsMenu
+                onOpenSettings: { showingAppSettings = true }
             )
 
             ActivitySection(
