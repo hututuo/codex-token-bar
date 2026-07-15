@@ -209,79 +209,110 @@ button {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
 }
 
 .header-context,
 .header-primary-actions {
-  display: flex;
   min-width: 0;
   align-items: center;
-  gap: 7px;
   white-space: nowrap;
 }
 
 .header-context {
-  overflow: hidden;
-  justify-content: center;
-  min-height: 34px;
-  padding: 4px 7px;
+  display: grid;
+  grid-template-columns: minmax(150px, 0.74fr) minmax(280px, 1.42fr) minmax(190px, 0.86fr);
+  gap: 6px;
+  min-height: 42px;
+  padding: 5px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--panel-soft) 78%, var(--panel));
+  background: color-mix(in srgb, var(--panel-soft) 82%, var(--panel));
 }
 
 .header-primary-actions {
+  display: flex;
   width: 100%;
   justify-content: center;
-  min-height: 36px;
+  gap: 6px;
+  min-height: 35px;
   padding: 4px 6px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--panel-soft) 78%, var(--panel));
+  background: color-mix(in srgb, var(--panel-soft) 72%, var(--panel));
 }
 
-.header-context-group,
 .header-action-group {
   display: inline-flex;
   min-width: 0;
   align-items: center;
 }
 
-.header-context-group {
+.header-info-cell {
+  display: grid;
+  min-width: 0;
+  grid-template-rows: auto auto;
+  align-content: center;
+  gap: 2px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 64%, transparent);
+}
+
+.header-info-cell--identity {
+  border-left: 2px solid color-mix(in srgb, var(--accent) 74%, transparent);
+}
+
+.header-info-cell--source {
+  border-left: 2px solid color-mix(in srgb, var(--accent) 58%, var(--green));
+}
+
+.header-info-cell--freshness {
+  border-left: 2px solid color-mix(in srgb, var(--green) 70%, transparent);
+}
+
+.header-info-kicker {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 720;
+  letter-spacing: 0;
+  line-height: 1;
+  text-overflow: ellipsis;
+}
+
+.header-info-main {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
   gap: 7px;
-  padding-inline: 7px;
-}
-
-.header-context-group--source {
-  flex: 0 1 360px;
-}
-
-.header-context-group--freshness {
-  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 640;
+  line-height: 1.2;
 }
 
 .header-action-group {
-  gap: 2px;
+  gap: 3px;
+  padding: 2px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel) 56%, transparent);
+}
+
+.header-action-group--primary {
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+}
+
+.header-action-divider {
+  width: 1px;
+  height: 21px;
+  flex: 0 0 1px;
+  background: var(--line-strong);
 }
 
 .toolbar-button--settings {
   border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
   background: color-mix(in srgb, var(--accent) 9%, transparent);
   color: var(--accent-strong);
-}
-
-.header-rail-divider {
-  width: 1px;
-  height: 18px;
-  flex: 0 0 1px;
-  margin-inline: 4px;
-  background: var(--line-strong);
-}
-
-.header-rail-divider--actions {
-  height: 20px;
-  margin-inline: 3px;
 }
 
 .platform-indicator {
@@ -389,7 +420,6 @@ button {
 .path-pill {
   overflow: hidden;
   min-width: 0;
-  max-width: 260px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -418,7 +448,7 @@ button {
 
 .header-primary-actions .toolbar-button {
   min-height: 28px;
-  padding: 3px 9px;
+  padding: 3px 8px;
   border-radius: 6px;
   font-size: 11.5px;
   line-height: 1.1;
@@ -440,6 +470,7 @@ button {
 .header-update-action,
 .header-autostart-action {
   display: inline-flex;
+  min-width: 0;
   flex: 0 0 auto;
 }
 

@@ -183,25 +183,32 @@ export function DashboardHeader({
       </div>
       <div className="header-toolbar">
         <div aria-label="运行信息" className="header-context">
-          <span className="header-context-group header-context-group--platform">
-            <i aria-hidden="true" className="platform-indicator" />
-            <span className="platform-badge">跨平台版</span>
-            <span className="plan-badge">{account.planLabel}</span>
+          <span className="header-info-cell header-info-cell--identity">
+            <span className="header-info-kicker">Codex Token Bar</span>
+            <span className="header-info-main">
+              <i aria-hidden="true" className="platform-indicator" />
+              <span className="platform-badge">跨平台版</span>
+              <span className="plan-badge">{account.planLabel}</span>
+            </span>
           </span>
-          <span aria-hidden="true" className="header-rail-divider" />
-          <span className="header-context-group header-context-group--source">
-            <span className={codexHome.exists ? "status-dot status-dot--ok" : "status-dot"} />
-            <span className="source-label">{sourceLabel}</span>
-            <span className="path-pill" title={codexHome.path}>{codexHome.path}</span>
+          <span className="header-info-cell header-info-cell--source">
+            <span className="header-info-kicker">数据源</span>
+            <span className="header-info-main">
+              <span className={codexHome.exists ? "status-dot status-dot--ok" : "status-dot"} />
+              <span className="source-label">{sourceLabel}</span>
+              <span className="path-pill" title={codexHome.path}>{codexHome.path}</span>
+            </span>
           </span>
-          <span aria-hidden="true" className="header-rail-divider" />
-          <span className="header-context-group header-context-group--freshness">
-            <span className="header-data-mode">本地统计</span>
-            <span className="muted updated-label">更新于 {updatedLabel}</span>
+          <span className="header-info-cell header-info-cell--freshness">
+            <span className="header-info-kicker">统计状态</span>
+            <span className="header-info-main">
+              <span className="header-data-mode">本地统计</span>
+              <span className="updated-label">更新于 {updatedLabel}</span>
+            </span>
           </span>
         </div>
         <div className="header-primary-actions" aria-label="常用操作">
-          <span className="header-action-group">
+          <span className="header-action-group header-action-group--primary">
             <button className="toolbar-button toolbar-button--accent" disabled={refreshing} onClick={onRefresh} type="button">
               立即刷新
             </button>
@@ -231,8 +238,8 @@ export function DashboardHeader({
               {autostartStatus.message ? <span className="visually-hidden" id={autostartHelpId}>{autostartStatus.message}</span> : null}
             </span>
           </span>
-          <span aria-hidden="true" className="header-rail-divider header-rail-divider--actions" />
-          <span className="header-action-group">
+          <span aria-hidden="true" className="header-action-divider" />
+          <span className="header-action-group header-action-group--maintenance">
             <button className="toolbar-button" onClick={() => setEditingPath((value) => !value)} type="button">
               {editingPath ? "收起目录" : "更改目录"}
             </button>
@@ -268,8 +275,8 @@ export function DashboardHeader({
               {threadDeleteActionDescription}。{threadDeleteBridgeStatus.message}
             </span>
           </span>
-          <span aria-hidden="true" className="header-rail-divider header-rail-divider--actions" />
-          <span className="header-action-group">
+          <span aria-hidden="true" className="header-action-divider" />
+          <span className="header-action-group header-action-group--export">
             <button className="toolbar-button toolbar-button--settings" onClick={onOpenSettings} type="button">
               设置
             </button>

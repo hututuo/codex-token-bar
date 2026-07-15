@@ -17,11 +17,19 @@ test("DashboardHeader renders restrained provider repair entry", async () => {
     assert.match(button.attrs, /class="toolbar-button/);
     assert.match(button.attrs, /title="找回消失的历史会话"/);
     assert.match(html, /class="header-context"/);
-    assert.equal((html.match(/class="header-context-group/g) ?? []).length, 3);
-    assert.equal((html.match(/<span aria-hidden="true" class="header-rail-divider(?: header-rail-divider--actions)?"><\/span>/g) ?? []).length, 4);
+    assert.equal((html.match(/class="header-info-cell/g) ?? []).length, 3);
+    assert.equal((html.match(/class="header-info-kicker"/g) ?? []).length, 3);
+    assert.equal((html.match(/class="header-info-main"/g) ?? []).length, 3);
+    assert.equal((html.match(/class="header-action-divider"/g) ?? []).length, 2);
+    assert.match(html, /class="header-info-kicker">Codex Token Bar/);
+    assert.match(html, /class="header-info-kicker">数据源/);
+    assert.match(html, /class="header-info-kicker">统计状态/);
     assert.match(html, /class="platform-badge">跨平台版/);
     assert.match(html, /class="header-data-mode">本地统计/);
     assert.match(html, /class="header-primary-actions" aria-label="常用操作"/);
+    assert.match(html, /class="header-action-group header-action-group--primary"/);
+    assert.match(html, /class="header-action-group header-action-group--maintenance"/);
+    assert.match(html, /class="header-action-group header-action-group--export"/);
     assert.match(html, /立即刷新/);
     assert.match(html, /检查更新/);
     assert.match(html, /开机自启：关/);
@@ -30,7 +38,7 @@ test("DashboardHeader renders restrained provider repair entry", async () => {
     assert.match(html, />设置<\/button>/);
     assert.match(html, /导出 CSV/);
     assert.match(html, /导出 PNG/);
-    assert.doesNotMatch(html, /Codex Token Bar|更多操作|启用会话删除/);
+    assert.doesNotMatch(html, /更多操作|启用会话删除/);
   });
 });
 
