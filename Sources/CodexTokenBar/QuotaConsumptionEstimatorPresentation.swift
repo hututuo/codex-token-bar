@@ -33,9 +33,15 @@ struct QuotaConsumptionEstimatePresentation: Equatable {
     let accessibilityLabel: String
     let accessibilityText: String
 
-    init(title: String, estimate: QuotaConsumptionEstimate) {
+    init(title: String, estimate: QuotaConsumptionEstimate, isQuotaAvailable: Bool = true) {
         self.title = title
         accessibilityLabel = "\(title) 额度估算"
+
+        guard isQuotaAvailable else {
+            detail = "无 \(title) 额度"
+            accessibilityText = "当前无 \(Self.accessibilityWindowName(title))额度"
+            return
+        }
 
         switch estimate.confidence {
         case .measured:
@@ -47,6 +53,14 @@ struct QuotaConsumptionEstimatePresentation: Equatable {
         case .noTokenUsage:
             detail = "无 token"
             accessibilityText = "没有 token 用量"
+        }
+    }
+
+    private static func accessibilityWindowName(_ title: String) -> String {
+        switch title {
+        case "5h": "5 小时"
+        case "7d": "7 天"
+        default: "\(title) "
         }
     }
 }
@@ -65,6 +79,7 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
     let fiveHourChip: QuotaConsumptionEstimatePresentation
     let sevenDayChip: QuotaConsumptionEstimatePresentation
     let budgetRatioText: String
+    let showsBudgetRatio: Bool
     let showsRatioWarning: Bool
     let ratioWarningText: String?
     let ratioWarningDetailText: String?
@@ -73,23 +88,37 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
     init(
         selection: QuotaConsumptionSelection,
         showsFiveHourQuota: Bool = true,
-        showsSevenDayQuota: Bool = true
+        showsSevenDayQuota: Bool = true,
+        currentFiveHourQuotaPresent: Bool = true,
+        currentSevenDayQuotaPresent: Bool = true
     ) {
         costText = selection.breakdown.quotaEstimatorCostText(selection.priceCard)
         timeRangeText = selection.quotaEstimatorTimeRangeText
         cacheHitText = "命中 \(selection.breakdown.cacheHitRate.percentString)"
-        fiveHourChip = QuotaConsumptionEstimatePresentation(title: "5h", estimate: selection.fiveHour)
-        sevenDayChip = QuotaConsumptionEstimatePresentation(title: "7d", estimate: selection.sevenDay)
+        fiveHourChip = QuotaConsumptionEstimatePresentation(
+            title: "5h",
+            estimate: selection.fiveHour,
+            isQuotaAvailable: currentFiveHourQuotaPresent
+        )
+        sevenDayChip = QuotaConsumptionEstimatePresentation(
+            title: "7d",
+            estimate: selection.sevenDay,
+            isQuotaAvailable: currentSevenDayQuotaPresent
+        )
         budgetRatioText = selection.quotaEstimatorBudgetRatioText
-        showsRatioWarning = selection.hasDivergentBudgetRatio
-        ratioWarningText = selection.hasDivergentBudgetRatio ? "偏离 6x，误差可能较大" : nil
-        ratioWarningDetailText = selection.hasDivergentBudgetRatio
+        showsBudgetRatio = showsFiveHourQuota
+            && showsSevenDayQuota
+            && currentFiveHourQuotaPresent
+            && currentSevenDayQuotaPresent
+        showsRatioWarning = showsBudgetRatio && selection.hasDivergentBudgetRatio
+        ratioWarningText = showsRatioWarning ? "偏离 6x，误差可能较大" : nil
+        ratioWarningDetailText = showsRatioWarning
             ? "可能因 7d 下降太少、颗粒度太低或其他误差。"
             : nil
         var accessibilityParts = ["本段消耗 \(costText)"]
         if showsFiveHourQuota { accessibilityParts.append("5 小时 \(fiveHourChip.accessibilityText)") }
         if showsSevenDayQuota { accessibilityParts.append("7 天 \(sevenDayChip.accessibilityText)") }
-        if showsFiveHourQuota && showsSevenDayQuota { accessibilityParts.append("倍率 \(budgetRatioText)") }
+        if showsBudgetRatio { accessibilityParts.append("倍率 \(budgetRatioText)") }
         accessibilityValue = accessibilityParts.joined(separator: "，")
     }
 }

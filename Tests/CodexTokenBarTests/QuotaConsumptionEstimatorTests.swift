@@ -27,6 +27,25 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(visibility.showsSevenDay)
     }
 
+    func testEstimatePresentationShowsMissingOfficialWindowInsteadOfSmallDrop() {
+        let selection = selection(fiveHourBudget: 0, sevenDayBudget: 552)
+        let presentation = QuotaConsumptionEstimatorOverlayPresentation(
+            selection: selection,
+            showsFiveHourQuota: true,
+            showsSevenDayQuota: true,
+            currentFiveHourQuotaPresent: false,
+            currentSevenDayQuotaPresent: true
+        )
+
+        XCTAssertEqual(presentation.fiveHourChip.detail, "无 5h 额度")
+        XCTAssertEqual(presentation.fiveHourChip.accessibilityText, "当前无 5 小时额度")
+        XCTAssertFalse(presentation.showsBudgetRatio)
+        XCTAssertEqual(
+            presentation.accessibilityValue,
+            "本段消耗 $1.18，5 小时 当前无 5 小时额度，7 天 反推总额度 $552，下降 1.1%"
+        )
+    }
+
     func testQuotaEstimateVisibilityAdaptsToSevenDayOnlyHistory() {
         let visibility = RecentChartQuotaEstimateVisibility(
             historyHasFiveHour: false,

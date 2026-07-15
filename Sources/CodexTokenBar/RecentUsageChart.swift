@@ -692,6 +692,8 @@ struct RecentUsageChart: View {
                             selection: consumptionSelection,
                             showsFiveHourQuota: quotaEstimateVisibility.showsFiveHour,
                             showsSevenDayQuota: quotaEstimateVisibility.showsSevenDay,
+                            currentFiveHourQuotaPresent: currentFiveHourQuotaPresent,
+                            currentSevenDayQuotaPresent: currentSevenDayQuotaPresent,
                             onClose: {
                                 consumptionSelectionState.reset()
                             }

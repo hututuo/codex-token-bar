@@ -281,6 +281,8 @@ export function RecentUsageChart({
           ) : null}
           {consumptionSelection ? (
             <RecentChartQuotaEstimateOverlay
+              currentFiveHourQuotaPresent={fiveHourQuotaPresent}
+              currentSevenDayQuotaPresent={sevenDayQuotaPresent}
               showsFiveHourQuota={quotaEstimateVisibility.fiveHour}
               selection={consumptionSelection}
               showsSevenDayQuota={quotaEstimateVisibility.sevenDay}
@@ -391,16 +393,25 @@ function HoverBubble({
 }
 
 function RecentChartQuotaEstimateOverlay({
+  currentFiveHourQuotaPresent,
+  currentSevenDayQuotaPresent,
   showsFiveHourQuota,
   selection,
   showsSevenDayQuota,
   onClose,
 }: {
+  currentFiveHourQuotaPresent: boolean;
+  currentSevenDayQuotaPresent: boolean;
   showsFiveHourQuota: boolean;
   selection: QuotaConsumptionSelection;
   showsSevenDayQuota: boolean;
   onClose: () => void;
 }) {
+  const showsBudgetRatio = showsFiveHourQuota
+    && showsSevenDayQuota
+    && currentFiveHourQuotaPresent
+    && currentSevenDayQuotaPresent;
+
   return (
     <div className="chart-quota-estimate-card" role="dialog" aria-label="额度估算">
       <div className="quota-estimate-main">
@@ -412,10 +423,24 @@ function RecentChartQuotaEstimateOverlay({
         </div>
         <div className="quota-estimate-row">
           <span>反推总额度</span>
-          {showsFiveHourQuota ? <QuotaEstimateChip title="5h" estimate={selection.fiveHour} className="quota-chip--five" /> : null}
-          {showsSevenDayQuota ? <QuotaEstimateChip title="7d" estimate={selection.sevenDay} className="quota-chip--seven" /> : null}
+          {showsFiveHourQuota ? (
+            <QuotaEstimateChip
+              className="quota-chip--five"
+              estimate={selection.fiveHour}
+              isQuotaAvailable={currentFiveHourQuotaPresent}
+              title="5h"
+            />
+          ) : null}
+          {showsSevenDayQuota ? (
+            <QuotaEstimateChip
+              className="quota-chip--seven"
+              estimate={selection.sevenDay}
+              isQuotaAvailable={currentSevenDayQuotaPresent}
+              title="7d"
+            />
+          ) : null}
         </div>
-        {showsFiveHourQuota && showsSevenDayQuota ? (
+        {showsBudgetRatio ? (
           <div className="quota-estimate-row">
             <span>倍率</span>
             <strong className={selection.hasDivergentBudgetRatio ? "is-warning" : ""}>
@@ -435,15 +460,17 @@ function QuotaEstimateChip({
   title,
   estimate,
   className,
+  isQuotaAvailable = true,
 }: {
   title: string;
   estimate: QuotaConsumptionEstimate;
   className: string;
+  isQuotaAvailable?: boolean;
 }) {
   return (
     <span className={`quota-estimate-chip ${className}`}>
       <b>{title}</b>
-      <span>{estimateText(estimate)}</span>
+      <span>{estimateText(estimate, title, isQuotaAvailable)}</span>
     </span>
   );
 }
@@ -561,7 +588,11 @@ function chartAccessibility(
   return `${data.title}，${data.points.length} 个时间点，Token 总量 ${formatTokens(data.tokenTotal)}，调用 ${data.callTotal} 次，已显示 ${visible.join("、") || "无曲线"}`;
 }
 
-function estimateText(estimate: QuotaConsumptionEstimate): string {
+function estimateText(estimate: QuotaConsumptionEstimate, title: string, isQuotaAvailable: boolean): string {
+  if (!isQuotaAvailable) {
+    return `无 ${title} 额度`;
+  }
+
   switch (estimate.confidence) {
     case "measured":
       return `${moneyText(estimate.impliedWindowBudgetUSD)} · 降 ${oneDecimalPercent(estimate.quotaDropPercent)}`;

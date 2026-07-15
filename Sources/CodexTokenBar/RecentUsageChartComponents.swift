@@ -228,13 +228,17 @@ struct RecentChartQuotaEstimateOverlay: View {
     let selection: QuotaConsumptionSelection
     let showsFiveHourQuota: Bool
     let showsSevenDayQuota: Bool
+    let currentFiveHourQuotaPresent: Bool
+    let currentSevenDayQuotaPresent: Bool
     let onClose: () -> Void
 
     var body: some View {
         let presentation = QuotaConsumptionEstimatorOverlayPresentation(
             selection: selection,
             showsFiveHourQuota: showsFiveHourQuota,
-            showsSevenDayQuota: showsSevenDayQuota
+            showsSevenDayQuota: showsSevenDayQuota,
+            currentFiveHourQuotaPresent: currentFiveHourQuotaPresent,
+            currentSevenDayQuotaPresent: currentSevenDayQuotaPresent
         )
 
         HStack(alignment: .top, spacing: 8) {
@@ -266,7 +270,7 @@ struct RecentChartQuotaEstimateOverlay: View {
                     }
                 }
 
-                if showsFiveHourQuota && showsSevenDayQuota {
+                if presentation.showsBudgetRatio {
                     HStack(spacing: 6) {
                         Text(presentation.ratioTitle)
                             .font(.system(size: 10, weight: .semibold))

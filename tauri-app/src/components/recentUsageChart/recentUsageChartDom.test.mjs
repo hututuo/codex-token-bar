@@ -61,6 +61,9 @@ test("quota estimate keeps historical 5h beside 7d after the current 5h window d
         assert.equal(estimate.closest(".recent-chart-scroll-content"), null);
         assert.match(estimate.textContent, /5h/);
         assert.match(estimate.textContent, /7d/);
+        assert.match(estimate.textContent, /无 5h 额度/);
+        assert.doesNotMatch(estimate.textContent, /5h下降太小/);
+        assert.doesNotMatch(estimate.textContent, /倍率/);
       } finally {
         await React.act(async () => root.unmount());
       }
