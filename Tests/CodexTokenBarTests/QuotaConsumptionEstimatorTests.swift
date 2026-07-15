@@ -27,6 +27,16 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(visibility.showsSevenDay)
     }
 
+    func testQuotaEstimateVisibilityAdaptsToSevenDayOnlyHistory() {
+        let visibility = RecentChartQuotaEstimateVisibility(
+            historyHasFiveHour: false,
+            historyHasSevenDay: true
+        )
+
+        XCTAssertFalse(visibility.showsFiveHour)
+        XCTAssertTrue(visibility.showsSevenDay)
+    }
+
     @MainActor
     func testOptionalChartPathKeepsAnIsolatedObservedSampleVisible() {
         let chart = RecentUsageChart(

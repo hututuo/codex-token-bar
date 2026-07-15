@@ -220,6 +220,26 @@ final class AccountQuotaReaderTests: XCTestCase {
         XCTAssertNotNil(snapshot.sevenDayPaceStatus)
     }
 
+    func testPrimaryOnlyLongResetWindowWithoutDurationIsClassifiedAsSevenDay() {
+        let snapshot = AccountQuotaReader.parse([
+            "rateLimits": [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 34,
+                    "resetsAt": Date().addingTimeInterval(7 * 24 * 60 * 60).timeIntervalSince1970
+                ],
+                "secondary": NSNull()
+            ]
+        ], accountName: "Seven Day Only")
+
+        XCTAssertNil(snapshot.fiveHour)
+        XCTAssertEqual(snapshot.sevenDay?.label, "7d")
+        XCTAssertEqual(snapshot.sevenDay?.usedPercent, 34)
+        XCTAssertNil(snapshot.limitCards.first?.fiveHour)
+        XCTAssertEqual(snapshot.limitCards.first?.sevenDay?.label, "7d")
+        XCTAssertNotNil(snapshot.sevenDayPaceStatus)
+    }
+
     func testRateLimitsByLimitIDFallbackPreservesTrimmedMapKeyForHistoryIdentity() {
         let snapshot = AccountQuotaReader.parse([
             "rateLimitsByLimitId": [

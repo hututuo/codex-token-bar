@@ -211,7 +211,7 @@ fn parse_window(value: Option<&Value>, label: &str) -> Option<QuotaLimit> {
         .and_then(normalized_unix_timestamp_seconds);
     let reset_at =
         reset_at_unix.and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok());
-    let label = window_label(value, label);
+    let label = window_label(value, label, reset_at_unix);
     Some(QuotaLimit {
         label: label.into(),
         availability: QuotaAvailability::Measured,
@@ -224,17 +224,28 @@ fn parse_window(value: Option<&Value>, label: &str) -> Option<QuotaLimit> {
     })
 }
 
-fn window_label<'a>(window: &Value, fallback: &'a str) -> &'a str {
-    let Some(duration_minutes) = window.get("windowDurationMins").and_then(number) else {
-        return fallback;
-    };
-    if duration_minutes >= 24.0 * 60.0 {
-        "7d"
-    } else if duration_minutes <= 6.0 * 60.0 {
-        "5h"
-    } else {
-        fallback
+fn window_label<'a>(window: &Value, fallback: &'a str, reset_at_unix: Option<i64>) -> &'a str {
+    if let Some(duration_minutes) = window.get("windowDurationMins").and_then(number) {
+        return if duration_minutes >= 24.0 * 60.0 {
+            "7d"
+        } else if duration_minutes <= 6.0 * 60.0 {
+            "5h"
+        } else {
+            fallback
+        };
     }
+
+    if let Some(reset_at_unix) = reset_at_unix {
+        let reset_span_seconds = reset_at_unix - OffsetDateTime::now_utc().unix_timestamp();
+        if reset_span_seconds > 6 * 60 * 60 {
+            return "7d";
+        }
+        if reset_span_seconds >= 0 {
+            return "5h";
+        }
+    }
+
+    fallback
 }
 
 fn uses_percent_scale(window: &Value, used_percent: &Value) -> bool {
@@ -415,6 +426,29 @@ mod tests {
         assert_eq!(quota.seven_day.availability, QuotaAvailability::Measured);
         assert_eq!(quota.seven_day.label, "7d");
         assert_eq!(quota.seven_day.used_percent, Some(0.0));
+        assert_ne!(quota.pace_label, "额度待读取");
+    }
+
+    #[test]
+    fn primary_only_long_reset_window_without_duration_is_classified_as_seven_day() {
+        let seven_day_reset = OffsetDateTime::now_utc().unix_timestamp() + 7 * 24 * 60 * 60;
+        let result = json!({
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": {
+                    "usedPercent": 34,
+                    "resetsAt": seven_day_reset
+                },
+                "secondary": null
+            }
+        });
+
+        let quota = parse_rate_limits(&result).unwrap();
+
+        assert_eq!(quota.five_hour.availability, QuotaAvailability::Absent);
+        assert_eq!(quota.seven_day.availability, QuotaAvailability::Measured);
+        assert_eq!(quota.seven_day.label, "7d");
+        assert_eq!(quota.seven_day.used_percent, Some(0.34));
         assert_ne!(quota.pace_label, "额度待读取");
     }
 

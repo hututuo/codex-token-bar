@@ -1507,19 +1507,26 @@ enum AccountQuotaReader {
     private static func parseWindow(_ raw: [String: Any]?, fallbackLabel: String) -> AccountQuotaWindow? {
         guard let raw, let usedPercent = raw["usedPercent"] as? NSNumber else { return nil }
         let resetsAtSeconds = raw["resetsAt"] as? NSNumber
+        let resetsAt = resetsAtSeconds.map { Date(timeIntervalSince1970: $0.doubleValue) }
         return AccountQuotaWindow(
-            label: quotaWindowLabel(raw, fallback: fallbackLabel),
+            label: quotaWindowLabel(raw, fallback: fallbackLabel, resetsAt: resetsAt),
             usedPercent: usedPercent.intValue,
-            resetsAt: resetsAtSeconds.map { Date(timeIntervalSince1970: $0.doubleValue) }
+            resetsAt: resetsAt
         )
     }
 
-    private static func quotaWindowLabel(_ raw: [String: Any], fallback: String) -> String {
-        guard let durationMinutes = (raw["windowDurationMins"] as? NSNumber)?.doubleValue else {
+    private static func quotaWindowLabel(_ raw: [String: Any], fallback: String, resetsAt: Date?) -> String {
+        if let durationMinutes = (raw["windowDurationMins"] as? NSNumber)?.doubleValue {
+            if durationMinutes >= 24 * 60 { return "7d" }
+            if durationMinutes <= 6 * 60 { return "5h" }
             return fallback
         }
-        if durationMinutes >= 24 * 60 { return "7d" }
-        if durationMinutes <= 6 * 60 { return "5h" }
+
+        if let resetsAt {
+            let resetSpan = resetsAt.timeIntervalSince(Date())
+            if resetSpan > 6 * 60 * 60 { return "7d" }
+            if resetSpan >= 0 { return "5h" }
+        }
         return fallback
     }
 }
