@@ -10,7 +10,7 @@ LATEST_RUN_LINK="$RUN_ROOT/latest"
 LEGACY_RUN_APP_PATH="$RUN_ROOT/$RUN_APP_NAME"
 BUILT_APP_BINARY="$BUILT_APP_PATH/Contents/MacOS/codex-token-bar"
 LEGACY_PROCESS_PATTERN="$BUILT_APP_BINARY"
-TRACE_LOG="$HOME/Library/Application Support/CodexTokenBar/startup-trace.log"
+TRACE_LOG="$HOME/Library/Application Support/CodexTokenBarTauri/startup-trace.log"
 BUILD_FIRST=0
 
 usage() {
