@@ -709,6 +709,31 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(quotaViewsSource.contains("AccountQuotaRefreshCadencePicker()"))
     }
 
+    func testAppSettingsUsesSharedCategorizedNavigationAndMaintenanceActions() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let appSettingsView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/AppSettingsView.swift")
+        let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
+        let appSettingsSource = try String(contentsOf: appSettingsView, encoding: .utf8)
+        let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
+
+        for category in ["常规", "显示面", "监控与额度", "悬浮窗", "内容与排序", "提醒与更新", "数据与维护"] {
+            XCTAssertTrue(appSettingsSource.contains("return \"\(category)\""), category)
+        }
+        XCTAssertTrue(appSettingsSource.contains("ForEach(AppSettingsCategory.allCases)"))
+        XCTAssertTrue(appSettingsSource.contains("@Binding var tokenRateFullScale: Double"))
+        XCTAssertTrue(appSettingsSource.contains("TokenRateScaleSettings.displayValue(tokenRateFullScale)"))
+        XCTAssertTrue(appSettingsSource.contains("buttonTitle: \"更改目录\""))
+        XCTAssertTrue(appSettingsSource.contains("buttonTitle: \"打开修复工具\""))
+        XCTAssertTrue(appSettingsSource.contains("threadDeleteStatus.connectionActionTitle"))
+        XCTAssertFalse(appSettingsSource.contains("删除本地数据"))
+        XCTAssertTrue(dashboardSource.contains("tokenRateFullScale: $tokenRateFullScale"))
+        XCTAssertTrue(dashboardSource.contains("dataSourceLabel: store.dataSourceLabel"))
+        XCTAssertTrue(dashboardSource.contains("threadDeleteStatus: threadDeleteBridge.status"))
+    }
+
     func testFloatingPanelSettingsExposeTextWhiteSlider() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

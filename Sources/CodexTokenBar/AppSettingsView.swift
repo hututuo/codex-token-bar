@@ -1,5 +1,53 @@
 import SwiftUI
 
+private enum AppSettingsCategory: String, CaseIterable, Identifiable {
+    case general
+    case surfaces
+    case monitoring
+    case floatingPanel
+    case content
+    case alertsAndUpdates
+    case dataAndMaintenance
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "常规"
+        case .surfaces: return "显示面"
+        case .monitoring: return "监控与额度"
+        case .floatingPanel: return "悬浮窗"
+        case .content: return "内容与排序"
+        case .alertsAndUpdates: return "提醒与更新"
+        case .dataAndMaintenance: return "数据与维护"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .general: return "启动与基础行为"
+        case .surfaces: return "主界面与辅助显示面"
+        case .monitoring: return "实时速率、统计与刷新"
+        case .floatingPanel: return "位置、尺寸与视觉样式"
+        case .content: return "悬浮窗信息和排列顺序"
+        case .alertsAndUpdates: return "未读反馈与版本检查"
+        case .dataAndMaintenance: return "目录、修复与侧栏连接"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .general: return "gearshape"
+        case .surfaces: return "rectangle.3.group"
+        case .monitoring: return "speedometer"
+        case .floatingPanel: return "rectangle.on.rectangle"
+        case .content: return "list.bullet.rectangle"
+        case .alertsAndUpdates: return "bell.badge"
+        case .dataAndMaintenance: return "wrench.and.screwdriver"
+        }
+    }
+}
+
 struct AppSettingsView: View {
     @ObservedObject var loginItemStore: LoginItemStore
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
@@ -7,6 +55,7 @@ struct AppSettingsView: View {
     @Binding var statusBarPanelEnabled: Bool
     @Binding var liveRateMonitoringEnabled: Bool
     @Binding var preciseTokenCountingEnabled: Bool
+    @Binding var tokenRateFullScale: Double
     @Binding var floatingPanelLocked: Bool
     @Binding var interfaceScaleAutoEnabled: Bool
     @Binding var interfaceScaleManualMultiplier: Double
@@ -26,16 +75,113 @@ struct AppSettingsView: View {
     @Binding var showQuota: Bool
     @Binding var showRadar: Bool
     @Binding var contentOrderRaw: String
+    let dataSourceLabel: String
+    let dataSourceOrigin: String
+    let threadDeleteStatus: CodexThreadDeleteBridgeStatus
+    let onChooseDirectory: () -> Void
+    let onOpenProviderSync: () -> Void
+    let onThreadDeleteConnectionAction: () -> Void
     let onClose: () -> Void
+
     @AppStorage(AccountQuotaRefreshCadence.storageKey) private var quotaRefreshCadenceRaw = AccountQuotaRefreshCadence.defaultRawValue
+    @State private var selectedCategory: AppSettingsCategory = .general
+    @FocusState private var focusedCategory: AppSettingsCategory?
 
     var body: some View {
+        HStack(spacing: 0) {
+            settingsSidebar
+
+            Rectangle()
+                .fill(AppTheme.border)
+                .frame(width: 1)
+
+            settingsContent
+        }
+        .frame(width: 920, height: 650)
+        .background(AppTheme.panelBackground)
+        .onExitCommand(perform: onClose)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("总体设置")
+    }
+
+    private var settingsSidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("总体设置")
+                    .font(.system(size: 18, weight: .semibold))
+                Text("Codex Token Bar")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 18)
+            .padding(.bottom, 14)
+
+            VStack(spacing: 4) {
+                ForEach(AppSettingsCategory.allCases) { category in
+                    sidebarButton(category)
+                }
+            }
+            .padding(.horizontal, 9)
+            .onMoveCommand(perform: moveSidebarSelection)
+
+            Spacer(minLength: 16)
+
+            Label("更改会立即生效", systemImage: "checkmark.circle")
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 16)
+        }
+        .frame(width: 204)
+        .background(AppTheme.panelBackgroundAlt)
+    }
+
+    private func sidebarButton(_ category: AppSettingsCategory) -> some View {
+        let isSelected = selectedCategory == category
+        return Button {
+            selectedCategory = category
+            focusedCategory = category
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: category.systemImage)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .frame(width: 17)
+                Text(category.title)
+                    .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
+                Spacer(minLength: 4)
+            }
+            .foregroundStyle(isSelected ? AppTheme.accentBlue : Color.primary.opacity(0.78))
+            .padding(.horizontal, 10)
+            .frame(height: 37)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected ? AppTheme.selectedControlBackground : Color.clear)
+            )
+            .overlay(alignment: .leading) {
+                if isSelected {
+                    Capsule()
+                        .fill(AppTheme.accentBlue)
+                        .frame(width: 3, height: 19)
+                        .padding(.leading, 2)
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .focused($focusedCategory, equals: category)
+        .accessibilityLabel(category.title)
+        .accessibilityValue(isSelected ? "已选择" : "未选择")
+        .accessibilityHint("切换到\(category.subtitle)")
+    }
+
+    private var settingsContent: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("总体设置")
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(selectedCategory.title)
                         .font(.system(size: 17, weight: .semibold))
-                    Text("启动、显示面和悬浮窗选项集中管理")
+                    Text(selectedCategory.subtitle)
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
@@ -43,76 +189,294 @@ struct AppSettingsView: View {
                 Button(action: onClose) {
                     Image(systemName: "xmark")
                         .font(.system(size: 11, weight: .bold))
-                        .frame(width: 28, height: 28)
+                        .frame(width: 30, height: 30)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("关闭总体设置")
                 .accessibilityLabel("关闭总体设置")
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
+            .padding(.horizontal, 24)
+            .frame(height: 72)
 
-            Rectangle().fill(AppTheme.border).frame(height: 1)
+            Rectangle()
+                .fill(AppTheme.border)
+                .frame(height: 1)
 
             ScrollView {
-                VStack(spacing: 16) {
-                    settingsSection(title: "常规", subtitle: "启动、更新与统计") {
-                        settingsToggle("开机自启", systemImage: "power", isOn: loginItemBinding)
-                        settingsToggle("自动检查更新", systemImage: "arrow.triangle.2.circlepath", isOn: automaticUpdateBinding)
-                        settingsToggle("实时速率监控", systemImage: "speedometer", isOn: $liveRateMonitoringEnabled)
-                        settingsToggle("精确 token 统计", systemImage: "number", isOn: $preciseTokenCountingEnabled)
-                        settingsPicker(
-                            "额度刷新",
-                            systemImage: "clock.arrow.circlepath",
-                            selection: $quotaRefreshCadenceRaw,
-                            options: AccountQuotaRefreshCadence.allCases.map { ($0.rawValue, $0.label) }
-                        )
-                    }
+                selectedCategoryContent
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .id(selectedCategory)
+        }
+    }
 
-                    settingsSection(title: "显示面", subtitle: "常用开关仍保留在实时速率卡") {
-                        settingsToggle("悬浮窗", systemImage: "rectangle.on.rectangle", isOn: $floatingPanelEnabled)
-                        settingsToggle("状态栏", systemImage: "menubar.rectangle", isOn: $statusBarPanelEnabled)
-                        settingsToggle("锁定悬浮窗位置", systemImage: "lock", isOn: $floatingPanelLocked)
-                        settingsToggle("界面自动适配", systemImage: "textformat.size", isOn: $interfaceScaleAutoEnabled)
-                        settingsSlider(
-                            "界面大小",
-                            systemImage: "textformat.size.larger",
-                            value: $interfaceScaleManualMultiplier,
-                            range: InterfaceScaleSettings.manualRange,
-                            display: InterfaceScaleSettings.displayValue(interfaceScaleManualMultiplier),
-                            disabled: interfaceScaleAutoEnabled
-                        )
-                    }
-
-                    settingsSection(title: "悬浮窗外观", subtitle: "颜色、尺寸与提醒效果") {
-                        settingsSlider("透明度", systemImage: "circle.lefthalf.filled", value: $floatingPanelOpacity, range: 0.45...0.98, display: "\(Int((floatingPanelOpacity * 100).rounded()))%")
-                        settingsSlider("大小", systemImage: "arrow.up.left.and.arrow.down.right", value: $floatingPanelScale, range: FloatingTokenPanelMetrics.scaleRange, display: "\(Int((floatingPanelScale * 100).rounded()))%")
-                        settingsSlider("字体颜色", systemImage: "textformat", value: $floatingPanelTextTone, range: -1...1, display: FloatingPanelTextTonePreference.displayText(for: floatingPanelTextTone))
-                        settingsColor("起始色", systemImage: "circle.fill", hex: $gradientStartHex, fallback: FloatingPanelAppearance.defaultStartHex)
-                        settingsColor("结束色", systemImage: "circle.lefthalf.filled", hex: $gradientEndHex, fallback: FloatingPanelAppearance.defaultEndHex)
-                        settingsPicker("渐变方向", systemImage: "arrow.up.right", selection: $gradientDirection, options: FloatingPanelGradientDirection.allCases.map { ($0.rawValue, $0.label) })
-                        settingsPicker("渐变类型", systemImage: "swirl.circle.righthalf.filled", selection: $gradientStyle, options: FloatingPanelGradientStyle.allCases.map { ($0.rawValue, $0.label) })
-                        settingsPicker("额度条配色", systemImage: "chart.bar.fill", selection: $quotaColorMode, options: FloatingQuotaColorMode.allCases.map { ($0.rawValue, $0.label) })
-                        if quotaColorMode == FloatingQuotaColorMode.fixed.rawValue {
-                            settingsColor("额度固定色", systemImage: "circle.fill", hex: $quotaFixedHex, fallback: FloatingQuotaColorStyle.defaultFixedHex)
-                        }
-                        settingsPicker("未读提醒", systemImage: "bell.badge", selection: $unreadEffect, options: FloatingPanelUnreadEffect.allCases.map { ($0.rawValue, $0.label) })
-                    }
-
-                    settingsSection(title: "显示内容", subtitle: "选择悬浮窗信息并调整顺序") {
-                        ForEach(orderedGroups) { group in
-                            contentRow(group)
-                        }
-                    }
-                }
-                .padding(18)
+    @ViewBuilder
+    private var selectedCategoryContent: some View {
+        VStack(spacing: 18) {
+            switch selectedCategory {
+            case .general:
+                generalSettings
+            case .surfaces:
+                surfaceSettings
+            case .monitoring:
+                monitoringSettings
+            case .floatingPanel:
+                floatingPanelSettings
+            case .content:
+                contentSettings
+            case .alertsAndUpdates:
+                alertsAndUpdateSettings
+            case .dataAndMaintenance:
+                dataAndMaintenanceSettings
             }
         }
-        .frame(width: 660, height: 650)
-        .background(AppTheme.panelBackground)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("总体设置")
+    }
+
+    private var generalSettings: some View {
+        Group {
+            settingsSection(title: "启动", subtitle: "控制应用是否随登录自动运行") {
+                settingsToggle("开机自启", systemImage: "power", isOn: loginItemBinding)
+            }
+
+            settingsSection(title: "设置行为", subtitle: "这里的选项无需单独保存") {
+                settingsInfoRow(
+                    "即时生效",
+                    systemImage: "bolt.fill",
+                    detail: "切换标签页或关闭设置后，当前选择都会继续保留。"
+                )
+            }
+        }
+    }
+
+    private var surfaceSettings: some View {
+        Group {
+            settingsSection(title: "辅助显示面", subtitle: "常用开关仍保留在主界面的实时速率卡") {
+                settingsToggle("悬浮窗", systemImage: "rectangle.on.rectangle", isOn: $floatingPanelEnabled)
+                settingsToggle("状态栏", systemImage: "menubar.rectangle", isOn: $statusBarPanelEnabled)
+            }
+
+            settingsSection(title: "主界面缩放", subtitle: "自动适配窗口，也可以固定界面大小") {
+                settingsToggle("界面自动适配", systemImage: "textformat.size", isOn: $interfaceScaleAutoEnabled)
+                settingsSlider(
+                    "界面大小",
+                    systemImage: "textformat.size.larger",
+                    value: $interfaceScaleManualMultiplier,
+                    range: InterfaceScaleSettings.manualRange,
+                    display: InterfaceScaleSettings.displayValue(interfaceScaleManualMultiplier),
+                    disabled: interfaceScaleAutoEnabled
+                )
+            }
+        }
+    }
+
+    private var monitoringSettings: some View {
+        Group {
+            settingsSection(title: "速率与统计", subtitle: "控制本地实时监控和 token 计算精度") {
+                settingsToggle("实时速率监控", systemImage: "speedometer", isOn: $liveRateMonitoringEnabled)
+                settingsToggle("精确 token 统计", systemImage: "number", isOn: $preciseTokenCountingEnabled)
+                settingsSlider(
+                    "速率满刻度",
+                    systemImage: "gauge.with.dots.needle.67percent",
+                    value: $tokenRateFullScale,
+                    range: TokenRateScaleSettings.range,
+                    display: TokenRateScaleSettings.displayValue(tokenRateFullScale),
+                    step: 10
+                )
+            }
+
+            settingsSection(title: "额度", subtitle: "设置官方额度数据的自动刷新频率") {
+                settingsPicker(
+                    "额度刷新",
+                    systemImage: "clock.arrow.circlepath",
+                    selection: $quotaRefreshCadenceRaw,
+                    options: AccountQuotaRefreshCadence.allCases.map { ($0.rawValue, $0.label) }
+                )
+            }
+        }
+    }
+
+    private var floatingPanelSettings: some View {
+        Group {
+            settingsSection(title: "实时预览", subtitle: "颜色、透明度和尺寸会直接反映在这里") {
+                floatingPanelPreview
+            }
+
+            settingsSection(title: "窗口行为", subtitle: "调整悬浮窗的位置与占用空间") {
+                settingsToggle("锁定悬浮窗位置", systemImage: "lock", isOn: $floatingPanelLocked)
+                settingsSlider(
+                    "透明度",
+                    systemImage: "circle.lefthalf.filled",
+                    value: $floatingPanelOpacity,
+                    range: 0.45...0.98,
+                    display: "\(Int((floatingPanelOpacity * 100).rounded()))%"
+                )
+                settingsSlider(
+                    "大小",
+                    systemImage: "arrow.up.left.and.arrow.down.right",
+                    value: $floatingPanelScale,
+                    range: FloatingTokenPanelMetrics.scaleRange,
+                    display: "\(Int((floatingPanelScale * 100).rounded()))%"
+                )
+            }
+
+            settingsSection(title: "外观", subtitle: "统一设置文字、背景渐变和额度条配色") {
+                settingsSlider(
+                    "字体颜色",
+                    systemImage: "textformat",
+                    value: $floatingPanelTextTone,
+                    range: -1...1,
+                    display: FloatingPanelTextTonePreference.displayText(for: floatingPanelTextTone)
+                )
+                settingsColor("起始色", systemImage: "circle.fill", hex: $gradientStartHex, fallback: FloatingPanelAppearance.defaultStartHex)
+                settingsColor("结束色", systemImage: "circle.lefthalf.filled", hex: $gradientEndHex, fallback: FloatingPanelAppearance.defaultEndHex)
+                settingsPicker("渐变方向", systemImage: "arrow.up.right", selection: $gradientDirection, options: FloatingPanelGradientDirection.allCases.map { ($0.rawValue, $0.label) })
+                settingsPicker("渐变类型", systemImage: "swirl.circle.righthalf.filled", selection: $gradientStyle, options: FloatingPanelGradientStyle.allCases.map { ($0.rawValue, $0.label) })
+                settingsPicker("额度条配色", systemImage: "chart.bar.fill", selection: $quotaColorMode, options: FloatingQuotaColorMode.allCases.map { ($0.rawValue, $0.label) })
+                if quotaColorMode == FloatingQuotaColorMode.fixed.rawValue {
+                    settingsColor("额度固定色", systemImage: "circle.fill", hex: $quotaFixedHex, fallback: FloatingQuotaColorStyle.defaultFixedHex)
+                }
+            }
+        }
+    }
+
+    private var contentSettings: some View {
+        settingsSection(title: "显示内容", subtitle: "选择悬浮窗信息，并用箭头调整从上到下的顺序") {
+            ForEach(orderedGroups) { group in
+                contentRow(group)
+            }
+        }
+    }
+
+    private var alertsAndUpdateSettings: some View {
+        Group {
+            settingsSection(title: "未读提醒", subtitle: "任务完成后在悬浮窗上显示柔和反馈") {
+                settingsPicker("未读提醒", systemImage: "bell.badge", selection: $unreadEffect, options: FloatingPanelUnreadEffect.allCases.map { ($0.rawValue, $0.label) })
+            }
+
+            settingsSection(title: "版本更新", subtitle: "后台定期检查 Codex Token Bar 新版本") {
+                settingsToggle("自动检查更新", systemImage: "arrow.triangle.2.circlepath", isOn: automaticUpdateBinding)
+            }
+        }
+    }
+
+    private var dataAndMaintenanceSettings: some View {
+        Group {
+            settingsSection(title: "数据来源", subtitle: "查看当前 Codex Home，或选择另一个本地目录") {
+                settingsActionRow(
+                    "Codex 数据目录",
+                    systemImage: "externaldrive",
+                    detail: "\(dataSourceOrigin) · \(dataSourceLabel)",
+                    buttonTitle: "更改目录",
+                    buttonSystemImage: "folder.badge.gearshape",
+                    action: onChooseDirectory
+                )
+            }
+
+            settingsSection(title: "Provider 维护", subtitle: "扫描并修复会话与本地状态中的 Provider 不一致") {
+                settingsActionRow(
+                    "Provider 修复",
+                    systemImage: "cross.case",
+                    detail: "打开专用检查页，先预览受影响项目，再选择是否修复。",
+                    buttonTitle: "打开修复工具",
+                    buttonSystemImage: "arrow.up.right.square",
+                    action: onOpenProviderSync
+                )
+            }
+
+            settingsSection(title: "Codex 侧栏删除", subtitle: "连接本机 Codex 调试端口，为侧栏任务提供删除入口") {
+                settingsActionRow(
+                    threadDeleteStatus.connected ? "侧栏删除已连接" : "侧栏删除未连接",
+                    systemImage: threadDeleteStatus.connected ? "link.circle.fill" : "link.badge.plus",
+                    detail: threadDeleteStatus.message,
+                    buttonTitle: threadDeleteStatus.connectionActionTitle,
+                    buttonSystemImage: "arrow.clockwise",
+                    statusColor: threadDeleteStatus.connected ? AppTheme.accentGreen : AppTheme.accentAmber,
+                    action: onThreadDeleteConnectionAction
+                )
+            }
+        }
+    }
+
+    private var floatingPanelPreview: some View {
+        let appearance = FloatingPanelAppearance(
+            startHex: gradientStartHex,
+            endHex: gradientEndHex,
+            directionRaw: gradientDirection,
+            styleRaw: gradientStyle
+        )
+        let tone = FloatingPanelTextTonePreference.mode(for: floatingPanelTextTone)
+        let palette = tone.manualWhite.map(FloatingPanelReadableTextPalette.init(fixedWhite:))
+            ?? FloatingPanelReadableTextPalette(
+                backgroundLuminance: appearance.readableTextPalette.backgroundLuminance,
+                automaticStrength: tone.automaticStrength
+            )
+        let quotaStyle = FloatingQuotaColorStyle(
+            modeRaw: quotaColorMode,
+            fixedHex: quotaFixedHex,
+            gradientAppearance: appearance
+        )
+        let scaleProgress = (FloatingTokenPanelMetrics.clampedScale(floatingPanelScale) - 0.75) / 1.25
+        let previewWidth = 350 + 150 * scaleProgress
+
+        return VStack(spacing: 8) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(appearance.gradientShapeStyle)
+                    .opacity(floatingPanelOpacity)
+
+                VStack(spacing: 9) {
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("实时速率")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(palette.secondaryColor)
+                            Text("128 token/s")
+                                .font(.system(size: 18, weight: .semibold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(palette.primaryColor)
+                        }
+                        Spacer(minLength: 12)
+                        Text("额度 72%")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(palette.primaryColor)
+                    }
+
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(palette.primaryColor.opacity(0.16))
+                            Capsule()
+                                .fill(quotaStyle.fillStyle(remainingPercent: 72, expectedRemainingPercent: 68))
+                                .frame(width: proxy.size.width * 0.72)
+                        }
+                    }
+                    .frame(height: 6)
+
+                    HStack {
+                        Text("本次 1,248 token")
+                        Spacer(minLength: 8)
+                        Text("今日 42.6K")
+                    }
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(palette.secondaryColor)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 13)
+            }
+            .frame(width: previewWidth, height: 116 + 12 * scaleProgress)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(AppTheme.borderStrong.opacity(0.45), lineWidth: 1)
+            )
+
+            Text("示例数据 · 实际悬浮窗内容由“内容与排序”控制")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+        .padding(.horizontal, 12)
     }
 
     private var loginItemBinding: Binding<Bool> {
@@ -130,6 +494,17 @@ struct AppSettingsView: View {
         FloatingPanelContentVisibility.order(from: contentOrderRaw)
     }
 
+    private func moveSidebarSelection(_ direction: MoveCommandDirection) {
+        guard direction == .up || direction == .down else { return }
+        let categories = AppSettingsCategory.allCases
+        guard let currentIndex = categories.firstIndex(of: focusedCategory ?? selectedCategory) else { return }
+        let delta = direction == .up ? -1 : 1
+        let nextIndex = min(max(currentIndex + delta, 0), categories.count - 1)
+        let next = categories[nextIndex]
+        selectedCategory = next
+        focusedCategory = next
+    }
+
     private func settingsSection<Content: View>(
         title: String,
         subtitle: String,
@@ -141,9 +516,10 @@ struct AppSettingsView: View {
                 Text(subtitle).font(.system(size: 9.5, weight: .medium)).foregroundStyle(.secondary)
             }
             VStack(spacing: 0) { content() }
-                .background(AppTheme.solidControlBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+                .background(AppTheme.solidControlBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func settingsToggle(_ title: String, systemImage: String, isOn: Binding<Bool>) -> some View {
@@ -155,9 +531,9 @@ struct AppSettingsView: View {
                 .accessibilityLabel(title)
                 .accessibilityValue(isOn.wrappedValue ? "已开启" : "已关闭")
         }
-        .padding(.horizontal, 11)
-        .frame(minHeight: 38)
-        .overlay(alignment: .bottom) { Rectangle().fill(AppTheme.border.opacity(0.55)).frame(height: 1).padding(.leading, 36) }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 40)
+        .settingsRowDivider()
     }
 
     private func settingsSlider(
@@ -166,14 +542,31 @@ struct AppSettingsView: View {
         value: Binding<Double>,
         range: ClosedRange<Double>,
         display: String,
+        step: Double = 0.01,
         disabled: Bool = false
     ) -> some View {
-        AlignedSettingSliderRow(title: title, systemImage: systemImage, value: value, range: range, displayValue: display)
-            .padding(.horizontal, 11)
-            .padding(.vertical, 6)
-            .disabled(disabled)
-            .opacity(disabled ? 0.48 : 1)
-            .overlay(alignment: .bottom) { Rectangle().fill(AppTheme.border.opacity(0.55)).frame(height: 1).padding(.leading, 36) }
+        HStack(spacing: 9) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text(title)
+                .font(.system(size: 11.5, weight: .medium))
+                .frame(width: 88, alignment: .leading)
+            Slider(value: value, in: range, step: step)
+                .accessibilityLabel(title)
+                .accessibilityValue(display)
+            Text(display)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: 58, alignment: .trailing)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .disabled(disabled)
+        .opacity(disabled ? 0.48 : 1)
+        .settingsRowDivider()
     }
 
     private func settingsPicker(
@@ -191,12 +584,13 @@ struct AppSettingsView: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .frame(width: 170, alignment: .trailing)
+            .frame(minWidth: 170, alignment: .trailing)
+            .fixedSize(horizontal: true, vertical: false)
             .accessibilityLabel(title)
         }
-        .padding(.horizontal, 11)
-        .frame(minHeight: 38)
-        .overlay(alignment: .bottom) { Rectangle().fill(AppTheme.border.opacity(0.55)).frame(height: 1).padding(.leading, 36) }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 40)
+        .settingsRowDivider()
     }
 
     private func settingsColor(_ title: String, systemImage: String, hex: Binding<String>, fallback: String) -> some View {
@@ -208,9 +602,73 @@ struct AppSettingsView: View {
                 .labelsHidden()
                 .accessibilityLabel(title)
         }
-        .padding(.horizontal, 11)
-        .frame(minHeight: 38)
-        .overlay(alignment: .bottom) { Rectangle().fill(AppTheme.border.opacity(0.55)).frame(height: 1).padding(.leading, 36) }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 40)
+        .settingsRowDivider()
+    }
+
+    private func settingsInfoRow(_ title: String, systemImage: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: systemImage)
+                .foregroundStyle(AppTheme.accentBlue)
+                .frame(width: 16)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 11.5, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func settingsActionRow(
+        _ title: String,
+        systemImage: String,
+        detail: String,
+        buttonTitle: String,
+        buttonSystemImage: String,
+        statusColor: Color? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack(alignment: .top, spacing: 11) {
+            Image(systemName: systemImage)
+                .foregroundStyle(statusColor ?? AppTheme.accentBlue)
+                .frame(width: 18)
+                .padding(.top, 3)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 12)
+            settingsActionButton(buttonTitle, systemImage: buttonSystemImage, action: action)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func settingsActionButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 10, weight: .semibold))
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(AppTheme.selectedControlBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(AppTheme.accentBlue.opacity(0.2), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(AppTheme.accentBlue)
+        .accessibilityLabel(title)
     }
 
     private func colorBinding(hex: Binding<String>, fallback: String) -> Binding<Color> {
@@ -228,7 +686,10 @@ struct AppSettingsView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(group.title).font(.system(size: 11.5, weight: .semibold))
                 if let subtitle = group.settingsSubtitle {
-                    Text(subtitle).font(.system(size: 8.5, weight: .medium)).foregroundStyle(.secondary)
+                    Text(subtitle)
+                        .font(.system(size: 8.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 10)
@@ -242,9 +703,9 @@ struct AppSettingsView: View {
                 .accessibilityLabel("显示\(group.title)")
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 11)
-        .frame(minHeight: 42)
-        .overlay(alignment: .bottom) { Rectangle().fill(AppTheme.border.opacity(0.55)).frame(height: 1).padding(.leading, 36) }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)
+        .settingsRowDivider()
     }
 
     private func visibilityBinding(for group: FloatingPanelContentGroup) -> Binding<Bool> {
@@ -265,5 +726,16 @@ struct AppSettingsView: View {
         order.remove(at: index)
         order.insert(group, at: destination)
         contentOrderRaw = FloatingPanelContentVisibility.encodedOrder(order)
+    }
+}
+
+private extension View {
+    func settingsRowDivider() -> some View {
+        overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(AppTheme.border.opacity(0.55))
+                .frame(height: 1)
+                .padding(.leading, 38)
+        }
     }
 }

@@ -2851,6 +2851,607 @@ button.quota-side-card:hover {
   padding: 10px;
 }
 
+/* The full settings surface uses a persistent category rail. The legacy
+   section rules above remain scoped to old markup used by older snapshots. */
+.app-settings-overlay {
+  background: color-mix(in srgb, var(--page) 48%, transparent);
+}
+
+.app-settings-dialog {
+  width: min(900px, calc(100vw - 48px));
+  height: min(650px, calc(100vh - 48px));
+  max-height: none;
+  border-radius: 12px;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.app-settings-layout {
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.app-settings-sidebar {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 11px;
+  border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-soft) 72%, var(--panel));
+  padding: 15px 12px 13px;
+}
+
+.app-settings-sidebar-title {
+  display: grid;
+  gap: 3px;
+  padding: 2px 8px 4px;
+}
+
+.app-settings-sidebar-title strong {
+  font-size: 17px;
+  font-weight: 760;
+}
+
+.app-settings-sidebar-title span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 620;
+}
+
+.app-settings-tabs {
+  display: grid;
+  gap: 4px;
+}
+
+.app-settings-tabs > button {
+  position: relative;
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 8px 9px 8px 12px;
+  text-align: left;
+}
+
+.app-settings-tabs > button::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 4px;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+  content: "";
+}
+
+.app-settings-tabs > button:hover {
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+}
+
+.app-settings-tabs > button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 52%, transparent);
+  outline-offset: 1px;
+}
+
+.app-settings-tabs > button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--line));
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+.app-settings-tabs > button.is-active::before {
+  background: var(--accent);
+}
+
+.app-settings-tabs strong {
+  font-size: 12px;
+  font-weight: 740;
+}
+
+.app-settings-tabs span {
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 560;
+  line-height: 1.35;
+}
+
+.app-settings-sidebar > p {
+  margin: auto 7px 0;
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
+.app-settings-content {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.app-settings-page-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 74%, transparent);
+  padding: 15px 20px 13px;
+}
+
+.app-settings-page-head > div {
+  display: grid;
+  gap: 3px;
+}
+
+.app-settings-page-head > div strong {
+  font-size: 15px;
+  font-weight: 760;
+}
+
+.app-settings-page-head > div span {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 570;
+}
+
+.app-settings-page-head > button {
+  min-width: 46px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 10.5px;
+  font-weight: 690;
+  padding-inline: 10px;
+}
+
+.app-settings-page-head > button:hover,
+.app-settings-page-head > button:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+}
+
+.app-settings-page {
+  overflow: auto;
+  padding: 17px 20px 22px;
+  scrollbar-gutter: stable;
+}
+
+.app-settings-page:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 44%, transparent);
+  outline-offset: -3px;
+}
+
+.app-settings-group {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.app-settings-group:last-child {
+  margin-bottom: 0;
+}
+
+.app-settings-group > header {
+  display: grid;
+  gap: 2px;
+  padding-inline: 2px;
+}
+
+.app-settings-group > header strong {
+  font-size: 13px;
+  font-weight: 740;
+}
+
+.app-settings-group > header span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 560;
+}
+
+.app-settings-group > div {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel-soft) 66%, var(--panel));
+}
+
+.app-setting-row,
+.app-setting-range {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  min-height: 54px;
+  padding: 10px 12px;
+}
+
+.app-setting-row + .app-setting-row,
+.app-setting-range + .app-setting-range,
+.app-setting-row + .app-setting-range,
+.app-setting-range + .app-setting-row,
+.app-settings-note + .app-setting-row,
+.app-setting-row + .app-settings-note {
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+}
+
+.app-setting-row > span,
+.app-setting-range > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.app-setting-row > span strong,
+.app-setting-range > span strong {
+  font-size: 11.5px;
+  font-weight: 710;
+}
+
+.app-setting-row > span em,
+.app-setting-range > span em {
+  color: var(--muted);
+  font-size: 9.5px;
+  font-style: normal;
+  font-weight: 540;
+  line-height: 1.4;
+}
+
+.app-setting-row > div {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.app-settings-toggle {
+  display: inline-grid;
+  grid-template-columns: 34px 18px;
+  gap: 6px;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.app-settings-toggle > span {
+  display: flex;
+  align-items: center;
+  width: 34px;
+  height: 19px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--control);
+  padding: 2px;
+}
+
+.app-settings-toggle i {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.app-settings-toggle strong {
+  font-size: 10px;
+  font-weight: 720;
+}
+
+.app-settings-toggle.is-active {
+  color: var(--accent);
+}
+
+.app-settings-toggle.is-active > span {
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--line));
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel));
+}
+
+.app-settings-toggle.is-active i {
+  background: var(--accent);
+  transform: translateX(15px);
+}
+
+.app-settings-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.app-settings-select,
+.app-settings-color-grid select {
+  min-width: 118px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11px;
+  padding-inline: 8px;
+}
+
+.app-setting-range {
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 0.8fr) 64px;
+}
+
+.app-setting-range input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.app-setting-range output {
+  color: var(--accent-strong);
+  font-size: 10.5px;
+  font-weight: 720;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.app-settings-note {
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 540;
+  line-height: 1.45;
+  padding: 10px 12px;
+}
+
+.app-settings-color-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 11px 12px;
+}
+
+.app-settings-color-grid label,
+.app-setting-inline-color {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 34px;
+  color: var(--text);
+  font-size: 10.5px;
+  font-weight: 640;
+}
+
+.app-settings-color-grid input[type="color"],
+.app-setting-inline-color input[type="color"] {
+  width: 35px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  cursor: pointer;
+  padding: 2px;
+}
+
+.app-setting-choice {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  padding: 10px 12px;
+}
+
+.app-setting-choice button,
+.app-settings-action,
+.app-settings-content-row button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--control);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 10.5px;
+  font-weight: 680;
+  padding: 0 10px;
+}
+
+.app-setting-choice button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
+  background: color-mix(in srgb, var(--accent) 11%, var(--panel));
+  color: var(--accent-strong);
+}
+
+.app-setting-inline-color {
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  padding: 9px 12px;
+}
+
+.app-settings-group-footer {
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  padding: 9px 12px;
+}
+
+.app-settings-preview-wrap {
+  display: grid;
+  gap: 7px;
+  justify-items: center;
+  margin-top: 4px;
+}
+
+.app-settings-preview-wrap > span {
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 620;
+}
+
+.app-settings-preview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 10px;
+  width: min(290px, 88%);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 58%, transparent);
+  border-radius: 10px;
+  padding: 12px 14px;
+  transform-origin: center;
+}
+
+.app-settings-preview strong {
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.app-settings-preview > span {
+  color: var(--preview-secondary);
+  font-size: 10.5px;
+  font-weight: 730;
+}
+
+.app-settings-preview i {
+  grid-column: 1 / -1;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--preview-muted) 24%, transparent);
+}
+
+.app-settings-preview i b {
+  display: block;
+  width: 64%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--preview-secondary);
+}
+
+.app-settings-preview small {
+  grid-column: 1 / -1;
+  color: var(--preview-muted);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.app-settings-content-list {
+  display: grid;
+}
+
+.app-settings-content-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 51px;
+  padding: 8px 11px;
+}
+
+.app-settings-content-row + .app-settings-content-row {
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+}
+
+.app-settings-content-row > label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.app-settings-content-row > label > span {
+  display: grid;
+  gap: 2px;
+}
+
+.app-settings-content-row strong {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.app-settings-content-row em {
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.app-settings-content-row > div {
+  display: flex;
+  gap: 4px;
+}
+
+.app-settings-content-row button {
+  min-width: 42px;
+  padding: 0 8px;
+}
+
+.app-settings-content-row button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.app-settings-option-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  padding: 11px 12px;
+}
+
+.app-settings-option-grid button {
+  display: grid;
+  gap: 3px;
+  min-height: 64px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  padding: 10px;
+  text-align: left;
+}
+
+.app-settings-option-grid button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+.app-settings-option-grid strong {
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.app-settings-option-grid span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.app-settings-action:hover,
+.app-settings-action:focus-visible,
+.app-setting-choice button:hover,
+.app-settings-content-row button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+}
+
+.app-settings-action:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+.app-settings-status {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.app-settings-group .codex-home-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 11px 12px;
+}
+
 .session-row {
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr) auto;
@@ -5282,6 +5883,88 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 @media (max-width: 680px) {
   .app-settings-general-grid,
   .settings-panel--quick {
+    grid-template-columns: 1fr;
+  }
+
+  .app-settings-overlay {
+    padding: 12px;
+  }
+
+  .app-settings-dialog {
+    width: calc(100vw - 24px);
+    height: calc(100vh - 24px);
+  }
+
+  .app-settings-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .app-settings-sidebar {
+    display: block;
+    overflow: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 8px 10px;
+  }
+
+  .app-settings-sidebar-title,
+  .app-settings-sidebar > p {
+    display: none;
+  }
+
+  .app-settings-tabs {
+    display: flex;
+    overflow-x: auto;
+    gap: 5px;
+    scrollbar-width: thin;
+  }
+
+  .app-settings-tabs > button {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 108px;
+    padding: 7px 9px;
+    text-align: center;
+  }
+
+  .app-settings-tabs > button::before {
+    top: auto;
+    right: 10px;
+    bottom: 3px;
+    left: 10px;
+    width: auto;
+    height: 2px;
+  }
+
+  .app-settings-tabs span {
+    display: none;
+  }
+
+  .app-settings-page-head,
+  .app-settings-page {
+    padding-inline: 14px;
+  }
+
+  .app-setting-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .app-setting-row > div {
+    justify-content: flex-start;
+  }
+
+  .app-setting-range {
+    grid-template-columns: minmax(0, 1fr) 58px;
+    gap: 8px 12px;
+  }
+
+  .app-setting-range > span {
+    grid-column: 1 / -1;
+  }
+
+  .app-settings-color-grid {
     grid-template-columns: 1fr;
   }
 

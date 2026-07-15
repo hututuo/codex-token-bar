@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { AppSettingsDialog } from "../components/settings/AppSettingsDialog";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
@@ -127,6 +127,7 @@ export function DashboardPage({
 }: DashboardPageProps) {
   const { analyticsReady, summaryReady } = useDashboardPageLifecycle();
   const [settingsOpen, setSettingsOpen] = useState(consumePendingSettingsRequest);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
   useEffect(() => {
     let disposed = false;
@@ -224,18 +225,26 @@ export function DashboardPage({
         snapshot={providerRepairSnapshot}
       />
       <AppSettingsDialog
+        appUpdateState={appUpdateState}
         autostartStatus={autostartStatus}
+        codexHome={codexHome}
         displaySurfaces={displaySurfaces}
         floatingSettings={floatingSettings}
         liveRateEnabled={liveRateEnabled}
-        onClose={() => setSettingsOpen(false)}
+        onCheckForUpdate={onCheckForUpdate}
+        onClose={closeSettings}
+        onCodexHomeChange={onCodexHomeChange}
+        onCodexHomeReset={onCodexHomeReset}
         onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
         onFloatingGradientChange={onFloatingGradientChange}
         onFloatingOpacityChange={onFloatingOpacityChange}
         onFloatingScaleChange={onFloatingScaleChange}
         onFloatingTextToneChange={onFloatingTextToneChange}
         onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
+        onOpenProviderRepair={onProviderRepairOpen}
         onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
+        onReconnectThreadDelete={onReconnectThreadDelete}
+        onTokenRateFullScaleChange={onTokenRateFullScaleChange}
         onToggleAutostart={onToggleAutostart}
         onToggleFloating={onToggleFloating}
         onToggleLiveRate={onToggleLiveRate}
@@ -243,6 +252,7 @@ export function DashboardPage({
         open={settingsOpen}
         platform={platform}
         quotaRefreshIntervalMs={quotaRefreshIntervalMs}
+        threadDeleteBridgeStatus={threadDeleteBridgeStatus}
       />
     </main>
   );

@@ -360,6 +360,7 @@ struct DashboardView: View {
                 statusBarPanelEnabled: $statusBarPanelEnabled,
                 liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
                 preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
+                tokenRateFullScale: $tokenRateFullScale,
                 floatingPanelLocked: $floatingPanelLocked,
                 interfaceScaleAutoEnabled: $interfaceScaleAutoEnabled,
                 interfaceScaleManualMultiplier: $interfaceScaleManualMultiplier,
@@ -379,6 +380,23 @@ struct DashboardView: View {
                 showQuota: $floatingPanelShowQuota,
                 showRadar: $floatingPanelShowRadar,
                 contentOrderRaw: $floatingPanelContentOrderRaw,
+                dataSourceLabel: store.dataSourceLabel,
+                dataSourceOrigin: store.dataSourceOrigin,
+                threadDeleteStatus: threadDeleteBridge.status,
+                onChooseDirectory: {
+                    store.chooseDataSourceDirectory()
+                    synchronizeSourceTransition()
+                },
+                onOpenProviderSync: {
+                    providerSyncStore.scan(dataSource: providerSyncStore.currentDataSource)
+                    showingAppSettings = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        showingProviderSync = true
+                    }
+                },
+                onThreadDeleteConnectionAction: {
+                    threadDeleteBridge.performConnectionAction()
+                },
                 onClose: { showingAppSettings = false }
             )
         }
