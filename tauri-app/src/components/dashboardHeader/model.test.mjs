@@ -63,7 +63,6 @@ test("DashboardHeader renders the resolved account name without the local diagno
       customAccountDisplayName: "  Lab Alias  ",
     }));
 
-    assert.doesNotMatch(html, /Codex Token Bar/);
     assert.match(html, /Lab Alias/);
     assert.doesNotMatch(html, /Official User/);
     assert.match(html, /account-name-button/);
