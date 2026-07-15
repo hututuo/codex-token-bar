@@ -4,6 +4,9 @@ import { AppSettingsDialog } from "../components/settings/AppSettingsDialog";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import type {
   AutostartStatus,
+  AutoResumeRuntimeStatus,
+  AutoResumeSettings,
+  AutoResumeThreadOption,
   CodexHomeStatus,
   DashboardSnapshot,
   DisplaySurfaceSettings,
@@ -30,6 +33,14 @@ interface AppUpdateViewState {
 
 interface DashboardPageProps {
   autostartStatus: AutostartStatus;
+  autoResumeCancelling: boolean;
+  autoResumeError: string | null;
+  autoResumeLoading: boolean;
+  autoResumeRunning: boolean;
+  autoResumeSaving: boolean;
+  autoResumeSettings: AutoResumeSettings;
+  autoResumeStatus: AutoResumeRuntimeStatus;
+  autoResumeThreads: AutoResumeThreadOption[];
   codexHome: CodexHomeStatus;
   dashboard: DashboardSnapshot;
   displaySurfaces: DisplaySurfaceSettings;
@@ -61,6 +72,10 @@ interface DashboardPageProps {
   onQuotaRefreshIntervalChange: (intervalMs: number) => Promise<void>;
   onToggleLiveRate: () => void;
   onRefresh: () => Promise<void>;
+  onCancelAutoResume: () => Promise<void>;
+  onRefreshAutoResume: () => Promise<void>;
+  onRunAutoResume: () => Promise<void>;
+  onSaveAutoResume: (settings: AutoResumeSettings) => Promise<void>;
   onReconnectThreadDelete: () => Promise<void>;
   onToggleAutostart: () => void;
   onToggleFloating: () => void;
@@ -79,6 +94,14 @@ interface DashboardPageProps {
 
 export function DashboardPage({
   autostartStatus,
+  autoResumeCancelling,
+  autoResumeError,
+  autoResumeLoading,
+  autoResumeRunning,
+  autoResumeSaving,
+  autoResumeSettings,
+  autoResumeStatus,
+  autoResumeThreads,
   codexHome,
   dashboard,
   displaySurfaces,
@@ -108,6 +131,10 @@ export function DashboardPage({
   onProviderRepairSnapshotChange,
   onQuotaRefresh,
   onQuotaRefreshIntervalChange,
+  onCancelAutoResume,
+  onRefreshAutoResume,
+  onRunAutoResume,
+  onSaveAutoResume,
   onToggleLiveRate,
   onRefresh,
   onReconnectThreadDelete,
@@ -227,6 +254,14 @@ export function DashboardPage({
       <AppSettingsDialog
         appUpdateState={appUpdateState}
         autostartStatus={autostartStatus}
+        autoResumeCancelling={autoResumeCancelling}
+        autoResumeError={autoResumeError}
+        autoResumeLoading={autoResumeLoading}
+        autoResumeRunning={autoResumeRunning}
+        autoResumeSaving={autoResumeSaving}
+        autoResumeSettings={autoResumeSettings}
+        autoResumeStatus={autoResumeStatus}
+        autoResumeThreads={autoResumeThreads}
         codexHome={codexHome}
         displaySurfaces={displaySurfaces}
         floatingSettings={floatingSettings}
@@ -243,7 +278,11 @@ export function DashboardPage({
         onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
         onOpenProviderRepair={onProviderRepairOpen}
         onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
+        onCancelAutoResume={onCancelAutoResume}
+        onRefreshAutoResume={onRefreshAutoResume}
         onReconnectThreadDelete={onReconnectThreadDelete}
+        onRunAutoResume={onRunAutoResume}
+        onSaveAutoResume={onSaveAutoResume}
         onTokenRateFullScaleChange={onTokenRateFullScaleChange}
         onToggleAutostart={onToggleAutostart}
         onToggleFloating={onToggleFloating}

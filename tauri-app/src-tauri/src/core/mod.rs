@@ -1,4 +1,5 @@
 pub mod app_paths;
+pub mod auto_resume;
 pub(crate) mod atomic_file;
 pub mod dashboard;
 pub mod live_rate;

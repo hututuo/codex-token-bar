@@ -1,5 +1,8 @@
 import type {
   AppSettingsSnapshot,
+  AutoResumeRuntimeStatus,
+  AutoResumeSettings,
+  AutoResumeThreadOption,
   AutostartStatus,
   DisplaySurfaceSettings,
   FloatingWindowPosition,
@@ -34,6 +37,30 @@ export function saveQuotaRefreshIntervalMs(intervalMs: number): Promise<AppSetti
 
 export function saveSetupGuideCompleted(completed: boolean): Promise<AppSettingsSnapshot> {
   return callCommandStrict<AppSettingsSnapshot>("save_setup_guide_completed", { completed });
+}
+
+export function saveAutoResumeSettings(settings: AutoResumeSettings): Promise<AppSettingsSnapshot> {
+  return callCommandStrict<AppSettingsSnapshot>("save_auto_resume_settings", { settings });
+}
+
+export function listAutoResumeThreads(): Promise<AutoResumeThreadOption[]> {
+  return callCommandStrict<AutoResumeThreadOption[]>("list_auto_resume_threads", undefined, 30_000);
+}
+
+export function readAutoResumeStatus(): Promise<AutoResumeRuntimeStatus> {
+  return callCommandStrict<AutoResumeRuntimeStatus>("read_auto_resume_status");
+}
+
+export function runAutoResumeNow(): Promise<AutoResumeRuntimeStatus> {
+  return callCommandStrict<AutoResumeRuntimeStatus>(
+    "run_auto_resume_now",
+    undefined,
+    6 * 60 * 60 * 1_000 + 60_000,
+  );
+}
+
+export function cancelAutoResumeRun(): Promise<AutoResumeRuntimeStatus> {
+  return callCommandStrict<AutoResumeRuntimeStatus>("cancel_auto_resume_run", undefined, 15_000);
 }
 
 export function readAutostartStatus(): Promise<AutostartStatus> {

@@ -1,7 +1,8 @@
 use crate::core::startup_trace;
 use crate::models::{
-    AppSettingsSnapshot, AutostartStatus, DisplaySurfaceSettingsSnapshot,
-    FloatingWindowPositionSnapshot, FloatingWindowSettingsSnapshot,
+    AppSettingsSnapshot, AutoResumeSettingsSnapshot, AutostartStatus,
+    DisplaySurfaceSettingsSnapshot, FloatingWindowPositionSnapshot,
+    FloatingWindowSettingsSnapshot,
 };
 use super::window_auth::require_window_label;
 use crate::platform;
@@ -145,6 +146,18 @@ pub fn save_quota_refresh_interval_ms(
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_quota_refresh_interval_ms")?;
     platform::save_quota_refresh_interval_ms(interval_ms)
+}
+
+#[tauri::command]
+pub fn save_auto_resume_settings(
+    window: tauri::WebviewWindow,
+    registry: tauri::State<'_, crate::commands::auto_resume::AutoResumeRegistry>,
+    settings: AutoResumeSettingsSnapshot,
+) -> Result<AppSettingsSnapshot, String> {
+    require_window_label(&window, "save_auto_resume_settings")?;
+    let saved = platform::save_auto_resume_settings(settings)?;
+    registry.update_settings(saved.auto_resume.clone());
+    Ok(saved)
 }
 
 #[tauri::command]

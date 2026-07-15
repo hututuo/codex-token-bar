@@ -20,6 +20,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(commands::live::LiveRateMonitorRegistry::default())
         .manage(commands::update::UpdateMonitorRegistry::default())
+        .manage(commands::auto_resume::AutoResumeRegistry::default())
         .manage(core::provider_repair::ProviderRecoveryState::default())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
@@ -36,6 +37,8 @@ pub fn run() {
             let settings = platform::read_app_settings().unwrap_or_default();
             platform::setup_desktop_surfaces(app, launch_mode, &settings)?;
             app.state::<commands::update::UpdateMonitorRegistry>()
+                .initialize_and_start(app.handle().clone());
+            app.state::<commands::auto_resume::AutoResumeRegistry>()
                 .initialize_and_start(app.handle().clone());
             if let Err(error) = app
                 .state::<commands::live::LiveRateMonitorRegistry>()
@@ -60,6 +63,7 @@ pub fn run() {
             commands::settings::save_display_surfaces,
             commands::settings::save_custom_account_display_name,
             commands::settings::save_quota_refresh_interval_ms,
+            commands::settings::save_auto_resume_settings,
             commands::settings::save_setup_guide_completed,
             commands::startup::record_performance_event,
             commands::dashboard::read_platform_capabilities,
@@ -98,6 +102,10 @@ pub fn run() {
             commands::thread_delete::read_thread_delete_bridge_status,
             commands::thread_delete::reconnect_thread_delete_bridge,
             commands::thread_delete::enable_thread_delete_bridge,
+            commands::auto_resume::list_auto_resume_threads,
+            commands::auto_resume::read_auto_resume_status,
+            commands::auto_resume::run_auto_resume_now,
+            commands::auto_resume::cancel_auto_resume_run,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Codex Token Bar");

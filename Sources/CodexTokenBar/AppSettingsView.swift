@@ -4,6 +4,7 @@ private enum AppSettingsCategory: String, CaseIterable, Identifiable {
     case general
     case surfaces
     case monitoring
+    case autoResume
     case floatingPanel
     case content
     case alertsAndUpdates
@@ -16,6 +17,7 @@ private enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .general: return "常规"
         case .surfaces: return "显示面"
         case .monitoring: return "监控与额度"
+        case .autoResume: return "自动续跑"
         case .floatingPanel: return "悬浮窗"
         case .content: return "内容与排序"
         case .alertsAndUpdates: return "提醒与更新"
@@ -28,6 +30,7 @@ private enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .general: return "启动与基础行为"
         case .surfaces: return "主界面与辅助显示面"
         case .monitoring: return "实时速率、统计与刷新"
+        case .autoResume: return "定时或额度恢复后继续任务"
         case .floatingPanel: return "位置、尺寸与视觉样式"
         case .content: return "悬浮窗信息和排列顺序"
         case .alertsAndUpdates: return "未读反馈与版本检查"
@@ -40,6 +43,7 @@ private enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .general: return "gearshape"
         case .surfaces: return "rectangle.3.group"
         case .monitoring: return "speedometer"
+        case .autoResume: return "play.circle"
         case .floatingPanel: return "rectangle.on.rectangle"
         case .content: return "list.bullet.rectangle"
         case .alertsAndUpdates: return "bell.badge"
@@ -51,6 +55,7 @@ private enum AppSettingsCategory: String, CaseIterable, Identifiable {
 struct AppSettingsView: View {
     @ObservedObject var loginItemStore: LoginItemStore
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
+    @ObservedObject var autoResumeController: AutoResumeController
     @Binding var floatingPanelEnabled: Bool
     @Binding var statusBarPanelEnabled: Bool
     @Binding var liveRateMonitoringEnabled: Bool
@@ -100,6 +105,12 @@ struct AppSettingsView: View {
         .frame(width: 920, height: 650)
         .background(AppTheme.panelBackground)
         .onExitCommand(perform: onClose)
+        .onChange(of: selectedCategory) {
+            if selectedCategory == .autoResume,
+               autoResumeController.availableThreads.isEmpty {
+                autoResumeController.refreshThreads()
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("总体设置")
     }
@@ -222,6 +233,8 @@ struct AppSettingsView: View {
                 surfaceSettings
             case .monitoring:
                 monitoringSettings
+            case .autoResume:
+                AutoResumeSettingsView(controller: autoResumeController)
             case .floatingPanel:
                 floatingPanelSettings
             case .content:

@@ -1980,6 +1980,7 @@ pub fn read_usage_cache_status(window: tauri::WebviewWindow) -> Result<UsageCach
 #[tauri::command]
 pub async fn read_account_quota(
     app: AppHandle,
+    auto_resume: tauri::State<'_, crate::commands::auto_resume::AutoResumeRegistry>,
     source_token: CodexHomeSourceToken,
     force_refresh: Option<bool>,
 ) -> Result<AccountQuotaBundle, String> {
@@ -1991,6 +1992,9 @@ pub async fn read_account_quota(
             .read_account_quota(forced)
     })
     .await;
+    if let Ok(bundle) = &result {
+        auto_resume.observe_quota(bundle);
+    }
     startup_trace::mark_performance(format!(
         "read_account_quota force={} {}ms {}",
         forced,

@@ -9,6 +9,7 @@ struct CodexTokenBarApp: App {
     @StateObject private var statusBarPanel: StatusBarTokenController
     @StateObject private var dashboardRuntime: DashboardRuntime
     @StateObject private var threadDeleteBridge: CodexThreadDeleteBridgeController
+    @StateObject private var autoResumeController: AutoResumeController
     private let updaterController: SPUStandardUpdaterController
 
     init() {
@@ -20,18 +21,31 @@ struct CodexTokenBarApp: App {
         let floatingPanel = FloatingTokenPanelController()
         let statusBarPanel = StatusBarTokenController()
         let threadDeleteBridge = CodexThreadDeleteBridgeController()
+        let dashboardRuntime = DashboardRuntime(
+            floatingPanel: floatingPanel,
+            statusBarPanel: statusBarPanel
+        )
+        let autoResumeController = AutoResumeController(
+            quotaStore: dashboardRuntime.quotaStore,
+            dataSourceProvider: { [weak dashboardRuntime] in
+                dashboardRuntime?.usageStore.currentDataSource
+                    ?? CodexDataSourceResolver().resolve()
+            },
+            quotaBackgroundActivityChanged: { [weak dashboardRuntime] enabled in
+                dashboardRuntime?.setAutoResumeQuotaBackgroundEnabled(enabled)
+            }
+        )
         self.updaterController = updaterController
         _updateSettingsStore = StateObject(wrappedValue: AppUpdateSettingsStore(updater: updaterController.updater))
         _floatingPanel = StateObject(wrappedValue: floatingPanel)
         _statusBarPanel = StateObject(wrappedValue: statusBarPanel)
         _threadDeleteBridge = StateObject(wrappedValue: threadDeleteBridge)
-        _dashboardRuntime = StateObject(wrappedValue: DashboardRuntime(
-            floatingPanel: floatingPanel,
-            statusBarPanel: statusBarPanel
-        ))
+        _dashboardRuntime = StateObject(wrappedValue: dashboardRuntime)
+        _autoResumeController = StateObject(wrappedValue: autoResumeController)
         StartupPresentation.configureInitialActivationPolicy()
         Task { @MainActor in
             threadDeleteBridge.start()
+            autoResumeController.start()
         }
     }
 
@@ -41,6 +55,7 @@ struct CodexTokenBarApp: App {
                 loginItemStore: loginItemStore,
                 updateSettingsStore: updateSettingsStore,
                 threadDeleteBridge: threadDeleteBridge,
+                autoResumeController: autoResumeController,
                 runtime: dashboardRuntime
             )
                 .frame(minWidth: 1080, minHeight: 760)

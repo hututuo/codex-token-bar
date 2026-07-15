@@ -1,6 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  cancelAutoResumeRun,
+  listAutoResumeThreads,
   readAppSettings,
+  readAutoResumeStatus,
+  runAutoResumeNow,
+  saveAutoResumeSettings,
   saveCustomAccountDisplayName,
   saveFloatingSettings,
   saveQuotaRefreshIntervalMs,
@@ -13,6 +18,9 @@ import {
 import { desktopPlatform } from "../platform/desktop";
 import type {
   AutostartStatus,
+  AutoResumeRuntimeStatus,
+  AutoResumeSettings,
+  AutoResumeThreadOption,
   DisplaySurfaceSettings,
   FloatingContentVisibility,
   FloatingPalettePatch,
@@ -24,6 +32,11 @@ import {
   DEFAULT_QUOTA_REFRESH_INTERVAL_MS,
   sanitizeQuotaRefreshIntervalMs,
 } from "../settings/quotaRefreshCadence";
+import {
+  DEFAULT_AUTO_RESUME_SETTINGS,
+  DEFAULT_AUTO_RESUME_STATUS,
+  sanitizeAutoResumeSettings,
+} from "../settings/autoResume";
 import { useAutostartSettings } from "./useAutostartSettings";
 import { useDisplaySurfaceSettings } from "./useDisplaySurfaceSettings";
 
@@ -34,6 +47,14 @@ interface DashboardShellSettingsOptions {
 
 export interface DashboardShellSettingsState {
   autostartStatus: AutostartStatus;
+  autoResumeError: string | null;
+  autoResumeCancelling: boolean;
+  autoResumeLoading: boolean;
+  autoResumeRunning: boolean;
+  autoResumeSaving: boolean;
+  autoResumeSettings: AutoResumeSettings;
+  autoResumeStatus: AutoResumeRuntimeStatus;
+  autoResumeThreads: AutoResumeThreadOption[];
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
   floatingVisible: boolean;
@@ -41,6 +62,10 @@ export interface DashboardShellSettingsState {
   quotaRefreshIntervalMs: number;
   showSetupGuide: boolean;
   completeSetupGuide: () => Promise<void>;
+  cancelAutoResume: () => Promise<void>;
+  refreshAutoResume: () => Promise<void>;
+  runAutoResume: () => Promise<void>;
+  saveAutoResume: (settings: AutoResumeSettings) => Promise<void>;
   toggleAutostart: () => void;
   toggleLiveRate: () => void;
   toggleFloatingWindow: () => Promise<void>;
@@ -61,6 +86,14 @@ export function useDashboardShellSettings({
   platform,
 }: DashboardShellSettingsOptions): DashboardShellSettingsState {
   const [floatingSettings, setFloatingSettings] = useState(DEFAULT_FLOATING_SETTINGS);
+  const [autoResumeSettings, setAutoResumeSettings] = useState(DEFAULT_AUTO_RESUME_SETTINGS);
+  const [autoResumeStatus, setAutoResumeStatus] = useState(DEFAULT_AUTO_RESUME_STATUS);
+  const [autoResumeThreads, setAutoResumeThreads] = useState<AutoResumeThreadOption[]>([]);
+  const [autoResumeLoading, setAutoResumeLoading] = useState(false);
+  const [autoResumeCancelling, setAutoResumeCancelling] = useState(false);
+  const [autoResumeSaving, setAutoResumeSaving] = useState(false);
+  const [autoResumeRunning, setAutoResumeRunning] = useState(false);
+  const [autoResumeError, setAutoResumeError] = useState<string | null>(null);
   const [customAccountDisplayName, setCustomAccountDisplayName] = useState("");
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const [showSetupGuide, setShowSetupGuide] = useState(false);
@@ -86,6 +119,7 @@ export function useDashboardShellSettings({
       setCustomAccountDisplayName(settings.customAccountDisplayName.trim());
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
       setFloatingSettings(sanitizeFloatingSettings(settings.floatingWindow));
+      setAutoResumeSettings(sanitizeAutoResumeSettings(settings.autoResume));
       applyDisplaySurfaces(settings.displaySurfaces);
       setShowSetupGuide(!settings.setupGuideCompleted);
     });
@@ -102,6 +136,66 @@ export function useDashboardShellSettings({
       void saveFloatingSettings(sanitized).catch(() => {});
     }
   }, [floatingSettings]);
+
+  const refreshAutoResume = useCallback(async () => {
+    setAutoResumeLoading(true);
+    const [threadsResult, statusResult] = await Promise.allSettled([
+      listAutoResumeThreads(),
+      readAutoResumeStatus(),
+    ]);
+    const failures: string[] = [];
+    if (threadsResult.status === "fulfilled") {
+      setAutoResumeThreads(threadsResult.value);
+    } else {
+      failures.push(`读取会话失败：${commandErrorMessage(threadsResult.reason)}`);
+    }
+    if (statusResult.status === "fulfilled") {
+      updateAutoResumeStatus(setAutoResumeStatus, statusResult.value);
+    } else {
+      failures.push(`读取运行状态失败：${commandErrorMessage(statusResult.reason)}`);
+    }
+    setAutoResumeError(failures.length > 0 ? failures.join("；") : null);
+    setAutoResumeLoading(false);
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    void readAutoResumeStatus().then((status) => {
+      if (disposed) return;
+      updateAutoResumeStatus(setAutoResumeStatus, status);
+      setAutoResumeError(null);
+    }).catch((error) => {
+      if (!disposed) setAutoResumeError(`读取运行状态失败：${commandErrorMessage(error)}`);
+    });
+    const poll = window.setInterval(() => {
+      void readAutoResumeStatus().then((status) => {
+        if (disposed) return;
+        updateAutoResumeStatus(setAutoResumeStatus, status);
+        setAutoResumeError((current) => current?.startsWith("刷新运行状态失败") ? null : current);
+      }).catch((error) => {
+        if (!disposed) setAutoResumeError(`刷新运行状态失败：${commandErrorMessage(error)}`);
+      });
+    }, 10_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(poll);
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void desktopPlatform.onAppSettingsChanged((settings) => {
+      if (!disposed) setAutoResumeSettings(sanitizeAutoResumeSettings(settings.autoResume));
+    }).then((listener) => {
+      if (disposed) listener();
+      else unlisten = listener;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   function updateFloatingOpacity(opacity: number) {
     setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, opacity }));
@@ -168,8 +262,62 @@ export function useDashboardShellSettings({
     setShowSetupGuide(false);
   }
 
+  async function saveAutoResume(settings: AutoResumeSettings) {
+    setAutoResumeSaving(true);
+    setAutoResumeError(null);
+    try {
+      const saved = await saveAutoResumeSettings(sanitizeAutoResumeSettings(settings));
+      setAutoResumeSettings(sanitizeAutoResumeSettings(saved.autoResume));
+      void desktopPlatform.publishAppSettings(saved);
+      void readAutoResumeStatus().then((status) => {
+        updateAutoResumeStatus(setAutoResumeStatus, status);
+      }).catch(() => {});
+    } catch (error) {
+      setAutoResumeError(`保存自动续跑失败：${commandErrorMessage(error)}`);
+      throw error;
+    } finally {
+      setAutoResumeSaving(false);
+    }
+  }
+
+  async function runAutoResume() {
+    setAutoResumeRunning(true);
+    setAutoResumeError(null);
+    try {
+      const status = await runAutoResumeNow();
+      updateAutoResumeStatus(setAutoResumeStatus, status);
+    } catch (error) {
+      setAutoResumeError(`立即续跑失败：${commandErrorMessage(error)}`);
+      throw error;
+    } finally {
+      setAutoResumeRunning(false);
+    }
+  }
+
+  async function cancelAutoResume() {
+    setAutoResumeCancelling(true);
+    setAutoResumeError(null);
+    try {
+      const status = await cancelAutoResumeRun();
+      updateAutoResumeStatus(setAutoResumeStatus, status);
+    } catch (error) {
+      setAutoResumeError(`停止本次续跑失败：${commandErrorMessage(error)}`);
+      throw error;
+    } finally {
+      setAutoResumeCancelling(false);
+    }
+  }
+
   return {
     autostartStatus,
+    autoResumeCancelling,
+    autoResumeError,
+    autoResumeLoading,
+    autoResumeRunning,
+    autoResumeSaving,
+    autoResumeSettings,
+    autoResumeStatus,
+    autoResumeThreads,
     displaySurfaces,
     floatingSettings,
     floatingVisible,
@@ -177,6 +325,10 @@ export function useDashboardShellSettings({
     quotaRefreshIntervalMs,
     showSetupGuide,
     completeSetupGuide,
+    cancelAutoResume,
+    refreshAutoResume,
+    runAutoResume,
+    saveAutoResume,
     toggleAutostart,
     toggleLiveRate,
     toggleFloatingWindow,
@@ -191,4 +343,17 @@ export function useDashboardShellSettings({
     updateCustomAccountDisplayName,
     updateQuotaRefreshIntervalMs,
   };
+}
+
+function updateAutoResumeStatus(
+  setStatus: (update: (current: AutoResumeRuntimeStatus) => AutoResumeRuntimeStatus) => void,
+  incoming: AutoResumeRuntimeStatus,
+) {
+  setStatus((current) => incoming.revision >= current.revision ? incoming : current);
+}
+
+function commandErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return "未知错误";
 }

@@ -12,6 +12,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "save_display_surfaces",
     "save_custom_account_display_name",
     "save_quota_refresh_interval_ms",
+    "save_auto_resume_settings",
     "save_setup_guide_completed",
     "scan_provider_repair",
     "list_provider_backups",
@@ -25,6 +26,10 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "read_thread_delete_bridge_status",
     "reconnect_thread_delete_bridge",
     "enable_thread_delete_bridge",
+    "list_auto_resume_threads",
+    "read_auto_resume_status",
+    "run_auto_resume_now",
+    "cancel_auto_resume_run",
 ];
 
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[

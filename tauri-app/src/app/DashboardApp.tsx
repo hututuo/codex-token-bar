@@ -70,6 +70,14 @@ export function DashboardApp() {
     <>
       <DashboardPage
         autostartStatus={shellSettings.autostartStatus}
+        autoResumeCancelling={shellSettings.autoResumeCancelling}
+        autoResumeError={shellSettings.autoResumeError}
+        autoResumeLoading={shellSettings.autoResumeLoading}
+        autoResumeRunning={shellSettings.autoResumeRunning}
+        autoResumeSaving={shellSettings.autoResumeSaving}
+        autoResumeSettings={shellSettings.autoResumeSettings}
+        autoResumeStatus={shellSettings.autoResumeStatus}
+        autoResumeThreads={shellSettings.autoResumeThreads}
         codexHome={readyState.codexHome}
         dashboard={readyState.dashboard}
         displaySurfaces={shellSettings.displaySurfaces}
@@ -80,6 +88,10 @@ export function DashboardApp() {
         liveThreadOptions={readyState.liveThreadOptions}
         platform={readyState.platform}
         onRefresh={reloadAll}
+        onCancelAutoResume={shellSettings.cancelAutoResume}
+        onRefreshAutoResume={shellSettings.refreshAutoResume}
+        onRunAutoResume={shellSettings.runAutoResume}
+        onSaveAutoResume={shellSettings.saveAutoResume}
         usageCacheInitializing={usageCacheInitializing}
         radarRefreshGeneration={radarRefreshGeneration}
         onFloatingOpacityChange={shellSettings.updateFloatingOpacity}

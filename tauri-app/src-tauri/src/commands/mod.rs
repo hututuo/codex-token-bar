@@ -1,3 +1,4 @@
+pub(crate) mod auto_resume;
 pub(crate) mod codex_radar;
 pub(crate) mod dashboard;
 pub(crate) mod live;

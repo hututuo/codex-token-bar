@@ -179,6 +179,7 @@ final class DashboardRuntime: ObservableObject {
     private var cadenceRecoveryTask: Task<Void, Never>?
     private var isCorrectingFloatingPanelScale = false
     private var expensiveOwnersActive: Bool?
+    private var autoResumeQuotaBackgroundEnabled = false
     private var dashboardOpenAction: (() -> Void)?
     private(set) var configuration: DashboardRuntimeConfiguration?
     private(set) var isStarted = false
@@ -339,6 +340,19 @@ final class DashboardRuntime: ObservableObject {
         applyAppConfiguration(configuration.replacing(statusBarPanelEnabled: false))
     }
 
+    func setAutoResumeQuotaBackgroundEnabled(_ enabled: Bool) {
+        guard autoResumeQuotaBackgroundEnabled != enabled else { return }
+        autoResumeQuotaBackgroundEnabled = enabled
+        if enabled {
+            quotaStore.setHistoryStore(quotaHistoryStore)
+            quotaHistoryStore.start()
+            synchronizeSourceTransition()
+            quotaStore.start(dataSource: usageStore.currentDataSource)
+        } else if expensiveOwnersActive != true {
+            quotaStore.stop()
+        }
+    }
+
     @discardableResult
     func synchronizeSourceTransition() -> DashboardSourceTransitionResult {
         sourceTransitionCoordinator.transition(
@@ -457,7 +471,9 @@ final class DashboardRuntime: ObservableObject {
             quotaStore.start(dataSource: usageStore.currentDataSource)
             radarStore.start()
         } else {
-            quotaStore.stop()
+            if !autoResumeQuotaBackgroundEnabled {
+                quotaStore.stop()
+            }
             radarStore.stop()
         }
     }

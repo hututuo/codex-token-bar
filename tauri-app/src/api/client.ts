@@ -26,8 +26,13 @@ export {
 } from "./liveClient";
 
 export {
+  cancelAutoResumeRun,
   readAppSettings,
+  listAutoResumeThreads,
+  readAutoResumeStatus,
   readAutostartStatus,
+  runAutoResumeNow,
+  saveAutoResumeSettings,
   saveCustomAccountDisplayName,
   saveDisplaySurfaces,
   saveFloatingPosition,

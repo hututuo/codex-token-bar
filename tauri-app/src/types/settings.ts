@@ -40,6 +40,50 @@ export interface AppSettingsSnapshot {
   floatingPosition: FloatingWindowPosition | null;
   displaySurfaces: DisplaySurfaceSettings;
   setupGuideCompleted: boolean;
+  autoResume: AutoResumeSettings;
+}
+
+export type AutoResumeScheduleMode = "off" | "interval" | "daily";
+export type AutoResumeQuotaWindow = "fiveHour" | "sevenDay" | "either";
+
+export interface AutoResumeSettings {
+  enabled: boolean;
+  threadId: string;
+  threadTitle: string;
+  threadCwd: string;
+  prompt: string;
+  scheduleMode: AutoResumeScheduleMode;
+  intervalMinutes: number;
+  dailyHour: number;
+  dailyMinute: number;
+  quotaResumeEnabled: boolean;
+  quotaWindow: AutoResumeQuotaWindow;
+  quotaLowThresholdPercent: number;
+  quotaRecoveryThresholdPercent: number;
+  cooldownMinutes: number;
+  maxRunsPerDay: number;
+  notifyOnResult: boolean;
+}
+
+export interface AutoResumeThreadOption {
+  id: string;
+  title: string;
+  cwd: string;
+  updatedAt: number;
+  status: string;
+  source: string;
+}
+
+export interface AutoResumeRuntimeStatus {
+  state: string;
+  message: string;
+  isRunning: boolean;
+  waitingForQuota: boolean;
+  lastTrigger: string | null;
+  lastRunAt: number | null;
+  nextScheduledAt: number | null;
+  runsToday: number;
+  revision: number;
 }
 
 export interface FloatingWindowPosition {

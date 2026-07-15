@@ -9,13 +9,14 @@ const SETTINGS_CATEGORIES = [
   "常规",
   "显示面",
   "监控与额度",
+  "自动续跑",
   "悬浮窗",
   "内容与排序",
   "提醒与更新",
   "数据与维护",
 ];
 
-test("global settings exposes seven categorized tabs and defaults to general", async () => {
+test("global settings exposes eight categorized tabs and defaults to general", async () => {
   await withSsrModules(async (load) => {
     const { AppSettingsDialog } = await load("/src/components/settings/AppSettingsDialog.tsx");
     const { DEFAULT_FLOATING_SETTINGS } = await load("/src/floating/floatingSettings.ts");
@@ -99,6 +100,126 @@ test("monitoring settings own the token-rate full scale control", async () => {
   });
 });
 
+test("auto resume settings preserve same-directory threads and save the selected exact thread id", async () => {
+  const sharedCwd = "/Users/test/project";
+  await withMountedSettings(async ({ act, calls, container, window }) => {
+    await click(act, tabByName(container, "自动续跑"), window);
+    const panel = activePanel(container);
+    assert.match(panel.textContent, /授权确认或需要用户输入时会明确拒绝并中断本次续跑/);
+    assert.match(panel.textContent, /不会代替你自动批准/);
+
+    const threadButtons = [...panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]')];
+    assert.equal(threadButtons.length, 2, "same-directory threads must not be deduplicated");
+    assert.equal(threadButtons.filter((button) => button.textContent.includes(sharedCwd)).length, 2);
+
+    const search = panel.querySelector('input[aria-label="搜索自动续跑会话"]');
+    assert.ok(search);
+    await setInputValue(act, search, "Beta", window);
+    assert.equal(panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]').length, 1);
+    await setInputValue(act, search, "", window);
+
+    const beta = [...panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]')]
+      .find((button) => button.textContent.includes("Beta thread"));
+    assert.ok(beta);
+    await click(act, beta, window);
+    const masterSwitch = panel.querySelector('button[aria-label^="自动续跑："]');
+    assert.ok(masterSwitch);
+    await click(act, masterSwitch, window);
+    await click(act, buttonWithText(panel, "保存设置"), window);
+    await flushPromises(act);
+
+    assert.equal(calls.autoResumeSaves.length, 1);
+    assert.equal(calls.autoResumeSaves[0].threadId, "thread-beta");
+    assert.equal(calls.autoResumeSaves[0].threadTitle, "Beta thread");
+    assert.equal(calls.autoResumeSaves[0].threadCwd, sharedCwd);
+    assert.equal(calls.autoResumeSaves[0].enabled, true);
+  }, {
+    autoResumeThreads: [
+      { id: "thread-alpha", title: "Alpha thread", cwd: sharedCwd, updatedAt: 1_784_000_000, status: "idle", source: "state-db" },
+      { id: "thread-beta", title: "Beta thread", cwd: sharedCwd, updatedAt: 1_784_100_000, status: "active", source: "state-db" },
+    ],
+  });
+});
+
+test("auto resume exposes interval, daily, quota and real run-now controls", async () => {
+  await withMountedSettings(async ({ act, calls, container, window }) => {
+    await click(act, tabByName(container, "自动续跑"), window);
+    const panel = activePanel(container);
+
+    await click(act, buttonWithText(panel, "按间隔"), window);
+    assert.ok(panel.querySelector('select[aria-label="自动续跑间隔"]'));
+    await click(act, buttonWithText(panel, "每天"), window);
+    assert.ok(panel.querySelector('input[aria-label="自动续跑每日时间"]'));
+    assert.ok(panel.querySelector('input[aria-label="额度低位阈值"]'));
+    assert.ok(panel.querySelector('input[aria-label="额度恢复阈值"]'));
+
+    await click(act, buttonWithText(panel, "Run Now"), window);
+    await flushPromises(act);
+    assert.equal(calls.autoResumeSaves.length, 1, "run now should save dirty settings first");
+    assert.equal(calls.autoResumeRuns, 1);
+    assert.deepEqual(calls.autoResumeOrder, ["save", "run"]);
+  }, {
+    autoResumeSettings: {
+      ...defaultAutoResumeSettings(),
+      threadId: "thread-alpha",
+      threadTitle: "Alpha thread",
+      threadCwd: "/Users/test/project",
+    },
+  });
+});
+
+test("running auto resume replaces run-now with a real cancel action", async () => {
+  await withMountedSettings(async ({ act, calls, container, window }) => {
+    await click(act, tabByName(container, "自动续跑"), window);
+    const panel = activePanel(container);
+    assert.equal(buttonWithTextOrNull(panel, "Run Now"), null);
+    assert.equal(panel.querySelector("fieldset.auto-resume-config-fieldset")?.disabled, true);
+    assert.match(panel.textContent, /目标与触发设置已暂时锁定/);
+    await click(act, buttonWithText(panel, "停止本次续跑"), window);
+    await flushPromises(act);
+    assert.equal(calls.autoResumeCancels, 1);
+  }, {
+    autoResumeStatus: {
+      ...defaultAutoResumeStatus(),
+      state: "running",
+      message: "正在发送续跑提示",
+      isRunning: true,
+      revision: 7,
+    },
+  });
+});
+
+test("auto resume translates the native armed state", async () => {
+  await withMountedSettings(async ({ act, container, window }) => {
+    await click(act, tabByName(container, "自动续跑"), window);
+    const panel = activePanel(container);
+    assert.match(panel.textContent, /已就绪/);
+    assert.doesNotMatch(panel.textContent, /\barmed\b/);
+  }, {
+    autoResumeStatus: {
+      ...defaultAutoResumeStatus(),
+      state: "armed",
+      message: "自动续跑已就绪",
+      revision: 8,
+    },
+  });
+});
+
+test("auto resume surfaces backend loading and error states", async () => {
+  await withMountedSettings(async ({ act, container, window }) => {
+    await click(act, tabByName(container, "自动续跑"), window);
+    const panel = activePanel(container);
+    assert.match(panel.textContent, /刷新中/);
+    const alert = panel.querySelector('[role="alert"]');
+    assert.ok(alert);
+    assert.match(alert.textContent, /无法连接自动续跑服务/);
+    assert.equal(buttonWithText(panel, "Run Now").disabled, true);
+  }, {
+    autoResumeError: "无法连接自动续跑服务",
+    autoResumeLoading: true,
+  });
+});
+
 test("maintenance settings expose safe data and repair actions without local-data deletion", async () => {
   await withMountedSettings(async ({ act, calls, container, window }) => {
     for (const category of SETTINGS_CATEGORIES) {
@@ -179,6 +300,11 @@ async function withMountedSettings(run, initialOverrides = {}) {
       before.focus();
       const root = createRoot(container);
       const calls = {
+        autoResumeCancels: 0,
+        autoResumeOrder: [],
+        autoResumeRefreshes: 0,
+        autoResumeRuns: 0,
+        autoResumeSaves: [],
         close: 0,
         providerRepair: 0,
         threadDeleteReconnect: 0,
@@ -210,6 +336,11 @@ async function withMountedSettings(run, initialOverrides = {}) {
 function settingsProps(floatingSettings, calls = null, overrides = {}) {
   const noop = () => {};
   const callLog = calls ?? {
+    autoResumeCancels: 0,
+    autoResumeOrder: [],
+    autoResumeRefreshes: 0,
+    autoResumeRuns: 0,
+    autoResumeSaves: [],
     close: 0,
     providerRepair: 0,
     threadDeleteReconnect: 0,
@@ -219,6 +350,14 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
   return {
     appUpdateState: { kind: "idle", message: "已是最新版本" },
     autostartStatus: { available: true, enabled: true, status: "enabled", message: "已开启" },
+    autoResumeCancelling: false,
+    autoResumeError: null,
+    autoResumeLoading: false,
+    autoResumeRunning: false,
+    autoResumeSaving: false,
+    autoResumeSettings: defaultAutoResumeSettings(),
+    autoResumeStatus: defaultAutoResumeStatus(),
+    autoResumeThreads: [],
     codexHome: { exists: true, path: "/Users/test/.codex", source: "auto" },
     displaySurfaces: {
       floatingWindowEnabled: true,
@@ -236,6 +375,10 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
       message: "已连接 Codex 调试端口 9222",
     },
     onCheckForUpdate: async () => { callLog.update += 1; },
+    onCancelAutoResume: async () => {
+      callLog.autoResumeCancels += 1;
+      callLog.autoResumeOrder.push("cancel");
+    },
     onClose: () => { callLog.close += 1; },
     onCodexHomeChange: async () => {},
     onCodexHomeReset: async () => {},
@@ -247,7 +390,16 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     onFloatingUnreadEffectChange: noop,
     onOpenProviderRepair: () => { callLog.providerRepair += 1; },
     onQuotaRefreshIntervalChange: async () => {},
+    onRefreshAutoResume: async () => { callLog.autoResumeRefreshes += 1; },
     onReconnectThreadDelete: async () => { callLog.threadDeleteReconnect += 1; },
+    onRunAutoResume: async () => {
+      callLog.autoResumeRuns += 1;
+      callLog.autoResumeOrder.push("run");
+    },
+    onSaveAutoResume: async (settings) => {
+      callLog.autoResumeSaves.push(settings);
+      callLog.autoResumeOrder.push("save");
+    },
     onTokenRateFullScaleChange: (value) => { callLog.tokenRateFullScale.push(value); },
     onToggleAutostart: noop,
     onToggleFloating: noop,
@@ -270,6 +422,41 @@ function platformCapabilities() {
     statusTrayLiveText: available("状态栏数字"),
     autostart: available("开机自启"),
     notifications: available("通知"),
+  };
+}
+
+function defaultAutoResumeSettings() {
+  return {
+    enabled: false,
+    threadId: "",
+    threadTitle: "",
+    threadCwd: "",
+    prompt: "继续",
+    scheduleMode: "off",
+    intervalMinutes: 60,
+    dailyHour: 9,
+    dailyMinute: 0,
+    quotaResumeEnabled: true,
+    quotaWindow: "either",
+    quotaLowThresholdPercent: 5,
+    quotaRecoveryThresholdPercent: 20,
+    cooldownMinutes: 30,
+    maxRunsPerDay: 6,
+    notifyOnResult: true,
+  };
+}
+
+function defaultAutoResumeStatus() {
+  return {
+    state: "disabled",
+    message: "自动续跑未开启",
+    isRunning: false,
+    waitingForQuota: false,
+    lastTrigger: null,
+    lastRunAt: null,
+    nextScheduledAt: null,
+    runsToday: 0,
+    revision: 0,
   };
 }
 
@@ -369,4 +556,18 @@ async function setRangeValue(act, input, value, window) {
   assert.ok(setter, "range value setter should exist");
   setter.call(input, String(value));
   await act(async () => input.dispatchEvent(new window.Event("input", { bubbles: true, cancelable: true })));
+}
+
+async function setInputValue(act, input, value, window) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+  assert.ok(setter, "input value setter should exist");
+  setter.call(input, value);
+  await act(async () => input.dispatchEvent(new window.Event("input", { bubbles: true, cancelable: true })));
+}
+
+async function flushPromises(act) {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 }

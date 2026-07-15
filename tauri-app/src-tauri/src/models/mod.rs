@@ -1,4 +1,5 @@
 mod common;
+mod auto_resume;
 mod dashboard;
 mod live;
 mod platform;
@@ -7,6 +8,7 @@ mod quota;
 mod settings;
 
 pub use common::{AccountInfo, LocalDataWarning, QuotaDiagnostic};
+pub use auto_resume::{AutoResumeRuntimeStatus, AutoResumeThreadOption};
 pub use dashboard::{
     ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats, RecentUsagePoint,
     SessionCacheUsage, TokenCacheBreakdown, TokenCacheUsage, TurnCacheUsage,
@@ -24,6 +26,7 @@ pub use quota::{
     QuotaSnapshot, ResetCreditDetail, ResetCreditSummary,
 };
 pub use settings::{
-    AppSettingsSnapshot, DisplaySurfaceSettingsSnapshot, FloatingContentVisibilitySnapshot,
-    FloatingWindowPositionSnapshot, FloatingWindowSettingsSnapshot,
+    AppSettingsSnapshot, AutoResumeSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
+    FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
+    FloatingWindowSettingsSnapshot,
 };

@@ -1,6 +1,7 @@
 import type { AppSettingsSnapshot } from "../../types/settings";
 import { DEFAULT_FLOATING_CONTENT_VISIBILITY } from "../../floating/floatingContent";
 import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS } from "../../settings/quotaRefreshCadence";
+import { DEFAULT_AUTO_RESUME_SETTINGS } from "../../settings/autoResume";
 
 export const fallbackAppSettings: AppSettingsSnapshot = {
   codexHome: null,
@@ -27,4 +28,5 @@ export const fallbackAppSettings: AppSettingsSnapshot = {
     statusTrayLiveTextEnabled: true,
   },
   setupGuideCompleted: false,
+  autoResume: DEFAULT_AUTO_RESUME_SETTINGS,
 };

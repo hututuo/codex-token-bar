@@ -1,7 +1,8 @@
 use crate::core::{app_paths, app_paths::home_dir};
 use crate::models::{
-    AppSettingsSnapshot, DisplaySurfaceSettingsSnapshot, FloatingContentVisibilitySnapshot,
-    FloatingWindowPositionSnapshot, FloatingWindowSettingsSnapshot,
+    AppSettingsSnapshot, AutoResumeSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
+    FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
+    FloatingWindowSettingsSnapshot,
 };
 use std::{
     fs::{File, OpenOptions},
@@ -123,6 +124,14 @@ pub fn save_display_surfaces(
 pub fn save_quota_refresh_interval_ms(interval_ms: u64) -> Result<AppSettingsSnapshot, String> {
     mutate_app_settings(|settings| {
         settings.quota_refresh_interval_ms = sanitize_quota_refresh_interval_ms(interval_ms);
+    })
+}
+
+pub fn save_auto_resume_settings(
+    auto_resume: AutoResumeSettingsSnapshot,
+) -> Result<AppSettingsSnapshot, String> {
+    mutate_app_settings(|settings| {
+        settings.auto_resume = sanitize_auto_resume_settings(auto_resume);
     })
 }
 
@@ -2298,6 +2307,47 @@ fn sanitize_app_settings(mut settings: AppSettingsSnapshot) -> AppSettingsSnapsh
         sanitize_quota_refresh_interval_ms(settings.quota_refresh_interval_ms);
     settings.floating_window = sanitize_floating_settings(settings.floating_window);
     settings.floating_position = sanitize_floating_position(settings.floating_position);
+    settings.auto_resume = sanitize_auto_resume_settings(settings.auto_resume);
+    settings
+}
+
+fn sanitize_auto_resume_settings(
+    mut settings: AutoResumeSettingsSnapshot,
+) -> AutoResumeSettingsSnapshot {
+    settings.thread_id = settings.thread_id.trim().chars().take(128).collect();
+    settings.thread_title = settings.thread_title.trim().chars().take(240).collect();
+    settings.thread_cwd = settings.thread_cwd.trim().chars().take(2_048).collect();
+    settings.prompt = settings.prompt.trim().chars().take(8_000).collect();
+    if settings.prompt.is_empty() {
+        settings.prompt = "继续".into();
+    }
+    settings.schedule_mode = match settings.schedule_mode.as_str() {
+        "interval" => "interval",
+        "daily" => "daily",
+        _ => "off",
+    }
+    .into();
+    settings.interval_minutes = match settings.interval_minutes {
+        15 | 30 | 60 | 120 | 360 | 720 => settings.interval_minutes,
+        _ => 60,
+    };
+    settings.daily_hour = settings.daily_hour.min(23);
+    settings.daily_minute = settings.daily_minute.min(59);
+    settings.quota_window = match settings.quota_window.as_str() {
+        "fiveHour" => "fiveHour",
+        "sevenDay" => "sevenDay",
+        _ => "either",
+    }
+    .into();
+    settings.quota_low_threshold_percent = settings.quota_low_threshold_percent.min(20);
+    settings.quota_recovery_threshold_percent = settings
+        .quota_recovery_threshold_percent
+        .clamp(settings.quota_low_threshold_percent.saturating_add(1), 100);
+    settings.cooldown_minutes = settings.cooldown_minutes.clamp(1, 24 * 60);
+    settings.max_runs_per_day = settings.max_runs_per_day.clamp(1, 24);
+    if settings.thread_id.is_empty() {
+        settings.enabled = false;
+    }
     settings
 }
 
@@ -2445,6 +2495,36 @@ mod tests {
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn auto_resume_settings_fail_closed_without_target_and_clamp_guards() {
+        let sanitized = sanitize_auto_resume_settings(AutoResumeSettingsSnapshot {
+            enabled: true,
+            thread_id: "   ".into(),
+            prompt: "  ".into(),
+            schedule_mode: "every-second".into(),
+            interval_minutes: 1,
+            daily_hour: 99,
+            daily_minute: 99,
+            quota_window: "unknown".into(),
+            quota_low_threshold_percent: 99,
+            quota_recovery_threshold_percent: 1,
+            cooldown_minutes: 0,
+            max_runs_per_day: 99,
+            ..AutoResumeSettingsSnapshot::default()
+        });
+        assert!(!sanitized.enabled);
+        assert_eq!(sanitized.prompt, "继续");
+        assert_eq!(sanitized.schedule_mode, "off");
+        assert_eq!(sanitized.interval_minutes, 60);
+        assert_eq!(sanitized.daily_hour, 23);
+        assert_eq!(sanitized.daily_minute, 59);
+        assert_eq!(sanitized.quota_window, "either");
+        assert_eq!(sanitized.quota_low_threshold_percent, 20);
+        assert_eq!(sanitized.quota_recovery_threshold_percent, 21);
+        assert_eq!(sanitized.cooldown_minutes, 1);
+        assert_eq!(sanitized.max_runs_per_day, 24);
+    }
 
     #[test]
     fn settings_keep_legacy_codex_home_and_sanitize_floating_values() {

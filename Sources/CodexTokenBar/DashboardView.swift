@@ -6,6 +6,7 @@ struct DashboardView: View {
     @ObservedObject var loginItemStore: LoginItemStore
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
     @ObservedObject var threadDeleteBridge: CodexThreadDeleteBridgeController
+    @ObservedObject var autoResumeController: AutoResumeController
     private let runtime: DashboardRuntime
     @State private var runtimeConsumerID = UUID()
     @ObservedObject private var store: CodexUsageStore
@@ -58,11 +59,13 @@ struct DashboardView: View {
         loginItemStore: LoginItemStore,
         updateSettingsStore: AppUpdateSettingsStore,
         threadDeleteBridge: CodexThreadDeleteBridgeController,
+        autoResumeController: AutoResumeController,
         runtime: DashboardRuntime
     ) {
         self.loginItemStore = loginItemStore
         self.updateSettingsStore = updateSettingsStore
         self.threadDeleteBridge = threadDeleteBridge
+        self.autoResumeController = autoResumeController
         self.runtime = runtime
         let composition = runtime.composition
         _store = ObservedObject(wrappedValue: composition.usageStore)
@@ -356,6 +359,7 @@ struct DashboardView: View {
             AppSettingsView(
                 loginItemStore: loginItemStore,
                 updateSettingsStore: updateSettingsStore,
+                autoResumeController: autoResumeController,
                 floatingPanelEnabled: $floatingPanelEnabled,
                 statusBarPanelEnabled: $statusBarPanelEnabled,
                 liveRateMonitoringEnabled: $liveRateMonitoringEnabled,

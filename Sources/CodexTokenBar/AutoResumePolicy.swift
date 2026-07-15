@@ -1,0 +1,298 @@
+import Foundation
+
+enum AutoResumeSafetyBlock: Equatable, Sendable {
+    case cooldown(until: Date)
+    case dailyLimit
+}
+
+enum AutoResumePolicy {
+    static func scheduledTrigger(
+        configuration: AutoResumeConfiguration,
+        state: AutoResumeRuntimeState,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> AutoResumeTrigger? {
+        let configuration = configuration.normalized
+        guard configuration.enabled, let target = configuration.target else { return nil }
+
+        switch configuration.scheduleMode {
+        case .off:
+            return nil
+        case .interval:
+            let anchor = state.lastIntervalFireAt ?? state.enabledAt ?? now
+            let interval = TimeInterval(configuration.intervalMinutes * 60)
+            guard now.timeIntervalSince(anchor) >= interval else { return nil }
+            let bucket = Int(floor(now.timeIntervalSince1970 / interval))
+            return AutoResumeTrigger(
+                kind: .interval,
+                key: "interval:\(target.id):\(configuration.intervalMinutes):\(bucket)",
+                firedAt: now
+            )
+        case .daily:
+            var components = calendar.dateComponents([.year, .month, .day], from: now)
+            components.hour = configuration.dailyHour
+            components.minute = configuration.dailyMinute
+            components.second = 0
+            guard let scheduled = calendar.date(from: components), now >= scheduled else { return nil }
+            if let enabledAt = state.enabledAt, scheduled < enabledAt {
+                return nil
+            }
+            let day = dayKey(for: now, calendar: calendar)
+            let key = String(
+                format: "daily:%@:%@:%02d%02d",
+                target.id,
+                day,
+                configuration.dailyHour,
+                configuration.dailyMinute
+            )
+            guard state.lastDailyTriggerKey != key else { return nil }
+            return AutoResumeTrigger(kind: .daily, key: key, firedAt: now)
+        }
+    }
+
+    static func quotaObservation(
+        snapshot: AccountQuotaSnapshot,
+        window: AutoResumeQuotaWindow,
+        preferredWindowLabel: String? = nil
+    ) -> AutoResumeQuotaObservation? {
+        guard snapshot.isAvailable, !snapshot.staleDataDisplayed else { return nil }
+
+        let selected: AccountQuotaWindow?
+        switch window {
+        case .fiveHour:
+            selected = snapshot.fiveHour
+        case .sevenDay:
+            selected = snapshot.sevenDay
+        case .lowestRemaining:
+            if let preferredWindowLabel {
+                selected = [snapshot.fiveHour, snapshot.sevenDay]
+                    .compactMap { $0 }
+                    .first { $0.label == preferredWindowLabel }
+            } else {
+                selected = [snapshot.fiveHour, snapshot.sevenDay]
+                    .compactMap { $0 }
+                    .min { lhs, rhs in lhs.remainingPercent < rhs.remainingPercent }
+            }
+        }
+        guard let selected else { return nil }
+
+        let resetEpoch = selected.resetsAt.map { Int($0.timeIntervalSince1970) }
+        let cycle = resetEpoch.map(String.init) ?? "unknown"
+        return AutoResumeQuotaObservation(
+            windowLabel: selected.label,
+            remainingPercent: selected.remainingPercent,
+            cycleID: "\(selected.label):\(cycle)"
+        )
+    }
+
+    static func observeQuota(
+        configuration: AutoResumeConfiguration,
+        state: inout AutoResumeRuntimeState,
+        snapshot: AccountQuotaSnapshot,
+        now: Date
+    ) -> AutoResumeTrigger? {
+        let configuration = configuration.normalized
+        let preferredWindowLabel = state.quotaArmed
+            ? state.quotaArmedWindowLabel
+            : nil
+        guard configuration.enabled,
+              configuration.quotaRecoveryEnabled,
+              let target = configuration.target,
+              let observation = quotaObservation(
+                  snapshot: snapshot,
+                  window: configuration.quotaWindow,
+                  preferredWindowLabel: preferredWindowLabel
+              )
+        else {
+            return nil
+        }
+
+        if state.quotaRecoveryRequiresTransition,
+           let armedAt = state.quotaRecoveryArmObservationAt {
+            guard let observedAt = snapshot.updatedAt, observedAt > armedAt else {
+                return nil
+            }
+        }
+
+        let hasBaseline = state.lastQuotaCycleID != nil
+            && state.lastQuotaWindowLabel != nil
+        state.lastQuotaRemainingPercent = observation.remainingPercent
+        state.lastQuotaCycleID = observation.cycleID
+        state.lastQuotaWindowLabel = observation.windowLabel
+        state.lastQuotaObservedAt = snapshot.updatedAt
+
+        if state.quotaArmed {
+            if state.quotaArmedWindowLabel == nil {
+                state.quotaArmedWindowLabel = observation.windowLabel
+            }
+            if state.quotaArmedCycleID == nil {
+                state.quotaArmedCycleID = observation.cycleID
+            }
+            if observation.remainingPercent <= configuration.quotaArmAtOrBelowPercent {
+                state.quotaRecoveryObservedLow = true
+            }
+
+            let cycleChanged = state.quotaArmedCycleID != nil
+                && state.quotaArmedCycleID != observation.cycleID
+            let allAvailableWindowsRecovered: Bool
+            if configuration.quotaWindow == .lowestRemaining {
+                let measuredWindows = [snapshot.fiveHour, snapshot.sevenDay].compactMap { $0 }
+                allAvailableWindowsRecovered = !measuredWindows.isEmpty
+                    && measuredWindows.allSatisfy {
+                        $0.remainingPercent >= configuration.quotaResumeAtOrAbovePercent
+                    }
+            } else {
+                allAvailableWindowsRecovered = true
+            }
+            let recovered = observation.remainingPercent >= configuration.quotaResumeAtOrAbovePercent
+                && (state.quotaRecoveryObservedLow || cycleChanged)
+                && allAvailableWindowsRecovered
+                && !observation.cycleID.hasSuffix(":unknown")
+            guard recovered else { return nil }
+
+            state.quotaArmed = false
+            state.quotaArmedCycleID = nil
+            state.quotaArmedWindowLabel = nil
+            state.quotaRecoveryRequiresTransition = false
+            state.quotaRecoveryObservedLow = false
+            state.quotaRecoveryArmObservationAt = nil
+            return AutoResumeTrigger(
+                kind: .quotaRecovery,
+                key: "quota:\(target.id):\(observation.cycleID)",
+                firedAt: now
+            )
+        }
+
+        guard hasBaseline else {
+            return nil
+        }
+
+        if observation.remainingPercent <= configuration.quotaArmAtOrBelowPercent {
+            state.quotaArmed = true
+            state.quotaArmedCycleID = observation.cycleID
+            state.quotaArmedWindowLabel = observation.windowLabel
+            state.quotaRecoveryRequiresTransition = false
+            state.quotaRecoveryObservedLow = true
+            state.quotaRecoveryArmObservationAt = snapshot.updatedAt
+        }
+        return nil
+    }
+
+    static func armAfterQuotaLimit(
+        configuration: AutoResumeConfiguration,
+        state: inout AutoResumeRuntimeState
+    ) {
+        let configuration = configuration.normalized
+        guard configuration.enabled, configuration.quotaRecoveryEnabled else { return }
+        state.quotaArmed = true
+        state.quotaArmedCycleID = state.lastQuotaCycleID
+        state.quotaArmedWindowLabel = state.lastQuotaWindowLabel
+        state.quotaRecoveryRequiresTransition = true
+        state.quotaRecoveryObservedLow = false
+        state.quotaRecoveryArmObservationAt = state.lastQuotaObservedAt
+    }
+
+    static func safetyBlock(
+        configuration: AutoResumeConfiguration,
+        state: AutoResumeRuntimeState,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> AutoResumeSafetyBlock? {
+        let configuration = configuration.normalized
+        if let lastRunAt = state.lastRunAt {
+            let cooldownUntil = lastRunAt.addingTimeInterval(
+                TimeInterval(configuration.cooldownMinutes * 60)
+            )
+            if now < cooldownUntil {
+                return .cooldown(until: cooldownUntil)
+            }
+        }
+
+        if let sharedDailyLimitUntil = state.sharedDailyLimitUntil,
+           now < sharedDailyLimitUntil {
+            return .dailyLimit
+        }
+
+        let runsToday = state.runHistory.filter { calendar.isDate($0, inSameDayAs: now) }.count
+        if runsToday >= configuration.maxRunsPerDay {
+            return .dailyLimit
+        }
+        return nil
+    }
+
+    static func markTriggerAccepted(
+        _ trigger: AutoResumeTrigger,
+        state: inout AutoResumeRuntimeState
+    ) {
+        state.lastTriggerKey = trigger.key
+        state.lastTriggerKind = trigger.kind
+        switch trigger.kind {
+        case .interval:
+            state.lastIntervalFireAt = trigger.firedAt
+        case .daily:
+            state.lastDailyTriggerKey = trigger.key
+        case .manual, .quotaRecovery:
+            break
+        }
+    }
+
+    static func nextScheduledDate(
+        configuration: AutoResumeConfiguration,
+        state: AutoResumeRuntimeState,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> Date? {
+        let configuration = configuration.normalized
+        guard configuration.enabled else { return nil }
+        switch configuration.scheduleMode {
+        case .off:
+            return nil
+        case .interval:
+            let anchor = state.lastIntervalFireAt ?? state.enabledAt ?? now
+            return anchor.addingTimeInterval(TimeInterval(configuration.intervalMinutes * 60))
+        case .daily:
+            var components = calendar.dateComponents([.year, .month, .day], from: now)
+            components.hour = configuration.dailyHour
+            components.minute = configuration.dailyMinute
+            components.second = 0
+            guard let today = calendar.date(from: components) else { return nil }
+            let key = dailyKey(
+                threadID: configuration.target?.id ?? "",
+                date: now,
+                hour: configuration.dailyHour,
+                minute: configuration.dailyMinute,
+                calendar: calendar
+            )
+            if now < today, state.lastDailyTriggerKey != key {
+                return today
+            }
+            return calendar.date(byAdding: .day, value: 1, to: today)
+        }
+    }
+
+    private static func dailyKey(
+        threadID: String,
+        date: Date,
+        hour: Int,
+        minute: Int,
+        calendar: Calendar
+    ) -> String {
+        String(
+            format: "daily:%@:%@:%02d%02d",
+            threadID,
+            dayKey(for: date, calendar: calendar),
+            hour,
+            minute
+        )
+    }
+
+    private static func dayKey(for date: Date, calendar: Calendar) -> String {
+        let values = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(
+            format: "%04d-%02d-%02d",
+            values.year ?? 0,
+            values.month ?? 0,
+            values.day ?? 0
+        )
+    }
+}
