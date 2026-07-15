@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Window } from "happy-dom";
 
@@ -56,6 +57,8 @@ test("quota estimate keeps historical 5h beside 7d after the current 5h window d
 
         const estimate = container.querySelector('[role="dialog"][aria-label="额度估算"]');
         assert.ok(estimate);
+        assert.ok(estimate.closest(".recent-chart-overlay-layer"));
+        assert.equal(estimate.closest(".recent-chart-scroll-content"), null);
         assert.match(estimate.textContent, /5h/);
         assert.match(estimate.textContent, /7d/);
       } finally {
@@ -83,6 +86,16 @@ function point(startUnix, fiveHourRemainingPercent, sevenDayRemainingPercent) {
     sevenDayRemainingPercent,
   };
 }
+
+test("quota estimate card is positioned inside the visible chart viewport", async () => {
+  const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
+  const cardRule = css.match(/\.chart-quota-estimate-card\s*\{(?<body>[\s\S]*?)\n\}/);
+  assert.ok(cardRule?.groups?.body);
+  assert.match(cardRule.groups.body, /position:\s*absolute;/);
+  assert.match(cardRule.groups.body, /top:\s*12px;/);
+  assert.doesNotMatch(cardRule.groups.body, /top:\s*-/);
+  assert.match(cardRule.groups.body, /left:\s*14px;/);
+})
 
 function installDomGlobals(window) {
   const values = {

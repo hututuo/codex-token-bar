@@ -4059,7 +4059,7 @@ input[type="range"]::-moz-range-thumb {
 .chart-quota-estimate-card {
   position: absolute;
   z-index: 6;
-  top: -12px;
+  top: 12px;
   left: 14px;
   pointer-events: auto;
   display: grid;
