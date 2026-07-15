@@ -13,6 +13,7 @@ import {
   plotChartPoints,
   prepareRecentChartData,
   quotaConsumptionSelection,
+  quotaEstimateWindowVisibility,
   recentChartScrollLayout,
   recentChartTimeMarkers,
   recentChartVisibleWindowLabel,
@@ -87,6 +88,7 @@ export function RecentUsageChart({
   const consumptionSelection = quotaSelectionState.startIndex !== null && quotaEndIndex !== null
     ? quotaConsumptionSelection(data, quotaSelectionState.startIndex, quotaEndIndex, quotaModel)
     : null;
+  const quotaEstimateVisibility = quotaEstimateWindowVisibility(data);
 
   useLayoutEffect(() => {
     const scrollElement = scrollRef.current;
@@ -279,9 +281,9 @@ export function RecentUsageChart({
           ) : null}
           {consumptionSelection ? (
             <RecentChartQuotaEstimateOverlay
-              fiveHourQuotaPresent={fiveHourQuotaPresent}
+              showsFiveHourQuota={quotaEstimateVisibility.fiveHour}
               selection={consumptionSelection}
-              sevenDayQuotaPresent={sevenDayQuotaPresent}
+              showsSevenDayQuota={quotaEstimateVisibility.sevenDay}
               onClose={() => setQuotaSelectionState({ startIndex: null, fixedEndIndex: null })}
             />
           ) : null}
@@ -389,14 +391,14 @@ function HoverBubble({
 }
 
 function RecentChartQuotaEstimateOverlay({
-  fiveHourQuotaPresent,
+  showsFiveHourQuota,
   selection,
-  sevenDayQuotaPresent,
+  showsSevenDayQuota,
   onClose,
 }: {
-  fiveHourQuotaPresent: boolean;
+  showsFiveHourQuota: boolean;
   selection: QuotaConsumptionSelection;
-  sevenDayQuotaPresent: boolean;
+  showsSevenDayQuota: boolean;
   onClose: () => void;
 }) {
   return (
@@ -410,10 +412,10 @@ function RecentChartQuotaEstimateOverlay({
         </div>
         <div className="quota-estimate-row">
           <span>反推总额度</span>
-          {fiveHourQuotaPresent ? <QuotaEstimateChip title="5h" estimate={selection.fiveHour} className="quota-chip--five" /> : null}
-          {sevenDayQuotaPresent ? <QuotaEstimateChip title="7d" estimate={selection.sevenDay} className="quota-chip--seven" /> : null}
+          {showsFiveHourQuota ? <QuotaEstimateChip title="5h" estimate={selection.fiveHour} className="quota-chip--five" /> : null}
+          {showsSevenDayQuota ? <QuotaEstimateChip title="7d" estimate={selection.sevenDay} className="quota-chip--seven" /> : null}
         </div>
-        {fiveHourQuotaPresent && sevenDayQuotaPresent ? (
+        {showsFiveHourQuota && showsSevenDayQuota ? (
           <div className="quota-estimate-row">
             <span>倍率</span>
             <strong className={selection.hasDivergentBudgetRatio ? "is-warning" : ""}>

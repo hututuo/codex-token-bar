@@ -52,6 +52,11 @@ export interface PreparedRecentChartData {
   markerIndices: number[];
 }
 
+export interface QuotaEstimateWindowVisibility {
+  fiveHour: boolean;
+  sevenDay: boolean;
+}
+
 export interface RecentChartTimeMarker {
   index: number;
   x: number;
@@ -197,6 +202,15 @@ export function prepareRecentChartData(
       points.length > 1
         ? uniqueIndices([0, Math.floor(last / 4), Math.floor(last / 2), Math.floor((last * 3) / 4), last])
         : [],
+  };
+}
+
+export function quotaEstimateWindowVisibility(
+  data: Pick<PreparedRecentChartData, "hasFiveHourQuota" | "hasSevenDayQuota">,
+): QuotaEstimateWindowVisibility {
+  return {
+    fiveHour: data.hasFiveHourQuota,
+    sevenDay: data.hasSevenDayQuota,
   };
 }
 

@@ -433,6 +433,16 @@ struct RecentChartQuotaSeriesVisibility: Equatable {
     }
 }
 
+struct RecentChartQuotaEstimateVisibility: Equatable {
+    let showsFiveHour: Bool
+    let showsSevenDay: Bool
+
+    init(historyHasFiveHour: Bool, historyHasSevenDay: Bool) {
+        showsFiveHour = historyHasFiveHour
+        showsSevenDay = historyHasSevenDay
+    }
+}
+
 struct RecentUsageChart: View {
     let bins: [BinUsage]
     let hourlyBins: [BinUsage]
@@ -481,6 +491,13 @@ struct RecentUsageChart: View {
         RecentChartQuotaSeriesVisibility(
             currentFiveHourPresent: currentFiveHourQuotaPresent,
             currentSevenDayPresent: currentSevenDayQuotaPresent,
+            historyHasFiveHour: preparedData.hasFiveHourQuota,
+            historyHasSevenDay: preparedData.hasSevenDayQuota
+        )
+    }
+
+    private var quotaEstimateVisibility: RecentChartQuotaEstimateVisibility {
+        RecentChartQuotaEstimateVisibility(
             historyHasFiveHour: preparedData.hasFiveHourQuota,
             historyHasSevenDay: preparedData.hasSevenDayQuota
         )
@@ -669,6 +686,19 @@ struct RecentUsageChart: View {
                         .frame(width: buttonWidth, height: proxy.size.height)
                         .offset(x: buttonWidth + 6)
                     }
+
+                    if let consumptionSelection = activeConsumptionSelection {
+                        RecentChartQuotaEstimateOverlay(
+                            selection: consumptionSelection,
+                            showsFiveHourQuota: quotaEstimateVisibility.showsFiveHour,
+                            showsSevenDayQuota: quotaEstimateVisibility.showsSevenDay,
+                            onClose: {
+                                consumptionSelectionState.reset()
+                            }
+                        )
+                        .position(x: 205, y: -40)
+                        .zIndex(12)
+                    }
                 }
                 .onAppear {
                     scrollChartToLatest(scrollProxy)
@@ -764,16 +794,6 @@ struct RecentUsageChart: View {
                 }
                 .stroke(AppTheme.accentBlue.opacity(0.55), style: StrokeStyle(lineWidth: 1.2, dash: [4, 5]))
 
-                RecentChartQuotaEstimateOverlay(
-                    selection: consumptionSelection,
-                    showsFiveHourQuota: quotaSeriesVisibility.showsFiveHour,
-                    showsSevenDayQuota: quotaSeriesVisibility.showsSevenDay,
-                    onClose: {
-                        consumptionSelectionState.reset()
-                    }
-                )
-                    .position(x: plot.minX + 205, y: plot.minY - 58)
-                    .zIndex(12)
             }
 
             ForEach(0..<4, id: \.self) { line in

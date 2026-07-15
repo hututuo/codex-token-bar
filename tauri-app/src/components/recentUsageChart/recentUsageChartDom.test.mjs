@@ -1,0 +1,114 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { Window } from "happy-dom";
+
+import { withSsrModules } from "../../test/ssrHarness.mjs";
+
+test("quota estimate keeps historical 5h beside 7d after the current 5h window disappears", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { RecentUsageChart } = await load("/src/components/RecentUsageChart.tsx");
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+      const recentUsage24h = [
+        point(0, 0.82, 0.91),
+        point(300, 0.78, 0.89),
+        point(600, 0.74, 0.87),
+      ];
+
+      try {
+        await React.act(async () => root.render(React.createElement(RecentUsageChart, {
+          recentUsage24h,
+          recentUsage7d: [],
+          recentUsage30d: [],
+          fiveHourQuotaPresent: false,
+          sevenDayQuotaPresent: true,
+        })));
+
+        assert.equal(container.querySelector('[role="dialog"]'), null);
+        const chart = container.querySelector("svg.usage-chart");
+        assert.ok(chart);
+        chart.getBoundingClientRect = () => ({
+          bottom: 185,
+          height: 185,
+          left: 0,
+          right: 980,
+          top: 0,
+          width: 980,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        });
+
+        await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 120,
+          clientY: 80,
+          pointerId: 1,
+        })));
+
+        const estimate = container.querySelector('[role="dialog"][aria-label="额度估算"]');
+        assert.ok(estimate);
+        assert.match(estimate.textContent, /5h/);
+        assert.match(estimate.textContent, /7d/);
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreGlobals();
+    window.close();
+  }
+});
+
+function point(startUnix, fiveHourRemainingPercent, sevenDayRemainingPercent) {
+  return {
+    label: "00:00",
+    startUnix,
+    tokens: 100_000,
+    calls: 1,
+    inputTokens: 100_000,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    cacheHitRate: 0,
+    fiveHourRemainingPercent,
+    sevenDayRemainingPercent,
+  };
+}
+
+function installDomGlobals(window) {
+  const values = {
+    document: window.document,
+    window,
+    navigator: window.navigator,
+    Node: window.Node,
+    Element: window.Element,
+    HTMLElement: window.HTMLElement,
+    SVGElement: window.SVGElement,
+    Event: window.Event,
+    MouseEvent: window.MouseEvent,
+    PointerEvent: window.PointerEvent,
+    MutationObserver: window.MutationObserver,
+    ResizeObserver: window.ResizeObserver,
+    getComputedStyle: window.getComputedStyle.bind(window),
+  };
+  const previous = new Map();
+  for (const [name, value] of Object.entries(values)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, { configurable: true, value, writable: true });
+  }
+  return () => {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  };
+}

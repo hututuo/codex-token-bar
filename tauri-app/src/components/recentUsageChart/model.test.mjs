@@ -9,6 +9,7 @@ import {
   percentText,
   prepareRecentChartData,
   quotaConsumptionSelection,
+  quotaEstimateWindowVisibility,
   recentChartScrollLayout,
   recentChartTimeMarkers,
   recentChartVisibleWindowLabel,
@@ -54,6 +55,21 @@ test("prepareRecentChartData keeps low-activity cache gaps unknown instead of ca
   assert.equal(data.latestFiveHourRemaining, 0.7);
   assert.equal(data.latestSevenDayRemaining, 0.6);
   assert.equal(data.markerIndices.at(-1), 2);
+});
+
+test("quota estimate visibility follows historical windows instead of current official availability", () => {
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [
+      point(0, { fiveHourRemainingPercent: 0.8, sevenDayRemainingPercent: 0.9 }),
+    ],
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+
+  assert.deepEqual(quotaEstimateWindowVisibility(data), {
+    fiveHour: true,
+    sevenDay: true,
+  });
 });
 
 test("prepareRecentChartData weights headline cache rate by input tokens", () => {

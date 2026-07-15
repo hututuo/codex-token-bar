@@ -17,6 +17,16 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(visibility.accessibilityLabels, ["7 天额度"])
     }
 
+    func testQuotaEstimateVisibilityUsesHistoricalWindowsAfterOfficialWindowRemoval() {
+        let visibility = RecentChartQuotaEstimateVisibility(
+            historyHasFiveHour: true,
+            historyHasSevenDay: true
+        )
+
+        XCTAssertTrue(visibility.showsFiveHour)
+        XCTAssertTrue(visibility.showsSevenDay)
+    }
+
     @MainActor
     func testOptionalChartPathKeepsAnIsolatedObservedSampleVisible() {
         let chart = RecentUsageChart(
@@ -802,10 +812,21 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(source.contains("consumptionSelectionState"))
         XCTAssertTrue(source.contains("quotaConsumptionSelection("))
         XCTAssertTrue(source.contains("onClick:"))
-        XCTAssertTrue(source.contains("y: plot.minY - 58"))
         XCTAssertTrue(componentSource.contains("onClose:"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateModelSelector"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateOverlay"))
+    }
+
+    func testEstimateOverlayLivesInTheFixedViewportInsteadOfTheScrollableCanvas() throws {
+        let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
+        let chartStart = try XCTUnwrap(source.range(of: "private var chartPlot: some View")).lowerBound
+        let canvasStart = try XCTUnwrap(source.range(of: "private func chartPlotCanvas")).lowerBound
+        let refreshStart = try XCTUnwrap(source.range(of: "private func refreshPreparedData()", range: canvasStart..<source.endIndex)).lowerBound
+        let viewportSource = source[chartStart..<canvasStart]
+        let canvasSource = source[canvasStart..<refreshStart]
+
+        XCTAssertTrue(viewportSource.contains("RecentChartQuotaEstimateOverlay"))
+        XCTAssertFalse(canvasSource.contains("RecentChartQuotaEstimateOverlay"))
     }
 
     func testEstimateAffordancePresentationProvidesChartHelpAndModelOptions() {
