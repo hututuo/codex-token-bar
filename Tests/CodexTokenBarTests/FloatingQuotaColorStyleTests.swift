@@ -5,7 +5,7 @@ import XCTest
 
 final class FloatingQuotaColorStyleTests: XCTestCase {
     func testModesExposeStableLabelsAndInvalidValuesFallBackToAdaptive() {
-        XCTAssertEqual(FloatingQuotaColorMode.allCases.map(\.label), ["随百分比", "固定色", "面板渐变"])
+        XCTAssertEqual(FloatingQuotaColorMode.allCases.map(\.label), ["随均速", "固定色", "面板渐变"])
 
         let style = FloatingQuotaColorStyle(
             modeRaw: "unknown",
@@ -14,6 +14,41 @@ final class FloatingQuotaColorStyleTests: XCTestCase {
         )
 
         XCTAssertEqual(style.mode, .adaptive)
+    }
+
+    func testAdaptiveColorComparesRemainingQuotaWithTheCurrentEvenPaceEstimate() {
+        XCTAssertEqual(
+            FloatingQuotaColorStyle.adaptiveMetricPercent(
+                remainingPercent: 50,
+                expectedRemainingPercent: 90
+            ),
+            0,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            FloatingQuotaColorStyle.adaptiveMetricPercent(
+                remainingPercent: 50,
+                expectedRemainingPercent: 50
+            ),
+            70,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            FloatingQuotaColorStyle.adaptiveMetricPercent(
+                remainingPercent: 50,
+                expectedRemainingPercent: 30
+            ),
+            100,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            FloatingQuotaColorStyle.adaptiveMetricPercent(
+                remainingPercent: 10,
+                expectedRemainingPercent: nil
+            ),
+            100,
+            accuracy: 0.001
+        )
     }
 
     func testFixedColorUsesConfiguredHex() throws {

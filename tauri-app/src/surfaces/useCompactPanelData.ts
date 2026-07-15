@@ -4,7 +4,7 @@ import type {
   CodexHomeSourceToken,
   FloatingPanelSnapshot,
 } from "../types/dashboard";
-import { compactQuotaLabel } from "../utils/quota";
+import { compactQuotaLabel, expectedRemainingPercentByEvenPace } from "../utils/quota";
 import {
   compactFloatingPaceLabel,
   compactResetCreditRateBarSuffix,
@@ -86,9 +86,11 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
         fiveHourLabel: quotaLabels.fiveHour,
         fiveHourAvailability: quota.quota.fiveHour.availability,
         fiveHourRemainingPercent: quota.quota.fiveHour.remainingPercent,
+        fiveHourExpectedRemainingPercent: expectedRemainingPercentByEvenPace(quota.quota.fiveHour),
         sevenDayLabel: quotaLabels.sevenDay,
         sevenDayAvailability: quota.quota.sevenDay.availability,
         sevenDayRemainingPercent: quota.quota.sevenDay.remainingPercent,
+        sevenDayExpectedRemainingPercent: expectedRemainingPercentByEvenPace(quota.quota.sevenDay),
       };
     },
     [quota, quotaLabels, rawSnapshot],

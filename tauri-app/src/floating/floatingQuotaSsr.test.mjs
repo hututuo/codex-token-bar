@@ -29,22 +29,22 @@ test("floating quota projection distinguishes unavailable compatibility zero fro
   });
 });
 
-test("floating quota colors support percentage, fixed, and existing panel gradients", async () => {
+test("floating quota colors compare remaining quota with the current even-pace estimate", async () => {
   await withSsrModules(async (load) => {
-    const { floatingQuotaFillBackground } = await load("/src/floating/FloatingPanelPreview.tsx");
-    const adaptiveLow = floatingQuotaFillBackground({
+    const { floatingQuotaFillBackground, floatingQuotaPaceMetricPercent } = await load("/src/floating/FloatingPanelPreview.tsx");
+    const adaptiveBehindPace = floatingQuotaFillBackground({
       ...floatingSettingsFixture(),
       quotaColorMode: "adaptive",
-    }, 10);
-    const adaptiveHigh = floatingQuotaFillBackground({
+    }, 50, 90);
+    const adaptiveAheadOfPace = floatingQuotaFillBackground({
       ...floatingSettingsFixture(),
       quotaColorMode: "adaptive",
-    }, 90);
+    }, 50, 30);
     const fixed = floatingQuotaFillBackground({
       ...floatingSettingsFixture(),
       quotaColorMode: "fixed",
       quotaFixedColor: "#123456",
-    }, 10);
+    }, 50, 90);
     const panelGradient = floatingQuotaFillBackground({
       ...floatingSettingsFixture(),
       gradientStart: "#102040",
@@ -52,13 +52,34 @@ test("floating quota colors support percentage, fixed, and existing panel gradie
       gradientDirection: "90deg",
       gradientType: "linear",
       quotaColorMode: "panelGradient",
-    }, 10);
+    }, 50, 90);
 
-    assert.notEqual(adaptiveLow, adaptiveHigh);
-    assert.match(adaptiveLow, /rgb\(/);
-    assert.match(adaptiveHigh, /rgb\(/);
+    assert.notEqual(adaptiveBehindPace, adaptiveAheadOfPace);
+    assert.match(adaptiveBehindPace, /rgb\(202 60 73\)/);
+    assert.match(adaptiveAheadOfPace, /rgb\(20 105 204\)/);
+    assert.equal(floatingQuotaPaceMetricPercent(50, 90), 0);
+    assert.equal(floatingQuotaPaceMetricPercent(50, 50), 70);
+    assert.equal(floatingQuotaPaceMetricPercent(50, 30), 100);
+    assert.equal(floatingQuotaPaceMetricPercent(10, null), 100);
     assert.equal(fixed, "#123456");
     assert.equal(panelGradient, "linear-gradient(90deg, #102040, #40a0ff)");
+  });
+});
+
+test("floating quota surface gives each window its own even-pace color", async () => {
+  await withSsrModules(async (load) => {
+    const { FloatingPanelSurface } = await load("/src/floating/FloatingPanelPreview.tsx");
+    const snapshot = floatingSnapshotFixture("measured", 0.5);
+    snapshot.fiveHourExpectedRemainingPercent = 90;
+    snapshot.sevenDayExpectedRemainingPercent = 30;
+
+    const html = renderToStaticMarkup(React.createElement(FloatingPanelSurface, {
+      settings: floatingSettingsFixture(),
+      snapshot,
+    }));
+
+    assert.match(html, /rgb\(202 60 73\)/);
+    assert.match(html, /rgb\(20 105 204\)/);
   });
 });
 
@@ -102,9 +123,11 @@ function floatingSnapshotFixture(availability, remainingPercent) {
     fiveHourLabel: "5h",
     fiveHourAvailability: availability,
     fiveHourRemainingPercent: remainingPercent,
+    fiveHourExpectedRemainingPercent: null,
     sevenDayLabel: "7d",
     sevenDayAvailability: availability,
     sevenDayRemainingPercent: remainingPercent,
+    sevenDayExpectedRemainingPercent: null,
     unread: false,
     unreadSummary: { active: false, count: 0, label: "无未读", detail: "", source: "test" },
   };

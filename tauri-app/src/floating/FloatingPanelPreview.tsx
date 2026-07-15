@@ -38,11 +38,13 @@ export function FloatingQuotaBar({
   availability,
   label,
   remainingPercent,
+  expectedRemainingPercent,
   settings,
 }: {
   availability: "measured" | "unavailable" | "absent";
   label: string;
   remainingPercent: number | null;
+  expectedRemainingPercent: number | null;
   settings: FloatingWindowSettings;
 }) {
   if (availability !== "measured" || typeof remainingPercent !== "number" || !Number.isFinite(remainingPercent)) {
@@ -65,7 +67,7 @@ export function FloatingQuotaBar({
       aria-valuenow={Math.round(fillPercent)}
       style={{
         "--quota-fill": `${fillPercent}%`,
-        "--quota-fill-background": floatingQuotaFillBackground(settings, fillPercent),
+        "--quota-fill-background": floatingQuotaFillBackground(settings, fillPercent, expectedRemainingPercent),
       } as CSSProperties}
     >
       <span className="floating-quota-track" aria-hidden="true">
@@ -76,7 +78,11 @@ export function FloatingQuotaBar({
   );
 }
 
-export function floatingQuotaFillBackground(settings: FloatingWindowSettings, remainingPercent: number): string {
+export function floatingQuotaFillBackground(
+  settings: FloatingWindowSettings,
+  remainingPercent: number,
+  expectedRemainingPercent: number | null,
+): string {
   switch (settings.quotaColorMode ?? "adaptive") {
     case "fixed":
       return settings.quotaFixedColor || "#1469cc";
@@ -84,10 +90,38 @@ export function floatingQuotaFillBackground(settings: FloatingWindowSettings, re
       return floatingGradientBackground(settings);
     case "adaptive":
     default: {
-      const color = semanticMetricColor(remainingPercent);
+      const color = semanticMetricColor(floatingQuotaPaceMetricPercent(remainingPercent, expectedRemainingPercent));
       return `linear-gradient(90deg, color-mix(in srgb, white 18%, ${color}), ${color})`;
     }
   }
+}
+
+export function floatingQuotaPaceMetricPercent(
+  remainingPercent: number,
+  expectedRemainingPercent: number | null,
+): number {
+  if (!Number.isFinite(remainingPercent) || expectedRemainingPercent === null || !Number.isFinite(expectedRemainingPercent)) {
+    return 100;
+  }
+
+  const remaining = Math.min(100, Math.max(0, remainingPercent));
+  const expected = Math.min(100, Math.max(0, expectedRemainingPercent));
+  const delta = remaining - expected;
+  const stops = [
+    { delta: -35, metric: 0 },
+    { delta: -20, metric: 20 },
+    { delta: -8, metric: 35 },
+    { delta: 0, metric: 70 },
+    { delta: 20, metric: 100 },
+  ];
+
+  if (delta <= stops[0].delta) return stops[0].metric;
+  if (delta >= stops[stops.length - 1].delta) return stops[stops.length - 1].metric;
+  const upperIndex = stops.findIndex((stop) => delta <= stop.delta);
+  const lower = stops[upperIndex - 1];
+  const upper = stops[upperIndex];
+  const progress = (delta - lower.delta) / (upper.delta - lower.delta);
+  return lower.metric + (upper.metric - lower.metric) * progress;
 }
 
 function FloatingRateMeter({
@@ -258,11 +292,13 @@ function FloatingContentRow({
           availability: snapshot.fiveHourAvailability,
           label: snapshot.fiveHourLabel,
           remainingPercent: snapshot.fiveHourRemainingPercent,
+          expectedRemainingPercent: snapshot.fiveHourExpectedRemainingPercent,
         },
         {
           availability: snapshot.sevenDayAvailability,
           label: snapshot.sevenDayLabel,
           remainingPercent: snapshot.sevenDayRemainingPercent,
+          expectedRemainingPercent: snapshot.sevenDayExpectedRemainingPercent,
         },
       ].filter((window) => window.availability !== "absent");
       return (
@@ -278,6 +314,7 @@ function FloatingContentRow({
               key={window.label}
               label={window.label}
               remainingPercent={window.remainingPercent}
+              expectedRemainingPercent={window.expectedRemainingPercent}
               settings={settings}
             />
           ))}

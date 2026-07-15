@@ -66,7 +66,12 @@ struct TokenQuotaMiniSegment: View {
                         .fill(floatingTrackColor)
                     if fillWidth > 0 {
                         quotaSegmentShape
-                            .fill(quotaColorStyle.fillStyle(remainingPercent: Double(window.remainingPercent)))
+                            .fill(
+                                quotaColorStyle.fillStyle(
+                                    remainingPercent: Double(window.remainingPercent),
+                                    expectedRemainingPercent: window.expectedRemainingPercentByEvenPace.map(Double.init)
+                                )
+                            )
                             .opacity(0.78)
                             .frame(width: min(proxy.size.width, max(proxy.size.height, fillWidth)), height: proxy.size.height)
                     }

@@ -45,9 +45,11 @@ export interface FloatingPanelSnapshot {
   fiveHourLabel: string;
   fiveHourAvailability: "measured" | "unavailable" | "absent";
   fiveHourRemainingPercent: number | null;
+  fiveHourExpectedRemainingPercent: number | null;
   sevenDayLabel: string;
   sevenDayAvailability: "measured" | "unavailable" | "absent";
   sevenDayRemainingPercent: number | null;
+  sevenDayExpectedRemainingPercent: number | null;
   unread: boolean;
   unreadSummary: UnreadSummary;
 }

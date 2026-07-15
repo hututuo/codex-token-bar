@@ -17,9 +17,11 @@ const baseFloatingPanelSnapshot: FloatingPanelSnapshot = {
   fiveHourLabel: "5h 待读取",
   fiveHourAvailability: "unavailable",
   fiveHourRemainingPercent: null,
+  fiveHourExpectedRemainingPercent: null,
   sevenDayLabel: "7d 待读取",
   sevenDayAvailability: "unavailable",
   sevenDayRemainingPercent: null,
+  sevenDayExpectedRemainingPercent: null,
   unread: false,
   unreadSummary: {
     active: false,

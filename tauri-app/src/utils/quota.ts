@@ -1,6 +1,8 @@
 import type { AccountQuotaBundle } from "../types/dashboard";
 
 const NEAR_RESET_WINDOW_MS = 24 * 60 * 60 * 1_000;
+const FIVE_HOUR_DURATION_SECONDS = 5 * 60 * 60;
+const SEVEN_DAY_DURATION_SECONDS = 7 * 24 * 60 * 60;
 
 export function compactQuotaLabel(limit: AccountQuotaBundle["quota"]["fiveHour"], now: Date = new Date()): string {
   if (
@@ -12,6 +14,32 @@ export function compactQuotaLabel(limit: AccountQuotaBundle["quota"]["fiveHour"]
   }
   const percent = Math.round(limit.remainingPercent * 100);
   return `${limit.label} ${percent}% ${compactQuotaResetText(limit, now)}`;
+}
+
+export function expectedRemainingPercentByEvenPace(
+  limit: AccountQuotaBundle["quota"]["fiveHour"],
+  nowUnix: number = Date.now() / 1_000,
+): number | null {
+  if (
+    limit.availability !== "measured"
+    || typeof limit.resetsAtUnix !== "number"
+    || !Number.isFinite(limit.resetsAtUnix)
+    || !Number.isFinite(nowUnix)
+  ) {
+    return null;
+  }
+
+  const durationSeconds = limit.label === "5h"
+    ? FIVE_HOUR_DURATION_SECONDS
+    : limit.label === "7d"
+      ? SEVEN_DAY_DURATION_SECONDS
+      : null;
+  if (durationSeconds === null) {
+    return null;
+  }
+
+  const remainingSeconds = Math.min(durationSeconds, Math.max(0, limit.resetsAtUnix - nowUnix));
+  return Math.round(remainingSeconds / durationSeconds * 100);
 }
 
 function compactQuotaResetText(limit: AccountQuotaBundle["quota"]["fiveHour"], now: Date): string {

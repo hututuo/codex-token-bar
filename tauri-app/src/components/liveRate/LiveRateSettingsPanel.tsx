@@ -428,7 +428,7 @@ function PaletteSettingsCallout({
         <span>额度条</span>
         <div className="segmented floating-quota-color-modes" aria-label="额度条配色">
           {([
-            ["adaptive", "随百分比"],
+            ["adaptive", "随均速"],
             ["fixed", "固定色"],
             ["panelGradient", "面板渐变"],
           ] as const).map(([mode, label]) => (

@@ -182,11 +182,13 @@ export function StatusPanelApp() {
       availability: displaySnapshot.fiveHourAvailability,
       label: displaySnapshot.fiveHourLabel,
       remainingPercent: displaySnapshot.fiveHourRemainingPercent,
+      expectedRemainingPercent: displaySnapshot.fiveHourExpectedRemainingPercent,
     },
     {
       availability: displaySnapshot.sevenDayAvailability,
       label: displaySnapshot.sevenDayLabel,
       remainingPercent: displaySnapshot.sevenDayRemainingPercent,
+      expectedRemainingPercent: displaySnapshot.sevenDayExpectedRemainingPercent,
     },
   ].filter((window) => window.availability !== "absent");
 
@@ -245,6 +247,7 @@ export function StatusPanelApp() {
               key={window.label}
               label={window.label}
               remainingPercent={window.remainingPercent}
+              expectedRemainingPercent={window.expectedRemainingPercent}
               settings={settings}
             />
           ))}

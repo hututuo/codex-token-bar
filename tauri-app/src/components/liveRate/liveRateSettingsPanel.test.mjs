@@ -32,6 +32,8 @@ test("content settings rows show Swift-style subtitles and movement feedback", a
   assert.equal(panel.includes("data-move-direction"), true);
   assert.equal(panel.includes("向上移动"), true);
   assert.equal(panel.includes("向下移动"), true);
+  assert.equal(panel.includes('["adaptive", "随均速"]'), true);
+  assert.equal(panel.includes('["adaptive", "随百分比"]'), false);
 });
 
 function panelProps(floatingSettings, floatingEnabled) {

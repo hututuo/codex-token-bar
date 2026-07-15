@@ -10,7 +10,7 @@ enum FloatingQuotaColorMode: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .adaptive:
-            return "随百分比"
+            return "随均速"
         case .fixed:
             return "固定色"
         case .panelGradient:
@@ -47,15 +47,58 @@ struct FloatingQuotaColorStyle {
             ?? AppTheme.accentBlue
     }
 
-    func fillStyle(remainingPercent: Double) -> AnyShapeStyle {
+    func fillStyle(
+        remainingPercent: Double,
+        expectedRemainingPercent: Double?
+    ) -> AnyShapeStyle {
         switch mode {
         case .adaptive:
-            return AnyShapeStyle(AppTheme.quotaRemainingColor(percent: remainingPercent))
+            return AnyShapeStyle(
+                AppTheme.quotaRemainingColor(
+                    percent: Self.adaptiveMetricPercent(
+                        remainingPercent: remainingPercent,
+                        expectedRemainingPercent: expectedRemainingPercent
+                    )
+                )
+            )
         case .fixed:
             return AnyShapeStyle(resolvedFixedColor)
         case .panelGradient:
             return gradientAppearance.gradientShapeStyle
         }
+    }
+
+    static func adaptiveMetricPercent(
+        remainingPercent: Double,
+        expectedRemainingPercent: Double?
+    ) -> Double {
+        guard remainingPercent.isFinite,
+              let expectedRemainingPercent,
+              expectedRemainingPercent.isFinite else {
+            return 100
+        }
+
+        let remaining = min(100, max(0, remainingPercent))
+        let expected = min(100, max(0, expectedRemainingPercent))
+        let delta = remaining - expected
+        let stops: [(delta: Double, metric: Double)] = [
+            (-35, 0),
+            (-20, 20),
+            (-8, 35),
+            (0, 70),
+            (20, 100),
+        ]
+
+        if delta <= stops[0].delta { return stops[0].metric }
+        if delta >= stops[stops.count - 1].delta { return stops[stops.count - 1].metric }
+
+        guard let upperIndex = stops.firstIndex(where: { delta <= $0.delta }), upperIndex > 0 else {
+            return stops[0].metric
+        }
+        let lower = stops[upperIndex - 1]
+        let upper = stops[upperIndex]
+        let progress = (delta - lower.delta) / (upper.delta - lower.delta)
+        return lower.metric + (upper.metric - lower.metric) * progress
     }
 }
 

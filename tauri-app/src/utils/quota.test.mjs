@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compactQuotaLabel } from "./quota.ts";
+import { compactQuotaLabel, expectedRemainingPercentByEvenPace } from "./quota.ts";
 
 function quotaLimit({
   label = "7d",
@@ -73,4 +73,25 @@ test("compactQuotaLabel leaves 5h reset labels unchanged", () => {
   );
 
   assert.equal(label, "5h 42% 14:00");
+});
+
+test("expectedRemainingPercentByEvenPace uses each official quota duration", () => {
+  const nowUnix = localUnix(2026, 7, 6, 10, 0);
+
+  assert.equal(expectedRemainingPercentByEvenPace(quotaLimit({
+    label: "5h",
+    resetsAtUnix: nowUnix + 150 * 60,
+  }), nowUnix), 50);
+  assert.equal(expectedRemainingPercentByEvenPace(quotaLimit({
+    label: "7d",
+    resetsAtUnix: nowUnix + 3.5 * 24 * 60 * 60,
+  }), nowUnix), 50);
+  assert.equal(expectedRemainingPercentByEvenPace(quotaLimit({
+    label: "7d",
+    resetsAtUnix: undefined,
+  }), nowUnix), null);
+  assert.equal(expectedRemainingPercentByEvenPace(quotaLimit({
+    label: "30d",
+    resetsAtUnix: nowUnix + 15 * 24 * 60 * 60,
+  }), nowUnix), null);
 });
