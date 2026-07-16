@@ -174,6 +174,7 @@ final class CodexRadarStore: ObservableObject {
     @Published private(set) var snapshot: CodexRadarSnapshot?
     @Published private(set) var detailSnapshot: CodexRadarSnapshot?
     @Published private(set) var feedItems: [CodexRadarFeedItem] = []
+    @Published private(set) var crowdSnapshot: CodexCrowdRadarSnapshot?
     @Published private(set) var status = "Codex 雷达待读取"
     @Published private(set) var detailStatus = "Codex 雷达详情待读取"
     @Published private(set) var isRefreshing = false
@@ -192,6 +193,7 @@ final class CodexRadarStore: ObservableObject {
     private let reader: any CodexRadarReading
     private let detailReader: any CodexRadarDetailReading
     private let feedReader: any CodexRadarFeedReading
+    private let crowdReader: any CodexCrowdRadarReading
     private let refreshInterval: TimeInterval
     private let detailRefreshDefaults: UserDefaults
     private let detailRefreshCalendar: Calendar
@@ -206,6 +208,7 @@ final class CodexRadarStore: ObservableObject {
         reader: any CodexRadarReading = LiveCodexRadarReader(),
         feedReader: any CodexRadarFeedReading = LiveCodexRadarFeedReader(),
         detailReader: any CodexRadarDetailReading = LiveCodexRadarDetailReader(),
+        crowdReader: any CodexCrowdRadarReading = LiveCodexCrowdRadarReader(),
         refreshInterval: TimeInterval = 600,
         detailRefreshDefaults: UserDefaults = .standard,
         detailRefreshCalendar: Calendar = .current
@@ -213,6 +216,7 @@ final class CodexRadarStore: ObservableObject {
         self.reader = reader
         self.feedReader = feedReader
         self.detailReader = detailReader
+        self.crowdReader = crowdReader
         self.refreshInterval = refreshInterval
         self.detailRefreshDefaults = detailRefreshDefaults
         self.detailRefreshCalendar = detailRefreshCalendar
@@ -291,6 +295,7 @@ final class CodexRadarStore: ObservableObject {
 
         let reader = reader
         let feedReader = feedReader
+        let crowdReader = crowdReader
         refreshTask = Task.detached(priority: .utility) {
             do {
                 trace?.mark("currentJSON.begin")
@@ -302,6 +307,7 @@ final class CodexRadarStore: ObservableObject {
                 let feedURL = URL(string: snapshot.links.rss)
                 trace?.mark("rss.begin", metadata: ["hasURL": feedURL == nil ? "0" : "1"])
                 let feedResult = await Self.readFeedIfAvailable(feedURL, feedReader: feedReader)
+                let crowdSnapshot = try? await crowdReader.readCrowdRadar()
                 trace?.mark("rss.end", metadata: [
                     "items": String(feedResult.items?.count ?? 0),
                     "failed": feedResult.diagnostic == nil ? "0" : "1"
@@ -312,6 +318,7 @@ final class CodexRadarStore: ObservableObject {
                     }
                     let now = Date()
                     self.snapshot = snapshot
+                    if let crowdSnapshot { self.crowdSnapshot = crowdSnapshot }
                     self.lastSuccessfulRefreshAt = now
                     self.staleDataDisplayed = false
                     self.feedStaleDataDisplayed = false

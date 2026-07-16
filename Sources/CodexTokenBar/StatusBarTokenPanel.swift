@@ -363,7 +363,8 @@ struct StatusBarTokenPopoverView: View {
             status: radar.status,
             diagnostics: radar.diagnostics,
             staleDataDisplayed: radar.staleDataDisplayed,
-            feedStaleDataDisplayed: radar.feedStaleDataDisplayed
+            feedStaleDataDisplayed: radar.feedStaleDataDisplayed,
+            crowdSnapshot: radar.crowdSnapshot
         )
         let radarPalette = FloatingPanelReadableTextPalette(
             backgroundLuminance: colorScheme == .dark ? 0.10 : 0.96

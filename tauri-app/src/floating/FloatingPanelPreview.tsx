@@ -16,11 +16,13 @@ import { floatingRateBarStatusText, floatingStandaloneStatusText } from "./float
 import { floatingTextPaletteForGroup } from "./floatingTextPalette";
 import { radarActionAccent, radarScoreAccent, semanticMetricColor } from "../styles/semanticColors";
 import { floatingGradientBackground } from "./floatingSettings";
+import { bestCodexCrowdRadarModel, crowdRadarModelLabel, type CodexCrowdRadarSnapshot } from "../api/codexCrowdRadarClient";
 
 interface FloatingPanelSurfaceProps {
   settings: FloatingWindowSettings;
   snapshot: FloatingPanelSnapshot;
   radarSnapshot?: CodexRadarSnapshot | null;
+  crowdRadarSnapshot?: CodexCrowdRadarSnapshot | null;
   unreadEffect?: FloatingUnreadEffect;
   onClose?: () => void;
   onDragStart?: (event: MouseEvent<HTMLElement>) => void;
@@ -166,6 +168,7 @@ export function FloatingPanelSurface({
   settings,
   snapshot,
   radarSnapshot,
+  crowdRadarSnapshot,
   unreadEffect = "ripple",
   onClose,
   onDragStart,
@@ -214,6 +217,7 @@ export function FloatingPanelSurface({
             index={index}
             key={group}
             radarSnapshot={radarSnapshot}
+            crowdRadarSnapshot={crowdRadarSnapshot}
             settings={settings}
             snapshot={snapshot}
             total={groups.length}
@@ -229,6 +233,7 @@ interface FloatingContentRowProps {
   group: FloatingContentGroup;
   index: number;
   radarSnapshot?: CodexRadarSnapshot | null;
+  crowdRadarSnapshot?: CodexCrowdRadarSnapshot | null;
   settings: FloatingWindowSettings;
   snapshot: FloatingPanelSnapshot;
   total: number;
@@ -239,6 +244,7 @@ function FloatingContentRow({
   group,
   index,
   radarSnapshot,
+  crowdRadarSnapshot,
   settings,
   snapshot,
   total,
@@ -285,7 +291,7 @@ function FloatingContentRow({
         </div>
       );
     case "radar":
-      return <FloatingRadarRow snapshot={radarSnapshot} style={style} />;
+      return <FloatingRadarRow crowdSnapshot={crowdRadarSnapshot} snapshot={radarSnapshot} style={style} />;
     case "quota": {
       const quotaWindows = [
         {
@@ -324,7 +330,7 @@ function FloatingContentRow({
   }
 }
 
-export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot | null; style: CSSProperties }) {
+export function FloatingRadarRow({ crowdSnapshot, snapshot, style }: { crowdSnapshot?: CodexCrowdRadarSnapshot | null; snapshot?: CodexRadarSnapshot | null; style: CSSProperties }) {
   if (!snapshot) {
     return (
       <div className="floating-row floating-radar" style={style}>
@@ -336,6 +342,7 @@ export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSna
 
   const primary = primaryModelRow(snapshot.modelIq);
   const secondaryText = floatingRadarSecondaryIQText(snapshot);
+  const crowdBest = bestCodexCrowdRadarModel(crowdSnapshot);
   const diagnosticLabel = codexRadarDiagnosticLabel(snapshot);
   const probability = snapshot.prediction.probability24H ?? snapshot.prediction.probability24h;
   const probability48 = snapshot.prediction.probability48H ?? snapshot.prediction.probability48h;
@@ -359,7 +366,7 @@ export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSna
           <span>IQ {displayRadarNumber(primary.point.score, 1)}</span>
           <em>{compactRadarModelName(primary.label)}</em>
         </strong>
-        <p className="floating-radar-models">{secondaryText}</p>
+        <p className="floating-radar-models">{crowdBest ? `众测 ${crowdRadarModelLabel(crowdBest)} ${(crowdBest.passRate * 150).toFixed(1)} · ${crowdBest.graded}判` : secondaryText}</p>
       </div>
     </div>
   );

@@ -133,17 +133,7 @@ struct DashboardView: View {
                                 showingCodexRadarDetails = false
                             }
 
-                        CodexRadarDetailCard(
-                            snapshot: radarStore.detailDisplaySnapshot,
-                            feedItems: radarStore.feedItems,
-                            status: radarStore.detailDisplayStatus,
-                            isRefreshing: radarStore.isDetailRefreshing,
-                            diagnostics: radarStore.detailDisplayDiagnostics,
-                            staleDataDisplayed: radarStore.detailDisplayStaleDataDisplayed,
-                            feedStaleDataDisplayed: radarStore.feedStaleDataDisplayed,
-                            onRefresh: radarStore.refreshDetail,
-                            onClose: { showingCodexRadarDetails = false }
-                        )
+                        radarDetailOverlayCard
                         .frame(width: min(900, max(680, proxy.size.width - 108)))
                         .frame(maxHeight: max(520, proxy.size.height - 90))
                         .padding(.top, 58)
@@ -433,6 +423,21 @@ struct DashboardView: View {
                 }
             }
         }
+    }
+
+    private var radarDetailOverlayCard: some View {
+        CodexRadarDetailCard(
+            snapshot: radarStore.detailDisplaySnapshot,
+            crowdSnapshot: radarStore.crowdSnapshot,
+            feedItems: radarStore.feedItems,
+            status: radarStore.detailDisplayStatus,
+            isRefreshing: radarStore.isDetailRefreshing,
+            diagnostics: radarStore.detailDisplayDiagnostics,
+            staleDataDisplayed: radarStore.detailDisplayStaleDataDisplayed,
+            feedStaleDataDisplayed: radarStore.feedStaleDataDisplayed,
+            onRefresh: radarStore.refreshDetail,
+            onClose: { showingCodexRadarDetails = false }
+        )
     }
 
     private func presentExportResult(_ result: DashboardExportResult) {

@@ -22,19 +22,22 @@ struct CodexRadarPresentationState: Equatable {
     let diagnostics: [CodexRadarDiagnostic]
     let staleDataDisplayed: Bool
     let feedStaleDataDisplayed: Bool
+    let crowdSnapshot: CodexCrowdRadarSnapshot?
 
     init(
         snapshot: CodexRadarSnapshot? = nil,
         status: String = "Codex 雷达待读取",
         diagnostics: [CodexRadarDiagnostic] = [],
         staleDataDisplayed: Bool = false,
-        feedStaleDataDisplayed: Bool = false
+        feedStaleDataDisplayed: Bool = false,
+        crowdSnapshot: CodexCrowdRadarSnapshot? = nil
     ) {
         self.snapshot = snapshot
         self.status = status
         self.diagnostics = diagnostics
         self.staleDataDisplayed = staleDataDisplayed
         self.feedStaleDataDisplayed = feedStaleDataDisplayed
+        self.crowdSnapshot = crowdSnapshot
     }
 
     var stripStatusText: String {

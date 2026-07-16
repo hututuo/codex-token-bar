@@ -200,7 +200,7 @@ struct TokenDisplayRadarStrip: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
                 }
-                Text(tokenDisplayRadarSecondaryIQText(snapshot))
+                Text(crowdSummaryText(snapshot))
                     .font(.system(size: 8.1.scaled(by: displayScale), weight: .semibold))
                     .foregroundStyle(modelPalette.secondaryColor)
                     .monospacedDigit()
@@ -226,6 +226,13 @@ struct TokenDisplayRadarStrip: View {
             return base
         }
         return "\(base)，\(compactAccessibility)"
+    }
+
+    private func crowdSummaryText(_ snapshot: CodexRadarSnapshot?) -> String {
+        if let best = presentation.crowdSnapshot?.bestModel {
+            return "众测 \(best.label) \(String(format: "%.1f", best.iq)) · \(best.graded)判"
+        }
+        return tokenDisplayRadarSecondaryIQText(snapshot)
     }
 }
 

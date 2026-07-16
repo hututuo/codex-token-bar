@@ -19,7 +19,7 @@ import {
   type FloatingWindowSettings,
 } from "./floatingSettings";
 import { FloatingPanelSurface } from "./FloatingPanelPreview";
-import { useFloatingRadar } from "./useFloatingRadar";
+import { useFloatingCrowdRadar, useFloatingRadar } from "./useFloatingRadar";
 import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
 
 export function FloatingWindowApp() {
@@ -40,6 +40,7 @@ export function FloatingWindowApp() {
   });
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   const radarSnapshot = useFloatingRadar(surfaceLifecycle.active && sourceReady);
+  const crowdRadarSnapshot = useFloatingCrowdRadar(surfaceLifecycle.active && sourceReady);
   useFloatingWindowPlacement();
 
   useEffect(() => {
@@ -215,6 +216,7 @@ export function FloatingWindowApp() {
         settings={settings}
         snapshot={snapshot}
         radarSnapshot={radarSnapshot}
+        crowdRadarSnapshot={crowdRadarSnapshot}
         unreadEffect={settings.unreadEffect}
         onClose={closeFloatingWindow}
         onDragStart={startWindowDrag}

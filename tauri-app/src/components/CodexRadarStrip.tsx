@@ -9,6 +9,12 @@ import {
 } from "../api/codexRadarDetailRefreshPlan";
 import { readCodexRadarState, subscribeCodexRadarState } from "../api/codexRadarClient";
 import {
+  bestCodexCrowdRadarModel,
+  crowdRadarModelLabel,
+  readCodexCrowdRadarSnapshot,
+  type CodexCrowdRadarSnapshot,
+} from "../api/codexCrowdRadarClient";
+import {
   codexRadarDiagnosticLabel,
   codexRadarSurfaceStatus,
   compactRadarModelName,
@@ -340,6 +346,8 @@ export function CodexRadarDetailOverlay({
   snapshot: CodexRadarSnapshot | null;
   status: string;
 }) {
+  const [crowdRadar, setCrowdRadar] = useState<CodexCrowdRadarSnapshot | null>(null);
+  const [crowdRadarStatus, setCrowdRadarStatus] = useState("正在读取众测雷达...");
   const displaySnapshot = selectCodexRadarDetailSnapshot(snapshot, detailSnapshot);
   const displayPrimary = displaySnapshot ? primaryModelRow(displaySnapshot.modelIq) : primary;
   const displaySecondary = displaySnapshot ? secondaryModelRows(displaySnapshot.modelIq) : [];
@@ -347,6 +355,19 @@ export function CodexRadarDetailOverlay({
   const displayQuotaRows = displaySnapshot?.modelIq.quotaRadar?.rows ?? quotaRows;
   const displayProbability24h = displaySnapshot?.prediction.probability24H ?? displaySnapshot?.prediction.probability24h ?? probability24h;
   const displayProbability48h = displaySnapshot?.prediction.probability48H ?? displaySnapshot?.prediction.probability48h ?? probability48h;
+
+  useEffect(() => {
+    let cancelled = false;
+    void readCodexCrowdRadarSnapshot().then((next) => {
+      if (!cancelled) {
+        setCrowdRadar(next);
+        setCrowdRadarStatus("众测数据已更新");
+      }
+    }).catch(() => {
+      if (!cancelled) setCrowdRadarStatus("众测雷达暂不可用");
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -385,6 +406,8 @@ export function CodexRadarDetailOverlay({
               probability48h={displayProbability48h}
               quotaRows={displayQuotaRows}
               snapshot={displaySnapshot}
+              crowdRadar={crowdRadar}
+              crowdRadarStatus={crowdRadarStatus}
             />
           ) : (
             <div className="codex-radar-detail-loading">
@@ -437,6 +460,8 @@ function writeLastDetailAttemptedSlotAt(value: string): void {
 
 const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
   allModels,
+  crowdRadar,
+  crowdRadarStatus,
   primary,
   probability24h,
   probability48h,
@@ -444,6 +469,8 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
   snapshot,
 }: {
   allModels: CodexRadarModelIQComparisonRow[];
+  crowdRadar: CodexCrowdRadarSnapshot | null;
+  crowdRadarStatus: string;
   primary: CodexRadarModelIQComparisonRow | null;
   probability24h: number | undefined;
   probability48h: number | undefined;
@@ -464,6 +491,7 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
   return (
     <div className="codex-radar-detail-stack">
       <CodexRadarDiagnosticsNotice snapshot={snapshot} />
+      <CrowdRadarDetail snapshot={crowdRadar} status={crowdRadarStatus} />
       <RadarDetailSection icon="bolt.badge.clock" title="速蹬窗口与预测">
         <RadarDetailSubsection title="窗口摘要">
           <RadarKeyValueGrid rows={[
@@ -656,6 +684,44 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
     </div>
   );
 });
+
+function CrowdRadarDetail({ snapshot, status }: { snapshot: CodexCrowdRadarSnapshot | null; status: string }) {
+  const rows = snapshot?.models
+    .filter((row) => row.graded > 0)
+    .sort((left, right) => right.passRate - left.passRate || right.graded - left.graded)
+    .slice(0, 8) ?? [];
+  const best = bestCodexCrowdRadarModel(snapshot);
+  return (
+    <RadarDetailSection icon="antenna.radiowaves.left.and.right" title="众测雷达">
+      {snapshot ? (
+        <>
+          <RadarDetailSubsection title="实时覆盖">
+            <RadarKeyValueGrid rows={[
+              ["任务", `${snapshot.taskCount} 道`],
+              ["众测格子", `${snapshot.cellCount}`],
+              ["参与者", `${snapshot.contributorCount} 人`],
+              ["等待判分", `${snapshot.pendingGrades}`],
+              ["判分异常", `${snapshot.errorGrades}`],
+              ["当前领先", best ? `${crowdRadarModelLabel(best)} · IQ ${(best.passRate * 150).toFixed(1)}` : "--"],
+            ]} />
+          </RadarDetailSubsection>
+          <RadarDetailSubsection title="通过率排名">
+            <RadarTable
+              headers={["模型", "通过率", "众测 IQ", "已判"]}
+              rows={rows.map((row) => [
+                crowdRadarModelLabel(row),
+                `${(row.passRate * 100).toFixed(1)}%`,
+                (row.passRate * 150).toFixed(1),
+                `${row.passed}/${row.graded}`,
+              ])}
+            />
+          </RadarDetailSubsection>
+          <a className="codex-radar-thanks" href="https://deng.codexradar.com" rel="noreferrer" target="_blank">打开分布式众测雷达</a>
+        </>
+      ) : <p className="codex-radar-paragraph">{status}</p>}
+    </RadarDetailSection>
+  );
+}
 
 export function CodexRadarDiagnosticsNotice({
   diagnostics = [],

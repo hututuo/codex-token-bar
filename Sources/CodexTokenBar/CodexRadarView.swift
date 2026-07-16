@@ -300,6 +300,7 @@ private struct CodexRadarEnvironmentBlock: View {
 
 struct CodexRadarDetailCard: View {
     let snapshot: CodexRadarSnapshot?
+    let crowdSnapshot: CodexCrowdRadarSnapshot?
     let feedItems: [CodexRadarFeedItem]
     let status: String
     let isRefreshing: Bool
@@ -308,6 +309,30 @@ struct CodexRadarDetailCard: View {
     let feedStaleDataDisplayed: Bool
     let onRefresh: () -> Void
     let onClose: () -> Void
+
+    init(
+        snapshot: CodexRadarSnapshot?,
+        crowdSnapshot: CodexCrowdRadarSnapshot? = nil,
+        feedItems: [CodexRadarFeedItem],
+        status: String,
+        isRefreshing: Bool,
+        diagnostics: [CodexRadarDiagnostic],
+        staleDataDisplayed: Bool,
+        feedStaleDataDisplayed: Bool,
+        onRefresh: @escaping () -> Void,
+        onClose: @escaping () -> Void
+    ) {
+        self.snapshot = snapshot
+        self.crowdSnapshot = crowdSnapshot
+        self.feedItems = feedItems
+        self.status = status
+        self.isRefreshing = isRefreshing
+        self.diagnostics = diagnostics
+        self.staleDataDisplayed = staleDataDisplayed
+        self.feedStaleDataDisplayed = feedStaleDataDisplayed
+        self.onRefresh = onRefresh
+        self.onClose = onClose
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -347,6 +372,7 @@ struct CodexRadarDetailCard: View {
                         if let warning = presentation.detailWarning {
                             CodexRadarDiagnosticBanner(warning: warning)
                         }
+                        CodexCrowdRadarDetail(snapshot: crowdSnapshot)
                         CodexRadarDetailOverview(snapshot: snapshot)
                         CodexRadarIQDetail(snapshot: snapshot)
                         CodexRadarQuotaDetail(snapshot: snapshot)
@@ -382,6 +408,43 @@ struct CodexRadarDetailCard: View {
             staleDataDisplayed: staleDataDisplayed,
             feedStaleDataDisplayed: feedStaleDataDisplayed
         )
+    }
+}
+
+private struct CodexCrowdRadarDetail: View {
+    let snapshot: CodexCrowdRadarSnapshot?
+
+    var body: some View {
+        CodexRadarDetailSection(title: "众测雷达", systemImage: "antenna.radiowaves.left.and.right") {
+            if let snapshot {
+                CodexRadarDetailSubsection(title: "实时覆盖") {
+                    CodexRadarKeyValueGrid(rows: [
+                        ("任务", "\(snapshot.taskCount) 道"),
+                        ("众测格子", "\(snapshot.cellCount)"),
+                        ("参与者", "\(snapshot.contributorCount) 人"),
+                        ("等待判分", "\(snapshot.pendingGrades)"),
+                        ("判分异常", "\(snapshot.errorGrades)"),
+                        ("当前领先", snapshot.bestModel.map { "\($0.label) · IQ \(String(format: "%.1f", $0.iq))" } ?? "--")
+                    ])
+                }
+                CodexRadarDetailSubsection(title: "通过率排名") {
+                    CodexRadarTable(
+                        headers: ["模型", "通过率", "众测 IQ", "已判"],
+                        rows: snapshot.models.filter { $0.graded > 0 }.sorted {
+                            $0.passRate == $1.passRate ? $0.graded > $1.graded : $0.passRate > $1.passRate
+                        }.prefix(8).map {
+                            [$0.label, String(format: "%.1f%%", $0.passRate * 100), String(format: "%.1f", $0.iq), "\($0.passed)/\($0.graded)"]
+                        }
+                    )
+                }
+                Link("打开分布式众测雷达", destination: URL(string: "https://deng.codexradar.com")!)
+                    .font(.system(size: 11, weight: .semibold))
+            } else {
+                Text("众测雷达待读取")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 

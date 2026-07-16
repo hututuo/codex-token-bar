@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { readCodexRadarState, subscribeCodexRadarState } from "../api/codexRadarClient";
 import type { CodexRadarSnapshot } from "../domain/codexRadar/model";
+import { readCodexCrowdRadarSnapshot, type CodexCrowdRadarSnapshot } from "../api/codexCrowdRadarClient";
 
 const FLOATING_RADAR_REFRESH_INTERVAL_MS = 600_000;
 
@@ -47,5 +48,20 @@ export function useFloatingRadar(
     };
   }, [active, readRadar, subscribeRadar]);
 
+  return snapshot;
+}
+
+export function useFloatingCrowdRadar(active: boolean): CodexCrowdRadarSnapshot | null {
+  const [snapshot, setSnapshot] = useState<CodexCrowdRadarSnapshot | null>(null);
+  useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    const refresh = () => void readCodexCrowdRadarSnapshot()
+      .then((next) => { if (!cancelled) setSnapshot(next); })
+      .catch(() => undefined);
+    refresh();
+    const timer = window.setInterval(refresh, FLOATING_RADAR_REFRESH_INTERVAL_MS);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [active]);
   return snapshot;
 }

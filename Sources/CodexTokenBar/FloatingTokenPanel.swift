@@ -536,7 +536,8 @@ struct FloatingTokenPanelView: View {
                     status: radar.status,
                     diagnostics: radar.diagnostics,
                     staleDataDisplayed: radar.staleDataDisplayed,
-                    feedStaleDataDisplayed: radar.feedStaleDataDisplayed
+                    feedStaleDataDisplayed: radar.feedStaleDataDisplayed,
+                    crowdSnapshot: radar.crowdSnapshot
                 ),
                 visibility: visibility,
                 onClose: nil,

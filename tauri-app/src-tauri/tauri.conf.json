@@ -13,7 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob: https:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://codexradar.com/current.json https://codexradar.com/feed.xml; frame-src 'none'; object-src 'none'; base-uri 'self'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob: https:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://codexradar.com/current.json https://codexradar.com/feed.xml https://api.codexradar.com/api/v1/table https://api.codexradar.com/api/v1/leaderboard; frame-src 'none'; object-src 'none'; base-uri 'self'"
     }
   },
   "bundle": {
