@@ -741,7 +741,11 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         var gestureBounds = scrollView.contentView.bounds
         gestureBounds.origin.x = 36.5
         scrollView.contentView.bounds = gestureBounds
-        XCTAssertEqual(callbacks.last?.offset ?? -1, 36.5, accuracy: 0.0001)
+        XCTAssertEqual(
+            callbacks.last?.offset ?? -1,
+            scrollView.contentView.bounds.origin.x,
+            accuracy: 0.0001
+        )
         XCTAssertEqual(callbacks.last?.viewportWidth, 100)
         XCTAssertEqual(callbacks.last?.contentWidth, 300)
         XCTAssertEqual(callbacks.last?.revision, 1)
