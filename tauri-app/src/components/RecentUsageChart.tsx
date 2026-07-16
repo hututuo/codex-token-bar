@@ -43,6 +43,7 @@ const RANGE_OPTIONS: RecentChartRange[] = ["24h", "7d", "30d"];
 const VISIBILITY_STORAGE_KEY = "recentChartVisibility";
 const RANGE_STORAGE_KEY = "recentChartRange";
 const QUOTA_MODEL_STORAGE_KEY = "recentChartQuotaEstimateModel";
+const QUOTA_MODEL_EVENT = "codex-token-bar:quota-price-model";
 const QUOTA_MODEL_OPTIONS: Array<{ value: OfficialAPIPriceModel; label: string }> = [
   { value: "gpt55", label: "官方 API · GPT-5.5" },
   { value: "gpt54", label: "官方 API · GPT-5.4" },
@@ -110,6 +111,7 @@ export function RecentUsageChart({
   function updateQuotaModel(next: OfficialAPIPriceModel) {
     setQuotaModel(next);
     window.localStorage.setItem(QUOTA_MODEL_STORAGE_KEY, next);
+    window.dispatchEvent(new CustomEvent(QUOTA_MODEL_EVENT, { detail: next }));
   }
 
   function updateVisibility(key: keyof SeriesVisibility) {

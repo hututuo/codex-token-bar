@@ -30,6 +30,14 @@ pub struct DashboardStats {
     pub longest_streak_days: u32,
     pub total_calls: u32,
     pub total_threads: u32,
+    #[serde(default)]
+    pub total_input_tokens: u64,
+    #[serde(default)]
+    pub total_cached_input_tokens: u64,
+    #[serde(default)]
+    pub total_output_tokens: u64,
+    #[serde(default)]
+    pub first_usage_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

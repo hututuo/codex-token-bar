@@ -534,8 +534,11 @@ struct StatStripStatusLinePresentation: Equatable {
 
 struct StatStrip: View {
     let snapshot: DashboardSnapshot
+    var planLabel = ""
     var isPreparingUsageCache = false
     var cacheStatus = ""
+
+    @AppStorage("recentChartQuotaEstimateModel") private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt55.rawValue
 
     private var stats: DashboardStats {
         snapshot.stats
@@ -557,10 +560,29 @@ struct StatStrip: View {
         )
     }
 
+    private var savingsPresentation: SubscriptionSavingsPresentation {
+        let priceModel = OfficialAPIPriceModel(rawValue: quotaEstimateModelRaw) ?? .gpt55
+        let estimate = snapshot.hasPreciseTokenUsage
+            ? SubscriptionSavingsEstimator.estimate(
+                breakdown: stats.lifetimeTokenBreakdown,
+                firstUsageAt: stats.firstUsageAt,
+                planLabel: planLabel,
+                priceModel: priceModel
+            )
+            : nil
+        return SubscriptionSavingsPresentation(estimate: estimate)
+    }
+
     var body: some View {
         VStack(spacing: 2) {
             HStack(spacing: 0) {
                 StatCell(value: tokenValue(stats.totalTokens.abbreviatedTokens), label: "累计 Token 数")
+                Divider().frame(height: 40)
+                StatCell(
+                    value: savingsPresentation.valueText,
+                    label: savingsPresentation.labelText,
+                    help: savingsPresentation.helpText
+                )
                 Divider().frame(height: 40)
                 StatCell(value: tokenValue(stats.peakDayTokens.abbreviatedTokens), label: "峰值 Token 数")
                 Divider().frame(height: 40)
@@ -604,6 +626,7 @@ struct StatStrip: View {
 struct StatCell: View {
     let value: String
     let label: String
+    var help: String? = nil
 
     var body: some View {
         VStack(spacing: 4) {
@@ -618,5 +641,6 @@ struct StatCell: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, minHeight: 48, maxHeight: 48)
+        .help(help ?? "")
     }
 }

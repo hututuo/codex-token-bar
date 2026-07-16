@@ -9,6 +9,10 @@ export interface DashboardStats {
   longestStreakDays: number;
   totalCalls: number;
   totalThreads: number;
+  totalInputTokens?: number;
+  totalCachedInputTokens?: number;
+  totalOutputTokens?: number;
+  firstUsageAt?: string | null;
 }
 
 export interface ActivityDay {

@@ -185,7 +185,11 @@ final class CodexUsageAnalyzer {
             totalThreads: officialSummary?.totalThreads ?? sessionIDsWithEvents.count,
             mostUsedReasoning: metadata.reasoning,
             skillsExplored: metadata.plugins.filter { $0.name.hasPrefix("$") }.count,
-            totalSkillsUsed: metadata.plugins.count
+            totalSkillsUsed: metadata.plugins.count,
+            totalInputTokens: cacheUsage.total.inputTokens,
+            totalCachedInputTokens: cacheUsage.total.cachedInputTokens,
+            totalOutputTokens: cacheUsage.total.outputTokens,
+            firstUsageAt: events.map(\.timestamp).min()
         )
         trace?.mark("stats.end", metadata: [
             "tokens": String(totalTokens),

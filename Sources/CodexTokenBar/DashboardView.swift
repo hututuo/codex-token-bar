@@ -482,6 +482,7 @@ struct DashboardView: View {
 
             StatStrip(
                 snapshot: store.snapshot,
+                planLabel: quotaStore.snapshot.planType ?? "",
                 isPreparingUsageCache: store.isPreparingUsageCache,
                 cacheStatus: store.status
             )

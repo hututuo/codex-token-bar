@@ -638,7 +638,7 @@ function quotaPercentValue(value: number): number {
   return value <= 1 ? value * 100 : value;
 }
 
-function officialAPICostUSD(
+export function officialAPICostUSD(
   inputTokens: number,
   cachedInputTokens: number,
   outputTokens: number,

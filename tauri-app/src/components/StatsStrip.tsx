@@ -1,10 +1,20 @@
-import { memo } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import type { DashboardStats, LocalDataWarning } from "../types/dashboard";
 import { usagePrecisionWarnings } from "../state/dashboardWarnings";
 import { formatTokens } from "../utils/format";
+import type { OfficialAPIPriceModel } from "./recentUsageChart/model";
+import {
+  estimateLifetimeSavings,
+  isOfficialAPIPriceModel,
+  QUOTA_PRICE_MODEL_EVENT,
+  QUOTA_PRICE_MODEL_STORAGE_KEY,
+  lifetimeBreakdownFromStats,
+  savingsPresentation,
+} from "./statsStrip/savings";
 
 interface StatsStripProps {
   stats: DashboardStats;
+  planLabel: string;
   warnings?: LocalDataWarning[];
 }
 
@@ -16,12 +26,41 @@ const statsConfig: Array<[keyof DashboardStats, string, (value: number) => strin
   ["longestStreakDays", "最长连续天数", (value) => `${value} 天`],
 ];
 
-function StatsStripView({ stats, warnings = [] }: StatsStripProps) {
+function StatsStripView({ stats, planLabel, warnings = [] }: StatsStripProps) {
   const usageWarnings = usagePrecisionWarnings(warnings);
+  const [priceModel, setPriceModel] = useState<OfficialAPIPriceModel>("gpt55");
+  const savings = useMemo(() => savingsPresentation(estimateLifetimeSavings({
+    breakdown: lifetimeBreakdownFromStats(stats),
+    firstUsageAt: stats.firstUsageAt,
+    planLabel,
+    priceModel,
+  })), [planLabel, priceModel, stats]);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem(QUOTA_PRICE_MODEL_STORAGE_KEY);
+    if (isOfficialAPIPriceModel(stored)) setPriceModel(stored);
+    const onPriceModel = (event: Event) => {
+      const next = (event as CustomEvent<string>).detail;
+      if (isOfficialAPIPriceModel(next)) setPriceModel(next);
+    };
+    window.addEventListener(QUOTA_PRICE_MODEL_EVENT, onPriceModel);
+    return () => window.removeEventListener(QUOTA_PRICE_MODEL_EVENT, onPriceModel);
+  }, []);
+
   return (
     <>
       <section className="stats-strip" aria-label="Token 总览">
-        {statsConfig.map(([key, label, format]) => (
+        {statsConfig.slice(0, 1).map(([key, label, format]) => (
+          <div className="stats-cell" key={key}>
+            <strong>{format(Number(stats[key]))}</strong>
+            <span>{label}</span>
+          </div>
+        ))}
+        <div className="stats-cell stats-cell--savings" title={savings.helpText}>
+          <strong>{savings.valueText}</strong>
+          <span>{savings.labelText}</span>
+        </div>
+        {statsConfig.slice(1).map(([key, label, format]) => (
           <div className="stats-cell" key={key}>
             <strong>{format(Number(stats[key]))}</strong>
             <span>{label}</span>

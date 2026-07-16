@@ -916,7 +916,7 @@ fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
 }
 
 #[test]
-fn usage_summary_rejects_v10_and_reuses_rebuilt_v11_dashboard_aggregate() {
+fn usage_summary_rejects_v11_and_reuses_rebuilt_v12_dashboard_aggregate() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("token-aggregate-cache.json");
@@ -924,7 +924,7 @@ fn usage_summary_rejects_v10_and_reuses_rebuilt_v11_dashboard_aggregate() {
     let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019eaggregate-stale-v10-cache.jsonl");
+    let file = session_dir.join("rollout-019eaggregate-stale-v11-cache.jsonl");
     write_lines(
         &file,
         &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
@@ -933,7 +933,7 @@ fn usage_summary_rejects_v10_and_reuses_rebuilt_v11_dashboard_aggregate() {
     fs::write(
         &cache_path,
         serde_json::json!({
-            "version": 10,
+            "version": 11,
             "signature": signature,
             "snapshot": null,
             "summary": {
@@ -951,7 +951,7 @@ fn usage_summary_rejects_v10_and_reuses_rebuilt_v11_dashboard_aggregate() {
     assert_eq!(summary.total_tokens, 120);
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""version":11"#));
+    assert!(aggregate_cache_text().contains(r#""version":12"#));
     assert!(aggregate_cache_text().contains(r#""totalTokens":120"#));
 
     reset_dashboard_aggregate_build_count_for_testing();
@@ -960,7 +960,7 @@ fn usage_summary_rejects_v10_and_reuses_rebuilt_v11_dashboard_aggregate() {
     assert_eq!(
         dashboard_aggregate_build_count_for_testing(&root),
         0,
-        "current v11 aggregate should be reused after memory state is cleared"
+        "current v12 aggregate should be reused after memory state is cleared"
     );
 
     fs::remove_dir_all(root).unwrap();

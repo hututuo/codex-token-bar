@@ -119,6 +119,10 @@ fn read_stats(connection: &Connection) -> Result<DashboardStats> {
         longest_streak_days: 0,
         total_calls: 0,
         total_threads: to_u32(total_threads),
+        total_input_tokens: 0,
+        total_cached_input_tokens: 0,
+        total_output_tokens: 0,
+        first_usage_at: None,
     })
 }
 

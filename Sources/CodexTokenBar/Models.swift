@@ -215,6 +215,26 @@ struct DashboardStats: Codable {
     let mostUsedReasoning: String
     let skillsExplored: Int
     let totalSkillsUsed: Int
+    var totalInputTokens: Int? = nil
+    var totalCachedInputTokens: Int? = nil
+    var totalOutputTokens: Int? = nil
+    var firstUsageAt: Date? = nil
+}
+
+extension DashboardStats {
+    var lifetimeTokenBreakdown: TokenCacheBreakdown {
+        TokenCacheBreakdown(
+            inputTokens: max(totalInputTokens ?? 0, 0),
+            cachedInputTokens: min(
+                max(totalCachedInputTokens ?? 0, 0),
+                max(totalInputTokens ?? 0, 0)
+            ),
+            outputTokens: max(totalOutputTokens ?? 0, 0),
+            reasoningOutputTokens: 0,
+            totalTokens: totalTokens,
+            calls: totalCalls
+        )
+    }
 }
 
 enum DashboardUsagePrecision: String, Codable, Equatable {

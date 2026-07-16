@@ -478,7 +478,11 @@ extension DashboardSnapshot {
                 totalThreads: 13_040,
                 mostUsedReasoning: "中 · 51%",
                 skillsExplored: 11,
-                totalSkillsUsed: 31
+                totalSkillsUsed: 31,
+                totalInputTokens: cacheUsage.total.inputTokens,
+                totalCachedInputTokens: cacheUsage.total.cachedInputTokens,
+                totalOutputTokens: cacheUsage.total.outputTokens,
+                firstUsageAt: days.first(where: { $0.tokens > 0 })?.date
             ),
             dailyUsage: days,
             recentBins: bins,

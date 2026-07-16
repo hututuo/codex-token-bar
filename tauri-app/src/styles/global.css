@@ -1452,7 +1452,7 @@ button.quota-side-card:hover {
 
 .stats-strip {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   padding: 10px 0;
   background: var(--panel);
 }
@@ -1472,6 +1472,10 @@ button.quota-side-card:hover {
 .stats-cell strong {
   font-size: 19px;
   font-weight: 700;
+}
+
+.stats-cell--savings strong {
+  color: var(--accent);
 }
 
 .stats-cell span {

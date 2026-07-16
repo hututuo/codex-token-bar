@@ -4,6 +4,7 @@ use crate::core::time_series_timeline::{
 };
 use crate::models::{ActivityDay, DashboardStats, RecentUsagePoint};
 use std::collections::{HashMap, HashSet};
+use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
 
@@ -159,10 +160,12 @@ pub(super) fn stats_at(
     let peak_day_tokens = days.iter().map(|day| day.tokens).max().unwrap_or(0);
     let mut by_session: HashMap<&str, u64> = HashMap::new();
     let mut sessions = HashSet::new();
+    let mut lifetime = TokenAccumulator::default();
 
     for event in events {
         sessions.insert(event.session_id.as_str());
         *by_session.entry(event.session_id.as_str()).or_default() += event.tokens;
+        lifetime.add(event);
     }
 
     DashboardStats {
@@ -173,6 +176,14 @@ pub(super) fn stats_at(
         longest_streak_days: longest_streak_days(days),
         total_calls: u32::try_from(events.len()).unwrap_or(u32::MAX),
         total_threads: u32::try_from(sessions.len()).unwrap_or(u32::MAX),
+        total_input_tokens: lifetime.input_tokens,
+        total_cached_input_tokens: lifetime.cached_input_tokens,
+        total_output_tokens: lifetime.output_tokens,
+        first_usage_at: events
+            .iter()
+            .map(|event| event.timestamp)
+            .min()
+            .and_then(|timestamp| timestamp.format(&Rfc3339).ok()),
     }
 }
 
@@ -309,6 +320,13 @@ mod current_streak_tests {
         assert_eq!(days.last().unwrap().date, "2026-07-11");
         assert_eq!(days.last().unwrap().tokens, 7);
         assert_eq!(stats.current_streak_days, 1);
+        assert_eq!(stats.total_input_tokens, 7);
+        assert_eq!(stats.total_cached_input_tokens, 0);
+        assert_eq!(stats.total_output_tokens, 0);
+        assert_eq!(
+            stats.first_usage_at.as_deref(),
+            Some("2026-07-11T15:59:59Z")
+        );
     }
 }
 
