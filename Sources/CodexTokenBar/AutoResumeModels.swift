@@ -55,6 +55,7 @@ struct AutoResumeConfiguration: Codable, Equatable, Sendable {
     var intervalMinutes = 60
     var dailyHour = 9
     var dailyMinute = 0
+    var capacityRecoveryEnabled = false
     var quotaRecoveryEnabled = true
     var quotaWindow: AutoResumeQuotaWindow = .lowestRemaining
     var quotaArmAtOrBelowPercent = 5
@@ -92,6 +93,7 @@ enum AutoResumeTriggerKind: String, Codable, Equatable, Sendable {
     case interval
     case daily
     case quotaRecovery
+    case capacityRecovery
 
     var label: String {
         switch self {
@@ -99,6 +101,7 @@ enum AutoResumeTriggerKind: String, Codable, Equatable, Sendable {
         case .interval: return "间隔定时"
         case .daily: return "每日定时"
         case .quotaRecovery: return "额度恢复"
+        case .capacityRecovery: return "容量中断续跑"
         }
     }
 }
@@ -126,6 +129,77 @@ struct AutoResumeThreadFreshness: Codable, Equatable, Sendable {
             return false
         }
         return updatedAt > baselineUpdatedAt
+    }
+}
+
+struct AutoResumeLatestTurnObservation: Equatable, Sendable {
+    static let automaticCapacityClientIDPrefix = "capacity:"
+
+    let turnID: String
+    let status: String
+    let startedAt: Date?
+    let completedAt: Date?
+    let errorMessage: String?
+    let codexErrorCode: String?
+    let clientUserMessageID: String?
+
+    init(
+        turnID: String,
+        status: String,
+        startedAt: Date? = nil,
+        completedAt: Date?,
+        errorMessage: String?,
+        codexErrorCode: String?,
+        clientUserMessageID: String?
+    ) {
+        self.turnID = turnID
+        self.status = status
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+        self.errorMessage = errorMessage
+        self.codexErrorCode = codexErrorCode
+        self.clientUserMessageID = clientUserMessageID
+    }
+
+    var freshness: AutoResumeThreadFreshness {
+        AutoResumeThreadFreshness(updatedAt: completedAt ?? startedAt, lastTurnID: turnID)
+    }
+
+    var monitorKey: String {
+        let code = codexErrorCode?.lowercased() ?? "none"
+        return "\(turnID)|\(normalizedStatus)|\(code)"
+    }
+
+    var isGeneratedByCapacityRecovery: Bool {
+        clientUserMessageID?.hasPrefix(Self.automaticCapacityClientIDPrefix) == true
+    }
+
+    var isServerCapacityFailure: Bool {
+        guard normalizedStatus == "failed" else { return false }
+        if let code = codexErrorCode?.lowercased() {
+            return code == "serveroverloaded" || code == "server_overloaded"
+        }
+        guard let message = errorMessage?.lowercased() else { return false }
+        return [
+            "selected model is at capacity",
+            "server is overloaded",
+            "server overloaded",
+            "insufficient capacity",
+            "no available capacity",
+            "currently experiencing high demand",
+            "服务容量不足",
+            "服务器容量不足",
+        ].contains { message.contains($0) }
+    }
+
+    var isRecoverableCapacityFailure: Bool {
+        isServerCapacityFailure
+            && clientUserMessageID != nil
+            && !isGeneratedByCapacityRecovery
+    }
+
+    private var normalizedStatus: String {
+        status.lowercased().filter(\.isLetter)
     }
 }
 
@@ -159,6 +233,10 @@ struct AutoResumeRuntimeState: Codable, Equatable, Sendable {
     var runHistory: [Date] = []
     var lastIntervalFireAt: Date?
     var lastDailyTriggerKey: String?
+    var capacityMonitorArmedAt: Date?
+    var lastCapacityMonitorObservationKey: String?
+    var lastCapacityObservedTurnID: String?
+    var capacityPendingFreshness: AutoResumePendingFreshness?
     var quotaArmed = false
     var quotaArmedCycleID: String?
     var quotaArmedWindowLabel: String?
@@ -202,6 +280,7 @@ extension AutoResumeConfiguration {
         case intervalMinutes
         case dailyHour
         case dailyMinute
+        case capacityRecoveryEnabled
         case quotaRecoveryEnabled
         case quotaWindow
         case quotaArmAtOrBelowPercent
@@ -227,6 +306,10 @@ extension AutoResumeConfiguration {
         ) ?? value.intervalMinutes
         value.dailyHour = try container.decodeIfPresent(Int.self, forKey: .dailyHour) ?? value.dailyHour
         value.dailyMinute = try container.decodeIfPresent(Int.self, forKey: .dailyMinute) ?? value.dailyMinute
+        value.capacityRecoveryEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .capacityRecoveryEnabled
+        ) ?? value.capacityRecoveryEnabled
         value.quotaRecoveryEnabled = try container.decodeIfPresent(
             Bool.self,
             forKey: .quotaRecoveryEnabled
@@ -273,6 +356,10 @@ extension AutoResumeRuntimeState {
         case runHistory
         case lastIntervalFireAt
         case lastDailyTriggerKey
+        case capacityMonitorArmedAt
+        case lastCapacityMonitorObservationKey
+        case lastCapacityObservedTurnID
+        case capacityPendingFreshness
         case quotaArmed
         case quotaArmedCycleID
         case quotaArmedWindowLabel
@@ -314,6 +401,22 @@ extension AutoResumeRuntimeState {
         value.runHistory = try container.decodeIfPresent([Date].self, forKey: .runHistory) ?? []
         value.lastIntervalFireAt = try container.decodeIfPresent(Date.self, forKey: .lastIntervalFireAt)
         value.lastDailyTriggerKey = try container.decodeIfPresent(String.self, forKey: .lastDailyTriggerKey)
+        value.capacityMonitorArmedAt = try container.decodeIfPresent(
+            Date.self,
+            forKey: .capacityMonitorArmedAt
+        )
+        value.lastCapacityMonitorObservationKey = try container.decodeIfPresent(
+            String.self,
+            forKey: .lastCapacityMonitorObservationKey
+        )
+        value.lastCapacityObservedTurnID = try container.decodeIfPresent(
+            String.self,
+            forKey: .lastCapacityObservedTurnID
+        )
+        value.capacityPendingFreshness = try container.decodeIfPresent(
+            AutoResumePendingFreshness.self,
+            forKey: .capacityPendingFreshness
+        )
         value.quotaArmed = try container.decodeIfPresent(Bool.self, forKey: .quotaArmed) ?? false
         value.quotaArmedCycleID = try container.decodeIfPresent(String.self, forKey: .quotaArmedCycleID)
         value.quotaArmedWindowLabel = try container.decodeIfPresent(

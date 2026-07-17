@@ -86,6 +86,7 @@ final class AutoResumeStartGuardTests: XCTestCase {
     func testSafetyLimitChangesInvalidateEveryAutomaticSource() throws {
         var configuration = enabledConfiguration()
         configuration.scheduleMode = .interval
+        configuration.capacityRecoveryEnabled = true
         let gate = AutoResumeStartGuard(configuration: configuration)
         let scheduleBeforeLimit = try XCTUnwrap(gate.authorization(
             for: .interval,
@@ -95,11 +96,16 @@ final class AutoResumeStartGuardTests: XCTestCase {
             for: .quotaRecovery,
             targetID: "thread-1"
         ))
+        let capacityBeforeLimit = try XCTUnwrap(gate.authorization(
+            for: .capacityRecovery,
+            targetID: "thread-1"
+        ))
 
         configuration.maxRunsPerDay -= 1
         gate.update(configuration: configuration)
         XCTAssertFalse(scheduleBeforeLimit.isValid)
         XCTAssertFalse(quotaBeforeLimit.isValid)
+        XCTAssertFalse(capacityBeforeLimit.isValid)
 
         let scheduleBeforeCooldown = try XCTUnwrap(gate.authorization(
             for: .interval,
@@ -109,10 +115,39 @@ final class AutoResumeStartGuardTests: XCTestCase {
             for: .quotaRecovery,
             targetID: "thread-1"
         ))
+        let capacityBeforeCooldown = try XCTUnwrap(gate.authorization(
+            for: .capacityRecovery,
+            targetID: "thread-1"
+        ))
         configuration.cooldownMinutes += 1
         gate.update(configuration: configuration)
         XCTAssertFalse(scheduleBeforeCooldown.isValid)
         XCTAssertFalse(quotaBeforeCooldown.isValid)
+        XCTAssertFalse(capacityBeforeCooldown.isValid)
+    }
+
+    func testCapacityAuthorizationTracksMasterTargetToggleAndPrompt() throws {
+        var configuration = enabledConfiguration()
+        configuration.capacityRecoveryEnabled = true
+        let gate = AutoResumeStartGuard(configuration: configuration)
+        let original = try XCTUnwrap(gate.authorization(
+            for: .capacityRecovery,
+            targetID: "thread-1"
+        ))
+        XCTAssertTrue(original.isValid)
+
+        configuration.prompt = "继续执行"
+        gate.update(configuration: configuration)
+        XCTAssertFalse(original.isValid)
+
+        let afterPrompt = try XCTUnwrap(gate.authorization(
+            for: .capacityRecovery,
+            targetID: "thread-1"
+        ))
+        configuration.capacityRecoveryEnabled = false
+        gate.update(configuration: configuration)
+        XCTAssertFalse(afterPrompt.isValid)
+        XCTAssertNil(gate.authorization(for: .capacityRecovery, targetID: "thread-1"))
     }
 
     private func enabledConfiguration() -> AutoResumeConfiguration {

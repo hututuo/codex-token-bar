@@ -6,6 +6,8 @@ enum AutoResumeSafetyBlock: Equatable, Sendable {
 }
 
 enum AutoResumePolicy {
+    static let capacityRecoveryLookback: TimeInterval = 5 * 60
+
     static func scheduledTrigger(
         configuration: AutoResumeConfiguration,
         state: AutoResumeRuntimeState,
@@ -192,6 +194,44 @@ enum AutoResumePolicy {
         state.quotaRecoveryArmObservationAt = state.lastQuotaObservedAt
     }
 
+    static func capacityRecoveryTrigger(
+        configuration: AutoResumeConfiguration,
+        state: AutoResumeRuntimeState,
+        observation: AutoResumeLatestTurnObservation,
+        now: Date,
+        lookback: TimeInterval = capacityRecoveryLookback
+    ) -> AutoResumeTrigger? {
+        let configuration = configuration.normalized
+        guard configuration.enabled,
+              configuration.capacityRecoveryEnabled,
+              let target = configuration.target,
+              observation.isRecoverableCapacityFailure,
+              state.lastCapacityObservedTurnID != observation.turnID else {
+            return nil
+        }
+        let isPending = state.capacityPendingFreshness?.threadID == target.id
+            && state.capacityPendingFreshness?.baseline?.lastTurnID == observation.turnID
+        if !isPending {
+            if let eventAt = observation.completedAt ?? observation.startedAt {
+                let oldestAllowed = now.addingTimeInterval(-max(1, lookback))
+                guard eventAt >= oldestAllowed,
+                      eventAt <= now.addingTimeInterval(60) else {
+                    return nil
+                }
+            } else {
+                guard let previousKey = state.lastCapacityMonitorObservationKey,
+                      previousKey != observation.monitorKey else {
+                    return nil
+                }
+            }
+        }
+        return AutoResumeTrigger(
+            kind: .capacityRecovery,
+            key: "capacity:\(target.id):\(observation.turnID)",
+            firedAt: now
+        )
+    }
+
     static func safetyBlock(
         configuration: AutoResumeConfiguration,
         state: AutoResumeRuntimeState,
@@ -231,7 +271,7 @@ enum AutoResumePolicy {
             state.lastIntervalFireAt = trigger.firedAt
         case .daily:
             state.lastDailyTriggerKey = trigger.key
-        case .manual, .quotaRecovery:
+        case .manual, .quotaRecovery, .capacityRecovery:
             break
         }
     }

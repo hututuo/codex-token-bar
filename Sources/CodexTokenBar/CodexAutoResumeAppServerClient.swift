@@ -12,6 +12,12 @@ protocol CodexAutoResumeAppServerServing: Sendable {
         threadID: String
     ) async throws -> AutoResumeThreadFreshness
 
+    func readLatestTurnObservation(
+        codexPath: String,
+        dataSource: CodexDataSource?,
+        threadID: String
+    ) async throws -> AutoResumeLatestTurnObservation?
+
     func resumeThread(
         codexPath: String,
         dataSource: CodexDataSource?,
@@ -176,6 +182,52 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
         }
     }
 
+    func readLatestTurnObservation(
+        codexPath: String,
+        dataSource: CodexDataSource?,
+        threadID: String
+    ) async throws -> AutoResumeLatestTurnObservation? {
+        try await withSession(codexPath: codexPath, dataSource: dataSource) { session in
+            var channel = CodexAutoResumeRPCChannel(session: session)
+            try channel.initialize(timeout: requestTimeout, experimentalAPI: true)
+            let result = try channel.request(
+                method: "thread/turns/list",
+                params: [
+                    "threadId": threadID,
+                    "limit": 1,
+                    "sortDirection": "desc",
+                    "itemsView": "summary",
+                ],
+                timeout: requestTimeout
+            )
+            guard let turns = result["data"] as? [[String: Any]] else {
+                throw CodexAutoResumeAppServerError.invalidResponse(
+                    "thread/turns/list 缺少 data"
+                )
+            }
+            guard let turn = turns.first else { return nil }
+            var observation = try Self.parseLatestTurnObservation(turn)
+            if observation.isServerCapacityFailure,
+               observation.clientUserMessageID == nil {
+                let fullResult = try channel.request(
+                    method: "thread/turns/list",
+                    params: [
+                        "threadId": threadID,
+                        "limit": 1,
+                        "sortDirection": "desc",
+                        "itemsView": "full",
+                    ],
+                    timeout: requestTimeout
+                )
+                if let fullTurn = (fullResult["data"] as? [[String: Any]])?.first,
+                   Self.nonemptyString(fullTurn["id"]) == observation.turnID {
+                    observation = try Self.parseLatestTurnObservation(fullTurn)
+                }
+            }
+            return observation
+        }
+    }
+
     func resumeThread(
         codexPath: String,
         dataSource: CodexDataSource?,
@@ -265,7 +317,9 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
             if Self.normalizedStatus(status) == "failed" {
                 let error = completed["error"] as? [String: Any]
                 let message = Self.nonemptyString(error?["message"]) ?? "Turn failed"
-                if Self.looksLikeQuotaLimit(message) {
+                let errorCode = Self.codexErrorCode(error?["codexErrorInfo"])
+                if Self.normalizedErrorCode(errorCode) == "usagelimitexceeded"
+                    || (errorCode == nil && Self.looksLikeQuotaLimit(message)) {
                     throw CodexAutoResumeAppServerError.quotaLimited(message)
                 }
                 throw CodexAutoResumeAppServerError.serverError(message)
@@ -356,6 +410,45 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
         return nonemptyString(last["id"]) ?? "unknown"
     }
 
+    private static func parseLatestTurnObservation(
+        _ turn: [String: Any]
+    ) throws -> AutoResumeLatestTurnObservation {
+        guard let turnID = nonemptyString(turn["id"]),
+              let status = nonemptyString(turn["status"]) else {
+            throw CodexAutoResumeAppServerError.invalidResponse(
+                "thread/turns/list 的最新 turn 缺少 id 或 status"
+            )
+        }
+        let error = turn["error"] as? [String: Any]
+        let items = turn["items"] as? [[String: Any]] ?? []
+        let clientUserMessageID = items.first(where: {
+            normalizedStatus(nonemptyString($0["type"]) ?? "") == "usermessage"
+        }).flatMap { nonemptyString($0["clientId"]) }
+        let startedAt = (turn["startedAt"] as? NSNumber)
+            .map { Date(timeIntervalSince1970: $0.doubleValue) }
+        let completedAt = (turn["completedAt"] as? NSNumber)
+            .map { Date(timeIntervalSince1970: $0.doubleValue) }
+        return AutoResumeLatestTurnObservation(
+            turnID: turnID,
+            status: status,
+            startedAt: startedAt,
+            completedAt: completedAt,
+            errorMessage: nonemptyString(error?["message"]),
+            codexErrorCode: codexErrorCode(error?["codexErrorInfo"]),
+            clientUserMessageID: clientUserMessageID
+        )
+    }
+
+    private static func codexErrorCode(_ value: Any?) -> String? {
+        if let value = nonemptyString(value) { return value }
+        guard let object = value as? [String: Any] else { return nil }
+        return object.keys.sorted().first
+    }
+
+    private static func normalizedErrorCode(_ value: String?) -> String? {
+        value?.lowercased().filter(\.isLetter)
+    }
+
     fileprivate static func normalizedStatus(_ value: String) -> String {
         value.lowercased().filter(\.isLetter)
     }
@@ -369,16 +462,14 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
     fileprivate static func looksLikeQuotaLimit(_ message: String) -> Bool {
         let normalized = message.lowercased()
         return [
-            "rate limit",
-            "rate_limit",
             "usage limit",
             "usage_limit",
-            "limit reached",
-            "too many requests",
+            "usage limit exceeded",
             "insufficient_quota",
-            "quota",
-            "429",
-            "额度",
+            "quota exceeded",
+            "额度耗尽",
+            "额度已用完",
+            "使用额度已达上限",
         ].contains { normalized.contains($0) }
     }
 }
@@ -399,7 +490,10 @@ struct CodexAutoResumeRPCChannel {
         self.session = session
     }
 
-    mutating func initialize(timeout: TimeInterval) throws {
+    mutating func initialize(
+        timeout: TimeInterval,
+        experimentalAPI: Bool = false
+    ) throws {
         _ = try request(
             method: "initialize",
             params: [
@@ -409,7 +503,7 @@ struct CodexAutoResumeRPCChannel {
                     "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0",
                 ],
                 "capabilities": [
-                    "experimentalApi": false,
+                    "experimentalApi": experimentalAPI,
                     "requestAttestation": false,
                 ],
             ],

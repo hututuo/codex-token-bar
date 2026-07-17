@@ -11,6 +11,8 @@ struct AutoResumeSettingsView: View {
                 .disabled(controller.isRunning)
             scheduleSection
                 .disabled(controller.isRunning)
+            capacitySection
+                .disabled(controller.isRunning)
             quotaSection
                 .disabled(controller.isRunning)
             safetySection
@@ -126,6 +128,24 @@ struct AutoResumeSettingsView: View {
         }
     }
 
+    private var capacitySection: some View {
+        section(
+            title: "中断续跑",
+            subtitle: "监督所选任务的最终失败状态；每个容量中断最多发送一次“继续”"
+        ) {
+            toggleRow(
+                "容量不足时续跑",
+                systemImage: "bolt.horizontal.circle.fill",
+                isOn: capacityRecoveryEnabledBinding
+            )
+            infoRow(
+                "只认服务容量不足",
+                systemImage: "checkmark.shield.fill",
+                detail: "仅处理 Codex 的 serverOverloaded；额度耗尽、上下文超限、用户主动停止、审批和人工输入都不会触发。自动发送的“继续”若仍容量不足，也不会循环重试。"
+            )
+        }
+    }
+
     private var safetySection: some View {
         section(
             title: "安全限制",
@@ -218,6 +238,13 @@ struct AutoResumeSettingsView: View {
         Binding(
             get: { controller.configuration.quotaRecoveryEnabled },
             set: { controller.setQuotaRecoveryEnabled($0) }
+        )
+    }
+
+    private var capacityRecoveryEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { controller.configuration.capacityRecoveryEnabled },
+            set: { controller.setCapacityRecoveryEnabled($0) }
         )
     }
 

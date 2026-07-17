@@ -197,6 +197,131 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         XCTAssertEqual(params["includeTurns"] as? Bool, true)
     }
 
+    func testReadLatestTurnObservationUsesOneTurnSummaryAndStructuredCapacityError() async throws {
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: [
+                "data": [[
+                    "id": "capacity-turn",
+                    "status": "failed",
+                    "completedAt": 200,
+                    "error": [
+                        "message": "Selected model is at capacity. Please try a different model.",
+                        "codexErrorInfo": "serverOverloaded",
+                    ],
+                    "items": [[
+                        "type": "userMessage",
+                        "clientId": "desktop-user-message",
+                    ]],
+                ]],
+            ]),
+        ])
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        let value = try await client.readLatestTurnObservation(
+            codexPath: "/fake/codex",
+            dataSource: nil,
+            threadID: "thread-1"
+        )
+        let observation = try XCTUnwrap(value)
+
+        XCTAssertEqual(observation.turnID, "capacity-turn")
+        XCTAssertEqual(observation.completedAt, Date(timeIntervalSince1970: 200))
+        XCTAssertEqual(observation.codexErrorCode, "serverOverloaded")
+        XCTAssertEqual(observation.clientUserMessageID, "desktop-user-message")
+        XCTAssertTrue(observation.isRecoverableCapacityFailure)
+        XCTAssertEqual(
+            transport.writes.compactMap(rpcMethod),
+            ["initialize", "initialized", "thread/turns/list"]
+        )
+        let initialize = try XCTUnwrap(transport.writes.first)
+        let capabilities = try XCTUnwrap(
+            (initialize["params"] as? [String: Any])?["capabilities"] as? [String: Any]
+        )
+        XCTAssertEqual(capabilities["experimentalApi"] as? Bool, true)
+        let list = try XCTUnwrap(transport.writes.first { rpcMethod($0) == "thread/turns/list" })
+        let params = try XCTUnwrap(list["params"] as? [String: Any])
+        XCTAssertEqual((params["limit"] as? NSNumber)?.intValue, 1)
+        XCTAssertEqual(params["sortDirection"] as? String, "desc")
+        XCTAssertEqual(params["itemsView"] as? String, "summary")
+    }
+
+    func testReadLatestTurnObservationParsesObjectErrorCodeAndRejectsOwnCapacityTurn() async throws {
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: [
+                "data": [[
+                    "id": "capacity-retry-turn",
+                    "status": "failed",
+                    "completedAt": 200,
+                    "error": [
+                        "message": "overloaded",
+                        "codexErrorInfo": [
+                            "responseTooManyFailedAttempts": ["httpStatusCode": 429],
+                        ],
+                    ],
+                    "items": [[
+                        "type": "userMessage",
+                        "clientId": "capacity:thread-1:original-turn",
+                    ]],
+                ]],
+            ]),
+        ])
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        let value = try await client.readLatestTurnObservation(
+            codexPath: "/fake/codex",
+            dataSource: nil,
+            threadID: "thread-1"
+        )
+        let observation = try XCTUnwrap(value)
+
+        XCTAssertEqual(observation.codexErrorCode, "responseTooManyFailedAttempts")
+        XCTAssertTrue(observation.isGeneratedByCapacityRecovery)
+        XCTAssertFalse(observation.isRecoverableCapacityFailure)
+    }
+
+    func testCapacityObservationFallsBackToFullItemsToVerifyClientIdentity() async throws {
+        let capacityTurn: [String: Any] = [
+            "id": "capacity-retry-turn",
+            "status": "failed",
+            "startedAt": 195,
+            "completedAt": 200,
+            "error": [
+                "message": "Selected model is at capacity. Please try a different model.",
+                "codexErrorInfo": "serverOverloaded",
+            ],
+        ]
+        var fullTurn = capacityTurn
+        fullTurn["items"] = [[
+            "type": "userMessage",
+            "clientId": "capacity:thread-1:original-turn",
+        ]]
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: ["data": [capacityTurn]]),
+            rpcResult(id: 3, result: ["data": [fullTurn]]),
+        ])
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        let value = try await client.readLatestTurnObservation(
+            codexPath: "/fake/codex",
+            dataSource: nil,
+            threadID: "thread-1"
+        )
+        let observation = try XCTUnwrap(value)
+
+        XCTAssertEqual(observation.startedAt, Date(timeIntervalSince1970: 195))
+        XCTAssertTrue(observation.isGeneratedByCapacityRecovery)
+        XCTAssertFalse(observation.isRecoverableCapacityFailure)
+        let listRequests = transport.writes.filter { rpcMethod($0) == "thread/turns/list" }
+        XCTAssertEqual(listRequests.count, 2)
+        XCTAssertEqual(
+            (listRequests.last?["params"] as? [String: Any])?["itemsView"] as? String,
+            "full"
+        )
+    }
+
     func testAutomaticResumeSkipsBeforeResumeOrTurnStartWhenThreadProgressed() async {
         let transport = AutoResumeScriptedTransport(events: [
             rpcResult(id: 1, result: [:]),
@@ -452,6 +577,37 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
                 error as? CodexAutoResumeAppServerError,
                 .quotaLimited("usage limit reached; try again after reset")
             )
+        }
+    }
+
+    func testStructuredServerOverloadWith429IsNotMisclassifiedAsQuota() async {
+        let message = "Selected model is at capacity (429). Please try a different model."
+        let transport = AutoResumeScriptedTransport(events: successfulResumeEvents(
+            replaceCompletionWith: notification("turn/completed", params: [
+                "threadId": "thread-1",
+                "turn": [
+                    "id": "turn-1",
+                    "status": "failed",
+                    "error": [
+                        "message": message,
+                        "codexErrorInfo": "serverOverloaded",
+                    ],
+                ],
+            ])
+        ))
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        do {
+            _ = try await client.resumeThread(
+                codexPath: "/fake/codex",
+                dataSource: nil,
+                target: thread(id: "thread-1"),
+                prompt: "继续",
+                clientMessageID: "capacity-test"
+            )
+            XCTFail("Expected server failure")
+        } catch {
+            XCTAssertEqual(error as? CodexAutoResumeAppServerError, .serverError(message))
         }
     }
 

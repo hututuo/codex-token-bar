@@ -356,6 +356,233 @@ final class AutoResumeControllerTests: XCTestCase {
         XCTAssertEqual(ledger.entries.values.first?.outcome, "skipped")
     }
 
+    func testCapacityFailureSendsExactlyOneContinueForTheObservedTurn() async throws {
+        let suiteName = "AutoResumeControllerCapacityTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let codexHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AutoResumeControllerCapacityTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: codexHome) }
+
+        let target = AutoResumeThreadDescriptor(
+            id: "capacity-target",
+            title: "Capacity target",
+            cwd: codexHome.path,
+            updatedAt: nil
+        )
+        let now = Date()
+        var configuration = AutoResumeConfiguration.default
+        configuration.enabled = true
+        configuration.target = target
+        configuration.capacityRecoveryEnabled = true
+        configuration.quotaRecoveryEnabled = false
+        configuration.scheduleMode = .off
+        configuration.prompt = "执行另一条定时指令"
+        configuration.cooldownMinutes = 1
+        var runtime = AutoResumeRuntimeState.default
+        runtime.enabledAt = now.addingTimeInterval(-60)
+        runtime.capacityMonitorArmedAt = now.addingTimeInterval(-60)
+        defaults.set(
+            try JSONEncoder().encode(configuration),
+            forKey: "CodexTokenBar.autoResume.configuration.v1"
+        )
+        defaults.set(
+            try JSONEncoder().encode(runtime),
+            forKey: "CodexTokenBar.autoResume.runtimeState.v1"
+        )
+
+        let observation = AutoResumeLatestTurnObservation(
+            turnID: "failed-capacity-turn",
+            status: "failed",
+            completedAt: now.addingTimeInterval(-5),
+            errorMessage: "Selected model is at capacity. Please try a different model.",
+            codexErrorCode: "serverOverloaded",
+            clientUserMessageID: "desktop-user-message"
+        )
+        let appServer = RecordingAutoResumeAppServer(latestTurnObservation: observation)
+        let quotaStore = AccountQuotaStore(
+            quotaReader: EmptyAutoResumeQuotaReader(),
+            userDefaults: defaults,
+            observesUserDefaults: false
+        )
+        let source = CodexDataSource(codexHome: codexHome, origin: .userSelected)
+        let controller = AutoResumeController(
+            quotaStore: quotaStore,
+            appServer: appServer,
+            defaults: defaults,
+            ownerID: "swift-capacity-tests",
+            dataSourceProvider: { source },
+            notifier: RecordingAutoResumeNotifier(),
+            codexBinaryProvider: { "/fake/codex" }
+        )
+
+        controller.start()
+        await waitUntil("capacity auto-resume") {
+            appServer.resumeCount == 1 && !controller.isRunning
+        }
+
+        XCTAssertEqual(appServer.lastPrompt, "继续")
+        XCTAssertEqual(
+            appServer.lastClientMessageID,
+            "capacity:\(target.id):failed-capacity-turn"
+        )
+        XCTAssertEqual(appServer.lastExpectedFreshness, observation.freshness)
+        XCTAssertTrue(appServer.lastHadStartAuthorization)
+        XCTAssertEqual(controller.runtimeState.lastTriggerKind, .capacityRecovery)
+        XCTAssertEqual(controller.runtimeState.lastCapacityObservedTurnID, observation.turnID)
+
+        controller.setNotifyOnResult(false)
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(appServer.resumeCount, 1, "the same failed turn must never send twice")
+    }
+
+    func testCapacityRecoveryDoesNotLoopWhenItsOwnContinueAlsoOverloads() async throws {
+        let suiteName = "AutoResumeControllerCapacityLoopTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let codexHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AutoResumeControllerCapacityLoopTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: codexHome) }
+        let target = AutoResumeThreadDescriptor(
+            id: "capacity-loop-target",
+            title: "Capacity loop target",
+            cwd: codexHome.path,
+            updatedAt: nil
+        )
+        let now = Date()
+        var configuration = AutoResumeConfiguration.default
+        configuration.enabled = true
+        configuration.target = target
+        configuration.capacityRecoveryEnabled = true
+        configuration.quotaRecoveryEnabled = false
+        var runtime = AutoResumeRuntimeState.default
+        runtime.enabledAt = now.addingTimeInterval(-60)
+        runtime.capacityMonitorArmedAt = now.addingTimeInterval(-60)
+        defaults.set(
+            try JSONEncoder().encode(configuration),
+            forKey: "CodexTokenBar.autoResume.configuration.v1"
+        )
+        defaults.set(
+            try JSONEncoder().encode(runtime),
+            forKey: "CodexTokenBar.autoResume.runtimeState.v1"
+        )
+        let ownFailure = AutoResumeLatestTurnObservation(
+            turnID: "own-failed-turn",
+            status: "failed",
+            completedAt: now.addingTimeInterval(-5),
+            errorMessage: "Selected model is at capacity. Please try a different model.",
+            codexErrorCode: "serverOverloaded",
+            clientUserMessageID: "capacity:\(target.id):original-failed-turn"
+        )
+        let appServer = RecordingAutoResumeAppServer(latestTurnObservation: ownFailure)
+        let quotaStore = AccountQuotaStore(
+            quotaReader: EmptyAutoResumeQuotaReader(),
+            userDefaults: defaults,
+            observesUserDefaults: false
+        )
+        let controller = AutoResumeController(
+            quotaStore: quotaStore,
+            appServer: appServer,
+            defaults: defaults,
+            ownerID: "swift-capacity-loop-tests",
+            dataSourceProvider: {
+                CodexDataSource(codexHome: codexHome, origin: .userSelected)
+            },
+            notifier: RecordingAutoResumeNotifier(),
+            codexBinaryProvider: { "/fake/codex" }
+        )
+
+        controller.start()
+        await waitUntil("own capacity failure observation") {
+            controller.runtimeState.lastCapacityObservedTurnID == ownFailure.turnID
+        }
+
+        XCTAssertEqual(appServer.resumeCount, 0)
+        XCTAssertTrue(controller.runtimeState.statusMessage.contains("本次不再重试"))
+    }
+
+    func testCapacityFailureBlockedByCooldownRemainsPendingAndUnconsumed() async throws {
+        let suiteName = "AutoResumeControllerCapacityCooldownTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let codexHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AutoResumeControllerCapacityCooldownTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: codexHome) }
+        let target = AutoResumeThreadDescriptor(
+            id: "capacity-cooldown-target",
+            title: "Capacity cooldown target",
+            cwd: codexHome.path,
+            updatedAt: nil
+        )
+        let now = Date()
+        var configuration = AutoResumeConfiguration.default
+        configuration.enabled = true
+        configuration.target = target
+        configuration.capacityRecoveryEnabled = true
+        configuration.quotaRecoveryEnabled = false
+        configuration.cooldownMinutes = 1
+        var runtime = AutoResumeRuntimeState.default
+        runtime.enabledAt = now.addingTimeInterval(-60)
+        runtime.capacityMonitorArmedAt = now.addingTimeInterval(-60)
+        runtime.lastRunAt = now
+        defaults.set(
+            try JSONEncoder().encode(configuration),
+            forKey: "CodexTokenBar.autoResume.configuration.v1"
+        )
+        defaults.set(
+            try JSONEncoder().encode(runtime),
+            forKey: "CodexTokenBar.autoResume.runtimeState.v1"
+        )
+        let observation = AutoResumeLatestTurnObservation(
+            turnID: "cooldown-capacity-turn",
+            status: "failed",
+            completedAt: now.addingTimeInterval(-5),
+            errorMessage: "Selected model is at capacity. Please try a different model.",
+            codexErrorCode: "serverOverloaded",
+            clientUserMessageID: "desktop-user-message"
+        )
+        let appServer = RecordingAutoResumeAppServer(latestTurnObservation: observation)
+        let quotaStore = AccountQuotaStore(
+            quotaReader: EmptyAutoResumeQuotaReader(),
+            userDefaults: defaults,
+            observesUserDefaults: false
+        )
+        let controller = AutoResumeController(
+            quotaStore: quotaStore,
+            appServer: appServer,
+            defaults: defaults,
+            ownerID: "swift-capacity-cooldown-tests",
+            dataSourceProvider: {
+                CodexDataSource(codexHome: codexHome, origin: .userSelected)
+            },
+            notifier: RecordingAutoResumeNotifier(),
+            codexBinaryProvider: { "/fake/codex" }
+        )
+
+        controller.start()
+        await waitUntil("capacity cooldown deferral") {
+            controller.runtimeState.capacityPendingFreshness?.baseline?.lastTurnID
+                == observation.turnID
+                && controller.runtimeState.statusMessage.contains("冷却中")
+        }
+
+        XCTAssertEqual(appServer.resumeCount, 0)
+        XCTAssertNil(controller.runtimeState.lastCapacityObservedTurnID)
+        let persisted = try JSONDecoder().decode(
+            AutoResumeRuntimeState.self,
+            from: try XCTUnwrap(defaults.data(
+                forKey: "CodexTokenBar.autoResume.runtimeState.v1"
+            ))
+        )
+        XCTAssertEqual(
+            persisted.capacityPendingFreshness?.baseline?.lastTurnID,
+            observation.turnID
+        )
+    }
+
     private func waitUntil(
         _ description: String,
         timeout: TimeInterval = 2,
@@ -394,6 +621,7 @@ private final class RecordingAutoResumeAppServer: CodexAutoResumeAppServerServin
     private let lock = NSLock()
     private let progressedWhenExpectedFreshness: Bool
     private let invalidatedWhenAuthorized: Bool
+    private let latestTurnObservation: AutoResumeLatestTurnObservation?
     private var recordedResumeCount = 0
     private var recordedTargetID: String?
     private var recordedPrompt: String?
@@ -403,10 +631,12 @@ private final class RecordingAutoResumeAppServer: CodexAutoResumeAppServerServin
 
     init(
         progressedWhenExpectedFreshness: Bool = false,
-        invalidatedWhenAuthorized: Bool = false
+        invalidatedWhenAuthorized: Bool = false,
+        latestTurnObservation: AutoResumeLatestTurnObservation? = nil
     ) {
         self.progressedWhenExpectedFreshness = progressedWhenExpectedFreshness
         self.invalidatedWhenAuthorized = invalidatedWhenAuthorized
+        self.latestTurnObservation = latestTurnObservation
     }
 
     var resumeCount: Int { lock.withLock { recordedResumeCount } }
@@ -431,6 +661,14 @@ private final class RecordingAutoResumeAppServer: CodexAutoResumeAppServerServin
         threadID: String
     ) async throws -> AutoResumeThreadFreshness {
         AutoResumeThreadFreshness(updatedAt: Date(), lastTurnID: "fresh-turn")
+    }
+
+    func readLatestTurnObservation(
+        codexPath: String,
+        dataSource: CodexDataSource?,
+        threadID: String
+    ) async throws -> AutoResumeLatestTurnObservation? {
+        latestTurnObservation
     }
 
     func resumeThread(

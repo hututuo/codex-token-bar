@@ -30,7 +30,7 @@ private enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .general: return "启动与基础行为"
         case .surfaces: return "主界面与辅助显示面"
         case .monitoring: return "实时速率、统计与刷新"
-        case .autoResume: return "定时或额度恢复后继续任务"
+        case .autoResume: return "容量中断、定时或额度恢复后继续任务"
         case .floatingPanel: return "位置、尺寸与视觉样式"
         case .content: return "悬浮窗信息和排列顺序"
         case .alertsAndUpdates: return "未读反馈与版本检查"

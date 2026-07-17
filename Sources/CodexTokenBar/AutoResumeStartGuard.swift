@@ -12,6 +12,7 @@ private enum AutoResumeStartSource: Equatable, Sendable {
     case interval
     case daily
     case quota
+    case capacity
 }
 
 private struct AutoResumeStartToken: Equatable, Sendable {
@@ -56,18 +57,30 @@ final class AutoResumeStartGuard: @unchecked Sendable {
         let maxRunsPerDay: Int
     }
 
+    private struct CapacitySignature: Equatable {
+        let enabled: Bool
+        let targetID: String?
+        let capacityRecoveryEnabled: Bool
+        let prompt: String
+        let cooldownMinutes: Int
+        let maxRunsPerDay: Int
+    }
+
     private let lock = NSLock()
     private var configuration: AutoResumeConfiguration
     private var scheduleSignature: ScheduleSignature
     private var quotaSignature: QuotaSignature
+    private var capacitySignature: CapacitySignature
     private var scheduleGeneration: UInt64 = 0
     private var quotaGeneration: UInt64 = 0
+    private var capacityGeneration: UInt64 = 0
 
     init(configuration: AutoResumeConfiguration) {
         let configuration = configuration.normalized
         self.configuration = configuration
         scheduleSignature = Self.scheduleSignature(configuration)
         quotaSignature = Self.quotaSignature(configuration)
+        capacitySignature = Self.capacitySignature(configuration)
     }
 
     func update(configuration: AutoResumeConfiguration) {
@@ -76,6 +89,7 @@ final class AutoResumeStartGuard: @unchecked Sendable {
         defer { lock.unlock() }
         let nextScheduleSignature = Self.scheduleSignature(configuration)
         let nextQuotaSignature = Self.quotaSignature(configuration)
+        let nextCapacitySignature = Self.capacitySignature(configuration)
         if nextScheduleSignature != scheduleSignature {
             scheduleGeneration &+= 1
             scheduleSignature = nextScheduleSignature
@@ -83,6 +97,10 @@ final class AutoResumeStartGuard: @unchecked Sendable {
         if nextQuotaSignature != quotaSignature {
             quotaGeneration &+= 1
             quotaSignature = nextQuotaSignature
+        }
+        if nextCapacitySignature != capacitySignature {
+            capacityGeneration &+= 1
+            capacitySignature = nextCapacitySignature
         }
         self.configuration = configuration
     }
@@ -122,6 +140,14 @@ final class AutoResumeStartGuard: @unchecked Sendable {
             }
             source = .quota
             generation = quotaGeneration
+        case .capacityRecovery:
+            guard configuration.enabled,
+                  configuration.target?.id == targetID,
+                  configuration.capacityRecoveryEnabled else {
+                return nil
+            }
+            source = .capacity
+            generation = capacityGeneration
         }
         return AutoResumeStartAuthorization(
             gate: self,
@@ -165,6 +191,9 @@ final class AutoResumeStartGuard: @unchecked Sendable {
         case .quota:
             return configuration.quotaRecoveryEnabled
                 && token.generation == quotaGeneration
+        case .capacity:
+            return configuration.capacityRecoveryEnabled
+                && token.generation == capacityGeneration
         }
     }
 
@@ -193,6 +222,19 @@ final class AutoResumeStartGuard: @unchecked Sendable {
             window: configuration.quotaWindow,
             armAtOrBelowPercent: configuration.quotaArmAtOrBelowPercent,
             resumeAtOrAbovePercent: configuration.quotaResumeAtOrAbovePercent,
+            cooldownMinutes: configuration.cooldownMinutes,
+            maxRunsPerDay: configuration.maxRunsPerDay
+        )
+    }
+
+    private static func capacitySignature(
+        _ configuration: AutoResumeConfiguration
+    ) -> CapacitySignature {
+        CapacitySignature(
+            enabled: configuration.enabled,
+            targetID: configuration.target?.id,
+            capacityRecoveryEnabled: configuration.capacityRecoveryEnabled,
+            prompt: configuration.prompt,
             cooldownMinutes: configuration.cooldownMinutes,
             maxRunsPerDay: configuration.maxRunsPerDay
         )

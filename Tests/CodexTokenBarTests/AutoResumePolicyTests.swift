@@ -14,6 +14,7 @@ final class AutoResumePolicyTests: XCTestCase {
         let configuration = AutoResumeConfiguration.default
 
         XCTAssertFalse(configuration.enabled)
+        XCTAssertFalse(configuration.capacityRecoveryEnabled)
         XCTAssertTrue(configuration.quotaRecoveryEnabled)
         XCTAssertEqual(configuration.quotaWindow, .lowestRemaining)
         XCTAssertEqual(configuration.prompt, "继续")
@@ -152,6 +153,7 @@ final class AutoResumePolicyTests: XCTestCase {
         XCTAssertEqual(configuration.prompt, "继续执行")
         XCTAssertEqual(configuration.maxRunsPerDay, 3)
         XCTAssertTrue(configuration.quotaRecoveryEnabled)
+        XCTAssertFalse(configuration.capacityRecoveryEnabled)
         XCTAssertEqual(configuration.quotaWindow, .lowestRemaining)
         XCTAssertTrue(configuration.notifyOnResult)
 
@@ -166,6 +168,10 @@ final class AutoResumePolicyTests: XCTestCase {
         XCTAssertTrue(runtime.quotaArmed)
         XCTAssertFalse(runtime.quotaRecoveryRequiresTransition)
         XCTAssertNil(runtime.lastQuotaObservedAt)
+        XCTAssertNil(runtime.capacityMonitorArmedAt)
+        XCTAssertNil(runtime.lastCapacityMonitorObservationKey)
+        XCTAssertNil(runtime.lastCapacityObservedTurnID)
+        XCTAssertNil(runtime.capacityPendingFreshness)
     }
 
     func testFirstLowQuotaSampleOnlyEstablishesBaselineAndSecondLowSampleArms() {
@@ -589,6 +595,153 @@ final class AutoResumePolicyTests: XCTestCase {
             updatedAt: Date(timeIntervalSince1970: 100),
             lastTurnID: nil
         )))
+    }
+
+    func testCapacityRecoveryOnlyAcceptsFreshExternalServerOverload() throws {
+        var configuration = enabledConfiguration()
+        configuration.capacityRecoveryEnabled = true
+        let now = date(2026, 7, 16, 10, 0)
+        var state = AutoResumeRuntimeState.default
+        state.capacityMonitorArmedAt = now.addingTimeInterval(-60)
+        let overload = AutoResumeLatestTurnObservation(
+            turnID: "capacity-turn",
+            status: "failed",
+            completedAt: now.addingTimeInterval(-10),
+            errorMessage: "Selected model is at capacity. Please try a different model.",
+            codexErrorCode: "serverOverloaded",
+            clientUserMessageID: "desktop-user-message"
+        )
+
+        let trigger = try XCTUnwrap(AutoResumePolicy.capacityRecoveryTrigger(
+            configuration: configuration,
+            state: state,
+            observation: overload,
+            now: now
+        ))
+        XCTAssertEqual(trigger.kind, .capacityRecovery)
+        XCTAssertEqual(trigger.key, "capacity:\(target.id):capacity-turn")
+
+        state.lastCapacityObservedTurnID = overload.turnID
+        XCTAssertNil(AutoResumePolicy.capacityRecoveryTrigger(
+            configuration: configuration,
+            state: state,
+            observation: overload,
+            now: now
+        ))
+    }
+
+    func testCapacityRecoveryRejectsQuotaContextInterruptedAndItsOwnRetry() {
+        var configuration = enabledConfiguration()
+        configuration.capacityRecoveryEnabled = true
+        let now = date(2026, 7, 16, 10, 0)
+        var state = AutoResumeRuntimeState.default
+        state.capacityMonitorArmedAt = now.addingTimeInterval(-60)
+
+        for (status, code, clientID) in [
+            ("failed", "usageLimitExceeded", "desktop-user-message"),
+            ("failed", "contextWindowExceeded", "desktop-user-message"),
+            ("interrupted", "serverOverloaded", "desktop-user-message"),
+            ("failed", "serverOverloaded", "capacity:\(target.id):old-turn"),
+        ] {
+            let observation = AutoResumeLatestTurnObservation(
+                turnID: UUID().uuidString,
+                status: status,
+                completedAt: now.addingTimeInterval(-5),
+                errorMessage: "error",
+                codexErrorCode: code,
+                clientUserMessageID: clientID
+            )
+            XCTAssertNil(AutoResumePolicy.capacityRecoveryTrigger(
+                configuration: configuration,
+                state: state,
+                observation: observation,
+                now: now
+            ))
+        }
+    }
+
+    func testCapacityRecoveryTextFallbackIsStrictAndRecent() {
+        var configuration = enabledConfiguration()
+        configuration.capacityRecoveryEnabled = true
+        let now = date(2026, 7, 16, 10, 0)
+        var state = AutoResumeRuntimeState.default
+        state.capacityMonitorArmedAt = now.addingTimeInterval(-60)
+
+        let fallback = AutoResumeLatestTurnObservation(
+            turnID: "fallback-turn",
+            status: "failed",
+            completedAt: now.addingTimeInterval(-5),
+            errorMessage: "Selected model is at capacity. Please try a different model.",
+            codexErrorCode: nil,
+            clientUserMessageID: "desktop-user-message"
+        )
+        XCTAssertNotNil(AutoResumePolicy.capacityRecoveryTrigger(
+            configuration: configuration,
+            state: state,
+            observation: fallback,
+            now: now
+        ))
+
+        let generic429 = AutoResumeLatestTurnObservation(
+            turnID: "429-turn",
+            status: "failed",
+            completedAt: now.addingTimeInterval(-5),
+            errorMessage: "429 Too Many Requests",
+            codexErrorCode: nil,
+            clientUserMessageID: "desktop-user-message"
+        )
+        XCTAssertNil(AutoResumePolicy.capacityRecoveryTrigger(
+            configuration: configuration,
+            state: state,
+            observation: generic429,
+            now: now
+        ))
+
+        let old = AutoResumeLatestTurnObservation(
+            turnID: "old-turn",
+            status: "failed",
+            completedAt: now.addingTimeInterval(-10 * 60),
+            errorMessage: fallback.errorMessage,
+            codexErrorCode: "server_overloaded",
+            clientUserMessageID: "desktop-user-message"
+        )
+        XCTAssertNil(AutoResumePolicy.capacityRecoveryTrigger(
+            configuration: configuration,
+            state: state,
+            observation: old,
+            now: now
+        ))
+    }
+
+    func testCapacityRecoveryWithoutTimestampsRequiresAnObservedStateTransition() {
+        var configuration = enabledConfiguration()
+        configuration.capacityRecoveryEnabled = true
+        let now = date(2026, 7, 16, 10, 0)
+        var state = AutoResumeRuntimeState.default
+        state.capacityMonitorArmedAt = now.addingTimeInterval(-60)
+        let observation = AutoResumeLatestTurnObservation(
+            turnID: "timestamp-less-turn",
+            status: "failed",
+            completedAt: nil,
+            errorMessage: "Selected model is at capacity. Please try a different model.",
+            codexErrorCode: "server_overloaded",
+            clientUserMessageID: "desktop-user-message"
+        )
+
+        XCTAssertNil(AutoResumePolicy.capacityRecoveryTrigger(
+            configuration: configuration,
+            state: state,
+            observation: observation,
+            now: now
+        ))
+
+        state.lastCapacityMonitorObservationKey = "timestamp-less-turn|inprogress|none"
+        XCTAssertNotNil(AutoResumePolicy.capacityRecoveryTrigger(
+            configuration: configuration,
+            state: state,
+            observation: observation,
+            now: now
+        ))
     }
 
     private func enabledConfiguration() -> AutoResumeConfiguration {

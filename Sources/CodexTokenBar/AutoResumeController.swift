@@ -49,6 +49,19 @@ private enum AutoResumeWorkerOutcome: Sendable {
         case .skipped: return false
         }
     }
+
+    var completesCapacityObservation: Bool {
+        switch self {
+        case .succeeded, .satisfied:
+            return true
+        case .failed(_, _, _, let claimedTrigger):
+            return claimedTrigger
+        case .skipped(let message):
+            return message.contains("本次触发已由")
+        case .dailyLimit:
+            return false
+        }
+    }
 }
 
 private enum AutoResumePendingSlot: String, Sendable {
@@ -87,6 +100,9 @@ final class AutoResumeController: ObservableObject {
     private var schedulerTimer: Timer?
     private var executionTask: Task<Void, Never>?
     private var workerTask: Task<AutoResumeWorkerOutcome, Never>?
+    private var capacityCheckTask: Task<Void, Never>?
+    private var capacityCheckToken: UUID?
+    private var capacityMonitorHasLiveBaseline = false
     private var pendingFreshnessCaptureKeys: Set<String> = []
     private var started = false
 
@@ -122,6 +138,8 @@ final class AutoResumeController: ObservableObject {
         schedulerTimer?.invalidate()
         executionTask?.cancel()
         workerTask?.cancel()
+        capacityCheckTask?.cancel()
+        capacityCheckToken = nil
     }
 
     func start() {
@@ -129,6 +147,11 @@ final class AutoResumeController: ObservableObject {
         started = true
         if configuration.enabled, runtimeState.enabledAt == nil {
             runtimeState.enabledAt = Date()
+        }
+        if configuration.enabled,
+           configuration.capacityRecoveryEnabled,
+           runtimeState.capacityMonitorArmedAt == nil {
+            runtimeState.capacityMonitorArmedAt = Date()
         }
         refreshWaitingStatus()
         persistRuntimeState()
@@ -145,6 +168,7 @@ final class AutoResumeController: ObservableObject {
 
         let timer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in
+                self?.evaluateCapacityRecovery()
                 self?.evaluateSchedule()
             }
         }
@@ -152,6 +176,7 @@ final class AutoResumeController: ObservableObject {
         RunLoop.main.add(timer, forMode: .common)
         schedulerTimer = timer
         synchronizePendingFreshness()
+        evaluateCapacityRecovery()
         evaluateSchedule()
     }
 
@@ -195,6 +220,12 @@ final class AutoResumeController: ObservableObject {
         var next = configuration
         next.quotaRecoveryEnabled = enabled
         applyConfiguration(next, resetsQuotaArming: true)
+    }
+
+    func setCapacityRecoveryEnabled(_ enabled: Bool) {
+        var next = configuration
+        next.capacityRecoveryEnabled = enabled
+        applyConfiguration(next, resetsCapacityMonitoring: true)
     }
 
     func setQuotaWindow(_ window: AutoResumeQuotaWindow) {
@@ -241,7 +272,12 @@ final class AutoResumeController: ObservableObject {
         } else {
             next.target = nil
         }
-        applyConfiguration(next, resetsScheduleAnchor: true, resetsQuotaArming: true)
+        applyConfiguration(
+            next,
+            resetsScheduleAnchor: true,
+            resetsQuotaArming: true,
+            resetsCapacityMonitoring: true
+        )
     }
 
     func refreshThreads() {
@@ -297,8 +333,11 @@ final class AutoResumeController: ObservableObject {
     func stopCurrentRun() {
         executionTask?.cancel()
         workerTask?.cancel()
+        capacityCheckTask?.cancel()
         executionTask = nil
         workerTask = nil
+        capacityCheckTask = nil
+        capacityCheckToken = nil
         isRunning = false
         runtimeState.status = .stopped
         runtimeState.statusMessage = "自动续跑已停止"
@@ -323,7 +362,8 @@ final class AutoResumeController: ObservableObject {
     private func applyConfiguration(
         _ value: AutoResumeConfiguration,
         resetsScheduleAnchor: Bool = false,
-        resetsQuotaArming: Bool = false
+        resetsQuotaArming: Bool = false,
+        resetsCapacityMonitoring: Bool = false
     ) {
         let old = configuration
         configuration = value.normalized
@@ -338,6 +378,7 @@ final class AutoResumeController: ObservableObject {
             runtimeState.enabledAt = Date()
             resetQuotaBaseline()
             runtimeState.schedulePendingFreshness = nil
+            resetCapacityMonitoring()
         }
         if resetsScheduleAnchor {
             runtimeState.enabledAt = Date()
@@ -347,6 +388,20 @@ final class AutoResumeController: ObservableObject {
         }
         if resetsQuotaArming {
             resetQuotaBaseline()
+        }
+        if resetsCapacityMonitoring {
+            capacityCheckTask?.cancel()
+            capacityCheckTask = nil
+            capacityCheckToken = nil
+            resetCapacityMonitoring()
+        }
+        if configuration.enabled, configuration.capacityRecoveryEnabled {
+            if runtimeState.capacityMonitorArmedAt == nil {
+                runtimeState.capacityMonitorArmedAt = Date()
+            }
+        } else {
+            runtimeState.capacityMonitorArmedAt = nil
+            runtimeState.capacityPendingFreshness = nil
         }
         AutoResumeStorage.save(
             configuration,
@@ -360,6 +415,7 @@ final class AutoResumeController: ObservableObject {
         synchronizePendingFreshness()
         refreshWaitingStatus()
         persistRuntimeState()
+        evaluateCapacityRecovery()
         evaluateSchedule()
     }
 
@@ -367,6 +423,160 @@ final class AutoResumeController: ObservableObject {
         quotaBackgroundActivityChanged(
             configuration.enabled && configuration.quotaRecoveryEnabled
         )
+    }
+
+    private func evaluateCapacityRecovery(now: Date = Date()) {
+        guard started,
+              configuration.enabled,
+              configuration.capacityRecoveryEnabled,
+              !isRunning,
+              capacityCheckTask == nil,
+              let target = configuration.target,
+              let dataSource = dataSourceProvider() else {
+            return
+        }
+
+        let targetID = target.id
+        let appServer = self.appServer
+        let codexBinaryProvider = self.codexBinaryProvider
+        let checkToken = UUID()
+        capacityCheckToken = checkToken
+        capacityCheckTask = Task { [weak self] in
+            do {
+                let observation = try await Task.detached(priority: .utility) {
+                    let codexPath = try codexBinaryProvider()
+                    return try await appServer.readLatestTurnObservation(
+                        codexPath: codexPath,
+                        dataSource: dataSource,
+                        threadID: targetID
+                    )
+                }.value
+                guard !Task.isCancelled,
+                      let self,
+                      self.capacityCheckToken == checkToken else {
+                    return
+                }
+                self.capacityCheckTask = nil
+                self.capacityCheckToken = nil
+                self.handleCapacityObservation(
+                    observation,
+                    targetID: targetID,
+                    now: now
+                )
+            } catch is CancellationError {
+                guard let self, self.capacityCheckToken == checkToken else { return }
+                self.capacityCheckTask = nil
+                self.capacityCheckToken = nil
+            } catch {
+                guard !Task.isCancelled,
+                      let self,
+                      self.capacityCheckToken == checkToken else {
+                    return
+                }
+                self.capacityCheckTask = nil
+                self.capacityCheckToken = nil
+                guard self.configuration.enabled,
+                      self.configuration.capacityRecoveryEnabled,
+                      self.configuration.target?.id == targetID else {
+                    return
+                }
+                self.runtimeState.status = .waiting
+                self.runtimeState.statusMessage = "容量中断监控检查失败，15 秒后重试"
+                self.runtimeState.lastError = error.localizedDescription
+                self.persistRuntimeState()
+            }
+        }
+    }
+
+    private func handleCapacityObservation(
+        _ observation: AutoResumeLatestTurnObservation?,
+        targetID: String,
+        now: Date
+    ) {
+        guard configuration.enabled,
+              configuration.capacityRecoveryEnabled,
+              configuration.target?.id == targetID,
+              !isRunning else {
+            return
+        }
+
+        let recoveredFromMonitorError = runtimeState.statusMessage
+            == "容量中断监控检查失败，15 秒后重试"
+        if recoveredFromMonitorError {
+            runtimeState.lastError = nil
+            refreshWaitingStatus()
+        }
+        guard let observation else {
+            if recoveredFromMonitorError { persistRuntimeState() }
+            return
+        }
+        let previousMonitorKey = runtimeState.lastCapacityMonitorObservationKey
+        let monitorKeyChanged = previousMonitorKey != observation.monitorKey
+        let pendingMatchesObservation = runtimeState.capacityPendingFreshness?.threadID == targetID
+            && runtimeState.capacityPendingFreshness?.baseline?.lastTurnID == observation.turnID
+        if observation.startedAt == nil,
+           observation.completedAt == nil,
+           !capacityMonitorHasLiveBaseline,
+           !pendingMatchesObservation {
+            capacityMonitorHasLiveBaseline = true
+            runtimeState.lastCapacityMonitorObservationKey = observation.monitorKey
+            persistRuntimeState()
+            return
+        }
+        capacityMonitorHasLiveBaseline = true
+        let alreadyObserved = runtimeState.lastCapacityObservedTurnID == observation.turnID
+        if observation.isGeneratedByCapacityRecovery,
+           observation.isServerCapacityFailure {
+            if !alreadyObserved {
+                runtimeState.lastCapacityMonitorObservationKey = observation.monitorKey
+                runtimeState.lastCapacityObservedTurnID = observation.turnID
+                runtimeState.capacityPendingFreshness = nil
+                runtimeState.status = .waiting
+                runtimeState.statusMessage = "自动发送的“继续”仍遇容量不足，本次不再重试"
+                runtimeState.lastError = observation.errorMessage
+                persistRuntimeState()
+            } else if recoveredFromMonitorError {
+                persistRuntimeState()
+            }
+            return
+        }
+
+        if alreadyObserved {
+            if monitorKeyChanged || recoveredFromMonitorError {
+                runtimeState.lastCapacityMonitorObservationKey = observation.monitorKey
+                persistRuntimeState()
+            }
+            return
+        }
+        guard let trigger = AutoResumePolicy.capacityRecoveryTrigger(
+            configuration: configuration,
+            state: runtimeState,
+            observation: observation,
+            now: now
+        ) else {
+            if monitorKeyChanged || recoveredFromMonitorError {
+                runtimeState.lastCapacityMonitorObservationKey = observation.monitorKey
+                if observation.isServerCapacityFailure,
+                   observation.clientUserMessageID == nil {
+                    runtimeState.status = .waiting
+                    runtimeState.statusMessage = "检测到容量错误，但无法确认消息来源，已安全停下"
+                }
+                persistRuntimeState()
+            }
+            return
+        }
+
+        runtimeState.lastCapacityMonitorObservationKey = observation.monitorKey
+        runtimeState.capacityPendingFreshness = AutoResumePendingFreshness(
+            threadID: targetID,
+            armedAt: now,
+            baseline: observation.freshness
+        )
+        runtimeState.status = .waiting
+        runtimeState.statusMessage = "检测到服务容量不足，准备发送一次“继续”"
+        runtimeState.lastError = observation.errorMessage
+        persistRuntimeState()
+        beginExecution(trigger: trigger, requiresAutomationEnabled: true)
     }
 
     private func evaluateSchedule(now: Date = Date()) {
@@ -446,6 +656,8 @@ final class AutoResumeController: ObservableObject {
                 pending = runtimeState.schedulePendingFreshness
             case .quotaRecovery:
                 pending = runtimeState.quotaPendingFreshness
+            case .capacityRecovery:
+                pending = runtimeState.capacityPendingFreshness
             case .manual:
                 pending = nil
             }
@@ -513,7 +725,9 @@ final class AutoResumeController: ObservableObject {
         persistRuntimeState()
 
         let appServer = self.appServer
-        let prompt = configuration.prompt
+        let prompt = trigger.kind == .capacityRecovery
+            ? AutoResumeConfiguration.defaultPrompt
+            : configuration.prompt
         let sharedCooldown = trigger.kind == .manual
             ? TimeInterval.zero
             : TimeInterval(configuration.cooldownMinutes * 60)
@@ -649,6 +863,9 @@ final class AutoResumeController: ObservableObject {
         trigger: AutoResumeTrigger,
         now: Date = Date()
     ) {
+        let capacityTurnID = trigger.kind == .capacityRecovery
+            ? runtimeState.capacityPendingFreshness?.baseline?.lastTurnID
+            : nil
         executionTask = nil
         workerTask = nil
         isRunning = false
@@ -708,6 +925,11 @@ final class AutoResumeController: ObservableObject {
             runtimeState.statusMessage = message
         }
         settlePendingFreshnessAfterExecution(outcome, trigger: trigger)
+        if trigger.kind == .capacityRecovery,
+           outcome.completesCapacityObservation {
+            runtimeState.lastCapacityObservedTurnID = capacityTurnID
+            runtimeState.capacityPendingFreshness = nil
+        }
         runtimeState.lastTriggerKey = trigger.key
         runtimeState.lastTriggerKind = trigger.kind
         synchronizePendingFreshness(now: now)
@@ -729,10 +951,12 @@ final class AutoResumeController: ObservableObject {
             runtimeState.statusMessage = "自动续跑已启用，请选择目标任务"
             return
         }
-        let hasTrigger = configuration.scheduleMode != .off || configuration.quotaRecoveryEnabled
+        let hasTrigger = configuration.scheduleMode != .off
+            || configuration.quotaRecoveryEnabled
+            || configuration.capacityRecoveryEnabled
         guard hasTrigger else {
             runtimeState.status = .waiting
-            runtimeState.statusMessage = "已启用，但尚未选择定时或额度触发"
+            runtimeState.statusMessage = "已启用，但尚未选择自动触发方式"
             return
         }
         runtimeState.status = .waiting
@@ -750,6 +974,10 @@ final class AutoResumeController: ObservableObject {
             runtimeState.statusMessage = "额度续跑已武装\(remaining)，等待恢复"
         } else if let next = nextScheduledAt {
             runtimeState.statusMessage = "等待下次续跑：\(next.formatted(date: .abbreviated, time: .shortened))"
+        } else if configuration.capacityRecoveryEnabled {
+            runtimeState.statusMessage = configuration.quotaRecoveryEnabled
+                ? "容量中断监控已武装，同时观察额度恢复"
+                : "容量中断监控已武装，每 15 秒检查目标任务"
         } else {
             runtimeState.statusMessage = "正在等待额度进入低位"
         }
@@ -769,6 +997,14 @@ final class AutoResumeController: ObservableObject {
         runtimeState.quotaPendingFreshness = nil
     }
 
+    private func resetCapacityMonitoring() {
+        capacityMonitorHasLiveBaseline = false
+        runtimeState.capacityMonitorArmedAt = nil
+        runtimeState.lastCapacityMonitorObservationKey = nil
+        runtimeState.lastCapacityObservedTurnID = nil
+        runtimeState.capacityPendingFreshness = nil
+    }
+
     private func rearmQuotaAfterDeferredTrigger() {
         runtimeState.quotaArmed = true
         runtimeState.quotaArmedCycleID = runtimeState.lastQuotaCycleID
@@ -786,6 +1022,7 @@ final class AutoResumeController: ObservableObject {
         case .succeeded:
             runtimeState.schedulePendingFreshness = nil
             runtimeState.quotaPendingFreshness = nil
+            runtimeState.capacityPendingFreshness = nil
             runtimeState.quotaArmed = false
             runtimeState.quotaArmedCycleID = nil
             runtimeState.quotaArmedWindowLabel = nil
@@ -799,6 +1036,8 @@ final class AutoResumeController: ObservableObject {
             case .quotaRecovery:
                 runtimeState.quotaPendingFreshness = nil
                 runtimeState.quotaArmed = false
+            case .capacityRecovery:
+                runtimeState.capacityPendingFreshness = nil
             case .manual:
                 break
             }
@@ -817,8 +1056,10 @@ final class AutoResumeController: ObservableObject {
         guard configuration.enabled, let target = configuration.target else {
             let changed = runtimeState.schedulePendingFreshness != nil
                 || runtimeState.quotaPendingFreshness != nil
+                || runtimeState.capacityPendingFreshness != nil
             runtimeState.schedulePendingFreshness = nil
             runtimeState.quotaPendingFreshness = nil
+            runtimeState.capacityPendingFreshness = nil
             if changed { persistRuntimeState() }
             return
         }
