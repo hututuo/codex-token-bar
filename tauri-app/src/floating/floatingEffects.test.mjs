@@ -25,6 +25,8 @@ test("crowd radar compares three compact results without a visual title or lower
   assert.doesNotMatch(crowdRow, /snapshot\.taskCount|snapshot\.cellCount|snapshot\.contributorCount|pendingGrades|通过/);
   assert.match(stylesSource, /\.floating-radar,\s*\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(0, 0\.74fr\) minmax\(0, 1\.26fr\);/);
   assert.match(stylesSource, /\.floating-crowd-radar-trailing,\s*\.floating-radar-iq\s*{[\s\S]*?padding-left: calc\(6px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-radar \+ \.floating-crowd-radar\s*{[\s\S]*?margin-top: calc\(-2px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-content\s*{[\s\S]*?gap: calc\(4px \* var\(--floating-scale\)\);/);
 });
 
 test("ripple uses a Swift-style sprite image atlas instead of realtime DOM canvas drawing", () => {

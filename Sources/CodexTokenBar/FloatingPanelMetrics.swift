@@ -1,13 +1,14 @@
 import AppKit
 
 enum FloatingTokenPanelMetrics {
-    static let baseSize = NSSize(width: 258, height: 119)
+    static let baseSize = NSSize(width: 258, height: 117)
     static let minimumControlSize = NSSize(width: 72, height: 34)
     static let baseCornerRadius: CGFloat = 14
     static let horizontalPadding: CGFloat = 10
     static let verticalPadding: CGFloat = 6
     static let singleElementTopInset: CGFloat = 10
     static let rowSpacing: CGFloat = 2
+    static let radarCrowdRowSpacing: CGFloat = 0
     static let rateRowHeight: CGFloat = 28
     static let usageStatusRowHeight: CGFloat = 20
     static let metricRowHeight: CGFloat = 11
@@ -67,7 +68,20 @@ enum FloatingTokenPanelMetrics {
         let rowHeights = groups.reduce(CGFloat.zero) { partial, group in
             partial + rowHeight(for: group)
         }
-        return rowHeights + rowSpacing * CGFloat(max(groups.count - 1, 0))
+        let interRowSpacing = zip(groups, groups.dropFirst()).reduce(CGFloat.zero) { partial, pair in
+            partial + spacing(between: pair.0, and: pair.1)
+        }
+        return rowHeights + interRowSpacing
+    }
+
+    static func spacing(
+        between upperGroup: FloatingPanelContentGroup,
+        and lowerGroup: FloatingPanelContentGroup
+    ) -> CGFloat {
+        if upperGroup == .radar, lowerGroup == .crowdRadar {
+            return radarCrowdRowSpacing
+        }
+        return rowSpacing
     }
 
     static func rowHeight(for group: FloatingPanelContentGroup) -> CGFloat {

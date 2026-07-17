@@ -40,13 +40,14 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             + FloatingTokenPanelMetrics.quotaRowHeight
             + FloatingTokenPanelMetrics.radarRowHeight
             + FloatingTokenPanelMetrics.crowdRadarRowHeight
-            + FloatingTokenPanelMetrics.rowSpacing * 4
+            + FloatingTokenPanelMetrics.rowSpacing * 3
+            + FloatingTokenPanelMetrics.radarCrowdRowSpacing
 
         XCTAssertEqual(height, expectedHeight, accuracy: 0.001)
     }
 
     func testDefaultFloatingPanelUsesTighterVerticalRhythm() {
-        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 119, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 117, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.verticalPadding, 6, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rowSpacing, 2, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rateRowHeight, 28, accuracy: 0.001)
@@ -55,8 +56,26 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(FloatingTokenPanelMetrics.quotaRowHeight, 15.5, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.radarRowHeight, 24, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.crowdRadarRowHeight, 20, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 106.5, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 119, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 104.5, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 117, accuracy: 0.001)
+    }
+
+    func testRadarCrowdPairTightensOnlyItsUpperGap() {
+        XCTAssertEqual(
+            FloatingTokenPanelMetrics.spacing(between: .radar, and: .crowdRadar),
+            0,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            FloatingTokenPanelMetrics.spacing(between: .crowdRadar, and: .quota),
+            FloatingTokenPanelMetrics.rowSpacing,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            FloatingTokenPanelMetrics.spacing(between: .metrics, and: .radar),
+            FloatingTokenPanelMetrics.rowSpacing,
+            accuracy: 0.001
+        )
     }
 
     func testUsageStatusEmbedsOnlyWhenAdjacentToRateRow() {

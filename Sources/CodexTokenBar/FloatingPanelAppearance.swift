@@ -627,7 +627,6 @@ struct FloatingPanelAppearance: Equatable {
         let scale = max(scale, 0.1)
         let horizontalPadding = FloatingTokenPanelMetrics.horizontalPadding * scale
         let verticalPadding = FloatingTokenPanelMetrics.verticalPadding * scale
-        let rowSpacing = FloatingTokenPanelMetrics.rowSpacing * scale
         let topInset = visibility.needsTopControlInset
             ? FloatingTokenPanelMetrics.singleElementTopInset * scale
             : 0
@@ -637,10 +636,13 @@ struct FloatingPanelAppearance: Equatable {
         let contentAreaHeight = max(0, cardHeight - topInset)
         var y = verticalPadding + topInset + max(0, (contentAreaHeight - contentHeight) / 2)
 
+        var previousGroup: FloatingPanelContentGroup?
         return groups.map { group in
+            if let previousGroup {
+                y += FloatingTokenPanelMetrics.spacing(between: previousGroup, and: group) * scale
+            }
             let height = FloatingTokenPanelMetrics.rowHeight(for: group) * scale
-            defer { y += height + rowSpacing }
-            return (
+            let result = (
                 group,
                 CGRect(
                     x: horizontalPadding,
@@ -649,6 +651,9 @@ struct FloatingPanelAppearance: Equatable {
                     height: height
                 )
             )
+            y += height
+            previousGroup = group
+            return result
         }
     }
 

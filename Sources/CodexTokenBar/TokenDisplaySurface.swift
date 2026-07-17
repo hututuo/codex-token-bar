@@ -301,7 +301,6 @@ struct TokenDisplayCard: View {
                 visibility: visibility,
                 radarPresentation: radarPresentation
             )
-            let rowSpacing = FloatingTokenPanelMetrics.rowSpacing.scaled(by: displayScale)
             let rateRowHeight = FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale)
             let usageStatusRowHeight = FloatingTokenPanelMetrics.usageStatusRowHeight.scaled(by: displayScale)
             let metricRowHeight = FloatingTokenPanelMetrics.metricRowHeight.scaled(by: displayScale)
@@ -310,34 +309,43 @@ struct TokenDisplayCard: View {
             let crowdRadarRowHeight = FloatingTokenPanelMetrics.crowdRadarRowHeight.scaled(by: displayScale)
             let topSafetyInset = presentation.needsTopSafetyInset ? FloatingTokenPanelMetrics.singleElementTopInset.scaled(by: displayScale) : 0
 
-            VStack(alignment: .center, spacing: rowSpacing) {
-                ForEach(presentation.rows) { row in
-                    switch row.group {
-                    case .rateAndBar:
-                        rateRow(usageStatus: presentation.rateBarUsageStatus)
-                            .environment(\.tokenDisplayTextPalette, palette(for: .rateAndBar))
-                            .frame(height: rateRowHeight, alignment: .center)
-                    case .usageStatus:
-                        TokenDisplayUsageStatusLine(text: presentation.standaloneUsageStatus ?? snapshot.standaloneUsageStatus)
-                            .environment(\.tokenDisplayTextPalette, standaloneUsageStatusTextPalette ?? palette(for: .usageStatus))
-                            .frame(height: usageStatusRowHeight, alignment: .center)
-                    case .metrics:
-                        metricRow
-                            .environment(\.tokenDisplayTextPalette, palette(for: .metrics))
-                            .frame(height: metricRowHeight, alignment: .center)
-                    case .quota:
-                        TokenQuotaMiniStrip(snapshot: snapshot.quota)
-                            .environment(\.tokenDisplayTextPalette, palette(for: .quota))
-                            .frame(height: quotaRowHeight, alignment: .center)
-                    case .radar:
-                        TokenDisplayRadarStrip(presentation: radarPresentation)
-                            .environment(\.tokenDisplayTextPalette, palette(for: .radar))
-                            .frame(height: radarRowHeight, alignment: .center)
-                    case .crowdRadar:
-                        TokenDisplayCrowdRadarRow(presentation: radarPresentation)
-                            .environment(\.tokenDisplayTextPalette, palette(for: .crowdRadar))
-                            .frame(height: crowdRadarRowHeight, alignment: .center)
+            VStack(alignment: .center, spacing: 0) {
+                ForEach(Array(presentation.rows.enumerated()), id: \.element.id) { index, row in
+                    let topSpacing = index > 0
+                        ? FloatingTokenPanelMetrics.spacing(
+                            between: presentation.rows[index - 1].group,
+                            and: row.group
+                        ).scaled(by: displayScale)
+                        : 0
+                    Group {
+                        switch row.group {
+                        case .rateAndBar:
+                            rateRow(usageStatus: presentation.rateBarUsageStatus)
+                                .environment(\.tokenDisplayTextPalette, palette(for: .rateAndBar))
+                                .frame(height: rateRowHeight, alignment: .center)
+                        case .usageStatus:
+                            TokenDisplayUsageStatusLine(text: presentation.standaloneUsageStatus ?? snapshot.standaloneUsageStatus)
+                                .environment(\.tokenDisplayTextPalette, standaloneUsageStatusTextPalette ?? palette(for: .usageStatus))
+                                .frame(height: usageStatusRowHeight, alignment: .center)
+                        case .metrics:
+                            metricRow
+                                .environment(\.tokenDisplayTextPalette, palette(for: .metrics))
+                                .frame(height: metricRowHeight, alignment: .center)
+                        case .quota:
+                            TokenQuotaMiniStrip(snapshot: snapshot.quota)
+                                .environment(\.tokenDisplayTextPalette, palette(for: .quota))
+                                .frame(height: quotaRowHeight, alignment: .center)
+                        case .radar:
+                            TokenDisplayRadarStrip(presentation: radarPresentation)
+                                .environment(\.tokenDisplayTextPalette, palette(for: .radar))
+                                .frame(height: radarRowHeight, alignment: .center)
+                        case .crowdRadar:
+                            TokenDisplayCrowdRadarRow(presentation: radarPresentation)
+                                .environment(\.tokenDisplayTextPalette, palette(for: .crowdRadar))
+                                .frame(height: crowdRadarRowHeight, alignment: .center)
+                        }
                     }
+                    .padding(.top, topSpacing)
                 }
             }
             .frame(width: proxy.size.width, height: max(0, proxy.size.height - topSafetyInset), alignment: .center)

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   DEFAULT_FLOATING_CONTENT_VISIBILITY,
+  floatingContentGap,
   floatingContentHeight,
   layoutFloatingContentGroups,
   moveFloatingContent,
@@ -79,5 +80,11 @@ test("floatingContentHeight uses Swift-style vertical protection pixels", () => 
     showRateAndBar: false,
     showUsageStatus: false,
   }), 88);
-  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 136);
+  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 134);
+});
+
+test("radar crowd spacing tightens without changing the crowd quota gap", () => {
+  assert.equal(floatingContentGap("radar", "crowdRadar"), 2);
+  assert.equal(floatingContentGap("crowdRadar", "quota"), 4);
+  assert.equal(floatingContentGap("metrics", "radar"), 4);
 });

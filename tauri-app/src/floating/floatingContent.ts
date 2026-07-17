@@ -102,6 +102,13 @@ export function moveFloatingContent(
   return sanitizeContentOrder(next);
 }
 
+export function floatingContentGap(
+  upperGroup: FloatingContentGroup,
+  lowerGroup: FloatingContentGroup,
+): number {
+  return upperGroup === "radar" && lowerGroup === "crowdRadar" ? 2 : 4;
+}
+
 export function floatingContentHeight(visibility: FloatingContentVisibility): number {
   const groups = layoutFloatingContentGroups(visibility);
   if (groups.length === 0) {
@@ -125,7 +132,10 @@ export function floatingContentHeight(visibility: FloatingContentVisibility): nu
     }
   });
   const verticalPadding = 14;
-  const gaps = Math.max(0, groups.length - 1) * 4;
+  const gaps = groups.slice(1).reduce(
+    (sum, group, index) => sum + floatingContentGap(groups[index], group),
+    0,
+  );
   return Math.max(88, Math.ceil(verticalPadding + gaps + rows.reduce((sum, height) => sum + height, 0)));
 }
 

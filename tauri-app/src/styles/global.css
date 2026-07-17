@@ -5598,6 +5598,10 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   gap: calc(4px * var(--floating-scale));
 }
 
+.floating-radar + .floating-crowd-radar {
+  margin-top: calc(-2px * var(--floating-scale));
+}
+
 .floating-row {
   color: var(--floating-primary);
 }
