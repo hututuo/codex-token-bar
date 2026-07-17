@@ -51,9 +51,17 @@ export async function readCodexCrowdRadarSnapshot(): Promise<CodexCrowdRadarSnap
 }
 
 export function bestCodexCrowdRadarModel(snapshot?: CodexCrowdRadarSnapshot | null): CodexCrowdRadarModel | null {
-  return snapshot?.models
+  return rankedCodexCrowdRadarModels(snapshot, 1)[0] ?? null;
+}
+
+export function rankedCodexCrowdRadarModels(
+  snapshot?: CodexCrowdRadarSnapshot | null,
+  limit = Number.MAX_SAFE_INTEGER,
+): CodexCrowdRadarModel[] {
+  return (snapshot?.models ?? [])
     .filter((row) => row.graded > 0)
-    .sort((left, right) => right.passRate - left.passRate || right.graded - left.graded)[0] ?? null;
+    .sort((left, right) => right.passRate - left.passRate || right.graded - left.graded)
+    .slice(0, Math.max(0, Math.floor(limit)));
 }
 
 export function crowdRadarModelLabel(row: CodexCrowdRadarModel): string {

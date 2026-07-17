@@ -16,7 +16,7 @@ import { floatingRateBarStatusText, floatingStandaloneStatusText } from "./float
 import { floatingTextPaletteForGroup } from "./floatingTextPalette";
 import { radarActionAccent, radarScoreAccent, semanticMetricColor } from "../styles/semanticColors";
 import { floatingGradientBackground } from "./floatingSettings";
-import { bestCodexCrowdRadarModel, crowdRadarModelLabel, type CodexCrowdRadarSnapshot } from "../api/codexCrowdRadarClient";
+import { crowdRadarModelLabel, rankedCodexCrowdRadarModels, type CodexCrowdRadarSnapshot } from "../api/codexCrowdRadarClient";
 
 interface FloatingPanelSurfaceProps {
   settings: FloatingWindowSettings;
@@ -374,18 +374,19 @@ export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSna
 }
 
 export function FloatingCrowdRadarRow({ snapshot, style }: { snapshot?: CodexCrowdRadarSnapshot | null; style: CSSProperties }) {
-  const best = bestCodexCrowdRadarModel(snapshot);
+  const leaders = rankedCodexCrowdRadarModels(snapshot, 2);
   return (
     <div className="floating-row floating-crowd-radar" style={style}>
-      <div className="floating-crowd-radar-line floating-crowd-radar-primary">
-        <strong>众测</strong>
-        <span>{snapshot ? `${snapshot.taskCount}题 · ${snapshot.cellCount}格 · ${snapshot.contributorCount}人` : "待读取"}</span>
-        {best ? <em>{crowdRadarModelLabel(best)}</em> : null}
-      </div>
-      <div className="floating-crowd-radar-line floating-crowd-radar-secondary">
-        <span>{best ? `IQ ${(best.passRate * 150).toFixed(1)} · 通过 ${(best.passRate * 100).toFixed(1)}%` : "暂无有效判定"}</span>
-        {best ? <em>{best.graded}判{snapshot && snapshot.pendingGrades > 0 ? ` · 待判${snapshot.pendingGrades}` : ""}</em> : null}
-      </div>
+      <strong>众测</strong>
+      {[0, 1].map((index) => {
+        const model = leaders[index];
+        return (
+          <div className="floating-crowd-radar-result" key={model ? `${model.model}:${model.effort}` : `empty-${index}`}>
+            <span>{index + 1} {model ? crowdRadarModelLabel(model) : "--"}</span>
+            <em>{model ? `IQ ${(model.passRate * 150).toFixed(1)} · ${model.graded}判` : "IQ -- · --判"}</em>
+          </div>
+        );
+      })}
     </div>
   );
 }

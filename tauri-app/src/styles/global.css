@@ -5812,9 +5812,9 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-crowd-radar {
   display: grid;
-  grid-template-rows: repeat(2, minmax(0, 1fr));
-  align-content: center;
-  gap: 0;
+  grid-template-columns: max-content repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: calc(4px * var(--floating-scale));
   min-width: 0;
   min-height: calc(20px * var(--floating-scale));
   border-top: 1px solid var(--floating-divider);
@@ -5823,33 +5823,33 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   font-variant-numeric: tabular-nums;
 }
 
-.floating-crowd-radar-line {
-  display: flex;
-  align-items: center;
-  gap: calc(4px * var(--floating-scale));
+.floating-crowd-radar > strong {
+  color: var(--floating-primary);
+  font-size: calc(8px * var(--floating-scale));
+}
+
+.floating-crowd-radar-result {
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  align-content: center;
   min-width: 0;
   line-height: 1;
   white-space: nowrap;
 }
 
-.floating-crowd-radar-primary strong {
+.floating-crowd-radar-result + .floating-crowd-radar-result {
+  border-left: 1px solid var(--floating-divider);
+  padding-left: calc(5px * var(--floating-scale));
+}
+
+.floating-crowd-radar-result span {
   color: var(--floating-primary);
-  font-size: calc(8px * var(--floating-scale));
+  font-weight: 600;
 }
 
-.floating-crowd-radar-primary span,
-.floating-crowd-radar-secondary em {
+.floating-crowd-radar-result em {
   color: var(--floating-muted);
-}
-
-.floating-crowd-radar-primary em,
-.floating-crowd-radar-secondary em {
-  margin-left: auto;
-}
-
-.floating-crowd-radar-primary em,
-.floating-crowd-radar-secondary span {
-  color: color-mix(in srgb, var(--floating-primary) 70%, var(--radar-secondary-color) 30%);
+  font-style: normal;
 }
 
 .floating-radar-action,

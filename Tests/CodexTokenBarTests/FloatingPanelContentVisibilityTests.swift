@@ -943,7 +943,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertFalse(radarStrip.contains("alignment: .trailing"))
     }
 
-    func testCrowdRadarUsesCompactTwoLineContentWithoutLongVisualTitle() throws {
+    func testCrowdRadarComparesTwoCompactLeadersWithoutCoverageNoise() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -956,11 +956,17 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             endingBefore: "private func tokenDisplayRadarProbabilityText"
         ))
 
-        XCTAssertTrue(crowdRow.contains("VStack(alignment: .leading, spacing: 0)"))
+        XCTAssertTrue(crowdRow.contains("let leaders = Array(crowd.rankedModels.prefix(2))"))
+        XCTAssertTrue(crowdRow.contains("ForEach(Array(leaders.enumerated())"))
         XCTAssertTrue(crowdRow.contains("Text(\"众测\")"))
         XCTAssertFalse(crowdRow.contains("Label(\"众测雷达\", systemImage:"))
-        XCTAssertTrue(crowdRow.contains("· 通过"))
-        XCTAssertTrue(crowdRow.contains("judgementText(crowd: crowd, best: best)"))
+        XCTAssertTrue(crowdRow.contains("Text(\"\\(index + 1) \\(model.label)\")"))
+        XCTAssertTrue(crowdRow.contains("· \\(model.graded)判"))
+        XCTAssertFalse(crowdRow.contains("crowd.taskCount"))
+        XCTAssertFalse(crowdRow.contains("crowd.cellCount"))
+        XCTAssertFalse(crowdRow.contains("crowd.contributorCount"))
+        XCTAssertFalse(crowdRow.contains("crowd.pendingGrades"))
+        XCTAssertFalse(crowdRow.contains("通过"))
         XCTAssertTrue(crowdRow.contains(".accessibilityLabel(\"众测雷达\")"))
     }
 

@@ -430,9 +430,7 @@ private struct CodexCrowdRadarDetail: View {
                 CodexRadarDetailSubsection(title: "通过率排名") {
                     CodexRadarTable(
                         headers: ["模型", "通过率", "众测 IQ", "已判"],
-                        rows: snapshot.models.filter { $0.graded > 0 }.sorted {
-                            $0.passRate == $1.passRate ? $0.graded > $1.graded : $0.passRate > $1.passRate
-                        }.prefix(8).map {
+                        rows: snapshot.rankedModels.prefix(8).map {
                             [$0.label, String(format: "%.1f%%", $0.passRate * 100), String(format: "%.1f", $0.iq), "\($0.passed)/\($0.graded)"]
                         }
                     )

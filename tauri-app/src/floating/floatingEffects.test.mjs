@@ -14,14 +14,15 @@ const settingsPanelSource = readFileSync(
   "utf8",
 );
 
-test("crowd radar uses a compact two-line row and short visual title", () => {
+test("crowd radar compares two compact results and omits lower-value coverage fields", () => {
   const crowdRow = /export function FloatingCrowdRadarRow[\s\S]*?\n}\n\nfunction floatingRadarSecondaryIQText/.exec(previewSource)?.[0] ?? "";
-  assert.match(crowdRow, /floating-crowd-radar-primary/);
-  assert.match(crowdRow, /floating-crowd-radar-secondary/);
+  assert.match(crowdRow, /rankedCodexCrowdRadarModels\(snapshot, 2\)/);
+  assert.match(crowdRow, /\[0, 1\]\.map/);
+  assert.match(crowdRow, /floating-crowd-radar-result/);
   assert.match(crowdRow, /<strong>众测<\/strong>/);
-  assert.doesNotMatch(crowdRow, /<strong>众测雷达<\/strong>/);
-  assert.match(crowdRow, /IQ .* · 通过/);
-  assert.match(stylesSource, /\.floating-crowd-radar\s*{[\s\S]*?grid-template-rows: repeat\(2,/);
+  assert.match(crowdRow, /IQ .*model\.graded.*判/);
+  assert.doesNotMatch(crowdRow, /snapshot\.taskCount|snapshot\.cellCount|snapshot\.contributorCount|pendingGrades|通过/);
+  assert.match(stylesSource, /\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: max-content repeat\(2,/);
 });
 
 test("ripple uses a Swift-style sprite image atlas instead of realtime DOM canvas drawing", () => {

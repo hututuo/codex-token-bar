@@ -11,6 +11,7 @@ import { readCodexRadarState, subscribeCodexRadarState } from "../api/codexRadar
 import {
   bestCodexCrowdRadarModel,
   crowdRadarModelLabel,
+  rankedCodexCrowdRadarModels,
   readCodexCrowdRadarSnapshot,
   type CodexCrowdRadarSnapshot,
 } from "../api/codexCrowdRadarClient";
@@ -686,10 +687,7 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
 });
 
 function CrowdRadarDetail({ snapshot, status }: { snapshot: CodexCrowdRadarSnapshot | null; status: string }) {
-  const rows = snapshot?.models
-    .filter((row) => row.graded > 0)
-    .sort((left, right) => right.passRate - left.passRate || right.graded - left.graded)
-    .slice(0, 8) ?? [];
+  const rows = rankedCodexCrowdRadarModels(snapshot, 8);
   const best = bestCodexCrowdRadarModel(snapshot);
   return (
     <RadarDetailSection icon="antenna.radiowaves.left.and.right" title="众测雷达">

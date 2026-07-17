@@ -236,33 +236,44 @@ struct TokenDisplayCrowdRadarRow: View {
     @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     var body: some View {
-        if let crowd = presentation.crowdSnapshot, let best = crowd.bestModel {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 4.scaled(by: displayScale)) {
-                    Text("众测")
-                        .font(.system(size: 8.scaled(by: displayScale), weight: .bold))
-                    Text("\(crowd.taskCount)题 · \(crowd.cellCount)格 · \(crowd.contributorCount)人")
-                        .foregroundStyle(textPalette.secondaryColor)
-                    Spacer(minLength: 3.scaled(by: displayScale))
-                    Text(best.label)
-                        .fontWeight(.semibold)
+        if let crowd = presentation.crowdSnapshot, !crowd.rankedModels.isEmpty {
+            let leaders = Array(crowd.rankedModels.prefix(2))
+            HStack(spacing: 4.scaled(by: displayScale)) {
+                Text("众测")
+                    .font(.system(size: 8.scaled(by: displayScale), weight: .bold))
+                    .fixedSize()
+                ForEach(Array(leaders.enumerated()), id: \.element.id) { index, model in
+                    if index > 0 {
+                        Divider()
+                            .frame(height: 14.scaled(by: displayScale))
+                    }
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("\(index + 1) \(model.label)")
+                            .fontWeight(.semibold)
+                        Text("IQ \(String(format: "%.1f", model.iq)) · \(model.graded)判")
+                            .foregroundStyle(textPalette.secondaryColor)
+                            .monospacedDigit()
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                HStack(spacing: 4.scaled(by: displayScale)) {
-                    Text("IQ \(String(format: "%.1f", best.iq)) · 通过 \(String(format: "%.1f%%", best.passRate * 100))")
-                        .monospacedDigit()
-                    Spacer(minLength: 3.scaled(by: displayScale))
-                    Text(judgementText(crowd: crowd, best: best))
-                        .foregroundStyle(crowd.pendingGrades > 0 ? .orange : textPalette.secondaryColor)
-                        .monospacedDigit()
+                if leaders.count < 2 {
+                    Divider()
+                        .frame(height: 14.scaled(by: displayScale))
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("2 --")
+                        Text("IQ -- · --判")
+                            .foregroundStyle(textPalette.secondaryColor)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .font(.system(size: 7.6.scaled(by: displayScale), weight: .medium))
+            .font(.system(size: 7.4.scaled(by: displayScale), weight: .medium))
             .foregroundStyle(textPalette.primaryColor)
             .lineLimit(1)
-            .minimumScaleFactor(0.8)
+            .minimumScaleFactor(0.76)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("众测雷达")
-            .accessibilityValue("\(crowd.taskCount)题，\(crowd.cellCount)格，\(crowd.contributorCount)人，\(best.label)，IQ \(String(format: "%.1f", best.iq))，通过率 \(String(format: "%.1f%%", best.passRate * 100))，\(judgementText(crowd: crowd, best: best))")
+            .accessibilityValue(accessibilityValue(leaders))
         } else {
             HStack {
                 Text("众测")
@@ -274,10 +285,10 @@ struct TokenDisplayCrowdRadarRow: View {
         }
     }
 
-    private func judgementText(crowd: CodexCrowdRadarSnapshot, best: CodexCrowdRadarModel) -> String {
-        let graded = "\(best.graded)判"
-        guard crowd.pendingGrades > 0 else { return graded }
-        return "\(graded) · 待判\(crowd.pendingGrades)"
+    private func accessibilityValue(_ leaders: [CodexCrowdRadarModel]) -> String {
+        leaders.enumerated().map { index, model in
+            "第\(index + 1)名 \(model.label)，IQ \(String(format: "%.1f", model.iq))，\(model.graded)个已判样本"
+        }.joined(separator: "；")
     }
 }
 

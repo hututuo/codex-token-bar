@@ -23,11 +23,12 @@ struct CodexCrowdRadarSnapshot: Equatable, Sendable {
     let pendingGrades: Int
     let errorGrades: Int
     let models: [CodexCrowdRadarModel]
-    var bestModel: CodexCrowdRadarModel? {
+    var rankedModels: [CodexCrowdRadarModel] {
         models.filter { $0.graded > 0 }.sorted {
             $0.passRate == $1.passRate ? $0.graded > $1.graded : $0.passRate > $1.passRate
-        }.first
+        }
     }
+    var bestModel: CodexCrowdRadarModel? { rankedModels.first }
 }
 
 protocol CodexCrowdRadarReading: Sendable {
