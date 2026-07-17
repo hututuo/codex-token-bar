@@ -14,6 +14,16 @@ const settingsPanelSource = readFileSync(
   "utf8",
 );
 
+test("crowd radar uses a compact two-line row and short visual title", () => {
+  const crowdRow = /export function FloatingCrowdRadarRow[\s\S]*?\n}\n\nfunction floatingRadarSecondaryIQText/.exec(previewSource)?.[0] ?? "";
+  assert.match(crowdRow, /floating-crowd-radar-primary/);
+  assert.match(crowdRow, /floating-crowd-radar-secondary/);
+  assert.match(crowdRow, /<strong>众测<\/strong>/);
+  assert.doesNotMatch(crowdRow, /<strong>众测雷达<\/strong>/);
+  assert.match(crowdRow, /IQ .* · 通过/);
+  assert.match(stylesSource, /\.floating-crowd-radar\s*{[\s\S]*?grid-template-rows: repeat\(2,/);
+});
+
 test("ripple uses a Swift-style sprite image atlas instead of realtime DOM canvas drawing", () => {
   assert.match(previewSource, /<FloatingUnreadRippleSprite effectRgb=\{effectRgb\} \/>/);
   assert.match(previewSource, /function renderRippleAtlas/);

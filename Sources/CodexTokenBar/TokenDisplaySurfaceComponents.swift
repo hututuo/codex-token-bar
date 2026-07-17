@@ -237,33 +237,47 @@ struct TokenDisplayCrowdRadarRow: View {
 
     var body: some View {
         if let crowd = presentation.crowdSnapshot, let best = crowd.bestModel {
-            HStack(spacing: 5.scaled(by: displayScale)) {
-                Label("众测雷达", systemImage: "antenna.radiowaves.left.and.right")
-                    .font(.system(size: 8.2.scaled(by: displayScale), weight: .bold))
-                Text("\(crowd.taskCount)题 · \(crowd.cellCount)格 · \(crowd.contributorCount)人")
-                    .foregroundStyle(textPalette.secondaryColor)
-                Spacer(minLength: 3.scaled(by: displayScale))
-                Text("\(best.label)  IQ \(String(format: "%.1f", best.iq)) · \(String(format: "%.1f%%", best.passRate * 100)) · \(best.graded)判")
-                    .fontWeight(.semibold)
-                    .monospacedDigit()
-                if crowd.pendingGrades > 0 {
-                    Text("待判 \(crowd.pendingGrades)")
-                        .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 4.scaled(by: displayScale)) {
+                    Text("众测")
+                        .font(.system(size: 8.scaled(by: displayScale), weight: .bold))
+                    Text("\(crowd.taskCount)题 · \(crowd.cellCount)格 · \(crowd.contributorCount)人")
+                        .foregroundStyle(textPalette.secondaryColor)
+                    Spacer(minLength: 3.scaled(by: displayScale))
+                    Text(best.label)
+                        .fontWeight(.semibold)
+                }
+                HStack(spacing: 4.scaled(by: displayScale)) {
+                    Text("IQ \(String(format: "%.1f", best.iq)) · 通过 \(String(format: "%.1f%%", best.passRate * 100))")
+                        .monospacedDigit()
+                    Spacer(minLength: 3.scaled(by: displayScale))
+                    Text(judgementText(crowd: crowd, best: best))
+                        .foregroundStyle(crowd.pendingGrades > 0 ? .orange : textPalette.secondaryColor)
+                        .monospacedDigit()
                 }
             }
-            .font(.system(size: 8.1.scaled(by: displayScale), weight: .medium))
+            .font(.system(size: 7.6.scaled(by: displayScale), weight: .medium))
             .foregroundStyle(textPalette.primaryColor)
             .lineLimit(1)
-            .minimumScaleFactor(0.72)
+            .minimumScaleFactor(0.8)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("众测雷达")
+            .accessibilityValue("\(crowd.taskCount)题，\(crowd.cellCount)格，\(crowd.contributorCount)人，\(best.label)，IQ \(String(format: "%.1f", best.iq))，通过率 \(String(format: "%.1f%%", best.passRate * 100))，\(judgementText(crowd: crowd, best: best))")
         } else {
             HStack {
-                Text("众测雷达")
+                Text("众测")
                 Spacer()
                 Text("待读取")
             }
             .font(.system(size: 7.8.scaled(by: displayScale), weight: .semibold))
             .foregroundStyle(textPalette.secondaryColor)
         }
+    }
+
+    private func judgementText(crowd: CodexCrowdRadarSnapshot, best: CodexCrowdRadarModel) -> String {
+        let graded = "\(best.graded)判"
+        guard crowd.pendingGrades > 0 else { return graded }
+        return "\(graded) · 待判\(crowd.pendingGrades)"
     }
 }
 

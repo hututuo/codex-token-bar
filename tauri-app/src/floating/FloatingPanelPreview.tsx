@@ -377,9 +377,15 @@ export function FloatingCrowdRadarRow({ snapshot, style }: { snapshot?: CodexCro
   const best = bestCodexCrowdRadarModel(snapshot);
   return (
     <div className="floating-row floating-crowd-radar" style={style}>
-      <strong>众测雷达</strong>
-      <span>{snapshot ? `${snapshot.taskCount}题 · ${snapshot.cellCount}格 · ${snapshot.contributorCount}人` : "待读取"}</span>
-      {best ? <em>{crowdRadarModelLabel(best)} · IQ {(best.passRate * 150).toFixed(1)} · {(best.passRate * 100).toFixed(1)}% · {best.graded}判{snapshot && snapshot.pendingGrades > 0 ? ` · 待判${snapshot.pendingGrades}` : ""}</em> : null}
+      <div className="floating-crowd-radar-line floating-crowd-radar-primary">
+        <strong>众测</strong>
+        <span>{snapshot ? `${snapshot.taskCount}题 · ${snapshot.cellCount}格 · ${snapshot.contributorCount}人` : "待读取"}</span>
+        {best ? <em>{crowdRadarModelLabel(best)}</em> : null}
+      </div>
+      <div className="floating-crowd-radar-line floating-crowd-radar-secondary">
+        <span>{best ? `IQ ${(best.passRate * 150).toFixed(1)} · 通过 ${(best.passRate * 100).toFixed(1)}%` : "暂无有效判定"}</span>
+        {best ? <em>{best.graded}判{snapshot && snapshot.pendingGrades > 0 ? ` · 待判${snapshot.pendingGrades}` : ""}</em> : null}
+      </div>
     </div>
   );
 }

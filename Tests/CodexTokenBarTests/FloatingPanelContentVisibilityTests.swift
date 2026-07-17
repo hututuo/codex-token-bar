@@ -943,6 +943,27 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertFalse(radarStrip.contains("alignment: .trailing"))
     }
 
+    func testCrowdRadarUsesCompactTwoLineContentWithoutLongVisualTitle() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let components = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurfaceComponents.swift")
+        let componentsSource = try String(contentsOf: components, encoding: .utf8)
+        let crowdRow = try XCTUnwrap(sourceBlock(
+            named: "TokenDisplayCrowdRadarRow",
+            in: componentsSource,
+            endingBefore: "private func tokenDisplayRadarProbabilityText"
+        ))
+
+        XCTAssertTrue(crowdRow.contains("VStack(alignment: .leading, spacing: 0)"))
+        XCTAssertTrue(crowdRow.contains("Text(\"众测\")"))
+        XCTAssertFalse(crowdRow.contains("Label(\"众测雷达\", systemImage:"))
+        XCTAssertTrue(crowdRow.contains("· 通过"))
+        XCTAssertTrue(crowdRow.contains("judgementText(crowd: crowd, best: best)"))
+        XCTAssertTrue(crowdRow.contains(".accessibilityLabel(\"众测雷达\")"))
+    }
+
     func testFloatingPanelPresentationKeepsNoQuotaStatesCountSafe() {
         let pendingSnapshot = makeTokenDisplaySnapshot(quota: .empty)
         var failedQuota = AccountQuotaSnapshot.empty

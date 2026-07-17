@@ -5812,29 +5812,44 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-crowd-radar {
   display: grid;
-  grid-template-columns: max-content minmax(0, 0.9fr) minmax(0, 1.55fr);
-  align-items: center;
-  gap: calc(5px * var(--floating-scale));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  align-content: center;
+  gap: 0;
   min-width: 0;
   min-height: calc(20px * var(--floating-scale));
   border-top: 1px solid var(--floating-divider);
-  padding-top: calc(2px * var(--floating-scale));
-  font-size: calc(7.7px * var(--floating-scale));
+  padding-top: calc(1px * var(--floating-scale));
+  font-size: calc(7.5px * var(--floating-scale));
   font-variant-numeric: tabular-nums;
 }
 
-.floating-crowd-radar strong {
-  color: var(--floating-primary);
-  font-size: calc(8.1px * var(--floating-scale));
+.floating-crowd-radar-line {
+  display: flex;
+  align-items: center;
+  gap: calc(4px * var(--floating-scale));
+  min-width: 0;
+  line-height: 1;
+  white-space: nowrap;
 }
 
-.floating-crowd-radar span {
+.floating-crowd-radar-primary strong {
+  color: var(--floating-primary);
+  font-size: calc(8px * var(--floating-scale));
+}
+
+.floating-crowd-radar-primary span,
+.floating-crowd-radar-secondary em {
   color: var(--floating-muted);
 }
 
-.floating-crowd-radar em {
+.floating-crowd-radar-primary em,
+.floating-crowd-radar-secondary em {
+  margin-left: auto;
+}
+
+.floating-crowd-radar-primary em,
+.floating-crowd-radar-secondary span {
   color: color-mix(in srgb, var(--floating-primary) 70%, var(--radar-secondary-color) 30%);
-  text-align: right;
 }
 
 .floating-radar-action,
