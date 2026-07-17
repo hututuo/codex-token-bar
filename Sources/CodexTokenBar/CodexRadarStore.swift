@@ -175,6 +175,7 @@ final class CodexRadarStore: ObservableObject {
     @Published private(set) var detailSnapshot: CodexRadarSnapshot?
     @Published private(set) var feedItems: [CodexRadarFeedItem] = []
     @Published private(set) var crowdSnapshot: CodexCrowdRadarSnapshot?
+    @Published private(set) var crowdStaleDataDisplayed = false
     @Published private(set) var status = "Codex 雷达待读取"
     @Published private(set) var detailStatus = "Codex 雷达详情待读取"
     @Published private(set) var isRefreshing = false
@@ -307,7 +308,15 @@ final class CodexRadarStore: ObservableObject {
                 let feedURL = URL(string: snapshot.links.rss)
                 trace?.mark("rss.begin", metadata: ["hasURL": feedURL == nil ? "0" : "1"])
                 let feedResult = await Self.readFeedIfAvailable(feedURL, feedReader: feedReader)
-                let crowdSnapshot = try? await crowdReader.readCrowdRadar()
+                let crowdSnapshot: CodexCrowdRadarSnapshot?
+                let crowdRefreshFailed: Bool
+                do {
+                    crowdSnapshot = try await crowdReader.readCrowdRadar()
+                    crowdRefreshFailed = false
+                } catch {
+                    crowdSnapshot = nil
+                    crowdRefreshFailed = true
+                }
                 trace?.mark("rss.end", metadata: [
                     "items": String(feedResult.items?.count ?? 0),
                     "failed": feedResult.diagnostic == nil ? "0" : "1"
@@ -318,7 +327,12 @@ final class CodexRadarStore: ObservableObject {
                     }
                     let now = Date()
                     self.snapshot = snapshot
-                    if let crowdSnapshot { self.crowdSnapshot = crowdSnapshot }
+                    if let crowdSnapshot {
+                        self.crowdSnapshot = crowdSnapshot
+                        self.crowdStaleDataDisplayed = false
+                    } else if crowdRefreshFailed {
+                        self.crowdStaleDataDisplayed = self.crowdSnapshot != nil
+                    }
                     self.lastSuccessfulRefreshAt = now
                     self.staleDataDisplayed = false
                     self.feedStaleDataDisplayed = false

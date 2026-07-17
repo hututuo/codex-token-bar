@@ -16,6 +16,22 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertLessThan(radarRange.lowerBound, liveRateRange.lowerBound)
     }
 
+    func testRadarDetailRefreshAlsoRetriesCrowdRadar() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
+        let source = try String(contentsOf: dashboardView, encoding: .utf8)
+        let overlayStart = try XCTUnwrap(source.range(of: "private var radarDetailOverlayCard"))
+        let overlayEnd = try XCTUnwrap(source.range(of: "private func presentExportResult", range: overlayStart.upperBound..<source.endIndex))
+        let overlaySource = String(source[overlayStart.lowerBound..<overlayEnd.lowerBound])
+
+        XCTAssertTrue(overlaySource.contains("radarStore.refreshDetail()"))
+        XCTAssertTrue(overlaySource.contains("radarStore.refresh()"))
+        XCTAssertTrue(overlaySource.contains("radarStore.isDetailRefreshing || radarStore.isRefreshing"))
+    }
+
     func testRadarStoreDefaultsToTenMinuteRefresh() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -27,15 +43,16 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("refreshInterval: TimeInterval = 600"))
     }
 
-    func testRadarStripMovesModelIQLeftOfEvenColumns() {
+    func testRadarStripBalancesOfficialAndCrowdRadarsInMiddleColumns() {
         let widths = CodexRadarStrip.columnWidths(totalWidth: 800)
         let evenColumnWidth = 800 / 4.0
 
-        XCTAssertLessThan(widths.window, widths.modelIQ)
+        XCTAssertLessThan(widths.window, widths.officialRadar)
         XCTAssertLessThan(widths.window, evenColumnWidth)
-        XCTAssertLessThan(widths.window + 1, evenColumnWidth + 1)
-        XCTAssertGreaterThan(widths.modelIQ, evenColumnWidth)
-        XCTAssertEqual(widths.window + widths.modelIQ + widths.quota + widths.environment, 800, accuracy: 0.01)
+        XCTAssertEqual(widths.officialRadar, widths.crowdRadar, accuracy: 0.01)
+        XCTAssertGreaterThan(widths.officialRadar, evenColumnWidth)
+        XCTAssertGreaterThan(widths.quota, widths.window)
+        XCTAssertEqual(widths.window + widths.officialRadar + widths.crowdRadar + widths.quota, 800, accuracy: 0.01)
     }
 
     func testRadarDetailUsesSeparatedPanelsAndFramedTables() throws {
@@ -107,7 +124,7 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains(".contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))"))
     }
 
-    func testRadarStripShowsSecondaryModelsAndSourceCredit() throws {
+    func testRadarStripShowsTwoMiddleRadarsAndSourceCredit() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -119,9 +136,35 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("snapshot?.modelIQ.secondaryModelRows ?? []"))
         XCTAssertTrue(source.contains("CodexRadarHeaderSourceCredit(snapshot: snapshot)"))
         XCTAssertTrue(source.contains("private struct CodexRadarHeaderSourceCredit"))
-        XCTAssertTrue(source.contains("CodexRadarEnvironmentBlock(snapshot: snapshot)"))
-        XCTAssertTrue(source.contains("private struct CodexRadarEnvironmentBlock"))
+        XCTAssertTrue(source.contains("CodexCrowdRadarBlock("))
+        XCTAssertTrue(source.contains("staleDataDisplayed: crowdStaleDataDisplayed"))
+        XCTAssertTrue(source.contains("private struct CodexCrowdRadarBlock"))
+        XCTAssertTrue(source.contains("\"官方雷达\""))
+        XCTAssertTrue(source.contains("\"众测雷达\""))
         XCTAssertTrue(source.contains("Codex 雷达  codexradar.com"))
+
+        let window = try XCTUnwrap(source.range(of: "CodexRadarWindowBlock(snapshot: snapshot)"))
+        let official = try XCTUnwrap(source.range(of: "CodexRadarModelIQBlock(snapshot: snapshot)"))
+        let crowd = try XCTUnwrap(source.range(of: "CodexCrowdRadarBlock("))
+        let quota = try XCTUnwrap(source.range(of: "CodexRadarQuotaBlock(snapshot: snapshot)"))
+        XCTAssertLessThan(window.lowerBound, official.lowerBound)
+        XCTAssertLessThan(official.lowerBound, crowd.lowerBound)
+        XCTAssertLessThan(crowd.lowerBound, quota.lowerBound)
+    }
+
+    func testRadarDetailKeepsEnvironmentPressureAfterSummaryReplacement() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let radarView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexRadarView.swift")
+        let source = try String(contentsOf: radarView, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("CodexRadarEnvironmentDetail(snapshot: snapshot, feedItems: feedItems)"))
+        XCTAssertTrue(source.contains("private struct CodexRadarEnvironmentDetail"))
+        XCTAssertTrue(source.contains("\"环境压力与资讯\""))
+        XCTAssertFalse(source.contains("private struct CodexRadarEnvironmentBlock"))
+        XCTAssertTrue(source.contains("众测刷新失败，显示上次排行"))
     }
 
     func testRadarStripBalancesAccentColorAcrossEverySummaryColumn() throws {
@@ -134,7 +177,8 @@ final class CodexRadarViewPlacementTests: XCTestCase {
 
         XCTAssertTrue(source.contains(".foregroundStyle(primaryAccent ?? .secondary)"))
         XCTAssertTrue(source.contains("accent: AppTheme.accentCyan"))
-        XCTAssertTrue(source.contains("let environmentAccent"))
+        XCTAssertTrue(source.contains("let bestAccent = best.map { accent(for: $0) }"))
+        XCTAssertTrue(source.contains("AppTheme.radarScoreColor(passed: model.passed, tasks: model.graded, score: model.iq)"))
         XCTAssertTrue(source.contains("Text(title)\n                .foregroundStyle(accent ?? .secondary)"))
     }
 }

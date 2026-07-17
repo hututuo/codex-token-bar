@@ -431,13 +431,17 @@ struct DashboardView: View {
         CodexRadarDetailCard(
             snapshot: radarStore.detailDisplaySnapshot,
             crowdSnapshot: radarStore.crowdSnapshot,
+            crowdStaleDataDisplayed: radarStore.crowdStaleDataDisplayed,
             feedItems: radarStore.feedItems,
             status: radarStore.detailDisplayStatus,
-            isRefreshing: radarStore.isDetailRefreshing,
+            isRefreshing: radarStore.isDetailRefreshing || radarStore.isRefreshing,
             diagnostics: radarStore.detailDisplayDiagnostics,
             staleDataDisplayed: radarStore.detailDisplayStaleDataDisplayed,
             feedStaleDataDisplayed: radarStore.feedStaleDataDisplayed,
-            onRefresh: radarStore.refreshDetail,
+            onRefresh: {
+                radarStore.refreshDetail()
+                radarStore.refresh()
+            },
             onClose: { showingCodexRadarDetails = false }
         )
     }
@@ -496,6 +500,8 @@ struct DashboardView: View {
 
             CodexRadarStrip(
                 snapshot: radarStore.snapshot,
+                crowdSnapshot: radarStore.crowdSnapshot,
+                crowdStaleDataDisplayed: radarStore.crowdStaleDataDisplayed,
                 status: radarStore.status,
                 isRefreshing: radarStore.isRefreshing,
                 diagnostics: radarStore.diagnostics,

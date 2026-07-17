@@ -193,8 +193,17 @@ test("Codex Radar summary carries accent color through labels and right-side val
   const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
 
   assert.match(component, /accentColor=\{semanticMetricColor\(86\)\} icon="\$" title="预估额度"/);
-  assert.match(component, /title="环境压力"/);
+  for (const title of ["速蹬窗口", "官方雷达", "众测雷达", "预估额度"]) {
+    assert.match(component, new RegExp(`title="${title}"`));
+  }
+  const summaryTitles = ["速蹬窗口", "官方雷达", "众测雷达", "预估额度"].map((title) => component.indexOf(`title="${title}"`));
+  assert.ok(summaryTitles.every((offset) => offset >= 0));
+  assert.deepEqual(summaryTitles, [...summaryTitles].sort((left, right) => left - right));
+  assert.doesNotMatch(component, /title="环境压力"/);
+  assert.match(component, /title="环境压力与资讯"/);
   assert.match(component, /--radar-score-color/);
+  assert.match(component, /rankedCodexCrowdRadarModels\(crowdRadar, 3\)/);
+  assert.match(css, /grid-template-columns:\s*0\.82fr 1\.08fr 1\.08fr 1\.02fr/);
   assert.match(css, /\.radar-block-title\s*\{[^}]*color:\s*var\(--radar-accent, var\(--muted\)\)/s);
   assert.match(css, /\.radar-score-row span\s*\{[^}]*color:\s*var\(--radar-score-color, var\(--muted\)\)/s);
   assert.match(css, /\.radar-quota-row span\s*\{[^}]*color:\s*var\(--radar-accent, var\(--muted\)\)/s);

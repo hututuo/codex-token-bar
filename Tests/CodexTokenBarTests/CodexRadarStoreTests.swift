@@ -116,6 +116,32 @@ final class CodexRadarStoreTests: XCTestCase {
         XCTAssertEqual(store.feedItems, [newFeed])
     }
 
+    func testCrowdFailurePreservesPreviousRankingAndMarksItStale() async throws {
+        let snapshot = try Self.makeSnapshot()
+        let crowdSnapshot = Self.makeCrowdSnapshot()
+        let store = CodexRadarStore(
+            reader: RadarReaderStub(actions: [.success(snapshot), .success(snapshot)]),
+            feedReader: FeedReaderStub(actions: []),
+            crowdReader: CrowdReaderStub(actions: [
+                .success(crowdSnapshot),
+                .failure(URLError(.timedOut))
+            ])
+        )
+
+        store.refresh()
+        await waitUntil("initial crowd success") {
+            store.crowdSnapshot == crowdSnapshot && !store.isRefreshing
+        }
+        XCTAssertFalse(store.crowdStaleDataDisplayed)
+
+        store.refresh()
+        await waitUntil("crowd failure marks stale") {
+            store.crowdStaleDataDisplayed && !store.isRefreshing
+        }
+
+        XCTAssertEqual(store.crowdSnapshot, crowdSnapshot)
+    }
+
     func testRadarDiagnosticClassifiesTimeoutHTTPParseAndEmptyPayload() {
         XCTAssertEqual(
             CodexRadarDiagnostic.classify(source: .current, error: URLError(.timedOut)).category,
@@ -417,6 +443,27 @@ final class CodexRadarStoreTests: XCTestCase {
             description: "Codex Radar feed item"
         )
     }
+
+    private static func makeCrowdSnapshot() -> CodexCrowdRadarSnapshot {
+        CodexCrowdRadarSnapshot(
+            generatedAt: "2026-07-18T00:00:00Z",
+            taskCount: 112,
+            cellCount: 1_904,
+            contributorCount: 130,
+            pendingGrades: 1,
+            errorGrades: 0,
+            models: [
+                CodexCrowdRadarModel(
+                    model: "gpt-5.6-terra",
+                    effort: "ultra",
+                    graded: 45,
+                    passed: 36,
+                    passRate: 0.8,
+                    cells: 44
+                )
+            ]
+        )
+    }
 }
 
 private enum RadarReaderAction: Sendable {
@@ -492,6 +539,32 @@ private actor FeedReaderStub: CodexRadarFeedReading {
         switch action {
         case .success(let items):
             return items
+        case .failure(let error):
+            throw error
+        }
+    }
+}
+
+private enum CrowdReaderAction: Sendable {
+    case success(CodexCrowdRadarSnapshot)
+    case failure(any Error & Sendable)
+}
+
+private actor CrowdReaderStub: CodexCrowdRadarReading {
+    private var actions: [CrowdReaderAction]
+
+    init(actions: [CrowdReaderAction]) {
+        self.actions = actions
+    }
+
+    func readCrowdRadar() async throws -> CodexCrowdRadarSnapshot {
+        guard !actions.isEmpty else {
+            throw CodexRadarReaderError.invalidResponse
+        }
+        let action = actions.removeFirst()
+        switch action {
+        case .success(let snapshot):
+            return snapshot
         case .failure(let error):
             throw error
         }

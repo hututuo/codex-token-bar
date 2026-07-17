@@ -2,6 +2,8 @@ import SwiftUI
 
 struct CodexRadarStrip: View {
     let snapshot: CodexRadarSnapshot?
+    let crowdSnapshot: CodexCrowdRadarSnapshot?
+    let crowdStaleDataDisplayed: Bool
     let status: String
     let isRefreshing: Bool
     let diagnostics: [CodexRadarDiagnostic]
@@ -12,21 +14,21 @@ struct CodexRadarStrip: View {
 
     struct ColumnWidths {
         let window: CGFloat
-        let modelIQ: CGFloat
+        let officialRadar: CGFloat
+        let crowdRadar: CGFloat
         let quota: CGFloat
-        let environment: CGFloat
     }
 
     nonisolated static func columnWidths(totalWidth: CGFloat) -> ColumnWidths {
         let clampedWidth = max(0, totalWidth)
-        let weights: (window: CGFloat, modelIQ: CGFloat, quota: CGFloat, environment: CGFloat) = (0.82, 1.08, 1.12, 0.98)
-        let totalWeight = weights.window + weights.modelIQ + weights.quota + weights.environment
+        let weights: (window: CGFloat, officialRadar: CGFloat, crowdRadar: CGFloat, quota: CGFloat) = (0.82, 1.08, 1.08, 1.02)
+        let totalWeight = weights.window + weights.officialRadar + weights.crowdRadar + weights.quota
 
         return ColumnWidths(
             window: clampedWidth * weights.window / totalWeight,
-            modelIQ: clampedWidth * weights.modelIQ / totalWeight,
-            quota: clampedWidth * weights.quota / totalWeight,
-            environment: clampedWidth * weights.environment / totalWeight
+            officialRadar: clampedWidth * weights.officialRadar / totalWeight,
+            crowdRadar: clampedWidth * weights.crowdRadar / totalWeight,
+            quota: clampedWidth * weights.quota / totalWeight
         )
     }
 
@@ -72,13 +74,16 @@ struct CodexRadarStrip: View {
                         .frame(width: columnWidths.window, height: 74, alignment: .leading)
                     CodexRadarDivider()
                     CodexRadarModelIQBlock(snapshot: snapshot)
-                        .frame(width: columnWidths.modelIQ, height: 74, alignment: .leading)
+                        .frame(width: columnWidths.officialRadar, height: 74, alignment: .leading)
+                    CodexRadarDivider()
+                    CodexCrowdRadarBlock(
+                        snapshot: crowdSnapshot,
+                        staleDataDisplayed: crowdStaleDataDisplayed
+                    )
+                        .frame(width: columnWidths.crowdRadar, height: 74, alignment: .leading)
                     CodexRadarDivider()
                     CodexRadarQuotaBlock(snapshot: snapshot)
                         .frame(width: columnWidths.quota, height: 74, alignment: .leading)
-                    CodexRadarDivider()
-                    CodexRadarEnvironmentBlock(snapshot: snapshot)
-                        .frame(width: columnWidths.environment, height: 74, alignment: .leading)
                 }
             }
             .frame(height: 74)
@@ -203,7 +208,7 @@ private struct CodexRadarModelIQBlock: View {
         }
         VStack(alignment: .leading, spacing: 6) {
             CodexRadarBlockTitle(
-                "今日主模型",
+                "官方雷达",
                 systemImage: "brain.head.profile",
                 accent: primary.map {
                     AppTheme.radarScoreColor(passed: $0.passed, tasks: $0.tasks, score: $0.score)
@@ -237,6 +242,66 @@ private struct CodexRadarModelIQBlock: View {
     }
 }
 
+private struct CodexCrowdRadarBlock: View {
+    let snapshot: CodexCrowdRadarSnapshot?
+    let staleDataDisplayed: Bool
+
+    var body: some View {
+        let leaders = Array(snapshot?.rankedModels.prefix(3) ?? [])
+        let best = leaders.first
+        let bestAccent = best.map { accent(for: $0) }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                CodexRadarBlockTitle(
+                    "众测雷达",
+                    systemImage: "antenna.radiowaves.left.and.right",
+                    accent: bestAccent ?? AppTheme.accentGreen
+                )
+                if staleDataDisplayed {
+                    Text("旧")
+                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Capsule(style: .continuous).fill(Color.orange.opacity(0.12)))
+                        .accessibilityLabel("众测刷新失败，显示上次排行")
+                }
+            }
+            HStack(alignment: .lastTextBaseline, spacing: 8) {
+                Text(best.map { "IQ \(String(format: "%.1f", $0.iq))" } ?? "IQ --")
+                    .font(.system(size: 20, weight: .semibold, design: .rounded))
+                    .foregroundStyle(bestAccent ?? .primary)
+                    .monospacedDigit()
+                Text(best?.label ?? "待读取")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(bestAccent ?? .secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+            if leaders.count > 1 {
+                HStack(spacing: 8) {
+                    ForEach(Array(leaders.dropFirst()), id: \.id) { model in
+                        Text("\(model.label) \(String(format: "%.1f", model.iq))")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(accent(for: model))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.68)
+                    }
+                }
+            } else {
+                Text(snapshot == nil ? "等待众测排行" : "暂无更多排行")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 10)
+    }
+
+    private func accent(for model: CodexCrowdRadarModel) -> Color {
+        AppTheme.radarScoreColor(passed: model.passed, tasks: model.graded, score: model.iq)
+    }
+}
+
 private struct CodexRadarQuotaBlock: View {
     let snapshot: CodexRadarSnapshot?
 
@@ -266,41 +331,10 @@ private struct CodexRadarQuotaBlock: View {
     }
 }
 
-private struct CodexRadarEnvironmentBlock: View {
-    let snapshot: CodexRadarSnapshot?
-
-    var body: some View {
-        let environment = snapshot?.codexEnvironment
-        let environmentAccent = (environment?.issueOrLimitAnomalies24h ?? 0) > 0
-            ? AppTheme.accentAmber
-            : AppTheme.accentGreen
-        VStack(alignment: .leading, spacing: 6) {
-            CodexRadarBlockTitle(
-                "环境压力",
-                systemImage: "waveform.path.ecg",
-                accent: environmentAccent
-            )
-            HStack(alignment: .lastTextBaseline, spacing: 8) {
-                Text(environment?.complaintPressure ?? "--")
-                    .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    .foregroundStyle(environmentAccent)
-                Text("异常 \(environment.map { "\($0.issueOrLimitAnomalies24h)" } ?? "--")")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-            HStack(spacing: 10) {
-                CodexRadarTinyMetric(label: "官方", value: environment.map { "\($0.officialUpdates24h)" } ?? "--")
-                CodexRadarTinyMetric(label: "社区", value: environment.map { "\($0.communityMentions24h)" } ?? "--")
-                CodexRadarTinyMetric(label: "事故", value: environment.map { "\($0.statusIncidents24h)" } ?? "--")
-            }
-        }
-        .padding(.leading, 10)
-    }
-}
-
 struct CodexRadarDetailCard: View {
     let snapshot: CodexRadarSnapshot?
     let crowdSnapshot: CodexCrowdRadarSnapshot?
+    let crowdStaleDataDisplayed: Bool
     let feedItems: [CodexRadarFeedItem]
     let status: String
     let isRefreshing: Bool
@@ -313,6 +347,7 @@ struct CodexRadarDetailCard: View {
     init(
         snapshot: CodexRadarSnapshot?,
         crowdSnapshot: CodexCrowdRadarSnapshot? = nil,
+        crowdStaleDataDisplayed: Bool = false,
         feedItems: [CodexRadarFeedItem],
         status: String,
         isRefreshing: Bool,
@@ -324,6 +359,7 @@ struct CodexRadarDetailCard: View {
     ) {
         self.snapshot = snapshot
         self.crowdSnapshot = crowdSnapshot
+        self.crowdStaleDataDisplayed = crowdStaleDataDisplayed
         self.feedItems = feedItems
         self.status = status
         self.isRefreshing = isRefreshing
@@ -372,7 +408,10 @@ struct CodexRadarDetailCard: View {
                         if let warning = presentation.detailWarning {
                             CodexRadarDiagnosticBanner(warning: warning)
                         }
-                        CodexCrowdRadarDetail(snapshot: crowdSnapshot)
+                        CodexCrowdRadarDetail(
+                            snapshot: crowdSnapshot,
+                            staleDataDisplayed: crowdStaleDataDisplayed
+                        )
                         CodexRadarDetailOverview(snapshot: snapshot)
                         CodexRadarIQDetail(snapshot: snapshot)
                         CodexRadarQuotaDetail(snapshot: snapshot)
@@ -413,9 +452,15 @@ struct CodexRadarDetailCard: View {
 
 private struct CodexCrowdRadarDetail: View {
     let snapshot: CodexCrowdRadarSnapshot?
+    let staleDataDisplayed: Bool
 
     var body: some View {
         CodexRadarDetailSection(title: "众测雷达", systemImage: "antenna.radiowaves.left.and.right") {
+            if staleDataDisplayed {
+                Label("众测刷新失败，显示上次排行", systemImage: "clock.arrow.circlepath")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.orange)
+            }
             if let snapshot {
                 CodexRadarDetailSubsection(title: "实时覆盖") {
                     CodexRadarKeyValueGrid(rows: [

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { bestCodexCrowdRadarModel, crowdRadarModelLabel, rankedCodexCrowdRadarModels } from "./codexCrowdRadarClient.ts";
 
 test("crowd radar picks the highest pass rate and formats model family", () => {
@@ -22,4 +23,12 @@ test("crowd radar picks the highest pass rate and formats model family", () => {
   assert.equal(best?.model, "gpt-5.6-terra");
   assert.equal(crowdRadarModelLabel(best), "Terra ultra");
   assert.equal((best.passRate * 150).toFixed(1), "119.3");
+});
+
+test("crowd radar network reads have a bounded timeout", () => {
+  const source = readFileSync(new URL("./codexCrowdRadarClient.ts", import.meta.url), "utf8");
+  assert.match(source, /new AbortController\(\)/);
+  assert.match(source, /setTimeout\(\(\) => controller\.abort\(\), 18_000\)/);
+  assert.match(source, /signal: controller\.signal/);
+  assert.match(source, /clearTimeout\(timeoutID\)/);
 });
