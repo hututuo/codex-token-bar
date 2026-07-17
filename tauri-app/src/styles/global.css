@@ -5798,10 +5798,14 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   white-space: nowrap;
 }
 
-.floating-radar {
+.floating-radar,
+.floating-crowd-radar {
   display: grid;
   grid-template-columns: minmax(0, 0.74fr) minmax(0, 1.26fr);
   gap: calc(6px * var(--floating-scale));
+}
+
+.floating-radar {
   align-items: stretch;
   min-height: calc(26px * var(--floating-scale));
   border-top: 1px solid var(--floating-divider);
@@ -5811,10 +5815,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-crowd-radar {
-  display: grid;
-  grid-template-columns: max-content repeat(2, minmax(0, 1fr));
   align-items: center;
-  gap: calc(4px * var(--floating-scale));
   min-width: 0;
   min-height: calc(20px * var(--floating-scale));
   border-top: 1px solid var(--floating-divider);
@@ -5823,7 +5824,15 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   font-variant-numeric: tabular-nums;
 }
 
-.floating-crowd-radar > strong {
+.floating-crowd-radar-leading {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: calc(3px * var(--floating-scale));
+  min-width: 0;
+}
+
+.floating-crowd-radar-leading > strong {
   color: var(--floating-primary);
   font-size: calc(8px * var(--floating-scale));
 }
@@ -5837,9 +5846,10 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   white-space: nowrap;
 }
 
-.floating-crowd-radar-result + .floating-crowd-radar-result {
+.floating-crowd-radar-result--secondary,
+.floating-radar-iq {
   border-left: 1px solid var(--floating-divider);
-  padding-left: calc(5px * var(--floating-scale));
+  padding-left: calc(6px * var(--floating-scale));
 }
 
 .floating-crowd-radar-result span {
@@ -5874,11 +5884,6 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   flex: 0 0 auto;
   border-radius: 999px;
   background: var(--radar-action-color);
-}
-
-.floating-radar-iq {
-  border-left: 1px solid var(--floating-divider);
-  padding-left: calc(6px * var(--floating-scale));
 }
 
 .floating-radar span,

@@ -17,12 +17,14 @@ const settingsPanelSource = readFileSync(
 test("crowd radar compares two compact results and omits lower-value coverage fields", () => {
   const crowdRow = /export function FloatingCrowdRadarRow[\s\S]*?\n}\n\nfunction floatingRadarSecondaryIQText/.exec(previewSource)?.[0] ?? "";
   assert.match(crowdRow, /rankedCodexCrowdRadarModels\(snapshot, 2\)/);
-  assert.match(crowdRow, /\[0, 1\]\.map/);
+  assert.match(crowdRow, /floating-crowd-radar-leading/);
+  assert.match(crowdRow, /floating-crowd-radar-result--secondary/);
   assert.match(crowdRow, /floating-crowd-radar-result/);
   assert.match(crowdRow, /<strong>众测<\/strong>/);
   assert.match(crowdRow, /IQ .*model\.graded.*判/);
   assert.doesNotMatch(crowdRow, /snapshot\.taskCount|snapshot\.cellCount|snapshot\.contributorCount|pendingGrades|通过/);
-  assert.match(stylesSource, /\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: max-content repeat\(2,/);
+  assert.match(stylesSource, /\.floating-radar,\s*\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(0, 0\.74fr\) minmax\(0, 1\.26fr\);/);
+  assert.match(stylesSource, /\.floating-crowd-radar-result--secondary,\s*\.floating-radar-iq\s*{[\s\S]*?padding-left: calc\(6px \* var\(--floating-scale\)\);/);
 });
 
 test("ripple uses a Swift-style sprite image atlas instead of realtime DOM canvas drawing", () => {
@@ -162,7 +164,7 @@ test("floating radar shows multiple sorted model IQ scores", () => {
   assert.match(previewSource, /compactRadarModelName\(row\.label\).*displayRadarNumber\(row\.point\.score, 1\)/s);
   assert.doesNotMatch(previewSource, /function floatingRadar(?:Primary|Short)ModelLabel/);
   assert.match(stylesSource, /\.floating-radar-models\s*{[\s\S]*?display: block;[\s\S]*?text-overflow: clip;/);
-  assert.match(stylesSource, /\.floating-radar\s*{[\s\S]*?grid-template-columns: minmax\(0, 0\.74fr\) minmax\(0, 1\.26fr\);/);
+  assert.match(stylesSource, /\.floating-radar,\s*\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(0, 0\.74fr\) minmax\(0, 1\.26fr\);/);
   assert.match(previewSource, /className="floating-radar-dot"/);
   assert.match(stylesSource, /\.floating-radar strong\s*{[\s\S]*?display: grid;[\s\S]*?grid-template-columns: calc\(4px \* var\(--floating-scale\)\) max-content minmax\(0, 1fr\);/);
   assert.match(stylesSource, /\.floating-radar-action > span\s*{[\s\S]*?color: var\(--floating-primary\);/);

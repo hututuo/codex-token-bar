@@ -957,11 +957,15 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         ))
 
         XCTAssertTrue(crowdRow.contains("let leaders = Array(crowd.rankedModels.prefix(2))"))
-        XCTAssertTrue(crowdRow.contains("ForEach(Array(leaders.enumerated())"))
+        XCTAssertEqual(
+            componentsSource.components(separatedBy: "TokenDisplayRadarColumns(dividerColor: textPalette.dividerColor)").count - 1,
+            2
+        )
         XCTAssertTrue(crowdRow.contains("Text(\"众测\")"))
         XCTAssertFalse(crowdRow.contains("Label(\"众测雷达\", systemImage:"))
-        XCTAssertTrue(crowdRow.contains("Text(\"\\(index + 1) \\(model.label)\")"))
-        XCTAssertTrue(crowdRow.contains("· \\(model.graded)判"))
+        XCTAssertTrue(crowdRow.contains("resultView(leaders.first, position: 1)"))
+        XCTAssertTrue(crowdRow.contains("resultView(leaders.dropFirst().first, position: 2)"))
+        XCTAssertTrue(crowdRow.contains("· \\($0.graded)判"))
         XCTAssertFalse(crowdRow.contains("crowd.taskCount"))
         XCTAssertFalse(crowdRow.contains("crowd.cellCount"))
         XCTAssertFalse(crowdRow.contains("crowd.contributorCount"))

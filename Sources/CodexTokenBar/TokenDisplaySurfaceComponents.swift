@@ -136,6 +136,35 @@ struct TokenDisplayUsageStatusLine: View {
     }
 }
 
+private struct TokenDisplayRadarColumns<Leading: View, Trailing: View>: View {
+    let dividerColor: Color
+    let leading: Leading
+    let trailing: Trailing
+    @Environment(\.tokenDisplayScale) private var displayScale
+
+    init(
+        dividerColor: Color,
+        @ViewBuilder leading: () -> Leading,
+        @ViewBuilder trailing: () -> Trailing
+    ) {
+        self.dividerColor = dividerColor
+        self.leading = leading()
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        HStack(spacing: 7.scaled(by: displayScale)) {
+            leading
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Rectangle()
+                .fill(dividerColor)
+                .frame(width: 1, height: 19.scaled(by: displayScale))
+            trailing
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 struct TokenDisplayRadarStrip: View {
     let presentation: CodexRadarPresentationState
     @Environment(\.tokenDisplayScale) private var displayScale
@@ -152,7 +181,7 @@ struct TokenDisplayRadarStrip: View {
         let primaryAccent = primary.map {
             AppTheme.radarScoreColor(passed: $0.passed, tasks: $0.tasks, score: $0.score)
         } ?? AppTheme.accentBlue
-        HStack(spacing: 7.scaled(by: displayScale)) {
+        TokenDisplayRadarColumns(dividerColor: textPalette.dividerColor) {
             VStack(alignment: .leading, spacing: 2.scaled(by: displayScale)) {
                 HStack(alignment: .firstTextBaseline, spacing: 3.scaled(by: displayScale)) {
                     Circle()
@@ -179,12 +208,7 @@ struct TokenDisplayRadarStrip: View {
             }
             .lineLimit(1)
             .minimumScaleFactor(0.74)
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Rectangle()
-                .fill(textPalette.dividerColor)
-                .frame(width: 1, height: 19.scaled(by: displayScale))
-
+        } trailing: {
             VStack(alignment: .leading, spacing: 1.scaled(by: displayScale)) {
                 HStack(alignment: .lastTextBaseline, spacing: 3.scaled(by: displayScale)) {
                     Circle()
@@ -207,7 +231,6 @@ struct TokenDisplayRadarStrip: View {
             }
             .lineLimit(1)
             .minimumScaleFactor(0.72)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .foregroundStyle(textPalette.primaryColor)
         .lineLimit(1)
@@ -238,34 +261,15 @@ struct TokenDisplayCrowdRadarRow: View {
     var body: some View {
         if let crowd = presentation.crowdSnapshot, !crowd.rankedModels.isEmpty {
             let leaders = Array(crowd.rankedModels.prefix(2))
-            HStack(spacing: 4.scaled(by: displayScale)) {
-                Text("众测")
-                    .font(.system(size: 8.scaled(by: displayScale), weight: .bold))
-                    .fixedSize()
-                ForEach(Array(leaders.enumerated()), id: \.element.id) { index, model in
-                    if index > 0 {
-                        Divider()
-                            .frame(height: 14.scaled(by: displayScale))
-                    }
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("\(index + 1) \(model.label)")
-                            .fontWeight(.semibold)
-                        Text("IQ \(String(format: "%.1f", model.iq)) · \(model.graded)判")
-                            .foregroundStyle(textPalette.secondaryColor)
-                            .monospacedDigit()
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            TokenDisplayRadarColumns(dividerColor: textPalette.dividerColor) {
+                HStack(spacing: 3.scaled(by: displayScale)) {
+                    Text("众测")
+                        .font(.system(size: 8.scaled(by: displayScale), weight: .bold))
+                        .fixedSize()
+                    resultView(leaders.first, position: 1)
                 }
-                if leaders.count < 2 {
-                    Divider()
-                        .frame(height: 14.scaled(by: displayScale))
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("2 --")
-                        Text("IQ -- · --判")
-                            .foregroundStyle(textPalette.secondaryColor)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            } trailing: {
+                resultView(leaders.dropFirst().first, position: 2)
             }
             .font(.system(size: 7.4.scaled(by: displayScale), weight: .medium))
             .foregroundStyle(textPalette.primaryColor)
@@ -283,6 +287,17 @@ struct TokenDisplayCrowdRadarRow: View {
             .font(.system(size: 7.8.scaled(by: displayScale), weight: .semibold))
             .foregroundStyle(textPalette.secondaryColor)
         }
+    }
+
+    private func resultView(_ model: CodexCrowdRadarModel?, position: Int) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(model.map { "\(position) \($0.label)" } ?? "\(position) --")
+                .fontWeight(.semibold)
+            Text(model.map { "IQ \(String(format: "%.1f", $0.iq)) · \($0.graded)判" } ?? "IQ -- · --判")
+                .foregroundStyle(textPalette.secondaryColor)
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func accessibilityValue(_ leaders: [CodexCrowdRadarModel]) -> String {

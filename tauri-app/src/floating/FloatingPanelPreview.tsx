@@ -377,16 +377,20 @@ export function FloatingCrowdRadarRow({ snapshot, style }: { snapshot?: CodexCro
   const leaders = rankedCodexCrowdRadarModels(snapshot, 2);
   return (
     <div className="floating-row floating-crowd-radar" style={style}>
-      <strong>众测</strong>
-      {[0, 1].map((index) => {
-        const model = leaders[index];
-        return (
-          <div className="floating-crowd-radar-result" key={model ? `${model.model}:${model.effort}` : `empty-${index}`}>
-            <span>{index + 1} {model ? crowdRadarModelLabel(model) : "--"}</span>
-            <em>{model ? `IQ ${(model.passRate * 150).toFixed(1)} · ${model.graded}判` : "IQ -- · --判"}</em>
-          </div>
-        );
-      })}
+      <div className="floating-crowd-radar-leading">
+        <strong>众测</strong>
+        <FloatingCrowdRadarResult index={0} model={leaders[0]} />
+      </div>
+      <FloatingCrowdRadarResult className="floating-crowd-radar-result--secondary" index={1} model={leaders[1]} />
+    </div>
+  );
+}
+
+function FloatingCrowdRadarResult({ className = "", index, model }: { className?: string; index: number; model?: ReturnType<typeof rankedCodexCrowdRadarModels>[number] }) {
+  return (
+    <div className={`floating-crowd-radar-result ${className}`.trim()}>
+      <span>{index + 1} {model ? crowdRadarModelLabel(model) : "--"}</span>
+      <em>{model ? `IQ ${(model.passRate * 150).toFixed(1)} · ${model.graded}判` : "IQ -- · --判"}</em>
     </div>
   );
 }
