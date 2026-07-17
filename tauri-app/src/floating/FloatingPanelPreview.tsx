@@ -374,21 +374,21 @@ export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSna
 }
 
 export function FloatingCrowdRadarRow({ snapshot, style }: { snapshot?: CodexCrowdRadarSnapshot | null; style: CSSProperties }) {
-  const leaders = rankedCodexCrowdRadarModels(snapshot, 2);
+  const leaders = rankedCodexCrowdRadarModels(snapshot, 3);
   return (
     <div className="floating-row floating-crowd-radar" style={style}>
-      <div className="floating-crowd-radar-leading">
-        <strong>众测</strong>
-        <FloatingCrowdRadarResult index={0} model={leaders[0]} />
+      <FloatingCrowdRadarResult index={0} model={leaders[0]} />
+      <div className="floating-crowd-radar-trailing">
+        <FloatingCrowdRadarResult index={1} model={leaders[1]} />
+        <FloatingCrowdRadarResult index={2} model={leaders[2]} />
       </div>
-      <FloatingCrowdRadarResult className="floating-crowd-radar-result--secondary" index={1} model={leaders[1]} />
     </div>
   );
 }
 
-function FloatingCrowdRadarResult({ className = "", index, model }: { className?: string; index: number; model?: ReturnType<typeof rankedCodexCrowdRadarModels>[number] }) {
+function FloatingCrowdRadarResult({ index, model }: { index: number; model?: ReturnType<typeof rankedCodexCrowdRadarModels>[number] }) {
   return (
-    <div className={`floating-crowd-radar-result ${className}`.trim()}>
+    <div className="floating-crowd-radar-result">
       <span>{index + 1} {model ? crowdRadarModelLabel(model) : "--"}</span>
       <em>{model ? `IQ ${(model.passRate * 150).toFixed(1)} · ${model.graded}判` : "IQ -- · --判"}</em>
     </div>

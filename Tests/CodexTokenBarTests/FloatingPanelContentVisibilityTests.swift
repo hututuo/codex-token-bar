@@ -943,7 +943,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertFalse(radarStrip.contains("alignment: .trailing"))
     }
 
-    func testCrowdRadarComparesTwoCompactLeadersWithoutCoverageNoise() throws {
+    func testCrowdRadarComparesThreeCompactLeadersWithoutVisualTitleOrCoverageNoise() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -956,15 +956,17 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             endingBefore: "private func tokenDisplayRadarProbabilityText"
         ))
 
-        XCTAssertTrue(crowdRow.contains("let leaders = Array(crowd.rankedModels.prefix(2))"))
+        XCTAssertTrue(crowdRow.contains("let leaders = Array(crowd.rankedModels.prefix(3))"))
         XCTAssertEqual(
             componentsSource.components(separatedBy: "TokenDisplayRadarColumns(dividerColor: textPalette.dividerColor)").count - 1,
             2
         )
-        XCTAssertTrue(crowdRow.contains("Text(\"众测\")"))
+        XCTAssertTrue(componentsSource.contains("let leadingWidth = contentWidth * 0.37"))
+        XCTAssertFalse(crowdRow.contains("Text(\"众测\")"))
         XCTAssertFalse(crowdRow.contains("Label(\"众测雷达\", systemImage:"))
         XCTAssertTrue(crowdRow.contains("resultView(leaders.first, position: 1)"))
         XCTAssertTrue(crowdRow.contains("resultView(leaders.dropFirst().first, position: 2)"))
+        XCTAssertTrue(crowdRow.contains("resultView(leaders.dropFirst(2).first, position: 3)"))
         XCTAssertTrue(crowdRow.contains("· \\($0.graded)判"))
         XCTAssertFalse(crowdRow.contains("crowd.taskCount"))
         XCTAssertFalse(crowdRow.contains("crowd.cellCount"))

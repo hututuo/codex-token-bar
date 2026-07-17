@@ -153,14 +153,20 @@ private struct TokenDisplayRadarColumns<Leading: View, Trailing: View>: View {
     }
 
     var body: some View {
-        HStack(spacing: 7.scaled(by: displayScale)) {
-            leading
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Rectangle()
-                .fill(dividerColor)
-                .frame(width: 1, height: 19.scaled(by: displayScale))
-            trailing
-                .frame(maxWidth: .infinity, alignment: .leading)
+        GeometryReader { proxy in
+            let spacing = 7.scaled(by: displayScale)
+            let contentWidth = max(0, proxy.size.width - spacing * 2 - 1)
+            let leadingWidth = contentWidth * 0.37
+            HStack(spacing: spacing) {
+                leading
+                    .frame(width: leadingWidth, alignment: .leading)
+                Rectangle()
+                    .fill(dividerColor)
+                    .frame(width: 1, height: 19.scaled(by: displayScale))
+                trailing
+                    .frame(width: contentWidth - leadingWidth, alignment: .leading)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .leading)
         }
     }
 }
@@ -260,16 +266,17 @@ struct TokenDisplayCrowdRadarRow: View {
 
     var body: some View {
         if let crowd = presentation.crowdSnapshot, !crowd.rankedModels.isEmpty {
-            let leaders = Array(crowd.rankedModels.prefix(2))
+            let leaders = Array(crowd.rankedModels.prefix(3))
             TokenDisplayRadarColumns(dividerColor: textPalette.dividerColor) {
-                HStack(spacing: 3.scaled(by: displayScale)) {
-                    Text("众测")
-                        .font(.system(size: 8.scaled(by: displayScale), weight: .bold))
-                        .fixedSize()
-                    resultView(leaders.first, position: 1)
-                }
+                resultView(leaders.first, position: 1)
             } trailing: {
-                resultView(leaders.dropFirst().first, position: 2)
+                HStack(spacing: 4.scaled(by: displayScale)) {
+                    resultView(leaders.dropFirst().first, position: 2)
+                    Rectangle()
+                        .fill(textPalette.dividerColor)
+                        .frame(width: 1, height: 14.scaled(by: displayScale))
+                    resultView(leaders.dropFirst(2).first, position: 3)
+                }
             }
             .font(.system(size: 7.4.scaled(by: displayScale), weight: .medium))
             .foregroundStyle(textPalette.primaryColor)
@@ -280,9 +287,9 @@ struct TokenDisplayCrowdRadarRow: View {
             .accessibilityValue(accessibilityValue(leaders))
         } else {
             HStack {
-                Text("众测")
                 Spacer()
-                Text("待读取")
+                Text("排名待读取")
+                Spacer()
             }
             .font(.system(size: 7.8.scaled(by: displayScale), weight: .semibold))
             .foregroundStyle(textPalette.secondaryColor)

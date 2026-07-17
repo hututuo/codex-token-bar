@@ -5824,17 +5824,12 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   font-variant-numeric: tabular-nums;
 }
 
-.floating-crowd-radar-leading {
+.floating-crowd-radar-trailing {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: center;
-  gap: calc(3px * var(--floating-scale));
+  gap: calc(4px * var(--floating-scale));
   min-width: 0;
-}
-
-.floating-crowd-radar-leading > strong {
-  color: var(--floating-primary);
-  font-size: calc(8px * var(--floating-scale));
 }
 
 .floating-crowd-radar-result {
@@ -5846,10 +5841,15 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   white-space: nowrap;
 }
 
-.floating-crowd-radar-result--secondary,
+.floating-crowd-radar-trailing,
 .floating-radar-iq {
   border-left: 1px solid var(--floating-divider);
   padding-left: calc(6px * var(--floating-scale));
+}
+
+.floating-crowd-radar-result + .floating-crowd-radar-result {
+  border-left: 1px solid var(--floating-divider);
+  padding-left: calc(4px * var(--floating-scale));
 }
 
 .floating-crowd-radar-result span {

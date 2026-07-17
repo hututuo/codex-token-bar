@@ -14,17 +14,17 @@ const settingsPanelSource = readFileSync(
   "utf8",
 );
 
-test("crowd radar compares two compact results and omits lower-value coverage fields", () => {
+test("crowd radar compares three compact results without a visual title or lower-value coverage fields", () => {
   const crowdRow = /export function FloatingCrowdRadarRow[\s\S]*?\n}\n\nfunction floatingRadarSecondaryIQText/.exec(previewSource)?.[0] ?? "";
-  assert.match(crowdRow, /rankedCodexCrowdRadarModels\(snapshot, 2\)/);
-  assert.match(crowdRow, /floating-crowd-radar-leading/);
-  assert.match(crowdRow, /floating-crowd-radar-result--secondary/);
+  assert.match(crowdRow, /rankedCodexCrowdRadarModels\(snapshot, 3\)/);
+  assert.match(crowdRow, /floating-crowd-radar-trailing/);
   assert.match(crowdRow, /floating-crowd-radar-result/);
-  assert.match(crowdRow, /<strong>众测<\/strong>/);
+  assert.doesNotMatch(crowdRow, />众测</);
+  assert.match(crowdRow, /index=\{2\} model=\{leaders\[2\]\}/);
   assert.match(crowdRow, /IQ .*model\.graded.*判/);
   assert.doesNotMatch(crowdRow, /snapshot\.taskCount|snapshot\.cellCount|snapshot\.contributorCount|pendingGrades|通过/);
   assert.match(stylesSource, /\.floating-radar,\s*\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(0, 0\.74fr\) minmax\(0, 1\.26fr\);/);
-  assert.match(stylesSource, /\.floating-crowd-radar-result--secondary,\s*\.floating-radar-iq\s*{[\s\S]*?padding-left: calc\(6px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-crowd-radar-trailing,\s*\.floating-radar-iq\s*{[\s\S]*?padding-left: calc\(6px \* var\(--floating-scale\)\);/);
 });
 
 test("ripple uses a Swift-style sprite image atlas instead of realtime DOM canvas drawing", () => {
