@@ -79,6 +79,7 @@ struct AppSettingsView: View {
     @Binding var showMetrics: Bool
     @Binding var showQuota: Bool
     @Binding var showRadar: Bool
+    @Binding var showCrowdRadar: Bool
     @Binding var contentOrderRaw: String
     let dataSourceLabel: String
     let dataSourceOrigin: String
@@ -728,6 +729,7 @@ struct AppSettingsView: View {
         case .metrics: return $showMetrics
         case .quota: return $showQuota
         case .radar: return $showRadar
+        case .crowdRadar: return $showCrowdRadar
         }
     }
 

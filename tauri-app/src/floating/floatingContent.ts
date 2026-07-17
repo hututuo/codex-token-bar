@@ -5,6 +5,7 @@ export const FLOATING_CONTENT_GROUPS: FloatingContentGroup[] = [
   "usageStatus",
   "metrics",
   "radar",
+  "crowdRadar",
   "quota",
 ];
 
@@ -14,6 +15,7 @@ export const DEFAULT_FLOATING_CONTENT_VISIBILITY: FloatingContentVisibility = {
   showMetrics: true,
   showQuota: true,
   showRadar: true,
+  showCrowdRadar: true,
   order: FLOATING_CONTENT_GROUPS,
 };
 
@@ -22,6 +24,7 @@ export const FLOATING_CONTENT_LABELS: Record<FloatingContentGroup, { title: stri
   usageStatus: { title: "趣味话", subtitle: "靠近速率会吸附" },
   metrics: { title: "总今次" },
   radar: { title: "Radar" },
+  crowdRadar: { title: "众测雷达" },
   quota: { title: "5h/7d" },
 };
 
@@ -32,6 +35,7 @@ export function sanitizeFloatingContentVisibility(value: Partial<FloatingContent
     showMetrics: value?.showMetrics ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showMetrics,
     showQuota: value?.showQuota ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showQuota,
     showRadar: value?.showRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showRadar,
+    showCrowdRadar: value?.showCrowdRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showCrowdRadar,
     order: sanitizeContentOrder(value?.order),
   };
 }
@@ -114,6 +118,8 @@ export function floatingContentHeight(visibility: FloatingContentVisibility): nu
         return 13;
       case "radar":
         return 26;
+      case "crowdRadar":
+        return 20;
       case "quota":
         return 16.5;
     }
@@ -139,6 +145,8 @@ function showsGroup(visibility: FloatingContentVisibility, group: FloatingConten
       return visibility.showQuota;
     case "radar":
       return visibility.showRadar;
+    case "crowdRadar":
+      return visibility.showCrowdRadar;
   }
 }
 
@@ -152,5 +160,13 @@ function sanitizeContentOrder(value: unknown): FloatingContentGroup[] {
     seen.add(item as FloatingContentGroup);
     return true;
   });
-  return [...decoded, ...FLOATING_CONTENT_GROUPS.filter((group) => !seen.has(group))];
+  const result = [...decoded];
+  for (const group of FLOATING_CONTENT_GROUPS.filter((item) => !seen.has(item))) {
+    if (group === "crowdRadar" && result.includes("radar")) {
+      result.splice(result.indexOf("radar") + 1, 0, group);
+    } else {
+      result.push(group);
+    }
+  }
+  return result;
 }

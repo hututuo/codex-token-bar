@@ -5810,6 +5810,33 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   font-size: calc(9.3px * var(--floating-scale));
 }
 
+.floating-crowd-radar {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 0.9fr) minmax(0, 1.55fr);
+  align-items: center;
+  gap: calc(5px * var(--floating-scale));
+  min-width: 0;
+  min-height: calc(20px * var(--floating-scale));
+  border-top: 1px solid var(--floating-divider);
+  padding-top: calc(2px * var(--floating-scale));
+  font-size: calc(7.7px * var(--floating-scale));
+  font-variant-numeric: tabular-nums;
+}
+
+.floating-crowd-radar strong {
+  color: var(--floating-primary);
+  font-size: calc(8.1px * var(--floating-scale));
+}
+
+.floating-crowd-radar span {
+  color: var(--floating-muted);
+}
+
+.floating-crowd-radar em {
+  color: color-mix(in srgb, var(--floating-primary) 70%, var(--radar-secondary-color) 30%);
+  text-align: right;
+}
+
 .floating-radar-action,
 .floating-radar-iq {
   display: grid;

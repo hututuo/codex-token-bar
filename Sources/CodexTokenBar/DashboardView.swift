@@ -42,6 +42,7 @@ struct DashboardView: View {
     @AppStorage(FloatingPanelContentVisibility.metricsKey) private var floatingPanelShowMetrics = FloatingPanelContentVisibility.default.showMetrics
     @AppStorage(FloatingPanelContentVisibility.quotaKey) private var floatingPanelShowQuota = FloatingPanelContentVisibility.default.showQuota
     @AppStorage(FloatingPanelContentVisibility.radarKey) private var floatingPanelShowRadar = FloatingPanelContentVisibility.default.showRadar
+    @AppStorage(FloatingPanelContentVisibility.crowdRadarKey) private var floatingPanelShowCrowdRadar = FloatingPanelContentVisibility.default.showCrowdRadar
     @AppStorage(FloatingPanelContentVisibility.orderKey) private var floatingPanelContentOrderRaw = FloatingPanelContentVisibility.defaultOrderRaw
     @AppStorage("setupGuideCompletedV01") private var setupGuideCompleted = false
     @State private var showingProviderSync = false
@@ -373,6 +374,7 @@ struct DashboardView: View {
                 showMetrics: $floatingPanelShowMetrics,
                 showQuota: $floatingPanelShowQuota,
                 showRadar: $floatingPanelShowRadar,
+                showCrowdRadar: $floatingPanelShowCrowdRadar,
                 contentOrderRaw: $floatingPanelContentOrderRaw,
                 dataSourceLabel: store.dataSourceLabel,
                 dataSourceOrigin: store.dataSourceOrigin,
@@ -577,6 +579,7 @@ struct DashboardView: View {
             showMetrics: floatingPanelShowMetrics,
             showQuota: floatingPanelShowQuota,
             showRadar: floatingPanelShowRadar,
+            showCrowdRadar: floatingPanelShowCrowdRadar,
             groupOrder: FloatingPanelContentVisibility.order(from: floatingPanelContentOrderRaw)
         )
     }

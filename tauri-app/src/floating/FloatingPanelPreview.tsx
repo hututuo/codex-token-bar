@@ -291,7 +291,9 @@ function FloatingContentRow({
         </div>
       );
     case "radar":
-      return <FloatingRadarRow crowdSnapshot={crowdRadarSnapshot} snapshot={radarSnapshot} style={style} />;
+      return <FloatingRadarRow snapshot={radarSnapshot} style={style} />;
+    case "crowdRadar":
+      return <FloatingCrowdRadarRow snapshot={crowdRadarSnapshot} style={style} />;
     case "quota": {
       const quotaWindows = [
         {
@@ -330,7 +332,7 @@ function FloatingContentRow({
   }
 }
 
-export function FloatingRadarRow({ crowdSnapshot, snapshot, style }: { crowdSnapshot?: CodexCrowdRadarSnapshot | null; snapshot?: CodexRadarSnapshot | null; style: CSSProperties }) {
+export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot | null; style: CSSProperties }) {
   if (!snapshot) {
     return (
       <div className="floating-row floating-radar" style={style}>
@@ -342,7 +344,6 @@ export function FloatingRadarRow({ crowdSnapshot, snapshot, style }: { crowdSnap
 
   const primary = primaryModelRow(snapshot.modelIq);
   const secondaryText = floatingRadarSecondaryIQText(snapshot);
-  const crowdBest = bestCodexCrowdRadarModel(crowdSnapshot);
   const diagnosticLabel = codexRadarDiagnosticLabel(snapshot);
   const probability = snapshot.prediction.probability24H ?? snapshot.prediction.probability24h;
   const probability48 = snapshot.prediction.probability48H ?? snapshot.prediction.probability48h;
@@ -357,17 +358,28 @@ export function FloatingRadarRow({ crowdSnapshot, snapshot, style }: { crowdSnap
   return (
     <div className="floating-row floating-radar" style={radarStyle}>
       <div className="floating-radar-action">
-        <span><i className="floating-radar-dot" aria-hidden="true" />{diagnosticLabel ? `${diagnosticLabel} · ` : ""}动作 {radarActionDisplayText(snapshot.recommendedAction)}</span>
-        <em>24h {percentText(probability)} · 48h {percentText(probability48)}</em>
+          <span><i className="floating-radar-dot" aria-hidden="true" />{diagnosticLabel ? `${diagnosticLabel} · ` : ""}动作 {radarActionDisplayText(snapshot.recommendedAction)}</span>
+          <em>24h {percentText(probability)} · 48h {percentText(probability48)}</em>
       </div>
       <div className="floating-radar-iq">
-        <strong>
-          <i className="floating-radar-dot" aria-hidden="true" />
-          <span>IQ {displayRadarNumber(primary.point.score, 1)}</span>
-          <em>{compactRadarModelName(primary.label)}</em>
-        </strong>
-        <p className="floating-radar-models">{crowdBest ? `众测 ${crowdRadarModelLabel(crowdBest)} ${(crowdBest.passRate * 150).toFixed(1)} · ${crowdBest.graded}判` : secondaryText}</p>
+          <strong>
+            <i className="floating-radar-dot" aria-hidden="true" />
+            <span>IQ {displayRadarNumber(primary.point.score, 1)}</span>
+            <em>{compactRadarModelName(primary.label)}</em>
+          </strong>
+          <p className="floating-radar-models">{secondaryText}</p>
       </div>
+    </div>
+  );
+}
+
+export function FloatingCrowdRadarRow({ snapshot, style }: { snapshot?: CodexCrowdRadarSnapshot | null; style: CSSProperties }) {
+  const best = bestCodexCrowdRadarModel(snapshot);
+  return (
+    <div className="floating-row floating-crowd-radar" style={style}>
+      <strong>众测雷达</strong>
+      <span>{snapshot ? `${snapshot.taskCount}题 · ${snapshot.cellCount}格 · ${snapshot.contributorCount}人` : "待读取"}</span>
+      {best ? <em>{crowdRadarModelLabel(best)} · IQ {(best.passRate * 150).toFixed(1)} · {(best.passRate * 100).toFixed(1)}% · {best.graded}判{snapshot && snapshot.pendingGrades > 0 ? ` · 待判${snapshot.pendingGrades}` : ""}</em> : null}
     </div>
   );
 }

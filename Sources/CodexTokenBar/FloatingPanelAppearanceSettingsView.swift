@@ -165,6 +165,7 @@ struct FloatingPanelContentSettingsMenu: View {
     @AppStorage(FloatingPanelContentVisibility.metricsKey) private var showMetrics = FloatingPanelContentVisibility.default.showMetrics
     @AppStorage(FloatingPanelContentVisibility.quotaKey) private var showQuota = FloatingPanelContentVisibility.default.showQuota
     @AppStorage(FloatingPanelContentVisibility.radarKey) private var showRadar = FloatingPanelContentVisibility.default.showRadar
+    @AppStorage(FloatingPanelContentVisibility.crowdRadarKey) private var showCrowdRadar = FloatingPanelContentVisibility.default.showCrowdRadar
     @AppStorage(FloatingPanelContentVisibility.orderKey) private var orderRaw = FloatingPanelContentVisibility.defaultOrderRaw
     @State private var dropTarget: FloatingPanelContentGroup?
     @State private var draggingGroup: FloatingPanelContentGroup?
@@ -244,6 +245,8 @@ struct FloatingPanelContentSettingsMenu: View {
             return $showQuota
         case .radar:
             return $showRadar
+        case .crowdRadar:
+            return $showCrowdRadar
         }
     }
 }

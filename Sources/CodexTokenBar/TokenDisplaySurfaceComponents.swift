@@ -200,7 +200,7 @@ struct TokenDisplayRadarStrip: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
                 }
-                Text(crowdSummaryText(snapshot))
+                Text(tokenDisplayRadarSecondaryIQText(snapshot))
                     .font(.system(size: 8.1.scaled(by: displayScale), weight: .semibold))
                     .foregroundStyle(modelPalette.secondaryColor)
                     .monospacedDigit()
@@ -228,11 +228,42 @@ struct TokenDisplayRadarStrip: View {
         return "\(base)，\(compactAccessibility)"
     }
 
-    private func crowdSummaryText(_ snapshot: CodexRadarSnapshot?) -> String {
-        if let best = presentation.crowdSnapshot?.bestModel {
-            return "众测 \(best.label) \(String(format: "%.1f", best.iq)) · \(best.graded)判"
+}
+
+struct TokenDisplayCrowdRadarRow: View {
+    let presentation: CodexRadarPresentationState
+    @Environment(\.tokenDisplayScale) private var displayScale
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
+
+    var body: some View {
+        if let crowd = presentation.crowdSnapshot, let best = crowd.bestModel {
+            HStack(spacing: 5.scaled(by: displayScale)) {
+                Label("众测雷达", systemImage: "antenna.radiowaves.left.and.right")
+                    .font(.system(size: 8.2.scaled(by: displayScale), weight: .bold))
+                Text("\(crowd.taskCount)题 · \(crowd.cellCount)格 · \(crowd.contributorCount)人")
+                    .foregroundStyle(textPalette.secondaryColor)
+                Spacer(minLength: 3.scaled(by: displayScale))
+                Text("\(best.label)  IQ \(String(format: "%.1f", best.iq)) · \(String(format: "%.1f%%", best.passRate * 100)) · \(best.graded)判")
+                    .fontWeight(.semibold)
+                    .monospacedDigit()
+                if crowd.pendingGrades > 0 {
+                    Text("待判 \(crowd.pendingGrades)")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .font(.system(size: 8.1.scaled(by: displayScale), weight: .medium))
+            .foregroundStyle(textPalette.primaryColor)
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
+        } else {
+            HStack {
+                Text("众测雷达")
+                Spacer()
+                Text("待读取")
+            }
+            .font(.system(size: 7.8.scaled(by: displayScale), weight: .semibold))
+            .foregroundStyle(textPalette.secondaryColor)
         }
-        return tokenDisplayRadarSecondaryIQText(snapshot)
     }
 }
 

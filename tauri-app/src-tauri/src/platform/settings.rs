@@ -2386,12 +2386,13 @@ fn sanitize_floating_content_visibility(
         show_metrics: visibility.show_metrics,
         show_quota: visibility.show_quota,
         show_radar: visibility.show_radar,
+        show_crowd_radar: visibility.show_crowd_radar,
         order: sanitize_floating_content_order(visibility.order),
     }
 }
 
 fn sanitize_floating_content_order(order: Vec<String>) -> Vec<String> {
-    let defaults = ["rateAndBar", "usageStatus", "metrics", "radar", "quota"];
+    let defaults = ["rateAndBar", "usageStatus", "metrics", "radar", "crowdRadar", "quota"];
     let mut next: Vec<String> = Vec::new();
     for item in order {
         if defaults.contains(&item.as_str()) && !next.iter().any(|existing| existing == &item) {
@@ -2400,6 +2401,12 @@ fn sanitize_floating_content_order(order: Vec<String>) -> Vec<String> {
     }
     for item in defaults {
         if !next.iter().any(|existing| existing == item) {
+            if item == "crowdRadar" {
+                if let Some(radar_index) = next.iter().position(|existing| existing == "radar") {
+                    next.insert(radar_index + 1, item.into());
+                    continue;
+                }
+            }
             next.push(item.into());
         }
     }
@@ -2568,9 +2575,10 @@ mod tests {
         assert_eq!(sanitized.floating_window.quota_fixed_color, "#1469cc");
         assert_eq!(sanitized.floating_window.text_tone, 1.0);
         assert!(!sanitized.floating_window.content_visibility.show_radar);
+        assert!(sanitized.floating_window.content_visibility.show_crowd_radar);
         assert_eq!(
             sanitized.floating_window.content_visibility.order,
-            ["quota", "rateAndBar", "usageStatus", "metrics", "radar"]
+            ["quota", "rateAndBar", "usageStatus", "metrics", "radar", "crowdRadar"]
         );
         assert!(sanitized.display_surfaces.floating_window_enabled);
         assert!(sanitized.display_surfaces.live_rate_enabled);

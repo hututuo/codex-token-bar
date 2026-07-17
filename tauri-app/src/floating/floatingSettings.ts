@@ -9,13 +9,14 @@ import type {
 export const FLOATING_SETTINGS_EVENT = "floating-settings-changed";
 export const FLOATING_BASE_WIDTH = 296;
 export const FLOATING_MIN_HEIGHT = 88;
-export const FLOATING_DEFAULT_HEIGHT = 112;
+export const FLOATING_DEFAULT_HEIGHT = 136;
 
 const FLOATING_CONTENT_GROUPS: FloatingContentGroup[] = [
   "rateAndBar",
   "usageStatus",
   "metrics",
   "radar",
+  "crowdRadar",
   "quota",
 ];
 
@@ -25,6 +26,7 @@ const DEFAULT_FLOATING_CONTENT_VISIBILITY: FloatingContentVisibility = {
   showMetrics: true,
   showQuota: true,
   showRadar: true,
+  showCrowdRadar: true,
   order: FLOATING_CONTENT_GROUPS,
 };
 
@@ -124,7 +126,8 @@ function sanitizeFloatingContentVisibility(value: Partial<FloatingContentVisibil
     showUsageStatus: value?.showUsageStatus ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showUsageStatus,
     showMetrics: value?.showMetrics ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showMetrics,
     showQuota: value?.showQuota ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showQuota,
-    showRadar: value?.showRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showRadar,
+      showRadar: value?.showRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showRadar,
+      showCrowdRadar: value?.showCrowdRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showCrowdRadar,
     order: sanitizeContentOrder(value?.order),
   };
 }

@@ -107,6 +107,7 @@ enum DisplayModeMigration {
         defaults.set(true, forKey: FloatingPanelContentVisibility.metricsKey)
         defaults.set(true, forKey: FloatingPanelContentVisibility.quotaKey)
         defaults.set(true, forKey: FloatingPanelContentVisibility.radarKey)
+        defaults.set(true, forKey: FloatingPanelContentVisibility.crowdRadarKey)
         defaults.set(FloatingPanelContentVisibility.defaultOrderRaw, forKey: FloatingPanelContentVisibility.orderKey)
         defaults.set(true, forKey: contentDefaultsMigrationKey)
     }

@@ -15,7 +15,7 @@ test("layoutFloatingContentGroups embeds usage status into adjacent rate row", (
     order: ["metrics", "usageStatus", "rateAndBar", "radar", "quota"],
   });
 
-  assert.deepEqual(layoutFloatingContentGroups(visibility), ["metrics", "rateAndBar", "radar", "quota"]);
+  assert.deepEqual(layoutFloatingContentGroups(visibility), ["metrics", "rateAndBar", "radar", "crowdRadar", "quota"]);
 });
 
 test("layoutFloatingContentGroups keeps usage status standalone when it is not adjacent to rate", () => {
@@ -24,7 +24,7 @@ test("layoutFloatingContentGroups keeps usage status standalone when it is not a
     order: ["rateAndBar", "metrics", "usageStatus", "radar", "quota"],
   });
 
-  assert.deepEqual(layoutFloatingContentGroups(visibility), ["rateAndBar", "metrics", "usageStatus", "radar", "quota"]);
+  assert.deepEqual(layoutFloatingContentGroups(visibility), ["rateAndBar", "metrics", "usageStatus", "radar", "crowdRadar", "quota"]);
 });
 
 test("moveFloatingContent swaps adjacent groups in both directions", () => {
@@ -35,6 +35,7 @@ test("moveFloatingContent swaps adjacent groups in both directions", () => {
     "rateAndBar",
     "metrics",
     "radar",
+    "crowdRadar",
     "quota",
   ]);
   assert.deepEqual(moveFloatingContent(order, "metrics", 1), [
@@ -42,6 +43,7 @@ test("moveFloatingContent swaps adjacent groups in both directions", () => {
     "usageStatus",
     "radar",
     "metrics",
+    "crowdRadar",
     "quota",
   ]);
 });
@@ -77,5 +79,5 @@ test("floatingContentHeight uses Swift-style vertical protection pixels", () => 
     showRateAndBar: false,
     showUsageStatus: false,
   }), 88);
-  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 112);
+  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 136);
 });

@@ -5,14 +5,15 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     func testDefaultVisibilityShowsAllFloatingPanelGroups() {
         let visibility = FloatingPanelContentVisibility.default
 
-        XCTAssertEqual(visibility.visibleGroups, [.rateAndBar, .usageStatus, .metrics, .radar, .quota])
-        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrder, [.rateAndBar, .usageStatus, .metrics, .radar, .quota])
-        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrderRaw, "rateAndBar,usageStatus,metrics,radar,quota")
+        XCTAssertEqual(visibility.visibleGroups, [.rateAndBar, .usageStatus, .metrics, .radar, .crowdRadar, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrder, [.rateAndBar, .usageStatus, .metrics, .radar, .crowdRadar, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrderRaw, "rateAndBar,usageStatus,metrics,radar,crowdRadar,quota")
         XCTAssertTrue(visibility.shows(.rateAndBar))
         XCTAssertTrue(visibility.shows(.usageStatus))
         XCTAssertTrue(visibility.shows(.metrics))
         XCTAssertTrue(visibility.shows(.quota))
         XCTAssertTrue(visibility.shows(.radar))
+        XCTAssertTrue(visibility.shows(.crowdRadar))
     }
 
     func testAdaptiveSizeShrinksWhenOnlyUsageStatusIsVisible() {
@@ -38,13 +39,14 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             + FloatingTokenPanelMetrics.metricRowHeight
             + FloatingTokenPanelMetrics.quotaRowHeight
             + FloatingTokenPanelMetrics.radarRowHeight
-            + FloatingTokenPanelMetrics.rowSpacing * 3
+            + FloatingTokenPanelMetrics.crowdRadarRowHeight
+            + FloatingTokenPanelMetrics.rowSpacing * 4
 
         XCTAssertEqual(height, expectedHeight, accuracy: 0.001)
     }
 
     func testDefaultFloatingPanelUsesTighterVerticalRhythm() {
-        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 97, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 119, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.verticalPadding, 6, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rowSpacing, 2, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rateRowHeight, 28, accuracy: 0.001)
@@ -52,8 +54,9 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(FloatingTokenPanelMetrics.metricRowHeight, 11, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.quotaRowHeight, 15.5, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.radarRowHeight, 24, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 84.5, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 97, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.crowdRadarRowHeight, 20, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 106.5, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 119, accuracy: 0.001)
     }
 
     func testUsageStatusEmbedsOnlyWhenAdjacentToRateRow() {
@@ -119,8 +122,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
 
     func testFloatingPanelLayoutGroupsFollowStoredOrder() {
         let decoded = FloatingPanelContentVisibility.order(from: "radar,metrics,rateAndBar,unknown,radar")
-        XCTAssertEqual(decoded, [.radar, .metrics, .rateAndBar, .usageStatus, .quota])
-        XCTAssertEqual(FloatingPanelContentVisibility.encodedOrder(decoded), "radar,metrics,rateAndBar,usageStatus,quota")
+        XCTAssertEqual(decoded, [.radar, .crowdRadar, .metrics, .rateAndBar, .usageStatus, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.encodedOrder(decoded), "radar,crowdRadar,metrics,rateAndBar,usageStatus,quota")
 
         let visibility = FloatingPanelContentVisibility(
             showRateAndBar: true,
@@ -289,7 +292,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 relativeTo: .metrics,
                 placement: .after
             ),
-            [.usageStatus, .metrics, .rateAndBar, .quota, .radar]
+            [.usageStatus, .metrics, .rateAndBar, .quota, .radar, .crowdRadar]
         )
 
         XCTAssertEqual(
@@ -299,7 +302,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 relativeTo: .usageStatus,
                 placement: .before
             ),
-            [.rateAndBar, .radar, .usageStatus, .metrics, .quota]
+            [.rateAndBar, .radar, .usageStatus, .metrics, .quota, .crowdRadar]
         )
     }
 

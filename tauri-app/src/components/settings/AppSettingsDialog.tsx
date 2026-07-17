@@ -1239,6 +1239,7 @@ function isFloatingGroupVisible(visibility: FloatingContentVisibility, group: Fl
     case "metrics": return visibility.showMetrics;
     case "quota": return visibility.showQuota;
     case "radar": return visibility.showRadar;
+    case "crowdRadar": return visibility.showCrowdRadar;
   }
 }
 
@@ -1249,5 +1250,6 @@ function visibilityKey(group: FloatingContentGroup): keyof FloatingContentVisibi
     case "metrics": return "showMetrics";
     case "quota": return "showQuota";
     case "radar": return "showRadar";
+    case "crowdRadar": return "showCrowdRadar";
   }
 }

@@ -672,5 +672,7 @@ function visibilityKey(group: FloatingContentGroup): keyof Omit<FloatingContentV
       return "showQuota";
     case "radar":
       return "showRadar";
+    case "crowdRadar":
+      return "showCrowdRadar";
   }
 }

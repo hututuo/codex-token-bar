@@ -307,6 +307,7 @@ struct TokenDisplayCard: View {
             let metricRowHeight = FloatingTokenPanelMetrics.metricRowHeight.scaled(by: displayScale)
             let quotaRowHeight = FloatingTokenPanelMetrics.quotaRowHeight.scaled(by: displayScale)
             let radarRowHeight = FloatingTokenPanelMetrics.radarRowHeight.scaled(by: displayScale)
+            let crowdRadarRowHeight = FloatingTokenPanelMetrics.crowdRadarRowHeight.scaled(by: displayScale)
             let topSafetyInset = presentation.needsTopSafetyInset ? FloatingTokenPanelMetrics.singleElementTopInset.scaled(by: displayScale) : 0
 
             VStack(alignment: .center, spacing: rowSpacing) {
@@ -332,6 +333,10 @@ struct TokenDisplayCard: View {
                         TokenDisplayRadarStrip(presentation: radarPresentation)
                             .environment(\.tokenDisplayTextPalette, palette(for: .radar))
                             .frame(height: radarRowHeight, alignment: .center)
+                    case .crowdRadar:
+                        TokenDisplayCrowdRadarRow(presentation: radarPresentation)
+                            .environment(\.tokenDisplayTextPalette, palette(for: .crowdRadar))
+                            .frame(height: crowdRadarRowHeight, alignment: .center)
                     }
                 }
             }
