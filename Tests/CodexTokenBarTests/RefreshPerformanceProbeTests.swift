@@ -44,6 +44,21 @@ final class RefreshPerformanceProbeTests: XCTestCase {
         XCTAssertTrue(log.contains("status=ok"))
     }
 
+    func testProbeRotatesBoundedLogBeforeAppending() throws {
+        let logURL = try makeLogURL()
+        setenv("CODEX_TOKEN_BAR_REFRESH_PROBE", "1", 1)
+        setenv("CODEX_TOKEN_BAR_REFRESH_PROBE_LOG", logURL.path, 1)
+        try Data(repeating: 0x78, count: 5 * 1024 * 1024).write(to: logURL)
+
+        RefreshPerformanceProbe.event("test.rotate")
+
+        let previousURL = logURL.appendingPathExtension("previous")
+        XCTAssertEqual(try Data(contentsOf: previousURL).count, 5 * 1024 * 1024)
+        let current = try String(contentsOf: logURL, encoding: .utf8)
+        XCTAssertTrue(current.contains("event=test.rotate"))
+        XCTAssertLessThan(current.utf8.count, 1_024)
+    }
+
     private func makeLogURL() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CodexTokenBarProbeTests-\(UUID().uuidString)", isDirectory: true)

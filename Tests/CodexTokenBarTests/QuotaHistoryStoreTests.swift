@@ -301,6 +301,72 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertFalse(values.contains(99), "legacy rows older than 45 days must not bridge")
     }
 
+    func testLegacyBridgeClaimSkipsNoOpWritesUntilHeartbeatIsDue() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let quota = identifiedSnapshot(
+            usedPercent: 7,
+            reset: now.addingTimeInterval(3 * 60 * 60),
+            homeIdentity: "/fixture/legacy-claim-heartbeat",
+            stableAccountKey: "sub:legacy-claim-heartbeat",
+            planType: "Plus",
+            limitID: "codex",
+            accountName: "Heartbeat Legacy",
+            at: now
+        )
+        XCTAssertTrue(try database.record(quota, createdAt: now.addingTimeInterval(-120)))
+        try insertRawSnapshot(
+            databaseURL: url,
+            createdAt: now.addingTimeInterval(-60),
+            accountKey: "Heartbeat Legacy|Plus|codex",
+            source: "swift",
+            planType: "Plus",
+            limitName: "codex",
+            accountName: "Heartbeat Legacy",
+            fiveHourUsedPercent: 6,
+            fiveHourResetsAt: now.addingTimeInterval(3 * 60 * 60),
+            sevenDayUsedPercent: 20,
+            sevenDayResetsAt: now.addingTimeInterval(4 * 24 * 60 * 60)
+        )
+
+        XCTAssertEqual(
+            try database.recordedFiveHourUsedPercents(for: quota, now: now).sorted(),
+            [6, 7]
+        )
+        let driver = SQLiteDatabaseDriver(url: url)
+        let firstSeenAt = try XCTUnwrap(driver.readRows(
+            "SELECT last_seen_at FROM quota_history_legacy_claims LIMIT 1;"
+        ) { statement in
+            statement.date(0)
+        }.first ?? nil)
+
+        XCTAssertEqual(
+            try database.recordedFiveHourUsedPercents(
+                for: quota,
+                now: now.addingTimeInterval(60)
+            ).sorted(),
+            [6, 7]
+        )
+        let unchangedSeenAt = try XCTUnwrap(driver.readRows(
+            "SELECT last_seen_at FROM quota_history_legacy_claims LIMIT 1;"
+        ) { statement in
+            statement.date(0)
+        }.first ?? nil)
+        XCTAssertEqual(unchangedSeenAt, firstSeenAt)
+
+        _ = try database.recordedFiveHourUsedPercents(
+            for: quota,
+            now: now.addingTimeInterval(60 * 60 + 1)
+        )
+        let refreshedSeenAt = try XCTUnwrap(driver.readRows(
+            "SELECT last_seen_at FROM quota_history_legacy_claims LIMIT 1;"
+        ) { statement in
+            statement.date(0)
+        }.first ?? nil)
+        XCTAssertGreaterThan(refreshedSeenAt, firstSeenAt)
+    }
+
     @MainActor
     func testOlderReloadCannotOverwriteNewerRecordedSnapshot() async throws {
         let client = SuspendedQuotaHistoryClient()

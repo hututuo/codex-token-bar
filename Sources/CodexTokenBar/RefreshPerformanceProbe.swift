@@ -22,6 +22,7 @@ enum RefreshPerformanceProbe {
     private static let lock = NSLock()
     private static let state = State()
     private static let clock = ContinuousClock()
+    private static let maximumLogBytes: UInt64 = 5 * 1024 * 1024
 
     static var isEnabled: Bool {
         let environment = ProcessInfo.processInfo.environment
@@ -131,6 +132,7 @@ enum RefreshPerformanceProbe {
         do {
             let directory = logURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try rotateLogIfNeeded(appendingByteCount: line.utf8.count)
             if FileManager.default.fileExists(atPath: logURL.path) {
                 let handle = try FileHandle(forWritingTo: logURL)
                 try handle.seekToEnd()
@@ -142,6 +144,16 @@ enum RefreshPerformanceProbe {
         } catch {
             // Performance probes must never affect refresh behavior.
         }
+    }
+
+    private static func rotateLogIfNeeded(appendingByteCount: Int) throws {
+        guard let size = try? logURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              UInt64(max(0, size)) + UInt64(max(0, appendingByteCount)) > maximumLogBytes else {
+            return
+        }
+        let previousURL = logURL.appendingPathExtension("previous")
+        try? FileManager.default.removeItem(at: previousURL)
+        try FileManager.default.moveItem(at: logURL, to: previousURL)
     }
 
     private static func sanitize(_ value: String) -> String {

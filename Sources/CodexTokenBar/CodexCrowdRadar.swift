@@ -70,7 +70,7 @@ struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("CodexTokenBar", forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await CodexRadarNetworkSession.shared.data(for: request)
         guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
             throw CodexRadarReaderError.invalidResponse
         }

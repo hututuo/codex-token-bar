@@ -23,6 +23,9 @@ enum UsageCacheLifecycle {
               let url = stateURL else {
             return
         }
+        if loadState()?.usageCacheNamespace == namespace {
+            return
+        }
         let state = CacheState(usageCacheNamespace: namespace, initializedAt: Date())
         do {
             try FileManager.default.createDirectory(
@@ -72,7 +75,12 @@ enum UsageCacheLifecycle {
         ) else {
             return
         }
+        let preservePreviousNamespace = !CodexUsageAnalyzer.SessionEventCache.isLegacyV8MigrationComplete
         for child in children where child.lastPathComponent != namespace {
+            if preservePreviousNamespace,
+               child.lastPathComponent == CodexUsageAnalyzer.SessionEventCache.previousCacheNamespace {
+                continue
+            }
             try? FileManager.default.removeItem(at: child)
         }
     }

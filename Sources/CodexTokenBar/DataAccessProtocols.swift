@@ -67,7 +67,23 @@ protocol LiveRateLogReading: Sendable {
     var path: String { get }
 
     func globalLogRows(afterID: Int) throws -> [LiveRateMonitor.LogRow]
+    func globalLogBatch(afterID: Int) throws -> LiveRateLogReadBatch
     func globalLogRows(since timestamp: TimeInterval) throws -> [LiveRateMonitor.LogRow]
+}
+
+struct LiveRateLogReadBatch: Sendable {
+    let rows: [LiveRateMonitor.LogRow]
+    let scannedThroughID: Int
+}
+
+extension LiveRateLogReading {
+    func globalLogBatch(afterID: Int) throws -> LiveRateLogReadBatch {
+        let rows = try globalLogRows(afterID: afterID)
+        return LiveRateLogReadBatch(
+            rows: rows,
+            scannedThroughID: max(afterID, rows.last?.id ?? afterID)
+        )
+    }
 }
 
 protocol LiveRateLogReaderMaking: Sendable {

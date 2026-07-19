@@ -15,17 +15,34 @@ extension CodexUsageAnalyzer {
     }
 
     final class SessionEventCache: @unchecked Sendable {
-        private static let persistentCacheVersion = 8
+        private static let persistentCacheVersion = 9
+        private static let legacyPersistentCacheVersion = 8
         private static let appCacheDirectoryName = "CodexTokenBarSwift"
-        static let cacheNamespace = "swift-usage-cache-2026-07-v3"
+        static let cacheNamespace = "swift-usage-cache-2026-07-v4"
+        static let previousCacheNamespace = "swift-usage-cache-2026-07-v3"
+        private static let legacyMigrationMarkerName = ".v8-migration-complete"
         private static let cacheDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_DIR"
 
-        private struct PersistentSessionFile: Codable {
+        private struct PersistentSessionMetadata: Codable {
             let version: Int
-            let entry: PersistentEntry
+            let path: String
+            let size: UInt64
+            let modifiedAt: TimeInterval
+            let lastOffset: UInt64
+            let endedWithNewline: Bool
+            let previousTotalTokens: Int?
+            let canIncrementFromOffset: Bool
+            let forkReplayActive: Bool
+            let lastSkippedForkReplayTokenAt: TimeInterval?
+            let eventCount: Int
         }
 
-        private struct PersistentEntry: Codable {
+        private struct LegacyPersistentSessionFile: Codable {
+            let version: Int
+            let entry: LegacyPersistentEntry
+        }
+
+        private struct LegacyPersistentEntry: Codable {
             let path: String
             let size: UInt64
             let modifiedAt: TimeInterval
@@ -87,9 +104,17 @@ extension CodexUsageAnalyzer {
         private var fullSessionParseCount = 0
         private var incrementalSessionParseCount = 0
         private var didLoadPersistentCache = false
-        private var dirtyPaths = Set<String>()
+        private var pendingPersistence: [String: PersistenceOperation] = [:]
         private var deletedPersistentPaths = Set<String>()
         private var isSnapshotDirty = false
+        private var shouldFinalizeLegacyV8Migration = false
+        private var legacyV8MigrationFailed = false
+        private let persistenceLock = NSLock()
+
+        private enum PersistenceOperation {
+            case replace
+            case append(fromEventIndex: Int)
+        }
 
         func cachedSession(for path: String, key: SessionCacheKey) -> CachedSession? {
             loadPersistentCacheIfNeeded()
@@ -117,11 +142,30 @@ extension CodexUsageAnalyzer {
             return cached
         }
 
-        func store(_ session: CachedSession, for path: String) {
+        func store(
+            _ session: CachedSession,
+            for path: String,
+            appendingFromEventIndex: Int? = nil
+        ) {
             loadPersistentCacheIfNeeded()
             lock.lock()
             storage[path] = session
-            dirtyPaths.insert(path)
+            let operation: PersistenceOperation
+            if let appendingFromEventIndex,
+               appendingFromEventIndex >= 0,
+               appendingFromEventIndex <= session.events.count {
+                operation = .append(fromEventIndex: appendingFromEventIndex)
+            } else {
+                operation = .replace
+            }
+            switch (pendingPersistence[path], operation) {
+            case (.replace?, _), (_, .replace):
+                pendingPersistence[path] = .replace
+            case let (.append(fromEventIndex: existingIndex)?, .append(fromEventIndex: newIndex)):
+                pendingPersistence[path] = .append(fromEventIndex: min(existingIndex, newIndex))
+            case (nil, .append):
+                pendingPersistence[path] = operation
+            }
             deletedPersistentPaths.remove(path)
             lock.unlock()
         }
@@ -133,7 +177,7 @@ extension CodexUsageAnalyzer {
             for path in removed {
                 storage.removeValue(forKey: path)
                 deletedPersistentPaths.insert(path)
-                dirtyPaths.remove(path)
+                pendingPersistence.removeValue(forKey: path)
             }
             lock.unlock()
         }
@@ -207,9 +251,11 @@ extension CodexUsageAnalyzer {
             fullSessionParseCount = 0
             incrementalSessionParseCount = 0
             didLoadPersistentCache = false
-            dirtyPaths.removeAll()
+            pendingPersistence.removeAll()
             deletedPersistentPaths.removeAll()
             isSnapshotDirty = false
+            shouldFinalizeLegacyV8Migration = false
+            legacyV8MigrationFailed = false
             lock.unlock()
         }
 
@@ -217,23 +263,30 @@ extension CodexUsageAnalyzer {
             let trace = RefreshPerformanceProbe.begin("usageCache.flushPersistent")
             lock.lock()
             if CodexUsageAnalyzer.isPersistentSessionEventCacheDisabled {
-                dirtyPaths.removeAll()
+                pendingPersistence.removeAll()
                 deletedPersistentPaths.removeAll()
                 isSnapshotDirty = false
                 lock.unlock()
                 trace?.end("disabled")
                 return
             }
-            let dirtyPaths = dirtyPaths
+            let pendingPersistence = pendingPersistence
             let deletedPersistentPaths = deletedPersistentPaths
-            let dirtySessions = dirtyPaths.compactMap { path in storage[path].map { (path, $0) } }
+            let dirtySessions = pendingPersistence.compactMap { path, operation in
+                storage[path].map { (path, $0, operation) }
+            }
             let shouldRemovePersistentSnapshot = isSnapshotDirty
-            guard !dirtySessions.isEmpty || !deletedPersistentPaths.isEmpty || shouldRemovePersistentSnapshot else {
+            let shouldFinalizeLegacyV8Migration = shouldFinalizeLegacyV8Migration
+                && !legacyV8MigrationFailed
+            guard !dirtySessions.isEmpty
+                    || !deletedPersistentPaths.isEmpty
+                    || shouldRemovePersistentSnapshot
+                    || shouldFinalizeLegacyV8Migration else {
                 lock.unlock()
                 trace?.end("clean")
                 return
             }
-            self.dirtyPaths.removeAll()
+            self.pendingPersistence.removeAll()
             self.deletedPersistentPaths.removeAll()
             isSnapshotDirty = false
             lock.unlock()
@@ -242,6 +295,8 @@ extension CodexUsageAnalyzer {
                 trace?.end("no-cache-directory")
                 return
             }
+            persistenceLock.lock()
+            defer { persistenceLock.unlock() }
             do {
                 trace?.mark("removeLegacy.begin")
                 Self.removeLegacyCaches()
@@ -251,7 +306,9 @@ extension CodexUsageAnalyzer {
                     try? FileManager.default.removeItem(at: snapshotURL)
                     trace?.mark("removePersistentSnapshot.end")
                 }
-                guard !dirtySessions.isEmpty || !deletedPersistentPaths.isEmpty else {
+                guard !dirtySessions.isEmpty
+                        || !deletedPersistentPaths.isEmpty
+                        || shouldFinalizeLegacyV8Migration else {
                     trace?.end("removed-snapshot-only")
                     return
                 }
@@ -263,13 +320,15 @@ extension CodexUsageAnalyzer {
                 trace?.mark("createDirectory.end")
                 trace?.mark("deleteShards.begin", metadata: ["count": String(deletedPersistentPaths.count)])
                 for path in deletedPersistentPaths {
-                    try? FileManager.default.removeItem(at: Self.sessionEntryURL(for: path, in: cacheDirectory))
+                    try? FileManager.default.removeItem(at: Self.sessionMetadataURL(for: path, in: cacheDirectory))
+                    try? FileManager.default.removeItem(at: Self.sessionEventsURL(for: path, in: cacheDirectory))
                 }
                 trace?.mark("deleteShards.end")
                 var writtenBytes = 0
                 trace?.mark("writeShards.begin", metadata: ["count": String(dirtySessions.count)])
-                for (path, value) in dirtySessions {
-                    let entry = PersistentEntry(
+                for (path, value, operation) in dirtySessions {
+                    let metadata = PersistentSessionMetadata(
+                        version: Self.persistentCacheVersion,
                         path: path,
                         size: value.key.size,
                         modifiedAt: value.key.modifiedAt,
@@ -279,14 +338,27 @@ extension CodexUsageAnalyzer {
                         canIncrementFromOffset: value.canIncrementFromOffset,
                         forkReplayActive: value.forkReplayActive,
                         lastSkippedForkReplayTokenAt: value.lastSkippedForkReplayTokenAt?.timeIntervalSince1970,
-                        events: value.events.map(Self.persistentEvent)
+                        eventCount: value.events.count
                     )
-                    let file = PersistentSessionFile(version: Self.persistentCacheVersion, entry: entry)
-                    let data = try JSONEncoder().encode(file)
-                    writtenBytes += data.count
-                    try data.write(to: Self.sessionEntryURL(for: path, in: cacheDirectory), options: [.atomic])
+                    writtenBytes += try Self.persist(
+                        value,
+                        metadata: metadata,
+                        operation: operation,
+                        cacheDirectory: cacheDirectory
+                    )
                 }
                 trace?.mark("writeShards.end", metadata: ["bytes": String(writtenBytes)])
+                if shouldFinalizeLegacyV8Migration {
+                    trace?.mark("finalizeV8Migration.begin")
+                    try Self.markLegacyV8MigrationComplete()
+                    if let legacyDirectory = Self.legacyV8NamespaceDirectory {
+                        try? FileManager.default.removeItem(at: legacyDirectory)
+                    }
+                    lock.lock()
+                    self.shouldFinalizeLegacyV8Migration = false
+                    lock.unlock()
+                    trace?.mark("finalizeV8Migration.end")
+                }
                 if !dirtySessions.isEmpty, let legacyV5CacheURL = Self.legacyV5CacheURL {
                     try? FileManager.default.removeItem(at: legacyV5CacheURL)
                 }
@@ -296,6 +368,11 @@ extension CodexUsageAnalyzer {
                     "writtenBytes": String(writtenBytes)
                 ])
             } catch {
+                if shouldFinalizeLegacyV8Migration {
+                    lock.lock()
+                    legacyV8MigrationFailed = true
+                    lock.unlock()
+                }
                 trace?.end("failed", metadata: ["error": error.localizedDescription])
                 // The in-memory cache is still valid; a disk-cache miss should never block the dashboard.
             }
@@ -318,28 +395,82 @@ extension CodexUsageAnalyzer {
             }
 
             let trace = RefreshPerformanceProbe.begin("usageCache.loadPersistent")
-            trace?.mark("loadV6.begin")
-            let loaded = Self.loadV6SessionCache()
-            trace?.mark("loadV6.end", metadata: ["sessions": String(loaded.count)])
+            trace?.mark("loadV9.begin")
+            let current = Self.loadV9SessionCache()
+            trace?.mark("loadV9.end", metadata: ["sessions": String(current.count)])
+            trace?.mark("loadV8Migration.begin")
+            let migrationAlreadyComplete = Self.isLegacyV8MigrationComplete
+            let legacy = migrationAlreadyComplete ? [:] : Self.loadLegacyV8SessionCache()
+            trace?.mark("loadV8Migration.end", metadata: ["sessions": String(legacy.count)])
 
             var mergedCount = 0
+            var migratedCount = 0
             lock.lock()
             if !didLoadPersistentCache {
-                for (path, value) in loaded where storage[path] == nil {
+                for (path, value) in current where storage[path] == nil {
                     storage[path] = value
                     mergedCount += 1
                 }
+                for (path, value) in legacy where storage[path] == nil {
+                    storage[path] = value
+                    pendingPersistence[path] = .replace
+                    mergedCount += 1
+                    migratedCount += 1
+                }
+                shouldFinalizeLegacyV8Migration = !migrationAlreadyComplete
+                    && Self.legacyV8NamespaceDirectory.map {
+                        FileManager.default.fileExists(atPath: $0.path)
+                    } == true
                 didLoadPersistentCache = true
             }
             lock.unlock()
             trace?.end("ok", metadata: [
                 "sessions": String(mergedCount),
+                "migratedSessions": String(migratedCount),
                 "namespace": Self.cacheNamespace
             ])
         }
 
-        private static func loadV6SessionCache() -> [String: CachedSession] {
+        private static func loadV9SessionCache() -> [String: CachedSession] {
             guard let directory = sessionCacheDirectory,
+                  let enumerator = FileManager.default.enumerator(
+                    at: directory,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles]
+                  ) else {
+                return [:]
+            }
+
+            var loaded: [String: CachedSession] = [:]
+            for case let url as URL in enumerator where url.lastPathComponent.hasSuffix(".meta.json") {
+                guard let data = try? Data(contentsOf: url),
+                      let metadata = try? JSONDecoder().decode(PersistentSessionMetadata.self, from: data),
+                      metadata.version == persistentCacheVersion,
+                      url.standardizedFileURL == sessionMetadataURL(for: metadata.path, in: directory).standardizedFileURL,
+                      let persistentEvents = loadPersistentEvents(
+                        from: sessionEventsURL(for: metadata.path, in: directory),
+                        expectedCount: metadata.eventCount
+                      ) else {
+                    continue
+                }
+                let path = URL(fileURLWithPath: metadata.path).resolvingSymlinksInPath().path
+                let key = SessionCacheKey(path: path, size: metadata.size, modifiedAt: metadata.modifiedAt)
+                loaded[path] = CachedSession(
+                    key: key,
+                    events: persistentEvents.map(tokenEvent),
+                    lastOffset: metadata.lastOffset,
+                    endedWithNewline: metadata.endedWithNewline,
+                    previousTotalTokens: metadata.previousTotalTokens,
+                    canIncrementFromOffset: metadata.canIncrementFromOffset,
+                    forkReplayActive: metadata.forkReplayActive,
+                    lastSkippedForkReplayTokenAt: metadata.lastSkippedForkReplayTokenAt.map(Date.init(timeIntervalSince1970:))
+                )
+            }
+            return loaded
+        }
+
+        private static func loadLegacyV8SessionCache() -> [String: CachedSession] {
+            guard let directory = legacyV8SessionCacheDirectory,
                   let enumerator = FileManager.default.enumerator(
                     at: directory,
                     includingPropertiesForKeys: [.isRegularFileKey],
@@ -351,8 +482,8 @@ extension CodexUsageAnalyzer {
             var loaded: [String: CachedSession] = [:]
             for case let url as URL in enumerator where url.pathExtension == "json" {
                 guard let data = try? Data(contentsOf: url),
-                      let file = try? JSONDecoder().decode(PersistentSessionFile.self, from: data),
-                      file.version == persistentCacheVersion else {
+                      let file = try? JSONDecoder().decode(LegacyPersistentSessionFile.self, from: data),
+                      file.version == legacyPersistentCacheVersion else {
                     continue
                 }
                 let entry = file.entry
@@ -388,14 +519,40 @@ extension CodexUsageAnalyzer {
             cacheRootURL?
                 .appendingPathComponent(appCacheDirectoryName, isDirectory: true)
                 .appendingPathComponent(cacheNamespace, isDirectory: true)
+                .appendingPathComponent("session-token-events-v9", isDirectory: true)
+        }
+
+        private static var legacyV8SessionCacheDirectory: URL? {
+            legacyV8NamespaceDirectory?
                 .appendingPathComponent("session-token-events-v6", isDirectory: true)
+        }
+
+        private static var cacheNamespaceDirectory: URL? {
+            cacheRootURL?
+                .appendingPathComponent(appCacheDirectoryName, isDirectory: true)
+                .appendingPathComponent(cacheNamespace, isDirectory: true)
+        }
+
+        static var legacyV8NamespaceDirectory: URL? {
+            cacheRootURL?
+                .appendingPathComponent(appCacheDirectoryName, isDirectory: true)
+                .appendingPathComponent(previousCacheNamespace, isDirectory: true)
+        }
+
+        private static var legacyV8MigrationMarkerURL: URL? {
+            cacheNamespaceDirectory?.appendingPathComponent(legacyMigrationMarkerName)
+        }
+
+        static var isLegacyV8MigrationComplete: Bool {
+            guard let marker = legacyV8MigrationMarkerURL else { return false }
+            return FileManager.default.fileExists(atPath: marker.path)
         }
 
         private static var snapshotCacheURL: URL? {
             cacheRootURL?
                 .appendingPathComponent(appCacheDirectoryName, isDirectory: true)
                 .appendingPathComponent(cacheNamespace, isDirectory: true)
-                .appendingPathComponent("session-token-snapshots-v6.json")
+                .appendingPathComponent("session-token-snapshots-v9.json")
         }
 
         private static var legacyCacheURLs: [URL] {
@@ -430,8 +587,100 @@ extension CodexUsageAnalyzer {
             }
         }
 
-        private static func sessionEntryURL(for path: String, in directory: URL) -> URL {
-            directory.appendingPathComponent("\(digest(path) ?? "empty").json")
+        private static func markLegacyV8MigrationComplete() throws {
+            guard let marker = legacyV8MigrationMarkerURL else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            try FileManager.default.createDirectory(
+                at: marker.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("v8-to-v9\n".utf8).write(to: marker, options: [.atomic])
+        }
+
+        private static func sessionMetadataURL(for path: String, in directory: URL) -> URL {
+            directory.appendingPathComponent("\(digest(path) ?? "empty").meta.json")
+        }
+
+        private static func sessionEventsURL(for path: String, in directory: URL) -> URL {
+            directory.appendingPathComponent("\(digest(path) ?? "empty").events.jsonl")
+        }
+
+        private static func persist(
+            _ session: CachedSession,
+            metadata: PersistentSessionMetadata,
+            operation: PersistenceOperation,
+            cacheDirectory: URL
+        ) throws -> Int {
+            let metadataURL = sessionMetadataURL(for: metadata.path, in: cacheDirectory)
+            let eventsURL = sessionEventsURL(for: metadata.path, in: cacheDirectory)
+            var writtenBytes = 0
+
+            switch operation {
+            case .replace:
+                let eventData = try encodeEventLines(session.events)
+                try eventData.write(to: eventsURL, options: [.atomic])
+                writtenBytes += eventData.count
+            case .append(let fromEventIndex):
+                let canAppend = persistedEventCount(at: metadataURL) == fromEventIndex
+                    && FileManager.default.fileExists(atPath: eventsURL.path)
+                if canAppend {
+                    let eventData = try encodeEventLines(session.events.suffix(from: fromEventIndex))
+                    if !eventData.isEmpty {
+                        let handle = try FileHandle(forWritingTo: eventsURL)
+                        defer { try? handle.close() }
+                        try handle.seekToEnd()
+                        try handle.write(contentsOf: eventData)
+                        writtenBytes += eventData.count
+                    }
+                } else {
+                    let eventData = try encodeEventLines(session.events)
+                    try eventData.write(to: eventsURL, options: [.atomic])
+                    writtenBytes += eventData.count
+                }
+            }
+
+            let metadataData = try JSONEncoder().encode(metadata)
+            try metadataData.write(to: metadataURL, options: [.atomic])
+            writtenBytes += metadataData.count
+            return writtenBytes
+        }
+
+        private static func persistedEventCount(at metadataURL: URL) -> Int? {
+            guard let data = try? Data(contentsOf: metadataURL),
+                  let metadata = try? JSONDecoder().decode(PersistentSessionMetadata.self, from: data),
+                  metadata.version == persistentCacheVersion else {
+                return nil
+            }
+            return metadata.eventCount
+        }
+
+        private static func encodeEventLines<S: Sequence>(_ events: S) throws -> Data where S.Element == TokenEvent {
+            let encoder = JSONEncoder()
+            var data = Data()
+            for event in events {
+                data.append(try encoder.encode(persistentEvent(event)))
+                data.append(0x0A)
+            }
+            return data
+        }
+
+        private static func loadPersistentEvents(from url: URL, expectedCount: Int) -> [PersistentEvent]? {
+            guard expectedCount >= 0,
+                  let data = try? Data(contentsOf: url) else {
+                return nil
+            }
+            let decoder = JSONDecoder()
+            var events: [PersistentEvent] = []
+            events.reserveCapacity(expectedCount)
+            for line in data.split(separator: 0x0A) {
+                guard let event = try? decoder.decode(PersistentEvent.self, from: Data(line)) else {
+                    return nil
+                }
+                events.append(event)
+            }
+            guard events.count == expectedCount else { return nil }
+            return events
         }
 
         private static func persistentEvent(_ event: TokenEvent) -> PersistentEvent {

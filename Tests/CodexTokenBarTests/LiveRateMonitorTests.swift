@@ -471,6 +471,133 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(rows.map(\.id), [2, 3, 4, 6, 7])
     }
 
+    func testLiveRateLogReaderAdvancesAcrossLargeTailsWithNoUsableRows() throws {
+        let databaseURL = try makeDatabaseURL()
+        let driver = SQLiteDatabaseDriver(url: databaseURL)
+        try driver.execute("""
+        CREATE TABLE logs (
+            id INTEGER PRIMARY KEY,
+            thread_id TEXT,
+            ts INTEGER,
+            ts_nanos INTEGER,
+            target TEXT,
+            feedback_log_body TEXT
+        );
+        """)
+        try driver.execute("""
+        WITH RECURSIVE sequence(id) AS (
+            VALUES(1)
+            UNION ALL
+            SELECT id + 1 FROM sequence WHERE id < 5000
+        )
+        INSERT INTO logs (id, thread_id, ts, ts_nanos, target, feedback_log_body)
+        SELECT id, 'thread-1', 1000 + id, 0, 'unrelated', 'not a live-rate event'
+        FROM sequence;
+        """)
+
+        let reader = LiveRateLogDatabaseReader(path: databaseURL.path)
+        let first = try reader.globalLogBatch(afterID: 0)
+
+        XCTAssertTrue(first.rows.isEmpty)
+        XCTAssertEqual(first.scannedThroughID, 5_000)
+
+        try driver.execute("""
+        WITH RECURSIVE sequence(id) AS (
+            VALUES(5001)
+            UNION ALL
+            SELECT id + 1 FROM sequence WHERE id < 9000
+        )
+        INSERT INTO logs (id, thread_id, ts, ts_nanos, target, feedback_log_body)
+        SELECT id, 'thread-1', 1000 + id, 0, 'unrelated', 'still not a live-rate event'
+        FROM sequence;
+        """)
+
+        let second = try reader.globalLogBatch(afterID: first.scannedThroughID)
+        XCTAssertTrue(second.rows.isEmpty)
+        XCTAssertEqual(second.scannedThroughID, 9_000)
+
+        let unchanged = try reader.globalLogBatch(afterID: second.scannedThroughID)
+        XCTAssertTrue(unchanged.rows.isEmpty)
+        XCTAssertEqual(unchanged.scannedThroughID, 9_000)
+    }
+
+    func testLiveRateLogReaderPagesMoreThanRowLimitWithoutSkippingUsableRows() throws {
+        let databaseURL = try makeDatabaseURL()
+        let driver = SQLiteDatabaseDriver(url: databaseURL)
+        try driver.execute("""
+        CREATE TABLE logs (
+            id INTEGER PRIMARY KEY,
+            thread_id TEXT,
+            ts INTEGER,
+            ts_nanos INTEGER,
+            target TEXT,
+            feedback_log_body TEXT
+        );
+        """)
+        try driver.execute("""
+        WITH RECURSIVE sequence(id) AS (
+            VALUES(1)
+            UNION ALL
+            SELECT id + 1 FROM sequence WHERE id < 2500
+        )
+        INSERT INTO logs (id, thread_id, ts, ts_nanos, target, feedback_log_body)
+        SELECT id,
+               'thread-1',
+               1000 + id,
+               0,
+               'codex_api::sse::responses',
+               'SSE event: {"type":"response.output_text.delta","delta":"x"}'
+        FROM sequence;
+        """)
+
+        let reader = LiveRateLogDatabaseReader(path: databaseURL.path)
+        let first = try reader.globalLogBatch(afterID: 0)
+
+        XCTAssertEqual(first.rows.count, 2_000)
+        XCTAssertEqual(first.rows.first?.id, 1)
+        XCTAssertEqual(first.rows.last?.id, 2_000)
+        XCTAssertEqual(
+            first.scannedThroughID,
+            2_000,
+            "a full batch must stop at the last returned row instead of jumping to captured MAX(id)"
+        )
+
+        let second = try reader.globalLogBatch(afterID: first.scannedThroughID)
+        XCTAssertEqual(second.rows.count, 500)
+        XCTAssertEqual(second.rows.first?.id, 2_001)
+        XCTAssertEqual(second.rows.last?.id, 2_500)
+        XCTAssertEqual(second.scannedThroughID, 2_500)
+        XCTAssertEqual((first.rows + second.rows).map(\.id), Array(1...2_500))
+    }
+
+    @MainActor
+    func testPollCompletionAdvancesZeroMatchWatermarkOnlyForCurrentSource() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        let generation = monitor.testSourceGeneration
+        let bindingGeneration = monitor.testSourceBindingGeneration
+
+        XCTAssertTrue(monitor.testApplyPollCompletion(
+            streamRows: [],
+            streamScannedThroughID: 9_000,
+            rolloutReads: [],
+            sourceGeneration: generation,
+            sourceBindingGeneration: bindingGeneration,
+            now: 1_000
+        ))
+        XCTAssertEqual(monitor.testLastGlobalLogID, 9_000)
+
+        XCTAssertFalse(monitor.testApplyPollCompletion(
+            streamRows: [],
+            streamScannedThroughID: 10_000,
+            rolloutReads: [],
+            sourceGeneration: generation + 1,
+            sourceBindingGeneration: bindingGeneration,
+            now: 1_001
+        ))
+        XCTAssertEqual(monitor.testLastGlobalLogID, 9_000)
+    }
+
     func testStreamParserKeepsToolArgumentDeltasOutOfVisibleTextButInLiveRate() throws {
         let row = LiveRateMonitor.LogRow(
             id: 1,

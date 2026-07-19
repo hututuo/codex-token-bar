@@ -3,11 +3,24 @@ import XCTest
 
 @MainActor
 final class CodexRadarStoreTests: XCTestCase {
+    func testRadarNetworkSessionDisablesPersistentCachesAndCookies() {
+        let configuration = CodexRadarNetworkSession.shared.configuration
+
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertNil(configuration.urlCredentialStorage)
+        XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalCacheData)
+    }
+
     func testInitialRadarFailureExposesDiagnosticWithoutStaleSnapshot() async throws {
         let reader = RadarReaderStub(actions: [
             .failure(URLError(.notConnectedToInternet))
         ])
-        let store = CodexRadarStore(reader: reader, feedReader: FeedReaderStub(actions: []))
+        let store = CodexRadarStore(
+            reader: reader,
+            feedReader: FeedReaderStub(actions: []),
+            crowdReader: CrowdReaderStub(actions: [])
+        )
 
         store.refresh()
 
@@ -32,7 +45,11 @@ final class CodexRadarStoreTests: XCTestCase {
         let feedReader = FeedReaderStub(actions: [
             .success([feedItem])
         ])
-        let store = CodexRadarStore(reader: reader, feedReader: feedReader)
+        let store = CodexRadarStore(
+            reader: reader,
+            feedReader: feedReader,
+            crowdReader: CrowdReaderStub(actions: [])
+        )
 
         store.refresh()
         await waitUntil("first radar success") {
@@ -62,7 +79,11 @@ final class CodexRadarStoreTests: XCTestCase {
             .success([feedItem]),
             .failure(CodexRadarFeedParserError.invalidXML)
         ])
-        let store = CodexRadarStore(reader: reader, feedReader: feedReader)
+        let store = CodexRadarStore(
+            reader: reader,
+            feedReader: feedReader,
+            crowdReader: CrowdReaderStub(actions: [])
+        )
 
         store.refresh()
         await waitUntil("radar success with feed") {
@@ -96,7 +117,11 @@ final class CodexRadarStoreTests: XCTestCase {
             .failure(CodexRadarReaderError.httpStatus(503)),
             .success([newFeed])
         ])
-        let store = CodexRadarStore(reader: reader, feedReader: feedReader)
+        let store = CodexRadarStore(
+            reader: reader,
+            feedReader: feedReader,
+            crowdReader: CrowdReaderStub(actions: [])
+        )
 
         store.refresh()
         await waitUntil("initial success") {
@@ -164,7 +189,11 @@ final class CodexRadarStoreTests: XCTestCase {
     func testStopPreventsInFlightRefreshFromPublishingSnapshot() async throws {
         let snapshot = try Self.makeSnapshot()
         let reader = DelayedRadarReader()
-        let store = CodexRadarStore(reader: reader, feedReader: FeedReaderStub(actions: []))
+        let store = CodexRadarStore(
+            reader: reader,
+            feedReader: FeedReaderStub(actions: []),
+            crowdReader: CrowdReaderStub(actions: [])
+        )
 
         store.refresh()
         await waitUntil("radar request pending") {
@@ -186,7 +215,8 @@ final class CodexRadarStoreTests: XCTestCase {
         let store = CodexRadarStore(
             reader: RadarReaderStub(actions: [.success(snapshot)]),
             feedReader: FeedReaderStub(actions: []),
-            detailReader: detailReader
+            detailReader: detailReader,
+            crowdReader: CrowdReaderStub(actions: [])
         )
 
         store.refresh()

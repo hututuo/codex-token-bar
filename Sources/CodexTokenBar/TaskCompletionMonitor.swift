@@ -420,6 +420,7 @@ final class TaskCompletionMonitor: ObservableObject {
 
     private func refreshActiveOfficialUnreadState() {
         guard hasCodexUnreadState else { return }
+        let baselineBeforeRefresh = readBaseline
         let completionThreadIDs = Set(completedTaskThreadIDs.values)
         unreadThreadState = CodexUnreadThreadState(
             threadIDs: readBaseline.activeUnreadThreadIDs(
@@ -427,7 +428,9 @@ final class TaskCompletionMonitor: ObservableObject {
                 reactivatedBy: completionThreadIDs
             )
         )
-        persistReadBaseline()
+        if readBaseline != baselineBeforeRefresh {
+            persistReadBaseline()
+        }
     }
 
     private func applyReadBaselineToFallbackEvents() {

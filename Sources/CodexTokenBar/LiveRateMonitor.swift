@@ -610,15 +610,18 @@ final class LiveRateMonitor: ObservableObject {
                 lastFallbackPollAt = now
             }
 
-            let globalRows: [LogRow]
+            let globalBatch: LiveRateLogReadBatch
             if readPlan.readStreamRows {
                 let currentGlobalLogID = lastGlobalLogID
                 let reader = logReader(for: logsDB)
-                globalRows = try await Task.detached(priority: .utility) {
-                    try reader.globalLogRows(afterID: currentGlobalLogID)
+                globalBatch = try await Task.detached(priority: .utility) {
+                    try reader.globalLogBatch(afterID: currentGlobalLogID)
                 }.value
             } else {
-                globalRows = []
+                globalBatch = LiveRateLogReadBatch(
+                    rows: [],
+                    scannedThroughID: lastGlobalLogID
+                )
             }
             guard isCurrentPollingActivity(
                 activityGeneration,
@@ -651,7 +654,8 @@ final class LiveRateMonitor: ObservableObject {
                 lastRolloutReadAt = now
             }
             _ = applyPollCompletion(
-                streamRows: globalRows,
+                streamRows: globalBatch.rows,
+                streamScannedThroughID: globalBatch.scannedThroughID,
                 rolloutReads: rolloutReads,
                 sourceGeneration: generation,
                 sourceBindingGeneration: bindingGeneration,
@@ -845,6 +849,7 @@ final class LiveRateMonitor: ObservableObject {
     @discardableResult
     private func applyPollCompletion(
         streamRows: [LogRow],
+        streamScannedThroughID: Int? = nil,
         rolloutReads: [RolloutRead],
         sourceGeneration generation: Int,
         sourceBindingGeneration bindingGeneration: Int,
@@ -860,6 +865,12 @@ final class LiveRateMonitor: ObservableObject {
             ) else { return false }
         } else {
             guard isCurrentSource(generation: generation, bindingGeneration: bindingGeneration) else { return false }
+        }
+        // Advance past every inspected row, even when none of those rows is useful for
+        // live-rate parsing. Keeping this inside the validated completion avoids dropping
+        // useful rows when another data-source read fails or the source changes mid-poll.
+        if let streamScannedThroughID {
+            lastGlobalLogID = max(lastGlobalLogID, streamScannedThroughID)
         }
         var processedRolloutEvents = false
         let processedStreamEvents = processStreamRows(streamRows)
@@ -1403,6 +1414,7 @@ extension LiveRateMonitor {
     @discardableResult
     func testApplyPollCompletion(
         streamRows: [LogRow],
+        streamScannedThroughID: Int? = nil,
         rolloutReads: [RolloutRead],
         sourceGeneration: Int,
         sourceBindingGeneration: Int,
@@ -1410,6 +1422,7 @@ extension LiveRateMonitor {
     ) -> Bool {
         applyPollCompletion(
             streamRows: streamRows,
+            streamScannedThroughID: streamScannedThroughID,
             rolloutReads: rolloutReads,
             sourceGeneration: sourceGeneration,
             sourceBindingGeneration: sourceBindingGeneration,

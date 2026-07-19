@@ -37,8 +37,14 @@ extension FloatingTokenPanelController {
 
     func persistLockedOrigin(_ origin: NSPoint) {
         let defaults = UserDefaults.standard
-        defaults.set(Double(origin.x), forKey: lockedOriginXKey)
-        defaults.set(Double(origin.y), forKey: lockedOriginYKey)
+        let x = Double(origin.x)
+        let y = Double(origin.y)
+        if defaults.object(forKey: lockedOriginXKey) == nil || defaults.double(forKey: lockedOriginXKey) != x {
+            defaults.set(x, forKey: lockedOriginXKey)
+        }
+        if defaults.object(forKey: lockedOriginYKey) == nil || defaults.double(forKey: lockedOriginYKey) != y {
+            defaults.set(y, forKey: lockedOriginYKey)
+        }
         lastLockedOriginPersistAt = Date()
     }
 

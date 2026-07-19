@@ -201,7 +201,19 @@ final class CodexUsageStoreTests: XCTestCase {
         UsageCacheLifecycle.markCurrentCachePrepared()
 
         XCTAssertTrue(UsageCacheLifecycle.isCurrentCachePrepared)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: stateRoot.appendingPathComponent("cache-state.json").path))
+        let stateURL = stateRoot.appendingPathComponent("cache-state.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stateURL.path))
+        let initialData = try Data(contentsOf: stateURL)
+        let initialAttributes = try FileManager.default.attributesOfItem(atPath: stateURL.path)
+
+        UsageCacheLifecycle.markCurrentCachePrepared()
+
+        XCTAssertEqual(try Data(contentsOf: stateURL), initialData)
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(atPath: stateURL.path)[.systemFileNumber] as? NSNumber,
+            initialAttributes[.systemFileNumber] as? NSNumber,
+            "an already-current cache marker must not be atomically rewritten"
+        )
     }
 
     func testInitialPreciseFailurePreservesFastUsageSnapshot() async {

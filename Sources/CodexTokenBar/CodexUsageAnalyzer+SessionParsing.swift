@@ -308,11 +308,6 @@ extension CodexUsageAnalyzer {
         let cachePath = cacheKey.path
 
         if let cached = Self.sessionEventCache.cachedSession(for: cachePath, key: cacheKey) {
-            RefreshPerformanceProbe.event("usageAnalyzer.session.cacheHit", metadata: [
-                "file": file.lastPathComponent,
-                "size": String(cacheKey.size),
-                "events": String(cached.events.count)
-            ])
             return cached.events
         }
 
@@ -345,7 +340,8 @@ extension CodexUsageAnalyzer {
                     forkReplayActive: appended.forkReplayActive,
                     lastSkippedForkReplayTokenAt: appended.lastSkippedForkReplayTokenAt
                 ),
-                for: cachePath
+                for: cachePath,
+                appendingFromEventIndex: cached.events.count
             )
             trace?.end("ok", metadata: [
                 "newEvents": String(appended.events.count),

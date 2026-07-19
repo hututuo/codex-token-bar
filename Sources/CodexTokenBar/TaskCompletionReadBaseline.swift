@@ -46,7 +46,10 @@ enum TaskCompletionReadBaselineStore {
         guard let codexHomePath, !codexHomePath.isEmpty else { return }
         var baselines = allBaselines(defaults: defaults)
         baselines[codexHomePath] = baseline
-        guard let data = try? JSONEncoder().encode(baselines) else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(baselines) else { return }
+        guard defaults.data(forKey: key) != data else { return }
         defaults.set(data, forKey: key)
     }
 

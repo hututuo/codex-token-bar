@@ -15,7 +15,7 @@ extension LiveRateMonitor {
         }
     }
 
-    struct LogRow: Decodable {
+    struct LogRow: Decodable, Sendable {
         let id: Int
         let threadID: String?
         let ts: Int

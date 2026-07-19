@@ -791,6 +791,24 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         let isFakePro: Bool
     }
 
+    private struct LegacyBridgeClaim {
+        let state: String
+        let version: Int?
+        let home: String?
+        let account: String?
+        let plan: String?
+        let limit: String?
+        let lastSeenAt: Date?
+
+        func belongs(to identity: QuotaHistoryIdentity) -> Bool {
+            version == identity.version
+                && home == identity.homeIdentity
+                && account == identity.stableAccountKey
+                && plan == identity.planType
+                && limit == identity.limitID
+        }
+    }
+
     private func ensureSchema(_ database: SQLiteDatabaseConnection) throws {
         try database.execute(
             """
@@ -1085,6 +1103,20 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         knownAmbiguous: Bool,
         now: Date
     ) throws -> Bool {
+        let desiredState = knownAmbiguous ? "ambiguous" : "claimed"
+        if let existing = try legacyBridgeClaim(database: database, bridge: bridge) {
+            let remainsClaimed = desiredState == "claimed"
+                && existing.state == "claimed"
+                && existing.belongs(to: identity)
+            let resultingState = remainsClaimed ? "claimed" : "ambiguous"
+            let heartbeatDue = existing.lastSeenAt.map {
+                now.timeIntervalSince($0) >= heartbeatInterval
+            } ?? true
+            if existing.state == resultingState, !heartbeatDue {
+                return remainsClaimed
+            }
+        }
+
         try database.execute(
             """
             INSERT INTO quota_history_legacy_claims (
@@ -1123,10 +1155,21 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             ]
         )
 
-        let claims = try database.readRows(
+        guard let claim = try legacyBridgeClaim(database: database, bridge: bridge) else {
+            return false
+        }
+        return claim.state == "claimed" && claim.belongs(to: identity)
+    }
+
+    private func legacyBridgeClaim(
+        database: SQLiteDatabaseConnection,
+        bridge: LegacyBridge
+    ) throws -> LegacyBridgeClaim? {
+        try database.readRows(
             """
             SELECT state, owner_identity_version, owner_home_identity,
-                   owner_stable_account_key, owner_plan_type, owner_limit_id
+                   owner_stable_account_key, owner_plan_type, owner_limit_id,
+                   last_seen_at
             FROM quota_history_legacy_claims
             WHERE legacy_account_name = ?
               AND legacy_plan_type = ?
@@ -1138,22 +1181,16 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 .text(bridge.limitID)
             ]
         ) { statement in
-            (
-                state: statement.text(0),
+            LegacyBridgeClaim(
+                state: statement.text(0) ?? "",
                 version: statement.int(1),
                 home: statement.text(2),
                 account: statement.text(3),
                 plan: statement.text(4),
-                limit: statement.text(5)
+                limit: statement.text(5),
+                lastSeenAt: statement.date(6)
             )
-        }
-        guard let claim = claims.first else { return false }
-        return claim.state == "claimed"
-            && claim.version == identity.version
-            && claim.home == identity.homeIdentity
-            && claim.account == identity.stableAccountKey
-            && claim.plan == identity.planType
-            && claim.limit == identity.limitID
+        }.first
     }
 
     private func rows(database: SQLiteDatabaseConnection, sql: String, bindings: [SQLiteBinding] = []) throws -> [QuotaHistoryRow] {

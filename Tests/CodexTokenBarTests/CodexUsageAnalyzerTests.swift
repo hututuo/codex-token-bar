@@ -216,9 +216,9 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertTrue(snapshot.cacheUsage.turns.contains { $0.userPrompt == secretQuestion })
         XCTAssertTrue(snapshot.cacheUsage.turns.contains { $0.assistantResponse == secretAnswer })
 
-        let cacheDirectoryV6 = swiftUsageCacheRoot(in: cacheRoot)
-            .appendingPathComponent("session-token-events-v6", isDirectory: true)
-        let cacheText = try cacheTextContents(under: cacheDirectoryV6)
+        let cacheDirectoryV9 = swiftUsageCacheRoot(in: cacheRoot)
+            .appendingPathComponent("session-token-events-v9", isDirectory: true)
+        let cacheText = try cacheTextContents(under: cacheDirectoryV9)
         XCTAssertFalse(cacheText.contains(secretQuestion))
         XCTAssertFalse(cacheText.contains(secretAnswer))
         XCTAssertFalse(cacheText.contains("legacy secret question"))
@@ -1052,9 +1052,9 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(afterDelete.cacheUsage.sessions.map(\.id), [secondID])
     }
 
-    func testPersistentV6SessionCacheDoesNotStoreConversationText() throws {
+    func testPersistentV9SessionCacheDoesNotStoreConversationText() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
-        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV6Cache")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV9Cache")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
         defer {
@@ -1086,7 +1086,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         XCTAssertEqual(snapshot.stats.totalTokens, 140)
         let cacheDirectory = swiftUsageCacheRoot(in: cacheRoot)
-            .appendingPathComponent("session-token-events-v6", isDirectory: true)
+            .appendingPathComponent("session-token-events-v9", isDirectory: true)
         let cacheText = try cacheTextContents(under: cacheDirectory)
         XCTAssertFalse(cacheText.contains(secretQuestion))
         XCTAssertFalse(cacheText.contains(secretAnswer))
@@ -1099,7 +1099,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 atPath: cacheRoot
                     .appendingPathComponent(UsageCacheLifecycle.appDirectoryName, isDirectory: true)
                     .appendingPathComponent(UsageCacheLifecycle.namespace, isDirectory: true)
-                    .appendingPathComponent("session-token-snapshots-v6.json")
+                    .appendingPathComponent("session-token-snapshots-v9.json")
                     .path
             )
         )
@@ -1110,6 +1110,232 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(reloaded.stats.totalTokens, 140)
         XCTAssertEqual(reloaded.stats.totalCalls, 1)
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+    }
+
+    func testPersistentV9SessionCacheAppendsOnlyNewEventsAndSkipsNoOpWrites() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV9Append")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-v9append"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date()
+        try [
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-60),
+                total: Usage(input: 100, cachedInput: 30, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 30, output: 20, reasoning: 0, total: 120)
+            )
+        ].joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+
+        let cacheDirectory = swiftUsageCacheRoot(in: cacheRoot)
+            .appendingPathComponent("session-token-events-v9", isDirectory: true)
+        let cacheFiles = try FileManager.default.contentsOfDirectory(
+            at: cacheDirectory,
+            includingPropertiesForKeys: nil
+        )
+        let eventURL = try XCTUnwrap(cacheFiles.first { $0.lastPathComponent.hasSuffix(".events.jsonl") })
+        let metadataURL = try XCTUnwrap(cacheFiles.first { $0.lastPathComponent.hasSuffix(".meta.json") })
+        let initialEvents = try Data(contentsOf: eventURL)
+        let initialEventAttributes = try FileManager.default.attributesOfItem(atPath: eventURL.path)
+        let initialEventFileNumber = try XCTUnwrap(
+            (initialEventAttributes[.systemFileNumber] as? NSNumber)?.uint64Value
+        )
+        let initialMetadata = try Data(contentsOf: metadataURL)
+        let initialMetadataAttributes = try FileManager.default.attributesOfItem(atPath: metadataURL.path)
+
+        _ = try analyzer.load()
+
+        XCTAssertEqual(try Data(contentsOf: eventURL), initialEvents)
+        XCTAssertEqual(try Data(contentsOf: metadataURL), initialMetadata)
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(atPath: eventURL.path)[.systemFileNumber] as? NSNumber,
+            initialEventAttributes[.systemFileNumber] as? NSNumber
+        )
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(atPath: metadataURL.path)[.systemFileNumber] as? NSNumber,
+            initialMetadataAttributes[.systemFileNumber] as? NSNumber
+        )
+
+        try appendLines([
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-10),
+                total: Usage(input: 190, cachedInput: 50, output: 40, reasoning: 0, total: 230),
+                last: Usage(input: 90, cachedInput: 20, output: 20, reasoning: 0, total: 110)
+            )
+        ], to: sessionFile)
+
+        let fullParses = CodexUsageAnalyzer.fullSessionParseCountForTesting
+        let incrementalParses = CodexUsageAnalyzer.incrementalSessionParseCountForTesting
+        let updated = try analyzer.load()
+        let updatedEvents = try Data(contentsOf: eventURL)
+        let updatedEventAttributes = try FileManager.default.attributesOfItem(atPath: eventURL.path)
+
+        XCTAssertEqual(updated.stats.totalTokens, 230)
+        XCTAssertEqual(updated.stats.totalCalls, 2)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, fullParses)
+        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, incrementalParses + 1)
+        XCTAssertEqual(
+            try XCTUnwrap((updatedEventAttributes[.systemFileNumber] as? NSNumber)?.uint64Value),
+            initialEventFileNumber,
+            "append-only persistence must not atomically replace the full event shard"
+        )
+        XCTAssertTrue(updatedEvents.starts(with: initialEvents))
+        XCTAssertGreaterThan(updatedEvents.count, initialEvents.count)
+        XCTAssertLessThan(updatedEvents.count - initialEvents.count, 2_048)
+        let metadataObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: metadataURL)) as? [String: Any]
+        )
+        XCTAssertEqual((metadataObject["eventCount"] as? NSNumber)?.intValue, 2)
+
+        let stableEventAttributes = try FileManager.default.attributesOfItem(atPath: eventURL.path)
+        let stableMetadataAttributes = try FileManager.default.attributesOfItem(atPath: metadataURL.path)
+        let stableEvents = try Data(contentsOf: eventURL)
+        let stableMetadata = try Data(contentsOf: metadataURL)
+        _ = try analyzer.load()
+        XCTAssertEqual(try Data(contentsOf: eventURL), stableEvents)
+        XCTAssertEqual(try Data(contentsOf: metadataURL), stableMetadata)
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(atPath: eventURL.path)[.systemFileNumber] as? NSNumber,
+            stableEventAttributes[.systemFileNumber] as? NSNumber
+        )
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(atPath: metadataURL.path)[.systemFileNumber] as? NSNumber,
+            stableMetadataAttributes[.systemFileNumber] as? NSNumber
+        )
+    }
+
+    func testPersistentV9MigratesPreviousNamespaceWithoutFullSessionParse() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV9Migration")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-v9migration"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let eventDate = Date().addingTimeInterval(-60)
+        try [
+            try tokenCountLine(
+                timestamp: eventDate,
+                total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+            )
+        ].joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+        let attributes = try FileManager.default.attributesOfItem(atPath: sessionFile.path)
+        let size = try XCTUnwrap((attributes[.size] as? NSNumber)?.uint64Value)
+        let modifiedAt = try XCTUnwrap(attributes[.modificationDate] as? Date).timeIntervalSince1970
+
+        let legacyNamespace = cacheRoot
+            .appendingPathComponent(UsageCacheLifecycle.appDirectoryName, isDirectory: true)
+            .appendingPathComponent("swift-usage-cache-2026-07-v3", isDirectory: true)
+        let legacyDirectory = legacyNamespace
+            .appendingPathComponent("session-token-events-v6", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        let legacyPayload: [String: Any] = [
+            "version": 8,
+            "entry": [
+                "path": sessionFile.resolvingSymlinksInPath().path,
+                "size": size,
+                "modifiedAt": modifiedAt,
+                "lastOffset": size,
+                "endedWithNewline": true,
+                "previousTotalTokens": 120,
+                "canIncrementFromOffset": true,
+                "forkReplayActive": false,
+                "events": [[
+                    "timestamp": eventDate.timeIntervalSince1970,
+                    "sessionID": sessionID,
+                    "tokens": 120,
+                    "inputTokens": 100,
+                    "cachedInputTokens": 20,
+                    "outputTokens": 20,
+                    "reasoningOutputTokens": 0,
+                    "userPromptDigest": "legacy-prompt-digest",
+                    "assistantResponseDigest": "legacy-response-digest"
+                ]]
+            ]
+        ]
+        let legacyData = try JSONSerialization.data(withJSONObject: legacyPayload, options: [.sortedKeys])
+        try legacyData.write(to: legacyDirectory.appendingPathComponent("legacy-session.json"), options: [.atomic])
+
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertEqual(snapshot.stats.totalTokens, 120)
+        XCTAssertEqual(snapshot.stats.totalCalls, 1)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        let v9Directory = swiftUsageCacheRoot(in: cacheRoot)
+            .appendingPathComponent("session-token-events-v9", isDirectory: true)
+        XCTAssertTrue(try cacheTextContents(under: v9Directory).contains(#""eventCount":1"#))
+
+        UsageCacheLifecycle.markCurrentCachePrepared()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyNamespace.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: v9Directory.path))
+    }
+
+    func testPersistentV9SessionCacheRebuildsAfterEventLogCorruption() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV9Corrupt")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-v9corrupt"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date()
+        try [
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-60),
+                total: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120)
+            )
+        ].joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+        let cacheDirectory = swiftUsageCacheRoot(in: cacheRoot)
+            .appendingPathComponent("session-token-events-v9", isDirectory: true)
+        let cacheFiles = try FileManager.default.contentsOfDirectory(
+            at: cacheDirectory,
+            includingPropertiesForKeys: nil
+        )
+        let eventURL = try XCTUnwrap(cacheFiles.first { $0.lastPathComponent.hasSuffix(".events.jsonl") })
+        try Data("corrupt-cache-line\n".utf8).write(to: eventURL, options: [.atomic])
+
+        CodexUsageAnalyzer.clearUsageCachesForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        let rebuilt = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertEqual(rebuilt.stats.totalTokens, 120)
+        XCTAssertEqual(rebuilt.stats.totalCalls, 1)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
+        XCTAssertFalse(try String(contentsOf: eventURL, encoding: .utf8).contains("corrupt-cache-line"))
     }
 
     func testOldDiscardableSessionCacheIsIgnoredAndRebuilt() throws {
@@ -1171,9 +1397,9 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.stats.totalTokens, 140)
         XCTAssertGreaterThanOrEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacyCache.path))
-        let v6Directory = swiftUsageCacheRoot(in: cacheRoot)
-            .appendingPathComponent("session-token-events-v6", isDirectory: true)
-        let rebuiltText = try cacheTextContents(under: v6Directory)
+        let v9Directory = swiftUsageCacheRoot(in: cacheRoot)
+            .appendingPathComponent("session-token-events-v9", isDirectory: true)
+        let rebuiltText = try cacheTextContents(under: v9Directory)
         XCTAssertFalse(rebuiltText.contains("legacy-user"))
         XCTAssertTrue(rebuiltText.contains("canIncrementFromOffset"))
     }

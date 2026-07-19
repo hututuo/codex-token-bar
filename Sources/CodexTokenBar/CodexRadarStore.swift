@@ -1,5 +1,16 @@
 import Foundation
 
+enum CodexRadarNetworkSession {
+    static let shared: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.urlCredentialStorage = nil
+        return URLSession(configuration: configuration)
+    }()
+}
+
 protocol CodexRadarReading: Sendable {
     func readRadar() async throws -> CodexRadarSnapshot
 }
@@ -21,7 +32,7 @@ struct LiveCodexRadarReader: CodexRadarReading, Sendable {
     init(
         endpoint: URL = URL(string: "https://codexradar.com/current.json")!,
         transport: @escaping Transport = { request in
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await CodexRadarNetworkSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw CodexRadarReaderError.invalidResponse
             }
@@ -59,7 +70,7 @@ struct LiveCodexRadarDetailReader: CodexRadarDetailReading, Sendable {
     init(
         endpoint: URL = URL(string: "https://codexradar.com/api/v1/current")!,
         transport: @escaping Transport = { request in
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await CodexRadarNetworkSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw CodexRadarReaderError.invalidResponse
             }
@@ -121,7 +132,7 @@ struct LiveCodexRadarFeedReader: CodexRadarFeedReading, Sendable {
 
     init(
         transport: @escaping Transport = { request in
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await CodexRadarNetworkSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw CodexRadarReaderError.invalidResponse
             }

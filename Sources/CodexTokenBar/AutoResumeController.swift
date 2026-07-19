@@ -25,6 +25,7 @@ private enum AutoResumeStorage {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(value) else { return }
+        guard defaults.data(forKey: key) != data else { return }
         defaults.set(data, forKey: key)
     }
 }
