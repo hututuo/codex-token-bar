@@ -186,8 +186,8 @@ test("usage cache initialization shows inline notice without blocking dashboard"
   const lib = await readFile(new URL("../../src-tauri/src/lib.rs", import.meta.url), "utf8");
 
   assert.equal(dashboardClient.includes("read_usage_cache_status"), true);
-  assert.equal(dashboardClient.includes("tauri-usage-cache-2026-07-v5"), true);
-  assert.equal(dashboardClient.includes("tauri-usage-cache-2026-07-v4"), false);
+  assert.equal(dashboardClient.includes("tauri-usage-cache-2026-07-v6"), true);
+  assert.equal(dashboardClient.includes("tauri-usage-cache-2026-07-v5"), false);
   assert.equal(dataSource.includes("readUsageCacheStatus"), true);
   assert.equal(preciseLoad.includes("source.readUsageCacheStatus()"), true);
   assert.equal(preciseLoad.includes("onUsageCacheStatus?.(cacheStatus)"), true);

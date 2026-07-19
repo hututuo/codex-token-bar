@@ -1,8 +1,8 @@
 use super::{aggregates::TokenAccumulator, TokenEvent};
 use crate::core::sqlite;
 use crate::models::{
-    CacheHitRankingItem, LocalDataWarning, SessionCacheUsage, TokenCacheBreakdown,
-    TokenCacheUsage, TurnCacheUsage,
+    CacheHitRankingItem, LocalDataWarning, SessionCacheUsage, TokenCacheBreakdown, TokenCacheUsage,
+    TurnCacheUsage,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -30,7 +30,10 @@ pub(super) fn cache_hit_ranking(
     let mut last_seen: HashMap<&str, OffsetDateTime> = HashMap::new();
 
     for event in events {
-        by_session.entry(event.session_id.as_str()).or_default().add(event);
+        by_session
+            .entry(event.session_id.as_str())
+            .or_default()
+            .add(event);
         last_seen
             .entry(event.session_id.as_str())
             .and_modify(|timestamp| {
@@ -81,14 +84,16 @@ pub(super) fn cache_hit_ranking(
     rows.into_iter()
         .take(10)
         .enumerate()
-        .map(|(index, (_, usage, title, updated_at, _))| CacheHitRankingItem {
-            rank: u32::try_from(index + 1).unwrap_or(u32::MAX),
-            title,
-            subtitle: session_ranking_subtitle(&usage, updated_at, local_offset),
-            hit_rate: usage.cache_hit_rate(),
-            input_tokens: usage.input_tokens,
-            cached_tokens: usage.cached_input_tokens,
-        })
+        .map(
+            |(index, (_, usage, title, updated_at, _))| CacheHitRankingItem {
+                rank: u32::try_from(index + 1).unwrap_or(u32::MAX),
+                title,
+                subtitle: session_ranking_subtitle(&usage, updated_at, local_offset),
+                hit_rate: usage.cache_hit_rate(),
+                input_tokens: usage.input_tokens,
+                cached_tokens: usage.cached_input_tokens,
+            },
+        )
         .collect()
 }
 
@@ -103,7 +108,10 @@ pub(super) fn cache_usage(
     let mut last_seen: HashMap<&str, OffsetDateTime> = HashMap::new();
 
     for event in events {
-        by_session.entry(event.session_id.as_str()).or_default().add(event);
+        by_session
+            .entry(event.session_id.as_str())
+            .or_default()
+            .add(event);
         last_seen
             .entry(event.session_id.as_str())
             .and_modify(|timestamp| {
@@ -133,10 +141,12 @@ pub(super) fn cache_usage(
         })
         .collect::<Vec<_>>();
     sessions.sort_by(|left, right| {
-        right
-            .last_updated
-            .cmp(&left.last_updated)
-            .then_with(|| right.breakdown.total_tokens.cmp(&left.breakdown.total_tokens))
+        right.last_updated.cmp(&left.last_updated).then_with(|| {
+            right
+                .breakdown
+                .total_tokens
+                .cmp(&left.breakdown.total_tokens)
+        })
     });
 
     let mut ordered_events = events.iter().enumerate().collect::<Vec<_>>();
@@ -156,7 +166,11 @@ pub(super) fn cache_usage(
                 .or_insert(1);
             let info = thread_info.get(event.session_id.as_str());
             TurnCacheUsage {
-                id: format!("{}-{}-{index}", event.session_id, event.timestamp.unix_timestamp()),
+                id: format!(
+                    "{}-{}-{index}",
+                    event.session_id,
+                    event.timestamp.unix_timestamp()
+                ),
                 session_id: event.session_id.clone(),
                 session_title: info
                     .map(|value| value.title.clone())
@@ -176,14 +190,6 @@ pub(super) fn cache_usage(
     turns = trim_turn_cache_usage(turns);
 
     TokenCacheUsage { sessions, turns }
-}
-
-pub(super) fn sanitize_cache_usage_for_persistence(mut usage: TokenCacheUsage) -> TokenCacheUsage {
-    for turn in &mut usage.turns {
-        turn.user_prompt.clear();
-        turn.assistant_response.clear();
-    }
-    usage
 }
 
 fn thread_info_warning(message: String) -> LocalDataWarning {
@@ -322,8 +328,18 @@ fn breakdown_from_event(event: &TokenEvent) -> TokenCacheBreakdown {
 fn trim_session_cache_usage(items: Vec<SessionCacheUsage>) -> Vec<SessionCacheUsage> {
     let mut selected_ids = HashSet::new();
     let mut selected = Vec::new();
-    extend_ranked_sessions(&items, |item| item.breakdown.calls > 1, &mut selected_ids, &mut selected);
-    extend_latest_sessions(&items, |item| item.breakdown.calls > 1, &mut selected_ids, &mut selected);
+    extend_ranked_sessions(
+        &items,
+        |item| item.breakdown.calls > 1,
+        &mut selected_ids,
+        &mut selected,
+    );
+    extend_latest_sessions(
+        &items,
+        |item| item.breakdown.calls > 1,
+        &mut selected_ids,
+        &mut selected,
+    );
     extend_ranked_sessions(&items, |_| true, &mut selected_ids, &mut selected);
     extend_latest_sessions(&items, |_| true, &mut selected_ids, &mut selected);
     selected
@@ -381,8 +397,18 @@ fn extend_latest_sessions(
 fn trim_turn_cache_usage(items: Vec<TurnCacheUsage>) -> Vec<TurnCacheUsage> {
     let mut selected_ids = HashSet::new();
     let mut selected = Vec::new();
-    extend_ranked_turns(&items, |item| item.turn_index_in_session > 1, &mut selected_ids, &mut selected);
-    extend_latest_turns(&items, |item| item.turn_index_in_session > 1, &mut selected_ids, &mut selected);
+    extend_ranked_turns(
+        &items,
+        |item| item.turn_index_in_session > 1,
+        &mut selected_ids,
+        &mut selected,
+    );
+    extend_latest_turns(
+        &items,
+        |item| item.turn_index_in_session > 1,
+        &mut selected_ids,
+        &mut selected,
+    );
     extend_ranked_turns(&items, |_| true, &mut selected_ids, &mut selected);
     extend_latest_turns(&items, |_| true, &mut selected_ids, &mut selected);
     selected
@@ -426,8 +452,11 @@ fn extend_latest_turns(
         })
         .collect::<Vec<_>>();
     ranked.sort_by(|left, right| {
-        compare_optional_timestamp_desc(Some(left.timestamp.as_str()), Some(right.timestamp.as_str()))
-            .then_with(|| compare_breakdowns(&left.breakdown, &right.breakdown))
+        compare_optional_timestamp_desc(
+            Some(left.timestamp.as_str()),
+            Some(right.timestamp.as_str()),
+        )
+        .then_with(|| compare_breakdowns(&left.breakdown, &right.breakdown))
     });
 
     for item in ranked.into_iter().take(CACHE_USAGE_CANDIDATE_LIMIT) {
@@ -438,7 +467,10 @@ fn extend_latest_turns(
 }
 
 fn compare_optional_timestamp_desc(left: Option<&str>, right: Option<&str>) -> std::cmp::Ordering {
-    match (left.filter(|value| !value.is_empty()), right.filter(|value| !value.is_empty())) {
+    match (
+        left.filter(|value| !value.is_empty()),
+        right.filter(|value| !value.is_empty()),
+    ) {
         (Some(left), Some(right)) => right.cmp(left),
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,

@@ -3,9 +3,9 @@ use crate::core::atomic_file;
 use crate::models::LocalDataWarning;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::sync::{Mutex, OnceLock};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-use std::sync::{Mutex, OnceLock};
 
 static MARKER_FAILURE: OnceLock<Mutex<Option<LocalDataWarning>>> = OnceLock::new();
 #[cfg(test)]
@@ -24,7 +24,10 @@ pub(crate) fn usage_cache_test_state_guard(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
-    UsageCacheTestStateGuard { _env: env, marker_failure }
+    UsageCacheTestStateGuard {
+        _env: env,
+        marker_failure,
+    }
 }
 
 #[cfg(test)]
@@ -70,26 +73,38 @@ pub fn usage_cache_status() -> UsageCacheStatus {
 }
 
 pub fn mark_usage_cache_initialized() -> Result<(), String> {
-    mark_usage_cache_initialized_with(|path, data| atomic_file::write_atomically(path, data))
+    let force_durability_retry = usage_cache_persistence_warning().is_some();
+    mark_usage_cache_initialized_with(force_durability_retry, |path, data| {
+        atomic_file::write_atomically(path, data)
+    })
 }
 
 fn mark_usage_cache_initialized_with(
+    force_write: bool,
     writer: impl FnOnce(&std::path::Path, &[u8]) -> Result<(), atomic_file::AtomicWriteError>,
 ) -> Result<(), String> {
-    let result = try_mark_usage_cache_initialized_with(writer);
+    let result = try_mark_usage_cache_initialized_with(force_write, writer);
     match &result {
         Ok(()) => {
-            if let Ok(mut failure) = MARKER_FAILURE.get_or_init(|| Mutex::new(None)).lock() { *failure = None; }
+            if let Ok(mut failure) = MARKER_FAILURE.get_or_init(|| Mutex::new(None)).lock() {
+                *failure = None;
+            }
         }
         Err(error) => {
-            let warning = LocalDataWarning { source: "usage-cache-marker-persistence".into(), message: error.clone() };
-            if let Ok(mut failure) = MARKER_FAILURE.get_or_init(|| Mutex::new(None)).lock() { *failure = Some(warning); }
+            let warning = LocalDataWarning {
+                source: "usage-cache-marker-persistence".into(),
+                message: error.clone(),
+            };
+            if let Ok(mut failure) = MARKER_FAILURE.get_or_init(|| Mutex::new(None)).lock() {
+                *failure = Some(warning);
+            }
         }
     }
     result
 }
 
 fn try_mark_usage_cache_initialized_with(
+    force_write: bool,
     writer: impl FnOnce(&std::path::Path, &[u8]) -> Result<(), atomic_file::AtomicWriteError>,
 ) -> Result<(), String> {
     let Some(path) = app_paths::tauri_cache_state_path() else {
@@ -97,15 +112,28 @@ fn try_mark_usage_cache_initialized_with(
     };
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
-            format!("创建 Tauri 统计缓存状态目录失败：{}（{}）", parent.display(), error)
+            format!(
+                "创建 Tauri 统计缓存状态目录失败：{}（{}）",
+                parent.display(),
+                error
+            )
         })?;
+    }
+
+    let namespace = app_paths::tauri_usage_cache_namespace();
+    let already_initialized = fs::read(&path)
+        .ok()
+        .and_then(|data| serde_json::from_slice::<UsageCacheStateFile>(&data).ok())
+        .is_some_and(|state| state.usage_cache_namespace == namespace);
+    if already_initialized && !force_write {
+        return Ok(());
     }
 
     let initialized_at = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
     let payload = UsageCacheStateFile {
-        usage_cache_namespace: app_paths::tauri_usage_cache_namespace().to_string(),
+        usage_cache_namespace: namespace.to_string(),
         initialized_at,
     };
     let data = serde_json::to_vec(&payload)
@@ -114,7 +142,11 @@ fn try_mark_usage_cache_initialized_with(
 }
 
 pub fn usage_cache_persistence_warning() -> Option<LocalDataWarning> {
-    MARKER_FAILURE.get_or_init(|| Mutex::new(None)).lock().ok().and_then(|warning| warning.clone())
+    MARKER_FAILURE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|warning| warning.clone())
 }
 
 pub fn mark_usage_cache_ready_after_success() -> Result<(), String> {
@@ -175,7 +207,7 @@ mod tests {
         let _env = PathEnvGuard::new(&root);
 
         let missing = usage_cache_status();
-        assert_eq!(missing.namespace, "tauri-usage-cache-2026-07-v5");
+        assert_eq!(missing.namespace, "tauri-usage-cache-2026-07-v6");
         assert!(!missing.initialized);
         assert_eq!(missing.initialized_at, None);
 
@@ -200,6 +232,23 @@ mod tests {
     }
 
     #[test]
+    fn marker_matching_namespace_skips_the_writer() {
+        let root = temp_root("marker-noop");
+        let _env = PathEnvGuard::new(&root);
+        mark_usage_cache_initialized().unwrap();
+        let mut writes = 0;
+
+        mark_usage_cache_initialized_with(false, |_, _| {
+            writes += 1;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(writes, 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn marker_persistence_failure_does_not_report_ready() {
         let root = temp_root("marker-failure");
         let _env = PathEnvGuard::new(&root);
@@ -218,9 +267,13 @@ mod tests {
     fn committed_not_durable_marker_is_visible_but_not_ready_until_durable_retry() {
         let root = temp_root("marker-parent-sync");
         let _env = PathEnvGuard::new(&root);
-        let error = mark_usage_cache_initialized_with(|path, data| {
+        let error = mark_usage_cache_initialized_with(false, |path, data| {
             atomic_file::write_atomically_with_hook(path, data, |stage, _| {
-                if stage == atomic_file::AtomicWriteStage::ParentSync { Err("injected parent sync".into()) } else { Ok(()) }
+                if stage == atomic_file::AtomicWriteStage::ParentSync {
+                    Err("injected parent sync".into())
+                } else {
+                    Ok(())
+                }
             })
         })
         .unwrap_err();
@@ -260,10 +313,16 @@ mod tests {
         let _env = PathEnvGuard::new(&root);
         let cache_base = root.join("cache");
         let support_base = root.join("support");
-        let old_shared = cache_base.join("CodexTokenBar").join("token-events-cache-v3");
-        let old_tauri = cache_base.join("CodexTokenBarTauri").join("tauri-usage-cache-2026-06-v1");
+        let old_shared = cache_base
+            .join("CodexTokenBar")
+            .join("token-events-cache-v3");
+        let old_tauri = cache_base
+            .join("CodexTokenBarTauri")
+            .join("tauri-usage-cache-2026-06-v1");
         let current = app_paths::tauri_usage_cache_dir().unwrap();
-        let quota = support_base.join("CodexTokenBar").join("quota-history.sqlite");
+        let quota = support_base
+            .join("CodexTokenBar")
+            .join("quota-history.sqlite");
 
         fs::create_dir_all(&old_shared).unwrap();
         fs::create_dir_all(&old_tauri).unwrap();
@@ -311,7 +370,12 @@ mod tests {
         assert!(app_paths::app_path_test_env_lock_is_held());
         assert!(receiver.try_recv().is_err());
         drop(first);
-        assert_eq!(receiver.recv_timeout(std::time::Duration::from_secs(1)).unwrap(), "acquired");
+        assert_eq!(
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap(),
+            "acquired"
+        );
         worker.join().unwrap();
     }
 
@@ -346,7 +410,9 @@ mod tests {
                     root.join("cache").join("CodexTokenBarTauri"),
                 ),
             ];
-            Self { _state: usage_cache_test_state_guard(&pairs) }
+            Self {
+                _state: usage_cache_test_state_guard(&pairs),
+            }
         }
     }
 }

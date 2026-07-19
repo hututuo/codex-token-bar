@@ -1,10 +1,10 @@
-use super::token_event_cache::{
-    codex_home_cache_key, parse_session_file_cached, CachedCodexHome, CachedFileSignature,
-    CachedSessionFile, CachedTokenEvent, TokenEventCache,
-};
 use super::session_parser::{
     parse_session_file_full_result, reset_session_full_parse_count_for_testing,
     session_full_parse_count_for_testing,
+};
+use super::token_event_cache::{
+    codex_home_cache_key, parse_session_file_cached, CachedCodexHome, CachedFileSignature,
+    CachedSessionFile, CachedTokenEvent, TokenEventCache,
 };
 use super::*;
 use rusqlite::Connection;
@@ -13,6 +13,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration as StdDuration, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
@@ -37,10 +38,7 @@ fn parses_token_count_totals_as_deltas() {
     let second_line = format!(
         r#"{{"timestamp":"{second_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":20,"cached_input_tokens":5,"output_tokens":8,"total_tokens":28}},"last_token_usage":{{"input_tokens":10,"cached_input_tokens":3,"output_tokens":5,"total_tokens":15}}}}}}}}"#
     );
-    write_lines(
-        &file,
-        &[first_line, second_line],
-    );
+    write_lines(&file, &[first_line, second_line]);
 
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 28);
@@ -114,8 +112,14 @@ fn recent_usage_24h_series_keeps_thirty_days_of_five_minute_history() {
     let snapshot = dashboard_snapshot(&root).unwrap();
 
     assert_eq!(snapshot.recent_usage_24h.len(), 30 * 24 * 12);
-    assert!(snapshot.recent_usage_24h.iter().any(|point| point.tokens == 120));
-    assert!(snapshot.recent_usage_24h.iter().any(|point| point.tokens == 230));
+    assert!(snapshot
+        .recent_usage_24h
+        .iter()
+        .any(|point| point.tokens == 120));
+    assert!(snapshot
+        .recent_usage_24h
+        .iter()
+        .any(|point| point.tokens == 230));
     assert!(snapshot
         .recent_usage_24h
         .windows(2)
@@ -140,8 +144,15 @@ fn skips_pure_fork_replay_even_after_thirty_seconds() {
     );
 
     let mut warnings = Vec::new();
-    let events = parse_session_file_full_result(&file, "019eaaaa-bbbb-cccc-dddd-eeeeffffffff", &mut warnings);
-    assert_eq!(events.events.iter().map(|event| event.tokens).sum::<u64>(), 0);
+    let events = parse_session_file_full_result(
+        &file,
+        "019eaaaa-bbbb-cccc-dddd-eeeeffffffff",
+        &mut warnings,
+    );
+    assert_eq!(
+        events.events.iter().map(|event| event.tokens).sum::<u64>(),
+        0
+    );
     assert_eq!(events.previous_total_tokens, Some(300));
 
     fs::remove_dir_all(root).unwrap();
@@ -170,7 +181,10 @@ fn keeps_fork_replay_active_for_replayed_user_message_near_token_counts() {
         "019efork-copy-0000-0000-eeeeffffffff",
         &mut warnings,
     );
-    assert_eq!(parsed.events.iter().map(|event| event.tokens).sum::<u64>(), 0);
+    assert_eq!(
+        parsed.events.iter().map(|event| event.tokens).sum::<u64>(),
+        0
+    );
     assert_eq!(parsed.previous_total_tokens, Some(620));
     assert!(parsed.events.is_empty());
     assert!(parsed.fork_replay_active);
@@ -208,9 +222,15 @@ fn fork_replay_with_multiple_session_meta_skips_dense_replayed_history_until_lat
         "019efork-dense-replay-0000-eeeeffffffff",
         &mut warnings,
     );
-    assert_eq!(parsed.events.iter().map(|event| event.tokens).sum::<u64>(), 28_506);
+    assert_eq!(
+        parsed.events.iter().map(|event| event.tokens).sum::<u64>(),
+        28_506
+    );
     assert_eq!(parsed.previous_total_tokens, Some(317_908_333));
-    assert_eq!(parsed.events[0].user_prompt, "请对当前项目做一轮业务逻辑与核心技术债审查");
+    assert_eq!(
+        parsed.events[0].user_prompt,
+        "请对当前项目做一轮业务逻辑与核心技术债审查"
+    );
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -238,11 +258,8 @@ fn counts_new_call_after_fork_replay_user_message() {
     assert_eq!(snapshot.stats.total_calls, 1);
 
     let mut warnings = Vec::new();
-    let parsed = parse_session_file_full_result(
-        &file,
-        "019efork-new-0000-0000-eeeeffffffff",
-        &mut warnings,
-    );
+    let parsed =
+        parse_session_file_full_result(&file, "019efork-new-0000-0000-eeeeffffffff", &mut warnings);
     assert_eq!(parsed.events[0].user_prompt, "新分支问题");
 
     fs::remove_dir_all(root).unwrap();
@@ -370,7 +387,9 @@ fn dashboard_scan_signature_changes_when_local_date_changes() {
     let file = session_dir.join("rollout-019edate-0000-0000-0000-signature.jsonl");
     write_lines(
         &file,
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
     );
     let files = vec![file];
     let offset = UtcOffset::from_hms(8, 0, 0).unwrap();
@@ -581,7 +600,9 @@ fn dashboard_snapshot_reuses_cached_aggregate_when_session_signatures_are_unchan
     let session_id = "019eaaaa-bbbb-cccc-dddd-incremental";
     write_lines(
         &session_dir.join(format!("rollout-{session_id}.jsonl")),
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":20,"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
     );
     reset_dashboard_aggregate_build_count_for_testing();
 
@@ -609,7 +630,9 @@ fn dashboard_snapshot_cache_ignores_state_database_churn() {
     let session_id = "019eaaaa-bbbb-cccc-dddd-state-churn";
     write_lines(
         &session_dir.join(format!("rollout-{session_id}.jsonl")),
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":20,"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
     );
     create_state_database(&root, session_id, "019ehigh-0000-0000-0000-state-churn2");
     reset_dashboard_aggregate_build_count_for_testing();
@@ -717,6 +740,24 @@ fn token_event_cache_persists_sessions_as_sharded_files() {
     assert!(warnings.is_empty());
     assert_eq!(loaded.homes.get(&key_a).unwrap().files.len(), 1);
     assert_eq!(loaded.homes.get(&key_b).unwrap().files.len(), 1);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn token_event_cache_cross_process_lock_is_non_blocking_when_busy() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let _cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
+    let first = TokenEventCache::acquire_io_lock().unwrap().unwrap();
+    let started = std::time::Instant::now();
+    let second = TokenEventCache::acquire_io_lock();
+
+    assert!(second.is_err());
+    assert!(started.elapsed() < StdDuration::from_secs(1));
+    drop(first);
+    assert!(TokenEventCache::acquire_io_lock().unwrap().is_some());
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -853,6 +894,87 @@ fn token_event_cache_removes_deleted_session_shards() {
 }
 
 #[test]
+fn token_event_cache_updates_only_dirty_shards_without_replacing_the_directory() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_dir = root.join("token-event-cache-shards");
+    let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
+    let home = root.join("codex-home");
+    fs::create_dir_all(&home).unwrap();
+    let home_key = codex_home_cache_key(&home);
+    let mut cache = TokenEventCache::default();
+    {
+        let home_cache = cache.home_cache_mut(&home_key, &home);
+        home_cache
+            .files
+            .insert("sessions/a.jsonl".into(), cached_file_with_one_event(10));
+        home_cache
+            .files
+            .insert("sessions/b.jsonl".into(), cached_file_with_one_event(20));
+    }
+    cache.save().unwrap();
+    let marker = cache_dir.join("directory-owner-marker");
+    fs::write(&marker, b"must survive incremental save").unwrap();
+    let before = json_files_under(&cache_dir)
+        .into_iter()
+        .map(|path| (path.clone(), fs::read(path).unwrap()))
+        .collect::<HashMap<_, _>>();
+
+    cache
+        .home_cache_mut(&home_key, &home)
+        .files
+        .insert("sessions/a.jsonl".into(), cached_file_with_one_event(30));
+    let dirty = HashSet::from([(home_key.clone(), "sessions/a.jsonl".to_string())]);
+    cache.save_changes(&dirty, &HashSet::new()).unwrap();
+
+    let throttled = json_files_under(&cache_dir)
+        .into_iter()
+        .map(|path| (path.clone(), fs::read(path).unwrap()))
+        .collect::<HashMap<_, _>>();
+    assert_eq!(
+        before, throttled,
+        "a fresh active shard must wait for its checkpoint"
+    );
+    for path in json_files_under(&cache_dir) {
+        age_file(&path, StdDuration::from_secs(16 * 60));
+    }
+    cache.save_changes(&dirty, &HashSet::new()).unwrap();
+
+    assert_eq!(fs::read(&marker).unwrap(), b"must survive incremental save");
+    let after = json_files_under(&cache_dir)
+        .into_iter()
+        .map(|path| (path.clone(), fs::read(path).unwrap()))
+        .collect::<HashMap<_, _>>();
+    assert_eq!(before.len(), after.len());
+    assert_eq!(
+        before
+            .values()
+            .filter(|bytes| after.values().any(|other| other == *bytes))
+            .count(),
+        1,
+        "exactly one untouched shard should remain byte-identical"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn token_event_cache_adapts_checkpoint_interval_to_bound_large_shard_writes() {
+    assert_eq!(
+        super::token_event_cache::shard_checkpoint_interval(1024 * 1024),
+        StdDuration::from_secs(15 * 60)
+    );
+    assert_eq!(
+        super::token_event_cache::shard_checkpoint_interval(16 * 1024 * 1024),
+        StdDuration::from_secs(90 * 60)
+    );
+    assert_eq!(
+        super::token_event_cache::shard_checkpoint_interval(256 * 1024 * 1024),
+        StdDuration::from_secs(24 * 60 * 60)
+    );
+}
+
+#[test]
 fn dashboard_aggregate_cache_does_not_persist_conversation_text() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
@@ -887,6 +1009,73 @@ fn dashboard_aggregate_cache_does_not_persist_conversation_text() {
 }
 
 #[test]
+fn dashboard_aggregate_persists_a_bounded_startup_snapshot_then_rebuilds_full_details() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_path = root.join("dashboard-aggregate.json");
+    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
+    let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019eslim-aggregate.jsonl"),
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"prompt"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:20Z","type":"event_msg","payload":{"type":"agent_message","message":"answer"}}"#,
+            r#"{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200,"cached_input_tokens":100,"output_tokens":50,"total_tokens":1250}}}}"#,
+        ],
+    );
+
+    let full = dashboard_snapshot(&root).unwrap();
+    assert!(!full.recent_usage_24h.is_empty());
+    assert!(!full.cache_usage.turns.is_empty());
+    let persisted = fs::read(&cache_path).unwrap();
+    assert!(
+        persisted.len() < 512 * 1024,
+        "slim aggregate was {} bytes",
+        persisted.len()
+    );
+    let json: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
+    assert_eq!(json["version"], 13);
+    assert_eq!(
+        json["snapshot"]["recentUsage24h"].as_array().unwrap().len(),
+        0
+    );
+    assert_eq!(
+        json["snapshot"]["cacheHitRanking"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        json["snapshot"]["cacheUsage"]["sessions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        json["snapshot"]["cacheUsage"]["turns"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    reset_dashboard_aggregate_build_count_for_testing();
+    let startup = cached_dashboard_snapshot_for_startup(&root).unwrap();
+    assert!(startup.recent_usage_24h.is_empty());
+    assert!(startup.cache_usage.turns.is_empty());
+    let rebuilt = dashboard_snapshot(&root).unwrap();
+    assert!(!rebuilt.recent_usage_24h.is_empty());
+    assert!(!rebuilt.cache_usage.turns.is_empty());
+    assert_eq!(dashboard_aggregate_build_count_for_testing(&root), 1);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
@@ -895,7 +1084,9 @@ fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
     fs::create_dir_all(&session_dir).unwrap();
     write_lines(
         &session_dir.join("rollout-019esummary-0000-0000-0000-cache.jsonl"),
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
     );
 
     let summary = usage_summary(&root).unwrap();
@@ -916,7 +1107,7 @@ fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
 }
 
 #[test]
-fn usage_summary_rejects_v11_and_reuses_rebuilt_v12_dashboard_aggregate() {
+fn usage_summary_rejects_v11_and_reuses_rebuilt_v13_dashboard_aggregate() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("token-aggregate-cache.json");
@@ -927,7 +1118,9 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v12_dashboard_aggregate() {
     let file = session_dir.join("rollout-019eaggregate-stale-v11-cache.jsonl");
     write_lines(
         &file,
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
     );
     let signature = dashboard_scan_signature(&root, &[file]);
     fs::write(
@@ -951,7 +1144,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v12_dashboard_aggregate() {
     assert_eq!(summary.total_tokens, 120);
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""version":12"#));
+    assert!(aggregate_cache_text().contains(r#""version":13"#));
     assert!(aggregate_cache_text().contains(r#""totalTokens":120"#));
 
     reset_dashboard_aggregate_build_count_for_testing();
@@ -960,7 +1153,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v12_dashboard_aggregate() {
     assert_eq!(
         dashboard_aggregate_build_count_for_testing(&root),
         0,
-        "current v12 aggregate should be reused after memory state is cleared"
+        "current v13 aggregate should be reused after memory state is cleared"
     );
 
     fs::remove_dir_all(root).unwrap();
@@ -980,11 +1173,15 @@ fn cached_usage_summary_is_scoped_to_codex_home() {
     fs::create_dir_all(&session_dir_b).unwrap();
     write_lines(
         &session_dir_a.join("rollout-019ehome-a-0000-0000-0000-summary.jsonl"),
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
     );
     write_lines(
         &session_dir_b.join("rollout-019ehome-b-0000-0000-0000-summary.jsonl"),
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":10,"total_tokens":30}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":10,"total_tokens":30}}}}"#,
+        ],
     );
 
     let snapshot_a = dashboard_snapshot(&home_a).unwrap();
@@ -1036,18 +1233,13 @@ fn cached_usage_summary_scope_rejects_date_and_offset_changes() {
             .total_tokens,
         120
     );
-    assert!(cached_dashboard_usage_summary_at(
-        &root,
-        now + time::Duration::days(1),
-        offset,
-    )
-    .is_none());
-    assert!(cached_dashboard_usage_summary_at(
-        &root,
-        now,
-        UtcOffset::from_hms(9, 0, 0).unwrap(),
-    )
-    .is_none());
+    assert!(
+        cached_dashboard_usage_summary_at(&root, now + time::Duration::days(1), offset,).is_none()
+    );
+    assert!(
+        cached_dashboard_usage_summary_at(&root, now, UtcOffset::from_hms(9, 0, 0).unwrap(),)
+            .is_none()
+    );
     assert!(cached_dashboard_usage_summary_at(&root.join("other-home"), now, offset).is_none());
 
     fs::remove_dir_all(root).unwrap();
@@ -1071,11 +1263,7 @@ fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
             r#"{"timestamp":"2026-06-18T01:11:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":120,"total_tokens":620},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120}}}}"#,
         ],
     );
-    create_state_database_with_rollout(
-        &root,
-        "019efork-active-0000-0000-cache",
-        &rollout_path,
-    );
+    create_state_database_with_rollout(&root, "019efork-active-0000-0000-cache", &rollout_path);
 
     let first = dashboard_snapshot(&root).unwrap();
     assert_eq!(first.stats.total_tokens, 120);
@@ -1150,6 +1338,7 @@ fn dashboard_aggregate_cache_save_does_not_clobber_existing_temp_file() {
             today_requests: 1,
         },
     );
+    age_file(&cache_path, StdDuration::from_secs(16 * 60));
     let second_warning = store_dashboard_aggregate(
         signature,
         None,
@@ -1167,7 +1356,110 @@ fn dashboard_aggregate_cache_save_does_not_clobber_existing_temp_file() {
         "aggregate cache should use a unique temp path instead of overwriting another save"
     );
     assert!(cache_path.exists());
-    assert_eq!(load_persistent_dashboard_aggregate().unwrap().summary.total_tokens, 20);
+    assert_eq!(
+        load_persistent_dashboard_aggregate()
+            .unwrap()
+            .summary
+            .total_tokens,
+        20
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dashboard_aggregate_checkpoints_active_signature_changes_at_most_every_fifteen_minutes() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_path = root.join("dashboard-aggregate.json");
+    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
+    fs::create_dir_all(&root).unwrap();
+    let now = OffsetDateTime::from_unix_timestamp(1_781_715_600).unwrap();
+    let mut first_signature = dashboard_scan_signature_at(&root, &[], now, UtcOffset::UTC);
+    first_signature.session_files.push(SessionFileSignature {
+        cache_key: "active.jsonl".into(),
+        signature: CachedFileSignature {
+            size: 100,
+            modified_millis: 1,
+        },
+    });
+    store_dashboard_aggregate(
+        first_signature.clone(),
+        None,
+        TokenUsageSummary {
+            total_tokens: 100,
+            today_tokens: 100,
+            today_requests: 1,
+        },
+    );
+    let initial = fs::read(&cache_path).unwrap();
+    let mut next_day_signature = first_signature.clone();
+    next_day_signature.local_date = "2026-06-19".into();
+    assert!(aggregate_checkpoint_due(
+        &cache_path,
+        &next_day_signature,
+        SystemTime::now()
+    ));
+
+    let mut active_signature = first_signature;
+    active_signature.session_files[0].signature.size = 110;
+    active_signature.session_files[0].signature.modified_millis = 2;
+    age_file(&cache_path, StdDuration::from_secs(30));
+    store_dashboard_aggregate(
+        active_signature.clone(),
+        None,
+        TokenUsageSummary {
+            total_tokens: 110,
+            today_tokens: 110,
+            today_requests: 2,
+        },
+    );
+    assert_eq!(fs::read(&cache_path).unwrap(), initial);
+    assert_eq!(
+        cached_dashboard_aggregate(&active_signature)
+            .unwrap()
+            .summary
+            .total_tokens,
+        110,
+        "memory must update immediately while the startup checkpoint is throttled"
+    );
+
+    age_file(&cache_path, StdDuration::from_secs(16 * 60));
+    store_dashboard_aggregate(
+        active_signature,
+        None,
+        TokenUsageSummary {
+            total_tokens: 120,
+            today_tokens: 120,
+            today_requests: 3,
+        },
+    );
+    assert_ne!(fs::read(&cache_path).unwrap(), initial);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dashboard_aggregate_cache_skips_an_identical_payload() {
+    let root = temp_root();
+    let path = root.join("dashboard-aggregate.json");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(&path, b"same aggregate").unwrap();
+    let mut writes = 0;
+
+    super::write_aggregate_if_changed(&path, b"same aggregate", |_, _| {
+        writes += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(writes, 0);
+
+    super::write_aggregate_if_changed(&path, b"changed aggregate", |_, _| {
+        writes += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(writes, 1);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1212,9 +1504,10 @@ fn marker_failure_warning_is_deduplicated_for_fresh_and_cached_snapshots() {
     let blocked_support = root.join("blocked-support");
     fs::create_dir_all(&root).unwrap();
     fs::write(&blocked_support, b"not a directory").unwrap();
-    let _state = cache_lifecycle::usage_cache_test_state_guard(&[
-        ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", blocked_support.clone()),
-    ]);
+    let _state = cache_lifecycle::usage_cache_test_state_guard(&[(
+        "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",
+        blocked_support.clone(),
+    )]);
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
     let timestamp = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
@@ -1229,7 +1522,11 @@ fn marker_failure_warning_is_deduplicated_for_fresh_and_cached_snapshots() {
     let cached = dashboard_snapshot(&root).unwrap();
     for snapshot in [fresh, cached] {
         assert_eq!(
-            snapshot.warnings.iter().filter(|warning| warning.source == "usage-cache-marker-persistence").count(),
+            snapshot
+                .warnings
+                .iter()
+                .filter(|warning| warning.source == "usage-cache-marker-persistence")
+                .count(),
             1
         );
     }
@@ -1246,7 +1543,9 @@ fn usage_summary_snapshot_cache_miss_schedules_one_background_build() {
     fs::create_dir_all(&session_dir).unwrap();
     write_lines(
         &session_dir.join("rollout-019esummary-0000-0000-0000-background.jsonl"),
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
     );
 
     reset_dashboard_aggregate_build_count_for_testing();
@@ -1313,7 +1612,9 @@ fn token_event_cache_reads_only_appended_session_bytes() {
     let file = session_dir.join("rollout-019eappend-0000-0000-0000-cache.jsonl");
     write_lines(
         &file,
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
     );
 
     let mut warnings = Vec::new();
@@ -1352,7 +1653,10 @@ fn token_event_cache_reads_only_appended_session_bytes() {
     assert_eq!(first.iter().map(|event| event.tokens).sum::<u64>(), 120);
     assert_eq!(second.iter().map(|event| event.tokens).sum::<u64>(), 170);
     assert_eq!(full_parses_after_first, 1);
-    assert_eq!(session_full_parse_count_for_testing(), full_parses_after_first);
+    assert_eq!(
+        session_full_parse_count_for_testing(),
+        full_parses_after_first
+    );
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1502,7 +1806,9 @@ fn token_event_cache_reparses_legacy_entries_without_parsed_size() {
     let file = session_dir.join("rollout-019elegacy-0000-0000-0000-cache.jsonl");
     write_lines(
         &file,
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
     );
     {
         let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
@@ -1568,8 +1874,9 @@ fn token_event_cache_reads_tail_when_signature_matches_but_parsed_size_lags() {
     let full_signature = super::token_event_cache::file_signature(&file).unwrap();
     let parsed_size = (first_line.len() + 1) as u64;
     let cache_key = super::token_event_cache::file_cache_key(&root, &file);
-    let first_timestamp =
-        OffsetDateTime::parse("2026-06-18T01:00:00Z", &Rfc3339).unwrap().unix_timestamp();
+    let first_timestamp = OffsetDateTime::parse("2026-06-18T01:00:00Z", &Rfc3339)
+        .unwrap()
+        .unix_timestamp();
     let mut files = HashMap::new();
     files.insert(
         cache_key.clone(),
@@ -1677,8 +1984,9 @@ fn token_event_cache_reparses_implausible_cached_event_even_when_signature_match
     );
     let signature = super::token_event_cache::file_signature(&file).unwrap();
     let cache_key = super::token_event_cache::file_cache_key(&root, &file);
-    let first_timestamp =
-        OffsetDateTime::parse("2026-06-18T01:00:00Z", &Rfc3339).unwrap().unix_timestamp();
+    let first_timestamp = OffsetDateTime::parse("2026-06-18T01:00:00Z", &Rfc3339)
+        .unwrap()
+        .unix_timestamp();
     let mut files = HashMap::new();
     files.insert(
         cache_key,
@@ -1735,10 +2043,12 @@ fn token_event_cache_reparses_when_incremental_range_overlaps_cached_events() {
         writeln!(handle, "{second_line}").unwrap();
     }
     let cache_key = super::token_event_cache::file_cache_key(&root, &file);
-    let first_timestamp =
-        OffsetDateTime::parse("2026-06-18T01:00:00Z", &Rfc3339).unwrap().unix_timestamp();
-    let second_timestamp =
-        OffsetDateTime::parse("2026-06-18T01:05:00Z", &Rfc3339).unwrap().unix_timestamp();
+    let first_timestamp = OffsetDateTime::parse("2026-06-18T01:00:00Z", &Rfc3339)
+        .unwrap()
+        .unix_timestamp();
+    let second_timestamp = OffsetDateTime::parse("2026-06-18T01:05:00Z", &Rfc3339)
+        .unwrap()
+        .unix_timestamp();
     let mut files = HashMap::new();
     files.insert(
         cache_key,
@@ -1796,7 +2106,9 @@ fn token_event_cache_keeps_incomplete_appended_line_unconsumed() {
     let file = session_dir.join("rollout-019epartial-0000-0000-0000-cache.jsonl");
     write_lines(
         &file,
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
     );
 
     let mut warnings = Vec::new();
@@ -1882,7 +2194,9 @@ fn token_event_cache_reparses_truncated_session_file() {
     );
     write_lines(
         &file,
-        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":70,"cached_input_tokens":10,"output_tokens":20,"total_tokens":90}}}}"#],
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":70,"cached_input_tokens":10,"output_tokens":20,"total_tokens":90}}}}"#,
+        ],
     );
     let second = parse_session_file_cached(
         &file,
@@ -1918,6 +2232,12 @@ fn write_lines<S: AsRef<str>>(path: &Path, lines: &[S]) {
     for line in lines {
         writeln!(file, "{}", line.as_ref()).unwrap();
     }
+}
+
+fn age_file(path: &Path, age: StdDuration) {
+    let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+    let times = fs::FileTimes::new().set_modified(SystemTime::now() - age);
+    file.set_times(times).unwrap();
 }
 
 struct AggregateCacheEnvGuard {
@@ -1987,7 +2307,10 @@ fn collect_json_files(root: &Path, files: &mut Vec<PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             collect_json_files(&path, files);
-        } else if path.extension().is_some_and(|extension| extension == "json") {
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
             files.push(path);
         }
     }

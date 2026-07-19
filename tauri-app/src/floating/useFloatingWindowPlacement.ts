@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { readAppSettings, saveFloatingPosition } from "../api/client";
 import { desktopPlatform } from "../platform/desktop";
+import { createFloatingPositionPersistence } from "./floatingPositionPersistence";
 
 const MAX_REASONABLE_COORDINATE = 20_000;
 
@@ -14,20 +15,23 @@ export function useFloatingWindowPlacement() {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
+    const positionPersistence = createFloatingPositionPersistence((position) =>
+      saveFloatingPosition({
+        ...position,
+        savedAt: Date.now(),
+      }),
+    );
 
     void readAppSettings().then((settings) => {
       if (!disposed && settings !== null && isStoredPosition(settings.floatingPosition)) {
+        positionPersistence.setPersisted(settings.floatingPosition);
         void desktopPlatform.setFloatingWindowPosition(settings.floatingPosition);
       }
     });
 
     void desktopPlatform.onFloatingWindowMoved((position) => {
       if (isValidCoordinate(position.x) && isValidCoordinate(position.y)) {
-        void saveFloatingPosition({
-          x: position.x,
-          y: position.y,
-          savedAt: Date.now(),
-        }).catch(() => {});
+        positionPersistence.schedule(position);
       }
     }).then((listener) => {
       if (disposed) {
@@ -39,6 +43,7 @@ export function useFloatingWindowPlacement() {
 
     return () => {
       disposed = true;
+      positionPersistence.flush();
       unlisten?.();
     };
   }, []);

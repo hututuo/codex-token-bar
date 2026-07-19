@@ -6,15 +6,26 @@ use super::{
     TokenEvent,
 };
 use crate::core::app_paths;
+use crate::core::atomic_file;
 use crate::models::LocalDataWarning;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use time::OffsetDateTime;
 
 const TOKEN_EVENT_CACHE_VERSION: u32 = 8;
+const STALE_TEMP_MIN_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+const SHARD_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const SHARD_TARGET_DAILY_WRITE_BYTES: u64 = 256 * 1024 * 1024;
+
+pub(super) type SessionShardKey = (String, String);
+
+pub(super) struct TokenEventCacheIoLock {
+    _file: File,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,6 +96,49 @@ pub(super) struct CachedTokenEvent {
 }
 
 impl TokenEventCache {
+    pub(super) fn acquire_io_lock() -> Result<Option<TokenEventCacheIoLock>, String> {
+        let Some(directory) = app_paths::token_event_cache_directory() else {
+            return Ok(None);
+        };
+        let parent = directory
+            .parent()
+            .ok_or_else(|| format!("精确 token 缓存目录缺少父目录：{}", directory.display()))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "创建精确 token 缓存锁目录失败：{}（{}）",
+                parent.display(),
+                error
+            )
+        })?;
+        let lock_path = parent.join("session-token-events.lock");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .map_err(|error| {
+                format!(
+                    "打开精确 token 缓存锁失败：{}（{}）",
+                    lock_path.display(),
+                    error
+                )
+            })?;
+        lock_file_exclusive(&file).map_err(|error| {
+            format!(
+                "获取精确 token 缓存跨进程锁失败：{}（{}）",
+                lock_path.display(),
+                error
+            )
+        })?;
+        Ok(Some(TokenEventCacheIoLock { _file: file }))
+    }
+
+    pub(super) fn cleanup_stale_temps() {
+        if let Some(directory) = app_paths::token_event_cache_directory() {
+            cleanup_stale_legacy_temp_directories(&directory);
+        }
+    }
+
     pub(super) fn load(warnings: &mut Vec<LocalDataWarning>) -> Self {
         if let Some(cache) = Self::load_sharded(warnings) {
             return cache;
@@ -95,7 +149,17 @@ impl TokenEventCache {
 
     pub(super) fn save(&self) -> Result<(), String> {
         if let Some(directory) = app_paths::token_event_cache_directory() {
-            return self.save_sharded(&directory);
+            let dirty = self
+                .homes
+                .iter()
+                .flat_map(|(home_key, home)| {
+                    home.files
+                        .keys()
+                        .map(|cache_key| (home_key.clone(), cache_key.clone()))
+                })
+                .collect::<HashSet<_>>();
+            let deleted = self.persisted_shards_missing_from_memory(&directory);
+            return self.save_sharded_changes(&directory, &dirty, &deleted, false);
         }
 
         let Some(path) = app_paths::token_event_cache_path() else {
@@ -103,18 +167,25 @@ impl TokenEventCache {
         };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| {
-                format!("创建精确 token 缓存目录失败：{}（{}）", parent.display(), error)
+                format!(
+                    "创建精确 token 缓存目录失败：{}（{}）",
+                    parent.display(),
+                    error
+                )
             })?;
         }
         let data = serde_json::to_vec(self)
             .map_err(|error| format!("序列化精确 token 缓存失败：{error}"))?;
         let temp_path = unique_temp_path(&path, "json.tmp");
         fs::write(&temp_path, data).map_err(|error| {
-            format!("写入精确 token 缓存失败：{}（{}）", temp_path.display(), error)
+            format!(
+                "写入精确 token 缓存失败：{}（{}）",
+                temp_path.display(),
+                error
+            )
         })?;
-        fs::rename(&temp_path, &path).map_err(|error| {
-            format!("替换精确 token 缓存失败：{}（{}）", path.display(), error)
-        })
+        fs::rename(&temp_path, &path)
+            .map_err(|error| format!("替换精确 token 缓存失败：{}（{}）", path.display(), error))
     }
 
     fn load_sharded(warnings: &mut Vec<LocalDataWarning>) -> Option<Self> {
@@ -164,18 +235,40 @@ impl TokenEventCache {
         Some(cache)
     }
 
-    fn save_sharded(&self, directory: &Path) -> Result<(), String> {
-        let temp_directory = unique_temp_path(directory, "tmp");
-        fs::create_dir_all(&temp_directory).map_err(|error| {
+    pub(super) fn save_changes(
+        &self,
+        dirty: &HashSet<SessionShardKey>,
+        deleted: &HashSet<SessionShardKey>,
+    ) -> Result<(), String> {
+        let Some(directory) = app_paths::token_event_cache_directory() else {
+            return Ok(());
+        };
+        self.save_sharded_changes(&directory, dirty, deleted, true)
+    }
+
+    fn save_sharded_changes(
+        &self,
+        directory: &Path,
+        dirty: &HashSet<SessionShardKey>,
+        deleted: &HashSet<SessionShardKey>,
+        throttle_existing_shards: bool,
+    ) -> Result<(), String> {
+        fs::create_dir_all(directory).map_err(|error| {
             format!(
                 "创建精确 token 分片缓存目录失败：{}（{}）",
-                temp_directory.display(),
+                directory.display(),
                 error
             )
         })?;
 
-        for (home_key, home) in &self.homes {
-            let home_directory = temp_directory.join(home_key);
+        for (home_key, cache_key) in dirty {
+            let Some(home) = self.homes.get(home_key) else {
+                continue;
+            };
+            let Some(session) = home.files.get(cache_key) else {
+                continue;
+            };
+            let home_directory = directory.join(home_key);
             fs::create_dir_all(&home_directory).map_err(|error| {
                 format!(
                     "创建精确 token 分片缓存目录失败：{}（{}）",
@@ -183,41 +276,48 @@ impl TokenEventCache {
                     error
                 )
             })?;
-            for (cache_key, session) in &home.files {
-                let shard = PersistentSessionShard {
-                    version: TOKEN_EVENT_CACHE_VERSION,
-                    home_key: home_key.clone(),
-                    codex_home: home.codex_home.clone(),
-                    cache_key: cache_key.clone(),
-                    session: session.clone(),
-                };
-                let data = serde_json::to_vec(&shard)
-                    .map_err(|error| format!("序列化精确 token 分片缓存失败：{error}"))?;
-                let path =
-                    home_directory.join(format!("{}.json", stable_path_fingerprint(cache_key)));
-                fs::write(&path, data).map_err(|error| {
-                    format!("写入精确 token 分片缓存失败：{}（{}）", path.display(), error)
-                })?;
+            let path = shard_path(directory, home_key, cache_key);
+            if throttle_existing_shards && !shard_checkpoint_due(&path, SystemTime::now()) {
+                continue;
             }
+            let shard = PersistentSessionShard {
+                version: TOKEN_EVENT_CACHE_VERSION,
+                home_key: home_key.clone(),
+                codex_home: home.codex_home.clone(),
+                cache_key: cache_key.clone(),
+                session: session.clone(),
+            };
+            let data = serde_json::to_vec(&shard)
+                .map_err(|error| format!("序列化精确 token 分片缓存失败：{error}"))?;
+            atomic_file::write_atomically(&path, &data).map_err(|error| error.to_string())?;
         }
 
-        if directory.exists() {
-            fs::remove_dir_all(directory).map_err(|error| {
-                format!("清理旧精确 token 分片缓存失败：{}（{}）", directory.display(), error)
-            })?;
+        for (home_key, cache_key) in deleted {
+            remove_shard_if_identity_matches(directory, home_key, cache_key)?;
         }
-        fs::rename(&temp_directory, directory).map_err(|error| {
-            format!(
-                "替换精确 token 分片缓存失败：{}（{}）",
-                directory.display(),
-                error
-            )
-        })?;
 
         if let Some(legacy_path) = app_paths::token_event_cache_path() {
             let _ = fs::remove_file(legacy_path);
         }
         Ok(())
+    }
+
+    fn persisted_shards_missing_from_memory(&self, directory: &Path) -> HashSet<SessionShardKey> {
+        let mut shard_paths = Vec::new();
+        collect_json_files(directory, &mut shard_paths);
+        shard_paths
+            .into_iter()
+            .filter_map(|path| fs::read(path).ok())
+            .filter_map(|data| serde_json::from_slice::<PersistentSessionShard>(&data).ok())
+            .filter(|shard| shard.version == TOKEN_EVENT_CACHE_VERSION)
+            .filter_map(|shard| {
+                (!self
+                    .homes
+                    .get(&shard.home_key)
+                    .is_some_and(|home| home.files.contains_key(&shard.cache_key)))
+                .then_some((shard.home_key, shard.cache_key))
+            })
+            .collect()
     }
 
     pub(super) fn home_cache_mut(
@@ -241,10 +341,19 @@ impl TokenEventCache {
 }
 
 impl CachedCodexHome {
-    pub(super) fn retain_seen(&mut self, seen: &HashSet<String>) -> bool {
-        let before = self.files.len();
+    pub(super) fn remove_unseen(&mut self, seen: &HashSet<String>) -> HashSet<String> {
+        let removed = self
+            .files
+            .keys()
+            .filter(|path| !seen.contains(*path))
+            .cloned()
+            .collect::<HashSet<_>>();
         self.files.retain(|path, _| seen.contains(path));
-        before != self.files.len()
+        removed
+    }
+
+    pub(super) fn retain_seen(&mut self, seen: &HashSet<String>) -> bool {
+        !self.remove_unseen(seen).is_empty()
     }
 }
 
@@ -395,7 +504,8 @@ impl CachedSessionFile {
 
     fn has_plausible_token_events(&self) -> bool {
         self.parsed_size > 0
-            && self.events
+            && self
+                .events
                 .iter()
                 .all(CachedTokenEvent::has_plausible_token_total)
     }
@@ -427,9 +537,7 @@ impl CachedTokenEvent {
 
     fn has_plausible_token_total(&self) -> bool {
         let visible_total = self.input_tokens.saturating_add(self.output_tokens);
-        let slack = visible_total
-            .saturating_mul(4)
-            .max(1_000_000);
+        let slack = visible_total.saturating_mul(4).max(1_000_000);
         self.tokens <= visible_total.saturating_add(slack)
     }
 }
@@ -480,6 +588,199 @@ fn unique_temp_path(path: &Path, label: &str) -> PathBuf {
     path.with_extension(suffix)
 }
 
+fn shard_path(directory: &Path, home_key: &str, cache_key: &str) -> PathBuf {
+    directory
+        .join(home_key)
+        .join(format!("{}.json", stable_path_fingerprint(cache_key)))
+}
+
+fn shard_checkpoint_due(path: &Path, now: SystemTime) -> bool {
+    if !shard_file_has_current_version(path) {
+        return true;
+    }
+    let Some(metadata) = fs::metadata(path).ok() else {
+        return true;
+    };
+    let Some(modified) = metadata.modified().ok() else {
+        return true;
+    };
+    now.duration_since(modified)
+        .is_ok_and(|age| age >= shard_checkpoint_interval(metadata.len()))
+}
+
+pub(super) fn shard_checkpoint_interval(persisted_bytes: u64) -> Duration {
+    let proportional_seconds = persisted_bytes
+        .saturating_mul(24 * 60 * 60)
+        .saturating_add(SHARD_TARGET_DAILY_WRITE_BYTES - 1)
+        / SHARD_TARGET_DAILY_WRITE_BYTES;
+    SHARD_CHECKPOINT_INTERVAL.max(Duration::from_secs(proportional_seconds))
+}
+
+fn shard_file_has_current_version(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let mut prefix = Vec::with_capacity(256);
+    if file.take(256).read_to_end(&mut prefix).is_err() {
+        return false;
+    }
+    let needle = format!(r#""version":{TOKEN_EVENT_CACHE_VERSION}"#);
+    String::from_utf8_lossy(&prefix).contains(&needle)
+}
+
+fn remove_shard_if_identity_matches(
+    directory: &Path,
+    home_key: &str,
+    cache_key: &str,
+) -> Result<(), String> {
+    let path = shard_path(directory, home_key, cache_key);
+    let data = match fs::read(&path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "读取待删除精确 token 分片失败：{}（{}）",
+                path.display(),
+                error
+            ))
+        }
+    };
+    let matches = serde_json::from_slice::<PersistentSessionShard>(&data).is_ok_and(|shard| {
+        shard.version == TOKEN_EVENT_CACHE_VERSION
+            && shard.home_key == home_key
+            && shard.cache_key == cache_key
+    });
+    if !matches {
+        return Ok(());
+    }
+    fs::remove_file(&path).map_err(|error| {
+        format!(
+            "删除过期精确 token 分片失败：{}（{}）",
+            path.display(),
+            error
+        )
+    })
+}
+
+fn cleanup_stale_legacy_temp_directories(directory: &Path) {
+    let Some(parent) = directory.parent() else {
+        return;
+    };
+    let Some(directory_name) = directory.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let prefix = format!("{directory_name}.tmp-");
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(owner_pid) = owned_legacy_temp_pid(name, &prefix) else {
+            continue;
+        };
+        let is_stale_directory = fs::symlink_metadata(&path)
+            .ok()
+            .filter(|metadata| metadata.file_type().is_dir())
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= STALE_TEMP_MIN_AGE);
+        if is_stale_directory && !process_is_alive(owner_pid) {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
+fn owned_legacy_temp_pid(name: &str, prefix: &str) -> Option<u32> {
+    let Some(suffix) = name.strip_prefix(prefix) else {
+        return None;
+    };
+    let Some((pid, nanos)) = suffix.split_once('-') else {
+        return None;
+    };
+    let valid = !pid.is_empty()
+        && !nanos.is_empty()
+        && pid.bytes().all(|byte| byte.is_ascii_digit())
+        && nanos.bytes().all(|byte| byte.is_ascii_digit());
+    valid.then(|| pid.parse().ok()).flatten()
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    let result = unsafe { kill(pid, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(3)
+}
+
+#[cfg(windows)]
+fn process_is_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return std::io::Error::last_os_error().raw_os_error()
+            != Some(windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER as i32);
+    }
+    let mut exit_code = 0;
+    let queried = unsafe { GetExitCodeProcess(process, &mut exit_code) } != 0;
+    let alive = !queried || exit_code == STILL_ACTIVE;
+    unsafe {
+        CloseHandle(process);
+    }
+    alive
+}
+
+#[cfg(not(any(unix, windows)))]
+fn process_is_alive(_pid: u32) -> bool {
+    true
+}
+
+#[cfg(unix)]
+fn lock_file_exclusive(file: &File) -> std::io::Result<()> {
+    rustix::fs::flock(file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+        .map_err(std::io::Error::from)
+}
+
+#[cfg(windows)]
+fn lock_file_exclusive(file: &File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+    let mut overlapped = OVERLAPPED::default();
+    let ok = unsafe {
+        LockFileEx(
+            file.as_raw_handle() as _,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn lock_file_exclusive(_file: &File) -> std::io::Result<()> {
+    Ok(())
+}
+
 fn collect_json_files(root: &Path, files: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(root) else {
         return;
@@ -488,7 +789,10 @@ fn collect_json_files(root: &Path, files: &mut Vec<PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             collect_json_files(&path, files);
-        } else if path.extension().is_some_and(|extension| extension == "json") {
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
             files.push(path);
         }
     }

@@ -49,7 +49,7 @@ export function readUsageSummarySnapshot(
 
 export function readUsageCacheStatus(): Promise<UsageCacheStatus> {
   return callCommand("read_usage_cache_status", {
-    namespace: "tauri-usage-cache-2026-07-v5",
+    namespace: "tauri-usage-cache-2026-07-v6",
     initialized: true,
     initializedAt: null,
   });

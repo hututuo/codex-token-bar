@@ -116,8 +116,8 @@ pub(super) fn parse_session_file_range(
     let mut fork_replay_active = initial_fork_replay_state
         .map(|state: ForkReplayState| state.active)
         .unwrap_or_else(|| fork_replay_started_at.is_some());
-    let mut last_skipped_fork_replay_token_at = initial_fork_replay_state
-        .and_then(|state: ForkReplayState| state.last_skipped_token_at);
+    let mut last_skipped_fork_replay_token_at =
+        initial_fork_replay_state.and_then(|state: ForkReplayState| state.last_skipped_token_at);
     let mut previous_total = initial_previous_total;
     let mut current_user_prompt = String::new();
     let mut assistant_fragments = Vec::<String>::new();
@@ -150,9 +150,9 @@ pub(super) fn parse_session_file_range(
         if let Some(message_line) = parse_payload_message_line(line, "user_message") {
             if fork_replay_active {
                 let replay_reference = last_skipped_fork_replay_token_at.or(fork_replay_started_at);
-                if replay_reference
-                    .is_some_and(|reference| message_line.timestamp - reference > FORK_REPLAY_EXIT_GRACE)
-                {
+                if replay_reference.is_some_and(|reference| {
+                    message_line.timestamp - reference > FORK_REPLAY_EXIT_GRACE
+                }) {
                     fork_replay_active = false;
                 }
             }
@@ -209,12 +209,18 @@ pub(super) fn parse_session_file_range(
             timestamp: usage_line.timestamp,
             session_id: session_id.to_string(),
             tokens: delta,
-            input_tokens: usage_line.last.as_ref().map_or(0, |usage| usage.input_tokens),
+            input_tokens: usage_line
+                .last
+                .as_ref()
+                .map_or(0, |usage| usage.input_tokens),
             cached_input_tokens: usage_line
                 .last
                 .as_ref()
                 .map_or(0, |usage| usage.cached_input_tokens),
-            output_tokens: usage_line.last.as_ref().map_or(0, |usage| usage.output_tokens),
+            output_tokens: usage_line
+                .last
+                .as_ref()
+                .map_or(0, |usage| usage.output_tokens),
             user_prompt: excerpt(&current_user_prompt, 180),
             assistant_response: excerpt(&assistant_fragments.join(" "), 220),
         });

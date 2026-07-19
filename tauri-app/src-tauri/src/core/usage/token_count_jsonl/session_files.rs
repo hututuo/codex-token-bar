@@ -1,5 +1,5 @@
-use crate::models::LocalDataWarning;
 use crate::core::sqlite;
+use crate::models::LocalDataWarning;
 use rusqlite::Connection;
 use std::collections::HashSet;
 use std::fs;
@@ -99,7 +99,11 @@ fn collect_state_rollout_files(
     };
     for row in rows.flatten() {
         let path = normalize_rollout_path(codex_home, row);
-        if path.is_file() && path.extension().is_some_and(|extension| extension == "jsonl") {
+        if path.is_file()
+            && path
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+        {
             files.push(path);
         }
     }
@@ -126,7 +130,11 @@ fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {
     exists
 }
 
-fn collect_jsonl_files(root: &Path, files: &mut Vec<PathBuf>, warnings: &mut Vec<LocalDataWarning>) {
+fn collect_jsonl_files(
+    root: &Path,
+    files: &mut Vec<PathBuf>,
+    warnings: &mut Vec<LocalDataWarning>,
+) {
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) => {
@@ -154,7 +162,10 @@ fn collect_jsonl_files(root: &Path, files: &mut Vec<PathBuf>, warnings: &mut Vec
         let path = entry.path();
         if path.is_dir() {
             collect_jsonl_files(&path, files, warnings);
-        } else if path.extension().is_some_and(|extension| extension == "jsonl") {
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "jsonl")
+        {
             files.push(path);
         }
     }

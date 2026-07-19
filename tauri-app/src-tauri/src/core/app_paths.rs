@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 const APP_DIRECTORY_NAME: &str = "CodexTokenBar";
 const TAURI_DIRECTORY_NAME: &str = "CodexTokenBarTauri";
-pub const TAURI_USAGE_CACHE_NAMESPACE: &str = "tauri-usage-cache-2026-07-v5";
+// The v6 namespace isolates the incremental/locked shard layout from older
+// binaries that replaced the entire v5 directory without taking the new lock.
+pub const TAURI_USAGE_CACHE_NAMESPACE: &str = "tauri-usage-cache-2026-07-v6";
 const HISTORY_REPAIR_DIRECTORY_NAME: &str = "CodexHistoryRepair";
 
 pub fn home_dir() -> PathBuf {

@@ -1,35 +1,35 @@
 use super::cache_lifecycle;
 use crate::core::app_paths;
 use crate::models::{
-    AccountInfo, DashboardSnapshot, LocalDataWarning, QuotaLimit, QuotaSnapshot,
-    ResetCreditSummary,
+    AccountInfo, DashboardSnapshot, LocalDataWarning, QuotaLimit, QuotaSnapshot, ResetCreditSummary,
 };
+use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::collections::HashMap;
 use std::collections::HashSet;
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration as StdDuration, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
 mod aggregates;
+#[cfg(test)]
+mod cache_version_tests;
 mod event_loader;
 mod ranking;
 mod session_files;
 mod session_parser;
-#[cfg(test)]
-mod cache_version_tests;
 #[cfg(test)]
 mod tests;
 mod token_event_cache;
 
 use aggregates::{activity_days_at, recent_usage, recent_usage_30d, recent_usage_7d, stats_at};
 use event_loader::load_token_events_from_files;
-use ranking::{cache_hit_ranking, cache_usage, sanitize_cache_usage_for_persistence};
+use ranking::{cache_hit_ranking, cache_usage};
 use session_files::jsonl_files_for_codex_home;
 use token_event_cache::{file_cache_key, file_signature, CachedFileSignature};
 
@@ -42,7 +42,8 @@ static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLo
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_SCAN_SIGNATURE_COUNT: AtomicUsize = AtomicUsize::new(0);
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 12;
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 13;
+const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,7 +80,11 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     }
 
     let mut events = Vec::new();
-    events.extend(load_token_events_from_files(codex_home, session_files, &mut warnings));
+    events.extend(load_token_events_from_files(
+        codex_home,
+        session_files,
+        &mut warnings,
+    ));
 
     if events.is_empty() {
         return Err(no_token_events_error(&warnings));
@@ -126,7 +131,11 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
 
 fn merge_usage_cache_marker_warning(snapshot: &mut DashboardSnapshot) {
     if let Some(warning) = cache_lifecycle::usage_cache_persistence_warning() {
-        if !snapshot.warnings.iter().any(|existing| existing.source == warning.source) {
+        if !snapshot
+            .warnings
+            .iter()
+            .any(|existing| existing.source == warning.source)
+        {
             snapshot.warnings.push(warning);
         }
     }
@@ -136,7 +145,10 @@ fn activity_days_and_stats_at(
     events: &[TokenEvent],
     now_utc: OffsetDateTime,
     local_offset: UtcOffset,
-) -> (Vec<crate::models::ActivityDay>, crate::models::DashboardStats) {
+) -> (
+    Vec<crate::models::ActivityDay>,
+    crate::models::DashboardStats,
+) {
     let days = activity_days_at(events, now_utc, local_offset);
     let stats = stats_at(events, &days, now_utc.to_offset(local_offset).date());
     (days, stats)
@@ -152,7 +164,11 @@ pub fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
         return Ok(summary);
     }
 
-    events.extend(load_token_events_from_files(codex_home, session_files, &mut warnings));
+    events.extend(load_token_events_from_files(
+        codex_home,
+        session_files,
+        &mut warnings,
+    ));
 
     if events.is_empty() {
         return Err(no_token_events_error(&warnings));
@@ -199,7 +215,7 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
     let mut warnings = Vec::new();
     let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings);
     let signature = dashboard_scan_signature(codex_home, &session_files);
-    cached_dashboard_snapshot(&signature).map(snapshot_with_generated_at)
+    cached_dashboard_startup_snapshot(&signature).map(snapshot_with_generated_at)
 }
 
 #[cfg(test)]
@@ -291,6 +307,7 @@ struct CachedDashboardAggregate {
     signature: DashboardScanSignature,
     snapshot: Option<DashboardSnapshot>,
     summary: TokenUsageSummary,
+    snapshot_complete: bool,
 }
 
 #[derive(Default)]
@@ -327,11 +344,19 @@ struct SessionFileSignature {
     signature: CachedFileSignature,
 }
 
-fn dashboard_scan_signature(codex_home: &Path, session_files: &[PathBuf]) -> DashboardScanSignature {
+fn dashboard_scan_signature(
+    codex_home: &Path,
+    session_files: &[PathBuf],
+) -> DashboardScanSignature {
     #[cfg(test)]
     DASHBOARD_SCAN_SIGNATURE_COUNT.fetch_add(1, Ordering::Relaxed);
     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-    dashboard_scan_signature_at(codex_home, session_files, OffsetDateTime::now_utc(), local_offset)
+    dashboard_scan_signature_at(
+        codex_home,
+        session_files,
+        OffsetDateTime::now_utc(),
+        local_offset,
+    )
 }
 
 fn dashboard_usage_scope_at(
@@ -409,7 +434,23 @@ fn local_date_string(date_time: OffsetDateTime) -> String {
 }
 
 fn cached_dashboard_snapshot(signature: &DashboardScanSignature) -> Option<DashboardSnapshot> {
-    cached_dashboard_aggregate(signature).and_then(|cached| cached.snapshot)
+    cached_dashboard_aggregate(signature)
+        .filter(|cached| cached.snapshot_complete)
+        .and_then(|cached| cached.snapshot)
+}
+
+fn cached_dashboard_startup_snapshot(
+    signature: &DashboardScanSignature,
+) -> Option<DashboardSnapshot> {
+    hydrate_dashboard_aggregate_cache_once();
+    let expected_scope = signature.usage_scope();
+    DASHBOARD_AGGREGATE_CACHE
+        .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
+        .lock()
+        .ok()
+        .and_then(|guard| guard.aggregate.clone())
+        .filter(|cached| cached.signature.usage_scope() == expected_scope)
+        .and_then(|cached| cached.snapshot)
 }
 
 fn cached_dashboard_aggregate(
@@ -463,13 +504,20 @@ fn store_dashboard_aggregate(
         signature,
         snapshot,
         summary,
+        snapshot_complete: true,
     };
-    let warning = save_persistent_dashboard_aggregate(&aggregate).err().map(|error| LocalDataWarning {
-        source: "usage-cache-persistence".into(),
-        message: error,
-    });
+    let warning = save_persistent_dashboard_aggregate(&aggregate)
+        .err()
+        .map(|error| LocalDataWarning {
+            source: "usage-cache-persistence".into(),
+            message: error,
+        });
     if let (Some(warning), Some(snapshot)) = (&warning, aggregate.snapshot.as_mut()) {
-        if !snapshot.warnings.iter().any(|existing| existing.source == warning.source) {
+        if !snapshot
+            .warnings
+            .iter()
+            .any(|existing| existing.source == warning.source)
+        {
             snapshot.warnings.push(warning.clone());
         }
     }
@@ -549,6 +597,7 @@ fn decode_persistent_dashboard_aggregate(data: &[u8]) -> Option<CachedDashboardA
         signature: cache.signature,
         snapshot: cache.snapshot,
         summary: cache.summary,
+        snapshot_complete: false,
     })
 }
 
@@ -557,17 +606,67 @@ fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) -> 
         return Ok(());
     };
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("create aggregate cache directory {}: {error}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "create aggregate cache directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    if !aggregate_checkpoint_due(&path, &aggregate.signature, SystemTime::now()) {
+        return Ok(());
     }
     let payload = PersistentDashboardAggregateCache {
         version: DASHBOARD_AGGREGATE_CACHE_VERSION,
         signature: aggregate.signature.clone(),
-        snapshot: aggregate.snapshot.clone().map(sanitize_snapshot_for_persistence),
+        snapshot: aggregate
+            .snapshot
+            .clone()
+            .map(sanitize_snapshot_for_persistence),
         summary: aggregate.summary.clone(),
     };
     let data = serde_json::to_vec(&payload)
         .map_err(|error| format!("serialize aggregate cache {}: {error}", path.display()))?;
-    crate::core::atomic_file::write_atomically(&path, &data).map_err(|error| error.to_string())
+    write_aggregate_if_changed(&path, &data, |path, data| {
+        crate::core::atomic_file::write_atomically(path, data)
+    })
+}
+
+fn aggregate_checkpoint_due(
+    path: &Path,
+    signature: &DashboardScanSignature,
+    now: SystemTime,
+) -> bool {
+    let Some(existing) = fs::read(path)
+        .ok()
+        .and_then(|data| serde_json::from_slice::<PersistentDashboardAggregateCache>(&data).ok())
+    else {
+        return true;
+    };
+    if existing.version != DASHBOARD_AGGREGATE_CACHE_VERSION
+        || existing.signature.usage_scope() != signature.usage_scope()
+    {
+        return true;
+    }
+    let Some(modified) = fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+    else {
+        return true;
+    };
+    now.duration_since(modified)
+        .is_ok_and(|age| age >= AGGREGATE_CHECKPOINT_INTERVAL)
+}
+
+fn write_aggregate_if_changed(
+    path: &Path,
+    data: &[u8],
+    writer: impl FnOnce(&Path, &[u8]) -> Result<(), crate::core::atomic_file::AtomicWriteError>,
+) -> Result<(), String> {
+    if fs::read(path).is_ok_and(|existing| existing == data) {
+        return Ok(());
+    }
+    writer(path, data).map_err(|error| error.to_string())
 }
 
 #[derive(Deserialize, Serialize)]
@@ -580,7 +679,9 @@ struct PersistentDashboardAggregateCache {
 }
 
 fn sanitize_snapshot_for_persistence(mut snapshot: DashboardSnapshot) -> DashboardSnapshot {
-    snapshot.cache_usage = sanitize_cache_usage_for_persistence(snapshot.cache_usage);
+    snapshot.recent_usage_24h.clear();
+    snapshot.cache_hit_ranking.clear();
+    snapshot.cache_usage = Default::default();
     snapshot
 }
 

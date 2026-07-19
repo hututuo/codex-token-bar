@@ -90,7 +90,12 @@ pub(super) fn recent_usage_7d(
     events: &[TokenEvent],
     local_offset: UtcOffset,
 ) -> Vec<RecentUsagePoint> {
-    usage_series(events, local_offset, HOURLY_INTERVAL_SECONDS, SEVEN_DAY_POINT_COUNT)
+    usage_series(
+        events,
+        local_offset,
+        HOURLY_INTERVAL_SECONDS,
+        SEVEN_DAY_POINT_COUNT,
+    )
 }
 
 pub(super) fn recent_usage_30d(
@@ -151,11 +156,7 @@ fn usage_series(
         .collect()
 }
 
-pub(super) fn stats_at(
-    events: &[TokenEvent],
-    days: &[ActivityDay],
-    today: Date,
-) -> DashboardStats {
+pub(super) fn stats_at(events: &[TokenEvent], days: &[ActivityDay], today: Date) -> DashboardStats {
     let total_tokens = events.iter().map(|event| event.tokens).sum();
     let peak_day_tokens = days.iter().map(|day| day.tokens).max().unwrap_or(0);
     let mut by_session: HashMap<&str, u64> = HashMap::new();
