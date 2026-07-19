@@ -64,7 +64,7 @@ test("compactFloatingUsageStatus keeps pace and standalone reset card suffix in 
       status: "5 张重置卡可用",
       credits: [resetCredit({ expiresAtUnix: Date.parse("2026-06-28T09:00:00Z") / 1000 })],
     }, now),
-    "慢一点(余量低8%) · 5卡 · 近2天到期",
+    "慢一点(余量低8%) · 5卡 · 近2.0天到期",
   );
   assert.equal(
     compactFloatingUsageStatus("用得偏快，慢一点（低 8%）", { availableCount: 0, status: "0 张重置卡", credits: [] }),
@@ -107,7 +107,7 @@ test("compact reset credit suffixes describe the nearest available card expiry",
         resetCredit({ cardId: "soon", expiresAtUnix: Date.parse("2026-06-28T09:00:00Z") / 1000 }),
       ],
     }, now),
-    " · 2卡 · 2天",
+    " · 2卡 · 2.0天",
   );
 
   assert.equal(
@@ -196,6 +196,26 @@ test("compact reset credit suffixes describe the nearest available card expiry",
     }, now),
     "",
   );
+});
+
+test("compact reset credit expiry uses decimal days without changing short-range units", () => {
+  const now = new Date("2026-06-26T10:00:00Z");
+  const suffixAt = (milliseconds) => compactResetCreditRateBarSuffix({
+    availableCount: 1,
+    status: "1 张重置卡可用",
+    credits: [resetCredit({ expiresAtUnix: now.getTime() + milliseconds })],
+  }, now);
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  assert.equal(suffixAt(30 * 1000), " · 1卡 · 1m");
+  assert.equal(suffixAt(hour - 1), " · 1卡 · 60m");
+  assert.equal(suffixAt(hour), " · 1卡 · 1h");
+  assert.equal(suffixAt(day - 1), " · 1卡 · 24h");
+  assert.equal(suffixAt(day), " · 1卡 · 1.0天");
+  assert.equal(suffixAt(7.5 * day), " · 1卡 · 7.5天");
+  assert.equal(suffixAt(7.6 * day), " · 1卡 · 7.6天");
 });
 
 test("compact reset credit suffixes do not invent expiry details for empty failed or expired states", () => {

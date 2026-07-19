@@ -197,9 +197,14 @@ struct AccountQuotaResetCredit: Equatable, Identifiable, Sendable {
         if interval <= 0 {
             return "已到期"
         }
-        if interval > 24 * 60 * 60 {
-            let days = Int(ceil(interval / (24 * 60 * 60)))
-            return "\(days)天"
+        if interval >= 24 * 60 * 60 {
+            let exactDays = interval / (24 * 60 * 60)
+            let text = String(
+                format: "%.1f",
+                locale: Locale(identifier: "en_US_POSIX"),
+                exactDays
+            )
+            return "\(text)天"
         }
         if interval < 60 * 60 {
             let minutes = max(1, Int(ceil(interval / 60)))

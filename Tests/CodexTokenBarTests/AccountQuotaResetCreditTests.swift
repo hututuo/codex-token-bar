@@ -32,11 +32,23 @@ final class AccountQuotaResetCreditTests: XCTestCase {
 
     func testCompactExpiryCountdownUsesDaysUntilFinalDayThenHours() {
         let now = Date(timeIntervalSince1970: 10_000)
-        let laterCredit = makeCredit(id: "later", expiresAt: now.addingTimeInterval(2.2 * 24 * 60 * 60))
+        let laterCredit = makeCredit(id: "later", expiresAt: now.addingTimeInterval(2.29 * 24 * 60 * 60))
+        let exactDayCredit = makeCredit(id: "exact-day", expiresAt: now.addingTimeInterval(24 * 60 * 60))
         let finalDayCredit = makeCredit(id: "final-day", expiresAt: now.addingTimeInterval(5.2 * 60 * 60))
         let finalHourCredit = makeCredit(id: "final-hour", expiresAt: now.addingTimeInterval(34.2 * 60))
 
-        XCTAssertEqual(laterCredit.compactExpiryCountdownText(relativeTo: now), "3天")
+        XCTAssertEqual(laterCredit.compactExpiryCountdownText(relativeTo: now), "2.3天")
+        XCTAssertEqual(exactDayCredit.compactExpiryCountdownText(relativeTo: now), "1.0天")
+        XCTAssertEqual(
+            makeCredit(id: "seven-point-five", expiresAt: now.addingTimeInterval(7.5 * 24 * 60 * 60))
+                .compactExpiryCountdownText(relativeTo: now),
+            "7.5天"
+        )
+        XCTAssertEqual(
+            makeCredit(id: "seven-point-six", expiresAt: now.addingTimeInterval(7.6 * 24 * 60 * 60))
+                .compactExpiryCountdownText(relativeTo: now),
+            "7.6天"
+        )
         XCTAssertEqual(finalDayCredit.compactExpiryCountdownText(relativeTo: now), "6h")
         XCTAssertEqual(finalHourCredit.compactExpiryCountdownText(relativeTo: now), "35m")
     }
@@ -79,7 +91,7 @@ final class AccountQuotaResetCreditTests: XCTestCase {
             fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: now.addingTimeInterval(60 * 60)),
             resetCreditsAvailableCount: 1,
             resetCredits: [
-                makeCredit(id: "later", expiresAt: now.addingTimeInterval(2.2 * 24 * 60 * 60))
+                makeCredit(id: "later", expiresAt: now.addingTimeInterval(2.29 * 24 * 60 * 60))
             ]
         )
         let finalHourSnapshot = AccountQuotaSnapshot(
@@ -92,7 +104,7 @@ final class AccountQuotaResetCreditTests: XCTestCase {
 
         XCTAssertEqual(noCardSnapshot.compactResetCreditRateBarSuffix, "")
         XCTAssertEqual(finalDaySnapshot.compactResetCreditRateBarSuffix, " · 1卡 · 6h")
-        XCTAssertEqual(laterSnapshot.compactResetCreditRateBarSuffix, " · 1卡 · 3天")
+        XCTAssertEqual(laterSnapshot.compactResetCreditRateBarSuffix, " · 1卡 · 2.3天")
         XCTAssertEqual(finalHourSnapshot.compactResetCreditRateBarSuffix, " · 1卡 · 35m")
     }
 

@@ -126,8 +126,7 @@ function nearestResetCreditExpiryCountdown(summary: ResetCreditSummary, now = ne
     return `${hours}h`;
   }
 
-  const days = Math.max(1, Math.ceil(remaining / DAY_MS));
-  return `${days}天`;
+  return `${(remaining / DAY_MS).toFixed(1)}天`;
 }
 
 function availableResetCreditCount(summary: ResetCreditSummary, now: Date): number {
