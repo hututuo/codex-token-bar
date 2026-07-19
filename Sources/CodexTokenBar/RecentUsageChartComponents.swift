@@ -250,6 +250,9 @@ struct RecentChartQuotaEstimateOverlay: View {
                     Text(presentation.costText)
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(AppTheme.accentBlue)
+                    Text(presentation.durationText)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.primary)
                     Text(presentation.timeRangeText)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
@@ -310,7 +313,7 @@ struct RecentChartQuotaEstimateOverlay: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .frame(width: 410, alignment: .leading)
+        .frame(width: 460, alignment: .leading)
         .background(AppTheme.hoverBubble.opacity(0.96), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)

@@ -13,6 +13,7 @@ import {
   plotChartPoints,
   prepareRecentChartData,
   quotaConsumptionSelection,
+  quotaSelectionDurationText,
   quotaEstimateWindowVisibility,
   recentChartScrollLayout,
   recentChartTimeMarkers,
@@ -420,6 +421,7 @@ function RecentChartQuotaEstimateOverlay({
         <div className="quota-estimate-row">
           <span>本段消耗</span>
           <strong>{moneyText(selection.selectedCostUSD)}</strong>
+          <b>{quotaSelectionDurationText(selection)}</b>
           <em>{timeRange(selection.startUnix, selection.endUnix - selection.startUnix)}</em>
           <b>命中 {percentText(selection.cacheHitRate)}</b>
         </div>
@@ -599,7 +601,7 @@ function estimateText(estimate: QuotaConsumptionEstimate, title: string, isQuota
     case "measured":
       return `${moneyText(estimate.impliedWindowBudgetUSD)} · 降 ${oneDecimalPercent(estimate.quotaDropPercent)}`;
     case "insufficientQuotaMovement":
-      return "下降太小";
+      return `降 ${oneDecimalPercent(estimate.quotaDropPercent)} · 不反推`;
     case "noTokenUsage":
       return "无 token";
   }

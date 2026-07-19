@@ -483,6 +483,25 @@ export function quotaConsumptionSelection(
   };
 }
 
+export function quotaSelectionDurationText(
+  selection: Pick<QuotaConsumptionSelection, "startUnix" | "endUnix">,
+): string {
+  const totalSeconds = Math.max(Math.round(selection.endUnix - selection.startUnix), 0);
+  if (totalSeconds < 60) {
+    return `持续 ${totalSeconds}秒`;
+  }
+
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}天`);
+  if (hours > 0) parts.push(`${hours}小时`);
+  if (minutes > 0 || parts.length === 0) parts.push(`${minutes}分钟`);
+  return `持续 ${parts.join("")}`;
+}
+
 function pointsForRange(range: RecentChartRange, series: RecentUsageChartSeries): RecentUsagePoint[] {
   let points: RecentUsagePoint[];
   switch (range) {

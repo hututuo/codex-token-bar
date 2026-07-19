@@ -140,6 +140,72 @@ test("quota estimate adapts to seven-day-only history after the 5h window disapp
   }
 });
 
+test("quota estimate keeps the range summary visible when quota stays at zero", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { RecentUsageChart } = await load("/src/components/RecentUsageChart.tsx");
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+      const recentUsage24h = [
+        point(0, 0, 0),
+        point(300, 0, 0),
+        point(600, 0, 0),
+      ];
+
+      try {
+        await React.act(async () => root.render(React.createElement(RecentUsageChart, {
+          recentUsage24h,
+          recentUsage7d: [],
+          recentUsage30d: [],
+        })));
+
+        const chart = container.querySelector("svg.usage-chart");
+        assert.ok(chart);
+        chart.getBoundingClientRect = () => ({
+          bottom: 185,
+          height: 185,
+          left: 0,
+          right: 980,
+          top: 0,
+          width: 980,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        });
+
+        for (const clientX of [0, 980]) {
+          await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointerdown", {
+            bubbles: true,
+            cancelable: true,
+            clientX,
+            clientY: 80,
+            pointerId: 1,
+          })));
+        }
+
+        const estimate = container.querySelector('[role="dialog"][aria-label="额度估算"]');
+        assert.ok(estimate);
+        assert.match(estimate.textContent, /持续 15分钟/);
+        assert.match(estimate.textContent, /5h降 0% · 不反推/);
+        assert.match(estimate.textContent, /7d降 0% · 不反推/);
+        assert.ok(container.querySelector(".chart-selection-range"));
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreGlobals();
+    window.close();
+  }
+});
+
 function point(startUnix, fiveHourRemainingPercent, sevenDayRemainingPercent) {
   return {
     label: "00:00",

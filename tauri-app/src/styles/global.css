@@ -5107,7 +5107,7 @@ input[type="range"]::-moz-range-thumb {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 22px;
   gap: 8px;
-  width: min(410px, calc(100% - 28px));
+  width: min(460px, calc(100% - 28px));
   padding: 9px 12px;
   border: 1px solid color-mix(in srgb, var(--line-strong) 90%, var(--line));
   border-radius: 8px;

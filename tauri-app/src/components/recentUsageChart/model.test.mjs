@@ -9,6 +9,7 @@ import {
   percentText,
   prepareRecentChartData,
   quotaConsumptionSelection,
+  quotaSelectionDurationText,
   quotaEstimateWindowVisibility,
   recentChartScrollLayout,
   recentChartTimeMarkers,
@@ -229,6 +230,28 @@ test("quotaConsumptionSelection uses cumulative quota drop instead of start-end 
   assert.equal(selection?.sevenDay.quotaDropPercent, 5);
   assert.equal(selection?.fiveHour.impliedWindowBudgetUSD?.toFixed(4), "15.3846");
   assert.equal(selection?.sevenDay.impliedWindowBudgetUSD?.toFixed(4), "40.0000");
+});
+
+test("quotaConsumptionSelection keeps a flat zero-quota range summary", () => {
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [
+      point(0, { inputTokens: 100_000, outputTokens: 20_000, tokens: 120_000, calls: 1, fiveHourRemainingPercent: 0, sevenDayRemainingPercent: 0 }),
+      point(300, { inputTokens: 100_000, outputTokens: 20_000, tokens: 120_000, calls: 1, fiveHourRemainingPercent: 0, sevenDayRemainingPercent: 0 }),
+    ],
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+
+  const selection = quotaConsumptionSelection(data, 0, 1, "gpt55");
+
+  assert.ok(selection);
+  assert.equal(selection.bucketCount, 2);
+  assert.equal(selection.endUnix - selection.startUnix, 600);
+  assert.equal(selection.fiveHour.quotaDropPercent, 0);
+  assert.equal(selection.sevenDay.quotaDropPercent, 0);
+  assert.equal(selection.fiveHour.confidence, "insufficientQuotaMovement");
+  assert.equal(selection.sevenDay.confidence, "insufficientQuotaMovement");
+  assert.equal(quotaSelectionDurationText(selection), "持续 10分钟");
 });
 
 test("quotaConsumptionSelection estimates quota from the fallback -> quota -> precise chain", async () => {

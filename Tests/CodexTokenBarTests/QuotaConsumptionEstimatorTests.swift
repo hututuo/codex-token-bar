@@ -42,7 +42,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertFalse(presentation.showsBudgetRatio)
         XCTAssertEqual(
             presentation.accessibilityValue,
-            "本段消耗 $1.18，5 小时 当前无 5 小时额度，7 天 反推总额度 $552，下降 1.1%"
+            "选区 \(presentation.timeRangeText)，持续 10分钟，本段消耗 $1.18，5 小时 当前无 5 小时额度，7 天 反推总额度 $552，下降 1.1%"
         )
     }
 
@@ -214,6 +214,61 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(selection.bucketCount, 3)
         XCTAssertEqual(try XCTUnwrap(selection.fiveHour.impliedWindowBudgetUSD), 110.1, accuracy: 0.0001)
         XCTAssertEqual(try XCTUnwrap(selection.sevenDay.impliedWindowBudgetUSD), 275.25, accuracy: 0.0001)
+    }
+
+    func testFlatZeroQuotaRangeStillBuildsSelectionSummary() throws {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let bins = [
+            BinUsage(start: start, tokens: 10, calls: 1),
+            BinUsage(start: start.addingTimeInterval(300), tokens: 20, calls: 1)
+        ]
+        let cache = Array(repeating: TokenCacheBreakdown(
+            inputTokens: 100_000,
+            cachedInputTokens: 50_000,
+            outputTokens: 20_000,
+            reasoningOutputTokens: 0,
+            totalTokens: 120_000,
+            calls: 1
+        ), count: 2)
+        let prepared = RecentChartPreparedData(
+            range: .twentyFourHours,
+            bins: bins,
+            bucketInterval: 300,
+            maxTokens: 20,
+            maxCalls: 1,
+            tokenTotal: 30,
+            callTotal: 2,
+            recentCacheBreakdown: cache.combined,
+            cacheBreakdowns: cache,
+            observedCacheHitRates: [0.5, 0.5],
+            fiveHourRemainingPercents: [0, 0],
+            sevenDayRemainingPercents: [0, 0],
+            latestFiveHourRemaining: 0,
+            latestSevenDayRemaining: 0,
+            hasCacheCalls: true,
+            hasFiveHourQuota: true,
+            hasSevenDayQuota: true,
+            markerIndices: [0, 1]
+        )
+
+        let selection = try XCTUnwrap(
+            prepared.quotaConsumptionSelection(
+                startIndex: 0,
+                endIndex: 1,
+                priceCard: .officialAPI(.gpt55)
+            )
+        )
+        let presentation = QuotaConsumptionEstimatorOverlayPresentation(selection: selection)
+
+        XCTAssertEqual(selection.bucketCount, 2)
+        XCTAssertEqual(selection.endDate.timeIntervalSince(selection.startDate), 600, accuracy: 0.0001)
+        XCTAssertEqual(selection.fiveHour.quotaDropPercent, 0, accuracy: 0.0001)
+        XCTAssertEqual(selection.sevenDay.quotaDropPercent, 0, accuracy: 0.0001)
+        XCTAssertEqual(selection.fiveHour.confidence, .insufficientQuotaMovement)
+        XCTAssertEqual(selection.sevenDay.confidence, .insufficientQuotaMovement)
+        XCTAssertEqual(presentation.durationText, "持续 10分钟")
+        XCTAssertEqual(presentation.fiveHourChip.detail, "降 0% · 不反推")
+        XCTAssertTrue(presentation.accessibilityValue.contains("持续 10分钟"))
     }
 
     func testSelectionReportsSevenDayToFiveHourBudgetRatioAndDivergence() throws {
@@ -894,6 +949,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(presentation.costTitle, "本段消耗")
         XCTAssertEqual(presentation.costText, "$1.18")
         XCTAssertEqual(presentation.timeRangeText, expectedRange)
+        XCTAssertEqual(presentation.durationText, "持续 10分钟")
         XCTAssertEqual(presentation.cacheHitText, "命中 40%")
         XCTAssertEqual(presentation.estimateTitle, "反推总额度")
         XCTAssertEqual(presentation.fiveHourChip.title, "5h")
@@ -909,7 +965,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(presentation.accessibilityLabel, "额度估算")
         XCTAssertEqual(
             presentation.accessibilityValue,
-            "本段消耗 $1.18，5 小时 反推总额度 $92.0，下降 10%，7 天 反推总额度 $552，下降 1.1%，倍率 6.0x"
+            "选区 \(expectedRange)，持续 10分钟，本段消耗 $1.18，5 小时 反推总额度 $92.0，下降 10%，7 天 反推总额度 $552，下降 1.1%，倍率 6.0x"
         )
     }
 
@@ -949,10 +1005,10 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             confidence: .noTokenUsage
         )
 
-        XCTAssertEqual(QuotaConsumptionEstimatePresentation(title: "5h", estimate: insufficient).detail, "下降太小")
+        XCTAssertEqual(QuotaConsumptionEstimatePresentation(title: "5h", estimate: insufficient).detail, "降 0% · 不反推")
         XCTAssertEqual(
             QuotaConsumptionEstimatePresentation(title: "5h", estimate: insufficient).accessibilityText,
-            "额度下降太小，不能反推"
+            "额度下降 0%，不能反推总额度"
         )
         XCTAssertEqual(QuotaConsumptionEstimatePresentation(title: "7d", estimate: noToken).detail, "无 token")
         XCTAssertEqual(

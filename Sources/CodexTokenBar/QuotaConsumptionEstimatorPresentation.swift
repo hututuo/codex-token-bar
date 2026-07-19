@@ -48,8 +48,8 @@ struct QuotaConsumptionEstimatePresentation: Equatable {
             detail = "\(estimate.quotaEstimatorBudgetText) · 降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
             accessibilityText = "反推总额度 \(estimate.quotaEstimatorBudgetText)，下降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
         case .insufficientQuotaMovement:
-            detail = "下降太小"
-            accessibilityText = "额度下降太小，不能反推"
+            detail = "降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent) · 不反推"
+            accessibilityText = "额度下降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)，不能反推总额度"
         case .noTokenUsage:
             detail = "无 token"
             accessibilityText = "没有 token 用量"
@@ -75,6 +75,7 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
 
     let costText: String
     let timeRangeText: String
+    let durationText: String
     let cacheHitText: String
     let fiveHourChip: QuotaConsumptionEstimatePresentation
     let sevenDayChip: QuotaConsumptionEstimatePresentation
@@ -94,6 +95,7 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
     ) {
         costText = selection.breakdown.quotaEstimatorCostText(selection.priceCard)
         timeRangeText = selection.quotaEstimatorTimeRangeText
+        durationText = selection.quotaEstimatorDurationText
         cacheHitText = "命中 \(selection.breakdown.cacheHitRate.percentString)"
         fiveHourChip = QuotaConsumptionEstimatePresentation(
             title: "5h",
@@ -115,7 +117,10 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
         ratioWarningDetailText = showsRatioWarning
             ? "可能因 7d 下降太少、颗粒度太低或其他误差。"
             : nil
-        var accessibilityParts = ["本段消耗 \(costText)"]
+        var accessibilityParts = [
+            "选区 \(timeRangeText)，\(durationText)",
+            "本段消耗 \(costText)"
+        ]
         if showsFiveHourQuota { accessibilityParts.append("5 小时 \(fiveHourChip.accessibilityText)") }
         if showsSevenDayQuota { accessibilityParts.append("7 天 \(sevenDayChip.accessibilityText)") }
         if showsBudgetRatio { accessibilityParts.append("倍率 \(budgetRatioText)") }
@@ -136,6 +141,21 @@ extension OfficialAPIPriceModel {
 extension QuotaConsumptionSelection {
     var quotaEstimatorTimeRangeText: String {
         "\(DateFormatter.hourMinute.string(from: startDate))-\(DateFormatter.hourMinute.string(from: endDate))"
+    }
+
+    var quotaEstimatorDurationText: String {
+        let totalSeconds = max(Int(endDate.timeIntervalSince(startDate).rounded()), 0)
+        guard totalSeconds >= 60 else { return "持续 \(totalSeconds)秒" }
+
+        let totalMinutes = totalSeconds / 60
+        let days = totalMinutes / (24 * 60)
+        let hours = totalMinutes % (24 * 60) / 60
+        let minutes = totalMinutes % 60
+        var parts: [String] = []
+        if days > 0 { parts.append("\(days)天") }
+        if hours > 0 { parts.append("\(hours)小时") }
+        if minutes > 0 || parts.isEmpty { parts.append("\(minutes)分钟") }
+        return "持续 \(parts.joined())"
     }
 
     var quotaEstimatorBudgetRatioText: String {
