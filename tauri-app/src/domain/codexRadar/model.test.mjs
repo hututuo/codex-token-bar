@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compactRadarModelName, modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, primaryModelRow, quotaChartSeries, radarActionDisplayText, secondaryModelRows, selectCodexRadarDetailSnapshot, shortDateLabel } from "./model.ts";
+import { compactRadarModelName, modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, primaryModelRow, quotaChartSeries, quotaRadarAvailableWindows, radarActionDisplayText, secondaryModelRows, selectCodexRadarDetailSnapshot, shortDateLabel } from "./model.ts";
 
 const snapshot = {
   modelIq: {
@@ -260,6 +260,55 @@ test("normalizeCodexRadarSnapshot accepts the public snake_case feed", () => {
   assert.equal(normalized.prediction.probability24H, 0.18);
   assert.equal(normalized.codexEnvironment.issueOrLimitAnomalies24H, 4);
   assert.deepEqual(normalized.feedItems, []);
+});
+
+test("normalizeCodexRadarSnapshot keeps the current seven-day-only quota schema nullable", () => {
+  const raw = radarSnapshotFixture();
+  raw.model_iq.quota_radar = {
+    date: "2026-07-19",
+    source: "super-account-app-server-measurement",
+    updated_at: "2026-07-19T04:35:09+00:00",
+    basis_date: "2026-07-19",
+    cost_usd: 369.517156,
+    basis_window: "secondary_7d",
+    basis_window_label: "7d",
+    raw_delta: 19,
+    endpoint: "https://api.codexradar.com/api/v1/quota",
+    source_kind: "quota_api",
+    tasks: 78,
+    five_hour_policy: "temporarily_paused_hidden",
+    seven_day_policy: "direct_quota_api",
+    rows: [
+      { tier: "20x Pro", basis: "distributed radar", five_h: null, seven_d: 1944.83 },
+      { tier: "5x Pro", basis: "estimated", five_h: null, seven_d: 486.21 },
+      { tier: "Plus", basis: "estimated", five_h: null, seven_d: 97.24 },
+    ],
+    trend: [{
+      date: "2026-07-19",
+      source: "super-account-app-server-measurement",
+      updated_at: "2026-07-19T04:35:09+00:00",
+      five_h_20x: null,
+      seven_d_20x: 1944.83,
+      five_h_5x: null,
+      five_h_plus: null,
+      basis_window: "secondary_7d",
+      basis_window_label: "7d",
+      cost_usd: 369.517156,
+    }],
+  };
+
+  const normalized = normalizeCodexRadarSnapshot(raw);
+  const quotaRadar = normalized.modelIq.quotaRadar;
+
+  assert.ok(quotaRadar);
+  assert.equal(quotaRadar.totalTokens, null);
+  assert.equal(quotaRadar.adjustedDelta, null);
+  assert.equal(quotaRadar.rate, null);
+  assert.equal(quotaRadar.fiveHourPolicy, "temporarily_paused_hidden");
+  assert.deepEqual(quotaRadarAvailableWindows(quotaRadar), ["sevenDay"]);
+  assert.equal(quotaRadar.rows[0].fiveH, null);
+  assert.deepEqual(quotaChartSeries(quotaRadar, "fiveHour"), []);
+  assert.deepEqual(quotaChartSeries(quotaRadar, "sevenDay").map((item) => item.points[0].value), [97.2415, 486.2075, 1944.83]);
 });
 
 test("selectCodexRadarDetailSnapshot prefers optional full detail and falls back to public summary", () => {

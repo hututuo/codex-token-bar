@@ -2404,6 +2404,10 @@ button.quota-side-card:hover {
   line-height: 1.08;
 }
 
+.radar-quota-row--single {
+  grid-template-columns: 46px 1fr;
+}
+
 .radar-quota-row b {
   overflow: hidden;
   color: var(--text);

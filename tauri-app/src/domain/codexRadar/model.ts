@@ -172,13 +172,18 @@ export interface CodexRadarQuotaRadar {
   updatedAt: string;
   basisDate: string;
   costUsd: number;
-  totalTokens: number;
+  totalTokens: number | null;
   basisWindow: string;
   basisWindowLabel: string;
-  adjustedDelta: number;
-  rawDelta: number;
-  offset: number;
-  rate: number;
+  adjustedDelta: number | null;
+  rawDelta: number | null;
+  offset: number | null;
+  rate: number | null;
+  endpoint?: string | null;
+  sourceKind?: string | null;
+  tasks?: number | null;
+  fiveHourPolicy?: string | null;
+  sevenDayPolicy?: string | null;
   rows: CodexRadarQuotaRow[];
   trend: CodexRadarQuotaTrendPoint[];
 }
@@ -186,8 +191,8 @@ export interface CodexRadarQuotaRadar {
 export interface CodexRadarQuotaRow {
   tier: string;
   basis: string;
-  fiveH: number;
-  sevenD: number;
+  fiveH: number | null;
+  sevenD: number | null;
 }
 
 export interface CodexRadarQuotaCalibration {
@@ -208,18 +213,18 @@ export interface CodexRadarQuotaTrendPoint {
   date: string;
   source: string;
   updatedAt: string;
-  fiveHour20x: number;
-  sevenDay20x: number;
-  fiveHour5x: number;
-  fiveHourPlus: number;
+  fiveHour20x: number | null;
+  sevenDay20x: number | null;
+  fiveHour5x: number | null;
+  fiveHourPlus: number | null;
   basisWindow: string;
   basisWindowLabel: string;
-  rate: number;
-  rawDelta: number;
-  adjustedDelta: number;
-  offset: number;
+  rate: number | null;
+  rawDelta: number | null;
+  adjustedDelta: number | null;
+  offset: number | null;
   costUsd: number;
-  totalTokens: number;
+  totalTokens: number | null;
 }
 
 export interface CodexRadarQuotaCheck {
@@ -474,23 +479,56 @@ export function modelIqChartSeries(modelIq: CodexRadarModelIQ): CodexRadarChartS
 }
 
 export function quotaChartSeries(quotaRadar: CodexRadarQuotaRadar, window: CodexRadarQuotaWindow): CodexRadarChartSeries[] {
+  if (!quotaRadarWindowAvailable(quotaRadar, window)) {
+    return [];
+  }
+
   return [
     {
       id: "quota-plus",
       label: "Plus",
-      points: quotaRadar.trend.map((point) => quotaPointToChartPoint(point, valueForQuotaTier(point, window, "plus"))),
+      points: quotaRadar.trend.flatMap((point) => {
+        const value = valueForQuotaTier(point, window, "plus");
+        return value === null ? [] : [quotaPointToChartPoint(point, value)];
+      }),
     },
     {
       id: "quota-5x",
       label: "5x Pro",
-      points: quotaRadar.trend.map((point) => quotaPointToChartPoint(point, valueForQuotaTier(point, window, "fiveX"))),
+      points: quotaRadar.trend.flatMap((point) => {
+        const value = valueForQuotaTier(point, window, "fiveX");
+        return value === null ? [] : [quotaPointToChartPoint(point, value)];
+      }),
     },
     {
       id: "quota-20x",
       label: "20x Pro",
-      points: quotaRadar.trend.map((point) => quotaPointToChartPoint(point, valueForQuotaTier(point, window, "twentyX"))),
+      points: quotaRadar.trend.flatMap((point) => {
+        const value = valueForQuotaTier(point, window, "twentyX");
+        return value === null ? [] : [quotaPointToChartPoint(point, value)];
+      }),
     },
-  ];
+  ].filter((series) => series.points.length > 0);
+}
+
+export function quotaRadarAvailableWindows(quotaRadar: CodexRadarQuotaRadar): CodexRadarQuotaWindow[] {
+  return (["fiveHour", "sevenDay"] as CodexRadarQuotaWindow[])
+    .filter((window) => quotaRadarWindowAvailable(quotaRadar, window));
+}
+
+export function quotaRadarWindowAvailable(quotaRadar: CodexRadarQuotaRadar, window: CodexRadarQuotaWindow): boolean {
+  if (window === "fiveHour") {
+    if (quotaPolicyHidesWindow(quotaRadar.fiveHourPolicy)) {
+      return false;
+    }
+    return quotaRadar.rows.some((row) => row.fiveH !== null)
+      || quotaRadar.trend.some((point) => point.fiveHour20x !== null || point.fiveHour5x !== null || point.fiveHourPlus !== null);
+  }
+  if (quotaPolicyHidesWindow(quotaRadar.sevenDayPolicy)) {
+    return false;
+  }
+  return quotaRadar.rows.some((row) => row.sevenD !== null)
+    || quotaRadar.trend.some((point) => point.sevenDay20x !== null);
 }
 
 export function modelDisplayName(point: CodexRadarModelIQPoint): string {
@@ -631,7 +669,7 @@ function quotaPointToChartPoint(point: CodexRadarQuotaTrendPoint, value: number)
   };
 }
 
-function valueForQuotaTier(point: CodexRadarQuotaTrendPoint, window: CodexRadarQuotaWindow, tier: "plus" | "fiveX" | "twentyX"): number {
+function valueForQuotaTier(point: CodexRadarQuotaTrendPoint, window: CodexRadarQuotaWindow, tier: "plus" | "fiveX" | "twentyX"): number | null {
   if (window === "fiveHour") {
     switch (tier) {
       case "plus":
@@ -645,12 +683,17 @@ function valueForQuotaTier(point: CodexRadarQuotaTrendPoint, window: CodexRadarQ
 
   switch (tier) {
     case "plus":
-      return point.sevenDay20x / 20;
+      return point.sevenDay20x === null ? null : point.sevenDay20x / 20;
     case "fiveX":
-      return point.sevenDay20x / 4;
+      return point.sevenDay20x === null ? null : point.sevenDay20x / 4;
     case "twentyX":
       return point.sevenDay20x;
   }
+}
+
+function quotaPolicyHidesWindow(policy: string | null | undefined): boolean {
+  const normalized = policy?.toLowerCase() ?? "";
+  return normalized.includes("hidden") || normalized.includes("paused") || normalized.includes("disabled");
 }
 
 function normalizeModelIq(modelIq: Record<string, unknown>): CodexRadarModelIQ {
@@ -705,8 +748,8 @@ function normalizeQuotaRadar(raw: unknown): CodexRadarQuotaRadar | null {
     return {
       tier: stringValue(read(row, "tier")),
       basis: stringValue(read(row, "basis")),
-      fiveH: numberValue(read(row, "fiveH", "five_h")),
-      sevenD: numberValue(read(row, "sevenD", "seven_d")),
+      fiveH: optionalNumber(read(row, "fiveH", "five_h")) ?? null,
+      sevenD: optionalNumber(read(row, "sevenD", "seven_d")) ?? null,
     };
   });
   return rows.length > 0 ? {
@@ -715,13 +758,18 @@ function normalizeQuotaRadar(raw: unknown): CodexRadarQuotaRadar | null {
     updatedAt: stringValue(read(radar, "updatedAt", "updated_at")),
     basisDate: stringValue(read(radar, "basisDate", "basis_date")),
     costUsd: numberValue(read(radar, "costUsd", "cost_usd")),
-    totalTokens: numberValue(read(radar, "totalTokens", "total_tokens")),
+    totalTokens: optionalNumber(read(radar, "totalTokens", "total_tokens")) ?? null,
     basisWindow: stringValue(read(radar, "basisWindow", "basis_window")),
     basisWindowLabel: stringValue(read(radar, "basisWindowLabel", "basis_window_label")),
-    adjustedDelta: numberValue(read(radar, "adjustedDelta", "adjusted_delta")),
-    rawDelta: numberValue(read(radar, "rawDelta", "raw_delta")),
-    offset: numberValue(read(radar, "offset")),
-    rate: numberValue(read(radar, "rate")),
+    adjustedDelta: optionalNumber(read(radar, "adjustedDelta", "adjusted_delta")) ?? null,
+    rawDelta: optionalNumber(read(radar, "rawDelta", "raw_delta")) ?? null,
+    offset: optionalNumber(read(radar, "offset")) ?? null,
+    rate: optionalNumber(read(radar, "rate")) ?? null,
+    endpoint: nullableString(read(radar, "endpoint")),
+    sourceKind: nullableString(read(radar, "sourceKind", "source_kind")),
+    tasks: optionalNumber(read(radar, "tasks")) ?? null,
+    fiveHourPolicy: nullableString(read(radar, "fiveHourPolicy", "five_hour_policy")),
+    sevenDayPolicy: nullableString(read(radar, "sevenDayPolicy", "seven_day_policy")),
     rows,
     trend: arrayValue(read(radar, "trend")).map(normalizeQuotaTrendPoint),
   } : null;
@@ -770,18 +818,18 @@ function normalizeQuotaTrendPoint(raw: unknown): CodexRadarQuotaTrendPoint {
     date: stringValue(read(point, "date")),
     source: stringValue(read(point, "source")),
     updatedAt: stringValue(read(point, "updatedAt", "updated_at")),
-    fiveHour20x: numberValue(read(point, "fiveHour20x", "fiveH20X", "five_h20x")),
-    sevenDay20x: numberValue(read(point, "sevenDay20x", "sevenD20X", "seven_d20x")),
-    fiveHour5x: numberValue(read(point, "fiveHour5x", "fiveH5X", "five_h5x")),
-    fiveHourPlus: numberValue(read(point, "fiveHourPlus", "fiveHPlus", "five_h_plus")),
+    fiveHour20x: optionalNumber(read(point, "fiveHour20x", "fiveH20X", "five_h_20x", "five_h20x")) ?? null,
+    sevenDay20x: optionalNumber(read(point, "sevenDay20x", "sevenD20X", "seven_d_20x", "seven_d20x")) ?? null,
+    fiveHour5x: optionalNumber(read(point, "fiveHour5x", "fiveH5X", "five_h_5x", "five_h5x")) ?? null,
+    fiveHourPlus: optionalNumber(read(point, "fiveHourPlus", "fiveHPlus", "five_h_plus")) ?? null,
     basisWindow: stringValue(read(point, "basisWindow", "basis_window")),
     basisWindowLabel: stringValue(read(point, "basisWindowLabel", "basis_window_label")),
-    rate: numberValue(read(point, "rate")),
-    rawDelta: numberValue(read(point, "rawDelta", "raw_delta")),
-    adjustedDelta: numberValue(read(point, "adjustedDelta", "adjusted_delta")),
-    offset: numberValue(read(point, "offset")),
+    rate: optionalNumber(read(point, "rate")) ?? null,
+    rawDelta: optionalNumber(read(point, "rawDelta", "raw_delta")) ?? null,
+    adjustedDelta: optionalNumber(read(point, "adjustedDelta", "adjusted_delta")) ?? null,
+    offset: optionalNumber(read(point, "offset")) ?? null,
     costUsd: numberValue(read(point, "costUsd", "cost_usd")),
-    totalTokens: numberValue(read(point, "totalTokens", "total_tokens")),
+    totalTokens: optionalNumber(read(point, "totalTokens", "total_tokens")) ?? null,
   };
 }
 

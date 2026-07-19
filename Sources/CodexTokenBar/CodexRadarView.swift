@@ -306,20 +306,28 @@ private struct CodexRadarQuotaBlock: View {
     let snapshot: CodexRadarSnapshot?
 
     var body: some View {
+        let quotaRadar = snapshot?.modelIQ.quotaRadar
+        let showsFiveHour = quotaRadar?.isWindowAvailable(.fiveHour) == true
+        let showsSevenDay = quotaRadar?.isWindowAvailable(.sevenDay) == true
+
         VStack(alignment: .leading, spacing: 6) {
             CodexRadarBlockTitle(
                 "预估额度",
                 systemImage: "gauge.with.dots.needle.67percent",
                 accent: AppTheme.accentCyan
             )
-            ForEach(snapshot?.modelIQ.quotaRadar?.rowsForDisplay ?? []) { row in
+            ForEach(quotaRadar?.rowsForDisplay ?? []) { row in
                 HStack(spacing: 8) {
                     Text(row.tier)
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(AppTheme.accentCyan)
                         .frame(width: 44, alignment: .leading)
-                    Text("5h \(row.fiveHourDisplayText)")
-                    Text("7d \(row.sevenDayDisplayText)")
+                    if showsFiveHour, row.fiveH != nil {
+                        Text("5h \(row.fiveHourDisplayText)")
+                    }
+                    if showsSevenDay, row.sevenD != nil {
+                        Text("7d \(row.sevenDayDisplayText)")
+                    }
                 }
                 .font(.system(size: 10, weight: .medium, design: .rounded))
                 .monospacedDigit()
@@ -712,67 +720,68 @@ private struct CodexRadarQuotaDetail: View {
     var body: some View {
         CodexRadarDetailSection(title: "预估额度", systemImage: "gauge.with.dots.needle.67percent") {
             if let quotaRadar = snapshot.modelIQ.quotaRadar {
-                let quotaSeries = quotaRadar.chartSeries(for: selectedQuotaWindow)
-                let activeTierIDs = activeSelectedTierIDs(for: quotaSeries)
-
                 CodexRadarDetailSubsection(title: "额度基准") {
                     CodexRadarKeyValueGrid(rows: [
                         ("依据窗口", quotaRadar.basisWindowLabel),
                         ("本轮成本", "$\(CodexRadarModelIQPoint.display(quotaRadar.costUsd, fractionDigits: 2))"),
-                        ("本轮 tokens", "\(CodexRadarModelIQPoint.display(Double(quotaRadar.totalTokens) / 1_000_000, fractionDigits: 2))M"),
-                        ("原始变化", "\(quotaRadar.rawDelta)%"),
-                        ("修正变化", "\(quotaRadar.adjustedDelta)%"),
-                        ("rate", "$\(CodexRadarModelIQPoint.display(quotaRadar.rate, fractionDigits: 4))")
+                        ("本轮 tokens", tokenText(quotaRadar.totalTokens)),
+                        ("原始变化", percentText(quotaRadar.rawDelta)),
+                        ("修正变化", percentText(quotaRadar.adjustedDelta)),
+                        ("rate", moneyText(quotaRadar.rate, fractionDigits: 4))
                     ])
                 }
 
-                CodexRadarDetailSubsection(title: "\(selectedQuotaWindow.title) 额度趋势") {
-                    HStack(alignment: .center, spacing: 10) {
-                        CodexRadarQuotaWindowSelector(selection: $selectedQuotaWindow)
+                if let activeQuotaWindow = quotaRadar.resolvedWindow(selectedQuotaWindow) {
+                    let quotaSeries = quotaRadar.chartSeries(for: activeQuotaWindow)
+                    let activeTierIDs = activeSelectedTierIDs(for: quotaSeries)
 
-                        HStack(spacing: 5) {
-                            ForEach(Array(quotaSeries.enumerated()), id: \.element.id) { index, series in
-                                ChartLineToggle(
-                                    title: series.label,
-                                    color: codexRadarSeriesColor(index),
-                                    isOn: quotaTierSelectionBinding(for: series.id, in: quotaSeries)
-                                )
+                    CodexRadarDetailSubsection(title: "\(activeQuotaWindow.title) 额度趋势") {
+                        HStack(alignment: .center, spacing: 10) {
+                            CodexRadarQuotaWindowSelector(
+                                selection: Binding(
+                                    get: { activeQuotaWindow },
+                                    set: { selectedQuotaWindow = $0 }
+                                ),
+                                windows: quotaRadar.availableWindows
+                            )
+
+                            HStack(spacing: 5) {
+                                ForEach(Array(quotaSeries.enumerated()), id: \.element.id) { index, series in
+                                    ChartLineToggle(
+                                        title: series.label,
+                                        color: codexRadarSeriesColor(index),
+                                        isOn: quotaTierSelectionBinding(for: series.id, in: quotaSeries)
+                                    )
+                                }
                             }
                         }
-                    }
 
-                    CodexRadarSeriesLineChart(
-                        series: quotaSeries,
-                        visibleSeriesIDs: activeTierIDs,
-                        xAxisTitle: "日期",
-                        yAxisTitle: "\(selectedQuotaWindow.title)美元额度",
-                        valuePrefix: "$"
-                    )
-                    .frame(height: 155)
+                        CodexRadarSeriesLineChart(
+                            series: quotaSeries,
+                            visibleSeriesIDs: activeTierIDs,
+                            xAxisTitle: "日期",
+                            yAxisTitle: "\(activeQuotaWindow.title)美元额度",
+                            valuePrefix: "$"
+                        )
+                        .frame(height: 155)
+                    }
+                } else {
+                    Text("当前没有可展示的额度窗口")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                 }
 
                 CodexRadarDetailSubsection(title: "套餐预估") {
                     CodexRadarTable(
-                        headers: ["套餐", "5h", "7d", "依据"],
-                        rows: quotaRadar.rowsForDisplay.map { row in
-                            [row.tier, row.fiveHourDisplayText, row.sevenDayDisplayText, row.basis]
-                        }
+                        headers: packageHeaders(for: quotaRadar),
+                        rows: packageRows(for: quotaRadar)
                     )
                 }
 
                 CodexRadarDetailSubsection(title: "趋势明细") {
                     CodexRadarTable(
-                        headers: ["日期", "20x 5h", "20x 7d", "5x 5h", "Plus 5h", "依据"],
-                        rows: quotaRadar.trend.map { point in
-                            [
-                                point.date,
-                                "$\(CodexRadarModelIQPoint.display(point.fiveHour20x, fractionDigits: 2))",
-                                "$\(CodexRadarModelIQPoint.display(point.sevenDay20x, fractionDigits: 2))",
-                                "$\(CodexRadarModelIQPoint.display(point.fiveHour5x, fractionDigits: 2))",
-                                "$\(CodexRadarModelIQPoint.display(point.fiveHourPlus, fractionDigits: 2))",
-                                point.basisWindowLabel
-                            ]
-                        }
+                        headers: trendHeaders(for: quotaRadar),
+                        rows: trendRows(for: quotaRadar)
                     )
                 }
             } else {
@@ -790,6 +799,54 @@ private struct CodexRadarQuotaDetail: View {
             return selected
         }
         return validIDs
+    }
+
+    private func packageHeaders(for radar: CodexRadarQuotaRadar) -> [String] {
+        ["套餐"]
+            + (radar.isWindowAvailable(.fiveHour) ? ["5h"] : [])
+            + (radar.isWindowAvailable(.sevenDay) ? ["7d"] : [])
+            + ["依据"]
+    }
+
+    private func packageRows(for radar: CodexRadarQuotaRadar) -> [[String]] {
+        radar.rowsForDisplay.map { row in
+            [row.tier]
+                + (radar.isWindowAvailable(.fiveHour) ? [row.fiveHourDisplayText] : [])
+                + (radar.isWindowAvailable(.sevenDay) ? [row.sevenDayDisplayText] : [])
+                + [row.basis]
+        }
+    }
+
+    private func trendHeaders(for radar: CodexRadarQuotaRadar) -> [String] {
+        ["日期"]
+            + (radar.isWindowAvailable(.fiveHour) ? ["20x 5h", "5x 5h", "Plus 5h"] : [])
+            + (radar.isWindowAvailable(.sevenDay) ? ["20x 7d"] : [])
+            + ["依据"]
+    }
+
+    private func trendRows(for radar: CodexRadarQuotaRadar) -> [[String]] {
+        radar.trend.map { point in
+            [point.date]
+                + (radar.isWindowAvailable(.fiveHour)
+                    ? [moneyText(point.fiveHour20x), moneyText(point.fiveHour5x), moneyText(point.fiveHourPlus)]
+                    : [])
+                + (radar.isWindowAvailable(.sevenDay) ? [moneyText(point.sevenDay20x)] : [])
+                + [point.basisWindowLabel]
+        }
+    }
+
+    private func tokenText(_ value: Int?) -> String {
+        guard let value else { return "--" }
+        return "\(CodexRadarModelIQPoint.display(Double(value) / 1_000_000, fractionDigits: 2))M"
+    }
+
+    private func percentText(_ value: Int?) -> String {
+        value.map { "\($0)%" } ?? "--"
+    }
+
+    private func moneyText(_ value: Double?, fractionDigits: Int = 2) -> String {
+        guard let value else { return "--" }
+        return "$\(CodexRadarModelIQPoint.display(value, fractionDigits: fractionDigits))"
     }
 
     private func quotaTierSelectionBinding(for id: String, in series: [CodexRadarChartSeries]) -> Binding<Bool> {
@@ -1002,10 +1059,11 @@ private struct CodexRadarSignalList: View {
 
 private struct CodexRadarQuotaWindowSelector: View {
     @Binding var selection: CodexRadarQuotaWindow
+    let windows: [CodexRadarQuotaWindow]
 
     var body: some View {
         HStack(spacing: 3) {
-            ForEach(CodexRadarQuotaWindow.allCases) { window in
+            ForEach(windows) { window in
                 Button {
                     selection = window
                 } label: {

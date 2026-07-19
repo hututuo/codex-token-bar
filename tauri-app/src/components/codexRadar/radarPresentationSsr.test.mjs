@@ -152,6 +152,66 @@ test("Codex Radar detail overlay prefers full detail snapshot and falls back to 
   });
 });
 
+test("Codex Radar detail hides the paused five-hour quota without dropping seven-day data", async () => {
+  await withSsrModules(async (load) => {
+    const { CodexRadarDetailOverlay } = await load("/src/components/CodexRadarStrip.tsx");
+    const { normalizeCodexRadarSnapshot, primaryModelRow } = await load("/src/domain/codexRadar/model.ts");
+    const raw = snapshotFixture();
+    raw.model_iq.quota_radar = {
+      date: "2026-07-19",
+      source: "super-account-app-server-measurement",
+      updated_at: "2026-07-19T04:35:09+00:00",
+      basis_date: "2026-07-19",
+      cost_usd: 369.517156,
+      basis_window: "secondary_7d",
+      basis_window_label: "7d",
+      raw_delta: 19,
+      five_hour_policy: "temporarily_paused_hidden",
+      seven_day_policy: "direct_quota_api",
+      rows: [
+        { tier: "20x Pro", basis: "distributed radar", five_h: 200, seven_d: 1944.83 },
+        { tier: "Plus", basis: "estimated", five_h: 10, seven_d: 97.24 },
+      ],
+      trend: [{
+        date: "2026-07-19",
+        source: "super-account-app-server-measurement",
+        updated_at: "2026-07-19T04:35:09+00:00",
+        five_h_20x: 200,
+        seven_d_20x: 1944.83,
+        five_h_5x: 50,
+        five_h_plus: 10,
+        basis_window: "secondary_7d",
+        basis_window_label: "7d",
+        cost_usd: 369.517156,
+      }],
+    };
+    const snapshot = normalizeCodexRadarSnapshot(raw);
+    const html = renderComponent(CodexRadarDetailOverlay, {
+      allModels: [primaryModelRow(snapshot.modelIq)],
+      detailSnapshot: snapshot,
+      detailStatus: "详细信息已更新",
+      diagnostics: [],
+      isDetailRefreshing: false,
+      isRefreshing: false,
+      onClose: () => {},
+      onRefresh: () => {},
+      primary: primaryModelRow(snapshot.modelIq),
+      probability24h: snapshot.prediction.probability24H,
+      probability48h: snapshot.prediction.probability48H,
+      quotaRows: snapshot.modelIq.quotaRadar.rows,
+      snapshot,
+      status: "公开摘要已更新",
+    });
+
+    assert.match(html, /7 天 额度趋势/);
+    assert.match(html, /role="tab"[^>]*>7d<\/button>/);
+    assert.doesNotMatch(html, /role="tab"[^>]*>5h<\/button>/);
+    assert.match(html, /<th>套餐<\/th><th>7d<\/th><th>依据<\/th>/);
+    assert.doesNotMatch(html, /<th>5h<\/th>/);
+    assert.match(html, /\$1,?944\.83/);
+  });
+});
+
 test("Codex Radar chart toggles expose enabled series with aria-pressed", async () => {
   await withSsrModules(async (load) => {
     const { CodexRadarDetailOverlay } = await load("/src/components/CodexRadarStrip.tsx");

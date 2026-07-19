@@ -30,6 +30,7 @@ import {
   percentText,
   primaryModelRow,
   quotaChartSeries,
+  quotaRadarAvailableWindows,
   radarActionDisplayText,
   selectCodexRadarDetailSnapshot,
   secondaryModelRows,
@@ -229,7 +230,15 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const crowdLeaders = useMemo(() => rankedCodexCrowdRadarModels(crowdRadar, 3), [crowdRadar]);
   const crowdBest = crowdLeaders[0] ?? null;
   const crowdRadarStale = crowdRadar !== null && crowdRadarStatus.startsWith("众测刷新失败");
-  const quotaRows = snapshot?.modelIq.quotaRadar?.rows ?? [];
+  const summaryQuotaRadar = snapshot?.modelIq.quotaRadar ?? null;
+  const quotaRows = summaryQuotaRadar?.rows ?? [];
+  const hasFiveHourQuota = summaryQuotaRadar
+    ? quotaRadarAvailableWindows(summaryQuotaRadar).includes("fiveHour")
+    : false;
+  const hasSevenDayQuota = summaryQuotaRadar
+    ? quotaRadarAvailableWindows(summaryQuotaRadar).includes("sevenDay")
+    : false;
+  const hasBothQuotaWindows = hasFiveHourQuota && hasSevenDayQuota;
   const probability24h = snapshot?.prediction.probability24H ?? snapshot?.prediction.probability24h;
   const probability48h = snapshot?.prediction.probability48H ?? snapshot?.prediction.probability48h;
 
@@ -320,10 +329,10 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
 
         <RadarBlock accentColor={semanticMetricColor(86)} icon="$" title="预估额度">
           {quotaRows.slice(0, 3).map((row) => (
-            <div className="radar-quota-row" key={row.tier}>
+            <div className={hasBothQuotaWindows ? "radar-quota-row" : "radar-quota-row radar-quota-row--single"} key={row.tier}>
               <b>{row.tier}</b>
-              <span>5h ${displayRadarNumber(row.fiveH, 2)}</span>
-              <span>7d ${displayRadarNumber(row.sevenD, 2)}</span>
+              {!hasFiveHourQuota || row.fiveH === null ? null : <span>5h ${displayRadarNumber(row.fiveH, 2)}</span>}
+              {!hasSevenDayQuota || row.sevenD === null ? null : <span>7d ${displayRadarNumber(row.sevenD, 2)}</span>}
             </div>
           ))}
           {snapshot?.modelIq.quotaRadar ? null : <span className="radar-muted">暂无额度雷达数据</span>}
@@ -386,7 +395,7 @@ export function CodexRadarDetailOverlay({
   primary: CodexRadarModelIQComparisonRow | null;
   probability24h: number | undefined;
   probability48h: number | undefined;
-  quotaRows: { tier: string; basis: string; fiveH: number; sevenD: number }[];
+  quotaRows: { tier: string; basis: string; fiveH: number | null; sevenD: number | null }[];
   snapshot: CodexRadarSnapshot | null;
   status: string;
 }) {
@@ -503,7 +512,7 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
   primary: CodexRadarModelIQComparisonRow | null;
   probability24h: number | undefined;
   probability48h: number | undefined;
-  quotaRows: { tier: string; basis: string; fiveH: number; sevenD: number }[];
+  quotaRows: { tier: string; basis: string; fiveH: number | null; sevenD: number | null }[];
   snapshot: CodexRadarSnapshot;
 }) {
   const [selectedModelSeriesIds, setSelectedModelSeriesIds] = useState<Set<string>>(new Set());
@@ -511,9 +520,16 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
   const [selectedQuotaTierIds, setSelectedQuotaTierIds] = useState<Set<string>>(new Set(["quota-plus", "quota-5x", "quota-20x"]));
   const modelSeries = useMemo(() => modelIqChartSeries(snapshot.modelIq), [snapshot.modelIq]);
   const activeModelSeriesIds = activeChartIds(modelSeries, selectedModelSeriesIds, modelSeries.slice(0, 2).map((series) => series.id));
+  const quotaRadar = snapshot.modelIq.quotaRadar;
+  const availableQuotaWindows = quotaRadar ? quotaRadarAvailableWindows(quotaRadar) : [];
+  const activeQuotaWindow = availableQuotaWindows.includes(selectedQuotaWindow)
+    ? selectedQuotaWindow
+    : (availableQuotaWindows[0] ?? "sevenDay");
+  const showsFiveHourQuota = availableQuotaWindows.includes("fiveHour");
+  const showsSevenDayQuota = availableQuotaWindows.includes("sevenDay");
   const quotaSeries = useMemo(
-    () => (snapshot.modelIq.quotaRadar ? quotaChartSeries(snapshot.modelIq.quotaRadar, selectedQuotaWindow) : []),
-    [selectedQuotaWindow, snapshot.modelIq.quotaRadar],
+    () => (quotaRadar ? quotaChartSeries(quotaRadar, activeQuotaWindow) : []),
+    [activeQuotaWindow, quotaRadar],
   );
   const activeQuotaSeriesIds = activeChartIds(quotaSeries, selectedQuotaTierIds, quotaSeries.map((series) => series.id));
 
@@ -605,50 +621,55 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
       </RadarDetailSection>
 
       <RadarDetailSection icon="gauge.with.dots.needle.67percent" title="预估额度">
-        {snapshot.modelIq.quotaRadar ? (
+        {quotaRadar ? (
           <>
             <RadarDetailSubsection title="额度基准">
               <RadarKeyValueGrid rows={[
-                ["依据窗口", snapshot.modelIq.quotaRadar.basisWindowLabel || "--"],
-                ["本轮成本", formatCost(snapshot.modelIq.quotaRadar.costUsd)],
-                ["本轮 tokens", formatTokens(snapshot.modelIq.quotaRadar.totalTokens)],
-                ["原始变化", `${snapshot.modelIq.quotaRadar.rawDelta}%`],
-                ["修正变化", `${snapshot.modelIq.quotaRadar.adjustedDelta}%`],
-                ["rate", formatCost(snapshot.modelIq.quotaRadar.rate)],
+                ["依据窗口", quotaRadar.basisWindowLabel || "--"],
+                ["本轮成本", formatCost(quotaRadar.costUsd)],
+                ["本轮 tokens", formatTokens(quotaRadar.totalTokens ?? Number.NaN)],
+                ["原始变化", quotaRadar.rawDelta === null ? "--" : `${quotaRadar.rawDelta}%`],
+                ["修正变化", quotaRadar.adjustedDelta === null ? "--" : `${quotaRadar.adjustedDelta}%`],
+                ["rate", quotaRadar.rate === null ? "--" : formatCost(quotaRadar.rate)],
               ]} />
             </RadarDetailSubsection>
-            <RadarDetailSubsection title={`${quotaWindowTitle(selectedQuotaWindow)} 额度趋势`}>
-              <div className="codex-radar-chart-toolbar">
-                <RadarQuotaWindowSelector selection={selectedQuotaWindow} onSelect={setSelectedQuotaWindow} />
-                <RadarChartToggleRow
-                  activeIds={activeQuotaSeriesIds}
-                  onToggle={(id, isOn) => setSelectedQuotaTierIds((current) => toggleChartId(current, quotaSeries, id, isOn, quotaSeries.map((series) => series.id)))}
+            {availableQuotaWindows.length > 0 ? (
+              <RadarDetailSubsection title={`${quotaWindowTitle(activeQuotaWindow)} 额度趋势`}>
+                <div className="codex-radar-chart-toolbar">
+                  <RadarQuotaWindowSelector selection={activeQuotaWindow} windows={availableQuotaWindows} onSelect={setSelectedQuotaWindow} />
+                  <RadarChartToggleRow
+                    activeIds={activeQuotaSeriesIds}
+                    onToggle={(id, isOn) => setSelectedQuotaTierIds((current) => toggleChartId(current, quotaSeries, id, isOn, quotaSeries.map((series) => series.id)))}
+                    series={quotaSeries}
+                  />
+                </div>
+                <RadarLineChart
                   series={quotaSeries}
+                  valuePrefix="$"
+                  visibleSeriesIds={activeQuotaSeriesIds}
+                  xAxisTitle="日期"
+                  yAxisTitle={`${quotaWindowTitle(activeQuotaWindow)}美元额度`}
                 />
-              </div>
-              <RadarLineChart
-                series={quotaSeries}
-                valuePrefix="$"
-                visibleSeriesIds={activeQuotaSeriesIds}
-                xAxisTitle="日期"
-                yAxisTitle={`${quotaWindowTitle(selectedQuotaWindow)}美元额度`}
-              />
-            </RadarDetailSubsection>
+              </RadarDetailSubsection>
+            ) : <p className="codex-radar-paragraph">当前没有可展示的额度窗口</p>}
             <RadarDetailSubsection title="套餐预估">
               <RadarTable
-                headers={["套餐", "5h", "7d", "依据"]}
-                rows={quotaRows.map((row) => [row.tier, formatCost(row.fiveH), formatCost(row.sevenD), row.basis || "--"])}
+                headers={["套餐", ...(showsFiveHourQuota ? ["5h"] : []), ...(showsSevenDayQuota ? ["7d"] : []), "依据"]}
+                rows={quotaRows.map((row) => [
+                  row.tier,
+                  ...(showsFiveHourQuota ? [formatCost(row.fiveH)] : []),
+                  ...(showsSevenDayQuota ? [formatCost(row.sevenD)] : []),
+                  row.basis || "--",
+                ])}
               />
             </RadarDetailSubsection>
             <RadarDetailSubsection title="趋势明细">
               <RadarTable
-                headers={["日期", "20x 5h", "20x 7d", "5x 5h", "Plus 5h", "依据"]}
-                rows={snapshot.modelIq.quotaRadar.trend.slice(-8).map((point) => [
+                headers={["日期", ...(showsFiveHourQuota ? ["20x 5h", "5x 5h", "Plus 5h"] : []), ...(showsSevenDayQuota ? ["20x 7d"] : []), "依据"]}
+                rows={quotaRadar.trend.slice(-8).map((point) => [
                   point.date,
-                  formatCost(point.fiveHour20x),
-                  formatCost(point.sevenDay20x),
-                  formatCost(point.fiveHour5x),
-                  formatCost(point.fiveHourPlus),
+                  ...(showsFiveHourQuota ? [formatCost(point.fiveHour20x), formatCost(point.fiveHour5x), formatCost(point.fiveHourPlus)] : []),
+                  ...(showsSevenDayQuota ? [formatCost(point.sevenDay20x)] : []),
                   point.basisWindowLabel || "--",
                 ])}
                 emptyText="暂无趋势明细"
@@ -905,13 +926,15 @@ function RadarChartToggleRow({
 function RadarQuotaWindowSelector({
   onSelect,
   selection,
+  windows,
 }: {
   onSelect: (selection: CodexRadarQuotaWindow) => void;
   selection: CodexRadarQuotaWindow;
+  windows: CodexRadarQuotaWindow[];
 }) {
   return (
     <div className="codex-radar-window-selector" role="tablist" aria-label="额度窗口">
-      {(["fiveHour", "sevenDay"] as CodexRadarQuotaWindow[]).map((window) => (
+      {windows.map((window) => (
         <button
           aria-selected={selection === window}
           className={selection === window ? "is-active" : undefined}
@@ -1203,7 +1226,7 @@ function formatTokens(value: number): string {
 
 function formatCost(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) {
-    return "成本 --";
+    return "--";
   }
   return `$${displayRadarNumber(value, 2)}`;
 }

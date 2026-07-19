@@ -543,13 +543,18 @@ struct CodexRadarQuotaRadar: Decodable, Equatable, Sendable {
     let updatedAt: String
     let basisDate: String
     let costUsd: Double
-    let totalTokens: Int
+    let totalTokens: Int?
     let basisWindow: String
     let basisWindowLabel: String
-    let adjustedDelta: Int
-    let rawDelta: Int
-    let offset: Int
-    let rate: Double
+    let adjustedDelta: Int?
+    let rawDelta: Int?
+    let offset: Int?
+    let rate: Double?
+    let endpoint: String?
+    let sourceKind: String?
+    let tasks: Int?
+    let fiveHourPolicy: String?
+    let sevenDayPolicy: String?
     let rows: [CodexRadarQuotaRow]
     let trend: [CodexRadarQuotaTrendPoint]
 
@@ -563,42 +568,73 @@ struct CodexRadarQuotaRadar: Decodable, Equatable, Sendable {
         }
     }
 
+    var availableWindows: [CodexRadarQuotaWindow] {
+        CodexRadarQuotaWindow.allCases.filter(isWindowAvailable)
+    }
+
+    func resolvedWindow(_ requested: CodexRadarQuotaWindow) -> CodexRadarQuotaWindow? {
+        if isWindowAvailable(requested) { return requested }
+        return availableWindows.first
+    }
+
+    func isWindowAvailable(_ window: CodexRadarQuotaWindow) -> Bool {
+        switch window {
+        case .fiveHour:
+            guard !Self.policyHidesWindow(fiveHourPolicy) else { return false }
+            return rows.contains { $0.fiveH != nil }
+                || trend.contains { $0.fiveHour20x != nil || $0.fiveHour5x != nil || $0.fiveHourPlus != nil }
+        case .sevenDay:
+            guard !Self.policyHidesWindow(sevenDayPolicy) else { return false }
+            return rows.contains { $0.sevenD != nil }
+                || trend.contains { $0.sevenDay20x != nil }
+        }
+    }
+
     func chartSeries(for window: CodexRadarQuotaWindow) -> [CodexRadarChartSeries] {
-        [
+        guard isWindowAvailable(window) else { return [] }
+        return [
             CodexRadarChartSeries(
                 id: "quota-plus",
                 label: "Plus",
-                points: trend.map { point in
-                    CodexRadarChartPoint(
+                points: trend.compactMap { point in
+                    guard let value = point.value(for: window, tier: .plus) else { return nil }
+                    return CodexRadarChartPoint(
                         rawLabel: point.date,
                         xLabel: CodexRadarChartPoint.shortDateLabel(point.date),
-                        value: point.value(for: window, tier: .plus)
+                        value: value
                     )
                 }
             ),
             CodexRadarChartSeries(
                 id: "quota-5x",
                 label: "5x Pro",
-                points: trend.map { point in
-                    CodexRadarChartPoint(
+                points: trend.compactMap { point in
+                    guard let value = point.value(for: window, tier: .fiveX) else { return nil }
+                    return CodexRadarChartPoint(
                         rawLabel: point.date,
                         xLabel: CodexRadarChartPoint.shortDateLabel(point.date),
-                        value: point.value(for: window, tier: .fiveX)
+                        value: value
                     )
                 }
             ),
             CodexRadarChartSeries(
                 id: "quota-20x",
                 label: "20x Pro",
-                points: trend.map { point in
-                    CodexRadarChartPoint(
+                points: trend.compactMap { point in
+                    guard let value = point.value(for: window, tier: .twentyX) else { return nil }
+                    return CodexRadarChartPoint(
                         rawLabel: point.date,
                         xLabel: CodexRadarChartPoint.shortDateLabel(point.date),
-                        value: point.value(for: window, tier: .twentyX)
+                        value: value
                     )
                 }
             )
-        ]
+        ].filter { !$0.points.isEmpty }
+    }
+
+    private static func policyHidesWindow(_ policy: String?) -> Bool {
+        let normalized = policy?.lowercased() ?? ""
+        return normalized.contains("hidden") || normalized.contains("paused") || normalized.contains("disabled")
     }
 }
 
@@ -613,15 +649,17 @@ struct CodexRadarQuotaRow: Decodable, Equatable, Sendable, Identifiable {
 
     let tier: String
     let basis: String
-    let fiveH: Double
-    let sevenD: Double
+    let fiveH: Double?
+    let sevenD: Double?
 
     var fiveHourDisplayText: String {
-        "$\(CodexRadarModelIQPoint.display(fiveH, fractionDigits: 2))"
+        guard let fiveH else { return "--" }
+        return "$\(CodexRadarModelIQPoint.display(fiveH, fractionDigits: 2))"
     }
 
     var sevenDayDisplayText: String {
-        "$\(CodexRadarModelIQPoint.display(sevenD, fractionDigits: 2))"
+        guard let sevenD else { return "--" }
+        return "$\(CodexRadarModelIQPoint.display(sevenD, fractionDigits: 2))"
     }
 }
 
@@ -631,20 +669,20 @@ struct CodexRadarQuotaTrendPoint: Decodable, Equatable, Sendable, Identifiable {
     let date: String
     let source: String
     let updatedAt: String
-    let fiveHour20x: Double
-    let sevenDay20x: Double
-    let fiveHour5x: Double
-    let fiveHourPlus: Double
+    let fiveHour20x: Double?
+    let sevenDay20x: Double?
+    let fiveHour5x: Double?
+    let fiveHourPlus: Double?
     let basisWindow: String
     let basisWindowLabel: String
-    let rate: Double
-    let rawDelta: Int
-    let adjustedDelta: Int
-    let offset: Int
+    let rate: Double?
+    let rawDelta: Int?
+    let adjustedDelta: Int?
+    let offset: Int?
     let costUsd: Double
-    let totalTokens: Int
+    let totalTokens: Int?
 
-    fileprivate func value(for window: CodexRadarQuotaWindow, tier: CodexRadarQuotaTier) -> Double {
+    fileprivate func value(for window: CodexRadarQuotaWindow, tier: CodexRadarQuotaTier) -> Double? {
         switch (window, tier) {
         case (.fiveHour, .plus):
             return fiveHourPlus
@@ -653,9 +691,9 @@ struct CodexRadarQuotaTrendPoint: Decodable, Equatable, Sendable, Identifiable {
         case (.fiveHour, .twentyX):
             return fiveHour20x
         case (.sevenDay, .plus):
-            return sevenDay20x / 20
+            return sevenDay20x.map { $0 / 20 }
         case (.sevenDay, .fiveX):
-            return sevenDay20x / 4
+            return sevenDay20x.map { $0 / 4 }
         case (.sevenDay, .twentyX):
             return sevenDay20x
         }

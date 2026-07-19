@@ -109,7 +109,9 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("selectedQuotaWindow"))
         XCTAssertTrue(source.contains("selectedQuotaTierIDs"))
         XCTAssertTrue(source.contains("CodexRadarQuotaWindowSelector"))
-        XCTAssertTrue(source.contains("quotaRadar.chartSeries(for: selectedQuotaWindow)"))
+        XCTAssertTrue(source.contains("quotaRadar.resolvedWindow(selectedQuotaWindow)"))
+        XCTAssertTrue(source.contains("quotaRadar.chartSeries(for: activeQuotaWindow)"))
+        XCTAssertTrue(source.contains("windows: quotaRadar.availableWindows"))
     }
 
     func testQuotaWindowSelectorUsesFullSegmentHitTargets() throws {

@@ -93,6 +93,66 @@ final class CodexRadarModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.modelIQ.chartSeries.first?.points.count, 1)
     }
 
+    func testDecodesCurrentSevenDayOnlyQuotaSchemaWithoutInventingFiveHourValues() throws {
+        var root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(Self.publicSummaryJSON.utf8)) as? [String: Any]
+        )
+        var modelIQ = try XCTUnwrap(root["model_iq"] as? [String: Any])
+        modelIQ["quota_radar"] = [
+            "date": "2026-07-19",
+            "source": "super-account-app-server-measurement",
+            "updated_at": "2026-07-19T04:35:09+00:00",
+            "basis_date": "2026-07-19",
+            "cost_usd": 369.517156,
+            "basis_window": "secondary_7d",
+            "basis_window_label": "7d",
+            "raw_delta": 19,
+            "endpoint": "https://api.codexradar.com/api/v1/quota",
+            "source_kind": "quota_api",
+            "tasks": 78,
+            "five_hour_policy": "temporarily_paused_hidden",
+            "seven_day_policy": "direct_quota_api",
+            "rows": [
+                ["tier": "20x Pro", "basis": "distributed radar", "five_h": NSNull(), "seven_d": 1944.83],
+                ["tier": "5x Pro", "basis": "estimated", "five_h": NSNull(), "seven_d": 486.21],
+                ["tier": "Plus", "basis": "estimated", "five_h": NSNull(), "seven_d": 97.24]
+            ],
+            "trend": [[
+                "date": "2026-07-19",
+                "source": "super-account-app-server-measurement",
+                "updated_at": "2026-07-19T04:35:09+00:00",
+                "five_h_20x": NSNull(),
+                "seven_d_20x": 1944.83,
+                "five_h_5x": NSNull(),
+                "five_h_plus": NSNull(),
+                "basis_window": "secondary_7d",
+                "basis_window_label": "7d",
+                "cost_usd": 369.517156
+            ]]
+        ]
+        root["model_iq"] = modelIQ
+
+        let data = try JSONSerialization.data(withJSONObject: root)
+        let snapshot = try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: data)
+        let quotaRadar = try XCTUnwrap(snapshot.modelIQ.quotaRadar)
+
+        XCTAssertNil(quotaRadar.totalTokens)
+        XCTAssertNil(quotaRadar.adjustedDelta)
+        XCTAssertNil(quotaRadar.rate)
+        XCTAssertEqual(quotaRadar.fiveHourPolicy, "temporarily_paused_hidden")
+        XCTAssertEqual(quotaRadar.availableWindows, [.sevenDay])
+        XCTAssertEqual(quotaRadar.resolvedWindow(.fiveHour), .sevenDay)
+        XCTAssertNil(quotaRadar.rowsForDisplay.first?.fiveH)
+        XCTAssertEqual(quotaRadar.rowsForDisplay.first?.fiveHourDisplayText, "--")
+        XCTAssertEqual(quotaRadar.rowsForDisplay.first?.sevenDayDisplayText, "$97.24")
+        XCTAssertTrue(quotaRadar.chartSeries(for: .fiveHour).isEmpty)
+        let sevenDayValues = quotaRadar.chartSeries(for: .sevenDay).compactMap { $0.points.first?.value }
+        XCTAssertEqual(sevenDayValues.count, 3)
+        XCTAssertEqual(sevenDayValues[0], 97.2415, accuracy: 0.000_001)
+        XCTAssertEqual(sevenDayValues[1], 486.2075, accuracy: 0.000_001)
+        XCTAssertEqual(sevenDayValues[2], 1944.83, accuracy: 0.000_001)
+    }
+
     func testPrimaryModelUsesHighestCurrentComparisonInsteadOfRawLatest() {
         let xhigh = Self.modelIQPoint(score: 87.5, reasoningEffort: "xhigh")
         let high = Self.modelIQPoint(score: 100, reasoningEffort: "high")
