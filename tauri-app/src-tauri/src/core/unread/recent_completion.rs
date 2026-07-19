@@ -69,6 +69,31 @@ pub(super) fn recent_completion_thread_ids_at(
         .collect()
 }
 
+pub(super) fn recent_completed_user_task_markers_from_tail(
+    thread_id: &str,
+    thread_source: &str,
+    source: &Value,
+    tail: &[u8],
+    tail_starts_mid_line: bool,
+    now: f64,
+) -> Vec<(String, String)> {
+    if contains_subagent_text(thread_source) || value_contains_subagent(Some(source)) {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(tail);
+    let mut lines = text.lines();
+    if tail_starts_mid_line {
+        let _ = lines.next();
+    }
+    let cutoff = now - RECENT_COMPLETION_LOOKBACK_SECONDS;
+    lines
+        .filter_map(|line| recent_task_complete_marker(line, thread_id))
+        .filter_map(|(timestamp, marker)| {
+            (timestamp >= cutoff).then_some((thread_id.to_string(), marker))
+        })
+        .collect()
+}
+
 fn recent_session_files(root: &Path, now: f64) -> Vec<PathBuf> {
     let cutoff = now - RECENT_COMPLETION_LOOKBACK_SECONDS;
     let mut files = Vec::<(PathBuf, f64)>::new();

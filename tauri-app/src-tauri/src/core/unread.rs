@@ -20,6 +20,100 @@ use state::read_unread_thread_ids;
 static ACKNOWLEDGEMENT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static TRUSTED_SUMMARIES: OnceLock<Mutex<HashMap<String, UnreadSummary>>> = OnceLock::new();
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+const PINNED_RECENT_COMPLETION_MARKER_LIMIT: usize = 4_096;
+
+#[derive(Clone, Debug)]
+pub struct UnreadObservation {
+    native_thread_ids: Option<HashSet<String>>,
+    recent_completions: Vec<(String, String)>,
+}
+
+pub struct UnreadObservationBuilder {
+    native_thread_ids: Option<HashSet<String>>,
+    session_metadata: HashMap<String, state::ObservedSessionMetadata>,
+    recent_completions: Vec<(String, String)>,
+    observed_at: f64,
+}
+
+#[cfg(test)]
+impl UnreadObservation {
+    pub(crate) fn recent_completion_count(&self) -> usize {
+        self.recent_completions.len()
+    }
+
+    pub(crate) fn native_unread_count(&self) -> Option<usize> {
+        self.native_thread_ids.as_ref().map(HashSet::len)
+    }
+}
+
+impl UnreadObservationBuilder {
+    pub fn from_native_state(native_state: Option<&[u8]>) -> Result<Self, String> {
+        Ok(Self {
+            native_thread_ids: native_state
+                .map(state::parse_unread_thread_ids)
+                .transpose()?,
+            session_metadata: HashMap::new(),
+            recent_completions: Vec::new(),
+            observed_at: recent_completion::current_time_seconds(),
+        })
+    }
+
+    pub fn has_native_unread_ids(&self) -> bool {
+        self.native_thread_ids
+            .as_ref()
+            .is_some_and(|thread_ids| !thread_ids.is_empty())
+    }
+
+    pub fn observe_session(
+        &mut self,
+        first_line: &[u8],
+        tail: &[u8],
+        tail_starts_mid_line: bool,
+    ) {
+        let Some(metadata) = state::observed_session_metadata(first_line, false) else {
+            return;
+        };
+        let remaining = PINNED_RECENT_COMPLETION_MARKER_LIMIT
+            .saturating_sub(self.recent_completions.len());
+        if remaining > 0 {
+            let mut completions = recent_completion::recent_completed_user_task_markers_from_tail(
+                &metadata.id,
+                &metadata.thread_source,
+                &metadata.source,
+                tail,
+                tail_starts_mid_line,
+                self.observed_at,
+            );
+            if completions.len() > remaining {
+                completions.drain(..completions.len() - remaining);
+            }
+            self.recent_completions.extend(completions);
+        }
+        self.session_metadata.insert(metadata.id.clone(), metadata);
+    }
+
+    pub fn finish(self, database_path: Option<&Path>) -> Result<UnreadObservation, String> {
+        let native_thread_ids = match self.native_thread_ids {
+            Some(thread_ids) if thread_ids.is_empty() => Some(thread_ids),
+            Some(thread_ids) => {
+                let database_path = database_path.ok_or_else(|| {
+                    "pinned unread observation requires state_5.sqlite when native unread state exists"
+                        .to_string()
+                })?;
+                Some(state::visible_user_thread_ids_from_observation(
+                    &thread_ids,
+                    database_path,
+                    &self.session_metadata,
+                )?)
+            }
+            None => None,
+        };
+        Ok(UnreadObservation {
+            native_thread_ids,
+            recent_completions: self.recent_completions,
+        })
+    }
+}
 
 pub fn read_unread_summary(codex_home: &Path) -> UnreadSummary {
     let source_scope_key = codex_home_key(codex_home);
@@ -56,6 +150,70 @@ pub fn try_read_unread_summary_for_source(
     )?;
     remember_trusted_summary(source_scope_key, &summary);
     Ok(summary)
+}
+
+pub fn try_read_unread_summary_for_observation(
+    observation: &UnreadObservation,
+    source_scope_key: &str,
+    validate_before_write: impl FnOnce() -> Result<(), String>,
+) -> Result<UnreadSummary, String> {
+    let summary = try_read_unread_summary_for_observation_at(
+        observation,
+        source_scope_key,
+        &write_acknowledgement_at,
+        validate_before_write,
+    )?;
+    remember_trusted_summary(source_scope_key, &summary);
+    Ok(summary)
+}
+
+fn try_read_unread_summary_for_observation_at<W, V>(
+    observation: &UnreadObservation,
+    source_scope_key: &str,
+    writer: &W,
+    validate_before_write: V,
+) -> Result<UnreadSummary, String>
+where
+    W: Fn(&Path, &UnreadAcknowledgement) -> Result<AcknowledgementWriteOutcome, String> + ?Sized,
+    V: FnOnce() -> Result<(), String>,
+{
+    acknowledgement_transaction(writer, validate_before_write, |acknowledgement| {
+        let home_acknowledgement = acknowledgement
+            .by_codex_home
+            .entry(source_scope_key.to_string())
+            .or_default();
+        let previous = home_acknowledgement.clone();
+        let completion_thread_ids = observation
+            .recent_completions
+            .iter()
+            .filter_map(|(thread_id, marker)| {
+                (!home_acknowledgement.completion_markers.contains(marker))
+                    .then_some(thread_id.clone())
+            })
+            .collect::<HashSet<_>>();
+        let summary = match observation.native_thread_ids.as_ref() {
+            Some(thread_ids) => {
+                home_acknowledgement
+                    .unread_thread_ids
+                    .retain(|thread_id| thread_ids.contains(thread_id));
+                let reactivated_thread_ids: HashSet<String> = completion_thread_ids
+                    .intersection(thread_ids)
+                    .cloned()
+                    .collect();
+                home_acknowledgement
+                    .unread_thread_ids
+                    .retain(|thread_id| !reactivated_thread_ids.contains(thread_id));
+                let mut active_ids: HashSet<String> = thread_ids
+                    .difference(&home_acknowledgement.unread_thread_ids)
+                    .cloned()
+                    .collect();
+                active_ids.extend(completion_thread_ids.intersection(thread_ids).cloned());
+                unread_state_summary(active_ids.len())
+            }
+            None => recent_completion_summary(completion_thread_ids.len()),
+        };
+        Ok((summary, *home_acknowledgement != previous))
+    })
 }
 
 #[cfg(test)]
@@ -173,6 +331,41 @@ pub fn acknowledge_current_unread_for_source(
     Ok(summary)
 }
 
+pub fn acknowledge_current_unread_for_observation(
+    observation: &UnreadObservation,
+    source_scope_key: &str,
+    validate_before_write: impl FnOnce() -> Result<(), String>,
+) -> Result<UnreadSummary, String> {
+    let summary = acknowledgement_transaction(
+        &write_acknowledgement_at,
+        validate_before_write,
+        |acknowledgement| {
+            let home_acknowledgement = acknowledgement
+                .by_codex_home
+                .entry(source_scope_key.to_string())
+                .or_default();
+            let previous = home_acknowledgement.clone();
+            if let Some(thread_ids) = observation.native_thread_ids.as_ref() {
+                home_acknowledgement
+                    .unread_thread_ids
+                    .extend(thread_ids.iter().cloned());
+            }
+            home_acknowledgement.completion_markers.extend(
+                observation
+                    .recent_completions
+                    .iter()
+                    .map(|(_, marker)| marker.clone()),
+            );
+            Ok((
+                unread_state_summary(0),
+                *home_acknowledgement != previous,
+            ))
+        },
+    )?;
+    remember_trusted_summary(source_scope_key, &summary);
+    Ok(summary)
+}
+
 fn unread_state_summary(count: usize) -> UnreadSummary {
     let active = count > 0;
     UnreadSummary {
@@ -189,6 +382,25 @@ fn unread_state_summary(count: usize) -> UnreadSummary {
             "Codex 未读列表为空。".into()
         },
         source: "codex_unread_state".into(),
+    }
+}
+
+fn recent_completion_summary(count: usize) -> UnreadSummary {
+    let active = count > 0;
+    UnreadSummary {
+        active,
+        count: count as u32,
+        label: if active {
+            "刚有任务完成".into()
+        } else {
+            "暂无未读完成会话".into()
+        },
+        detail: if active {
+            format!("Codex 未读状态不可用，按最近 30 秒内完成的 {count} 个会话兜底。")
+        } else {
+            "Codex 未读状态不可用，最近 30 秒没有可见会话完成。".into()
+        },
+        source: "recent_task_complete".into(),
     }
 }
 

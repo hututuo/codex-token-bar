@@ -9,15 +9,80 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
+#[derive(Clone, Debug)]
+pub(super) struct ObservedSessionMetadata {
+    pub(super) id: String,
+    pub(super) archived: bool,
+    pub(super) thread_source: String,
+    pub(super) source: Value,
+    pub(super) preview: String,
+}
+
 pub(super) fn read_unread_thread_ids(codex_home: &Path) -> Option<HashSet<String>> {
     let path = codex_home.join(".codex-global-state.json");
     let data = fs::read(path).ok()?;
-    let object: Value = serde_json::from_slice(&data).ok()?;
-    let Some(unread_state) = unread_state_value(&object) else {
-        return Some(HashSet::new());
-    };
-    let thread_ids = collect_thread_ids(unread_state);
+    let thread_ids = parse_unread_thread_ids(&data).ok()?;
     Some(visible_user_thread_ids(&thread_ids, codex_home))
+}
+
+pub(super) fn parse_unread_thread_ids(data: &[u8]) -> Result<HashSet<String>, String> {
+    let object: Value = serde_json::from_slice(data)
+        .map_err(|error| format!("pinned native unread state JSON is invalid: {error}"))?;
+    let Some(unread_state) = unread_state_value(&object) else {
+        return Ok(HashSet::new());
+    };
+    Ok(collect_thread_ids(unread_state))
+}
+
+pub(super) fn observed_session_metadata(
+    first_line: &[u8],
+    archived: bool,
+) -> Option<ObservedSessionMetadata> {
+    let object: Value = serde_json::from_slice(first_line).ok()?;
+    if object.get("type")?.as_str()? != "session_meta" {
+        return None;
+    }
+    let payload = object.get("payload")?;
+    Some(ObservedSessionMetadata {
+        id: payload.get("id")?.as_str()?.to_string(),
+        archived,
+        thread_source: payload
+            .get("thread_source")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        source: payload.get("source").cloned().unwrap_or(Value::Null),
+        preview: payload
+            .get("preview")
+            .and_then(Value::as_str)
+            .unwrap_or("legacy")
+            .to_string(),
+    })
+}
+
+pub(super) fn visible_user_thread_ids_from_observation(
+    thread_ids: &HashSet<String>,
+    database_path: &Path,
+    session_metadata: &std::collections::HashMap<String, ObservedSessionMetadata>,
+) -> Result<HashSet<String>, String> {
+    let connection = sqlite::open_read_only(database_path, Duration::from_secs(3))
+        .map_err(|error| format!("pinned unread SQLite validation failed: {error}"))?;
+    let columns = read_thread_columns(&connection)
+        .map_err(|error| format!("pinned unread SQLite threads validation failed: {error}"))?;
+    let (matched, mut visible) = query_visible_user_thread_rows(thread_ids, &connection, &columns)
+        .map_err(|error| format!("pinned unread SQLite query failed: {error}"))?;
+    for unresolved in thread_ids.difference(&matched) {
+        match session_metadata.get(unresolved) {
+            Some(metadata) if metadata.is_visible_user_thread() => {
+                visible.insert(unresolved.clone());
+            }
+            Some(_) => {}
+            None => {
+                visible.insert(unresolved.clone());
+            }
+        }
+    }
+    Ok(visible)
 }
 
 fn unread_state_value(object: &Value) -> Option<&Value> {
@@ -81,6 +146,21 @@ fn read_visible_user_thread_ids(
     let connection = sqlite::open_read_only(database_path, Duration::from_secs(3))?;
     let columns = read_thread_columns(&connection)?;
 
+    let (matched, mut visible) = query_visible_user_thread_rows(thread_ids, &connection, &columns)?;
+    let unresolved: HashSet<String> = thread_ids.difference(&matched).cloned().collect();
+    if !unresolved.is_empty() {
+        let session_visibility = session_visible_thread_ids(&unresolved, codex_home);
+        visible.extend(session_visibility.visible_ids);
+        visible.extend(unresolved.difference(&session_visibility.found_ids).cloned());
+    }
+    Ok(visible)
+}
+
+fn query_visible_user_thread_rows(
+    thread_ids: &HashSet<String>,
+    connection: &Connection,
+    columns: &HashSet<String>,
+) -> SqlResult<(HashSet<String>, HashSet<String>)> {
     let archived = if columns.contains("archived") {
         "COALESCE(archived, 0)"
     } else {
@@ -127,13 +207,7 @@ fn read_visible_user_thread_ids(
         }
     }
 
-    let unresolved: HashSet<String> = thread_ids.difference(&matched).cloned().collect();
-    if !unresolved.is_empty() {
-        let session_visibility = session_visible_thread_ids(&unresolved, codex_home);
-        visible.extend(session_visibility.visible_ids);
-        visible.extend(unresolved.difference(&session_visibility.found_ids).cloned());
-    }
-    Ok(visible)
+    Ok((matched, visible))
 }
 
 fn read_thread_columns(connection: &Connection) -> SqlResult<HashSet<String>> {
@@ -157,6 +231,15 @@ impl ThreadVisibilityRow {
             && !self.preview.trim().is_empty()
             && !contains_subagent_text(&self.thread_source)
             && !contains_subagent_text(&self.source)
+    }
+}
+
+impl ObservedSessionMetadata {
+    fn is_visible_user_thread(&self) -> bool {
+        !self.archived
+            && !self.preview.trim().is_empty()
+            && !contains_subagent_text(&self.thread_source)
+            && !value_contains_subagent(Some(&self.source))
     }
 }
 

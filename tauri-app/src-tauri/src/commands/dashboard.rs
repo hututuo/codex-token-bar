@@ -1,6 +1,7 @@
 use super::window_auth::require_window_label;
 use crate::core::dashboard::DashboardDataSource;
 use crate::core::startup_trace;
+use crate::core::unread::{UnreadObservation, UnreadObservationBuilder};
 use crate::core::usage::cache_lifecycle::{self, UsageCacheStatus};
 use crate::core::usage::token_count_jsonl::{self, TokenUsageSummary};
 use crate::models::{AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, PlatformCapabilities};
@@ -18,16 +19,16 @@ use tauri::{async_runtime, AppHandle, Emitter};
 pub(crate) const CODEX_HOME_SOURCE_CHANGED_EVENT: &str = "codex-home-source-changed";
 
 static CODEX_HOME_TRANSITION_STATE: OnceLock<Mutex<CodexHomeTransitionState>> = OnceLock::new();
-static PINNED_SOURCE_SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static PINNED_SQLITE_VIEW_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[cfg(unix)]
-static PINNED_DB_SNAPSHOT_CACHE: OnceLock<Mutex<HashMap<String, CachedPinnedDbSnapshot>>> =
+static PINNED_SQLITE_DESCRIPTOR_VIEW: OnceLock<Mutex<Option<PinnedSqliteDescriptorView>>> =
     OnceLock::new();
+#[cfg(unix)]
+static PINNED_SQLITE_VIEW_CLEANUP: OnceLock<Result<(), String>> = OnceLock::new();
 #[cfg(test)]
-static PINNED_SOURCE_SESSION_FILES_COPIED: AtomicU64 = AtomicU64::new(0);
+static PINNED_SQLITE_VIEWS_CREATED: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
-static PINNED_SOURCE_SNAPSHOTS_CREATED: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
-static PINNED_SOURCE_DB_FILES_COPIED: AtomicU64 = AtomicU64::new(0);
+static PINNED_SQLITE_LINK_MUTATIONS: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static PINNED_SOURCE_SESSION_ENTRIES_INSPECTED: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
@@ -37,12 +38,21 @@ const PINNED_SESSION_FILE_LIMIT: usize = 64;
 const PINNED_SESSION_FIRST_LINE_LIMIT: u64 = 262_144;
 const PINNED_SESSION_TAIL_LIMIT: u64 = 4 * 1024 * 1024;
 const PINNED_SESSION_LOOKBACK_SECONDS: i64 = 30;
+#[cfg(unix)]
+const PINNED_STATE_FILE_LIMIT: u64 = 16 * 1024 * 1024;
 
 #[cfg(unix)]
-struct CachedPinnedDbSnapshot {
-    signature: u64,
+struct PinnedSqliteDescriptorView {
     directory: PathBuf,
+    files: HashMap<String, PinnedDescriptorFile>,
     _owner_lock: std::fs::File,
+}
+
+#[cfg(unix)]
+struct PinnedDescriptorFile {
+    handle: std::fs::File,
+    device: u64,
+    inode: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -78,7 +88,7 @@ pub(crate) struct CapturedCodexHomeSource {
 pub(crate) struct PinnedCodexHomeSource {
     _handle: std::fs::File,
     read_path: PathBuf,
-    snapshot_path: Option<PathBuf>,
+    observation: Option<UnreadObservation>,
     pub source_scope_key: String,
 }
 
@@ -86,13 +96,9 @@ impl PinnedCodexHomeSource {
     pub(crate) fn read_path(&self) -> &Path {
         &self.read_path
     }
-}
 
-impl Drop for PinnedCodexHomeSource {
-    fn drop(&mut self) {
-        if let Some(path) = self.snapshot_path.take() {
-            let _ = std::fs::remove_dir_all(path);
-        }
+    pub(crate) fn observation(&self) -> Option<&UnreadObservation> {
+        self.observation.as_ref()
     }
 }
 
@@ -350,821 +356,83 @@ pub(crate) fn pin_captured_codex_home_source(
         "{}|{}",
         captured.source_token.canonical_home_key, captured.source_token.physical_home_key
     );
-    let snapshot_path = snapshot_pinned_unread_source(&handle, &source_scope_key)?;
+    let observation = capture_pinned_unread_observation(&handle, &captured.codex_home)?;
     Ok(PinnedCodexHomeSource {
         _handle: handle,
-        read_path: snapshot_path.clone(),
-        snapshot_path: Some(snapshot_path),
+        read_path: PathBuf::new(),
+        observation: Some(observation),
         source_scope_key,
     })
 }
 
 #[cfg(unix)]
-fn snapshot_pinned_unread_source(
+fn capture_pinned_unread_observation(
     root: &std::fs::File,
-    source_scope_key: &str,
-) -> Result<PathBuf, String> {
-    use rustix::fs::FileType;
+    source_root: &Path,
+) -> Result<UnreadObservation, String> {
+    use std::io::Read;
 
-    let sequence = PINNED_SOURCE_SNAPSHOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let snapshot = std::env::temp_dir().join(format!(
-        "codex-token-bar-pinned-unread-{}-{sequence}",
-        std::process::id()
-    ));
-    use std::os::unix::fs::DirBuilderExt;
-    let mut builder = std::fs::DirBuilder::new();
-    builder.mode(0o700);
-    builder.create(&snapshot)
-        .map_err(|error| format!("failed to create pinned Codex Home snapshot: {error}"))?;
-    #[cfg(test)]
-    PINNED_SOURCE_SNAPSHOTS_CREATED.fetch_add(1, Ordering::Relaxed);
-    let result = (|| {
-        evict_other_pinned_db_snapshots(source_scope_key)?;
-        copy_optional_pinned_file(
-            root,
-            ".codex-global-state.json",
-            &snapshot.join(".codex-global-state.json"),
-        )?;
-        if let Some(state_fingerprint) = pinned_state_fingerprint(&snapshot)? {
-            materialize_cached_pinned_database(
-                root,
-                source_scope_key,
-                state_fingerprint,
-                &snapshot,
-            )?;
+    ensure_stale_pinned_sqlite_views_cleaned()?;
+    let state = match open_optional_pinned_descriptor_file(root, ".codex-global-state.json")? {
+        Some(file) => {
+            let size = file
+                .handle
+                .metadata()
+                .map_err(|error| format!("failed to inspect pinned native unread state: {error}"))?
+                .len();
+            if size > PINNED_STATE_FILE_LIMIT {
+                return Err(format!(
+                    "pinned native unread state exceeds the {} byte safety limit",
+                    PINNED_STATE_FILE_LIMIT
+                ));
+            }
+            let mut data = Vec::with_capacity(size as usize);
+            file.handle
+                .take(PINNED_STATE_FILE_LIMIT + 1)
+                .read_to_end(&mut data)
+                .map_err(|error| format!("failed to read pinned native unread state: {error}"))?;
+            if data.len() as u64 > PINNED_STATE_FILE_LIMIT {
+                return Err(format!(
+                    "pinned native unread state exceeds the {} byte safety limit",
+                    PINNED_STATE_FILE_LIMIT
+                ));
+            }
+            Some(data)
         }
-        copy_recent_pinned_sessions(root, &snapshot.join("sessions"))?;
-        Ok::<(), String>(())
-    })();
-    if let Err(error) = result {
-        let _ = std::fs::remove_dir_all(&snapshot);
-        return Err(error);
-    }
-    // Confirm the descriptor still names a directory after the full snapshot.
-    let stat = rustix::fs::fstat(root)
-        .map_err(|error| format!("failed to revalidate pinned Codex Home: {error}"))?;
-    if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
-        let _ = std::fs::remove_dir_all(&snapshot);
-        return Err("pinned Codex Home stopped being a directory".into());
-    }
-    Ok(snapshot)
-}
-
-#[cfg(unix)]
-fn pinned_state_fingerprint(snapshot: &Path) -> Result<Option<u64>, String> {
-    use std::hash::{Hash, Hasher};
-
-    let path = snapshot.join(".codex-global-state.json");
-    let data = match std::fs::read(path) {
-        Ok(data) => data,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("failed to read pinned native unread state: {error}")),
+        None => None,
     };
-    let value: serde_json::Value = serde_json::from_slice(&data)
-        .map_err(|error| format!("pinned native unread state JSON is invalid: {error}"))?;
-    let unread = value
-        .get("electron-persisted-atom-state")
-        .and_then(|state| state.get("unread-thread-ids-by-host-v1"))
-        .or_else(|| value.get("unread-thread-ids-by-host-v1"));
-    let mut ids = Vec::new();
-    if let Some(unread) = unread {
-        collect_thread_ids_for_fingerprint(unread, &mut ids);
-    }
-    if ids.is_empty() {
-        return Ok(None);
-    }
-    ids.sort();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    ids.hash(&mut hasher);
-    Ok(Some(hasher.finish()))
-}
-
-#[cfg(unix)]
-fn collect_thread_ids_for_fingerprint(value: &serde_json::Value, ids: &mut Vec<String>) {
-    match value {
-        serde_json::Value::String(text) if text.len() >= 24 && text.contains('-') => {
-            ids.push(text.clone())
-        }
-        serde_json::Value::Array(items) => {
-            for item in items {
-                collect_thread_ids_for_fingerprint(item, ids);
-            }
-        }
-        serde_json::Value::Object(map) => {
-            for item in map.values() {
-                collect_thread_ids_for_fingerprint(item, ids);
-            }
-        }
-        _ => {}
-    }
-}
-
-#[cfg(unix)]
-fn materialize_cached_pinned_database(
-    root: &std::fs::File,
-    source_scope_key: &str,
-    state_fingerprint: u64,
-    snapshot: &Path,
-) -> Result<(), String> {
-    let signature_before = pinned_database_signature(root, state_fingerprint)?;
-    let cache = pinned_db_snapshot_cache()?;
-    let mut cache = cache
-        .lock()
-        .map_err(|_| "pinned unread DB cache lock was poisoned".to_string())?;
-    if let Some(cached) = cache.get(source_scope_key) {
-        if cached.signature == signature_before {
-            return link_cached_pinned_database(&cached.directory, snapshot);
-        }
-    }
-
-    let (directory, owner_lock) = create_owned_pinned_db_directory(&std::env::temp_dir())?;
-    let result = (|| {
-        for file_name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
-            copy_optional_pinned_file(root, file_name, &directory.join(file_name))?;
-        }
-        validate_pinned_state_database(&directory)?;
-        let signature_after = pinned_database_signature(root, state_fingerprint)?;
-        if signature_after != signature_before {
-            return Err("pinned unread SQLite changed while it was being copied".into());
-        }
-        Ok::<(), String>(())
-    })();
-    if let Err(error) = result {
-        let _ = std::fs::remove_dir_all(&directory);
-        return Err(error);
-    }
-    if let Err(error) = link_cached_pinned_database(&directory, snapshot) {
-        let _ = std::fs::remove_dir_all(&directory);
-        return Err(error);
-    }
-    if let Some(previous) = cache.insert(
-        source_scope_key.to_string(),
-        CachedPinnedDbSnapshot {
-            signature: signature_before,
-            directory: directory.clone(),
-            _owner_lock: owner_lock,
-        },
-    ) {
-        let _ = std::fs::remove_dir_all(previous.directory);
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn pinned_db_snapshot_cache(
-) -> Result<&'static Mutex<HashMap<String, CachedPinnedDbSnapshot>>, String> {
-    clean_stale_pinned_db_snapshots()?;
-    Ok(PINNED_DB_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(HashMap::new())))
-}
-
-#[cfg(unix)]
-fn clean_stale_pinned_db_snapshots() -> Result<(), String> {
-    clean_stale_pinned_db_snapshots_in(&std::env::temp_dir())
-}
-
-#[cfg(unix)]
-fn clean_stale_pinned_db_snapshots_in(directory: &Path) -> Result<(), String> {
-    clean_stale_pinned_db_snapshots_in_with_hook(directory, |_| {})
-}
-
-#[cfg(unix)]
-fn clean_stale_pinned_db_snapshots_in_with_hook(
-    directory: &Path,
-    after_lock: impl FnMut(&str),
-) -> Result<(), String> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(i64::MAX);
-    clean_stale_pinned_db_snapshots_in_with_policy(directory, after_lock, |stat| {
-        now.saturating_sub(stat.st_mtime) >= 60
-    })
-}
-
-#[cfg(unix)]
-fn clean_stale_pinned_db_snapshots_in_with_policy(
-    directory: &Path,
-    mut after_lock: impl FnMut(&str),
-    old_enough: impl Fn(&rustix::fs::Stat) -> bool,
-) -> Result<(), String> {
-    use rustix::fs::{
-        fstat, openat, statat, unlinkat, AtFlags, Dir, FileType, Mode, OFlags,
-    };
-    use std::ffi::OsStr;
-    use std::os::unix::ffi::OsStrExt;
-
-    const PREFIX: &[u8] = b"codex-token-bar-pinned-db-";
-    let canonical_root = std::fs::canonicalize(directory)
-        .map_err(|error| format!("failed to resolve pinned DB cache root: {error}"))?;
-    let root = open_cache_root_without_following(&canonical_root)?;
-    clean_stale_pinned_db_staging(&root, &mut after_lock, &old_enough)?;
-    let mut entries = Dir::read_from(&root)
-        .map_err(|error| format!("failed to inspect pinned DB cache directory: {error}"))?;
-    while let Some(entry) = entries.read() {
-        let Ok(entry) = entry else {
-            continue;
-        };
-        let name_bytes = entry.file_name().to_bytes();
-        if !name_bytes.starts_with(PREFIX) {
-            continue;
-        }
-        let name = OsStr::from_bytes(name_bytes);
-        let Ok(path_stat) = statat(&root, name, AtFlags::SYMLINK_NOFOLLOW) else {
-            continue;
-        };
-        if FileType::from_raw_mode(path_stat.st_mode) != FileType::Directory {
-            continue;
-        }
-        let Ok(candidate) = openat(
-            &root,
-            name,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        ) else {
-            continue;
-        };
-        let Ok(candidate_stat) = fstat(&candidate) else {
-            continue;
-        };
-        if !same_unix_file_identity(&path_stat, &candidate_stat) {
-            continue;
-        }
-        let Ok(lock_path_stat) = statat(&candidate, ".owner.lock", AtFlags::SYMLINK_NOFOLLOW)
-        else {
-            continue;
-        };
-        if FileType::from_raw_mode(lock_path_stat.st_mode) != FileType::RegularFile {
-            continue;
-        }
-        let Ok(lock_fd) = openat(
-            &candidate,
-            ".owner.lock",
-            OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        ) else {
-            continue;
-        };
-        let lock = std::fs::File::from(lock_fd);
-        let Ok(lock_stat) = fstat(&lock) else {
-            continue;
-        };
-        if !same_unix_file_identity(&lock_path_stat, &lock_stat)
-            || rustix::fs::flock(
-                &lock,
-                rustix::fs::FlockOperation::NonBlockingLockExclusive,
-            )
-            .is_err()
-        {
-            continue;
-        }
-
-        after_lock(&name.to_string_lossy());
-        let Ok(current_candidate_stat) = statat(&root, name, AtFlags::SYMLINK_NOFOLLOW) else {
-            continue;
-        };
-        let Ok(current_lock_stat) = statat(&candidate, ".owner.lock", AtFlags::SYMLINK_NOFOLLOW)
-        else {
-            continue;
-        };
-        if !same_unix_file_identity(&candidate_stat, &current_candidate_stat)
-            || FileType::from_raw_mode(current_candidate_stat.st_mode) != FileType::Directory
-            || !same_unix_file_identity(&lock_stat, &current_lock_stat)
-            || FileType::from_raw_mode(current_lock_stat.st_mode) != FileType::RegularFile
-        {
-            continue;
-        }
-
-        let mut children = match Dir::read_from(&candidate) {
-            Ok(children) => children,
-            Err(_) => continue,
-        };
-        let mut removable = Vec::new();
-        let mut valid = true;
-        while let Some(child) = children.read() {
-            let Ok(child) = child else {
-                valid = false;
-                break;
-            };
-            let child_bytes = child.file_name().to_bytes();
-            if child_bytes == b"." || child_bytes == b".." {
-                continue;
-            }
-            let child_name = OsStr::from_bytes(child_bytes);
-            let Ok(child_stat) = statat(&candidate, child_name, AtFlags::SYMLINK_NOFOLLOW) else {
-                valid = false;
-                break;
-            };
-            if FileType::from_raw_mode(child_stat.st_mode) != FileType::RegularFile {
-                valid = false;
-                break;
-            }
-            removable.push(child_name.to_os_string());
-        }
-        if !valid {
-            continue;
-        }
-        for child in removable {
-            if unlinkat(&candidate, &child, AtFlags::empty()).is_err() {
-                valid = false;
-                break;
-            }
-        }
-        if !valid {
-            continue;
-        }
-        let Ok(final_candidate_stat) = statat(&root, name, AtFlags::SYMLINK_NOFOLLOW) else {
-            continue;
-        };
-        if !same_unix_file_identity(&candidate_stat, &final_candidate_stat) {
-            continue;
-        }
-        let _ = unlinkat(&root, name, AtFlags::REMOVEDIR);
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn clean_stale_pinned_db_staging(
-    root: &impl std::os::fd::AsFd,
-    after_lock: &mut impl FnMut(&str),
-    old_enough: &impl Fn(&rustix::fs::Stat) -> bool,
-) -> Result<(), String> {
-    use rustix::fs::{
-        fstat, openat, statat, unlinkat, AtFlags, Dir, FileType, Mode, OFlags,
-    };
-    use std::ffi::OsStr;
-    use std::os::unix::ffi::OsStrExt;
-
-    const STAGING_PREFIX: &[u8] = b".codex-token-bar-pinned-db-staging-";
-    const OWNER_PREFIX: &[u8] = b".codex-token-bar-pinned-db-owner-";
-    let mut entries = Dir::read_from(root)
-        .map_err(|error| format!("failed to inspect pinned DB staging directory: {error}"))?;
-    while let Some(entry) = entries.read() {
-        let Ok(entry) = entry else { continue };
-        let bytes = entry.file_name().to_bytes();
-        if !bytes.starts_with(STAGING_PREFIX) {
-            continue;
-        }
-        let name = OsStr::from_bytes(bytes);
-        let Ok(path_stat) = statat(root, name, AtFlags::SYMLINK_NOFOLLOW) else {
-            continue;
-        };
-        if FileType::from_raw_mode(path_stat.st_mode) != FileType::Directory {
-            continue;
-        }
-        let Ok(candidate) = openat(
-            root,
-            name,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        ) else {
-            continue;
-        };
-        let Ok(candidate_stat) = fstat(&candidate) else {
-            continue;
-        };
-        if !same_unix_file_identity(&path_stat, &candidate_stat) {
-            continue;
-        }
-        let token = &bytes[STAGING_PREFIX.len()..];
-        let owner_name = format!(
-            ".codex-token-bar-pinned-db-owner-{}.lock",
-            String::from_utf8_lossy(token)
-        );
-        let owner_path_stat = statat(root, owner_name.as_str(), AtFlags::SYMLINK_NOFOLLOW);
-        let Ok(owner_path_stat) = owner_path_stat else {
-            if old_enough(&candidate_stat)
-                && directory_is_empty(&candidate)
-                && statat(root, name, AtFlags::SYMLINK_NOFOLLOW)
-                    .is_ok_and(|stat| same_unix_file_identity(&candidate_stat, &stat))
-            {
-                let _ = unlinkat(root, name, AtFlags::REMOVEDIR);
-            }
-            continue;
-        };
-        if FileType::from_raw_mode(owner_path_stat.st_mode) != FileType::RegularFile
-            || !old_enough(&owner_path_stat)
-        {
-            continue;
-        }
-        let Ok(owner_fd) = openat(
-            root,
-            owner_name.as_str(),
-            OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        ) else {
-            continue;
-        };
-        let owner = std::fs::File::from(owner_fd);
-        let Ok(owner_stat) = fstat(&owner) else {
-            continue;
-        };
-        if !same_unix_file_identity(&owner_path_stat, &owner_stat)
-            || rustix::fs::flock(
-                &owner,
-                rustix::fs::FlockOperation::NonBlockingLockExclusive,
-            )
-            .is_err()
-        {
-            continue;
-        }
-        after_lock(&name.to_string_lossy());
-        let Ok(current_candidate) = statat(root, name, AtFlags::SYMLINK_NOFOLLOW) else {
-            continue;
-        };
-        let Ok(current_owner) = statat(root, owner_name.as_str(), AtFlags::SYMLINK_NOFOLLOW)
-        else {
-            continue;
-        };
-        if !same_unix_file_identity(&candidate_stat, &current_candidate)
-            || !same_unix_file_identity(&owner_stat, &current_owner)
-        {
-            continue;
-        }
-        match statat(&candidate, ".owner.lock", AtFlags::SYMLINK_NOFOLLOW) {
-            Ok(internal)
-                if FileType::from_raw_mode(internal.st_mode) == FileType::RegularFile
-                    && same_unix_file_identity(&owner_stat, &internal) =>
-            {
-                if unlinkat(&candidate, ".owner.lock", AtFlags::empty()).is_err() {
-                    continue;
-                }
-            }
-            Err(rustix::io::Errno::NOENT) => {}
-            _ => continue,
-        }
-        if !directory_is_empty(&candidate) {
-            continue;
-        }
-        let Ok(final_candidate) = statat(root, name, AtFlags::SYMLINK_NOFOLLOW) else {
-            continue;
-        };
-        if !same_unix_file_identity(&candidate_stat, &final_candidate)
-            || unlinkat(root, name, AtFlags::REMOVEDIR).is_err()
-        {
-            continue;
-        }
-        let Ok(final_owner) = statat(root, owner_name.as_str(), AtFlags::SYMLINK_NOFOLLOW) else {
-            continue;
-        };
-        if same_unix_file_identity(&owner_stat, &final_owner) {
-            let _ = unlinkat(root, owner_name.as_str(), AtFlags::empty());
-        }
-    }
-
-    let mut owners = Dir::read_from(root)
-        .map_err(|error| format!("failed to inspect pinned DB owner artifacts: {error}"))?;
-    while let Some(entry) = owners.read() {
-        let Ok(entry) = entry else { continue };
-        let bytes = entry.file_name().to_bytes();
-        if !bytes.starts_with(OWNER_PREFIX) || !bytes.ends_with(b".lock") {
-            continue;
-        }
-        let name = OsStr::from_bytes(bytes);
-        let Ok(path_stat) = statat(root, name, AtFlags::SYMLINK_NOFOLLOW) else {
-            continue;
-        };
-        if FileType::from_raw_mode(path_stat.st_mode) != FileType::RegularFile
-            || !old_enough(&path_stat)
-        {
-            continue;
-        }
-        let token = &bytes[OWNER_PREFIX.len()..bytes.len() - b".lock".len()];
-        let staging_name = format!(
-            ".codex-token-bar-pinned-db-staging-{}",
-            String::from_utf8_lossy(token)
-        );
-        let final_name = format!(
-            "codex-token-bar-pinned-db-{}",
-            String::from_utf8_lossy(token)
-        );
-        if statat(root, staging_name.as_str(), AtFlags::SYMLINK_NOFOLLOW).is_ok()
-            || statat(root, final_name.as_str(), AtFlags::SYMLINK_NOFOLLOW).is_ok()
-        {
-            continue;
-        }
-        let Ok(fd) = openat(
-            root,
-            name,
-            OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        ) else {
-            continue;
-        };
-        let file = std::fs::File::from(fd);
-        let Ok(opened_stat) = fstat(&file) else {
-            continue;
-        };
-        if !same_unix_file_identity(&path_stat, &opened_stat)
-            || rustix::fs::flock(
-                &file,
-                rustix::fs::FlockOperation::NonBlockingLockExclusive,
-            )
-            .is_err()
-        {
-            continue;
-        }
-        let Ok(current) = statat(root, name, AtFlags::SYMLINK_NOFOLLOW) else {
-            continue;
-        };
-        if same_unix_file_identity(&opened_stat, &current) {
-            let _ = unlinkat(root, name, AtFlags::empty());
-        }
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn directory_is_empty(directory: &impl std::os::fd::AsFd) -> bool {
-    use rustix::fs::Dir;
-
-    let Ok(mut entries) = Dir::read_from(directory) else {
-        return false;
-    };
-    while let Some(entry) = entries.read() {
-        let Ok(entry) = entry else { return false };
-        let bytes = entry.file_name().to_bytes();
-        if bytes != b"." && bytes != b".." {
-            return false;
-        }
-    }
-    true
-}
-
-#[cfg(unix)]
-fn same_unix_file_identity(left: &rustix::fs::Stat, right: &rustix::fs::Stat) -> bool {
-    left.st_dev == right.st_dev && left.st_ino == right.st_ino
-}
-
-#[cfg(unix)]
-fn open_cache_root_without_following(path: &Path) -> Result<rustix::fd::OwnedFd, String> {
-    use rustix::fs::{open, openat, Mode, OFlags};
-
-    let mut current = open(
-        "/",
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|error| format!("failed to open pinned DB filesystem root: {error}"))?;
-    for component in path.components() {
-        match component {
-            Component::RootDir => {}
-            Component::Normal(name) => {
-                current = openat(
-                    &current,
-                    name,
-                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )
-                .map_err(|error| format!("failed to pin DB cache root: {error}"))?;
-            }
-            _ => return Err("pinned DB cache root is not an absolute canonical path".into()),
-        }
-    }
-    Ok(current)
-}
-
-#[cfg(unix)]
-fn process_session_identity() -> &'static str {
-    static IDENTITY: OnceLock<String> = OnceLock::new();
-    IDENTITY.get_or_init(|| {
-        let started = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0);
-        format!("{:x}-{started:x}", std::process::id())
-    })
-}
-
-#[cfg(unix)]
-fn create_owned_pinned_db_directory(
-    parent: &Path,
-) -> Result<(PathBuf, std::fs::File), String> {
-    create_owned_pinned_db_directory_with_hook(parent, |_, _, _| {})
-}
-
-#[cfg(unix)]
-fn create_owned_pinned_db_directory_with_hook(
-    parent: &Path,
-    mut publication_hook: impl FnMut(&Path, &Path, bool),
-) -> Result<(PathBuf, std::fs::File), String> {
-    use rustix::fs::{linkat, mkdirat, openat, unlinkat, AtFlags, Mode, OFlags};
-
-    let canonical_root = std::fs::canonicalize(parent)
-        .map_err(|error| format!("failed to resolve pinned DB cache root: {error}"))?;
-    let root = open_cache_root_without_following(&canonical_root)?;
-    for _ in 0..16 {
-        let sequence = PINNED_SOURCE_SNAPSHOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let staging_name = format!(
-            ".codex-token-bar-pinned-db-staging-{}-{sequence}",
-            process_session_identity()
-        );
-        let final_name = format!(
-            "codex-token-bar-pinned-db-{}-{sequence}",
-            process_session_identity()
-        );
-        let owner_name = format!(
-            ".codex-token-bar-pinned-db-owner-{}-{sequence}.lock",
-            process_session_identity()
-        );
-        let owner_fd = match openat(
-            &root,
-            owner_name.as_str(),
-            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::from_raw_mode(0o600),
-        ) {
-            Ok(fd) => fd,
-            Err(rustix::io::Errno::EXIST) => continue,
-            Err(error) => {
-                return Err(format!("failed to create pinned DB staging owner: {error}"))
-            }
-        };
-        let owner_lock = std::fs::File::from(owner_fd);
-        if let Err(error) =
-            rustix::fs::flock(&owner_lock, rustix::fs::FlockOperation::LockExclusive)
-        {
-            let _ = unlinkat(&root, owner_name.as_str(), AtFlags::empty());
-            return Err(format!("failed to lock pinned DB staging owner: {error}"));
-        }
-        if let Err(error) = mkdirat(&root, staging_name.as_str(), Mode::from_raw_mode(0o700)) {
-            let _ = unlinkat(&root, owner_name.as_str(), AtFlags::empty());
-            if error == rustix::io::Errno::EXIST {
-                continue;
-            }
-            return Err(format!("failed to create pinned DB staging directory: {error}"));
-        }
-        let result = (|| {
-            let staging = openat(
-                &root,
-                staging_name.as_str(),
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            )
-            .map_err(|error| format!("failed to open pinned DB staging directory: {error}"))?;
-            linkat(
-                &root,
-                owner_name.as_str(),
-                &staging,
-                ".owner.lock",
-                AtFlags::empty(),
-            )
-            .map_err(|error| format!("failed to bind pinned DB staging owner: {error}"))?;
-            let staging_path = canonical_root.join(&staging_name);
-            let final_path = canonical_root.join(&final_name);
-            publication_hook(&staging_path, &final_path, false);
-            publish_pinned_db_cache_directory(&root, &staging_name, &final_name)?;
-            let _ = unlinkat(&root, owner_name.as_str(), AtFlags::empty());
-            publication_hook(&staging_path, &final_path, true);
-            Ok::<_, String>((final_path, owner_lock))
-        })();
-        if result.is_err() {
-            if let Ok(staging) = openat(
-                &root,
-                staging_name.as_str(),
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            ) {
-                let _ = unlinkat(&staging, ".owner.lock", AtFlags::empty());
-            }
-            let _ = unlinkat(&root, staging_name.as_str(), AtFlags::REMOVEDIR);
-            let _ = unlinkat(&root, owner_name.as_str(), AtFlags::empty());
-        }
-        match result {
-            Ok(created) => return Ok(created),
-            Err(error) if error.starts_with("pinned DB cache publication collided:") => continue,
-            Err(error) => return Err(error),
-        }
-    }
-    Err("failed to allocate a unique pinned DB cache directory".into())
-}
-
-#[cfg(all(unix, any(target_vendor = "apple", target_os = "linux", target_os = "redox")))]
-fn publish_pinned_db_cache_directory(
-    root: &impl std::os::fd::AsFd,
-    staging_name: &str,
-    final_name: &str,
-) -> Result<(), String> {
-    rustix::fs::renameat_with(
-        root,
-        staging_name,
-        root,
-        final_name,
-        rustix::fs::RenameFlags::NOREPLACE,
-    )
-    .map_err(|error| {
-        if error == rustix::io::Errno::EXIST {
-            format!("pinned DB cache publication collided: {error}")
-        } else {
-            format!("failed to publish pinned DB cache directory: {error}")
-        }
-    })
-}
-
-#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "linux", target_os = "redox"))))]
-fn publish_pinned_db_cache_directory(
-    _root: &impl std::os::fd::AsFd,
-    _staging_name: &str,
-    _final_name: &str,
-) -> Result<(), String> {
-    Err("atomic no-replace pinned DB cache publication is unsupported on this platform".into())
-}
-
-#[cfg(unix)]
-fn evict_other_pinned_db_snapshots(source_scope_key: &str) -> Result<(), String> {
-    let cache = pinned_db_snapshot_cache()?;
-    let mut cache = cache
-        .lock()
-        .map_err(|_| "pinned unread DB cache lock was poisoned".to_string())?;
-    let stale_keys = cache
-        .keys()
-        .filter(|key| key.as_str() != source_scope_key)
-        .cloned()
-        .collect::<Vec<_>>();
-    for key in stale_keys {
-        if let Some(stale) = cache.remove(&key) {
-            let _ = std::fs::remove_dir_all(stale.directory);
-        }
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn pinned_database_signature(
-    root: &std::fs::File,
-    state_fingerprint: u64,
-) -> Result<u64, String> {
-    use rustix::fs::{statat, AtFlags};
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    state_fingerprint.hash(&mut hasher);
-    for file_name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
-        match statat(root, file_name, AtFlags::SYMLINK_NOFOLLOW) {
-            Ok(stat) => {
-                file_name.hash(&mut hasher);
-                stat.st_ino.hash(&mut hasher);
-                stat.st_size.hash(&mut hasher);
-                stat.st_mtime.hash(&mut hasher);
-                stat.st_mtime_nsec.hash(&mut hasher);
-            }
-            Err(rustix::io::Errno::NOENT) if file_name != "state_5.sqlite" => {
-                file_name.hash(&mut hasher);
-            }
-            Err(rustix::io::Errno::NOENT) => {
-                return Err(
-                    "pinned unread observation requires state_5.sqlite when native unread state exists"
-                        .into(),
-                )
-            }
-            Err(error) => {
-                return Err(format!("failed to inspect pinned unread SQLite: {error}"))
-            }
-        }
-    }
-    Ok(hasher.finish())
-}
-
-#[cfg(unix)]
-fn link_cached_pinned_database(cache: &Path, snapshot: &Path) -> Result<(), String> {
-    for file_name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
-        let source = cache.join(file_name);
-        if source.exists() {
-            std::fs::hard_link(&source, snapshot.join(file_name)).map_err(|error| {
-                format!("failed to link cached pinned unread SQLite {file_name}: {error}")
+    let mut builder = UnreadObservationBuilder::from_native_state(state.as_deref())?;
+    observe_recent_pinned_sessions(root, &mut builder)?;
+    if !builder.has_native_unread_ids() {
+        if let Some(view) = PINNED_SQLITE_DESCRIPTOR_VIEW.get() {
+            let mut view = view.lock().map_err(|_| {
+                "pinned unread SQLite descriptor view lock was poisoned".to_string()
             })?;
+            if let Some(view) = view.as_mut() {
+                install_pinned_sqlite_descriptor_files(view, None, HashMap::new())?;
+            }
         }
+        return builder.finish(None);
     }
-    Ok(())
+
+    let view = pinned_sqlite_descriptor_view();
+    let mut view = view
+        .lock()
+        .map_err(|_| "pinned unread SQLite descriptor view lock was poisoned".to_string())?;
+    if view.is_none() {
+        *view = Some(create_pinned_sqlite_descriptor_view()?);
+    }
+    let view = view
+        .as_mut()
+        .ok_or_else(|| "pinned unread SQLite descriptor view is unavailable".to_string())?;
+    refresh_pinned_sqlite_descriptor_view(root, source_root, view)?;
+    builder.finish(Some(&view.directory.join("state_5.sqlite")))
 }
 
 #[cfg(unix)]
-fn validate_pinned_state_database(snapshot: &Path) -> Result<(), String> {
-    let state = snapshot.join(".codex-global-state.json");
-    let database = snapshot.join("state_5.sqlite");
-    if !database.exists() {
-        if !state.exists() {
-            return Ok(());
-        }
-        return Err(
-            "pinned unread observation requires state_5.sqlite when native unread state exists"
-                .into(),
-        );
-    }
-    let connection = rusqlite::Connection::open_with_flags(
-        database,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|error| format!("pinned unread SQLite validation failed: {error}"))?;
-    connection
-        .prepare("SELECT id FROM threads LIMIT 0")
-        .map_err(|error| format!("pinned unread SQLite threads validation failed: {error}"))?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn copy_recent_pinned_sessions(
+fn observe_recent_pinned_sessions(
     root: &std::fs::File,
-    destination: &Path,
+    builder: &mut UnreadObservationBuilder,
 ) -> Result<(), String> {
     use rustix::fs::{openat, Mode, OFlags};
 
@@ -1181,27 +449,368 @@ fn copy_recent_pinned_sessions(
     validate_canonical_sessions_root(&sessions)?;
     let now_utc = time::OffsetDateTime::now_utc();
     let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
-    let date_paths = recent_session_date_paths(now_utc, local_offset);
     let cutoff = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64 - PINNED_SESSION_LOOKBACK_SECONDS)
         .unwrap_or(i64::MAX);
     let mut candidates = Vec::new();
-    for date_path in date_paths {
+    for date_path in recent_session_date_paths(now_utc, local_offset) {
         let Some(day) = open_pinned_directory_path(&sessions, &date_path)? else {
             continue;
         };
-        collect_recent_pinned_session_candidates(
-            &day,
-            &date_path,
-            cutoff,
-            &mut candidates,
-        )?;
+        collect_recent_pinned_session_candidates(&day, &date_path, cutoff, &mut candidates)?;
     }
     candidates.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
     for (relative_path, _) in candidates.into_iter().take(PINNED_SESSION_FILE_LIMIT) {
-        copy_pinned_session_candidate(&sessions, &relative_path, destination)?;
+        observe_pinned_session_candidate(&sessions, &relative_path, cutoff, builder)?;
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn observe_pinned_session_candidate(
+    sessions: &impl std::os::fd::AsFd,
+    relative_path: &Path,
+    cutoff: i64,
+    builder: &mut UnreadObservationBuilder,
+) -> Result<(), String> {
+    use rustix::fs::{fstat, openat, FileType, Mode, OFlags};
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut current = rustix::io::dup(sessions)
+        .map_err(|error| format!("failed to duplicate pinned sessions handle: {error}"))?;
+    let mut components = relative_path.components().peekable();
+    while let Some(component) = components.next() {
+        let flags = if components.peek().is_some() {
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::DIRECTORY
+        } else {
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW
+        };
+        current = openat(&current, component.as_os_str(), flags, Mode::empty())
+            .map_err(|error| format!("failed to open pinned session candidate: {error}"))?;
+    }
+    let stat = fstat(&current)
+        .map_err(|error| format!("failed to inspect pinned session candidate: {error}"))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err("pinned session candidate stopped being a regular file".into());
+    }
+    if stat.st_mtime < cutoff {
+        return Ok(());
+    }
+    let mut file = std::fs::File::from(current);
+    let mut first = vec![0; PINNED_SESSION_FIRST_LINE_LIMIT as usize];
+    let first_len = file
+        .read(&mut first)
+        .map_err(|error| format!("failed to read pinned session head: {error}"))?;
+    first.truncate(
+        first[..first_len]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(first_len),
+    );
+    let size = stat.st_size.max(0) as u64;
+    let tail_start = size.saturating_sub(PINNED_SESSION_TAIL_LIMIT);
+    file.seek(SeekFrom::Start(tail_start))
+        .map_err(|error| format!("failed to seek pinned session tail: {error}"))?;
+    let mut tail = Vec::with_capacity((size - tail_start) as usize);
+    file.take(PINNED_SESSION_TAIL_LIMIT)
+        .read_to_end(&mut tail)
+        .map_err(|error| format!("failed to read pinned session tail: {error}"))?;
+    builder.observe_session(&first, &tail, tail_start > 0);
+    Ok(())
+}
+
+#[cfg(unix)]
+fn pinned_sqlite_descriptor_view() -> &'static Mutex<Option<PinnedSqliteDescriptorView>> {
+    PINNED_SQLITE_DESCRIPTOR_VIEW.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(unix)]
+fn create_pinned_sqlite_descriptor_view() -> Result<PinnedSqliteDescriptorView, String> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    for _ in 0..32 {
+        let sequence = PINNED_SQLITE_VIEW_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let directory = std::env::temp_dir().join(format!(
+            "codex-token-bar-pinned-sqlite-view-{}-{sequence}-{timestamp}",
+            std::process::id()
+        ));
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700);
+        match builder.create(&directory) {
+            Ok(()) => {
+                let owner_path = directory.join(".owner.lock");
+                let owner_lock = std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .read(true)
+                    .write(true)
+                    .open(&owner_path)
+                    .map_err(|error| {
+                        format!("failed to create pinned unread SQLite owner lock: {error}")
+                    })?;
+                rustix::fs::flock(
+                    &owner_lock,
+                    rustix::fs::FlockOperation::LockExclusive,
+                )
+                .map_err(|error| {
+                    format!("failed to lock pinned unread SQLite descriptor view: {error}")
+                })?;
+                #[cfg(test)]
+                PINNED_SQLITE_VIEWS_CREATED.fetch_add(1, Ordering::Relaxed);
+                return Ok(PinnedSqliteDescriptorView {
+                    directory,
+                    files: HashMap::new(),
+                    _owner_lock: owner_lock,
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to create pinned unread SQLite descriptor view: {error}"
+                ))
+            }
+        }
+    }
+    Err("failed to allocate pinned unread SQLite descriptor view".into())
+}
+
+#[cfg(unix)]
+fn ensure_stale_pinned_sqlite_views_cleaned() -> Result<(), String> {
+    PINNED_SQLITE_VIEW_CLEANUP
+        .get_or_init(clean_stale_pinned_sqlite_descriptor_views)
+        .clone()
+}
+
+#[cfg(unix)]
+fn clean_stale_pinned_sqlite_descriptor_views() -> Result<(), String> {
+    const PREFIX: &str = "codex-token-bar-pinned-sqlite-view-";
+    let entries = std::fs::read_dir(std::env::temp_dir())
+        .map_err(|error| format!("failed to inspect pinned SQLite view root: {error}"))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(PREFIX) {
+            continue;
+        }
+        let path = entry.path();
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_dir() => metadata,
+            _ => continue,
+        };
+        let owner = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.join(".owner.lock"))
+        {
+            Ok(owner) => owner,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let old_enough = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|modified| modified.elapsed().ok())
+                    .is_some_and(|age| age >= std::time::Duration::from_secs(60));
+                if old_enough {
+                    let _ = std::fs::remove_dir_all(&path);
+                }
+                continue;
+            }
+            Err(_) => continue,
+        };
+        match rustix::fs::flock(
+            &owner,
+            rustix::fs::FlockOperation::NonBlockingLockExclusive,
+        ) {
+            Ok(()) => {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+            Err(rustix::io::Errno::WOULDBLOCK) => {}
+            Err(_) => {}
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn refresh_pinned_sqlite_descriptor_view(
+    root: &std::fs::File,
+    source_root: &Path,
+    view: &mut PinnedSqliteDescriptorView,
+) -> Result<(), String> {
+    let mut desired = HashMap::new();
+    let database = open_optional_pinned_descriptor_file(root, "state_5.sqlite")?.ok_or_else(|| {
+        "pinned unread observation requires state_5.sqlite when native unread state exists"
+            .to_string()
+    })?;
+    desired.insert("state_5.sqlite".to_string(), database);
+    for name in ["state_5.sqlite-wal", "state_5.sqlite-shm"] {
+        if let Some(file) = open_optional_pinned_descriptor_file(root, name)? {
+            desired.insert(name.to_string(), file);
+        }
+    }
+    validate_pinned_descriptor_set(root, &desired)?;
+    install_pinned_sqlite_descriptor_files(view, Some(source_root), desired)
+}
+
+#[cfg(unix)]
+fn validate_pinned_descriptor_set(
+    root: &std::fs::File,
+    files: &HashMap<String, PinnedDescriptorFile>,
+) -> Result<(), String> {
+    use rustix::fs::{statat, AtFlags, FileType};
+
+    for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
+        match (statat(root, name, AtFlags::SYMLINK_NOFOLLOW), files.get(name)) {
+            (Ok(stat), Some(file))
+                if FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile
+                    && u64::try_from(stat.st_dev).ok() == Some(file.device)
+                    && stat.st_ino == file.inode => {}
+            (Err(rustix::io::Errno::NOENT), None) => {}
+            _ => {
+                return Err(format!(
+                    "pinned unread SQLite descriptor set changed while it was being captured: {name}"
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn open_optional_pinned_descriptor_file(
+    parent: &impl std::os::fd::AsFd,
+    name: &str,
+) -> Result<Option<PinnedDescriptorFile>, String> {
+    use rustix::fs::{fstat, openat, statat, AtFlags, FileType, Mode, OFlags};
+
+    let before = match statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => stat,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(error) => return Err(format!("failed to inspect pinned unread entry {name}: {error}")),
+    };
+    match FileType::from_raw_mode(before.st_mode) {
+        FileType::RegularFile => {}
+        FileType::Directory => return Err(format!("pinned unread file {name} is a directory")),
+        FileType::Symlink => {
+            return Err(format!(
+                "pinned unread entry {name} is a symlink and was rejected"
+            ))
+        }
+        other => {
+            return Err(format!(
+                "pinned unread entry {name} has unsupported type {other:?}"
+            ))
+        }
+    }
+    let handle = openat(
+        parent,
+        name,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|error| format!("failed to open pinned unread file {name}: {error}"))?;
+    let after = fstat(&handle)
+        .map_err(|error| format!("failed to inspect opened pinned unread file {name}: {error}"))?;
+    if before.st_dev != after.st_dev || before.st_ino != after.st_ino {
+        return Err(format!(
+            "pinned unread entry {name} changed while it was being opened"
+        ));
+    }
+    Ok(Some(PinnedDescriptorFile {
+        handle: std::fs::File::from(handle),
+        device: u64::try_from(after.st_dev)
+            .map_err(|_| format!("pinned unread entry {name} has an invalid device id"))?,
+        inode: after.st_ino,
+    }))
+}
+
+#[cfg(unix)]
+fn install_pinned_sqlite_descriptor_files(
+    view: &mut PinnedSqliteDescriptorView,
+    source_root: Option<&Path>,
+    mut desired: HashMap<String, PinnedDescriptorFile>,
+) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
+        if !desired.contains_key(name) {
+            let destination = view.directory.join(name);
+            match std::fs::remove_file(destination) {
+                Ok(()) => {
+                    #[cfg(test)]
+                    PINNED_SQLITE_LINK_MUTATIONS.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "failed to remove stale pinned unread SQLite descriptor {name}: {error}"
+                    ))
+                }
+            }
+        }
+    }
+    let names = desired.keys().cloned().collect::<Vec<_>>();
+    for name in names {
+        let unchanged = view.files.get(&name).is_some_and(|existing| {
+            let replacement = desired.get(&name).expect("desired descriptor disappeared");
+            existing.device == replacement.device
+                && existing.inode == replacement.inode
+                && std::fs::symlink_metadata(view.directory.join(&name)).is_ok_and(|metadata| {
+                    metadata.file_type().is_file()
+                        && metadata.dev() == existing.device
+                        && metadata.ino() == existing.inode
+                })
+        });
+        if unchanged {
+            if let Some(existing) = view.files.remove(&name) {
+                desired.insert(name, existing);
+            }
+            continue;
+        }
+        let descriptor = desired
+            .get(&name)
+            .ok_or_else(|| "desired pinned SQLite descriptor disappeared".to_string())?;
+        let source_root = source_root.ok_or_else(|| {
+            "pinned unread SQLite source root is unavailable for descriptor publication"
+                .to_string()
+        })?;
+        let destination = view.directory.join(&name);
+        match std::fs::remove_file(&destination) {
+            Ok(()) => {
+                #[cfg(test)]
+                PINNED_SQLITE_LINK_MUTATIONS.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to replace pinned unread SQLite descriptor {name}: {error}"
+                ))
+            }
+        }
+        std::fs::hard_link(source_root.join(&name), &destination).map_err(|error| {
+            format!(
+                "failed to publish pinned unread SQLite descriptor {name} without copying data: {error}"
+            )
+        })?;
+        let published = std::fs::symlink_metadata(&destination).map_err(|error| {
+            format!("failed to inspect pinned unread SQLite descriptor {name}: {error}")
+        })?;
+        if !published.file_type().is_file()
+            || published.dev() != descriptor.device
+            || published.ino() != descriptor.inode
+        {
+            let _ = std::fs::remove_file(&destination);
+            return Err(format!(
+                "pinned unread SQLite descriptor {name} changed while it was being published"
+            ));
+        }
+        #[cfg(test)]
+        PINNED_SQLITE_LINK_MUTATIONS.fetch_add(1, Ordering::Relaxed);
+    }
+    view.files = desired;
     Ok(())
 }
 
@@ -1336,6 +945,12 @@ fn collect_recent_pinned_session_candidates<Fd: std::os::fd::AsFd>(
                         relative_root.join(child_name),
                         (stat.st_mtime, stat.st_mtime_nsec),
                     ));
+                    if candidates.len() > PINNED_SESSION_FILE_LIMIT {
+                        candidates.sort_by(|left, right| {
+                            right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0))
+                        });
+                        candidates.truncate(PINNED_SESSION_FILE_LIMIT);
+                    }
                 }
             }
             FileType::Symlink => {
@@ -1347,74 +962,10 @@ fn collect_recent_pinned_session_candidates<Fd: std::os::fd::AsFd>(
     Ok(())
 }
 
-#[cfg(unix)]
-fn copy_pinned_session_candidate(
-    sessions: &impl std::os::fd::AsFd,
-    relative_path: &Path,
-    destination_root: &Path,
-) -> Result<(), String> {
-    use rustix::fs::{openat, Mode, OFlags};
-    use std::io::{Read, Seek, SeekFrom, Write};
-
-    let mut current = rustix::io::dup(sessions)
-        .map_err(|error| format!("failed to duplicate pinned sessions handle: {error}"))?;
-    let mut components = relative_path.components().peekable();
-    while let Some(component) = components.next() {
-        let name = component.as_os_str();
-        let flags = if components.peek().is_some() {
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::DIRECTORY
-        } else {
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW
-        };
-        current = openat(&current, name, flags, Mode::empty())
-            .map_err(|error| format!("failed to open pinned session candidate: {error}"))?;
-    }
-    let mut source = std::fs::File::from(current);
-    let size = source
-        .metadata()
-        .map_err(|error| format!("failed to inspect pinned session candidate: {error}"))?
-        .len();
-    let destination = destination_root.join(relative_path);
-    std::fs::create_dir_all(
-        destination
-            .parent()
-            .ok_or_else(|| "pinned session snapshot path has no parent".to_string())?,
-    )
-    .map_err(|error| format!("failed to create pinned session snapshot directory: {error}"))?;
-    let mut target = std::fs::File::create(destination)
-        .map_err(|error| format!("failed to create pinned session snapshot: {error}"))?;
-    if size <= PINNED_SESSION_FIRST_LINE_LIMIT + PINNED_SESSION_TAIL_LIMIT {
-        std::io::copy(&mut source, &mut target)
-            .map_err(|error| format!("failed to copy recent pinned session: {error}"))?;
-    } else {
-        let mut first = vec![0; PINNED_SESSION_FIRST_LINE_LIMIT as usize];
-        let first_len = source
-            .read(&mut first)
-            .map_err(|error| format!("failed to read pinned session head: {error}"))?;
-        let first_line_end = first[..first_len]
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map(|index| index + 1)
-            .unwrap_or(first_len);
-        target
-            .write_all(&first[..first_line_end])
-            .map_err(|error| format!("failed to write pinned session head: {error}"))?;
-        source
-            .seek(SeekFrom::Start(size - PINNED_SESSION_TAIL_LIMIT))
-            .map_err(|error| format!("failed to seek pinned session tail: {error}"))?;
-        std::io::copy(&mut source.take(PINNED_SESSION_TAIL_LIMIT), &mut target)
-            .map_err(|error| format!("failed to copy pinned session tail: {error}"))?;
-    }
-    #[cfg(test)]
-    PINNED_SOURCE_SESSION_FILES_COPIED.fetch_add(1, Ordering::Relaxed);
-    Ok(())
-}
-
 #[cfg(test)]
-pub(crate) fn reset_pinned_source_copy_count_for_test() {
-    PINNED_SOURCE_SESSION_FILES_COPIED.store(0, Ordering::Relaxed);
-    PINNED_SOURCE_SNAPSHOTS_CREATED.store(0, Ordering::Relaxed);
-    PINNED_SOURCE_DB_FILES_COPIED.store(0, Ordering::Relaxed);
+pub(crate) fn reset_pinned_source_observation_counters_for_test() {
+    PINNED_SQLITE_VIEWS_CREATED.store(0, Ordering::Relaxed);
+    PINNED_SQLITE_LINK_MUTATIONS.store(0, Ordering::Relaxed);
     PINNED_SOURCE_SESSION_ENTRIES_INSPECTED.store(0, Ordering::Relaxed);
 }
 
@@ -1427,69 +978,18 @@ pub(crate) fn pinned_source_counter_test_guard() -> std::sync::MutexGuard<'stati
 }
 
 #[cfg(test)]
-pub(crate) fn pinned_source_copy_count_for_test() -> u64 {
-    PINNED_SOURCE_SESSION_FILES_COPIED.load(Ordering::Relaxed)
+pub(crate) fn pinned_sqlite_view_create_count_for_test() -> u64 {
+    PINNED_SQLITE_VIEWS_CREATED.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]
-pub(crate) fn pinned_source_snapshot_count_for_test() -> u64 {
-    PINNED_SOURCE_SNAPSHOTS_CREATED.load(Ordering::Relaxed)
-}
-
-#[cfg(test)]
-pub(crate) fn pinned_source_db_copy_count_for_test() -> u64 {
-    PINNED_SOURCE_DB_FILES_COPIED.load(Ordering::Relaxed)
+pub(crate) fn pinned_sqlite_link_mutation_count_for_test() -> u64 {
+    PINNED_SQLITE_LINK_MUTATIONS.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]
 pub(crate) fn pinned_source_inspected_count_for_test() -> u64 {
     PINNED_SOURCE_SESSION_ENTRIES_INSPECTED.load(Ordering::Relaxed)
-}
-
-#[cfg(unix)]
-fn copy_optional_pinned_file<Fd: std::os::fd::AsFd>(
-    parent: Fd,
-    name: &str,
-    destination: &Path,
-) -> Result<(), String> {
-    use rustix::fs::{openat, statat, AtFlags, FileType, Mode, OFlags};
-
-    let stat = match statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW) {
-        Ok(stat) => stat,
-        Err(rustix::io::Errno::NOENT) => return Ok(()),
-        Err(error) => {
-            return Err(format!("failed to inspect pinned unread entry {name}: {error}"))
-        }
-    };
-    match FileType::from_raw_mode(stat.st_mode) {
-        FileType::RegularFile => {
-            let fd = openat(
-                &parent,
-                name,
-                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-                Mode::empty(),
-            )
-            .map_err(|error| format!("failed to open pinned unread file {name}: {error}"))?;
-            let mut source = std::fs::File::from(fd);
-            let mut target = std::fs::File::create(destination).map_err(|error| {
-                format!("failed to create pinned unread snapshot file {name}: {error}")
-            })?;
-            std::io::copy(&mut source, &mut target)
-                .map_err(|error| format!("failed to copy pinned unread file {name}: {error}"))?;
-            #[cfg(test)]
-            if name.starts_with("state_5.sqlite") {
-                PINNED_SOURCE_DB_FILES_COPIED.fetch_add(1, Ordering::Relaxed);
-            }
-            Ok(())
-        }
-        FileType::Directory => Err(format!("pinned unread file {name} is a directory")),
-        FileType::Symlink => Err(format!(
-            "pinned unread entry {name} is a symlink and was rejected"
-        )),
-        other => Err(format!(
-            "pinned unread entry {name} has unsupported type {other:?}"
-        )),
-    }
 }
 
 #[cfg(windows)]
@@ -1531,7 +1031,7 @@ pub(crate) fn pin_captured_codex_home_source(
     Ok(PinnedCodexHomeSource {
         _handle: handle,
         read_path: captured.codex_home.clone(),
-        snapshot_path: None,
+        observation: None,
         source_scope_key: format!(
             "{}|{}",
             captured.source_token.canonical_home_key,
@@ -2500,7 +2000,10 @@ mod tests {
         let displaced = home.with_extension("displaced");
         let session_path = canonical_session_test_directory(&home);
         std::fs::create_dir_all(&session_path).unwrap();
-        std::fs::write(session_path.join("observation.jsonl"), "A").unwrap();
+        write_completion_session(
+            &session_path.join("observation.jsonl"),
+            "019eaaaa-0000-0000-0000-0000000000a1",
+        );
         let mut transition = CodexHomeTransitionState::default();
         let source_a = resolve_codex_home_source(
             &mut transition,
@@ -2509,25 +2012,23 @@ mod tests {
         .unwrap();
         let captured =
             capture_codex_home_source_from_state(&transition, &source_a.source_token()).unwrap();
+        reset_pinned_source_observation_counters_for_test();
         let pinned = pin_captured_codex_home_source(&captured).expect("pin physical A");
 
         std::fs::rename(&home, &displaced).expect("replace A with B after pin");
         std::fs::create_dir(&home).expect("install B at the same canonical path");
         let session_path_b = canonical_session_test_directory(&home);
         std::fs::create_dir_all(&session_path_b).unwrap();
-        std::fs::write(session_path_b.join("observation.jsonl"), "B").unwrap();
+        write_completion_session(
+            &session_path_b.join("observation.jsonl"),
+            "019eaaaa-0000-0000-0000-0000000000b1",
+        );
         std::fs::remove_dir_all(&home).unwrap();
         std::fs::rename(&displaced, &home).expect("restore A before validation");
 
         assert_eq!(
-            std::fs::read_to_string(
-                pinned
-                    .read_path()
-                    .join(session_path.strip_prefix(&home).unwrap())
-                    .join("observation.jsonl"),
-            )
-            .unwrap(),
-            "A"
+            pinned.observation().unwrap().recent_completion_count(),
+            1
         );
         assert!(pinned.source_scope_key.contains(&source_a.physical_home_key));
 
@@ -2545,7 +2046,10 @@ mod tests {
         symlink(&target, &link).unwrap();
         let session_path = canonical_session_test_directory(&target);
         std::fs::create_dir_all(&session_path).unwrap();
-        std::fs::write(session_path.join("observation.jsonl"), "target").unwrap();
+        write_completion_session(
+            &session_path.join("observation.jsonl"),
+            "019eaaaa-0000-0000-0000-0000000000a2",
+        );
         let mut transition = CodexHomeTransitionState::default();
         let source = resolve_codex_home_source(
             &mut transition,
@@ -2557,14 +2061,8 @@ mod tests {
 
         let pinned = pin_captured_codex_home_source(&captured).expect("pin canonical target");
         assert_eq!(
-            std::fs::read_to_string(
-                pinned
-                    .read_path()
-                    .join(session_path.strip_prefix(&target).unwrap())
-                    .join("observation.jsonl"),
-            )
-            .unwrap(),
-            "target"
+            pinned.observation().unwrap().recent_completion_count(),
+            1
         );
 
         std::fs::remove_file(link).unwrap();
@@ -2573,7 +2071,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn pinned_source_copies_only_bounded_recent_session_candidates() {
+    fn pinned_source_reads_only_bounded_recent_session_candidates_in_memory() {
         let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("bounded-pinned-sessions");
         let old_sessions = home.join("sessions/2000/01/01");
@@ -2594,22 +2092,12 @@ mod tests {
         .unwrap();
         let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
             .unwrap();
-        reset_pinned_source_copy_count_for_test();
+        reset_pinned_source_observation_counters_for_test();
 
         let pinned = pin_captured_codex_home_source(&captured).unwrap();
 
-        assert_eq!(pinned_source_copy_count_for_test(), 2);
+        assert!(pinned.observation().is_some());
         assert_eq!(pinned_source_inspected_count_for_test(), 2);
-        assert_eq!(
-            std::fs::read_dir(
-                pinned
-                    .read_path()
-                    .join(sessions.strip_prefix(&home).unwrap()),
-            )
-                .unwrap()
-                .count(),
-            2
-        );
         remove_source_test_directory(home);
     }
 
@@ -2623,7 +2111,10 @@ mod tests {
         let base = std::time::SystemTime::now() - std::time::Duration::from_secs(20);
         for index in 0..70 {
             let path = sessions.join(format!("recent-{index:02}.jsonl"));
-            std::fs::write(&path, format!("session-{index}")).unwrap();
+            write_completion_session(
+                &path,
+                &format!("019eaaaa-0000-0000-0000-{index:012}"),
+            );
             std::fs::File::options()
                 .write(true)
                 .open(path)
@@ -2643,28 +2134,13 @@ mod tests {
         let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
             .unwrap();
 
+        reset_pinned_source_observation_counters_for_test();
         let pinned = pin_captured_codex_home_source(&captured).unwrap();
 
         assert_eq!(
-            std::fs::read_dir(
-                pinned
-                    .read_path()
-                    .join(sessions.strip_prefix(&home).unwrap()),
-            )
-                .unwrap()
-                .count(),
+            pinned.observation().unwrap().recent_completion_count(),
             64
         );
-        assert!(!pinned
-            .read_path()
-            .join(sessions.strip_prefix(&home).unwrap())
-            .join("recent-05.jsonl")
-            .exists());
-        assert!(pinned
-            .read_path()
-            .join(sessions.strip_prefix(&home).unwrap())
-            .join("recent-69.jsonl")
-            .exists());
         remove_source_test_directory(home);
     }
 
@@ -2689,244 +2165,6 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn owner_lock_cleanup_removes_all_stale_and_preserves_active_or_unknown() {
-        let root = disposable_source_test_directory("stale-cache-cleanup");
-        for index in 0..100 {
-            std::fs::create_dir(root.join(format!("unrelated-{index}"))).unwrap();
-        }
-        let same_pid_old_epoch = root.join(format!(
-            "codex-token-bar-pinned-db-{:x}-old-0",
-            std::process::id()
-        ));
-        std::fs::create_dir(&same_pid_old_epoch).unwrap();
-        std::fs::write(same_pid_old_epoch.join(".owner.lock"), b"").unwrap();
-        let mut stale = Vec::new();
-        for index in 0..65 {
-            let path = root.join(format!("codex-token-bar-pinned-db-deadbeef-old-{index}"));
-            std::fs::create_dir(&path).unwrap();
-            std::fs::write(path.join(".owner.lock"), b"").unwrap();
-            stale.push(path);
-        }
-        let active = root.join("codex-token-bar-pinned-db-active-epoch-1");
-        let unknown = root.join("codex-token-bar-pinned-db-unknown-epoch-1");
-        std::fs::create_dir(&active).unwrap();
-        std::fs::create_dir(&unknown).unwrap();
-        let active_lock = std::fs::OpenOptions::new()
-            .create_new(true)
-            .read(true)
-            .write(true)
-            .open(active.join(".owner.lock"))
-            .unwrap();
-        rustix::fs::flock(&active_lock, rustix::fs::FlockOperation::LockExclusive).unwrap();
-
-        clean_stale_pinned_db_snapshots_in(&root).unwrap();
-
-        assert!(!same_pid_old_epoch.exists());
-        assert!(stale.iter().all(|path| !path.exists()));
-        assert!(active.exists());
-        assert!(unknown.exists());
-        let (created, created_lock) = create_owned_pinned_db_directory(&root).unwrap();
-        assert!(created.exists());
-        assert_ne!(created, same_pid_old_epoch);
-        drop(created_lock);
-        std::fs::remove_dir_all(created).unwrap();
-        drop(active_lock);
-        remove_source_test_directory(root);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn owned_cache_directory_is_published_only_after_its_lock_is_held() {
-        let root = disposable_source_test_directory("cache-publish-lock");
-        let mut phases = Vec::new();
-        let (published, owner_lock) = create_owned_pinned_db_directory_with_hook(
-            &root,
-            |staging, final_path, published| {
-                clean_stale_pinned_db_snapshots_in(&root).unwrap();
-                phases.push(published);
-                if published {
-                    assert!(final_path.exists());
-                } else {
-                    assert!(staging.exists());
-                    assert!(!final_path.exists());
-                }
-            },
-        )
-        .unwrap();
-
-        assert_eq!(phases, vec![false, true]);
-        assert!(published.exists());
-        clean_stale_pinned_db_snapshots_in(&root).unwrap();
-        assert!(published.exists());
-        drop(owner_lock);
-        clean_stale_pinned_db_snapshots_in(&root).unwrap();
-        assert!(!published.exists());
-        remove_source_test_directory(root);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn cache_publication_collision_retries_without_staging_or_owner_residue() {
-        let root = disposable_source_test_directory("cache-publish-collision");
-        let mut collision = None;
-        let (published, owner_lock) = create_owned_pinned_db_directory_with_hook(
-            &root,
-            |_, final_path, published| {
-                if !published && collision.is_none() {
-                    std::fs::create_dir(final_path).unwrap();
-                    collision = Some(final_path.to_path_buf());
-                }
-            },
-        )
-        .unwrap();
-
-        assert!(published.exists());
-        assert!(std::fs::read_dir(&root).unwrap().flatten().all(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            !name.starts_with(".codex-token-bar-pinned-db-staging-")
-                && !name.starts_with(".codex-token-bar-pinned-db-owner-")
-        }));
-        std::fs::remove_dir(collision.unwrap()).unwrap();
-        drop(owner_lock);
-        clean_stale_pinned_db_snapshots_in(&root).unwrap();
-        assert!(!published.exists());
-        remove_source_test_directory(root);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn stale_cleanup_never_follows_candidate_or_owner_lock_symlinks() {
-        use std::os::unix::fs::symlink;
-
-        let root = disposable_source_test_directory("cache-cleanup-symlink");
-        let outside = disposable_source_test_directory("cache-cleanup-outside");
-        std::fs::write(outside.join("sentinel"), b"keep").unwrap();
-        let candidate_link = root.join("codex-token-bar-pinned-db-linked-epoch-1");
-        symlink(&outside, &candidate_link).unwrap();
-
-        let lock_link_dir = root.join("codex-token-bar-pinned-db-lock-link-epoch-1");
-        std::fs::create_dir(&lock_link_dir).unwrap();
-        let outside_lock = outside.join("outside.lock");
-        std::fs::write(&outside_lock, b"keep").unwrap();
-        symlink(&outside_lock, lock_link_dir.join(".owner.lock")).unwrap();
-
-        clean_stale_pinned_db_snapshots_in(&root).unwrap();
-
-        assert!(candidate_link.symlink_metadata().is_ok());
-        assert!(lock_link_dir.exists());
-        assert_eq!(std::fs::read(outside.join("sentinel")).unwrap(), b"keep");
-        assert_eq!(std::fs::read(outside_lock).unwrap(), b"keep");
-        std::fs::remove_file(candidate_link).unwrap();
-        remove_source_test_directory(root);
-        remove_source_test_directory(outside);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn stale_cleanup_revalidates_lock_and_directory_identity_after_locking() {
-        let root = disposable_source_test_directory("cache-cleanup-revalidate");
-        let lock_swapped = root.join("codex-token-bar-pinned-db-lock-swap-1");
-        std::fs::create_dir(&lock_swapped).unwrap();
-        std::fs::write(lock_swapped.join(".owner.lock"), b"old").unwrap();
-        let directory_swapped = root.join("codex-token-bar-pinned-db-dir-swap-1");
-        std::fs::create_dir(&directory_swapped).unwrap();
-        std::fs::write(directory_swapped.join(".owner.lock"), b"old").unwrap();
-        let moved_directory = root.join("moved-original");
-
-        clean_stale_pinned_db_snapshots_in_with_hook(&root, |name| {
-            if name == "codex-token-bar-pinned-db-lock-swap-1" {
-                std::fs::rename(
-                    lock_swapped.join(".owner.lock"),
-                    lock_swapped.join("old.lock"),
-                )
-                .unwrap();
-                std::fs::write(lock_swapped.join(".owner.lock"), b"new").unwrap();
-            } else if name == "codex-token-bar-pinned-db-dir-swap-1" {
-                std::fs::rename(&directory_swapped, &moved_directory).unwrap();
-                std::fs::create_dir(&directory_swapped).unwrap();
-                std::fs::write(directory_swapped.join(".owner.lock"), b"new").unwrap();
-            }
-        })
-        .unwrap();
-
-        assert!(lock_swapped.exists());
-        assert!(lock_swapped.join(".owner.lock").exists());
-        assert!(directory_swapped.exists());
-        assert!(moved_directory.exists());
-        remove_source_test_directory(root);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn staging_cleanup_is_owner_locked_bounded_and_symlink_safe() {
-        use std::os::unix::fs::symlink;
-
-        let root = disposable_source_test_directory("staging-cleanup");
-        let active_owner = root.join(".codex-token-bar-pinned-db-owner-active-1.lock");
-        let active_staging = root.join(".codex-token-bar-pinned-db-staging-active-1");
-        std::fs::write(&active_owner, b"").unwrap();
-        let active_lock = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&active_owner)
-            .unwrap();
-        rustix::fs::flock(&active_lock, rustix::fs::FlockOperation::LockExclusive).unwrap();
-        std::fs::create_dir(&active_staging).unwrap();
-        std::fs::hard_link(&active_owner, active_staging.join(".owner.lock")).unwrap();
-
-        let mut stale = Vec::new();
-        for index in 0..65 {
-            let owner = root.join(format!(
-                ".codex-token-bar-pinned-db-owner-stale-{index}.lock"
-            ));
-            let staging = root.join(format!(
-                ".codex-token-bar-pinned-db-staging-stale-{index}"
-            ));
-            std::fs::write(&owner, b"").unwrap();
-            std::fs::create_dir(&staging).unwrap();
-            std::fs::hard_link(&owner, staging.join(".owner.lock")).unwrap();
-            stale.push((owner, staging));
-        }
-        let fresh_ownerless = root.join(".codex-token-bar-pinned-db-staging-fresh-1");
-        std::fs::create_dir(&fresh_ownerless).unwrap();
-        let orphan_owner = root.join(".codex-token-bar-pinned-db-owner-orphan-1.lock");
-        std::fs::write(&orphan_owner, b"").unwrap();
-
-        let outside = disposable_source_test_directory("staging-cleanup-outside");
-        std::fs::write(outside.join("sentinel"), b"keep").unwrap();
-        let staging_link = root.join(".codex-token-bar-pinned-db-staging-linked-1");
-        symlink(&outside, &staging_link).unwrap();
-        let owner_link = root.join(".codex-token-bar-pinned-db-owner-linked-1.lock");
-        symlink(outside.join("sentinel"), &owner_link).unwrap();
-
-        clean_stale_pinned_db_snapshots_in_with_policy(&root, |_| {}, |_| false).unwrap();
-        assert!(active_staging.exists());
-        assert!(fresh_ownerless.exists());
-
-        clean_stale_pinned_db_snapshots_in_with_policy(&root, |_| {}, |_| true).unwrap();
-        assert!(active_staging.exists());
-        assert!(active_owner.exists());
-        assert!(stale
-            .iter()
-            .all(|(owner, staging)| !owner.exists() && !staging.exists()));
-        assert!(!fresh_ownerless.exists());
-        assert!(!orphan_owner.exists());
-        assert!(staging_link.symlink_metadata().is_ok());
-        assert!(owner_link.symlink_metadata().is_ok());
-        assert_eq!(std::fs::read(outside.join("sentinel")).unwrap(), b"keep");
-
-        drop(active_lock);
-        clean_stale_pinned_db_snapshots_in_with_policy(&root, |_| {}, |_| true).unwrap();
-        assert!(!active_staging.exists());
-        assert!(!active_owner.exists());
-        std::fs::remove_file(staging_link).unwrap();
-        std::fs::remove_file(owner_link).unwrap();
-        remove_source_test_directory(root);
-        remove_source_test_directory(outside);
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn sessions_root_allows_ds_store_without_weakening_layout_validation() {
         let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("sessions-ds-store");
@@ -2944,13 +2182,10 @@ mod tests {
         let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
             .unwrap();
 
+        reset_pinned_source_observation_counters_for_test();
         let pinned = pin_captured_codex_home_source(&captured).unwrap();
 
-        assert!(pinned
-            .read_path()
-            .join(current.strip_prefix(&home).unwrap())
-            .join("recent.jsonl")
-            .exists());
+        assert!(pinned.observation().is_some());
         remove_source_test_directory(home);
     }
 
@@ -3009,12 +2244,12 @@ mod tests {
         .unwrap();
         let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
             .unwrap();
-        reset_pinned_source_copy_count_for_test();
+        reset_pinned_source_observation_counters_for_test();
 
         let pinned = pin_captured_codex_home_source(&captured).unwrap();
 
-        assert_eq!(pinned_source_db_copy_count_for_test(), 0);
-        assert!(!pinned.read_path().join("state_5.sqlite").exists());
+        assert_eq!(pinned_sqlite_view_create_count_for_test(), 0);
+        assert!(pinned.observation().is_some());
         remove_source_test_directory(home);
     }
 
@@ -3049,7 +2284,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn unchanged_native_state_and_db_reuse_verified_db_snapshot_until_signature_changes() {
+    fn consecutive_15s_native_observations_reuse_unchanged_descriptor_links() {
         let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("db-signature-cache");
         let thread_id = "019eaaaa-0000-0000-0000-0000000000aa";
@@ -3080,26 +2315,145 @@ mod tests {
         .unwrap();
         let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
             .unwrap();
-        reset_pinned_source_copy_count_for_test();
+        reset_pinned_source_observation_counters_for_test();
 
         drop(pin_captured_codex_home_source(&captured).unwrap());
+        let (directory_modified, link_modified, creations, mutations) = {
+            let view = pinned_sqlite_descriptor_view().lock().unwrap();
+            let view = view.as_ref().unwrap();
+            (
+                std::fs::metadata(&view.directory).unwrap().modified().unwrap(),
+                std::fs::symlink_metadata(view.directory.join("state_5.sqlite"))
+                    .unwrap()
+                    .modified()
+                    .unwrap(),
+                pinned_sqlite_view_create_count_for_test(),
+                pinned_sqlite_link_mutation_count_for_test(),
+            )
+        };
         drop(pin_captured_codex_home_source(&captured).unwrap());
-        assert_eq!(pinned_source_db_copy_count_for_test(), 1);
-
-        let connection = rusqlite::Connection::open(&database_path).unwrap();
-        connection
-            .execute("UPDATE threads SET preview = 'changed' WHERE id = ?1", [thread_id])
-            .unwrap();
-        drop(connection);
-        drop(pin_captured_codex_home_source(&captured).unwrap());
-        assert_eq!(pinned_source_db_copy_count_for_test(), 2);
+        let view = pinned_sqlite_descriptor_view().lock().unwrap();
+        let view = view.as_ref().unwrap();
+        assert_eq!(
+            std::fs::metadata(&view.directory).unwrap().modified().unwrap(),
+            directory_modified
+        );
+        assert_eq!(
+            std::fs::symlink_metadata(view.directory.join("state_5.sqlite"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            link_modified
+        );
+        assert_eq!(pinned_sqlite_view_create_count_for_test(), creations);
+        assert_eq!(pinned_sqlite_link_mutation_count_for_test(), mutations);
 
         remove_source_test_directory(home);
     }
 
     #[cfg(unix)]
     #[test]
-    fn empty_native_source_evicts_previous_physical_db_cache_and_directory() {
+    fn unix_descriptor_view_reads_uncheckpointed_wal_rows() {
+        let _guard = pinned_source_counter_test_guard();
+        let home = disposable_source_test_directory("descriptor-wal");
+        let thread_id = "019eaaaa-0000-0000-0000-0000000000ab";
+        std::fs::write(
+            home.join(".codex-global-state.json"),
+            format!(r#"{{"unread-thread-ids-by-host-v1":{{"localhost":["{thread_id}"]}}}}"#),
+        )
+        .unwrap();
+        let connection = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA wal_autocheckpoint=0;
+                 CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    archived INTEGER,
+                    thread_source TEXT,
+                    source TEXT,
+                    preview TEXT
+                 );
+                 INSERT INTO threads VALUES (
+                    '019eaaaa-0000-0000-0000-0000000000ab', 0, 'user', 'user', 'visible'
+                 );",
+            )
+            .unwrap();
+        assert!(std::fs::metadata(home.join("state_5.sqlite-wal"))
+            .unwrap()
+            .len()
+            > 32);
+
+        let mut transition = CodexHomeTransitionState::default();
+        let source = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+        let captured = capture_codex_home_source_from_state(&transition, &source.source_token())
+            .unwrap();
+        let pinned = pin_captured_codex_home_source(&captured).unwrap();
+
+        assert_eq!(pinned.observation().unwrap().native_unread_count(), Some(1));
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            let view = pinned_sqlite_descriptor_view().lock().unwrap();
+            let view = view.as_ref().unwrap();
+            for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
+                let source = std::fs::symlink_metadata(home.join(name)).unwrap();
+                let published =
+                    std::fs::symlink_metadata(view.directory.join(name)).unwrap();
+                assert!(published.file_type().is_file());
+                assert_eq!(published.dev(), source.dev());
+                assert_eq!(published.ino(), source.ino());
+            }
+        }
+        drop(pinned);
+        drop(connection);
+        remove_source_test_directory(home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descriptor_view_cleanup_removes_unlocked_stale_and_preserves_locked_active() {
+        let _guard = pinned_source_counter_test_guard();
+        let sequence = SOURCE_TEST_PATH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let stale = std::env::temp_dir().join(format!(
+            "codex-token-bar-pinned-sqlite-view-stale-{}-{sequence}",
+            std::process::id()
+        ));
+        let active = std::env::temp_dir().join(format!(
+            "codex-token-bar-pinned-sqlite-view-active-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&stale).unwrap();
+        std::fs::write(stale.join(".owner.lock"), b"").unwrap();
+        std::fs::create_dir(&active).unwrap();
+        std::fs::write(active.join(".owner.lock"), b"").unwrap();
+        let active_lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(active.join(".owner.lock"))
+            .unwrap();
+        rustix::fs::flock(
+            &active_lock,
+            rustix::fs::FlockOperation::LockExclusive,
+        )
+        .unwrap();
+
+        clean_stale_pinned_sqlite_descriptor_views().unwrap();
+
+        assert!(!stale.exists());
+        assert!(active.exists());
+        drop(active_lock);
+        clean_stale_pinned_sqlite_descriptor_views().unwrap();
+        assert!(!active.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_native_source_releases_previous_sqlite_descriptors() {
         let _guard = pinned_source_counter_test_guard();
         let home_a = disposable_source_test_directory("cache-source-a");
         let thread_id = "019eaaaa-0000-0000-0000-0000000000aa";
@@ -3122,11 +2476,13 @@ mod tests {
         let captured_a =
             capture_codex_home_source_from_state(&transition_a, &source_a.source_token()).unwrap();
         drop(pin_captured_codex_home_source(&captured_a).unwrap());
-        let key_a = format!("{}|{}", source_a.canonical_home_key, source_a.physical_home_key);
-        let cached_directory = {
-            let cache = pinned_db_snapshot_cache().unwrap().lock().unwrap();
-            cache.get(&key_a).unwrap().directory.clone()
-        };
+        assert!(!pinned_sqlite_descriptor_view()
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .files
+            .is_empty());
 
         let home_b = disposable_source_test_directory("cache-source-b-empty");
         std::fs::write(
@@ -3144,12 +2500,13 @@ mod tests {
             capture_codex_home_source_from_state(&transition_b, &source_b.source_token()).unwrap();
         drop(pin_captured_codex_home_source(&captured_b).unwrap());
 
-        assert!(!pinned_db_snapshot_cache()
-            .unwrap()
+        assert!(pinned_sqlite_descriptor_view()
             .lock()
             .unwrap()
-            .contains_key(&key_a));
-        assert!(!cached_directory.exists());
+            .as_ref()
+            .unwrap()
+            .files
+            .is_empty());
 
         remove_source_test_directory(home_a);
         remove_source_test_directory(home_b);
@@ -3157,20 +2514,9 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn failed_db_snapshot_creation_leaves_no_task_owned_directory() {
+    fn invalid_sqlite_observation_fails_without_session_or_database_copy() {
         let _guard = pinned_source_counter_test_guard();
-        let prefix = format!(
-            "codex-token-bar-pinned-db-{}-",
-            process_session_identity()
-        );
-        let count = || {
-            std::fs::read_dir(std::env::temp_dir())
-                .unwrap()
-                .flatten()
-                .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
-                .count()
-        };
-        let before = count();
+        reset_pinned_source_observation_counters_for_test();
         let home = disposable_source_test_directory("failed-db-cache");
         std::fs::write(
             home.join(".codex-global-state.json"),
@@ -3188,7 +2534,6 @@ mod tests {
             .unwrap();
 
         assert!(pin_captured_codex_home_source(&captured).is_err());
-        assert_eq!(count(), before);
         remove_source_test_directory(home);
     }
 
@@ -3319,6 +2664,21 @@ mod tests {
             .next()
             .unwrap(),
         )
+    }
+
+    #[cfg(unix)]
+    fn write_completion_session(path: &Path, thread_id: &str) {
+        let completed_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        std::fs::write(
+            path,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{thread_id}\",\"thread_source\":\"user\",\"source\":\"user\"}}}}\n{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"turn-1\",\"completed_at\":{completed_at}}}}}\n"
+            ),
+        )
+        .unwrap();
     }
 
 }

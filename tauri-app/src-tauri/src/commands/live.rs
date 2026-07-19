@@ -238,11 +238,18 @@ impl LiveRateMonitorRegistry {
     ) -> Result<UnreadSummary, String> {
         self.unread_summary_for_source_with_refresh(captured, force_refresh, || {
             let pinned = pin_captured_codex_home_source(captured)?;
-            unread::try_read_unread_summary_for_source(
-                pinned.read_path(),
-                &pinned.source_scope_key,
-                validate_before_write,
-            )
+            match pinned.observation() {
+                Some(observation) => unread::try_read_unread_summary_for_observation(
+                    observation,
+                    &pinned.source_scope_key,
+                    validate_before_write,
+                ),
+                None => unread::try_read_unread_summary_for_source(
+                    pinned.read_path(),
+                    &pinned.source_scope_key,
+                    validate_before_write,
+                ),
+            }
         })
     }
 
@@ -1123,11 +1130,18 @@ fn acknowledge_pinned_unread(
 ) -> Result<UnreadSummary, String> {
     let pinned = pin_captured_codex_home_source(&captured)?;
     after_pin()?;
-    unread::acknowledge_current_unread_for_source(
-        pinned.read_path(),
-        &pinned.source_scope_key,
-        validate_before_write,
-    )
+    match pinned.observation() {
+        Some(observation) => unread::acknowledge_current_unread_for_observation(
+            observation,
+            &pinned.source_scope_key,
+            validate_before_write,
+        ),
+        None => unread::acknowledge_current_unread_for_source(
+            pinned.read_path(),
+            &pinned.source_scope_key,
+            validate_before_write,
+        ),
+    }
 }
 
 #[tauri::command]
@@ -1998,11 +2012,11 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn production_unread_cadence_pins_once_across_consecutive_live_ticks() {
+    fn production_unread_cadence_creates_no_disk_snapshot_or_source_copy() {
         use std::os::unix::fs::MetadataExt;
 
         let _counter_guard = super::super::dashboard::pinned_source_counter_test_guard();
-        super::super::dashboard::reset_pinned_source_copy_count_for_test();
+        super::super::dashboard::reset_pinned_source_observation_counters_for_test();
         let root = std::env::temp_dir().join(format!(
             "codex-token-bar-live-no-pinned-copy-{}",
             std::process::id()
@@ -2028,8 +2042,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            super::super::dashboard::pinned_source_snapshot_count_for_test(),
-            1
+            super::super::dashboard::pinned_sqlite_view_create_count_for_test(),
+            0
         );
         let _ = std::fs::remove_dir_all(root);
     }
