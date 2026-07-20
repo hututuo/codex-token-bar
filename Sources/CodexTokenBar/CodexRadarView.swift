@@ -180,7 +180,7 @@ private struct CodexRadarWindowBlock: View {
                 systemImage: "bolt.badge.clock",
                 accent: AppTheme.radarActionColor(snapshot?.recommendedAction)
             )
-            Text(snapshot?.window.message ?? "等待 Codex 雷达")
+            Text(snapshot.map { $0.window.message.isEmpty ? "暂无窗口信息" : $0.window.message } ?? "等待 Codex 雷达")
                 .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -202,7 +202,7 @@ private struct CodexRadarModelIQBlock: View {
     let snapshot: CodexRadarSnapshot?
 
     var body: some View {
-        let primary = snapshot?.modelIQ.primaryModelRow.point
+        let primary = snapshot?.modelIQ.primaryModelPoint
         let primaryAccent = primary.map {
             AppTheme.radarScoreColor(passed: $0.passed, tasks: $0.tasks, score: $0.score)
         }
@@ -723,7 +723,7 @@ private struct CodexRadarQuotaDetail: View {
                 CodexRadarDetailSubsection(title: "额度基准") {
                     CodexRadarKeyValueGrid(rows: [
                         ("依据窗口", quotaRadar.basisWindowLabel),
-                        ("本轮成本", "$\(CodexRadarModelIQPoint.display(quotaRadar.costUsd, fractionDigits: 2))"),
+                        ("本轮成本", moneyText(quotaRadar.costUsd)),
                         ("本轮 tokens", tokenText(quotaRadar.totalTokens)),
                         ("原始变化", percentText(quotaRadar.rawDelta)),
                         ("修正变化", percentText(quotaRadar.adjustedDelta)),
@@ -879,10 +879,10 @@ private struct CodexRadarEnvironmentDetail: View {
             if let environment = snapshot.codexEnvironment {
                 CodexRadarDetailSubsection(title: "压力指标") {
                     CodexRadarKeyValueGrid(rows: [
-                        ("官方动态 24h", "\(environment.officialUpdates24h)"),
-                        ("社区提及 24h", "\(environment.communityMentions24h)"),
-                        ("异常/限额反馈", "\(environment.issueOrLimitAnomalies24h)"),
-                        ("Status 事故", "\(environment.statusIncidents24h)"),
+                        ("官方动态 24h", environment.officialUpdates24h.map(String.init) ?? "--"),
+                        ("社区提及 24h", environment.communityMentions24h.map(String.init) ?? "--"),
+                        ("异常/限额反馈", environment.issueOrLimitAnomalies24h.map(String.init) ?? "--"),
+                        ("Status 事故", environment.statusIncidents24h.map(String.init) ?? "--"),
                         ("抱怨压力", environment.complaintPressure),
                         ("RSS", snapshot.links.rss)
                     ])

@@ -1,13 +1,5 @@
 import Foundation
 
-extension JSONDecoder {
-    static var codexRadar: JSONDecoder {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return decoder
-    }
-}
-
 enum CodexRadarPresentationText {
     static func action(_ rawValue: String?) -> String {
         let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -55,7 +47,7 @@ struct CodexRadarSnapshot: Decodable, Equatable, Sendable {
     let service: String
     let monitoredAt: String
     let timezone: String
-    let windowOpen: Bool
+    let windowOpen: Bool?
     let status: String
     let recommendedAction: String
     let window: CodexRadarWindow
@@ -81,29 +73,77 @@ struct CodexRadarSnapshot: Decodable, Equatable, Sendable {
         case links
         case modelIQ = "modelIq"
         case codexEnvironment
+        case data
+        case result
+        case snapshot
+        case payload
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        schemaVersion = try container.decode(String.self, forKey: .schemaVersion)
-        service = try container.decode(String.self, forKey: .service)
-        monitoredAt = try container.decode(String.self, forKey: .monitoredAt)
-        timezone = try container.decode(String.self, forKey: .timezone)
-        windowOpen = try container.decode(Bool.self, forKey: .windowOpen)
-        status = try container.decode(String.self, forKey: .status)
-        recommendedAction = try container.decode(String.self, forKey: .recommendedAction)
-        window = try container.decode(CodexRadarWindow.self, forKey: .window)
-        prediction = try container.decode(CodexRadarPrediction.self, forKey: .prediction)
-        tiboPresence = try container.decodeIfPresent(CodexRadarTiboPresence.self, forKey: .tiboPresence)
-        recentWindows = try container.decodeIfPresent([CodexRadarRecentWindow].self, forKey: .recentWindows) ?? []
-        links = try container.decode(CodexRadarLinks.self, forKey: .links)
-        modelIQ = try container.decode(CodexRadarModelIQ.self, forKey: .modelIQ)
-        codexEnvironment = try container.decodeIfPresent(CodexRadarEnvironment.self, forKey: .codexEnvironment)
+        let hasDirectBlocks = container.contains(.window)
+            || container.contains(.prediction)
+            || container.contains(.modelIQ)
+            || container.contains(.codexEnvironment)
+            || container.contains(.tiboPresence)
+            || container.contains(.recentWindows)
+            || container.contains(.recommendedAction)
+        if !hasDirectBlocks {
+            for key in [CodingKeys.data, .result, .snapshot, .payload] {
+                if let nested = container.codexRadarDecodeSafely(CodexRadarSnapshot.self, forKey: key) {
+                    self = nested
+                    return
+                }
+            }
+        }
+
+        schemaVersion = container.codexRadarString(forKey: .schemaVersion) ?? ""
+        service = container.codexRadarString(forKey: .service) ?? ""
+        monitoredAt = container.codexRadarString(forKey: .monitoredAt) ?? ""
+        timezone = container.codexRadarString(forKey: .timezone) ?? ""
+        windowOpen = container.codexRadarBool(forKey: .windowOpen)
+        status = container.codexRadarString(forKey: .status) ?? ""
+        recommendedAction = container.codexRadarString(forKey: .recommendedAction) ?? ""
+        window = container.codexRadarDecodeSafely(CodexRadarWindow.self, forKey: .window) ?? .unavailable
+        prediction = container.codexRadarDecodeSafely(CodexRadarPrediction.self, forKey: .prediction) ?? .unavailable
+        if let decodedTibo = container.codexRadarDecodeSafely(CodexRadarTiboPresence.self, forKey: .tiboPresence),
+           decodedTibo.hasContent {
+            tiboPresence = decodedTibo
+        } else {
+            tiboPresence = nil
+        }
+        recentWindows = container.codexRadarLossyArray(CodexRadarRecentWindow.self, forKey: .recentWindows)
+            .filter(\.hasContent)
+        links = container.codexRadarDecodeSafely(CodexRadarLinks.self, forKey: .links) ?? .defaults
+        modelIQ = container.codexRadarDecodeSafely(CodexRadarModelIQ.self, forKey: .modelIQ) ?? .unavailable
+        if let decodedEnvironment = container.codexRadarDecodeSafely(CodexRadarEnvironment.self, forKey: .codexEnvironment),
+           decodedEnvironment.hasContent {
+            codexEnvironment = decodedEnvironment
+        } else {
+            codexEnvironment = nil
+        }
+
+        guard hasUsableContent else {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "Codex Radar payload has no usable content")
+            )
+        }
+    }
+
+    var hasUsableContent: Bool {
+        !status.isEmpty
+            || !recommendedAction.isEmpty
+            || window.hasContent
+            || prediction.hasContent
+            || modelIQ.hasContent
+            || tiboPresence != nil
+            || !recentWindows.isEmpty
+            || codexEnvironment?.hasContent == true
     }
 }
 
 struct CodexRadarWindow: Decodable, Equatable, Sendable {
-    let open: Bool
+    let open: Bool?
     let status: String
     let action: String
     let message: String
@@ -112,12 +152,73 @@ struct CodexRadarWindow: Decodable, Equatable, Sendable {
     let openedAt: String?
     let closedAt: String?
     let sourceUrl: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case open, status, action, message, title, scope, openedAt, closedAt, sourceUrl
+    }
+
+    init(
+        open: Bool?,
+        status: String,
+        action: String,
+        message: String,
+        title: String,
+        scope: String,
+        openedAt: String?,
+        closedAt: String?,
+        sourceUrl: String?
+    ) {
+        self.open = open
+        self.status = status
+        self.action = action
+        self.message = message
+        self.title = title
+        self.scope = scope
+        self.openedAt = openedAt
+        self.closedAt = closedAt
+        self.sourceUrl = sourceUrl
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        open = container.codexRadarBool(forKey: .open)
+        status = container.codexRadarString(forKey: .status) ?? ""
+        action = container.codexRadarString(forKey: .action) ?? ""
+        message = container.codexRadarString(forKey: .message) ?? ""
+        title = container.codexRadarString(forKey: .title) ?? ""
+        scope = container.codexRadarString(forKey: .scope) ?? ""
+        openedAt = container.codexRadarString(forKey: .openedAt)
+        closedAt = container.codexRadarString(forKey: .closedAt)
+        sourceUrl = container.codexRadarString(forKey: .sourceUrl)
+    }
+
+    fileprivate static let unavailable = CodexRadarWindow(
+        open: nil,
+        status: "",
+        action: "",
+        message: "",
+        title: "",
+        scope: "",
+        openedAt: nil,
+        closedAt: nil,
+        sourceUrl: nil
+    )
+
+    var hasContent: Bool {
+        open != nil
+            || !status.isEmpty
+            || !action.isEmpty
+            || !message.isEmpty
+            || !title.isEmpty
+            || !scope.isEmpty
+            || sourceUrl != nil
+    }
 }
 
 struct CodexRadarPrediction: Decodable, Equatable, Sendable {
     let level: String
-    let probability24h: Double
-    let probability48h: Double
+    let probability24h: Double?
+    let probability48h: Double?
     let expectedWindow: String?
     let summary: String
     let summaryEn: String?
@@ -137,25 +238,68 @@ struct CodexRadarPrediction: Decodable, Equatable, Sendable {
         case updatedAt
     }
 
+    init(
+        level: String,
+        probability24h: Double?,
+        probability48h: Double?,
+        expectedWindow: String?,
+        summary: String,
+        summaryEn: String?,
+        positiveSignals: [String],
+        negativeSignals: [String],
+        updatedAt: String
+    ) {
+        self.level = level
+        self.probability24h = probability24h
+        self.probability48h = probability48h
+        self.expectedWindow = expectedWindow
+        self.summary = summary
+        self.summaryEn = summaryEn
+        self.positiveSignals = positiveSignals
+        self.negativeSignals = negativeSignals
+        self.updatedAt = updatedAt
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        level = try container.decode(String.self, forKey: .level)
-        probability24h = try container.decode(Double.self, forKey: .probability24h)
-        probability48h = try container.decode(Double.self, forKey: .probability48h)
-        expectedWindow = try container.decodeIfPresent(String.self, forKey: .expectedWindow)
-        summary = try container.decode(String.self, forKey: .summary)
-        summaryEn = try container.decodeIfPresent(String.self, forKey: .summaryEn)
-        positiveSignals = try container.decodeIfPresent([String].self, forKey: .positiveSignals) ?? []
-        negativeSignals = try container.decodeIfPresent([String].self, forKey: .negativeSignals) ?? []
-        updatedAt = try container.decode(String.self, forKey: .updatedAt)
+        level = container.codexRadarString(forKey: .level) ?? ""
+        probability24h = container.codexRadarDouble(forKey: .probability24h)
+        probability48h = container.codexRadarDouble(forKey: .probability48h)
+        expectedWindow = container.codexRadarString(forKey: .expectedWindow)
+        summary = container.codexRadarString(forKey: .summary) ?? ""
+        summaryEn = container.codexRadarString(forKey: .summaryEn)
+        positiveSignals = container.codexRadarLossyArray(String.self, forKey: .positiveSignals)
+        negativeSignals = container.codexRadarLossyArray(String.self, forKey: .negativeSignals)
+        updatedAt = container.codexRadarString(forKey: .updatedAt) ?? ""
     }
 
-    var probability24hPercent: Int {
-        Int((probability24h * 100).rounded())
+    var probability24hPercent: Int? {
+        probability24h.map { Int(($0 * 100).rounded()) }
     }
 
-    var probability48hPercent: Int {
-        Int((probability48h * 100).rounded())
+    var probability48hPercent: Int? {
+        probability48h.map { Int(($0 * 100).rounded()) }
+    }
+
+    fileprivate static let unavailable = CodexRadarPrediction(
+        level: "",
+        probability24h: nil,
+        probability48h: nil,
+        expectedWindow: nil,
+        summary: "",
+        summaryEn: nil,
+        positiveSignals: [],
+        negativeSignals: [],
+        updatedAt: ""
+    )
+
+    var hasContent: Bool {
+        !level.isEmpty
+            || probability24h != nil
+            || probability48h != nil
+            || !summary.isEmpty
+            || !positiveSignals.isEmpty
+            || !negativeSignals.isEmpty
     }
 }
 
@@ -177,6 +321,49 @@ struct CodexRadarTiboPresence: Decodable, Equatable, Sendable {
     let observedAt: String?
     let staleAt: String?
     let observationsConsidered: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, mode, timezone, locationLabelZh, locationLabelEn, probability, confidence
+        case evidenceSummaryZh, evidenceSummaryEn, sourceUrls, shouldDisplay, safetyNoteZh, safetyNoteEn
+        case updatedAt, observedAt, staleAt, observationsConsidered
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = container.codexRadarString(forKey: .schemaVersion)
+        mode = container.codexRadarString(forKey: .mode)
+        timezone = container.codexRadarString(forKey: .timezone)
+        locationLabelZh = container.codexRadarString(forKey: .locationLabelZh)
+        locationLabelEn = container.codexRadarString(forKey: .locationLabelEn)
+        probability = container.codexRadarDouble(forKey: .probability)
+        confidence = container.codexRadarString(forKey: .confidence)
+        evidenceSummaryZh = container.codexRadarString(forKey: .evidenceSummaryZh)
+        evidenceSummaryEn = container.codexRadarString(forKey: .evidenceSummaryEn)
+        sourceUrls = container.codexRadarLossyArray(String.self, forKey: .sourceUrls)
+        shouldDisplay = container.codexRadarBool(forKey: .shouldDisplay)
+        safetyNoteZh = container.codexRadarString(forKey: .safetyNoteZh)
+        safetyNoteEn = container.codexRadarString(forKey: .safetyNoteEn)
+        updatedAt = container.codexRadarString(forKey: .updatedAt)
+        observedAt = container.codexRadarString(forKey: .observedAt)
+        staleAt = container.codexRadarString(forKey: .staleAt)
+        observationsConsidered = container.codexRadarInt(forKey: .observationsConsidered)
+    }
+
+    var hasContent: Bool {
+        Self.hasText(mode)
+            || Self.hasText(timezone)
+            || Self.hasText(locationLabelZh)
+            || Self.hasText(locationLabelEn)
+            || probability != nil
+            || Self.hasText(confidence)
+            || !sourceUrls.isEmpty
+            || shouldDisplay != nil
+            || Self.hasText(safetyNoteZh)
+    }
+
+    private static func hasText(_ value: String?) -> Bool {
+        !(value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
 }
 
 struct CodexRadarRecentWindow: Decodable, Equatable, Sendable {
@@ -185,11 +372,35 @@ struct CodexRadarRecentWindow: Decodable, Equatable, Sendable {
     let openedAt: String?
     let closedAt: String?
     let sourceUrl: String?
+
+    var hasContent: Bool {
+        [title, status, openedAt, closedAt, sourceUrl]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .contains { !$0.isEmpty }
+    }
 }
 
 struct CodexRadarLinks: Decodable, Equatable, Sendable {
     let html: String
     let rss: String
+
+    private enum CodingKeys: String, CodingKey { case html, rss }
+
+    init(html: String, rss: String) {
+        self.html = html
+        self.rss = rss
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        html = container.codexRadarString(forKey: .html) ?? Self.defaults.html
+        rss = container.codexRadarString(forKey: .rss) ?? Self.defaults.rss
+    }
+
+    fileprivate static let defaults = CodexRadarLinks(
+        html: "https://codexradar.com",
+        rss: "https://codexradar.com/feed.xml"
+    )
 }
 
 struct CodexRadarModelIQ: Decodable, Equatable, Sendable {
@@ -227,17 +438,34 @@ struct CodexRadarModelIQ: Decodable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        latest = try container.decode(CodexRadarModelIQPoint.self, forKey: .latest)
-        recentDays = try container.decodeIfPresent([CodexRadarModelIQPoint].self, forKey: .recentDays) ?? []
-        comparisons = try container.decodeIfPresent([String: CodexRadarModelIQComparison].self, forKey: .comparisons) ?? [:]
-        quotaCalibration = try container.decodeIfPresent(CodexRadarQuotaCalibration.self, forKey: .quotaCalibration)
-        quotaRadar = try container.decodeIfPresent(CodexRadarQuotaRadar.self, forKey: .quotaRadar)
-        quotaCheck = try container.decodeIfPresent(CodexRadarQuotaCheck.self, forKey: .quotaCheck)
+        latest = container.codexRadarDecodeSafely(CodexRadarModelIQPoint.self, forKey: .latest) ?? .unavailable
+        recentDays = container.codexRadarLossyArray(CodexRadarModelIQPoint.self, forKey: .recentDays)
+            .filter(\.hasMeasurement)
+        comparisons = container.codexRadarLossyDictionary(CodexRadarModelIQComparison.self, forKey: .comparisons)
+            .filter { $0.value.latest.hasMeasurement }
+        quotaCalibration = container.codexRadarDecodeSafely(CodexRadarQuotaCalibration.self, forKey: .quotaCalibration)
+        if let decodedQuota = container.codexRadarDecodeSafely(CodexRadarQuotaRadar.self, forKey: .quotaRadar),
+           decodedQuota.hasContent {
+            quotaRadar = decodedQuota
+        } else {
+            quotaRadar = nil
+        }
+        if let decodedCheck = container.codexRadarDecodeSafely(CodexRadarQuotaCheck.self, forKey: .quotaCheck),
+           decodedCheck.hasContent {
+            quotaCheck = decodedCheck
+        } else {
+            quotaCheck = nil
+        }
     }
 
     var primaryModelRow: CodexRadarModelIQComparisonRow {
         allCurrentRows.sorted(by: isPreferredPrimaryModel).first
             ?? CodexRadarModelIQComparisonRow(label: latest.modelDisplayName, point: latest)
+    }
+
+    var primaryModelPoint: CodexRadarModelIQPoint? {
+        let point = primaryModelRow.point
+        return point.hasMeasurement ? point : nil
     }
 
     var secondaryModelRows: [CodexRadarModelIQComparisonRow] {
@@ -264,11 +492,13 @@ struct CodexRadarModelIQ: Decodable, Equatable, Sendable {
     }
 
     var chartSeries: [CodexRadarChartSeries] {
-        let latestSeries = CodexRadarChartSeries(
-            id: latest.modelSeriesID,
-            label: latest.modelDisplayName,
-            points: (recentDays.isEmpty ? [latest] : recentDays).map(CodexRadarChartPoint.init)
-        )
+        let latestSeries: [CodexRadarChartSeries] = latest.hasMeasurement ? [
+            CodexRadarChartSeries(
+                id: latest.modelSeriesID,
+                label: latest.modelDisplayName,
+                points: (recentDays.isEmpty ? [latest] : recentDays).map(CodexRadarChartPoint.init)
+            )
+        ] : []
         let comparisonSeries = comparisons
             .map { comparison -> CodexRadarChartSeries in
                 CodexRadarChartSeries(
@@ -284,12 +514,25 @@ struct CodexRadarModelIQ: Decodable, Equatable, Sendable {
                 if lhsIndex == rhsIndex { return lhs.label < rhs.label }
                 return lhsIndex < rhsIndex
         }
-        return [latestSeries] + comparisonSeries
+        return latestSeries + comparisonSeries
     }
 
     private var allCurrentRows: [CodexRadarModelIQComparisonRow] {
-        [CodexRadarModelIQComparisonRow(label: latest.modelDisplayName, point: latest)]
-            + comparisons.map { CodexRadarModelIQComparisonRow(label: $0.value.label, point: $0.value.latest) }
+        (latest.hasMeasurement ? [CodexRadarModelIQComparisonRow(label: latest.modelDisplayName, point: latest)] : [])
+            + comparisons.values.map { CodexRadarModelIQComparisonRow(label: $0.label, point: $0.latest) }
+    }
+
+    fileprivate static let unavailable = CodexRadarModelIQ(
+        latest: .unavailable,
+        recentDays: [],
+        comparisons: [:],
+        quotaCalibration: nil,
+        quotaRadar: nil,
+        quotaCheck: nil
+    )
+
+    var hasContent: Bool {
+        latest.hasMeasurement || !comparisons.isEmpty || quotaRadar?.hasContent == true || quotaCheck != nil
     }
 
     private func isPreferredPrimaryModel(
@@ -451,11 +694,12 @@ struct CodexRadarModelIQComparison: Decodable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        label = try container.decode(String.self, forKey: .label)
-        model = try container.decode(String.self, forKey: .model)
-        reasoningEffort = try container.decode(String.self, forKey: .reasoningEffort)
-        latest = try container.decode(CodexRadarModelIQPoint.self, forKey: .latest)
-        recentDays = try container.decodeIfPresent([CodexRadarModelIQPoint].self, forKey: .recentDays) ?? []
+        latest = container.codexRadarDecodeSafely(CodexRadarModelIQPoint.self, forKey: .latest) ?? .unavailable
+        label = container.codexRadarString(forKey: .label) ?? latest.modelDisplayName
+        model = container.codexRadarString(forKey: .model) ?? latest.model ?? ""
+        reasoningEffort = container.codexRadarString(forKey: .reasoningEffort) ?? latest.reasoningEffort ?? ""
+        recentDays = container.codexRadarLossyArray(CodexRadarModelIQPoint.self, forKey: .recentDays)
+            .filter(\.hasMeasurement)
     }
 }
 
@@ -483,8 +727,77 @@ struct CodexRadarModelIQPoint: Decodable, Equatable, Sendable, Identifiable {
     let reasoningEffort: String?
     let validTasks: Int?
     let costUsd: Double?
+    private let scoreAvailable: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case date, score, status, passed, tasks, invalid, totalTokens, inputTokens, cachedInputTokens
+        case outputTokens, wallSeconds, wallTimeHuman, model, reasoningEffort, validTasks, costUsd
+    }
+
+    init(
+        date: String,
+        score: Double,
+        status: String,
+        passed: Int,
+        tasks: Int,
+        invalid: Int,
+        totalTokens: Int,
+        inputTokens: Int,
+        cachedInputTokens: Int,
+        outputTokens: Int,
+        wallSeconds: Int,
+        wallTimeHuman: String,
+        model: String?,
+        reasoningEffort: String?,
+        validTasks: Int?,
+        costUsd: Double?,
+        scoreAvailable: Bool = true
+    ) {
+        self.date = date
+        self.score = score
+        self.status = status
+        self.passed = passed
+        self.tasks = tasks
+        self.invalid = invalid
+        self.totalTokens = totalTokens
+        self.inputTokens = inputTokens
+        self.cachedInputTokens = cachedInputTokens
+        self.outputTokens = outputTokens
+        self.wallSeconds = wallSeconds
+        self.wallTimeHuman = wallTimeHuman
+        self.model = model
+        self.reasoningEffort = reasoningEffort
+        self.validTasks = validTasks
+        self.costUsd = costUsd
+        self.scoreAvailable = scoreAvailable
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedScore = container.codexRadarDouble(forKey: .score)
+        date = container.codexRadarString(forKey: .date) ?? ""
+        score = decodedScore ?? 0
+        status = container.codexRadarString(forKey: .status) ?? ""
+        passed = container.codexRadarInt(forKey: .passed) ?? 0
+        tasks = container.codexRadarInt(forKey: .tasks) ?? 0
+        invalid = container.codexRadarInt(forKey: .invalid) ?? 0
+        totalTokens = container.codexRadarInt(forKey: .totalTokens) ?? 0
+        inputTokens = container.codexRadarInt(forKey: .inputTokens) ?? 0
+        cachedInputTokens = container.codexRadarInt(forKey: .cachedInputTokens) ?? 0
+        outputTokens = container.codexRadarInt(forKey: .outputTokens) ?? 0
+        wallSeconds = container.codexRadarInt(forKey: .wallSeconds) ?? 0
+        wallTimeHuman = container.codexRadarString(forKey: .wallTimeHuman) ?? ""
+        model = container.codexRadarString(forKey: .model)
+        reasoningEffort = container.codexRadarString(forKey: .reasoningEffort)
+        validTasks = container.codexRadarInt(forKey: .validTasks)
+        costUsd = container.codexRadarDouble(forKey: .costUsd)
+        scoreAvailable = decodedScore != nil
+    }
+
+    var hasMeasurement: Bool { scoreAvailable }
 
     var modelDisplayName: String {
+        guard hasMeasurement else { return "--" }
         let modelText = model?.uppercased() ?? "MODEL"
         guard let reasoningEffort, !reasoningEffort.isEmpty else {
             return modelText
@@ -497,11 +810,11 @@ struct CodexRadarModelIQPoint: Decodable, Equatable, Sendable, Identifiable {
     }
 
     var scoreDisplayText: String {
-        "IQ \(Self.display(score))"
+        hasMeasurement ? "IQ \(Self.display(score))" : "IQ --"
     }
 
     var passRatioText: String {
-        "\(passed)/\(tasks)"
+        hasMeasurement && tasks > 0 ? "\(passed)/\(tasks)" : "--"
     }
 
     var costDisplayText: String {
@@ -510,9 +823,30 @@ struct CodexRadarModelIQPoint: Decodable, Equatable, Sendable, Identifiable {
     }
 
     var totalTokensDisplayText: String {
+        guard hasMeasurement, totalTokens > 0 else { return "--" }
         let millions = Double(totalTokens) / 1_000_000
         return "\(Self.display(millions, fractionDigits: 2))M"
     }
+
+    fileprivate static let unavailable = CodexRadarModelIQPoint(
+        date: "",
+        score: 0,
+        status: "",
+        passed: 0,
+        tasks: 0,
+        invalid: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        wallSeconds: 0,
+        wallTimeHuman: "",
+        model: nil,
+        reasoningEffort: nil,
+        validTasks: nil,
+        costUsd: nil,
+        scoreAvailable: false
+    )
 
     static func display(_ value: Double, fractionDigits: Int = 1) -> String {
         if value.rounded() == value {
@@ -542,7 +876,7 @@ struct CodexRadarQuotaRadar: Decodable, Equatable, Sendable {
     let source: String
     let updatedAt: String
     let basisDate: String
-    let costUsd: Double
+    let costUsd: Double?
     let totalTokens: Int?
     let basisWindow: String
     let basisWindowLabel: String
@@ -557,6 +891,41 @@ struct CodexRadarQuotaRadar: Decodable, Equatable, Sendable {
     let sevenDayPolicy: String?
     let rows: [CodexRadarQuotaRow]
     let trend: [CodexRadarQuotaTrendPoint]
+
+    private enum CodingKeys: String, CodingKey {
+        case date, source, updatedAt, basisDate, costUsd, totalTokens, basisWindow, basisWindowLabel
+        case adjustedDelta, rawDelta, offset, rate, endpoint, sourceKind, tasks
+        case fiveHourPolicy, sevenDayPolicy, rows, trend
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        date = container.codexRadarString(forKey: .date) ?? ""
+        source = container.codexRadarString(forKey: .source) ?? ""
+        updatedAt = container.codexRadarString(forKey: .updatedAt) ?? ""
+        basisDate = container.codexRadarString(forKey: .basisDate) ?? ""
+        costUsd = container.codexRadarDouble(forKey: .costUsd)
+        totalTokens = container.codexRadarInt(forKey: .totalTokens)
+        basisWindow = container.codexRadarString(forKey: .basisWindow) ?? ""
+        basisWindowLabel = container.codexRadarString(forKey: .basisWindowLabel) ?? ""
+        adjustedDelta = container.codexRadarInt(forKey: .adjustedDelta)
+        rawDelta = container.codexRadarInt(forKey: .rawDelta)
+        offset = container.codexRadarInt(forKey: .offset)
+        rate = container.codexRadarDouble(forKey: .rate)
+        endpoint = container.codexRadarString(forKey: .endpoint)
+        sourceKind = container.codexRadarString(forKey: .sourceKind)
+        tasks = container.codexRadarInt(forKey: .tasks)
+        fiveHourPolicy = container.codexRadarString(forKey: .fiveHourPolicy)
+        sevenDayPolicy = container.codexRadarString(forKey: .sevenDayPolicy)
+        rows = container.codexRadarLossyArray(CodexRadarQuotaRow.self, forKey: .rows)
+            .filter(\.hasContent)
+        trend = container.codexRadarLossyArray(CodexRadarQuotaTrendPoint.self, forKey: .trend)
+            .filter(\.hasContent)
+    }
+
+    var hasContent: Bool {
+        !rows.isEmpty || !trend.isEmpty
+    }
 
     var rowsForDisplay: [CodexRadarQuotaRow] {
         let order = ["Plus", "5x Pro", "20x Pro"]
@@ -652,6 +1021,20 @@ struct CodexRadarQuotaRow: Decodable, Equatable, Sendable, Identifiable {
     let fiveH: Double?
     let sevenD: Double?
 
+    private enum CodingKeys: String, CodingKey { case tier, basis, fiveH, sevenD }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tier = container.codexRadarString(forKey: .tier) ?? ""
+        basis = container.codexRadarString(forKey: .basis) ?? ""
+        fiveH = container.codexRadarDouble(forKey: .fiveH)
+        sevenD = container.codexRadarDouble(forKey: .sevenD)
+    }
+
+    var hasContent: Bool {
+        !tier.isEmpty && (fiveH != nil || sevenD != nil)
+    }
+
     var fiveHourDisplayText: String {
         guard let fiveH else { return "--" }
         return "$\(CodexRadarModelIQPoint.display(fiveH, fractionDigits: 2))"
@@ -679,7 +1062,7 @@ struct CodexRadarQuotaTrendPoint: Decodable, Equatable, Sendable, Identifiable {
     let rawDelta: Int?
     let adjustedDelta: Int?
     let offset: Int?
-    let costUsd: Double
+    let costUsd: Double?
     let totalTokens: Int?
 
     fileprivate func value(for window: CodexRadarQuotaWindow, tier: CodexRadarQuotaTier) -> Double? {
@@ -716,6 +1099,30 @@ struct CodexRadarQuotaTrendPoint: Decodable, Equatable, Sendable, Identifiable {
         case costUsd
         case totalTokens
     }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        date = container.codexRadarString(forKey: .date) ?? ""
+        source = container.codexRadarString(forKey: .source) ?? ""
+        updatedAt = container.codexRadarString(forKey: .updatedAt) ?? ""
+        fiveHour20x = container.codexRadarDouble(forKey: .fiveHour20x)
+        sevenDay20x = container.codexRadarDouble(forKey: .sevenDay20x)
+        fiveHour5x = container.codexRadarDouble(forKey: .fiveHour5x)
+        fiveHourPlus = container.codexRadarDouble(forKey: .fiveHourPlus)
+        basisWindow = container.codexRadarString(forKey: .basisWindow) ?? ""
+        basisWindowLabel = container.codexRadarString(forKey: .basisWindowLabel) ?? ""
+        rate = container.codexRadarDouble(forKey: .rate)
+        rawDelta = container.codexRadarInt(forKey: .rawDelta)
+        adjustedDelta = container.codexRadarInt(forKey: .adjustedDelta)
+        offset = container.codexRadarInt(forKey: .offset)
+        costUsd = container.codexRadarDouble(forKey: .costUsd)
+        totalTokens = container.codexRadarInt(forKey: .totalTokens)
+    }
+
+    var hasContent: Bool {
+        !date.isEmpty
+            && (fiveHour20x != nil || sevenDay20x != nil || fiveHour5x != nil || fiveHourPlus != nil)
+    }
 }
 
 struct CodexRadarQuotaCheck: Decodable, Equatable, Sendable {
@@ -728,18 +1135,27 @@ struct CodexRadarQuotaCheck: Decodable, Equatable, Sendable {
     let rateLimitResetCreditsAvailableCount: Int?
     let limitReached: Bool?
     let allowed: Bool?
+
+    var hasContent: Bool {
+        [schemaVersion, date, source, status, checkedAt, planType]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .contains { !$0.isEmpty }
+            || rateLimitResetCreditsAvailableCount != nil
+            || limitReached != nil
+            || allowed != nil
+    }
 }
 
 struct CodexRadarEnvironment: Decodable, Equatable, Sendable {
     let schemaVersion: String
     let type: String
     let updatedAt: String
-    let statusIncidents24h: Int
-    let officialUpdates24h: Int
-    let communityMentions24h: Int
-    let issueOrLimitAnomalies24h: Int
+    let statusIncidents24h: Int?
+    let officialUpdates24h: Int?
+    let communityMentions24h: Int?
+    let issueOrLimitAnomalies24h: Int?
     let complaintPressure: String
-    let resetCard: CodexRadarResetCard
+    let resetCard: CodexRadarResetCard?
     let officialNews: [CodexRadarNewsItem]
     let statusIncidents: [CodexRadarNewsItem]
     let complaintExamples: [CodexRadarComplaintExample]
@@ -759,6 +1175,39 @@ struct CodexRadarEnvironment: Decodable, Equatable, Sendable {
         case statusIncidents
         case complaintExamples
         case roleCounts
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = container.codexRadarString(forKey: .schemaVersion) ?? ""
+        type = container.codexRadarString(forKey: .type) ?? ""
+        updatedAt = container.codexRadarString(forKey: .updatedAt) ?? ""
+        statusIncidents24h = container.codexRadarInt(forKey: .statusIncidents24h)
+        officialUpdates24h = container.codexRadarInt(forKey: .officialUpdates24h)
+        communityMentions24h = container.codexRadarInt(forKey: .communityMentions24h)
+        issueOrLimitAnomalies24h = container.codexRadarInt(forKey: .issueOrLimitAnomalies24h)
+        complaintPressure = container.codexRadarString(forKey: .complaintPressure) ?? ""
+        resetCard = container.codexRadarDecodeSafely(CodexRadarResetCard.self, forKey: .resetCard)
+        officialNews = container.codexRadarLossyArray(CodexRadarNewsItem.self, forKey: .officialNews)
+            .filter { !$0.url.isEmpty }
+        statusIncidents = container.codexRadarLossyArray(CodexRadarNewsItem.self, forKey: .statusIncidents)
+            .filter { !$0.url.isEmpty }
+        complaintExamples = container.codexRadarLossyArray(CodexRadarComplaintExample.self, forKey: .complaintExamples)
+            .filter { !$0.url.isEmpty && !$0.summaryZh.isEmpty }
+        roleCounts = container.codexRadarDecodeSafely([String: Int].self, forKey: .roleCounts) ?? [:]
+    }
+
+    var hasContent: Bool {
+        statusIncidents24h != nil
+            || officialUpdates24h != nil
+            || communityMentions24h != nil
+            || issueOrLimitAnomalies24h != nil
+            || !complaintPressure.isEmpty
+            || resetCard != nil
+            || !officialNews.isEmpty
+            || !statusIncidents.isEmpty
+            || !complaintExamples.isEmpty
+            || !roleCounts.isEmpty
     }
 }
 

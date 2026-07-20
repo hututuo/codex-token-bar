@@ -134,7 +134,7 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         let radarView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexRadarView.swift")
         let source = try String(contentsOf: radarView, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("snapshot?.modelIQ.primaryModelRow.point"))
+        XCTAssertTrue(source.contains("snapshot?.modelIQ.primaryModelPoint"))
         XCTAssertTrue(source.contains("snapshot?.modelIQ.secondaryModelRows ?? []"))
         XCTAssertTrue(source.contains("CodexRadarHeaderSourceCredit(snapshot: snapshot)"))
         XCTAssertTrue(source.contains("private struct CodexRadarHeaderSourceCredit"))

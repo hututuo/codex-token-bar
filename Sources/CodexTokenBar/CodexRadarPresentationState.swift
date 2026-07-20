@@ -42,13 +42,14 @@ struct CodexRadarPresentationState: Equatable {
 
     var stripStatusText: String {
         guard let snapshot else { return status }
+        let refreshLabel = snapshot.monitoredAt.isEmpty ? "已读取" : snapshot.monitoredAt
         if staleDataDisplayed {
             return firstDiagnosticMessage ?? "读取失败，显示旧雷达"
         }
         if feedStaleDataDisplayed {
-            return "RSS 读取失败 · \(snapshot.monitoredAt)"
+            return "RSS 读取失败 · \(refreshLabel)"
         }
-        return "10分钟刷新 · \(snapshot.monitoredAt)"
+        return "10分钟刷新 · \(refreshLabel)"
     }
 
     var statusBadge: CodexRadarStatusBadge? {

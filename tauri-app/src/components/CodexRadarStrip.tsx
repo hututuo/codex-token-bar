@@ -28,7 +28,7 @@ import {
   modelDisplayName,
   modelIqChartSeries,
   percentText,
-  primaryModelRow,
+  primaryModelMeasurementRow,
   quotaChartSeries,
   quotaRadarAvailableWindows,
   radarActionDisplayText,
@@ -224,9 +224,12 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshGeneration]);
 
-  const primary = useMemo(() => (snapshot ? primaryModelRow(snapshot.modelIq) : null), [snapshot]);
+  const primary = useMemo(() => (snapshot ? primaryModelMeasurementRow(snapshot.modelIq) : null), [snapshot]);
   const secondary = useMemo(() => (snapshot ? secondaryModelRows(snapshot.modelIq).slice(0, 3) : []), [snapshot]);
-  const allModels = useMemo(() => (snapshot ? [primaryModelRow(snapshot.modelIq), ...secondaryModelRows(snapshot.modelIq)] : []), [snapshot]);
+  const allModels = useMemo(
+    () => (snapshot ? [...(primary ? [primary] : []), ...secondaryModelRows(snapshot.modelIq)] : []),
+    [primary, snapshot],
+  );
   const crowdLeaders = useMemo(() => rankedCodexCrowdRadarModels(crowdRadar, 3), [crowdRadar]);
   const crowdBest = crowdLeaders[0] ?? null;
   const crowdRadarStale = crowdRadar !== null && crowdRadarStatus.startsWith("众测刷新失败");
@@ -271,7 +274,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
 
       <div className="codex-radar-grid">
         <RadarBlock accentColor={radarActionAccent(snapshot?.recommendedAction)} icon="W" title="速蹬窗口">
-          <strong>{snapshot?.window.message ?? "等待 Codex 雷达"}</strong>
+          <strong>{snapshot ? (snapshot.window.message || "暂无窗口信息") : "等待 Codex 雷达"}</strong>
           <div className="radar-mini-row">
             <RadarMini accentColor={radarActionAccent(snapshot?.recommendedAction)} label="建议" value={radarActionDisplayText(snapshot?.recommendedAction)} />
             <RadarMini label="24h" value={percentText(probability24h)} />
@@ -400,9 +403,11 @@ export function CodexRadarDetailOverlay({
   status: string;
 }) {
   const displaySnapshot = selectCodexRadarDetailSnapshot(snapshot, detailSnapshot);
-  const displayPrimary = displaySnapshot ? primaryModelRow(displaySnapshot.modelIq) : primary;
+  const displayPrimary = displaySnapshot ? primaryModelMeasurementRow(displaySnapshot.modelIq) : primary;
   const displaySecondary = displaySnapshot ? secondaryModelRows(displaySnapshot.modelIq) : [];
-  const displayAllModels = displaySnapshot ? [primaryModelRow(displaySnapshot.modelIq), ...displaySecondary] : allModels;
+  const displayAllModels = displaySnapshot
+    ? [...(displayPrimary ? [displayPrimary] : []), ...displaySecondary]
+    : allModels;
   const displayQuotaRows = displaySnapshot?.modelIq.quotaRadar?.rows ?? quotaRows;
   const displayProbability24h = displaySnapshot?.prediction.probability24H ?? displaySnapshot?.prediction.probability24h ?? probability24h;
   const displayProbability48h = displaySnapshot?.prediction.probability48H ?? displaySnapshot?.prediction.probability48h ?? probability48h;
@@ -596,7 +601,7 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
             rows={(allModels.length > 0 ? allModels : primary ? [primary] : []).map((row) => [
               row.label,
               displayRadarNumber(row.point.score),
-              `${row.point.passed}/${row.point.tasks}`,
+              radarPassRatioText(row.point.passed, row.point.tasks),
               row.point.status || "--",
               formatCost(row.point.costUsd),
               row.point.wallTimeHuman || formatSeconds(row.point.wallSeconds),
@@ -610,7 +615,7 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
             rows={snapshot.modelIq.recentDays.map((point) => [
               point.date || "--",
               displayRadarNumber(point.score),
-              `${point.passed}/${point.tasks}`,
+              radarPassRatioText(point.passed, point.tasks),
               point.status || "--",
               point.wallTimeHuman || formatSeconds(point.wallSeconds),
               formatTokens(point.totalTokens),
@@ -684,10 +689,10 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
       <RadarDetailSection icon="waveform.path.ecg" title="环境压力与资讯">
         <RadarDetailSubsection title="压力指标">
           <RadarKeyValueGrid rows={[
-            ["官方动态 24h", `${environmentCount(snapshot.codexEnvironment, "officialUpdates")}`],
-            ["社区提及 24h", `${environmentCount(snapshot.codexEnvironment, "communityMentions")}`],
-            ["异常/限额反馈", `${environmentCount(snapshot.codexEnvironment, "issueOrLimitAnomalies")}`],
-            ["Status 事故", `${environmentCount(snapshot.codexEnvironment, "statusIncidents")}`],
+            ["官方动态 24h", environmentCount(snapshot.codexEnvironment, "officialUpdates")?.toString() ?? "--"],
+            ["社区提及 24h", environmentCount(snapshot.codexEnvironment, "communityMentions")?.toString() ?? "--"],
+            ["异常/限额反馈", environmentCount(snapshot.codexEnvironment, "issueOrLimitAnomalies")?.toString() ?? "--"],
+            ["Status 事故", environmentCount(snapshot.codexEnvironment, "statusIncidents")?.toString() ?? "--"],
             ["抱怨压力", snapshot.codexEnvironment.complaintPressure || "--"],
             ["RSS", snapshot.links.rss || "--"],
           ]} />
@@ -1222,6 +1227,12 @@ function formatTokens(value: number): string {
     return `${displayRadarNumber(value / 10_000, 1)}万 token`;
   }
   return `${Math.round(value)} token`;
+}
+
+function radarPassRatioText(passed: number, tasks: number): string {
+  return Number.isFinite(passed) && Number.isFinite(tasks) && tasks > 0
+    ? `${passed}/${tasks}`
+    : "--";
 }
 
 function formatCost(value: number | null | undefined): string {

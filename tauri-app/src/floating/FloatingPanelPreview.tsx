@@ -4,7 +4,7 @@ import {
   compactRadarModelName,
   displayRadarNumber,
   percentText,
-  primaryModelRow,
+  primaryModelMeasurementRow,
   radarActionDisplayText,
   secondaryModelRows,
   type CodexRadarSnapshot,
@@ -342,17 +342,17 @@ export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSna
     );
   }
 
-  const primary = primaryModelRow(snapshot.modelIq);
+  const primary = primaryModelMeasurementRow(snapshot.modelIq);
   const secondaryText = floatingRadarSecondaryIQText(snapshot);
   const diagnosticLabel = codexRadarDiagnosticLabel(snapshot);
   const probability = snapshot.prediction.probability24H ?? snapshot.prediction.probability24h;
   const probability48 = snapshot.prediction.probability48H ?? snapshot.prediction.probability48h;
-  const secondaryAccentPoint = uniqueFloatingRadarRows(secondaryModelRows(snapshot.modelIq), 2)[0]?.point ?? primary.point;
+  const secondaryAccentPoint = uniqueFloatingRadarRows(secondaryModelRows(snapshot.modelIq), 2)[0]?.point ?? primary?.point;
   const radarStyle = {
     ...style,
     "--radar-action-color": radarActionAccent(snapshot.recommendedAction),
-    "--radar-score-color": radarScoreAccent(primary.point),
-    "--radar-secondary-color": radarScoreAccent(secondaryAccentPoint),
+    "--radar-score-color": primary ? radarScoreAccent(primary.point) : semanticMetricColor(70),
+    "--radar-secondary-color": secondaryAccentPoint ? radarScoreAccent(secondaryAccentPoint) : semanticMetricColor(70),
   } as CSSProperties;
 
   return (
@@ -364,8 +364,8 @@ export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSna
       <div className="floating-radar-iq">
           <strong>
             <i className="floating-radar-dot" aria-hidden="true" />
-            <span>IQ {displayRadarNumber(primary.point.score, 1)}</span>
-            <em>{compactRadarModelName(primary.label)}</em>
+            <span>{primary ? `IQ ${displayRadarNumber(primary.point.score, 1)}` : "IQ --"}</span>
+            <em>{primary ? compactRadarModelName(primary.label) : "模型 --"}</em>
           </strong>
           <p className="floating-radar-models">{secondaryText}</p>
       </div>
@@ -398,8 +398,13 @@ function FloatingCrowdRadarResult({ index, model }: { index: number; model?: Ret
 function floatingRadarSecondaryIQText(snapshot: CodexRadarSnapshot): string {
   const rows = uniqueFloatingRadarRows(secondaryModelRows(snapshot.modelIq), 2);
   if (rows.length === 0) {
-    const primary = primaryModelRow(snapshot.modelIq);
-    return `${primary.point.passed}/${primary.point.tasks} 通过`;
+    const primary = primaryModelMeasurementRow(snapshot.modelIq);
+    if (!primary) {
+      return "等待模型数据";
+    }
+    return primary.point.tasks > 0
+      ? `${primary.point.passed}/${primary.point.tasks} 通过`
+      : "等待通过率数据";
   }
   return rows
     .map((row) => `${compactRadarModelName(row.label)} ${displayRadarNumber(row.point.score, 1)}`)

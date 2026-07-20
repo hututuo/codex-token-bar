@@ -98,6 +98,29 @@ test("floating Radar row preserves stale snapshot and shows a restrained marker"
   });
 });
 
+test("floating Radar keeps healthy partial data without inventing IQ zero", async () => {
+  await withSsrModules(async (load) => {
+    const { FloatingRadarRow } = await load("/src/floating/FloatingPanelPreview.tsx");
+    const { normalizeCodexRadarSnapshot } = await load("/src/domain/codexRadar/model.ts");
+    const snapshot = normalizeCodexRadarSnapshot({
+      recommended_action: "wait",
+      window: { message: "窗口数据仍可读取" },
+      prediction: { probability_24h: "0.21" },
+      model_iq: {
+        latest: { score: { new_shape: 125 } },
+        quota_radar: { rows: [{ tier: "Plus", seven_d: "97.24" }] },
+      },
+    });
+
+    const html = renderComponent(FloatingRadarRow, { snapshot, style: {} });
+
+    assert.match(html, /IQ --/);
+    assert.match(html, /等待模型数据/);
+    assert.doesNotMatch(html, /IQ 0(?:\.0)?/);
+    assert.match(html, /24h 21%/);
+  });
+});
+
 test("Codex Radar detail overlay prefers full detail snapshot and falls back to public summary", async () => {
   await withSsrModules(async (load) => {
     const { CodexRadarDetailOverlay } = await load("/src/components/CodexRadarStrip.tsx");

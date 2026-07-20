@@ -43,6 +43,31 @@ test("empty Codex Radar root payload is treated as a failure without fake IQ dat
   });
 });
 
+test("a changed IQ block no longer makes the Radar client reject healthy window and quota data", async () => {
+  await withSsrModules(async (load) => {
+    const { __resetCodexRadarCacheForTests, readCodexRadarState } = await load("/src/api/codexRadarClient.ts");
+    __resetCodexRadarCacheForTests();
+    const partial = snapshotFixture();
+    partial.prediction = { unexpected_v3: { value: 1 } };
+    partial.model_iq.latest = { score: { new_shape: 125 } };
+    partial.model_iq.quota_radar = {
+      rows: [{ tier: "Plus", seven_d: "97.24", basis: "estimated" }],
+    };
+    withFetchQueue([
+      jsonResponse(partial),
+      textResponse(feedFixture("partial-radar")),
+    ]);
+
+    const state = await readCodexRadarState(null, { force: true });
+
+    assert.equal(state.snapshot?.window.message, "当前没有开启的速蹬窗口");
+    assert.equal(state.snapshot?.modelIq.latest.scoreAvailable, false);
+    assert.equal(state.snapshot?.modelIq.quotaRadar?.rows[0].sevenD, 97.24);
+    assert.deepEqual(state.snapshot?.feedItems.map((item) => item.guid), ["partial-radar"]);
+    assert.equal(state.diagnostics.length, 0);
+  });
+});
+
 test("Codex Radar root failures keep machine-readable categories", async () => {
   await withSsrModules(async (load) => {
     const { __resetCodexRadarCacheForTests, readCodexRadarState } = await load("/src/api/codexRadarClient.ts");

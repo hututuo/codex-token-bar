@@ -954,7 +954,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(radarStrip.contains("presentation.compactMarkerText"))
         XCTAssertTrue(radarStrip.contains("presentation.compactAccessibilityText"))
         XCTAssertTrue(radarStrip.contains(".foregroundStyle(actionPalette.primaryColor)"))
-        XCTAssertTrue(radarStrip.contains("let primary = snapshot?.modelIQ.primaryModelRow.point"))
+        XCTAssertTrue(radarStrip.contains("let primary = snapshot?.modelIQ.primaryModelPoint"))
         XCTAssertTrue(radarStrip.contains("Text(primary?.scoreDisplayText ?? \"IQ --\")"))
         XCTAssertTrue(radarStrip.contains("tokenDisplayRadarSecondaryIQText(snapshot)"))
         XCTAssertTrue(componentsSource.contains("snapshot?.modelIQ.secondaryModelRows.prefix(2)"))

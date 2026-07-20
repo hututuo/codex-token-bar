@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compactRadarModelName, modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, primaryModelRow, quotaChartSeries, quotaRadarAvailableWindows, radarActionDisplayText, secondaryModelRows, selectCodexRadarDetailSnapshot, shortDateLabel } from "./model.ts";
+import { codexRadarSnapshotHasContent, compactRadarModelName, modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, primaryModelMeasurementRow, primaryModelRow, quotaChartSeries, quotaRadarAvailableWindows, radarActionDisplayText, secondaryModelRows, selectCodexRadarDetailSnapshot, shortDateLabel } from "./model.ts";
 
 const snapshot = {
   modelIq: {
@@ -309,6 +309,88 @@ test("normalizeCodexRadarSnapshot keeps the current seven-day-only quota schema 
   assert.equal(quotaRadar.rows[0].fiveH, null);
   assert.deepEqual(quotaChartSeries(quotaRadar, "fiveHour"), []);
   assert.deepEqual(quotaChartSeries(quotaRadar, "sevenDay").map((item) => item.points[0].value), [97.2415, 486.2075, 1944.83]);
+});
+
+test("Radar normalization matches formatting-only key variants and numeric strings", () => {
+  const normalized = normalizeCodexRadarSnapshot({ "PAY-LOAD": {
+    "MONITORED-AT": "2026-07-20T08:00:00+08:00",
+    "WINDOW OPEN": "false",
+    "RECOMMENDED-ACTION": "wait",
+    "WIN-DOW": {
+      "MES-SAGE": "窗口数据仍可读取",
+    },
+    "PRE-DICTION": {
+      "PROBABILITY-24-H": "0.21",
+      "PROBABILITY 48H": "0.34",
+    },
+    "MODEL IQ": {
+      "LATEST": {
+        "SCORE": "125",
+        "TOTAL-TOKENS": "39090118",
+        "MODEL": "gpt-5.6-sol",
+        "REASONING EFFORT": "max",
+      },
+      "QUOTA-RADAR": {
+        "FIVE-HOUR-POLICY": "temporarily_paused_hidden",
+        "SEVEN-DAY-POLICY": "direct_quota_api",
+        "ROWS": [{ "TIER": "Plus", "SEVEN D": "97.24" }],
+      },
+    },
+  } });
+
+  assert.equal(normalized.monitoredAt, "2026-07-20T08:00:00+08:00");
+  assert.equal(normalized.windowOpen, false);
+  assert.equal(normalized.window.message, "窗口数据仍可读取");
+  assert.equal(normalized.prediction.probability24H, 0.21);
+  assert.equal(normalized.prediction.probability48H, 0.34);
+  assert.equal(primaryModelMeasurementRow(normalized.modelIq)?.point.score, 125);
+  assert.equal(normalized.modelIq.latest.totalTokens, 39090118);
+  assert.equal(normalized.modelIq.quotaRadar?.rows[0].sevenD, 97.24);
+  assert.equal(codexRadarSnapshotHasContent(normalized), true);
+});
+
+test("one changed Radar block does not hide healthy window quota and environment blocks", () => {
+  const normalized = normalizeCodexRadarSnapshot({
+    status: "normal",
+    window: { message: "窗口块仍然健康" },
+    prediction: { unexpected_v3: { value: 1 } },
+    model_iq: {
+      latest: { score: { new_shape: 125 } },
+      comparisons: { broken: { latest: "not_an_object" } },
+      quota_radar: {
+        rows: [
+          { tier: 123, five_h: "unknown" },
+          { tier: "Plus", seven_d: "97.24", basis: "estimated" },
+        ],
+      },
+    },
+    codex_environment: {
+      official_updates_24h: "4",
+      official_news: [
+        { title_zh: "仍可读取的资讯", url: "https://codexradar.com/kept" },
+        { title_zh: 123 },
+      ],
+    },
+  });
+
+  assert.equal(normalized.window.message, "窗口块仍然健康");
+  assert.equal(primaryModelMeasurementRow(normalized.modelIq), null);
+  assert.equal(modelIqChartSeries(normalized.modelIq).length, 0);
+  assert.equal(normalized.modelIq.quotaRadar?.rows.length, 1);
+  assert.equal(normalized.modelIq.quotaRadar?.rows[0].sevenD, 97.24);
+  assert.equal(normalized.codexEnvironment.officialUpdates24H, 4);
+  assert.equal(codexRadarSnapshotHasContent(normalized), true);
+});
+
+test("exact Radar keys win and genuinely empty normalized payloads fail the content gate", () => {
+  const exactWins = normalizeCodexRadarSnapshot({
+    recommendedAction: "wait",
+    "recommended-action": "run",
+    window: { message: "有内容" },
+  });
+  assert.equal(exactWins.recommendedAction, "wait");
+  assert.equal(codexRadarSnapshotHasContent(exactWins), true);
+  assert.equal(codexRadarSnapshotHasContent(normalizeCodexRadarSnapshot({ schema_version: "3" })), false);
 });
 
 test("selectCodexRadarDetailSnapshot prefers optional full detail and falls back to public summary", () => {

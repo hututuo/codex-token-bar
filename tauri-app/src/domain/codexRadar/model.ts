@@ -3,7 +3,7 @@ export interface CodexRadarSnapshot {
   service: string;
   monitoredAt: string;
   timezone: string;
-  windowOpen: boolean;
+  windowOpen: boolean | null;
   status: string;
   recommendedAction: string;
   window: CodexRadarWindow;
@@ -55,7 +55,7 @@ export interface CodexRadarReadState {
 }
 
 export interface CodexRadarWindow {
-  open: boolean;
+  open: boolean | null;
   status: string;
   action: string;
   message: string;
@@ -145,6 +145,7 @@ export interface CodexRadarModelIQPoint {
   model?: string | null;
   reasoningEffort?: string | null;
   costUsd?: number | null;
+  scoreAvailable?: boolean;
 }
 
 export interface CodexRadarModelIQComparisonRow {
@@ -171,7 +172,7 @@ export interface CodexRadarQuotaRadar {
   source: string;
   updatedAt: string;
   basisDate: string;
-  costUsd: number;
+  costUsd: number | null;
   totalTokens: number | null;
   basisWindow: string;
   basisWindowLabel: string;
@@ -223,7 +224,7 @@ export interface CodexRadarQuotaTrendPoint {
   rawDelta: number | null;
   adjustedDelta: number | null;
   offset: number | null;
-  costUsd: number;
+  costUsd: number | null;
   totalTokens: number | null;
 }
 
@@ -291,7 +292,7 @@ export interface CodexRadarComplaintExample {
 }
 
 export function normalizeCodexRadarSnapshot(raw: unknown): CodexRadarSnapshot {
-  const source = asRecord(raw);
+  const source = radarPayloadSource(asRecord(raw));
   const window = asRecord(read(source, "window"));
   const prediction = asRecord(read(source, "prediction"));
   const tiboPresence = asRecord(read(source, "tiboPresence", "tibo_presence"));
@@ -304,11 +305,11 @@ export function normalizeCodexRadarSnapshot(raw: unknown): CodexRadarSnapshot {
     service: stringValue(read(source, "service")),
     monitoredAt: stringValue(read(source, "monitoredAt", "monitored_at")),
     timezone: stringValue(read(source, "timezone")),
-    windowOpen: booleanValue(read(source, "windowOpen", "window_open")),
+    windowOpen: optionalBoolean(read(source, "windowOpen", "window_open")) ?? null,
     status: stringValue(read(source, "status")),
     recommendedAction: stringValue(read(source, "recommendedAction", "recommended_action")),
     window: {
-      open: booleanValue(read(window, "open")),
+      open: optionalBoolean(read(window, "open")) ?? null,
       status: stringValue(read(window, "status")),
       action: stringValue(read(window, "action")),
       message: stringValue(read(window, "message")),
@@ -340,7 +341,9 @@ export function normalizeCodexRadarSnapshot(raw: unknown): CodexRadarSnapshot {
       shouldDisplay: optionalBoolean(read(tiboPresence, "shouldDisplay", "should_display")),
       observationsConsidered: optionalNumber(read(tiboPresence, "observationsConsidered", "observations_considered")),
     } : null,
-    recentWindows: arrayValue(read(source, "recentWindows", "recent_windows")).map(normalizeRecentWindow),
+    recentWindows: arrayValue(read(source, "recentWindows", "recent_windows"))
+      .map(normalizeRecentWindow)
+      .filter((item) => Boolean(item.title || item.status || item.openedAt || item.closedAt || item.sourceUrl)),
     links: {
       html: stringValue(read(links, "html"), "https://codexradar.com"),
       rss: stringValue(read(links, "rss"), "https://codexradar.com/feed.xml"),
@@ -360,9 +363,15 @@ export function normalizeCodexRadarSnapshot(raw: unknown): CodexRadarSnapshot {
       issueOrLimitAnomalies24h: optionalNumber(read(environment, "issueOrLimitAnomalies24h", "issue_or_limit_anomalies_24h")),
       complaintPressure: stringValue(read(environment, "complaintPressure", "complaint_pressure")),
       resetCard: normalizeResetCard(read(environment, "resetCard", "reset_card")),
-      officialNews: arrayValue(read(environment, "officialNews", "official_news")).map(normalizeNewsItem),
-      statusIncidents: arrayValue(read(environment, "statusIncidents", "status_incidents")).map(normalizeNewsItem),
-      complaintExamples: arrayValue(read(environment, "complaintExamples", "complaint_examples")).map(normalizeComplaintExample),
+      officialNews: arrayValue(read(environment, "officialNews", "official_news"))
+        .map(normalizeNewsItem)
+        .filter((item) => Boolean(item.url)),
+      statusIncidents: arrayValue(read(environment, "statusIncidents", "status_incidents"))
+        .map(normalizeNewsItem)
+        .filter((item) => Boolean(item.url)),
+      complaintExamples: arrayValue(read(environment, "complaintExamples", "complaint_examples"))
+        .map(normalizeComplaintExample)
+        .filter((item) => Boolean(item.url && item.summaryZh)),
       roleCounts: numberRecord(read(environment, "roleCounts", "role_counts")),
     },
     feedItems: arrayValue(read(source, "feedItems", "feed_items")).map(normalizeFeedItem),
@@ -372,6 +381,76 @@ export function normalizeCodexRadarSnapshot(raw: unknown): CodexRadarSnapshot {
     staleDataDisplayed: booleanValue(read(source, "staleDataDisplayed", "stale_data_displayed")),
     feedStaleDataDisplayed: booleanValue(read(source, "feedStaleDataDisplayed", "feed_stale_data_displayed")),
   };
+}
+
+function radarPayloadSource(root: Record<string, unknown>): Record<string, unknown> {
+  const hasDirectBlocks = [
+    "window",
+    "prediction",
+    "modelIq",
+    "model_iq",
+    "codexEnvironment",
+    "codex_environment",
+    "tiboPresence",
+    "tibo_presence",
+    "recentWindows",
+    "recent_windows",
+    "recommendedAction",
+    "recommended_action",
+  ].some((key) => read(root, key) !== undefined);
+  if (hasDirectBlocks) {
+    return root;
+  }
+  for (const key of ["data", "result", "snapshot", "payload"]) {
+    const nested = asRecord(read(root, key));
+    if (Object.keys(nested).length > 0) {
+      return nested;
+    }
+  }
+  return root;
+}
+
+export function codexRadarSnapshotHasContent(snapshot: CodexRadarSnapshot): boolean {
+  const windowHasContent = snapshot.window.open !== null
+    || Boolean(snapshot.window.status || snapshot.window.action || snapshot.window.message || snapshot.window.title || snapshot.window.scope || snapshot.window.sourceUrl);
+  const predictionHasContent = snapshot.prediction.probability24H !== undefined
+    || snapshot.prediction.probability24h !== undefined
+    || snapshot.prediction.probability48H !== undefined
+    || snapshot.prediction.probability48h !== undefined
+    || Boolean(snapshot.prediction.level || snapshot.prediction.summary || snapshot.prediction.positiveSignals.length || snapshot.prediction.negativeSignals.length);
+  const modelIqHasContent = modelPointHasMeasurement(snapshot.modelIq.latest)
+    || Object.keys(snapshot.modelIq.comparisons).length > 0
+    || Boolean(snapshot.modelIq.quotaRadar)
+    || Boolean(snapshot.modelIq.quotaCheck);
+  const tiboHasContent = Boolean(snapshot.tiboPresence && (
+    snapshot.tiboPresence.locationLabelZh
+    || snapshot.tiboPresence.locationLabelEn
+    || snapshot.tiboPresence.probability !== undefined
+    || snapshot.tiboPresence.confidence
+    || snapshot.tiboPresence.safetyNoteZh
+    || snapshot.tiboPresence.shouldDisplay !== undefined
+  ));
+  const environment = snapshot.codexEnvironment;
+  const environmentHasContent = environment.statusIncidents24H !== undefined
+    || environment.statusIncidents24h !== undefined
+    || environment.officialUpdates24H !== undefined
+    || environment.officialUpdates24h !== undefined
+    || environment.communityMentions24H !== undefined
+    || environment.communityMentions24h !== undefined
+    || environment.issueOrLimitAnomalies24H !== undefined
+    || environment.issueOrLimitAnomalies24h !== undefined
+    || Boolean(environment.complaintPressure || environment.resetCard || environment.officialNews.length || environment.statusIncidents.length || environment.complaintExamples.length || Object.keys(environment.roleCounts).length);
+
+  return Boolean(
+    snapshot.status
+      || snapshot.recommendedAction
+      || windowHasContent
+      || predictionHasContent
+      || modelIqHasContent
+      || tiboHasContent
+      || snapshot.recentWindows.length
+      || environmentHasContent
+  );
 }
 
 export function codexRadarSurfaceStatus(snapshot: CodexRadarSnapshot | null, diagnostics: CodexRadarDiagnostic[] = []): string {
@@ -386,7 +465,7 @@ export function codexRadarSurfaceStatus(snapshot: CodexRadarSnapshot | null, dia
     return diagnostics[0].message;
   }
   if (snapshot) {
-    return `10分钟刷新 · ${snapshot.monitoredAt}`;
+    return `10分钟刷新 · ${snapshot.monitoredAt || "已读取"}`;
   }
   return "Codex 雷达待读取";
 }
@@ -446,6 +525,11 @@ export function primaryModelRow(modelIq: CodexRadarModelIQ): CodexRadarModelIQCo
   };
 }
 
+export function primaryModelMeasurementRow(modelIq: CodexRadarModelIQ): CodexRadarModelIQComparisonRow | null {
+  const row = primaryModelRow(modelIq);
+  return modelPointHasMeasurement(row.point) ? row : null;
+}
+
 export function secondaryModelRows(modelIq: CodexRadarModelIQ): CodexRadarModelIQComparisonRow[] {
   const primary = primaryModelRow(modelIq);
   return allCurrentRows(modelIq)
@@ -454,14 +538,17 @@ export function secondaryModelRows(modelIq: CodexRadarModelIQ): CodexRadarModelI
 }
 
 export function modelIqChartSeries(modelIq: CodexRadarModelIQ): CodexRadarChartSeries[] {
-  const latestSeries: CodexRadarChartSeries = {
+  const latestSeries: CodexRadarChartSeries[] = modelPointHasMeasurement(modelIq.latest) ? [{
     id: modelSeriesID(modelIq.latest),
     label: modelDisplayName(modelIq.latest),
-    points: (modelIq.recentDays.length > 0 ? modelIq.recentDays : [modelIq.latest]).map(modelPointToChartPoint),
-  };
+    points: (modelIq.recentDays.length > 0 ? modelIq.recentDays : [modelIq.latest])
+      .filter(modelPointHasMeasurement)
+      .map(modelPointToChartPoint),
+  }] : [];
 
   const preferredOrder = ["GPT-5.5 high", "GPT-5.5 medium", "GPT-5.4 xhigh"];
   const comparisonSeries = Object.values(modelIq.comparisons ?? {})
+    .filter((comparison) => modelPointHasMeasurement(comparison.latest))
     .map((comparison) => ({
       id: `${comparison.model}-${comparison.reasoningEffort}`,
       label: comparison.label,
@@ -475,7 +562,7 @@ export function modelIqChartSeries(modelIq: CodexRadarModelIQ): CodexRadarChartS
       return normalizedLhs === normalizedRhs ? lhs.label.localeCompare(rhs.label) : normalizedLhs - normalizedRhs;
     });
 
-  return [latestSeries, ...comparisonSeries];
+  return [...latestSeries, ...comparisonSeries];
 }
 
 export function quotaChartSeries(quotaRadar: CodexRadarQuotaRadar, window: CodexRadarQuotaWindow): CodexRadarChartSeries[] {
@@ -532,6 +619,9 @@ export function quotaRadarWindowAvailable(quotaRadar: CodexRadarQuotaRadar, wind
 }
 
 export function modelDisplayName(point: CodexRadarModelIQPoint): string {
+  if (!modelPointHasMeasurement(point)) {
+    return "--";
+  }
   const model = point.model?.toUpperCase() ?? "MODEL";
   return point.reasoningEffort ? `${model} ${point.reasoningEffort}` : model;
 }
@@ -587,28 +677,32 @@ export function percentText(value: number | null | undefined): string {
 export function environmentCount(
   environment: CodexRadarEnvironment | undefined,
   key: "statusIncidents" | "officialUpdates" | "communityMentions" | "issueOrLimitAnomalies",
-): number {
+): number | null {
   if (!environment) {
-    return 0;
+    return null;
   }
   const upperKey = `${key}24H` as keyof CodexRadarEnvironment;
   const lowerKey = `${key}24h` as keyof CodexRadarEnvironment;
   const value = environment[upperKey] ?? environment[lowerKey];
-  return typeof value === "number" ? value : 0;
+  return typeof value === "number" ? value : null;
 }
 
 function allCurrentRows(modelIq: CodexRadarModelIQ): CodexRadarModelIQComparisonRow[] {
   const rows: CodexRadarModelIQComparisonRow[] = [];
-  if (modelIq.latest) {
+  if (modelPointHasMeasurement(modelIq.latest)) {
     rows.push({ label: modelDisplayName(modelIq.latest), point: modelIq.latest });
   }
   rows.push(
-    ...Object.values(modelIq.comparisons ?? {}).filter((comparison) => comparison.latest).map((comparison) => ({
+    ...Object.values(modelIq.comparisons ?? {}).filter((comparison) => modelPointHasMeasurement(comparison.latest)).map((comparison) => ({
       label: comparison.label,
       point: comparison.latest,
     })),
   );
   return rows;
+}
+
+export function modelPointHasMeasurement(point: CodexRadarModelIQPoint): boolean {
+  return point.scoreAvailable !== false && Number.isFinite(point.score);
 }
 
 function preferredModelOrder(lhs: CodexRadarModelIQComparisonRow, rhs: CodexRadarModelIQComparisonRow): number {
@@ -696,21 +790,34 @@ function quotaPolicyHidesWindow(policy: string | null | undefined): boolean {
   return normalized.includes("hidden") || normalized.includes("paused") || normalized.includes("disabled");
 }
 
+function quotaRadarHasContent(quotaRadar: CodexRadarQuotaRadar): boolean {
+  return Boolean(quotaRadar.rows.length || quotaRadar.trend.length);
+}
+
 function normalizeModelIq(modelIq: Record<string, unknown>): CodexRadarModelIQ {
   const comparisons = asRecord(read(modelIq, "comparisons"));
+  const latest = normalizeModelPoint(read(modelIq, "latest"));
   return {
-    latest: normalizeModelPoint(read(modelIq, "latest")),
-    recentDays: arrayValue(read(modelIq, "recentDays", "recent_days")).map(normalizeModelPoint),
+    latest,
+    recentDays: arrayValue(read(modelIq, "recentDays", "recent_days"))
+      .map(normalizeModelPoint)
+      .filter(modelPointHasMeasurement),
     comparisons: Object.fromEntries(
-      Object.entries(comparisons).map(([key, value]) => {
+      Object.entries(comparisons).flatMap(([key, value]) => {
         const comparison = asRecord(value);
-        return [key, {
-          label: stringValue(read(comparison, "label")),
-          model: stringValue(read(comparison, "model")),
-          reasoningEffort: stringValue(read(comparison, "reasoningEffort", "reasoning_effort")),
-          latest: normalizeModelPoint(read(comparison, "latest")),
-          recentDays: arrayValue(read(comparison, "recentDays", "recent_days")).map(normalizeModelPoint),
-        } satisfies CodexRadarModelIQComparison];
+        const comparisonLatest = normalizeModelPoint(read(comparison, "latest"));
+        if (!modelPointHasMeasurement(comparisonLatest)) {
+          return [];
+        }
+        return [[key, {
+          label: stringValue(read(comparison, "label"), modelDisplayName(comparisonLatest)),
+          model: stringValue(read(comparison, "model"), comparisonLatest.model ?? ""),
+          reasoningEffort: stringValue(read(comparison, "reasoningEffort", "reasoning_effort"), comparisonLatest.reasoningEffort ?? ""),
+          latest: comparisonLatest,
+          recentDays: arrayValue(read(comparison, "recentDays", "recent_days"))
+            .map(normalizeModelPoint)
+            .filter(modelPointHasMeasurement),
+        } satisfies CodexRadarModelIQComparison]];
       }),
     ),
     quotaCalibration: normalizeQuotaCalibration(read(modelIq, "quotaCalibration", "quota_calibration")),
@@ -721,9 +828,11 @@ function normalizeModelIq(modelIq: Record<string, unknown>): CodexRadarModelIQ {
 
 function normalizeModelPoint(raw: unknown): CodexRadarModelIQPoint {
   const point = asRecord(raw);
+  const score = optionalNumber(read(point, "score"));
   return {
     date: stringValue(read(point, "date")),
-    score: numberValue(read(point, "score")),
+    score: score ?? 0,
+    scoreAvailable: score !== undefined,
     status: stringValue(read(point, "status")),
     passed: numberValue(read(point, "passed")),
     tasks: numberValue(read(point, "tasks")),
@@ -751,13 +860,21 @@ function normalizeQuotaRadar(raw: unknown): CodexRadarQuotaRadar | null {
       fiveH: optionalNumber(read(row, "fiveH", "five_h")) ?? null,
       sevenD: optionalNumber(read(row, "sevenD", "seven_d")) ?? null,
     };
-  });
-  return rows.length > 0 ? {
+  }).filter((row) => Boolean(row.tier && (row.fiveH !== null || row.sevenD !== null)));
+  const trend = arrayValue(read(radar, "trend"))
+    .map(normalizeQuotaTrendPoint)
+    .filter((point) => Boolean(point.date && (
+      point.fiveHour20x !== null
+      || point.sevenDay20x !== null
+      || point.fiveHour5x !== null
+      || point.fiveHourPlus !== null
+    )));
+  const normalized: CodexRadarQuotaRadar = {
     date: stringValue(read(radar, "date")),
     source: stringValue(read(radar, "source")),
     updatedAt: stringValue(read(radar, "updatedAt", "updated_at")),
     basisDate: stringValue(read(radar, "basisDate", "basis_date")),
-    costUsd: numberValue(read(radar, "costUsd", "cost_usd")),
+    costUsd: optionalNumber(read(radar, "costUsd", "cost_usd")) ?? null,
     totalTokens: optionalNumber(read(radar, "totalTokens", "total_tokens")) ?? null,
     basisWindow: stringValue(read(radar, "basisWindow", "basis_window")),
     basisWindowLabel: stringValue(read(radar, "basisWindowLabel", "basis_window_label")),
@@ -771,8 +888,9 @@ function normalizeQuotaRadar(raw: unknown): CodexRadarQuotaRadar | null {
     fiveHourPolicy: nullableString(read(radar, "fiveHourPolicy", "five_hour_policy")),
     sevenDayPolicy: nullableString(read(radar, "sevenDayPolicy", "seven_day_policy")),
     rows,
-    trend: arrayValue(read(radar, "trend")).map(normalizeQuotaTrendPoint),
-  } : null;
+    trend,
+  };
+  return quotaRadarHasContent(normalized) ? normalized : null;
 }
 
 function normalizeQuotaCalibration(raw: unknown): CodexRadarQuotaCalibration | null {
@@ -800,7 +918,7 @@ function normalizeQuotaCheck(raw: unknown): CodexRadarQuotaCheck | null {
   if (Object.keys(check).length === 0) {
     return null;
   }
-  return {
+  const normalized: CodexRadarQuotaCheck = {
     date: nullableString(read(check, "date")),
     source: nullableString(read(check, "source")),
     status: nullableString(read(check, "status")),
@@ -810,6 +928,9 @@ function normalizeQuotaCheck(raw: unknown): CodexRadarQuotaCheck | null {
     limitReached: optionalBoolean(read(check, "limitReached", "limit_reached")),
     allowed: optionalBoolean(read(check, "allowed")),
   };
+  return Object.values(normalized).some((value) => value !== null && value !== undefined && value !== "")
+    ? normalized
+    : null;
 }
 
 function normalizeQuotaTrendPoint(raw: unknown): CodexRadarQuotaTrendPoint {
@@ -828,7 +949,7 @@ function normalizeQuotaTrendPoint(raw: unknown): CodexRadarQuotaTrendPoint {
     rawDelta: optionalNumber(read(point, "rawDelta", "raw_delta")) ?? null,
     adjustedDelta: optionalNumber(read(point, "adjustedDelta", "adjusted_delta")) ?? null,
     offset: optionalNumber(read(point, "offset")) ?? null,
-    costUsd: numberValue(read(point, "costUsd", "cost_usd")),
+    costUsd: optionalNumber(read(point, "costUsd", "cost_usd")) ?? null,
     totalTokens: optionalNumber(read(point, "totalTokens", "total_tokens")) ?? null,
   };
 }
@@ -849,7 +970,7 @@ function normalizeResetCard(raw: unknown): CodexRadarResetCard | null {
   if (Object.keys(card).length === 0) {
     return null;
   }
-  return {
+  const normalized: CodexRadarResetCard = {
     probability24H: optionalNumber(read(card, "probability24H", "probability_24h")),
     probability48H: optionalNumber(read(card, "probability48H", "probability_48h")),
     probability24h: optionalNumber(read(card, "probability24h", "probability_24h")),
@@ -858,6 +979,13 @@ function normalizeResetCard(raw: unknown): CodexRadarResetCard | null {
     status: stringValue(read(card, "status")),
     note: stringValue(read(card, "note")),
   };
+  return normalized.probability24H !== undefined
+    || normalized.probability24h !== undefined
+    || normalized.probability48H !== undefined
+    || normalized.probability48h !== undefined
+    || Boolean(normalized.level || normalized.status || normalized.note)
+    ? normalized
+    : null;
 }
 
 function normalizeNewsItem(raw: unknown): CodexRadarNewsItem {
@@ -968,7 +1096,17 @@ function read(record: Record<string, unknown>, ...keys: string[]): unknown {
       return record[key];
     }
   }
+
+  const expected = new Set(keys.map(canonicalRadarKey).filter(Boolean));
+  const matches = Object.keys(record).filter((key) => expected.has(canonicalRadarKey(key)));
+  if (matches.length === 1) {
+    return record[matches[0]];
+  }
   return undefined;
+}
+
+function canonicalRadarKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -992,24 +1130,53 @@ function nullableString(value: unknown): string | null {
 }
 
 function numberValue(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return optionalNumber(value) ?? 0;
 }
 
 function optionalNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(trimmed)) {
+      const parsed = Number(trimmed);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    }
+  }
+  return undefined;
 }
 
 function booleanValue(value: unknown): boolean {
-  return typeof value === "boolean" ? value : false;
+  return optionalBoolean(value) ?? false;
 }
 
 function optionalBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (value === 0 || value === "0") {
+    return false;
+  }
+  if (value === 1 || value === "1") {
+    return true;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+  return undefined;
 }
 
 function numberRecord(value: unknown): Record<string, number> {
   const record = asRecord(value);
-  return Object.fromEntries(
-    Object.entries(record).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])),
-  );
+  return Object.fromEntries(Object.entries(record).flatMap(([key, raw]) => {
+    const value = optionalNumber(raw);
+    return value === undefined ? [] : [[key, value]];
+  }));
 }

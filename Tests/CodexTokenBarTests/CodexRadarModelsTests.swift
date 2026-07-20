@@ -153,6 +153,95 @@ final class CodexRadarModelsTests: XCTestCase {
         XCTAssertEqual(sevenDayValues[2], 1944.83, accuracy: 0.000_001)
     }
 
+    func testDecodesFormattingOnlyKeyVariantsAndNumericStrings() throws {
+        var root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(Self.sampleJSON.utf8)) as? [String: Any]
+        )
+        root["MONITORED-AT"] = root.removeValue(forKey: "monitored_at")
+        root["WINDOW OPEN"] = "false"
+        root.removeValue(forKey: "window_open")
+
+        var prediction = try XCTUnwrap(root.removeValue(forKey: "prediction") as? [String: Any])
+        prediction["Probability-24-H"] = "0.13"
+        prediction.removeValue(forKey: "probability_24h")
+        prediction["PROBABILITY 48H"] = "0.30"
+        prediction.removeValue(forKey: "probability_48h")
+        root["PRE-DICTION"] = prediction
+
+        var modelIQ = try XCTUnwrap(root.removeValue(forKey: "model_iq") as? [String: Any])
+        var latest = try XCTUnwrap(modelIQ.removeValue(forKey: "latest") as? [String: Any])
+        latest["SCORE"] = "125"
+        latest["TOTAL-TOKENS"] = "39090118"
+        latest.removeValue(forKey: "total_tokens")
+        modelIQ["LATEST"] = latest
+
+        var quotaRadar = try XCTUnwrap(modelIQ.removeValue(forKey: "quota_radar") as? [String: Any])
+        var rows = try XCTUnwrap(quotaRadar["rows"] as? [[String: Any]])
+        rows[0]["FIVE-H"] = rows[0].removeValue(forKey: "five_h")
+        rows[0]["SEVEN D"] = rows[0].removeValue(forKey: "seven_d")
+        quotaRadar["ROWS"] = rows
+        modelIQ["QUOTA-RADAR"] = quotaRadar
+        root["MODEL IQ"] = modelIQ
+
+        let data = try JSONSerialization.data(withJSONObject: ["PAY-LOAD": root])
+        let snapshot = try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: data)
+
+        XCTAssertEqual(snapshot.monitoredAt, "2026-06-23T08:51:28.710622+08:00")
+        XCTAssertEqual(snapshot.windowOpen, false)
+        XCTAssertEqual(snapshot.prediction.probability24hPercent, 13)
+        XCTAssertEqual(snapshot.prediction.probability48hPercent, 30)
+        XCTAssertEqual(snapshot.modelIQ.primaryModelPoint?.scoreDisplayText, "IQ 125")
+        XCTAssertEqual(snapshot.modelIQ.latest.totalTokens, 39_090_118)
+        XCTAssertNotNil(snapshot.modelIQ.quotaRadar?.rowsForDisplay.first?.sevenD)
+    }
+
+    func testOneChangedBlockAndBadArrayElementsDoNotHideHealthyRadarSections() throws {
+        var root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(Self.sampleJSON.utf8)) as? [String: Any]
+        )
+        root["prediction"] = ["unexpected_v3": ["value": 1]]
+        root["recent_windows"] = [
+            "broken",
+            ["title": "仍可读取的历史窗口", "status": "closed"]
+        ]
+
+        var modelIQ = try XCTUnwrap(root["model_iq"] as? [String: Any])
+        modelIQ["latest"] = ["score": ["new_shape": 125]]
+        modelIQ["comparisons"] = ["broken": ["latest": "not_an_object"]]
+        var quotaRadar = try XCTUnwrap(modelIQ["quota_radar"] as? [String: Any])
+        var rows = try XCTUnwrap(quotaRadar["rows"] as? [Any])
+        rows.insert(["tier": 123, "five_h": "unknown"], at: 0)
+        quotaRadar["rows"] = rows
+        modelIQ["quota_radar"] = quotaRadar
+        root["model_iq"] = modelIQ
+
+        root["codex_environment"] = [
+            "official_updates_24h": "4",
+            "official_news": [
+                ["title_zh": "仍可读取的资讯", "url": "https://codexradar.com/kept"],
+                ["title_zh": 123]
+            ]
+        ]
+
+        let data = try JSONSerialization.data(withJSONObject: root)
+        let snapshot = try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: data)
+
+        XCTAssertEqual(snapshot.window.message, "当前没有开启的速蹬窗口")
+        XCTAssertNil(snapshot.prediction.probability24hPercent)
+        XCTAssertNil(snapshot.modelIQ.primaryModelPoint)
+        XCTAssertEqual(snapshot.modelIQ.primaryModelRow.point.scoreDisplayText, "IQ --")
+        XCTAssertEqual(snapshot.modelIQ.quotaRadar?.rowsForDisplay.count, 3)
+        XCTAssertEqual(snapshot.recentWindows.map(\.title), ["仍可读取的历史窗口"])
+        XCTAssertEqual(snapshot.codexEnvironment?.officialUpdates24h, 4)
+        XCTAssertEqual(snapshot.codexEnvironment?.officialNews.map(\.titleZh), ["仍可读取的资讯"])
+    }
+
+    func testPayloadWithoutAnyUsableRadarBlockStillFailsClosed() throws {
+        XCTAssertThrowsError(
+            try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: Data(#"{"schema_version":"3"}"#.utf8))
+        )
+    }
+
     func testPrimaryModelUsesHighestCurrentComparisonInsteadOfRawLatest() {
         let xhigh = Self.modelIQPoint(score: 87.5, reasoningEffort: "xhigh")
         let high = Self.modelIQPoint(score: 100, reasoningEffort: "high")

@@ -1,4 +1,5 @@
 import {
+  codexRadarSnapshotHasContent,
   codexRadarSurfaceStatus,
   normalizeCodexRadarSnapshot,
   parseCodexRadarFeedXml,
@@ -126,10 +127,11 @@ async function fetchCodexRadarRootSnapshot(): Promise<CodexRadarSnapshot> {
   }
 
   const raw = await response.json();
-  if (!isUsableRadarPayload(raw)) {
+  const snapshot = normalizeCodexRadarSnapshot(raw);
+  if (!codexRadarSnapshotHasContent(snapshot)) {
     throw new Error("Codex Radar 空数据");
   }
-  return normalizeCodexRadarSnapshot(raw);
+  return snapshot;
 }
 
 async function fetchCodexRadarFeedState(
@@ -240,33 +242,6 @@ function categoryFromError(rawCause: string): CodexRadarDiagnostic["category"] {
     return "network_fetch";
   }
   return "unknown";
-}
-
-function isUsableRadarPayload(raw: unknown): boolean {
-  const payload = recordValue(raw);
-  const modelIq = recordValue(payload.modelIq ?? payload.model_iq);
-  const latestModel = recordValue(modelIq.latest);
-  return Boolean(
-    stringRecordValue(payload, "monitoredAt", "monitored_at")
-      && Object.keys(recordValue(payload.window)).length > 0
-      && Object.keys(recordValue(payload.prediction)).length > 0
-      && Object.keys(modelIq).length > 0
-      && (Object.keys(latestModel).length > 0 || Object.keys(recordValue(modelIq.comparisons)).length > 0),
-  );
-}
-
-function recordValue(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function stringRecordValue(record: Record<string, unknown>, ...keys: string[]): string {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.length > 0) {
-      return value;
-    }
-  }
-  return "";
 }
 
 export function __resetCodexRadarCacheForTests(): void {

@@ -180,7 +180,7 @@ struct TokenDisplayRadarStrip: View {
 
     var body: some View {
         let snapshot = presentation.snapshot
-        let primary = snapshot?.modelIQ.primaryModelRow.point
+        let primary = snapshot?.modelIQ.primaryModelPoint
         let actionPalette = actionTextPalette ?? textPalette
         let modelPalette = modelTextPalette ?? textPalette
         let actionAccent = AppTheme.radarActionColor(snapshot?.recommendedAction)
@@ -250,7 +250,10 @@ struct TokenDisplayRadarStrip: View {
         guard let snapshot = presentation.snapshot else {
             return presentation.compactAccessibilityText ?? "等待读取"
         }
-        let base = "建议 \(CodexRadarPresentationText.action(snapshot.recommendedAction))，24 小时概率 \(snapshot.prediction.probability24hPercent)%，48 小时概率 \(snapshot.prediction.probability48hPercent)%，\(snapshot.modelIQ.primaryModelRow.point.scoreDisplayText)"
+        let probability24h = tokenDisplayRadarProbabilityText(snapshot.prediction.probability24hPercent)
+        let probability48h = tokenDisplayRadarProbabilityText(snapshot.prediction.probability48hPercent)
+        let score = snapshot.modelIQ.primaryModelPoint?.scoreDisplayText ?? "IQ --"
+        let base = "建议 \(CodexRadarPresentationText.action(snapshot.recommendedAction))，24 小时概率 \(probability24h)，48 小时概率 \(probability48h)，\(score)"
         guard let compactAccessibility = presentation.compactAccessibilityText else {
             return base
         }
