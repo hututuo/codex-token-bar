@@ -151,12 +151,21 @@ test("auto resume settings preserve same-directory threads and save the selected
 
     const threadButtons = [...panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]')];
     assert.equal(threadButtons.length, 2, "same-directory threads must not be deduplicated");
-    assert.equal(threadButtons.filter((button) => button.textContent.includes(sharedCwd)).length, 2);
+    assert.match(panel.textContent, new RegExp(`${sharedCwd} · 共 2 个会话`));
 
     const search = panel.querySelector('input[aria-label="搜索自动续跑会话"]');
     assert.ok(search);
     await setInputValue(act, search, "Beta", window);
     assert.equal(panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]').length, 1);
+    const refreshesBeforeSubmit = calls.autoResumeRefreshes;
+    await submitForm(act, search.closest("form"), window);
+    await flushPromises(act);
+    assert.equal(calls.autoResumeRefreshes, refreshesBeforeSubmit + 1, "submitting search with Enter refreshes threads");
+    const submitArrow = panel.querySelector('button[aria-label="应用搜索并刷新会话"]');
+    assert.ok(submitArrow);
+    await click(act, submitArrow, window);
+    await flushPromises(act);
+    assert.equal(calls.autoResumeRefreshes, refreshesBeforeSubmit + 2, "explicit arrow submits search");
     await setInputValue(act, search, "", window);
 
     const beta = [...panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]')]
@@ -178,6 +187,54 @@ test("auto resume settings preserve same-directory threads and save the selected
     autoResumeThreads: [
       { id: "thread-alpha", title: "Alpha thread", cwd: sharedCwd, updatedAt: 1_784_000_000, status: "idle", source: "state-db" },
       { id: "thread-beta", title: "Beta thread", cwd: sharedCwd, updatedAt: 1_784_100_000, status: "active", source: "state-db" },
+    ],
+  });
+});
+
+test("auto resume selects a project first and exposes more than fifty recent conversation titles", async () => {
+  const mainCwd = "/Users/test/main-project";
+  const otherCwd = "/Users/test/other-project";
+  const mainThreads = Array.from({ length: 65 }, (_, index) => ({
+    id: `main-${index}`,
+    title: `完整会话标题 ${index}：这是用于确认标题不会被单行省略的内容`,
+    cwd: mainCwd,
+    updatedAt: 10_000 - index,
+    status: "idle",
+    source: "state-db",
+  }));
+  await withMountedSettings(async ({ act, container, window }) => {
+    await click(act, tabByName(container, "自动续跑"), window);
+    const panel = activePanel(container);
+    const projectPicker = panel.querySelector('select[aria-label="自动续跑项目文件夹"]');
+    assert.ok(projectPicker);
+    assert.equal(projectPicker.options.length, 2);
+    assert.equal(projectPicker.value, mainCwd);
+    assert.match(panel.textContent, /项目共 65 条/);
+
+    let options = [...panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]')];
+    assert.equal(options.length, 65);
+    assert.ok(options[0].textContent.includes("完整会话标题 0"));
+    assert.ok(options.at(-1).textContent.includes("完整会话标题 64"));
+
+    await setSelectValue(act, projectPicker, otherCwd, window);
+    options = [...panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]')];
+    assert.equal(options.length, 1);
+    assert.match(options[0].textContent, /另一个项目的会话/);
+  }, {
+    autoResumeSettings: {
+      ...defaultAutoResumeSettings(),
+      threadCwd: mainCwd,
+    },
+    autoResumeThreads: [
+      ...mainThreads,
+      {
+        id: "other-1",
+        title: "另一个项目的会话",
+        cwd: otherCwd,
+        updatedAt: 20_000,
+        status: "active",
+        source: "state-db",
+      },
     ],
   });
 });
@@ -604,6 +661,11 @@ async function mouseDown(act, target, window) {
   await act(async () => target.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, cancelable: true })));
 }
 
+async function submitForm(act, form, window) {
+  assert.ok(form);
+  await act(async () => form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })));
+}
+
 async function pressKey(act, target, key, window, options = {}) {
   assert.ok(target);
   await act(async () => target.dispatchEvent(new window.KeyboardEvent("keydown", {
@@ -630,6 +692,13 @@ async function setInputValue(act, input, value, window) {
   assert.ok(setter, "input value setter should exist");
   setter.call(input, value);
   await act(async () => input.dispatchEvent(new window.Event("input", { bubbles: true, cancelable: true })));
+}
+
+async function setSelectValue(act, select, value, window) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")?.set;
+  assert.ok(setter, "select value setter should exist");
+  setter.call(select, value);
+  await act(async () => select.dispatchEvent(new window.Event("change", { bubbles: true, cancelable: true })));
 }
 
 async function flushPromises(act) {

@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -22,6 +23,14 @@ import {
   formatAutoResumeTimestamp,
   sanitizeAutoResumeSettings,
 } from "../../settings/autoResume";
+import {
+  AUTO_RESUME_VISIBLE_THREAD_LIMIT,
+  autoResumeProjectKey,
+  autoResumeThreadsInProject,
+  buildAutoResumeProjects,
+  resolveAutoResumeProjectKey,
+  visibleAutoResumeThreads,
+} from "../../settings/autoResumeThreadPicker";
 import type {
   AutostartStatus,
   AutoResumeRuntimeStatus,
@@ -712,6 +721,9 @@ function AutomationSettings({
 >) {
   const [draft, setDraft] = useState(() => sanitizeAutoResumeSettings(autoResumeSettings));
   const [threadQuery, setThreadQuery] = useState("");
+  const [selectedProjectKey, setSelectedProjectKey] = useState(
+    () => autoResumeProjectKey(autoResumeSettings.threadCwd),
+  );
   const [localError, setLocalError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -719,19 +731,36 @@ function AutomationSettings({
     setLocalError(null);
   }, [autoResumeSettings]);
 
+  const projectOptions = useMemo(
+    () => buildAutoResumeProjects(autoResumeThreads),
+    [autoResumeThreads],
+  );
+
+  useEffect(() => {
+    setSelectedProjectKey((current) => resolveAutoResumeProjectKey(
+      projectOptions,
+      current,
+      autoResumeSettings.threadCwd,
+    ));
+  }, [autoResumeSettings.threadCwd, projectOptions]);
+
   const normalizedDraft = sanitizeAutoResumeSettings(draft);
   const dirty = JSON.stringify({ ...normalizedDraft, enabled: draft.enabled })
     !== JSON.stringify(sanitizeAutoResumeSettings(autoResumeSettings));
-  const normalizedQuery = threadQuery.trim().toLocaleLowerCase();
-  const filteredThreads = normalizedQuery.length === 0
-    ? autoResumeThreads
-    : autoResumeThreads.filter((thread) => [
-      thread.title,
-      thread.cwd,
-      thread.id,
-      thread.status,
-      thread.source,
-    ].some((value) => value.toLocaleLowerCase().includes(normalizedQuery)));
+  const selectedProject = projectOptions.find((project) => project.key === selectedProjectKey);
+  const projectThreads = useMemo(
+    () => autoResumeThreadsInProject(autoResumeThreads, selectedProjectKey),
+    [autoResumeThreads, selectedProjectKey],
+  );
+  const filteredThreads = useMemo(
+    () => visibleAutoResumeThreads(
+      autoResumeThreads,
+      selectedProjectKey,
+      threadQuery,
+      draft.threadId,
+    ),
+    [autoResumeThreads, draft.threadId, selectedProjectKey, threadQuery],
+  );
   const selectedThread = autoResumeThreads.find((thread) => thread.id === draft.threadId);
   const busy = autoResumeLoading || autoResumeSaving || autoResumeRunning || autoResumeStatus.isRunning;
   const runInProgress = autoResumeRunning || autoResumeStatus.isRunning;
@@ -821,17 +850,58 @@ function AutomationSettings({
         <div className="app-settings-note">定时触发和额度恢复触发都受此总开关控制；Run Now 可用于手动验证。</div>
       </SettingsGroup>
 
-      <SettingsGroup title="目标会话" description="按真实 thread ID 选择；相同目录下的不同会话会分别保留。">
-        <div className="auto-resume-thread-tools">
+      <SettingsGroup title="目标会话" description="先选项目文件夹，再从该项目的完整会话记录中选择；相同目录下的会话不会合并。">
+        <label className="auto-resume-project-picker">
+          <span>项目文件夹</span>
+          <select
+            aria-label="自动续跑项目文件夹"
+            className="app-settings-select"
+            disabled={projectOptions.length === 0}
+            onChange={(event) => {
+              setSelectedProjectKey(event.currentTarget.value);
+              setThreadQuery("");
+            }}
+            value={selectedProjectKey}
+          >
+            {projectOptions.length === 0 ? <option value="">暂无可选项目</option> : null}
+            {projectOptions.map((project) => (
+              <option key={project.key} value={project.key}>
+                {project.name} · {project.threadCount} 个会话
+              </option>
+            ))}
+          </select>
+          <small>
+            {selectedProject
+              ? `${selectedProject.cwd || "未记录工作目录"} · 共 ${selectedProject.threadCount} 个会话`
+              : (autoResumeLoading ? "正在读取本机项目…" : "刷新后选择项目文件夹")}
+          </small>
+        </label>
+        <form
+          className="auto-resume-thread-tools"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void onRefreshAutoResume();
+          }}
+        >
           <label>
-            <span>搜索标题、路径、ID 或状态</span>
-            <input
-              aria-label="搜索自动续跑会话"
-              onChange={(event) => setThreadQuery(event.currentTarget.value)}
-              placeholder="输入关键词筛选会话"
-              type="search"
-              value={threadQuery}
-            />
+            <span>搜索当前项目的标题、ID 或状态</span>
+            <div className="auto-resume-search-control">
+              <input
+                aria-label="搜索自动续跑会话"
+                onChange={(event) => setThreadQuery(event.currentTarget.value)}
+                placeholder="输入关键词；回车即可刷新"
+                type="search"
+                value={threadQuery}
+              />
+              <button
+                aria-label="应用搜索并刷新会话"
+                disabled={autoResumeLoading}
+                title="应用搜索并刷新会话"
+                type="submit"
+              >
+                <span aria-hidden="true">→</span>
+              </button>
+            </div>
           </label>
           <button
             className="app-settings-action"
@@ -841,6 +911,11 @@ function AutomationSettings({
           >
             {autoResumeLoading ? "刷新中…" : "刷新会话"}
           </button>
+        </form>
+        <div className="auto-resume-thread-summary" aria-live="polite">
+          {selectedProject
+            ? `当前显示 ${filteredThreads.length} 条 · 项目共 ${projectThreads.length} 条 · 最多列出最近 ${AUTO_RESUME_VISIBLE_THREAD_LIMIT} 条`
+            : "请先选择项目文件夹"}
         </div>
         <div aria-label="自动续跑目标会话" className="auto-resume-thread-list" role="listbox">
           {filteredThreads.length > 0 ? filteredThreads.map((thread) => (
@@ -856,12 +931,13 @@ function AutomationSettings({
                 <strong>{thread.title || "未命名会话"}</strong>
                 <em>{thread.status || "状态未知"}</em>
               </span>
-              <code>{thread.cwd || "未记录工作目录"}</code>
               <small>{formatAutoResumeTimestamp(thread.updatedAt)} · {thread.source || "本地"} · ID {thread.id}</small>
             </button>
           )) : (
             <div className="auto-resume-empty">
-              {autoResumeLoading ? "正在读取本机会话…" : "没有匹配的会话，请调整搜索或刷新。"}
+              {autoResumeLoading
+                ? "正在读取本机会话…"
+                : (selectedProject ? "当前项目没有匹配的会话，请调整搜索或按回车刷新。" : "请先选择项目文件夹。")}
             </div>
           )}
         </div>

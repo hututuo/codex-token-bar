@@ -44,6 +44,107 @@ struct AutoResumeThreadDescriptor: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+struct AutoResumeProjectDescriptor: Equatable, Identifiable, Sendable {
+    let id: String
+    let cwd: String
+    let displayName: String
+    let threadCount: Int
+    let updatedAt: Date?
+}
+
+enum AutoResumeThreadPicker {
+    static let visibleThreadLimit = 100
+    static let missingProjectID = "__codex_token_bar_no_cwd__"
+
+    static func projectID(for cwd: String) -> String {
+        let trimmed = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return missingProjectID }
+        return (trimmed as NSString).standardizingPath
+    }
+
+    static func projects(from threads: [AutoResumeThreadDescriptor]) -> [AutoResumeProjectDescriptor] {
+        Dictionary(grouping: threads, by: { projectID(for: $0.cwd) })
+            .map { id, projectThreads in
+                let cwd = id == missingProjectID ? "" : id
+                let folderName = cwd.isEmpty ? "未记录工作目录" : URL(fileURLWithPath: cwd).lastPathComponent
+                return AutoResumeProjectDescriptor(
+                    id: id,
+                    cwd: cwd,
+                    displayName: folderName.isEmpty ? cwd : folderName,
+                    threadCount: projectThreads.count,
+                    updatedAt: projectThreads.compactMap(\.updatedAt).max()
+                )
+            }
+            .sorted { left, right in
+                let leftDate = left.updatedAt ?? .distantPast
+                let rightDate = right.updatedAt ?? .distantPast
+                if leftDate != rightDate { return leftDate > rightDate }
+                let nameOrder = left.displayName.localizedCaseInsensitiveCompare(right.displayName)
+                if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+                return left.cwd.localizedCaseInsensitiveCompare(right.cwd) == .orderedAscending
+            }
+    }
+
+    static func resolvedProjectID(
+        projects: [AutoResumeProjectDescriptor],
+        currentID: String,
+        preferredCWD: String
+    ) -> String {
+        if projects.contains(where: { $0.id == currentID }) { return currentID }
+        let preferredID = projectID(for: preferredCWD)
+        if projects.contains(where: { $0.id == preferredID }) { return preferredID }
+        return projects.first?.id ?? ""
+    }
+
+    static func threads(
+        from threads: [AutoResumeThreadDescriptor],
+        projectID: String
+    ) -> [AutoResumeThreadDescriptor] {
+        guard !projectID.isEmpty else { return [] }
+        return threads
+            .filter { self.projectID(for: $0.cwd) == projectID }
+            .sorted(by: threadSort)
+    }
+
+    static func visibleThreads(
+        from threads: [AutoResumeThreadDescriptor],
+        projectID: String,
+        query: String,
+        selectedThreadID: String? = nil,
+        limit: Int = visibleThreadLimit
+    ) -> [AutoResumeThreadDescriptor] {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches = self.threads(from: threads, projectID: projectID).filter { thread in
+            normalizedQuery.isEmpty
+                || thread.displayTitle.localizedCaseInsensitiveContains(normalizedQuery)
+                || thread.cwd.localizedCaseInsensitiveContains(normalizedQuery)
+                || thread.id.localizedCaseInsensitiveContains(normalizedQuery)
+        }
+        let boundedLimit = max(1, limit)
+        var visible = Array(matches.prefix(boundedLimit))
+        guard let selectedThreadID,
+              !visible.contains(where: { $0.id == selectedThreadID }),
+              let selected = matches.first(where: { $0.id == selectedThreadID }) else {
+            return visible
+        }
+        if visible.count == boundedLimit {
+            visible.removeLast()
+        }
+        visible.append(selected)
+        return visible
+    }
+
+    private static func threadSort(
+        left: AutoResumeThreadDescriptor,
+        right: AutoResumeThreadDescriptor
+    ) -> Bool {
+        let leftDate = left.updatedAt ?? .distantPast
+        let rightDate = right.updatedAt ?? .distantPast
+        if leftDate != rightDate { return leftDate > rightDate }
+        return left.id < right.id
+    }
+}
+
 struct AutoResumeConfiguration: Codable, Equatable, Sendable {
     static let defaultPrompt = "继续"
     static let allowedIntervalMinutes = [15, 30, 60, 120, 360, 720]

@@ -3,6 +3,7 @@ import SwiftUI
 struct AutoResumeSettingsView: View {
     @ObservedObject var controller: AutoResumeController
     @State private var threadSearchQuery = ""
+    @State private var selectedProjectID = ""
 
     var body: some View {
         VStack(spacing: 18) {
@@ -19,6 +20,13 @@ struct AutoResumeSettingsView: View {
                 .disabled(controller.isRunning)
             manualSection
         }
+        .onAppear(perform: synchronizeSelectedProject)
+        .onChange(of: controller.availableThreads) {
+            synchronizeSelectedProject()
+        }
+        .onChange(of: controller.configuration.target?.cwd) {
+            synchronizeSelectedProject()
+        }
     }
 
     private var statusSection: some View {
@@ -34,24 +42,20 @@ struct AutoResumeSettingsView: View {
     private var targetSection: some View {
         section(
             title: "目标与提示词",
-            subtitle: "按 Codex thread ID 精确选择；同目录任务不会被合并"
+            subtitle: "先选项目文件夹，再选其中的会话；同目录会话不会被合并"
         ) {
             actionRow(
-                controller.configuration.target?.displayTitle ?? "尚未选择目标任务",
+                controller.configuration.target?.displayTitle ?? "尚未选择目标会话",
                 systemImage: "text.bubble",
-                detail: controller.configuration.target?.cwd ?? "刷新后从全部 Codex 任务中选择",
-                buttonTitle: controller.isRefreshingThreads ? "刷新中" : "刷新任务",
+                detail: controller.configuration.target?.cwd ?? "进入本页会自动读取，也可随时手动刷新",
+                buttonTitle: controller.isRefreshingThreads ? "刷新中" : "刷新会话",
                 buttonSystemImage: "arrow.clockwise",
                 action: controller.refreshThreads
             )
-            textFieldRow(
-                "搜索任务",
-                systemImage: "magnifyingglass",
-                text: $threadSearchQuery,
-                placeholder: "标题、目录或 thread ID"
-            )
+            projectPickerRow
+            threadSearchRow
             pickerRow(
-                "目标任务",
+                "目标会话",
                 systemImage: "scope",
                 selection: targetBinding,
                 options: threadOptions
@@ -201,6 +205,16 @@ struct AutoResumeSettingsView: View {
         )
     }
 
+    private var projectBinding: Binding<String> {
+        Binding(
+            get: { selectedProjectID },
+            set: { value in
+                selectedProjectID = value
+                threadSearchQuery = ""
+            }
+        )
+    }
+
     private var promptBinding: Binding<String> {
         Binding(
             get: { controller.configuration.prompt },
@@ -290,24 +304,111 @@ struct AutoResumeSettingsView: View {
         )
     }
 
-    private var threadOptions: [(String, String)] {
-        var values: [(String, String)] = [("", "请选择目标任务")]
-        let query = threadSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let threads = controller.availableThreads.filter { thread in
-            query.isEmpty
-                || thread.displayTitle.lowercased().contains(query)
-                || thread.cwd.lowercased().contains(query)
-                || thread.id.lowercased().contains(query)
+    private var projectDescriptors: [AutoResumeProjectDescriptor] {
+        AutoResumeThreadPicker.projects(from: controller.availableThreads)
+    }
+
+    private var selectedProject: AutoResumeProjectDescriptor? {
+        projectDescriptors.first { $0.id == selectedProjectID }
+    }
+
+    private var visibleThreads: [AutoResumeThreadDescriptor] {
+        AutoResumeThreadPicker.visibleThreads(
+            from: controller.availableThreads,
+            projectID: selectedProjectID,
+            query: threadSearchQuery,
+            selectedThreadID: controller.selectedThreadID
+        )
+    }
+
+    private var projectOptions: [(String, String)] {
+        guard !projectDescriptors.isEmpty else { return [("", "暂无可选项目")] }
+        return projectDescriptors.map { project in
+            (project.id, "\(project.displayName) · \(project.threadCount) 个会话")
         }
-        values.append(contentsOf: threads.map { thread in
-            let folder = URL(fileURLWithPath: thread.cwd).lastPathComponent
-            return (thread.id, "\(thread.displayTitle) · \(folder) · \(String(thread.id.suffix(6)))")
+    }
+
+    private var threadOptions: [(String, String)] {
+        var values: [(String, String)] = [("", "请选择目标会话")]
+        values.append(contentsOf: visibleThreads.map { thread in
+            (thread.id, "\(thread.displayTitle) · ID \(String(thread.id.suffix(6)))")
         })
         if let target = controller.configuration.target,
            !values.contains(where: { $0.0 == target.id }) {
-            values.append((target.id, "\(target.displayTitle) · 已保存 · \(String(target.id.suffix(6)))"))
+            values.append((target.id, "当前已选：\(target.displayTitle) · ID \(String(target.id.suffix(6)))"))
         }
         return values
+    }
+
+    private var projectPickerRow: some View {
+        HStack(alignment: .center, spacing: 9) {
+            Image(systemName: "folder.fill").foregroundStyle(.secondary).frame(width: 16)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("项目文件夹").font(.system(size: 11.5, weight: .medium))
+                Text(selectedProject?.cwd ?? (controller.isRefreshingThreads ? "正在读取本机项目…" : "刷新后选择项目文件夹"))
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                if let selectedProject {
+                    Text("项目共 \(selectedProject.threadCount) 个会话 · 当前显示 \(visibleThreads.count) 个 · 最多最近 \(AutoResumeThreadPicker.visibleThreadLimit) 个")
+                        .font(.system(size: 8.5, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer(minLength: 10)
+            Picker("", selection: projectBinding) {
+                ForEach(projectOptions, id: \.0) { value, label in Text(label).tag(value) }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(minWidth: 190, alignment: .trailing)
+            .fixedSize(horizontal: true, vertical: false)
+            .disabled(projectDescriptors.isEmpty)
+            .accessibilityLabel("自动续跑项目文件夹")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .autoResumeRowDivider()
+    }
+
+    private var threadSearchRow: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).frame(width: 16)
+            Text("搜索会话").font(.system(size: 11.5, weight: .medium))
+            Spacer(minLength: 10)
+            HStack(spacing: 5) {
+                TextField("当前项目的标题或 thread ID；回车即可刷新", text: $threadSearchQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .submitLabel(.search)
+                    .onSubmit { controller.refreshThreads() }
+                    .frame(minWidth: 250)
+                    .accessibilityLabel("搜索自动续跑会话")
+                Button(action: controller.refreshThreads) {
+                    Image(systemName: "arrow.right.circle.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(AppTheme.accentBlue)
+                .disabled(controller.isRefreshingThreads)
+                .help("应用搜索并刷新会话")
+                .accessibilityLabel("应用搜索并刷新会话")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .autoResumeRowDivider()
+    }
+
+    private func synchronizeSelectedProject() {
+        let resolved = AutoResumeThreadPicker.resolvedProjectID(
+            projects: projectDescriptors,
+            currentID: selectedProjectID,
+            preferredCWD: controller.configuration.target?.cwd ?? ""
+        )
+        if resolved != selectedProjectID {
+            selectedProjectID = resolved
+        }
     }
 
     private let intervalOptions = AutoResumeConfiguration.allowedIntervalMinutes.map { minutes in

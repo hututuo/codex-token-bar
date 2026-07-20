@@ -3507,6 +3507,34 @@ button.quota-side-card:hover {
   opacity: 0.72;
 }
 
+.auto-resume-project-picker {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 5px 10px;
+  align-items: center;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
+}
+
+.auto-resume-project-picker > span {
+  grid-row: 1 / span 2;
+  color: var(--text);
+  font-size: 10.5px;
+  font-weight: 690;
+}
+
+.auto-resume-project-picker > select {
+  width: 100%;
+  max-width: none;
+}
+
+.auto-resume-project-picker > small {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 8.8px;
+  line-height: 1.35;
+}
+
 .auto-resume-thread-tools {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -3548,9 +3576,46 @@ button.quota-side-card:hover {
   padding: 0 9px;
 }
 
+.auto-resume-search-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 31px;
+  gap: 5px;
+}
+
+.auto-resume-search-control > button {
+  display: grid;
+  width: 31px;
+  height: 31px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 760;
+}
+
+.auto-resume-search-control > button:hover,
+.auto-resume-search-control > button:focus-visible {
+  background: color-mix(in srgb, var(--accent) 15%, var(--panel));
+}
+
+.auto-resume-search-control > button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.auto-resume-thread-summary {
+  padding: 0 12px 8px;
+  color: var(--muted);
+  font-size: 8.8px;
+  font-weight: 560;
+}
+
 .auto-resume-thread-list {
   display: grid;
-  max-height: 224px;
+  max-height: 320px;
   overflow-y: auto;
   border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
@@ -3592,11 +3657,11 @@ button.quota-side-card:hover {
 }
 
 .auto-resume-thread-list strong {
-  overflow: hidden;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 10.8px;
   font-weight: 720;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.42;
 }
 
 .auto-resume-thread-list em {
@@ -3651,11 +3716,9 @@ button.quota-side-card:hover {
 }
 
 .auto-resume-selected > span {
-  overflow: hidden;
+  overflow-wrap: anywhere;
   font-size: 10px;
   font-weight: 690;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .auto-resume-prompt {

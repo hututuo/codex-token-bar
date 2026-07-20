@@ -606,7 +606,7 @@ fn parse_thread_option(value: &Value) -> Option<AutoResumeThreadOption> {
     };
     Some(AutoResumeThreadOption {
         id,
-        title: truncate_chars(title, 120),
+        title: truncate_chars(title, 240),
         cwd: value
             .get("cwd")
             .and_then(Value::as_str)
@@ -1286,6 +1286,17 @@ mod tests {
         .unwrap();
         assert_ne!(a.id, b.id);
         assert_eq!(a.cwd, b.cwd);
+    }
+
+    #[test]
+    fn thread_option_keeps_long_picker_titles() {
+        let title = "完整会话标题".repeat(30);
+        let option = parse_thread_option(&json!({
+            "id":"long-title","name":title.clone(),"preview":"","cwd":"/repo","updatedAt":1,
+            "status":{"type":"idle"},"source":"vscode"
+        }))
+        .unwrap();
+        assert_eq!(option.title, title);
     }
 
     #[test]

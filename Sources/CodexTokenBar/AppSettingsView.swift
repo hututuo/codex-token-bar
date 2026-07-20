@@ -111,9 +111,13 @@ struct AppSettingsView: View {
         .frame(width: 920, height: 650)
         .background(AppTheme.panelBackground)
         .onExitCommand(perform: onClose)
+        .onAppear {
+            if selectedCategory == .autoResume {
+                autoResumeController.refreshThreads()
+            }
+        }
         .onChange(of: selectedCategory) {
-            if selectedCategory == .autoResume,
-               autoResumeController.availableThreads.isEmpty {
+            if selectedCategory == .autoResume {
                 autoResumeController.refreshThreads()
             }
         }
