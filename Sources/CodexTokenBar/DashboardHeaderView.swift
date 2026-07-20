@@ -379,6 +379,7 @@ struct HeaderView: View {
                                     )
                                 }
                                 .buttonStyle(.plain)
+                                .disabled(threadDeleteStatus.isBusy)
                                 .help(threadDeleteStatus.message)
                                 .accessibilityLabel(threadDeleteStatus.dashboardActionTitle)
                                 .accessibilityValue(threadDeleteStatus.message)

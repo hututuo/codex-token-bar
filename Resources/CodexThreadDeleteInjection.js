@@ -4,16 +4,20 @@
   const stateKey = "__codexTokenBarThreadDeleteState";
   const styleId = "codex-token-bar-thread-delete-style";
   const buttonAttribute = "data-codex-token-bar-thread-delete";
+  const buttonThreadAttribute = "data-codex-token-bar-thread-delete-thread-id";
   const rowAttribute = "data-codex-token-bar-thread-delete-row";
   const bridgeTimeoutMs = Number(window.__CODEX_TOKEN_BAR_DELETE_BRIDGE_TIMEOUT_MS__) || 25000;
 
   const state = window[stateKey] || {
-    version: 1,
+    version: 2,
     bridges: new Map(),
     observer: null,
+    documentReadyListener: null,
     scanQueued: false,
     sequence: 0,
   };
+  state.version = 2;
+  state.documentReadyListener ||= null;
   window[stateKey] = state;
 
   const previousBridge = state.bridges.get(owner);
@@ -79,7 +83,9 @@
   };
 
   function ensureStyle() {
-    if (document.getElementById(styleId)) return;
+    if (document.getElementById(styleId)) return true;
+    const host = document.head || document.documentElement;
+    if (!host) return false;
     const style = document.createElement("style");
     style.id = styleId;
     style.textContent = `
@@ -128,7 +134,8 @@
         z-index: 2147483647;
       }
     `;
-    (document.head || document.documentElement).appendChild(style);
+    host.appendChild(style);
+    return true;
   }
 
   function showToast(message) {
@@ -152,13 +159,25 @@
     event.stopImmediatePropagation?.();
   }
 
+  function isTrustedThreadId(value) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+  }
+
   function attachButton(row) {
     const threadId = (row.getAttribute("data-app-action-sidebar-thread-id") || "").trim();
-    if (!threadId || row.querySelector(`[${buttonAttribute}="true"]`)) return;
+    const existingButton = row.querySelector(`[${buttonAttribute}="true"]`);
+    if (!isTrustedThreadId(threadId)) {
+      existingButton?.remove();
+      row.removeAttribute(rowAttribute);
+      return;
+    }
+    if (existingButton?.getAttribute(buttonThreadAttribute) === threadId) return;
+    existingButton?.remove();
     row.setAttribute(rowAttribute, "true");
     const button = document.createElement("button");
     button.type = "button";
     button.setAttribute(buttonAttribute, "true");
+    button.setAttribute(buttonThreadAttribute, threadId);
     button.setAttribute("aria-label", `永久删除会话：${rowTitle(row)}`);
     button.innerHTML = '<svg aria-hidden="true" fill="none" height="14" viewBox="0 0 24 24" width="14"><path d="M3 6h18M8 6V4h8v2m3 0-1 14H6L5 6m5 5v5m4-5v5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>';
     for (const eventName of ["pointerdown", "mousedown", "mouseup", "touchstart"]) {
@@ -166,17 +185,24 @@
     }
     button.addEventListener("click", async (event) => {
       stopRowNavigation(event);
+      const currentThreadId = (
+        row.getAttribute("data-app-action-sidebar-thread-id") || ""
+      ).trim();
+      if (!isTrustedThreadId(currentThreadId)) {
+        showToast("删除失败：当前会话 ID 不可用，请刷新侧栏后重试");
+        return;
+      }
       const title = rowTitle(row);
       if (!window.confirm(`永久删除“${title}”？\n\n该会话及其派生会话将被删除，无法撤销。`)) return;
       button.disabled = true;
       try {
-        const result = await state.callDelete({ threadId, title });
+        const result = await state.callDelete({ threadId: currentThreadId, title });
         if (result?.status !== "deleted") {
           throw new Error(result?.message || "删除失败");
         }
         const current = row.getAttribute("aria-current") === "page"
           || row.getAttribute("aria-current") === "true"
-          || window.location.href.includes(threadId);
+          || window.location.href.includes(currentThreadId);
         row.remove();
         showToast(result.message || "会话已永久删除");
         if (current) window.setTimeout(() => window.location.reload(), 120);
@@ -190,6 +216,8 @@
 
   function scan() {
     state.scanQueued = false;
+    ensureObserver();
+    if (!document.documentElement) return;
     ensureStyle();
     document.querySelectorAll("[data-app-action-sidebar-thread-id]").forEach(attachButton);
   }
@@ -200,9 +228,105 @@
     window.requestAnimationFrame ? window.requestAnimationFrame(scan) : window.setTimeout(scan, 0);
   }
 
-  if (!state.observer) {
+  function ensureObserver() {
+    if (state.observer) return true;
+    if (!document.documentElement) {
+      ensureDocumentReadyRetry();
+      return false;
+    }
     state.observer = new MutationObserver(queueScan);
-    state.observer.observe(document.documentElement, { childList: true, subtree: true });
+    state.observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-app-action-sidebar-thread-id"],
+      childList: true,
+      subtree: true,
+    });
+    return true;
   }
+
+  function ensureDocumentReadyRetry() {
+    if (state.documentReadyListener) return;
+    const listener = () => {
+      if (!document.documentElement) return;
+      document.removeEventListener("DOMContentLoaded", listener);
+      document.removeEventListener("readystatechange", listener);
+      state.documentReadyListener = null;
+      scan();
+    };
+    state.documentReadyListener = listener;
+    document.addEventListener("DOMContentLoaded", listener);
+    document.addEventListener("readystatechange", listener);
+    window.setTimeout(listener, 0);
+  }
+
+  window.__codexTokenBarThreadDeleteHealth = (targetOwner, expectedBindingName) => {
+    let scanError = null;
+    try {
+      scan();
+    } catch (error) {
+      scanError = error?.message || String(error);
+    }
+    const targetBridge = state.bridges.get(targetOwner);
+    const candidateRows = document.documentElement
+      ? [...document.querySelectorAll("[data-app-action-sidebar-thread-id]")]
+      : [];
+    const eligibleRows = candidateRows.filter((row) => isTrustedThreadId((
+      row.getAttribute("data-app-action-sidebar-thread-id") || ""
+    ).trim()));
+    const rowButtonCounts = eligibleRows.map((row) => (
+      row.querySelectorAll(`[${buttonAttribute}="true"]`).length
+    ));
+    const buttonCount = document.documentElement
+      ? document.querySelectorAll(`[${buttonAttribute}="true"]`).length
+      : 0;
+    const attachedRowCount = rowButtonCounts.filter((count) => count > 0).length;
+    const missingButtonCount = rowButtonCounts.filter((count) => count === 0).length;
+    const duplicateButtonCount = rowButtonCounts.reduce(
+      (total, count) => total + Math.max(0, count - 1),
+      0,
+    );
+    const buttonsInsideEligibleRows = rowButtonCounts.reduce((total, count) => total + count, 0);
+    const orphanButtonCount = Math.max(0, buttonCount - buttonsInsideEligibleRows);
+    const bridgeRegistered = Boolean(targetBridge);
+    const bindingMatches = targetBridge?.bindingName === expectedBindingName;
+    const bindingAvailable = typeof window[expectedBindingName] === "function";
+    const styleInstalled = Boolean(document.getElementById(styleId));
+    const observerInstalled = Boolean(state.observer);
+    let readiness = "failed";
+    if (!scanError && bridgeRegistered && bindingMatches && bindingAvailable
+      && styleInstalled && observerInstalled) {
+      if (candidateRows.length === 0 && eligibleRows.length === 0 && buttonCount === 0) {
+        readiness = "waitingForRows";
+      } else if (candidateRows.length === eligibleRows.length
+        && eligibleRows.length > 0
+        && missingButtonCount === 0
+        && duplicateButtonCount === 0
+        && orphanButtonCount === 0
+        && buttonCount === eligibleRows.length) {
+        readiness = "ready";
+      }
+    }
+    return {
+      schemaVersion: state.version,
+      owner: targetOwner,
+      bridgeRegistered,
+      bindingMatches,
+      bindingAvailable,
+      candidateRowCount: candidateRows.length,
+      eligibleRowCount: eligibleRows.length,
+      attachedRowCount,
+      buttonCount,
+      missingButtonCount,
+      duplicateButtonCount,
+      orphanButtonCount,
+      styleInstalled,
+      observerInstalled,
+      scanError,
+      readiness,
+    };
+  };
+
+  ensureObserver();
+  scan();
   queueScan();
 })();

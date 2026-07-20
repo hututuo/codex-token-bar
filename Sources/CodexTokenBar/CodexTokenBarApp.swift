@@ -114,6 +114,7 @@ struct CodexTokenBarApp: App {
                 Button(threadDeleteBridge.status.connectionActionTitle) {
                     threadDeleteBridge.performConnectionAction()
                 }
+                .disabled(threadDeleteBridge.status.isBusy)
 
                 Text(threadDeleteBridge.status.message)
 

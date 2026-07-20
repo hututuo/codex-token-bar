@@ -407,6 +407,7 @@ struct AppSettingsView: View {
                     buttonTitle: threadDeleteStatus.connectionActionTitle,
                     buttonSystemImage: "arrow.clockwise",
                     statusColor: threadDeleteStatus.connected ? AppTheme.accentGreen : AppTheme.accentAmber,
+                    enabled: !threadDeleteStatus.isBusy,
                     action: onThreadDeleteConnectionAction
                 )
             }
@@ -647,6 +648,7 @@ struct AppSettingsView: View {
         buttonTitle: String,
         buttonSystemImage: String,
         statusColor: Color? = nil,
+        enabled: Bool = true,
         action: @escaping () -> Void
     ) -> some View {
         HStack(alignment: .top, spacing: 11) {
@@ -665,6 +667,7 @@ struct AppSettingsView: View {
             }
             Spacer(minLength: 12)
             settingsActionButton(buttonTitle, systemImage: buttonSystemImage, action: action)
+                .disabled(!enabled)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
