@@ -741,7 +741,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let appSettingsSource = try String(contentsOf: appSettingsView, encoding: .utf8)
         let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
 
-        for category in ["常规", "显示面", "监控与额度", "悬浮窗", "内容与排序", "提醒与更新", "数据与维护"] {
+        for category in ["常规", "会话增强", "自动续跑", "显示面", "监控与额度", "悬浮窗", "内容与排序", "提醒与更新", "数据与维护"] {
             XCTAssertTrue(appSettingsSource.contains("return \"\(category)\""), category)
         }
         XCTAssertTrue(appSettingsSource.contains("ForEach(AppSettingsCategory.allCases)"))
@@ -749,11 +749,13 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(appSettingsSource.contains("TokenRateScaleSettings.displayValue(tokenRateFullScale)"))
         XCTAssertTrue(appSettingsSource.contains("buttonTitle: \"更改目录\""))
         XCTAssertTrue(appSettingsSource.contains("buttonTitle: \"打开修复工具\""))
-        XCTAssertTrue(appSettingsSource.contains("threadDeleteStatus.connectionActionTitle"))
+        XCTAssertTrue(appSettingsSource.contains("threadDeleteBridge.status.connectionActionTitle"))
+        XCTAssertTrue(appSettingsSource.contains("Codex++ · AGPL-3.0"))
         XCTAssertFalse(appSettingsSource.contains("删除本地数据"))
         XCTAssertTrue(dashboardSource.contains("tokenRateFullScale: $tokenRateFullScale"))
         XCTAssertTrue(dashboardSource.contains("dataSourceLabel: store.dataSourceLabel"))
-        XCTAssertTrue(dashboardSource.contains("threadDeleteStatus: threadDeleteBridge.status"))
+        XCTAssertTrue(dashboardSource.contains("threadDeleteBridge: threadDeleteBridge"))
+        XCTAssertTrue(dashboardSource.contains("selectedCategory: $appSettingsInitialCategory"))
     }
 
     func testFloatingPanelSettingsExposeTextWhiteSlider() throws {

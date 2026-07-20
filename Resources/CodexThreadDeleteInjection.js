@@ -8,6 +8,7 @@
   const buttonThreadAttribute = "data-codex-token-bar-thread-delete-thread-id";
   const runtimeVersion = 3;
   const bridgeTimeoutMs = Number(window.__CODEX_TOKEN_BAR_DELETE_BRIDGE_TIMEOUT_MS__) || 25000;
+  const requestedSettings = window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ || {};
 
   const state = window[stateKey] || {
     version: 2,
@@ -54,6 +55,16 @@
   }
   state.version = 2;
   state.runtimeVersion = runtimeVersion;
+  state.enhancementSettings = {
+    sessionDelete: requestedSettings.sessionDelete !== false,
+    markdownExport: requestedSettings.markdownExport === true,
+    pasteFix: requestedSettings.pasteFix === true,
+    projectMove: requestedSettings.projectMove === true,
+    threadIDBadge: requestedSettings.threadIDBadge === true,
+    conversationView: requestedSettings.conversationView === true,
+    conversationViewMaxWidth: Math.max(320, Math.min(4000, Number(requestedSettings.conversationViewMaxWidth) || 900)),
+    threadScrollRestore: requestedSettings.threadScrollRestore === true,
+  };
   state.documentReadyListener ||= null;
   state.buttonsByReference ||= new Map();
   state.hoveredThreadReference ||= null;
@@ -89,8 +100,8 @@
           nativeBinding(JSON.stringify({
             id: requestId,
             owner,
-            threadId: payload.threadId,
-            title: payload.title,
+            action: payload.action || "delete",
+            ...payload,
           }));
         } catch (error) {
           window.clearTimeout(timer);
@@ -120,6 +131,7 @@
     }
     throw lastError;
   };
+  window.__codexTokenBarSessionEnhancementInvoke = (payload) => state.callDelete(payload);
 
   function ensureStyle() {
     const existing = document.getElementById(styleId);
@@ -339,7 +351,9 @@
     ensureOverlay();
     const rows = [...document.querySelectorAll("[data-app-action-sidebar-thread-id]")];
     const liveReferences = new Set();
-    rows.forEach((row) => attachButton(row, liveReferences));
+    if (state.enhancementSettings.sessionDelete) {
+      rows.forEach((row) => attachButton(row, liveReferences));
+    }
     for (const [threadReference, button] of state.buttonsByReference) {
       if (liveReferences.has(threadReference) && button.isConnected) continue;
       button.remove();
@@ -488,12 +502,26 @@
       && state.overlay?.isConnected,
     );
     const observerInstalled = Boolean(state.observer);
+    const deleteEnabled = state.enhancementSettings.sessionDelete;
+    let sessionEnhancementsInstalled = false;
+    let sessionEnhancementError = null;
+    try {
+      const sessionHealth = window.__codexTokenBarSessionEnhancementsHealth?.();
+      sessionEnhancementsInstalled = sessionHealth?.runtimeVersion === 1;
+    } catch (error) {
+      sessionEnhancementError = error?.message || String(error);
+    }
     let readiness = "failed";
     if (!scanError && bridgeRegistered && bindingMatches && bindingAvailable
       && styleInstalled && observerInstalled) {
       if (candidateRows.length === 0 && eligibleRows.length === 0 && buttonCount === 0) {
         readiness = "waitingForRows";
-      } else if (candidateRows.length === eligibleRows.length
+      } else if (!deleteEnabled
+        && candidateRows.length === eligibleRows.length
+        && buttonCount === 0) {
+        readiness = "ready";
+      } else if (deleteEnabled
+        && candidateRows.length === eligibleRows.length
         && eligibleRows.length > 0
         && missingButtonCount === 0
         && duplicateButtonCount === 0
@@ -508,6 +536,9 @@
       bridgeRegistered,
       bindingMatches,
       bindingAvailable,
+      deleteEnabled,
+      sessionEnhancementsInstalled,
+      sessionEnhancementError,
       candidateRowCount: candidateRows.length,
       eligibleRowCount: eligibleRows.length,
       attachedRowCount,

@@ -54,6 +54,7 @@ struct DashboardView: View {
     @State private var showingUnreadEffectMenu = false
     @State private var showingContentSettingsMenu = false
     @State private var showingAppSettings = false
+    @State private var appSettingsInitialCategory: AppSettingsCategory = .general
     @State private var exportAlert: DashboardExportAlertPresentation?
 
     init(
@@ -351,6 +352,8 @@ struct DashboardView: View {
                 loginItemStore: loginItemStore,
                 updateSettingsStore: updateSettingsStore,
                 autoResumeController: autoResumeController,
+                threadDeleteBridge: threadDeleteBridge,
+                selectedCategory: $appSettingsInitialCategory,
                 floatingPanelEnabled: $floatingPanelEnabled,
                 statusBarPanelEnabled: $statusBarPanelEnabled,
                 liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
@@ -378,7 +381,6 @@ struct DashboardView: View {
                 contentOrderRaw: $floatingPanelContentOrderRaw,
                 dataSourceLabel: store.dataSourceLabel,
                 dataSourceOrigin: store.dataSourceOrigin,
-                threadDeleteStatus: threadDeleteBridge.status,
                 onChooseDirectory: {
                     store.chooseDataSourceDirectory()
                     synchronizeSourceTransition()
@@ -479,12 +481,16 @@ struct DashboardView: View {
                     providerSyncStore.scan(dataSource: providerSyncStore.currentDataSource)
                 },
                 onOpenSettings: {
-                    showingAppSettings = true
+                    openAppSettings(.general)
+                },
+                onOpenSessionEnhancements: {
+                    openAppSettings(.sessionEnhancements)
+                },
+                onOpenAutoResume: {
+                    openAppSettings(.autoResume)
                 },
                 threadDeleteStatus: threadDeleteBridge.status,
-                onThreadDeleteConnectionAction: {
-                    threadDeleteBridge.performConnectionAction()
-                },
+                autoResumeEnabled: autoResumeController.configuration.enabled,
                 showingInterfaceScaleMenu: $showingInterfaceScaleMenu,
                 interfaceScaleAutoEnabled: $interfaceScaleAutoEnabled,
                 interfaceScaleManualMultiplier: $interfaceScaleManualMultiplier,
@@ -551,6 +557,11 @@ struct DashboardView: View {
                     NotificationCenter.default.post(name: .dashboardBlankAreaClicked, object: nil)
                 }
         )
+    }
+
+    private func openAppSettings(_ category: AppSettingsCategory) {
+        appSettingsInitialCategory = category
+        showingAppSettings = true
     }
 
     private func refreshAllData(trigger: DashboardRefreshTrigger = .manual) {

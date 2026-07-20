@@ -10,7 +10,8 @@ enum DashboardHeaderAction: Equatable {
     case refresh
     case changeDirectory
     case providerRepair
-    case threadDelete
+    case sessionEnhancements
+    case autoResume
 }
 
 enum DashboardHeaderPresentationMode: Equatable {
@@ -21,7 +22,14 @@ enum DashboardHeaderPresentationMode: Equatable {
 
     func actions(unreadCount: Int) -> [DashboardHeaderAction] {
         guard showsActions else { return [] }
-        return [.markAllRead, .refresh, .changeDirectory, .providerRepair, .threadDelete]
+        return [
+            .markAllRead,
+            .refresh,
+            .changeDirectory,
+            .providerRepair,
+            .sessionEnhancements,
+            .autoResume,
+        ]
     }
 }
 
@@ -145,8 +153,10 @@ struct HeaderView: View {
     let onChangeDirectory: () -> Void
     let onOpenProviderSync: () -> Void
     let onOpenSettings: () -> Void
+    let onOpenSessionEnhancements: () -> Void
+    let onOpenAutoResume: () -> Void
     let threadDeleteStatus: CodexThreadDeleteBridgeStatus
-    let onThreadDeleteConnectionAction: () -> Void
+    let autoResumeEnabled: Bool
     @Binding var showingInterfaceScaleMenu: Bool
     @Binding var interfaceScaleAutoEnabled: Bool
     @Binding var interfaceScaleManualMultiplier: Double
@@ -367,27 +377,42 @@ struct HeaderView: View {
 
                             DashboardHeaderRailDivider(height: 20)
 
-                            if actions.contains(.threadDelete) {
-                                Button(action: onThreadDeleteConnectionAction) {
-                                    DashboardHeaderCommandLabel(
-                                        title: threadDeleteStatus.dashboardActionTitle,
-                                        systemImage: threadDeleteStatus.connected ? "link.circle.fill" : "link.badge.plus",
-                                        color: threadDeleteStatus.connected
-                                            ? AppTheme.accentGreen
-                                            : AppTheme.accentBlue,
-                                        highlighted: threadDeleteStatus.connected
-                                    )
+                            HStack(spacing: 2) {
+                                if actions.contains(.sessionEnhancements) {
+                                    Button(action: onOpenSessionEnhancements) {
+                                        DashboardHeaderCommandLabel(
+                                            title: threadDeleteStatus.dashboardActionTitle,
+                                            systemImage: threadDeleteStatus.connected ? "sparkles.rectangle.stack.fill" : "sparkles.rectangle.stack",
+                                            color: threadDeleteStatus.connected
+                                                ? AppTheme.accentGreen
+                                                : AppTheme.accentBlue,
+                                            highlighted: threadDeleteStatus.connected
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("管理 Codex 会话删除、导出、移动、输入和阅读增强。\n\(threadDeleteStatus.message)")
+                                    .accessibilityLabel("会话增强")
+                                    .accessibilityValue(threadDeleteStatus.message)
+                                    .accessibilityHint("打开会话增强设置")
                                 }
-                                .buttonStyle(.plain)
-                                .disabled(threadDeleteStatus.isBusy)
-                                .help(threadDeleteStatus.message)
-                                .accessibilityLabel(threadDeleteStatus.dashboardActionTitle)
-                                .accessibilityValue(threadDeleteStatus.message)
-                                .accessibilityHint(
-                                    threadDeleteStatus.connected
-                                        ? "重新连接 Codex 侧栏删除按钮"
-                                        : "启用 Codex 侧栏删除按钮"
-                                )
+
+                                if actions.contains(.autoResume) {
+                                    Button(action: onOpenAutoResume) {
+                                        DashboardHeaderCommandLabel(
+                                            title: "自动续跑",
+                                            systemImage: autoResumeEnabled ? "play.circle.fill" : "play.circle",
+                                            color: autoResumeEnabled
+                                                ? AppTheme.accentGreen
+                                                : AppTheme.accentBlue,
+                                            highlighted: autoResumeEnabled
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(autoResumeEnabled ? "自动续跑已开启，点击管理" : "管理定时、额度恢复和容量中断续跑")
+                                    .accessibilityLabel("自动续跑")
+                                    .accessibilityValue(autoResumeEnabled ? "已开启" : "已关闭")
+                                    .accessibilityHint("打开自动续跑设置")
+                                }
                             }
 
                             DashboardHeaderRailDivider(height: 20)

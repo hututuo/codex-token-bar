@@ -8,9 +8,9 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
         XCTAssertTrue(CodexThreadDeleteBridgeStatus.idle.requiresCodexRelaunch)
         XCTAssertEqual(
             CodexThreadDeleteBridgeStatus.idle.connectionActionTitle,
-            "重启 Codex 并连接侧栏删除"
+            "重启 Codex 并连接会话增强"
         )
-        XCTAssertEqual(CodexThreadDeleteBridgeStatus.idle.dashboardActionTitle, "启用侧栏删除")
+        XCTAssertEqual(CodexThreadDeleteBridgeStatus.idle.dashboardActionTitle, "会话增强")
         XCTAssertEqual(
             CodexThreadDeleteDesktopLauncher.openCommandArguments(
                 applicationPath: "/Applications/ChatGPT.app"
@@ -30,15 +30,15 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
             message: "连接中断"
         )
         XCTAssertFalse(interrupted.requiresCodexRelaunch)
-        XCTAssertEqual(interrupted.connectionActionTitle, "重新连接 Codex 侧栏删除")
-        XCTAssertEqual(interrupted.dashboardActionTitle, "重连侧栏删除")
+        XCTAssertEqual(interrupted.connectionActionTitle, "重新连接 Codex 会话增强")
+        XCTAssertEqual(interrupted.dashboardActionTitle, "会话增强")
 
         let connected = CodexThreadDeleteBridgeStatus(
             connected: true,
             debugPort: 9229,
             message: "Codex 会话删除按钮已连接"
         )
-        XCTAssertEqual(connected.dashboardActionTitle, "侧栏删除已连接")
+        XCTAssertEqual(connected.dashboardActionTitle, "会话增强")
 
         let busy = CodexThreadDeleteBridgeStatus(
             connected: false,
@@ -48,13 +48,13 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
         )
         XCTAssertTrue(busy.isBusy)
         XCTAssertFalse(busy.requiresCodexRelaunch)
-        XCTAssertEqual(busy.dashboardActionTitle, "正在启用侧栏删除")
+        XCTAssertEqual(busy.dashboardActionTitle, "增强连接中")
 
         let waiting = CodexThreadDeleteInjectionVerification.waitingForRows
             .bridgeStatus(debugPort: 9229)
         XCTAssertFalse(waiting.connected)
         XCTAssertEqual(waiting.phase, .waitingForRows)
-        XCTAssertEqual(waiting.dashboardActionTitle, "检查侧栏删除")
+        XCTAssertEqual(waiting.dashboardActionTitle, "会话增强")
     }
 
     func testSharedInjectionTemplateRendersSwiftOwner() throws {
@@ -210,7 +210,7 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
     }
 
     func testRealRuntimeEvaluateHealthResponseDecodesAndVerifies() throws {
-        let data = Data(#"{"id":104,"result":{"result":{"type":"object","value":{"schemaVersion":2,"owner":"swift","bridgeRegistered":true,"bindingMatches":true,"bindingAvailable":true,"candidateRowCount":2,"eligibleRowCount":2,"attachedRowCount":2,"buttonCount":2,"missingButtonCount":0,"duplicateButtonCount":0,"orphanButtonCount":0,"styleInstalled":true,"observerInstalled":true,"scanError":null,"readiness":"ready"}}}}"#.utf8)
+        let data = Data(#"{"id":104,"result":{"result":{"type":"object","value":{"schemaVersion":2,"owner":"swift","bridgeRegistered":true,"bindingMatches":true,"bindingAvailable":true,"deleteEnabled":true,"sessionEnhancementsInstalled":true,"sessionEnhancementError":null,"candidateRowCount":2,"eligibleRowCount":2,"attachedRowCount":2,"buttonCount":2,"missingButtonCount":0,"duplicateButtonCount":0,"orphanButtonCount":0,"styleInstalled":true,"observerInstalled":true,"scanError":null,"readiness":"ready"}}}}"#.utf8)
         let response = try JSONDecoder().decode(
             CodexThreadDeleteCDPCommandResponse.self,
             from: data
@@ -476,6 +476,9 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
             bridgeRegistered: true,
             bindingMatches: true,
             bindingAvailable: bindingAvailable,
+            deleteEnabled: true,
+            sessionEnhancementsInstalled: true,
+            sessionEnhancementError: nil,
             candidateRowCount: candidateRows,
             eligibleRowCount: eligibleRows,
             attachedRowCount: attachedRows,

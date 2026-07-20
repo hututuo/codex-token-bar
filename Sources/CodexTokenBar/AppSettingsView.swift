@@ -1,10 +1,12 @@
+import AppKit
 import SwiftUI
 
-private enum AppSettingsCategory: String, CaseIterable, Identifiable {
+enum AppSettingsCategory: String, CaseIterable, Identifiable {
     case general
+    case sessionEnhancements
+    case autoResume
     case surfaces
     case monitoring
-    case autoResume
     case floatingPanel
     case content
     case alertsAndUpdates
@@ -15,9 +17,10 @@ private enum AppSettingsCategory: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .general: return "常规"
+        case .sessionEnhancements: return "会话增强"
+        case .autoResume: return "自动续跑"
         case .surfaces: return "显示面"
         case .monitoring: return "监控与额度"
-        case .autoResume: return "自动续跑"
         case .floatingPanel: return "悬浮窗"
         case .content: return "内容与排序"
         case .alertsAndUpdates: return "提醒与更新"
@@ -28,22 +31,24 @@ private enum AppSettingsCategory: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .general: return "启动与基础行为"
+        case .sessionEnhancements: return "删除、导出、移动、输入与阅读体验"
+        case .autoResume: return "容量中断、定时或额度恢复后继续任务"
         case .surfaces: return "主界面与辅助显示面"
         case .monitoring: return "实时速率、统计与刷新"
-        case .autoResume: return "容量中断、定时或额度恢复后继续任务"
         case .floatingPanel: return "位置、尺寸与视觉样式"
         case .content: return "悬浮窗信息和排列顺序"
         case .alertsAndUpdates: return "未读反馈与版本检查"
-        case .dataAndMaintenance: return "目录、修复与侧栏连接"
+        case .dataAndMaintenance: return "目录与修复工具"
         }
     }
 
     var systemImage: String {
         switch self {
         case .general: return "gearshape"
+        case .sessionEnhancements: return "sparkles.rectangle.stack"
+        case .autoResume: return "play.circle"
         case .surfaces: return "rectangle.3.group"
         case .monitoring: return "speedometer"
-        case .autoResume: return "play.circle"
         case .floatingPanel: return "rectangle.on.rectangle"
         case .content: return "list.bullet.rectangle"
         case .alertsAndUpdates: return "bell.badge"
@@ -56,6 +61,8 @@ struct AppSettingsView: View {
     @ObservedObject var loginItemStore: LoginItemStore
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
     @ObservedObject var autoResumeController: AutoResumeController
+    @ObservedObject var threadDeleteBridge: CodexThreadDeleteBridgeController
+    @Binding var selectedCategory: AppSettingsCategory
     @Binding var floatingPanelEnabled: Bool
     @Binding var statusBarPanelEnabled: Bool
     @Binding var liveRateMonitoringEnabled: Bool
@@ -83,14 +90,12 @@ struct AppSettingsView: View {
     @Binding var contentOrderRaw: String
     let dataSourceLabel: String
     let dataSourceOrigin: String
-    let threadDeleteStatus: CodexThreadDeleteBridgeStatus
     let onChooseDirectory: () -> Void
     let onOpenProviderSync: () -> Void
     let onThreadDeleteConnectionAction: () -> Void
     let onClose: () -> Void
 
     @AppStorage(AccountQuotaRefreshCadence.storageKey) private var quotaRefreshCadenceRaw = AccountQuotaRefreshCadence.defaultRawValue
-    @State private var selectedCategory: AppSettingsCategory = .general
     @FocusState private var focusedCategory: AppSettingsCategory?
 
     var body: some View {
@@ -230,12 +235,14 @@ struct AppSettingsView: View {
             switch selectedCategory {
             case .general:
                 generalSettings
+            case .sessionEnhancements:
+                sessionEnhancementSettings
+            case .autoResume:
+                AutoResumeSettingsView(controller: autoResumeController)
             case .surfaces:
                 surfaceSettings
             case .monitoring:
                 monitoringSettings
-            case .autoResume:
-                AutoResumeSettingsView(controller: autoResumeController)
             case .floatingPanel:
                 floatingPanelSettings
             case .content:
@@ -259,6 +266,101 @@ struct AppSettingsView: View {
                     "即时生效",
                     systemImage: "bolt.fill",
                     detail: "切换标签页或关闭设置后，当前选择都会继续保留。"
+                )
+            }
+        }
+    }
+
+    private var sessionEnhancementSettings: some View {
+        Group {
+            settingsSection(
+                title: "Codex 页面连接",
+                subtitle: "通过仅限本机的调试端口加载增强；功能开关变化后会自动重连，无需重启 Codex"
+            ) {
+                settingsActionRow(
+                    threadDeleteBridge.status.connected ? "会话增强已连接" : "会话增强未连接",
+                    systemImage: threadDeleteBridge.status.connected
+                        ? "link.circle.fill"
+                        : "link.badge.plus",
+                    detail: threadDeleteBridge.status.message,
+                    buttonTitle: threadDeleteBridge.status.connectionActionTitle,
+                    buttonSystemImage: "arrow.clockwise",
+                    statusColor: threadDeleteBridge.status.connected
+                        ? AppTheme.accentGreen
+                        : AppTheme.accentAmber,
+                    enabled: !threadDeleteBridge.status.isBusy,
+                    action: onThreadDeleteConnectionAction
+                )
+            }
+
+            settingsSection(
+                title: "会话管理",
+                subtitle: "在 Codex 侧栏为每个任务增加可靠的管理操作"
+            ) {
+                settingsToggle(
+                    "会话删除",
+                    systemImage: "trash",
+                    isOn: sessionDeleteBinding
+                )
+                settingsToggle(
+                    "Markdown 导出",
+                    systemImage: "arrow.down.doc",
+                    isOn: markdownExportBinding
+                )
+                settingsToggle(
+                    "会话项目移动",
+                    systemImage: "folder.badge.arrow.forward",
+                    isOn: projectMoveBinding
+                )
+                settingsToggle(
+                    "会话 ID 标识",
+                    systemImage: "number.square",
+                    isOn: threadIDBadgeBinding
+                )
+            }
+
+            settingsSection(
+                title: "输入与阅读",
+                subtitle: "改善富文本粘贴、大屏阅读和多任务切换体验"
+            ) {
+                settingsToggle(
+                    "粘贴修复",
+                    systemImage: "doc.on.clipboard",
+                    isOn: pasteFixBinding
+                )
+                settingsToggle(
+                    "对话居中宽度",
+                    systemImage: "arrow.left.and.right",
+                    isOn: conversationViewBinding
+                )
+                if threadDeleteBridge.enhancementSettings.conversationView {
+                    settingsSlider(
+                        "最大宽度",
+                        systemImage: "rectangle.compress.vertical",
+                        value: conversationWidthBinding,
+                        range: 320...4_000,
+                        display: "\(threadDeleteBridge.enhancementSettings.conversationViewMaxWidth) px",
+                        step: 10
+                    )
+                }
+                settingsToggle(
+                    "切换对话保留位置",
+                    systemImage: "arrow.up.and.down.text.horizontal",
+                    isOn: threadScrollRestoreBinding
+                )
+            }
+
+            settingsSection(
+                title: "开源归属",
+                subtitle: "本页会话增强基于 Codex++ v1.2.41 的“对话与输入”实现迁入"
+            ) {
+                settingsActionRow(
+                    "Codex++ · AGPL-3.0",
+                    systemImage: "chevron.left.forwardslash.chevron.right",
+                    detail: "保留 BigPizzaV3/CodexPlusPlus 的版权与 GNU AGPL v3 许可；Token Bar 对迁入实现作了 Swift 原生桥接和当前 Codex 结构适配。",
+                    buttonTitle: "查看上游源码",
+                    buttonSystemImage: "arrow.up.right.square",
+                    action: openCodexPlusPlusSource
                 )
             }
         }
@@ -399,18 +501,6 @@ struct AppSettingsView: View {
                 )
             }
 
-            settingsSection(title: "Codex 侧栏删除", subtitle: "连接本机 Codex 调试端口，为侧栏任务提供删除入口") {
-                settingsActionRow(
-                    threadDeleteStatus.connected ? "侧栏删除已连接" : "侧栏删除未连接",
-                    systemImage: threadDeleteStatus.connected ? "link.circle.fill" : "link.badge.plus",
-                    detail: threadDeleteStatus.message,
-                    buttonTitle: threadDeleteStatus.connectionActionTitle,
-                    buttonSystemImage: "arrow.clockwise",
-                    statusColor: threadDeleteStatus.connected ? AppTheme.accentGreen : AppTheme.accentAmber,
-                    enabled: !threadDeleteStatus.isBusy,
-                    action: onThreadDeleteConnectionAction
-                )
-            }
         }
     }
 
@@ -503,6 +593,67 @@ struct AppSettingsView: View {
             get: { updateSettingsStore.automaticChecksEnabled },
             set: { updateSettingsStore.setAutomaticChecksEnabled($0) }
         )
+    }
+
+    private var sessionDeleteBinding: Binding<Bool> {
+        Binding(
+            get: { threadDeleteBridge.enhancementSettings.sessionDelete },
+            set: { threadDeleteBridge.setSessionDeleteEnabled($0) }
+        )
+    }
+
+    private var markdownExportBinding: Binding<Bool> {
+        Binding(
+            get: { threadDeleteBridge.enhancementSettings.markdownExport },
+            set: { threadDeleteBridge.setMarkdownExportEnabled($0) }
+        )
+    }
+
+    private var pasteFixBinding: Binding<Bool> {
+        Binding(
+            get: { threadDeleteBridge.enhancementSettings.pasteFix },
+            set: { threadDeleteBridge.setPasteFixEnabled($0) }
+        )
+    }
+
+    private var projectMoveBinding: Binding<Bool> {
+        Binding(
+            get: { threadDeleteBridge.enhancementSettings.projectMove },
+            set: { threadDeleteBridge.setProjectMoveEnabled($0) }
+        )
+    }
+
+    private var threadIDBadgeBinding: Binding<Bool> {
+        Binding(
+            get: { threadDeleteBridge.enhancementSettings.threadIDBadge },
+            set: { threadDeleteBridge.setThreadIDBadgeEnabled($0) }
+        )
+    }
+
+    private var conversationViewBinding: Binding<Bool> {
+        Binding(
+            get: { threadDeleteBridge.enhancementSettings.conversationView },
+            set: { threadDeleteBridge.setConversationViewEnabled($0) }
+        )
+    }
+
+    private var threadScrollRestoreBinding: Binding<Bool> {
+        Binding(
+            get: { threadDeleteBridge.enhancementSettings.threadScrollRestore },
+            set: { threadDeleteBridge.setThreadScrollRestoreEnabled($0) }
+        )
+    }
+
+    private var conversationWidthBinding: Binding<Double> {
+        Binding(
+            get: { Double(threadDeleteBridge.enhancementSettings.conversationViewMaxWidth) },
+            set: { threadDeleteBridge.setConversationViewMaxWidth(Int($0.rounded())) }
+        )
+    }
+
+    private func openCodexPlusPlusSource() {
+        guard let url = URL(string: "https://github.com/BigPizzaV3/CodexPlusPlus") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private var orderedGroups: [FloatingPanelContentGroup] {

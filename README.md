@@ -198,7 +198,10 @@ scripts/sign_tauri_windows_release.sh --version 0.7.3 --repo hututuo/codex-token
 
 ## License
 
-MIT
+GNU AGPL v3. The original Codex Token Bar MIT notice is preserved in
+[`LICENSES/CodexTokenBar-MIT.txt`](LICENSES/CodexTokenBar-MIT.txt), and the
+Codex++ attribution and modification notice is in
+[`OPEN_SOURCE_NOTICES.md`](OPEN_SOURCE_NOTICES.md).
 
 ---
 
@@ -385,4 +388,7 @@ The current local updater key uses an explicitly empty password, and the signer 
 
 ## License
 
-MIT
+GNU AGPL v3. The original Codex Token Bar MIT notice is preserved in
+[`LICENSES/CodexTokenBar-MIT.txt`](LICENSES/CodexTokenBar-MIT.txt); Codex++
+attribution and modification details are recorded in
+[`OPEN_SOURCE_NOTICES.md`](OPEN_SOURCE_NOTICES.md).

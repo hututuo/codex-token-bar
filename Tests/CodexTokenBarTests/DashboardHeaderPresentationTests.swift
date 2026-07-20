@@ -28,7 +28,14 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         XCTAssertTrue(DashboardHeaderPresentationMode.dashboard.showsActions)
         XCTAssertEqual(
             DashboardHeaderPresentationMode.dashboard.actions(unreadCount: 0),
-            [.markAllRead, .refresh, .changeDirectory, .providerRepair, .threadDelete]
+            [
+                .markAllRead,
+                .refresh,
+                .changeDirectory,
+                .providerRepair,
+                .sessionEnhancements,
+                .autoResume,
+            ]
         )
         XCTAssertFalse(DashboardHeaderPresentationMode.export.showsActions)
         XCTAssertTrue(DashboardHeaderPresentationMode.export.actions(unreadCount: 3).isEmpty)
@@ -90,7 +97,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         XCTAssertFalse(current.needsAttention)
     }
 
-    func testThreadDeleteHeaderEntryUsesConnectionSemanticsInsteadOfTrashIcon() throws {
+    func testHeaderExposesIndependentSessionEnhancementAndAutoResumeEntries() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -98,8 +105,8 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         let headerFile = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardHeaderView.swift")
         let source = try String(contentsOf: headerFile, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("link.badge.plus"))
-        XCTAssertTrue(source.contains("link.circle.fill"))
+        XCTAssertTrue(source.contains("sparkles.rectangle.stack"))
+        XCTAssertTrue(source.contains("title: \"自动续跑\""))
         XCTAssertFalse(source.contains("systemImage: \"trash\""))
     }
 

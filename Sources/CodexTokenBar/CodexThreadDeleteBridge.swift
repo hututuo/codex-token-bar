@@ -32,7 +32,7 @@ struct CodexThreadDeleteBridgeStatus: Equatable, Sendable {
     static let idle = CodexThreadDeleteBridgeStatus(
         connected: false,
         debugPort: nil,
-        message: "等待 Codex 调试连接（需以调试模式启动 Codex）",
+        message: "等待 Codex 会话增强连接（需以调试模式启动 Codex）",
         phase: .idle
     )
 
@@ -45,31 +45,39 @@ struct CodexThreadDeleteBridgeStatus: Equatable, Sendable {
     }
 
     var connectionActionTitle: String {
-        if isBusy { return "正在启用 Codex 侧栏删除" }
-        if phase == .waitingForRows { return "重新检查 Codex 侧栏删除" }
+        if isBusy { return "正在启用 Codex 会话增强" }
+        if phase == .waitingForRows { return "重新检查 Codex 会话增强" }
         return requiresCodexRelaunch
-            ? "重启 Codex 并连接侧栏删除"
-            : "重新连接 Codex 侧栏删除"
+            ? "重启 Codex 并连接会话增强"
+            : "重新连接 Codex 会话增强"
     }
 
     var dashboardActionTitle: String {
-        if connected { return "侧栏删除已连接" }
-        if isBusy { return "正在启用侧栏删除" }
-        if phase == .waitingForRows { return "检查侧栏删除" }
-        return requiresCodexRelaunch ? "启用侧栏删除" : "重连侧栏删除"
+        if connected { return "会话增强" }
+        if isBusy { return "增强连接中" }
+        if phase == .waitingForRows { return "会话增强" }
+        return "会话增强"
     }
 }
 
 @MainActor
 final class CodexThreadDeleteBridgeController: ObservableObject {
     @Published private(set) var status: CodexThreadDeleteBridgeStatus = .idle
+    @Published private(set) var enhancementSettings: CodexSessionEnhancementSettings
 
     private let service: CodexThreadDeleteBridgeService
+    private let defaults: UserDefaults
     private var task: Task<Void, Never>?
     private var relaunchTask: Task<Void, Never>?
 
-    init(service: CodexThreadDeleteBridgeService = CodexThreadDeleteBridgeService()) {
-        self.service = service
+    init(
+        service: CodexThreadDeleteBridgeService? = nil,
+        defaults: UserDefaults = .standard
+    ) {
+        let settings = CodexSessionEnhancementSettings.load(defaults: defaults)
+        self.enhancementSettings = settings
+        self.service = service ?? CodexThreadDeleteBridgeService(enhancementSettings: settings)
+        self.defaults = defaults
     }
 
     func start() {
@@ -88,7 +96,7 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
         status = CodexThreadDeleteBridgeStatus(
             connected: false,
             debugPort: status.debugPort,
-            message: "正在重新连接 Codex 侧栏删除",
+            message: "正在重新连接 Codex 会话增强",
             phase: .validating
         )
         task = Task { [weak self, service] in
@@ -113,14 +121,14 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
             let conflictAlert = NSAlert()
             conflictAlert.alertStyle = .critical
             conflictAlert.messageText = "请先退出 \(conflicts.joined(separator: "、"))"
-            conflictAlert.informativeText = "这些程序会控制 Codex 的启动方式，可能覆盖 Token Bar 所需的本机调试参数。Token Bar 不会自动关闭它们；退出后再点“启用侧栏删除”。"
+            conflictAlert.informativeText = "这些程序会控制 Codex 的启动方式，可能覆盖 Token Bar 所需的本机调试参数。Token Bar 不会自动关闭它们；退出后再点“启用会话增强”。"
             conflictAlert.addButton(withTitle: "我知道了")
             conflictAlert.runModal()
             return
         }
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "重启 Codex 并启用侧栏删除按钮？"
+        alert.messageText = "重启 Codex 并启用会话增强？"
         alert.informativeText = "Codex 会关闭后立即以仅限本机的调试端口重新打开。当前任务不会被删除，但正在生成的回复会中断，界面也会短暂消失。"
         alert.addButton(withTitle: "重启并启用")
         alert.addButton(withTitle: "取消")
@@ -136,7 +144,7 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
         status = CodexThreadDeleteBridgeStatus(
             connected: false,
             debugPort: nil,
-            message: "正在重启 Codex 并连接侧栏删除",
+            message: "正在重启 Codex 并连接会话增强",
             phase: .relaunching
         )
         relaunchTask = Task { [weak self, service] in
@@ -149,7 +157,7 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
                     self.status = CodexThreadDeleteBridgeStatus(
                         connected: false,
                         debugPort: target.port,
-                        message: "调试端口已存在，正在验证 CDP 命令和页面按钮",
+                        message: "调试端口已存在，正在验证会话增强",
                         phase: .validating
                     )
                     self.reconnect()
@@ -172,7 +180,7 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
                 self.status = CodexThreadDeleteBridgeStatus(
                     connected: false,
                     debugPort: target.port,
-                    message: "调试端口已确认，正在验证 CDP 命令和页面按钮",
+                    message: "调试端口已确认，正在验证会话增强",
                     phase: .validating
                 )
                 self.relaunchTask = nil
@@ -183,7 +191,7 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
                 self.status = CodexThreadDeleteBridgeStatus(
                     connected: false,
                     debugPort: nil,
-                    message: "连接 Codex 侧栏删除失败：\(error.localizedDescription)",
+                    message: "连接 Codex 会话增强失败：\(error.localizedDescription)",
                     phase: .failed
                 )
                 self.startRecoveryProbe()
@@ -195,6 +203,66 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
         task?.cancel()
         task = Task { [weak self, service] in
             await service.run(publishIdle: false, restrictedPorts: [9229]) { status in
+                await MainActor.run {
+                    self?.status = status
+                }
+            }
+        }
+    }
+
+    func setSessionDeleteEnabled(_ enabled: Bool) {
+        updateEnhancementSettings { $0.sessionDelete = enabled }
+    }
+
+    func setMarkdownExportEnabled(_ enabled: Bool) {
+        updateEnhancementSettings { $0.markdownExport = enabled }
+    }
+
+    func setPasteFixEnabled(_ enabled: Bool) {
+        updateEnhancementSettings { $0.pasteFix = enabled }
+    }
+
+    func setProjectMoveEnabled(_ enabled: Bool) {
+        updateEnhancementSettings { $0.projectMove = enabled }
+    }
+
+    func setThreadIDBadgeEnabled(_ enabled: Bool) {
+        updateEnhancementSettings { $0.threadIDBadge = enabled }
+    }
+
+    func setConversationViewEnabled(_ enabled: Bool) {
+        updateEnhancementSettings { $0.conversationView = enabled }
+    }
+
+    func setConversationViewMaxWidth(_ width: Int) {
+        updateEnhancementSettings { $0.conversationViewMaxWidth = width }
+    }
+
+    func setThreadScrollRestoreEnabled(_ enabled: Bool) {
+        updateEnhancementSettings { $0.threadScrollRestore = enabled }
+    }
+
+    private func updateEnhancementSettings(
+        _ mutate: (inout CodexSessionEnhancementSettings) -> Void
+    ) {
+        var next = enhancementSettings
+        mutate(&next)
+        next = next.normalized
+        guard next != enhancementSettings else { return }
+        enhancementSettings = next
+        next.save(defaults: defaults)
+
+        task?.cancel()
+        status = CodexThreadDeleteBridgeStatus(
+            connected: false,
+            debugPort: status.debugPort,
+            message: "正在应用会话增强设置",
+            phase: .validating
+        )
+        task = Task { [weak self, service] in
+            await service.updateEnhancementSettings(next)
+            await service.cancelActiveSession()
+            await service.run { status in
                 await MainActor.run {
                     self?.status = status
                 }
@@ -501,6 +569,9 @@ struct CodexThreadDeleteInjectionHealth: Decodable, Equatable, Sendable {
     let bridgeRegistered: Bool
     let bindingMatches: Bool
     let bindingAvailable: Bool
+    let deleteEnabled: Bool
+    let sessionEnhancementsInstalled: Bool
+    let sessionEnhancementError: String?
     let candidateRowCount: Int
     let eligibleRowCount: Int
     let attachedRowCount: Int
@@ -529,6 +600,7 @@ enum CodexThreadDeleteInjectionVerification: Equatable, Sendable {
               health.bridgeRegistered,
               health.bindingMatches,
               health.bindingAvailable,
+              health.sessionEnhancementsInstalled,
               health.styleInstalled,
               health.observerInstalled
         else {
@@ -536,6 +608,9 @@ enum CodexThreadDeleteInjectionVerification: Equatable, Sendable {
         }
         if let scanError = health.scanError, !scanError.isEmpty {
             throw CodexThreadDeleteError.injectionVerificationFailed("扫描侧栏失败：\(scanError)")
+        }
+        if let enhancementError = health.sessionEnhancementError, !enhancementError.isEmpty {
+            throw CodexThreadDeleteError.injectionVerificationFailed("会话增强扫描失败：\(enhancementError)")
         }
         let counts = [
             health.candidateRowCount,
@@ -564,16 +639,17 @@ enum CodexThreadDeleteInjectionVerification: Equatable, Sendable {
             }
             return .waitingForRows
         }
+        let expectedButtonCount = health.deleteEnabled ? health.eligibleRowCount : 0
         guard health.candidateRowCount == health.eligibleRowCount,
-              health.attachedRowCount == health.eligibleRowCount,
-              health.buttonCount == health.eligibleRowCount,
+              health.attachedRowCount == expectedButtonCount,
+              health.buttonCount == expectedButtonCount,
               health.missingButtonCount == 0,
               health.duplicateButtonCount == 0,
               health.orphanButtonCount == 0,
               health.readiness == "ready"
         else {
             throw CodexThreadDeleteError.injectionVerificationFailed(
-                "检测到 \(health.eligibleRowCount) 条会话，但只验证到 \(health.buttonCount) 个有效删除按钮"
+                "检测到 \(health.eligibleRowCount) 条会话，但会话增强控件验收不完整"
             )
         }
         return .ready(buttonCount: health.buttonCount)
@@ -585,7 +661,9 @@ enum CodexThreadDeleteInjectionVerification: Equatable, Sendable {
             return CodexThreadDeleteBridgeStatus(
                 connected: true,
                 debugPort: debugPort,
-                message: "Codex 侧栏删除已连接，已验证 \(buttonCount) 个按钮",
+                message: buttonCount > 0
+                    ? "Codex 会话增强已连接，已验证 \(buttonCount) 个会话按钮"
+                    : "Codex 会话增强已连接，页面能力已验证",
                 phase: .ready
             )
         case .waitingForRows:
@@ -881,18 +959,28 @@ actor CodexThreadDeleteBridgeService {
 
     private let ports: [Int]
     private let executor: any CodexThreadDeleteExecuting
+    private let enhancementExecutor: any CodexSessionEnhancementExecuting
     private let session: URLSession
+    private var enhancementSettings: CodexSessionEnhancementSettings
     private var activeTransport: CodexThreadDeleteCDPTransport?
     private var lifecycleGeneration = 0
 
     init(
         ports: [Int] = [9229, 9222],
         executor: any CodexThreadDeleteExecuting = FoundationCodexThreadDeleteExecutor(),
+        enhancementExecutor: any CodexSessionEnhancementExecuting = FoundationCodexSessionEnhancementExecutor(),
+        enhancementSettings: CodexSessionEnhancementSettings = .default,
         session: URLSession = .shared
     ) {
         self.ports = ports
         self.executor = executor
+        self.enhancementExecutor = enhancementExecutor
+        self.enhancementSettings = enhancementSettings.normalized
         self.session = session
+    }
+
+    func updateEnhancementSettings(_ settings: CodexSessionEnhancementSettings) {
+        enhancementSettings = settings.normalized
     }
 
     func run(
@@ -913,7 +1001,7 @@ actor CodexThreadDeleteBridgeService {
             await statusChanged(CodexThreadDeleteBridgeStatus(
                 connected: false,
                 debugPort: target.port,
-                message: "已发现 Codex 调试端口，正在验证 CDP 命令和页面按钮",
+                message: "已发现 Codex 调试端口，正在验证会话增强",
                 phase: .validating
             ))
             do {
@@ -929,7 +1017,7 @@ actor CodexThreadDeleteBridgeService {
                 await statusChanged(CodexThreadDeleteBridgeStatus(
                     connected: false,
                     debugPort: target.port,
-                    message: "Codex 删除按钮连接中断：\(error.localizedDescription)",
+                    message: "Codex 会话增强连接中断：\(error.localizedDescription)",
                     phase: .failed
                 ))
             }
@@ -1117,7 +1205,8 @@ actor CodexThreadDeleteBridgeService {
     ) async throws -> CodexThreadDeleteInjectionVerification {
         let script = try CodexThreadDeleteInjectionScript.render(
             owner: Self.owner,
-            bindingName: Self.bindingName
+            bindingName: Self.bindingName,
+            settings: enhancementSettings
         )
         _ = try await transport.request(
             method: "Runtime.enable",
@@ -1191,17 +1280,7 @@ actor CodexThreadDeleteBridgeService {
         }
         guard request.owner == Self.owner else { return }
 
-        let result: CodexThreadDeleteBindingResult
-        do {
-            try CodexThreadID.validate(request.threadID)
-            let message = try await executor.delete(threadID: request.threadID)
-            result = CodexThreadDeleteBindingResult(status: "deleted", message: message)
-        } catch {
-            result = CodexThreadDeleteBindingResult(
-                status: "failed",
-                message: error.localizedDescription
-            )
-        }
+        let result = await bindingResult(for: request)
         let expression = try CodexThreadDeleteInjectionScript.resolveExpression(
             owner: request.owner,
             requestID: request.id,
@@ -1214,6 +1293,50 @@ actor CodexThreadDeleteBridgeService {
                 contextId: event.executionContextID
             )
         )
+    }
+
+    private func bindingResult(
+        for request: CodexThreadDeleteBindingRequest
+    ) async -> CodexThreadDeleteBindingResult {
+        do {
+            try CodexThreadID.validate(request.threadID)
+            switch request.action {
+            case .delete:
+                let message = try await executor.delete(threadID: request.threadID)
+                return CodexThreadDeleteBindingResult(status: "deleted", message: message)
+            case .exportMarkdown:
+                let export = try await enhancementExecutor.exportMarkdown(
+                    threadID: request.threadID,
+                    fallbackTitle: request.title
+                )
+                return CodexThreadDeleteBindingResult(
+                    status: "exported",
+                    message: export.message,
+                    filename: export.filename,
+                    markdown: export.markdown
+                )
+            case .moveThreadWorkspace:
+                guard let targetCwd = request.targetCwd?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !targetCwd.isEmpty else {
+                    throw CodexSessionEnhancementBackendError.invalidTargetDirectory("")
+                }
+                let move = try await enhancementExecutor.moveThreadWorkspace(
+                    threadID: request.threadID,
+                    targetCwd: targetCwd
+                )
+                return CodexThreadDeleteBindingResult(
+                    status: "moved",
+                    message: move.message,
+                    previousCwd: move.previousCwd,
+                    targetCwd: move.targetCwd
+                )
+            }
+        } catch {
+            return CodexThreadDeleteBindingResult(
+                status: "failed",
+                message: error.localizedDescription
+            )
+        }
     }
 }
 
@@ -1251,31 +1374,85 @@ private struct CodexThreadDeleteTargetPayload: Decodable {
     }
 }
 
+enum CodexSessionEnhancementBindingAction: String, Decodable, Equatable, Sendable {
+    case delete
+    case exportMarkdown
+    case moveThreadWorkspace
+}
+
 struct CodexThreadDeleteBindingRequest: Decodable, Equatable, Sendable {
     let id: String
     let owner: String
+    let action: CodexSessionEnhancementBindingAction
     let threadID: String
     let title: String
+    let targetCwd: String?
 
     private enum CodingKeys: String, CodingKey {
         case id
         case owner
+        case action
         case threadID = "threadId"
         case title
+        case targetCwd
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        owner = try container.decode(String.self, forKey: .owner)
+        action = try container.decodeIfPresent(
+            CodexSessionEnhancementBindingAction.self,
+            forKey: .action
+        ) ?? .delete
+        threadID = try container.decode(String.self, forKey: .threadID)
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        targetCwd = try container.decodeIfPresent(String.self, forKey: .targetCwd)
     }
 }
 
 struct CodexThreadDeleteBindingResult: Encodable, Equatable, Sendable {
     let status: String
     let message: String
+    let filename: String?
+    let markdown: String?
+    let previousCwd: String?
+    let targetCwd: String?
+
+    init(
+        status: String,
+        message: String,
+        filename: String? = nil,
+        markdown: String? = nil,
+        previousCwd: String? = nil,
+        targetCwd: String? = nil
+    ) {
+        self.status = status
+        self.message = message
+        self.filename = filename
+        self.markdown = markdown
+        self.previousCwd = previousCwd
+        self.targetCwd = targetCwd
+    }
 }
 
 enum CodexThreadDeleteInjectionScript {
-    static func render(owner: String, bindingName: String) throws -> String {
+    static func render(
+        owner: String,
+        bindingName: String,
+        settings: CodexSessionEnhancementSettings = .default
+    ) throws -> String {
         let template = try loadTemplate()
-        return template
+        let enhancementTemplate = try loadEnhancementTemplate()
+        let settingsData = try JSONEncoder().encode(settings.normalized)
+        let settingsJSON = String(decoding: settingsData, as: UTF8.self)
+        let renderedDelete = template
             .replacingOccurrences(of: "__CTB_OWNER_JSON__", with: try jsonString(owner))
             .replacingOccurrences(of: "__CTB_BINDING_JSON__", with: try jsonString(bindingName))
+        return "window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ = \(settingsJSON);\n"
+            + renderedDelete
+            + "\n"
+            + enhancementTemplate
     }
 
     static func resolveExpression(
@@ -1309,6 +1486,25 @@ enum CodexThreadDeleteInjectionScript {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Resources/CodexThreadDeleteInjection.js")
+        return try String(contentsOf: source, encoding: .utf8)
+#else
+        throw CodexThreadDeleteError.injectionResourceMissing
+#endif
+    }
+
+    private static func loadEnhancementTemplate() throws -> String {
+        if let url = Bundle.main.url(
+            forResource: "CodexSessionEnhancementsInjection",
+            withExtension: "js"
+        ) {
+            return try String(contentsOf: url, encoding: .utf8)
+        }
+#if DEBUG
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Resources/CodexSessionEnhancementsInjection.js")
         return try String(contentsOf: source, encoding: .utf8)
 #else
         throw CodexThreadDeleteError.injectionResourceMissing

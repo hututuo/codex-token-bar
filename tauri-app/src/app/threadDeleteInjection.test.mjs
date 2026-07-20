@@ -150,6 +150,7 @@ test("health is JSON serializable and reports an empty sidebar as waiting", () =
     "bridgeRegistered",
     "buttonCount",
     "candidateRowCount",
+    "deleteEnabled",
     "duplicateButtonCount",
     "eligibleRowCount",
     "missingButtonCount",
@@ -159,6 +160,8 @@ test("health is JSON serializable and reports an empty sidebar as waiting", () =
     "readiness",
     "scanError",
     "schemaVersion",
+    "sessionEnhancementError",
+    "sessionEnhancementsInstalled",
     "styleInstalled",
   ]);
   assert.equal(copy.readiness, "waitingForRows");
@@ -168,6 +171,9 @@ test("health is JSON serializable and reports an empty sidebar as waiting", () =
   assert.equal(copy.bridgeRegistered, true);
   assert.equal(copy.bindingMatches, true);
   assert.equal(copy.bindingAvailable, true);
+  assert.equal(copy.deleteEnabled, true);
+  assert.equal(copy.sessionEnhancementsInstalled, false);
+  assert.equal(copy.sessionEnhancementError, null);
 });
 
 test("health synchronously scans rows and verifies one button per eligible row", () => {

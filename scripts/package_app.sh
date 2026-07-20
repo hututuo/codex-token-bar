@@ -132,6 +132,11 @@ if [[ -f "$ROOT_DIR/Assets/ResetCreditIcon.png" ]]; then
 fi
 
 cp "$ROOT_DIR/Resources/CodexThreadDeleteInjection.js" "$RESOURCES_DIR/CodexThreadDeleteInjection.js"
+cp "$ROOT_DIR/Resources/CodexSessionEnhancementsInjection.js" "$RESOURCES_DIR/CodexSessionEnhancementsInjection.js"
+mkdir -p "$RESOURCES_DIR/OpenSourceLicenses"
+cp "$ROOT_DIR/LICENSE" "$RESOURCES_DIR/OpenSourceLicenses/AGPL-3.0.txt"
+cp "$ROOT_DIR/LICENSES/CodexTokenBar-MIT.txt" "$RESOURCES_DIR/OpenSourceLicenses/CodexTokenBar-MIT.txt"
+cp "$ROOT_DIR/OPEN_SOURCE_NOTICES.md" "$RESOURCES_DIR/OPEN_SOURCE_NOTICES.md"
 
 if [[ -d "$SPARKLE_FRAMEWORK_SRC" ]]; then
   ditto "$SPARKLE_FRAMEWORK_SRC" "$FRAMEWORKS_DIR/Sparkle.framework"
