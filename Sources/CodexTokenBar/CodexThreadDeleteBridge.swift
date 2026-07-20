@@ -1008,8 +1008,7 @@ actor CodexThreadDeleteBridgeService {
         generation: Int,
         statusChanged: @escaping @Sendable (CodexThreadDeleteBridgeStatus) async -> Void
     ) async throws {
-        var request = URLRequest(url: target.webSocketURL)
-        request.setValue("http://127.0.0.1:\(target.port)", forHTTPHeaderField: "Origin")
+        let request = CodexThreadDeleteWebSocketRequest.make(for: target)
         let socket = session.webSocketTask(with: request)
         let transport = CodexThreadDeleteCDPTransport(socket: socket)
         activeTransport = transport
@@ -1221,6 +1220,16 @@ actor CodexThreadDeleteBridgeService {
 struct CodexThreadDeleteTarget: Equatable, Sendable {
     let port: Int
     let webSocketURL: URL
+}
+
+enum CodexThreadDeleteWebSocketRequest {
+    static func make(for target: CodexThreadDeleteTarget) -> URLRequest {
+        // Chromium 150 rejects an explicit browser-style Origin unless Codex is
+        // launched with --remote-allow-origins. A native loopback CDP client
+        // should omit Origin; the target URL itself is already restricted to
+        // ws://127.0.0.1 or ws://[::1] by target validation below.
+        URLRequest(url: target.webSocketURL)
+    }
 }
 
 private struct CodexThreadDeleteTargetPayload: Decodable {

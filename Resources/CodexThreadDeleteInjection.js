@@ -3,21 +3,60 @@
   const bindingName = __CTB_BINDING_JSON__;
   const stateKey = "__codexTokenBarThreadDeleteState";
   const styleId = "codex-token-bar-thread-delete-style";
+  const overlayId = "codex-token-bar-thread-delete-overlay";
   const buttonAttribute = "data-codex-token-bar-thread-delete";
   const buttonThreadAttribute = "data-codex-token-bar-thread-delete-thread-id";
-  const rowAttribute = "data-codex-token-bar-thread-delete-row";
+  const runtimeVersion = 3;
   const bridgeTimeoutMs = Number(window.__CODEX_TOKEN_BAR_DELETE_BRIDGE_TIMEOUT_MS__) || 25000;
 
   const state = window[stateKey] || {
     version: 2,
+    runtimeVersion,
     bridges: new Map(),
     observer: null,
     documentReadyListener: null,
     scanQueued: false,
     sequence: 0,
+    overlay: null,
+    buttonsByReference: new Map(),
+    hoveredThreadReference: null,
+    pointerMoveListener: null,
+    pointerLeaveListener: null,
+    scrollListener: null,
+    resizeListener: null,
   };
+  if (state.runtimeVersion !== runtimeVersion) {
+    state.observer?.disconnect?.();
+    if (state.pointerMoveListener) {
+      document.removeEventListener("pointermove", state.pointerMoveListener, true);
+    }
+    if (state.pointerLeaveListener) {
+      document.removeEventListener("pointerleave", state.pointerLeaveListener, true);
+    }
+    if (state.scrollListener) {
+      document.removeEventListener("scroll", state.scrollListener, true);
+    }
+    if (state.resizeListener) {
+      window.removeEventListener("resize", state.resizeListener);
+    }
+    document.querySelectorAll(`[${buttonAttribute}="true"]`).forEach((button) => button.remove());
+    document.getElementById(overlayId)?.remove();
+    document.getElementById(styleId)?.remove();
+    state.observer = null;
+    state.scanQueued = false;
+    state.overlay = null;
+    state.buttonsByReference = new Map();
+    state.hoveredThreadReference = null;
+    state.pointerMoveListener = null;
+    state.pointerLeaveListener = null;
+    state.scrollListener = null;
+    state.resizeListener = null;
+  }
   state.version = 2;
+  state.runtimeVersion = runtimeVersion;
   state.documentReadyListener ||= null;
+  state.buttonsByReference ||= new Map();
+  state.hoveredThreadReference ||= null;
   window[stateKey] = state;
 
   const previousBridge = state.bridges.get(owner);
@@ -83,14 +122,25 @@
   };
 
   function ensureStyle() {
-    if (document.getElementById(styleId)) return true;
+    const existing = document.getElementById(styleId);
+    if (existing?.dataset.codexTokenBarRuntimeVersion === String(runtimeVersion)) return true;
+    existing?.remove();
     const host = document.head || document.documentElement;
     if (!host) return false;
     const style = document.createElement("style");
     style.id = styleId;
+    style.dataset.codexTokenBarRuntimeVersion = String(runtimeVersion);
     style.textContent = `
-      [${rowAttribute}="true"] { position: relative !important; }
-      [${buttonAttribute}="true"] {
+      #${overlayId} {
+        height: 0;
+        inset: 0;
+        overflow: visible;
+        pointer-events: none;
+        position: fixed;
+        width: 0;
+        z-index: 2147483000;
+      }
+      #${overlayId} [${buttonAttribute}="true"] {
         align-items: center;
         background: color-mix(in srgb, Canvas 88%, transparent);
         border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
@@ -102,23 +152,26 @@
         justify-content: center;
         opacity: 0;
         padding: 0;
-        position: absolute;
-        right: 30px;
-        top: 50%;
-        transform: translateY(-50%);
+        pointer-events: none;
+        position: fixed;
         transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
         width: 24px;
-        z-index: 5;
+        z-index: 1;
       }
-      [${rowAttribute}="true"]:hover [${buttonAttribute}="true"],
-      [${buttonAttribute}="true"]:focus-visible {
+      #${overlayId} [${buttonAttribute}="true"][data-visible="true"],
+      #${overlayId} [${buttonAttribute}="true"]:focus-visible {
         opacity: 1;
+        pointer-events: auto;
       }
-      [${buttonAttribute}="true"]:hover {
+      #${overlayId} [${buttonAttribute}="true"]:hover {
         background: color-mix(in srgb, #dc2626 13%, Canvas);
         color: #dc2626;
       }
-      [${buttonAttribute}="true"]:disabled { cursor: wait; opacity: .55; }
+      #${overlayId} [${buttonAttribute}="true"]:disabled {
+        cursor: wait;
+        opacity: .55;
+        pointer-events: auto;
+      }
       .codex-token-bar-delete-toast {
         background: color-mix(in srgb, Canvas 94%, transparent);
         border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
@@ -159,59 +212,122 @@
     event.stopImmediatePropagation?.();
   }
 
-  function isTrustedThreadId(value) {
-    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+  function canonicalThreadId(value) {
+    const match = /^(?:local:)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(value);
+    return match?.[1] || null;
   }
 
-  function attachButton(row) {
-    const threadId = (row.getAttribute("data-app-action-sidebar-thread-id") || "").trim();
-    const existingButton = row.querySelector(`[${buttonAttribute}="true"]`);
-    if (!isTrustedThreadId(threadId)) {
-      existingButton?.remove();
-      row.removeAttribute(rowAttribute);
+  function ensureOverlay() {
+    if (state.overlay?.isConnected) return state.overlay;
+    const host = document.body || document.documentElement;
+    if (!host) {
+      ensureDocumentReadyRetry();
+      return null;
+    }
+    let overlay = document.getElementById(overlayId);
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.id = overlayId;
+      overlay.setAttribute("aria-hidden", "false");
+      host.appendChild(overlay);
+    }
+    state.overlay = overlay;
+    state.buttonsByReference = new Map(
+      [...overlay.querySelectorAll(`[${buttonAttribute}="true"]`)]
+        .map((button) => [button.getAttribute(buttonThreadAttribute) || "", button])
+        .filter(([reference]) => reference),
+    );
+    return overlay;
+  }
+
+  function rowForReference(threadReference) {
+    return [...document.querySelectorAll("[data-app-action-sidebar-thread-id]")]
+      .find((row) => (
+        row.getAttribute("data-app-action-sidebar-thread-id") || ""
+      ).trim() === threadReference) || null;
+  }
+
+  function positionButton(button, row) {
+    const rect = row.getBoundingClientRect();
+    const visible = rect.width > 0 && rect.height > 0
+      && rect.bottom > 0 && rect.top < window.innerHeight
+      && rect.right > 0 && rect.left < window.innerWidth;
+    button.style.visibility = visible ? "visible" : "hidden";
+    if (!visible) return;
+    button.style.left = `${Math.round(rect.right - 54)}px`;
+    button.style.top = `${Math.round(rect.top + (rect.height - 24) / 2)}px`;
+  }
+
+  function updateButtonVisibility() {
+    for (const [threadReference, button] of state.buttonsByReference) {
+      button.dataset.visible = String(
+        threadReference === state.hoveredThreadReference || button === document.activeElement,
+      );
+    }
+  }
+
+  async function deleteFromButton(button, event) {
+    stopRowNavigation(event);
+    const threadReference = (button.getAttribute(buttonThreadAttribute) || "").trim();
+    const row = rowForReference(threadReference);
+    const currentThreadId = canonicalThreadId(threadReference);
+    if (!row || !currentThreadId) {
+      showToast("删除失败：当前会话 ID 不可用，请刷新侧栏后重试");
       return;
     }
-    if (existingButton?.getAttribute(buttonThreadAttribute) === threadId) return;
-    existingButton?.remove();
-    row.setAttribute(rowAttribute, "true");
+    const title = rowTitle(row);
+    if (!window.confirm(`永久删除“${title}”？\n\n该会话及其派生会话将被删除，无法撤销。`)) return;
+    button.disabled = true;
+    try {
+      const result = await state.callDelete({ threadId: currentThreadId, title });
+      if (result?.status !== "deleted") {
+        throw new Error(result?.message || "删除失败");
+      }
+      const current = row.getAttribute("aria-current") === "page"
+        || row.getAttribute("aria-current") === "true"
+        || window.location.href.includes(currentThreadId);
+      row.remove();
+      button.remove();
+      state.buttonsByReference.delete(threadReference);
+      showToast(result.message || "会话已永久删除");
+      if (current) window.setTimeout(() => window.location.reload(), 120);
+    } catch (error) {
+      button.disabled = false;
+      showToast(`删除失败：${error?.message || error}`);
+    }
+  }
+
+  function createButton(threadReference) {
     const button = document.createElement("button");
     button.type = "button";
     button.setAttribute(buttonAttribute, "true");
-    button.setAttribute(buttonThreadAttribute, threadId);
-    button.setAttribute("aria-label", `永久删除会话：${rowTitle(row)}`);
+    button.setAttribute(buttonThreadAttribute, threadReference);
     button.innerHTML = '<svg aria-hidden="true" fill="none" height="14" viewBox="0 0 24 24" width="14"><path d="M3 6h18M8 6V4h8v2m3 0-1 14H6L5 6m5 5v5m4-5v5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>';
     for (const eventName of ["pointerdown", "mousedown", "mouseup", "touchstart"]) {
       button.addEventListener(eventName, stopRowNavigation, true);
     }
-    button.addEventListener("click", async (event) => {
-      stopRowNavigation(event);
-      const currentThreadId = (
-        row.getAttribute("data-app-action-sidebar-thread-id") || ""
-      ).trim();
-      if (!isTrustedThreadId(currentThreadId)) {
-        showToast("删除失败：当前会话 ID 不可用，请刷新侧栏后重试");
-        return;
-      }
-      const title = rowTitle(row);
-      if (!window.confirm(`永久删除“${title}”？\n\n该会话及其派生会话将被删除，无法撤销。`)) return;
-      button.disabled = true;
-      try {
-        const result = await state.callDelete({ threadId: currentThreadId, title });
-        if (result?.status !== "deleted") {
-          throw new Error(result?.message || "删除失败");
-        }
-        const current = row.getAttribute("aria-current") === "page"
-          || row.getAttribute("aria-current") === "true"
-          || window.location.href.includes(currentThreadId);
-        row.remove();
-        showToast(result.message || "会话已永久删除");
-        if (current) window.setTimeout(() => window.location.reload(), 120);
-      } catch (error) {
-        button.disabled = false;
-        showToast(`删除失败：${error?.message || error}`);
-      }
-    }, true);
-    row.appendChild(button);
+    button.addEventListener("click", (event) => deleteFromButton(button, event), true);
+    button.addEventListener("focus", updateButtonVisibility, true);
+    button.addEventListener("blur", updateButtonVisibility, true);
+    return button;
+  }
+
+  function attachButton(row, liveReferences) {
+    const threadReference = (
+      row.getAttribute("data-app-action-sidebar-thread-id") || ""
+    ).trim();
+    if (!canonicalThreadId(threadReference)) return;
+    liveReferences.add(threadReference);
+    const overlay = ensureOverlay();
+    if (!overlay) return;
+    let button = state.buttonsByReference.get(threadReference);
+    if (!button?.isConnected || button.parentElement !== overlay) {
+      button = createButton(threadReference);
+      overlay.appendChild(button);
+      state.buttonsByReference.set(threadReference, button);
+    }
+    button.setAttribute("aria-label", `永久删除会话：${rowTitle(row)}`);
+    positionButton(button, row);
   }
 
   function scan() {
@@ -219,7 +335,26 @@
     ensureObserver();
     if (!document.documentElement) return;
     ensureStyle();
-    document.querySelectorAll("[data-app-action-sidebar-thread-id]").forEach(attachButton);
+    ensureRuntimeListeners();
+    ensureOverlay();
+    const rows = [...document.querySelectorAll("[data-app-action-sidebar-thread-id]")];
+    const liveReferences = new Set();
+    rows.forEach((row) => attachButton(row, liveReferences));
+    for (const [threadReference, button] of state.buttonsByReference) {
+      if (liveReferences.has(threadReference) && button.isConnected) continue;
+      button.remove();
+      state.buttonsByReference.delete(threadReference);
+    }
+    if (!liveReferences.has(state.hoveredThreadReference)) {
+      const hoveredRow = rows.find((row) => row.matches?.(":hover"));
+      const hoveredReference = (
+        hoveredRow?.getAttribute("data-app-action-sidebar-thread-id") || ""
+      ).trim();
+      state.hoveredThreadReference = canonicalThreadId(hoveredReference)
+        ? hoveredReference
+        : null;
+    }
+    updateButtonVisibility();
   }
 
   function queueScan() {
@@ -234,7 +369,13 @@
       ensureDocumentReadyRetry();
       return false;
     }
-    state.observer = new MutationObserver(queueScan);
+    state.observer = new MutationObserver((mutations) => {
+      const overlay = state.overlay;
+      const outsideOverlay = mutations.some((mutation) => (
+        !overlay || (mutation.target !== overlay && !overlay.contains(mutation.target))
+      ));
+      if (outsideOverlay) queueScan();
+    });
     state.observer.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ["data-app-action-sidebar-thread-id"],
@@ -242,6 +383,45 @@
       subtree: true,
     });
     return true;
+  }
+
+  function ensureRuntimeListeners() {
+    if (!state.pointerMoveListener) {
+      state.pointerMoveListener = (event) => {
+        const target = event.target;
+        const button = target?.closest?.(`[${buttonAttribute}="true"]`);
+        const row = target?.closest?.("[data-app-action-sidebar-thread-id]");
+        const threadReference = (
+          button?.getAttribute(buttonThreadAttribute)
+          || row?.getAttribute("data-app-action-sidebar-thread-id")
+          || ""
+        ).trim();
+        state.hoveredThreadReference = canonicalThreadId(threadReference)
+          ? threadReference
+          : null;
+        updateButtonVisibility();
+      };
+      document.addEventListener("pointermove", state.pointerMoveListener, true);
+    }
+    if (!state.pointerLeaveListener) {
+      state.pointerLeaveListener = () => {
+        state.hoveredThreadReference = null;
+        updateButtonVisibility();
+      };
+      document.addEventListener("pointerleave", state.pointerLeaveListener, true);
+    }
+    if (!state.scrollListener) {
+      state.scrollListener = () => {
+        state.hoveredThreadReference = null;
+        updateButtonVisibility();
+        queueScan();
+      };
+      document.addEventListener("scroll", state.scrollListener, true);
+    }
+    if (!state.resizeListener) {
+      state.resizeListener = queueScan;
+      window.addEventListener("resize", state.resizeListener);
+    }
   }
 
   function ensureDocumentReadyRetry() {
@@ -270,27 +450,43 @@
     const candidateRows = document.documentElement
       ? [...document.querySelectorAll("[data-app-action-sidebar-thread-id]")]
       : [];
-    const eligibleRows = candidateRows.filter((row) => isTrustedThreadId((
+    const eligibleRows = candidateRows.filter((row) => canonicalThreadId((
       row.getAttribute("data-app-action-sidebar-thread-id") || ""
-    ).trim()));
-    const rowButtonCounts = eligibleRows.map((row) => (
-      row.querySelectorAll(`[${buttonAttribute}="true"]`).length
+    ).trim()) !== null);
+    const eligibleReferences = eligibleRows.map((row) => (
+      row.getAttribute("data-app-action-sidebar-thread-id") || ""
+    ).trim());
+    const eligibleReferenceSet = new Set(eligibleReferences);
+    const buttons = document.documentElement
+      ? [...document.querySelectorAll(`[${buttonAttribute}="true"]`)]
+      : [];
+    const buttonReference = (button) => (
+      button.getAttribute(buttonThreadAttribute)
+      || button.closest?.("[data-app-action-sidebar-thread-id]")
+        ?.getAttribute("data-app-action-sidebar-thread-id")
+      || ""
+    ).trim();
+    const rowButtonCounts = eligibleReferences.map((reference) => (
+      buttons.filter((button) => buttonReference(button) === reference).length
     ));
-    const buttonCount = document.documentElement
-      ? document.querySelectorAll(`[${buttonAttribute}="true"]`).length
-      : 0;
+    const buttonCount = buttons.length;
     const attachedRowCount = rowButtonCounts.filter((count) => count > 0).length;
     const missingButtonCount = rowButtonCounts.filter((count) => count === 0).length;
     const duplicateButtonCount = rowButtonCounts.reduce(
       (total, count) => total + Math.max(0, count - 1),
       0,
     );
-    const buttonsInsideEligibleRows = rowButtonCounts.reduce((total, count) => total + count, 0);
-    const orphanButtonCount = Math.max(0, buttonCount - buttonsInsideEligibleRows);
+    const orphanButtonCount = buttons.filter((button) => (
+      !eligibleReferenceSet.has(buttonReference(button))
+    )).length;
     const bridgeRegistered = Boolean(targetBridge);
     const bindingMatches = targetBridge?.bindingName === expectedBindingName;
     const bindingAvailable = typeof window[expectedBindingName] === "function";
-    const styleInstalled = Boolean(document.getElementById(styleId));
+    const installedStyle = document.getElementById(styleId);
+    const styleInstalled = Boolean(
+      installedStyle?.dataset.codexTokenBarRuntimeVersion === String(runtimeVersion)
+      && state.overlay?.isConnected,
+    );
     const observerInstalled = Boolean(state.observer);
     let readiness = "failed";
     if (!scanError && bridgeRegistered && bindingMatches && bindingAvailable

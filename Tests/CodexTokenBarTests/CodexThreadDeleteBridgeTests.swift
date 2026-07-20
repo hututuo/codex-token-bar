@@ -446,6 +446,18 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
         XCTAssertFalse(CodexThreadDeleteInjectionScript.isLoopback(URL(string: "wss://example.com/devtools/page/1")!))
     }
 
+    func testWebSocketHandshakeOmitsChromiumRejectedOriginHeader() {
+        let target = CodexThreadDeleteTarget(
+            port: 9229,
+            webSocketURL: URL(string: "ws://127.0.0.1:9229/devtools/page/1")!
+        )
+
+        let request = CodexThreadDeleteWebSocketRequest.make(for: target)
+
+        XCTAssertNil(request.value(forHTTPHeaderField: "Origin"))
+        XCTAssertEqual(request.url, target.webSocketURL)
+    }
+
     private func health(
         candidateRows: Int,
         eligibleRows: Int,

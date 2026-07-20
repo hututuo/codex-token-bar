@@ -49,7 +49,7 @@ test("injected delete control calls the native bridge and removes the row after 
 
   window.eval(renderedScript());
   await flush(window);
-  const button = row.querySelector('[data-codex-token-bar-thread-delete="true"]');
+  const button = window.document.querySelector('[data-codex-token-bar-thread-delete="true"]');
   assert.ok(button);
   assert.equal(button.getAttribute("aria-label"), "永久删除会话：需要删除的会话");
   button.click();
@@ -59,6 +59,42 @@ test("injected delete control calls the native bridge and removes the row after 
   assert.equal(calls[0].threadId, id);
   assert.equal(row.isConnected, false);
   assert.match(window.document.body.textContent, /会话已永久删除/);
+});
+
+test("current local namespace is accepted but the native bridge receives a bare UUID", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const id = "019f5a7c-1334-7abc-8def-0123456789ab";
+  const reference = `local:${id}`;
+  const row = sidebarRow(window.document, reference, "当前格式的会话");
+  const calls = [];
+  window.confirm = () => true;
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    const payload = JSON.parse(payloadText);
+    calls.push(payload);
+    window.__codexTokenBarThreadDeleteResolve(payload.owner, payload.id, {
+      status: "deleted",
+      message: "会话已永久删除",
+    });
+  };
+
+  window.eval(renderedScript());
+  const health = window.__codexTokenBarThreadDeleteHealth(
+    "tauri",
+    "codexTokenBarDeleteTauri",
+  );
+  assert.equal(health.readiness, "ready");
+  const button = window.document.querySelector('[data-codex-token-bar-thread-delete="true"]');
+  assert.ok(button);
+  assert.equal(
+    button.getAttribute("data-codex-token-bar-thread-delete-thread-id"),
+    reference,
+  );
+
+  button.click();
+  await flush(window);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].threadId, id);
 });
 
 test("repeated Swift and Tauri injection keeps one button and can fall through to a live bridge", async () => {
@@ -77,8 +113,8 @@ test("repeated Swift and Tauri injection keeps one button and can fall through t
   window.eval(renderedScript("swift", "codexTokenBarDeleteSwift"));
   await flush(window);
 
-  assert.equal(row.querySelectorAll('[data-codex-token-bar-thread-delete="true"]').length, 1);
-  row.querySelector('[data-codex-token-bar-thread-delete="true"]').click();
+  assert.equal(window.document.querySelectorAll('[data-codex-token-bar-thread-delete="true"]').length, 1);
+  window.document.querySelector('[data-codex-token-bar-thread-delete="true"]').click();
   await new Promise((resolve) => window.setTimeout(resolve, 60));
   assert.equal(row.isConnected, false);
 });
@@ -93,7 +129,7 @@ test("rows without a trusted thread id are not modified", async () => {
   window.eval(renderedScript());
   await flush(window);
 
-  assert.equal(row.querySelector('[data-codex-token-bar-thread-delete="true"]'), null);
+  assert.equal(window.document.querySelector('[data-codex-token-bar-thread-delete="true"]'), null);
 });
 
 test("health is JSON serializable and reports an empty sidebar as waiting", () => {
@@ -202,7 +238,7 @@ test("blank thread ids, duplicate buttons, and orphan buttons fail health verifi
   assert.equal(malformedHealth.candidateRowCount, 2);
   assert.equal(malformedHealth.eligibleRowCount, 0);
   assert.equal(malformedHealth.readiness, "failed");
-  assert.equal(malformed.querySelector('[data-codex-token-bar-thread-delete="true"]'), null);
+  assert.equal(blankWindow.document.querySelector('[data-codex-token-bar-thread-delete="true"]'), null);
 
   const duplicateWindow = new Window({ url: "app://codex/" });
   duplicateWindow.codexTokenBarDeleteTauri = () => {};
@@ -269,6 +305,37 @@ test("observer adds a button when a sidebar row appears after injection", async 
   ).readiness, "ready");
 });
 
+test("React-style row reconciliation cannot remove the portal delete button", async () => {
+  const window = new Window({ url: "app://codex/" });
+  window.codexTokenBarDeleteTauri = () => {};
+  const id = "019f5a7c-6334-7abc-8def-0123456789ab";
+  const row = sidebarRow(window.document, `local:${id}`, "会被重绘的行");
+
+  window.eval(renderedScript());
+  const originalButton = window.document.querySelector(
+    '[data-codex-token-bar-thread-delete="true"]',
+  );
+  assert.ok(originalButton);
+  assert.equal(originalButton.parentElement?.id, "codex-token-bar-thread-delete-overlay");
+  assert.equal(row.contains(originalButton), false);
+
+  const replacementLabel = window.document.createElement("span");
+  replacementLabel.className = "truncate";
+  replacementLabel.textContent = "React 重绘后的行";
+  row.replaceChildren(replacementLabel);
+  await flush(window);
+
+  assert.equal(originalButton.isConnected, true);
+  assert.equal(
+    window.document.querySelectorAll('[data-codex-token-bar-thread-delete="true"]').length,
+    1,
+  );
+  assert.equal(window.__codexTokenBarThreadDeleteHealth(
+    "tauri",
+    "codexTokenBarDeleteTauri",
+  ).readiness, "ready");
+});
+
 test("a reused sidebar row always deletes its current thread id", async () => {
   const window = new Window({ url: "app://codex/" });
   const oldID = "019f5a7c-7234-7abc-8def-0123456789ab";
@@ -288,7 +355,7 @@ test("a reused sidebar row always deletes its current thread id", async () => {
   window.eval(renderedScript());
   row.setAttribute("data-app-action-sidebar-thread-id", newID);
   await flush(window);
-  const button = row.querySelector('[data-codex-token-bar-thread-delete="true"]');
+  const button = window.document.querySelector('[data-codex-token-bar-thread-delete="true"]');
   assert.equal(
     button.getAttribute("data-codex-token-bar-thread-delete-thread-id"),
     newID,
