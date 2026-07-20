@@ -88,6 +88,7 @@ pub fn run() {
             commands::provider_repair::read_provider_operation_status,
             commands::provider_repair::discover_provider_operation_ownership,
             commands::codex_radar::read_codex_radar_full_snapshot,
+            commands::codex_radar::read_codex_crowd_radar_payload,
             commands::live::read_floating_snapshot,
             commands::live::read_unread_summary,
             commands::live::acknowledge_current_unread,

@@ -40,6 +40,7 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "record_performance_event",
     "read_platform_capabilities",
     "read_account_quota",
+    "read_codex_crowd_radar_payload",
     "read_usage_summary_snapshot",
     "read_live_rate_snapshot",
     "claim_live_rate_owner_session",
@@ -133,6 +134,17 @@ mod tests {
         assert!(allows_window_label("read_codex_radar_full_snapshot", "main"));
         assert!(!allows_window_label("read_codex_radar_full_snapshot", "floating"));
         assert!(!allows_window_label("read_codex_radar_full_snapshot", "status"));
+    }
+
+    #[test]
+    fn crowd_radar_public_read_is_available_to_every_app_surface() {
+        for label in ["main", "floating", "status"] {
+            assert!(allows_window_label("read_codex_crowd_radar_payload", label));
+        }
+        assert!(!allows_window_label(
+            "read_codex_crowd_radar_payload",
+            "unknown"
+        ));
     }
 
     #[test]

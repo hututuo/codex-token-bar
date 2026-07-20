@@ -10,7 +10,7 @@ struct CodexCrowdRadarModel: Decodable, Equatable, Sendable, Identifiable {
     var id: String { "\(model)|\(effort)" }
     var label: String {
         let family = ["Sol", "Terra", "Luna"].first { model.localizedCaseInsensitiveContains($0) } ?? model
-        return "\(family) \(effort)"
+        return "\(family) \(effort)".trimmingCharacters(in: .whitespacesAndNewlines)
     }
     var iq: Double { passRate * 150 }
 }
@@ -36,31 +36,18 @@ protocol CodexCrowdRadarReading: Sendable {
 }
 
 struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
-    private struct Table: Decodable { let baselineGeneratedAt: String; let tasks: [TaskRow]; let cells: [String: Cell] }
-    private struct TaskRow: Decodable {}
-    private struct Cell: Decodable {}
-    private struct Leaderboard: Decodable {
-        let models: [CodexCrowdRadarModel]
-        let contributors: [Contributor]
-        let pendingGrades: Int
-        let errorGrades: Int
-    }
-    private struct Contributor: Decodable {}
+    private static let maxResponseBytes = 8 * 1024 * 1024
 
     func readCrowdRadar() async throws -> CodexCrowdRadarSnapshot {
-        async let tableData = read(URL(string: "https://api.codexradar.com/api/v1/table")!)
-        async let leaderboardData = read(URL(string: "https://api.codexradar.com/api/v1/leaderboard")!)
-        let decoder = JSONDecoder.codexRadar
-        let table = try decoder.decode(Table.self, from: await tableData)
-        let leaderboard = try decoder.decode(Leaderboard.self, from: await leaderboardData)
-        return CodexCrowdRadarSnapshot(
-            generatedAt: table.baselineGeneratedAt,
-            taskCount: table.tasks.count,
-            cellCount: table.cells.count,
-            contributorCount: leaderboard.contributors.count,
-            pendingGrades: leaderboard.pendingGrades,
-            errorGrades: leaderboard.errorGrades,
-            models: leaderboard.models
+        async let tableData: Data? = try? read(
+            URL(string: "https://api.codexradar.com/api/v1/table")!
+        )
+        async let leaderboardData = read(
+            URL(string: "https://api.codexradar.com/api/v1/leaderboard")!
+        )
+        return try await CodexCrowdRadarParser.decode(
+            tableData: tableData,
+            leaderboardData: leaderboardData
         )
     }
 
@@ -75,6 +62,7 @@ struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
             throw CodexRadarReaderError.invalidResponse
         }
         guard !data.isEmpty else { throw CodexRadarReaderError.emptyPayload }
+        guard data.count <= Self.maxResponseBytes else { throw CodexRadarReaderError.invalidResponse }
         return data
     }
 }

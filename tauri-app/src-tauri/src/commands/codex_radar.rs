@@ -1,11 +1,16 @@
 use super::window_auth::require_window_label;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::time::Duration;
 use tauri::async_runtime;
 
 const CODEX_RADAR_FULL_ENDPOINT: &str = "https://codexradar.com/api/v1/current";
+const CODEX_CROWD_RADAR_TABLE_ENDPOINT: &str = "https://api.codexradar.com/api/v1/table";
+const CODEX_CROWD_RADAR_LEADERBOARD_ENDPOINT: &str =
+    "https://api.codexradar.com/api/v1/leaderboard";
 const CODEX_RADAR_TIMEOUT: Duration = Duration::from_secs(20);
+const CODEX_CROWD_RADAR_TIMEOUT: Duration = Duration::from_secs(18);
+const CODEX_CROWD_RADAR_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const KEY_CIPHER: [u8; 57] = [
     94, 228, 121, 185, 168, 72, 126, 255, 5, 110, 24, 99, 74, 39, 157, 134, 100, 135, 125, 94,
     135, 210, 1, 144, 13, 46, 200, 43, 156, 101, 161, 236, 160, 80, 7, 176, 218, 251, 217,
@@ -22,6 +27,16 @@ pub async fn read_codex_radar_full_snapshot(
 ) -> Result<Value, String> {
     require_window_label(&window, "read_codex_radar_full_snapshot")?;
     async_runtime::spawn_blocking(fetch_codex_radar_full_snapshot)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn read_codex_crowd_radar_payload(
+    window: tauri::WebviewWindow,
+) -> Result<Value, String> {
+    require_window_label(&window, "read_codex_crowd_radar_payload")?;
+    async_runtime::spawn_blocking(fetch_codex_crowd_radar_payload)
         .await
         .map_err(|error| error.to_string())?
 }
@@ -48,12 +63,108 @@ fn fetch_codex_radar_full_snapshot() -> Result<Value, String> {
         .map_err(|error| format!("Codex Radar detail parse failed: {error}"))
 }
 
+fn fetch_codex_crowd_radar_payload() -> Result<Value, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(CODEX_CROWD_RADAR_TIMEOUT)
+        .no_gzip()
+        .build()
+        .map_err(|error| format!("Crowd Radar client failed: {error}"))?;
+    let (table, leaderboard) = std::thread::scope(|scope| {
+        let table_request = scope.spawn(|| {
+            fetch_public_json(&client, CODEX_CROWD_RADAR_TABLE_ENDPOINT, "table")
+        });
+        let leaderboard_request = scope.spawn(|| {
+            fetch_public_json(
+                &client,
+                CODEX_CROWD_RADAR_LEADERBOARD_ENDPOINT,
+                "leaderboard",
+            )
+        });
+        (
+            table_request
+                .join()
+                .unwrap_or_else(|_| Err("Crowd Radar table worker panicked".into())),
+            leaderboard_request
+                .join()
+                .unwrap_or_else(|_| Err("Crowd Radar leaderboard worker panicked".into())),
+        )
+    });
+    combine_crowd_radar_payload(table, leaderboard)
+}
+
+fn fetch_public_json(
+    client: &reqwest::blocking::Client,
+    endpoint: &str,
+    label: &str,
+) -> Result<Value, String> {
+    let response = client
+        .get(endpoint)
+        .headers(public_json_headers())
+        .send()
+        .map_err(|error| format!("Crowd Radar {label} fetch failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Crowd Radar {label} HTTP {}", response.status()));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > CODEX_CROWD_RADAR_MAX_BYTES)
+    {
+        return Err(format!("Crowd Radar {label} payload is too large"));
+    }
+    let body = response
+        .bytes()
+        .map_err(|error| format!("Crowd Radar {label} body failed: {error}"))?;
+    if body.is_empty() {
+        return Err(format!("Crowd Radar {label} returned empty data"));
+    }
+    if body.len() as u64 > CODEX_CROWD_RADAR_MAX_BYTES {
+        return Err(format!("Crowd Radar {label} payload is too large"));
+    }
+    serde_json::from_slice(&body)
+        .map_err(|error| format!("Crowd Radar {label} parse failed: {error}"))
+}
+
+fn combine_crowd_radar_payload(
+    table: Result<Value, String>,
+    leaderboard: Result<Value, String>,
+) -> Result<Value, String> {
+    let (table_value, table_error) = split_result(table);
+    let (leaderboard_value, leaderboard_error) = split_result(leaderboard);
+    if table_value.is_none() && leaderboard_value.is_none() {
+        return Err(format!(
+            "Crowd Radar endpoints failed: table={}; leaderboard={}",
+            table_error.as_deref().unwrap_or("unknown"),
+            leaderboard_error.as_deref().unwrap_or("unknown")
+        ));
+    }
+    Ok(json!({
+        "table": table_value,
+        "leaderboard": leaderboard_value,
+        "tableError": table_error,
+        "leaderboardError": leaderboard_error,
+    }))
+}
+
+fn split_result(result: Result<Value, String>) -> (Option<Value>, Option<String>) {
+    match result {
+        Ok(value) => (Some(value), None),
+        Err(error) => (None, Some(error)),
+    }
+}
+
 fn full_detail_headers() -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(USER_AGENT, HeaderValue::from_static("CodexTokenBar"));
     headers.insert(AUTHORIZATION, authorization_header_value()?);
     Ok(headers)
+}
+
+fn public_json_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    headers.insert(USER_AGENT, HeaderValue::from_static("CodexTokenBar"));
+    headers
 }
 
 fn authorization_header_value() -> Result<HeaderValue, String> {
@@ -101,5 +212,59 @@ mod tests {
             headers.get(ACCEPT).and_then(|value| value.to_str().ok()),
             Some("application/json")
         );
+    }
+
+    #[test]
+    fn crowd_radar_public_headers_never_attach_authorization() {
+        let headers = public_json_headers();
+        assert!(!headers.contains_key(AUTHORIZATION));
+        assert_eq!(
+            headers.get(ACCEPT).and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+    }
+
+    #[test]
+    fn crowd_radar_payload_keeps_a_healthy_endpoint_when_the_other_fails() {
+        let payload = combine_crowd_radar_payload(
+            Err("table unavailable".into()),
+            Ok(json!({"models": [{"model": "gpt-5.6-sol"}]})),
+        )
+        .expect("partial payload");
+        assert!(payload.get("table").is_some_and(Value::is_null));
+        assert_eq!(
+            payload.pointer("/leaderboard/models/0/model").and_then(Value::as_str),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            payload.get("tableError").and_then(Value::as_str),
+            Some("table unavailable")
+        );
+    }
+
+    #[test]
+    fn crowd_radar_payload_fails_only_when_both_endpoints_fail() {
+        let error = combine_crowd_radar_payload(
+            Err("table unavailable".into()),
+            Err("leaderboard unavailable".into()),
+        )
+        .expect_err("both endpoints must fail");
+        assert!(error.contains("table unavailable"));
+        assert!(error.contains("leaderboard unavailable"));
+    }
+
+    #[test]
+    #[ignore = "requires the live public Crowd Radar endpoints"]
+    fn live_crowd_radar_payload_contains_rankable_models() {
+        let payload = fetch_codex_crowd_radar_payload().expect("live Crowd Radar payload");
+        let models = payload
+            .pointer("/leaderboard/models")
+            .and_then(Value::as_array)
+            .expect("leaderboard models");
+        assert!(models.len() >= 3);
+        assert!(models.iter().any(|model| {
+            model.get("pass_rate").and_then(Value::as_f64).is_some()
+                && model.get("graded").and_then(Value::as_i64).unwrap_or_default() > 0
+        }));
     }
 }
