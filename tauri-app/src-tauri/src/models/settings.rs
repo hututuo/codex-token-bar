@@ -18,6 +18,8 @@ pub struct AppSettingsSnapshot {
     #[serde(default)]
     pub setup_guide_completed: bool,
     #[serde(default)]
+    pub session_enhancements: SessionEnhancementSettingsSnapshot,
+    #[serde(default)]
     pub auto_resume: AutoResumeSettingsSnapshot,
 }
 
@@ -31,9 +33,50 @@ impl Default for AppSettingsSnapshot {
             floating_position: None,
             display_surfaces: DisplaySurfaceSettingsSnapshot::default(),
             setup_guide_completed: false,
+            session_enhancements: SessionEnhancementSettingsSnapshot::default(),
             auto_resume: AutoResumeSettingsSnapshot::default(),
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionEnhancementSettingsSnapshot {
+    #[serde(default = "default_enabled")]
+    pub session_delete: bool,
+    #[serde(default = "default_enabled")]
+    pub markdown_export: bool,
+    #[serde(default)]
+    pub paste_fix: bool,
+    #[serde(default = "default_enabled")]
+    pub project_move: bool,
+    #[serde(default)]
+    pub thread_id_badge: bool,
+    #[serde(default)]
+    pub conversation_view: bool,
+    #[serde(default = "default_conversation_view_max_width")]
+    pub conversation_view_max_width: u32,
+    #[serde(default = "default_enabled")]
+    pub thread_scroll_restore: bool,
+}
+
+impl Default for SessionEnhancementSettingsSnapshot {
+    fn default() -> Self {
+        Self {
+            session_delete: true,
+            markdown_export: true,
+            paste_fix: false,
+            project_move: true,
+            thread_id_badge: false,
+            conversation_view: false,
+            conversation_view_max_width: default_conversation_view_max_width(),
+            thread_scroll_restore: true,
+        }
+    }
+}
+
+fn default_conversation_view_max_width() -> u32 {
+    900
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

@@ -7,16 +7,17 @@ import { withSsrModules } from "../../test/ssrHarness.mjs";
 
 const SETTINGS_CATEGORIES = [
   "常规",
+  "会话增强",
+  "自动续跑",
   "显示面",
   "监控与额度",
-  "自动续跑",
   "悬浮窗",
   "内容与排序",
   "提醒与更新",
   "数据与维护",
 ];
 
-test("global settings exposes eight categorized tabs and defaults to general", async () => {
+test("global settings exposes nine categorized tabs and defaults to general", async () => {
   await withSsrModules(async (load) => {
     const { AppSettingsDialog } = await load("/src/components/settings/AppSettingsDialog.tsx");
     const { DEFAULT_FLOATING_SETTINGS } = await load("/src/floating/floatingSettings.ts");
@@ -51,6 +52,17 @@ test("global settings stays unmounted while closed", async () => {
   });
 });
 
+test("header shortcuts can open session enhancements and auto resume directly", async () => {
+  await withMountedSettings(async ({ container, render }) => {
+    assert.equal(tabName(selectedTab(container)), "会话增强");
+    assert.match(activePanel(container).textContent, /Markdown 导出/);
+
+    await render({ initialCategory: "automation" });
+    assert.equal(tabName(selectedTab(container)), "自动续跑");
+    assert.match(activePanel(container).textContent, /Run Now/);
+  }, { initialCategory: "session" });
+});
+
 test("settings tabs switch by click and support ArrowUp, ArrowDown, Home, and End", async () => {
   await withMountedSettings(async ({ act, container, document, window }) => {
     assert.deepEqual(settingTabs(container).map(tabName), SETTINGS_CATEGORIES);
@@ -61,8 +73,8 @@ test("settings tabs switch by click and support ArrowUp, ArrowDown, Home, and En
     generalTab.focus();
     await pressKey(act, generalTab, "ArrowDown", window);
     await flushAnimationFrame(act, window);
-    assert.equal(tabName(selectedTab(container)), "显示面");
-    assert.equal(document.activeElement, tabByName(container, "显示面"));
+    assert.equal(tabName(selectedTab(container)), "会话增强");
+    assert.equal(document.activeElement, tabByName(container, "会话增强"));
 
     await pressKey(act, document.activeElement, "ArrowUp", window);
     await flushAnimationFrame(act, window);
@@ -82,6 +94,35 @@ test("settings tabs switch by click and support ArrowUp, ArrowDown, Home, and En
     await click(act, tabByName(container, "内容与排序"), window);
     assert.equal(tabName(selectedTab(container)), "内容与排序");
     assert.match(activePanel(container).textContent, /速率|额度|雷达/);
+  });
+});
+
+test("session enhancements expose real feature toggles, connection flow and attribution", async () => {
+  await withMountedSettings(async ({ act, calls, container, window }) => {
+    await click(act, tabByName(container, "会话增强"), window);
+    const panel = activePanel(container);
+    for (const label of [
+      "会话删除",
+      "Markdown 导出",
+      "会话项目移动",
+      "会话 ID 标识",
+      "粘贴修复",
+      "对话居中宽度",
+      "切换对话保留位置",
+    ]) {
+      assert.match(panel.textContent, new RegExp(label));
+    }
+    assert.match(panel.textContent, /Codex\+\+ · AGPL-3\.0/);
+    assert.match(panel.querySelector('a[href*="BigPizzaV3/CodexPlusPlus"]')?.textContent, /上游源码/);
+
+    await click(act, panel.querySelector('button[aria-label^="粘贴修复："]'), window);
+    await flushPromises(act);
+    assert.equal(calls.sessionEnhancementSaves.length, 1);
+    assert.equal(calls.sessionEnhancementSaves[0].pasteFix, true);
+    assert.equal(calls.sessionEnhancementSaves[0].markdownExport, true);
+
+    await click(act, buttonWithText(panel, "重新连接"), window);
+    assert.equal(calls.threadDeleteReconnect, 1);
   });
 });
 
@@ -234,10 +275,8 @@ test("maintenance settings expose safe data and repair actions without local-dat
     assert.ok(codexHomeInput, "maintenance page should expose the Codex directory editor");
     assert.equal(codexHomeInput.value, "/Users/test/.codex");
     assert.match(panel.textContent, /会话消失修复/);
-    assert.match(panel.textContent, /已连接 Codex 调试端口 9222/);
-
-    await click(act, buttonWithText(panel, "重新连接"), window);
-    assert.equal(calls.threadDeleteReconnect, 1);
+    assert.match(panel.textContent, /会话增强/);
+    assert.equal(buttonWithTextOrNull(panel, "重新连接"), null);
 
     await click(act, buttonWithText(panel, "打开修复工具"), window);
     await flushAnimationFrame(act, window);
@@ -246,12 +285,21 @@ test("maintenance settings expose safe data and repair actions without local-dat
   });
 });
 
-test("maintenance defers first-time thread-delete enablement to the confirmed header flow", async () => {
-  await withMountedSettings(async ({ act, container, window }) => {
-    await click(act, tabByName(container, "数据与维护"), window);
+test("session settings confirm first-time Codex relaunch without closing the settings dialog", async () => {
+  await withMountedSettings(async ({ act, calls, container, document, window }) => {
+    await click(act, tabByName(container, "会话增强"), window);
     const panel = activePanel(container);
-    assert.match(panel.textContent, /请回主界面启用/);
-    assert.equal(buttonWithTextOrNull(panel, "重新连接"), null);
+    await click(act, buttonWithText(panel, "重启 Codex 并启用"), window);
+    assert.ok(container.querySelector('[role="alertdialog"]'));
+    assert.equal(document.activeElement.textContent.trim(), "取消");
+    await pressKey(act, document.activeElement, "Escape", window);
+    assert.equal(container.querySelector('[role="alertdialog"]'), null);
+    assert.ok(container.querySelector('[role="dialog"]'));
+    assert.equal(calls.threadDeleteReconnect, 0);
+
+    await click(act, buttonWithText(panel, "重启 Codex 并启用"), window);
+    await click(act, buttonWithText(container, "重启并启用"), window);
+    assert.equal(calls.threadDeleteReconnect, 1);
   }, {
     threadDeleteBridgeStatus: {
       connected: false,
@@ -308,6 +356,7 @@ async function withMountedSettings(run, initialOverrides = {}) {
         close: 0,
         providerRepair: 0,
         threadDeleteReconnect: 0,
+        sessionEnhancementSaves: [],
         tokenRateFullScale: [],
         update: 0,
       };
@@ -344,6 +393,7 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     close: 0,
     providerRepair: 0,
     threadDeleteReconnect: 0,
+    sessionEnhancementSaves: [],
     tokenRateFullScale: [],
     update: 0,
   };
@@ -369,6 +419,7 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     open: true,
     platform: platformCapabilities(),
     quotaRefreshIntervalMs: 60_000,
+    sessionEnhancements: defaultSessionEnhancements(),
     threadDeleteBridgeStatus: {
       connected: true,
       debugPort: 9222,
@@ -400,12 +451,28 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
       callLog.autoResumeSaves.push(settings);
       callLog.autoResumeOrder.push("save");
     },
+    onSaveSessionEnhancements: async (settings) => {
+      callLog.sessionEnhancementSaves.push(settings);
+    },
     onTokenRateFullScaleChange: (value) => { callLog.tokenRateFullScale.push(value); },
     onToggleAutostart: noop,
     onToggleFloating: noop,
     onToggleLiveRate: noop,
     onToggleStatusTray: noop,
     ...overrides,
+  };
+}
+
+function defaultSessionEnhancements() {
+  return {
+    sessionDelete: true,
+    markdownExport: true,
+    pasteFix: false,
+    projectMove: true,
+    threadIDBadge: false,
+    conversationView: false,
+    conversationViewMaxWidth: 900,
+    threadScrollRestore: true,
   };
 }
 

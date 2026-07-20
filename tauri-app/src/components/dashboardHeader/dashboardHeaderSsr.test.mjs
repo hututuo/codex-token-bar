@@ -34,11 +34,12 @@ test("DashboardHeader renders restrained provider repair entry", async () => {
     assert.match(html, /检查更新/);
     assert.match(html, /开机自启：关/);
     assert.match(html, /更改目录/);
-    assert.match(html, /启用侧栏删除/);
+    assert.match(html, />会话增强<\/button>/);
+    assert.match(html, />自动续跑<\/button>/);
     assert.match(html, />设置<\/button>/);
     assert.match(html, /导出 CSV/);
     assert.match(html, /导出 PNG/);
-    assert.doesNotMatch(html, /更多操作|启用会话删除/);
+    assert.doesNotMatch(html, /更多操作|启用侧栏删除|启用会话删除/);
   });
 });
 
@@ -73,6 +74,7 @@ function headerProps(overrides = {}) {
       displayName: "Test User",
       planLabel: "Plus",
     },
+    autoResumeEnabled: false,
     appUpdateState: {
       kind: "idle",
       message: "",
@@ -99,7 +101,6 @@ function headerProps(overrides = {}) {
     onOpenProviderRepair: () => {},
     onOpenSettings: () => {},
     onRefresh: async () => {},
-    onReconnectThreadDelete: async () => {},
     onToggleAutostart: () => {},
     refreshing: false,
     threadDeleteBridgeStatus: {

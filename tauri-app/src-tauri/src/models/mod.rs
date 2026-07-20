@@ -28,5 +28,5 @@ pub use quota::{
 pub use settings::{
     AppSettingsSnapshot, AutoResumeSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
-    FloatingWindowSettingsSnapshot,
+    FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
 };

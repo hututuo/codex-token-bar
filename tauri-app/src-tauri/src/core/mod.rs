@@ -6,6 +6,7 @@ pub mod live_rate;
 pub mod provider_repair;
 pub mod quota;
 pub mod quota_history;
+pub mod session_enhancements;
 pub mod sqlite;
 pub mod startup_trace;
 pub mod thread_delete;

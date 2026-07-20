@@ -7,8 +7,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tungstenite::client::IntoClientRequest;
-use tungstenite::http::header::ORIGIN;
-use tungstenite::http::HeaderValue;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{connect, Message, WebSocket};
 
@@ -17,10 +15,13 @@ const BINDING_NAME: &str = "codexTokenBarDeleteTauri";
 const OWNER: &str = "tauri";
 const PROBE_INTERVAL: Duration = Duration::from_secs(3);
 const READ_TIMEOUT: Duration = Duration::from_secs(1);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(4);
 const REINJECT_INTERVAL: Duration = Duration::from_secs(5);
 const DELETE_TIMEOUT: Duration = Duration::from_secs(20);
 const INJECTION_TEMPLATE: &str =
     include_str!("../../../../Resources/CodexThreadDeleteInjection.js");
+const SESSION_ENHANCEMENTS_TEMPLATE: &str =
+    include_str!("../../../../Resources/CodexSessionEnhancementsInjection.js");
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 static RECONNECT_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -49,18 +50,40 @@ struct CdpTarget {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DeleteBindingRequest {
+struct SessionEnhancementBindingRequest {
     id: String,
     owner: String,
+    #[serde(default)]
+    action: SessionEnhancementBindingAction,
     thread_id: String,
-    #[allow(dead_code)]
+    #[serde(default)]
     title: String,
+    #[serde(default)]
+    target_cwd: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum SessionEnhancementBindingAction {
+    #[default]
+    Delete,
+    ExportMarkdown,
+    MoveThreadWorkspace,
 }
 
 #[derive(Debug, Serialize)]
-struct DeleteBindingResult {
+#[serde(rename_all = "camelCase")]
+struct SessionEnhancementBindingResult {
     status: &'static str,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    filename: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    markdown: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_cwd: Option<String>,
 }
 
 pub fn start_supervisor() {
@@ -81,14 +104,14 @@ pub fn bridge_status() -> ThreadDeleteBridgeStatus {
 pub fn request_reconnect() -> ThreadDeleteBridgeStatus {
     RECONNECT_REQUESTED.store(true, Ordering::Release);
     let current = bridge_status();
-    set_status(false, current.debug_port, "正在重新连接 Codex 删除按钮");
+    set_status(false, current.debug_port, "正在重新连接 Codex 会话增强");
     bridge_status()
 }
 
 pub fn enable_with_codex_restart() -> Result<ThreadDeleteBridgeStatus, String> {
-    set_status(false, None, "正在重启 Codex 并启用删除按钮");
+    set_status(false, None, "正在重启 Codex 并启用会话增强");
     if let Err(error) = crate::platform::relaunch_codex_with_debug_port() {
-        set_status(false, None, format!("启用 Codex 删除按钮失败：{error}"));
+        set_status(false, None, format!("启用 Codex 会话增强失败：{error}"));
         return Err(error);
     }
     RECONNECT_REQUESTED.store(true, Ordering::Release);
@@ -122,14 +145,14 @@ fn supervisor_loop() {
                 false
             }
             Ok(SessionExit::Reconnect) => {
-                set_status(false, Some(port), "正在重新连接 Codex 删除按钮");
+                set_status(false, Some(port), "正在重新连接 Codex 会话增强");
                 true
             }
             Err(error) => {
                 set_status(
                     false,
                     Some(port),
-                    format!("Codex 删除按钮连接中断：{error}"),
+                    format!("Codex 会话增强连接中断：{error}"),
                 );
                 false
             }
@@ -195,18 +218,13 @@ fn run_cdp_session(port: u16, websocket_url: &str) -> Result<SessionExit, String
     if !is_loopback_websocket(websocket_url) {
         return Err("拒绝连接非本机 Codex 调试地址".into());
     }
-    let mut request = websocket_url
+    let request = websocket_url
         .into_client_request()
         .map_err(|error| error.to_string())?;
-    request.headers_mut().insert(
-        ORIGIN,
-        HeaderValue::from_str(&format!("http://127.0.0.1:{port}"))
-            .map_err(|error| error.to_string())?,
-    );
     let (mut socket, _) = connect(request).map_err(|error| error.to_string())?;
     set_read_timeout(&mut socket, READ_TIMEOUT)?;
-    install_bridge(&mut socket)?;
-    set_status(true, Some(port), "Codex 会话删除按钮已连接");
+    let health = install_bridge(&mut socket)?;
+    publish_health_status(port, &health);
     let mut last_injection = Instant::now();
 
     loop {
@@ -215,11 +233,16 @@ fn run_cdp_session(port: u16, websocket_url: &str) -> Result<SessionExit, String
             return Ok(SessionExit::Reconnect);
         }
         if last_injection.elapsed() >= REINJECT_INTERVAL {
-            send_command(
+            send_command_and_wait(
                 &mut socket,
                 "Runtime.evaluate",
-                json!({ "expression": rendered_injection_script() }),
+                json!({
+                    "expression": rendered_injection_script()?,
+                    "returnByValue": true,
+                }),
             )?;
+            let health = verify_injection_health(&mut socket)?;
+            publish_health_status(port, &health);
             last_injection = Instant::now();
         }
         match socket.read() {
@@ -248,29 +271,43 @@ fn set_read_timeout(
     }
 }
 
-fn install_bridge(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> Result<(), String> {
-    send_command(socket, "Runtime.enable", json!({}))?;
-    send_command(
+fn install_bridge(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+) -> Result<InjectionHealth, String> {
+    send_command_and_wait(socket, "Runtime.enable", json!({}))?;
+    send_command_and_wait(
         socket,
         "Runtime.removeBinding",
         json!({ "name": BINDING_NAME }),
     )?;
-    send_command(
+    send_command_and_wait(
         socket,
         "Runtime.addBinding",
         json!({ "name": BINDING_NAME }),
     )?;
-    let script = rendered_injection_script();
-    send_command(
+    let script = rendered_injection_script()?;
+    send_command_and_wait(
         socket,
         "Page.addScriptToEvaluateOnNewDocument",
         json!({ "source": script }),
     )?;
-    send_command(socket, "Runtime.evaluate", json!({ "expression": script }))
+    send_command_and_wait(
+        socket,
+        "Runtime.evaluate",
+        json!({ "expression": script, "returnByValue": true }),
+    )?;
+    verify_injection_health(socket)
 }
 
-fn rendered_injection_script() -> String {
-    INJECTION_TEMPLATE
+fn rendered_injection_script() -> Result<String, String> {
+    let settings = crate::platform::read_app_settings()?.session_enhancements;
+    Ok(rendered_injection_script_with_settings(&settings))
+}
+
+fn rendered_injection_script_with_settings(
+    settings: &crate::models::SessionEnhancementSettingsSnapshot,
+) -> String {
+    let delete_script = INJECTION_TEMPLATE
         .replace(
             "__CTB_OWNER_JSON__",
             &serde_json::to_string(OWNER).expect("static owner serializes"),
@@ -278,14 +315,63 @@ fn rendered_injection_script() -> String {
         .replace(
             "__CTB_BINDING_JSON__",
             &serde_json::to_string(BINDING_NAME).expect("static binding serializes"),
-        )
+        );
+    format!(
+        "window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ = {};\n{}\n{}",
+        serde_json::to_string(settings).expect("session enhancement settings serialize"),
+        delete_script,
+        SESSION_ENHANCEMENTS_TEMPLATE,
+    )
+}
+
+fn send_command_and_wait(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    let id = send_command(socket, method, params)?;
+    let deadline = Instant::now() + COMMAND_TIMEOUT;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(format!("等待 CDP 命令回执超时：{method}"));
+        }
+        match socket.read() {
+            Ok(Message::Text(text)) => {
+                let message: Value = serde_json::from_str(text.as_str())
+                    .map_err(|error| format!("解析 CDP 回执失败：{error}"))?;
+                if message.get("method").and_then(Value::as_str) == Some("Runtime.bindingCalled") {
+                    handle_cdp_message(socket, text.as_str())?;
+                    continue;
+                }
+                if message.get("id").and_then(Value::as_u64) != Some(id) {
+                    continue;
+                }
+                if let Some(error) = message.get("error") {
+                    return Err(format!("CDP 命令失败 {method}：{error}"));
+                }
+                let result = message.get("result").cloned().unwrap_or(Value::Null);
+                if let Some(exception) = result.get("exceptionDetails") {
+                    return Err(format!("CDP 页面执行失败 {method}：{exception}"));
+                }
+                return Ok(result);
+            }
+            Ok(Message::Ping(payload)) => socket
+                .send(Message::Pong(payload))
+                .map_err(|error| error.to_string())?,
+            Ok(Message::Close(_)) => return Err(format!("等待 CDP 回执时连接关闭：{method}")),
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(error))
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+            Err(error) => return Err(format!("读取 CDP 回执失败 {method}：{error}")),
+        }
+    }
 }
 
 fn send_command(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     method: &str,
     params: Value,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     let id = MESSAGE_ID.fetch_add(1, Ordering::Relaxed) + 1;
     socket
         .send(Message::Text(
@@ -293,7 +379,125 @@ fn send_command(
                 .to_string()
                 .into(),
         ))
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    Ok(id)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InjectionHealth {
+    ready: bool,
+    waiting_for_rows: bool,
+    eligible_rows: u64,
+    delete_buttons: u64,
+    more_buttons: u64,
+}
+
+fn verify_injection_health(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+) -> Result<InjectionHealth, String> {
+    let expression = format!(
+        "(() => ({{ deleteHealth: window.__codexTokenBarThreadDeleteHealth?.({}, {}), sessionHealth: window.__codexTokenBarSessionEnhancementsHealth?.(), expectedSessionRuntimeVersion: window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS_RUNTIME_VERSION__ }}))()",
+        serde_json::to_string(OWNER).expect("static owner serializes"),
+        serde_json::to_string(BINDING_NAME).expect("static binding serializes"),
+    );
+    let result = send_command_and_wait(
+        socket,
+        "Runtime.evaluate",
+        json!({ "expression": expression, "returnByValue": true }),
+    )?;
+    let value = result
+        .pointer("/result/value")
+        .ok_or_else(|| "CDP 会话增强健康检查没有返回页面值".to_string())?;
+    parse_injection_health(value)
+}
+
+fn parse_injection_health(value: &Value) -> Result<InjectionHealth, String> {
+    let delete = value
+        .get("deleteHealth")
+        .ok_or_else(|| "CDP 页面缺少删除桥健康结果".to_string())?;
+    let session = value
+        .get("sessionHealth")
+        .ok_or_else(|| "CDP 页面缺少会话增强健康结果".to_string())?;
+    let expected_runtime = value
+        .get("expectedSessionRuntimeVersion")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "CDP 页面缺少会话增强运行时版本".to_string())?;
+    let session_runtime = session
+        .get("runtimeVersion")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "CDP 会话增强运行时没有版本".to_string())?;
+    if session_runtime != expected_runtime {
+        return Err(format!(
+            "CDP 会话增强运行时版本不一致：{session_runtime} != {expected_runtime}"
+        ));
+    }
+    if delete
+        .get("sessionEnhancementsInstalled")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(format!("CDP 删除桥未确认会话增强：{delete}"));
+    }
+    let readiness = delete
+        .get("readiness")
+        .and_then(Value::as_str)
+        .unwrap_or("failed");
+    if !matches!(readiness, "ready" | "waitingForRows") {
+        return Err(format!("CDP 页面会话增强结构校验失败：{delete}"));
+    }
+    let eligible_rows = delete
+        .get("eligibleRowCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let delete_buttons = delete
+        .get("buttonCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let more_buttons = session
+        .get("moreButtonCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let session_settings = session.get("settings").unwrap_or(&Value::Null);
+    let expects_more = session_settings
+        .get("markdownExport")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || session_settings
+            .get("projectMove")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    if readiness == "ready" && eligible_rows > 0 {
+        let expected_more = if expects_more { eligible_rows } else { 0 };
+        if more_buttons != expected_more {
+            return Err(format!(
+                "CDP 会话更多按钮数量不一致：{more_buttons} != {expected_more}"
+            ));
+        }
+    }
+    Ok(InjectionHealth {
+        ready: readiness == "ready",
+        waiting_for_rows: readiness == "waitingForRows",
+        eligible_rows,
+        delete_buttons,
+        more_buttons,
+    })
+}
+
+fn publish_health_status(port: u16, health: &InjectionHealth) {
+    if health.ready {
+        set_status(
+            true,
+            Some(port),
+            format!(
+                "Codex 会话增强已连接，已验证 {} 个会话、{} 个删除入口、{} 个管理入口",
+                health.eligible_rows, health.delete_buttons, health.more_buttons
+            ),
+        );
+    } else if health.waiting_for_rows {
+        set_status(false, Some(port), "Codex 会话增强已加载，等待会话列表");
+    } else {
+        set_status(false, Some(port), "Codex 会话增强页面校验未就绪");
+    }
 }
 
 fn handle_cdp_message(
@@ -304,6 +508,9 @@ fn handle_cdp_message(
     if message.get("method").and_then(Value::as_str) != Some("Runtime.bindingCalled") {
         return Ok(());
     }
+    if message.pointer("/params/name").and_then(Value::as_str) != Some(BINDING_NAME) {
+        return Ok(());
+    }
     let Some(payload) = message
         .get("params")
         .and_then(|params| params.get("payload"))
@@ -311,35 +518,29 @@ fn handle_cdp_message(
     else {
         return Ok(());
     };
-    let request: DeleteBindingRequest = match serde_json::from_str(payload) {
+    let request: SessionEnhancementBindingRequest = match serde_json::from_str(payload) {
         Ok(request) => request,
-        Err(error) => return Err(format!("删除请求格式错误：{error}")),
+        Err(error) => return Err(format!("会话增强请求格式错误：{error}")),
     };
     if request.owner != OWNER {
         return Ok(());
     }
-    let result = match delete_thread(&request.thread_id) {
-        Ok(message) => DeleteBindingResult {
-            status: "deleted",
-            message,
-        },
-        Err(message) => DeleteBindingResult {
-            status: "failed",
-            message,
-        },
-    };
+    let result = session_enhancement_result(&request);
     let expression = resolve_expression(&request.owner, &request.id, &result)?;
-    send_command(
-        socket,
-        "Runtime.evaluate",
-        json!({ "expression": expression }),
-    )
+    let context_id = message
+        .pointer("/params/executionContextId")
+        .and_then(Value::as_u64);
+    let mut params = json!({ "expression": expression });
+    if let Some(context_id) = context_id {
+        params["contextId"] = json!(context_id);
+    }
+    send_command(socket, "Runtime.evaluate", params).map(|_| ())
 }
 
 fn resolve_expression(
     owner: &str,
     request_id: &str,
-    result: &DeleteBindingResult,
+    result: &SessionEnhancementBindingResult,
 ) -> Result<String, String> {
     Ok(format!(
         "window.__codexTokenBarThreadDeleteResolve({}, {}, {})",
@@ -347,6 +548,80 @@ fn resolve_expression(
         serde_json::to_string(request_id).map_err(|error| error.to_string())?,
         serde_json::to_string(result).map_err(|error| error.to_string())?,
     ))
+}
+
+fn session_enhancement_result(
+    request: &SessionEnhancementBindingRequest,
+) -> SessionEnhancementBindingResult {
+    let result = (|| {
+        let settings = crate::platform::read_app_settings()?.session_enhancements;
+        let codex_home = crate::platform::default_codex_home();
+        match request.action {
+            SessionEnhancementBindingAction::Delete => {
+                if !settings.session_delete {
+                    return Err("会话删除未启用".into());
+                }
+                delete_thread(&request.thread_id).map(|message| SessionEnhancementBindingResult {
+                    status: "deleted",
+                    message,
+                    filename: None,
+                    markdown: None,
+                    previous_cwd: None,
+                    target_cwd: None,
+                })
+            }
+            SessionEnhancementBindingAction::ExportMarkdown => {
+                if !settings.markdown_export {
+                    return Err("Markdown 导出未启用".into());
+                }
+                crate::core::session_enhancements::export_markdown(
+                    &codex_home,
+                    &request.thread_id,
+                    &request.title,
+                )
+                .map(|result| SessionEnhancementBindingResult {
+                    status: "exported",
+                    message: result.message,
+                    filename: Some(result.filename),
+                    markdown: Some(result.markdown),
+                    previous_cwd: None,
+                    target_cwd: None,
+                })
+            }
+            SessionEnhancementBindingAction::MoveThreadWorkspace => {
+                if !settings.project_move {
+                    return Err("会话项目移动未启用".into());
+                }
+                let target = request
+                    .target_cwd
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|target| !target.is_empty())
+                    .ok_or_else(|| "目标项目目录不能为空".to_string())?;
+                crate::core::session_enhancements::move_thread_workspace(
+                    &codex_home,
+                    &request.thread_id,
+                    target,
+                )
+                .map(|result| SessionEnhancementBindingResult {
+                    status: "moved",
+                    message: result.message,
+                    filename: None,
+                    markdown: None,
+                    previous_cwd: Some(result.previous_cwd),
+                    target_cwd: Some(result.target_cwd),
+                })
+            }
+        }
+    })();
+    result.unwrap_or_else(|message| SessionEnhancementBindingResult {
+        status: "failed",
+        message,
+        filename: None,
+        markdown: None,
+        previous_cwd: None,
+        target_cwd: None,
+    })
 }
 
 fn delete_thread(thread_id: &str) -> Result<String, String> {
@@ -465,11 +740,76 @@ mod tests {
 
     #[test]
     fn injection_template_is_rendered_for_the_tauri_owner() {
-        let script = rendered_injection_script();
+        let script = rendered_injection_script_with_settings(
+            &crate::models::SessionEnhancementSettingsSnapshot::default(),
+        );
         assert!(script.contains("const owner = \"tauri\";"));
         assert!(script.contains("const bindingName = \"codexTokenBarDeleteTauri\";"));
+        assert!(script.contains("__codexTokenBarSessionEnhancementsHealth"));
+        assert!(script.contains("\"markdownExport\":true"));
         assert!(!script.contains("__CTB_OWNER_JSON__"));
         assert!(!script.contains("__CTB_BINDING_JSON__"));
+    }
+
+    #[test]
+    fn binding_request_supports_every_session_enhancement_action() {
+        let export: SessionEnhancementBindingRequest = serde_json::from_str(
+            r#"{"id":"1","owner":"tauri","action":"exportMarkdown","threadId":"019f5a7c-1234-7abc-8def-0123456789ab","title":"测试"}"#,
+        )
+        .unwrap();
+        let moved: SessionEnhancementBindingRequest = serde_json::from_str(
+            r#"{"id":"2","owner":"tauri","action":"moveThreadWorkspace","threadId":"019f5a7c-1234-7abc-8def-0123456789ab","targetCwd":"/tmp/project"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            export.action,
+            SessionEnhancementBindingAction::ExportMarkdown
+        );
+        assert_eq!(
+            moved.action,
+            SessionEnhancementBindingAction::MoveThreadWorkspace
+        );
+        assert_eq!(moved.target_cwd.as_deref(), Some("/tmp/project"));
+    }
+
+    #[test]
+    fn combined_page_health_requires_matching_runtime_and_more_button_counts() {
+        let value = json!({
+            "expectedSessionRuntimeVersion": 3,
+            "deleteHealth": {
+                "readiness": "ready",
+                "sessionEnhancementsInstalled": true,
+                "eligibleRowCount": 2,
+                "buttonCount": 2
+            },
+            "sessionHealth": {
+                "runtimeVersion": 3,
+                "moreButtonCount": 2,
+                "settings": { "markdownExport": true, "projectMove": true }
+            }
+        });
+        assert_eq!(
+            parse_injection_health(&value).unwrap(),
+            InjectionHealth {
+                ready: true,
+                waiting_for_rows: false,
+                eligible_rows: 2,
+                delete_buttons: 2,
+                more_buttons: 2,
+            }
+        );
+
+        let mut stale = value.clone();
+        stale["sessionHealth"]["runtimeVersion"] = json!(2);
+        assert!(parse_injection_health(&stale)
+            .unwrap_err()
+            .contains("版本不一致"));
+
+        let mut missing = value;
+        missing["sessionHealth"]["moreButtonCount"] = json!(1);
+        assert!(parse_injection_health(&missing)
+            .unwrap_err()
+            .contains("数量不一致"));
     }
 
     #[test]

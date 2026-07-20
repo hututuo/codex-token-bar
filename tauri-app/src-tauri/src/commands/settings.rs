@@ -2,7 +2,7 @@ use crate::core::startup_trace;
 use crate::models::{
     AppSettingsSnapshot, AutoResumeSettingsSnapshot, AutostartStatus,
     DisplaySurfaceSettingsSnapshot, FloatingWindowPositionSnapshot,
-    FloatingWindowSettingsSnapshot,
+    FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
 };
 use super::window_auth::require_window_label;
 use crate::platform;
@@ -157,6 +157,17 @@ pub fn save_auto_resume_settings(
     require_window_label(&window, "save_auto_resume_settings")?;
     let saved = platform::save_auto_resume_settings(settings)?;
     registry.update_settings(saved.auto_resume.clone());
+    Ok(saved)
+}
+
+#[tauri::command]
+pub fn save_session_enhancement_settings(
+    window: tauri::WebviewWindow,
+    settings: SessionEnhancementSettingsSnapshot,
+) -> Result<AppSettingsSnapshot, String> {
+    require_window_label(&window, "save_session_enhancement_settings")?;
+    let saved = platform::save_session_enhancement_settings(settings)?;
+    crate::core::thread_delete::request_reconnect();
     Ok(saved)
 }
 

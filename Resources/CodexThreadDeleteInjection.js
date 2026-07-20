@@ -81,13 +81,13 @@
       return new Promise((resolve, reject) => {
         const nativeBinding = window[bindingName];
         if (typeof nativeBinding !== "function") {
-          reject(new Error("删除桥接暂不可用"));
+          reject(new Error("会话增强桥接暂不可用"));
           return;
         }
         const requestId = `${owner}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const timer = window.setTimeout(() => {
           callbacks.delete(requestId);
-          reject(new Error("删除请求超时"));
+          reject(new Error("会话增强请求超时"));
         }, bridgeTimeoutMs);
         callbacks.set(requestId, {
           resolve(result) {
@@ -121,7 +121,7 @@
   state.callDelete = async (payload) => {
     const bridges = [...state.bridges.values()]
       .sort((left, right) => right.rank - left.rank);
-    let lastError = new Error("没有可用的删除桥接");
+    let lastError = new Error("没有可用的会话增强桥接");
     for (const candidate of bridges) {
       try {
         return await candidate.invoke(payload);
@@ -507,7 +507,11 @@
     let sessionEnhancementError = null;
     try {
       const sessionHealth = window.__codexTokenBarSessionEnhancementsHealth?.();
-      sessionEnhancementsInstalled = sessionHealth?.runtimeVersion === 1;
+      const expectedSessionRuntimeVersion = Number(
+        window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS_RUNTIME_VERSION__,
+      );
+      sessionEnhancementsInstalled = Number.isInteger(expectedSessionRuntimeVersion)
+        && sessionHealth?.runtimeVersion === expectedSessionRuntimeVersion;
     } catch (error) {
       sessionEnhancementError = error?.message || String(error);
     }

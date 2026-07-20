@@ -19,6 +19,13 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
+    "license": "AGPL-3.0-only",
+    "licenseFile": "../../LICENSE",
+    "resources": {
+      "../../LICENSE": "OpenSourceLicenses/AGPL-3.0.txt",
+      "../../LICENSES/CodexTokenBar-MIT.txt": "OpenSourceLicenses/CodexTokenBar-MIT.txt",
+      "../../OPEN_SOURCE_NOTICES.md": "OPEN_SOURCE_NOTICES.md"
+    },
     "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",

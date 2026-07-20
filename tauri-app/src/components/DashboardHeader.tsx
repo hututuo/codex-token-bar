@@ -5,8 +5,9 @@ import {
   resolveAccountDisplayName,
   shouldCommitDisplayNameOnKey,
 } from "./dashboardHeader/model";
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useState, type KeyboardEvent } from "react";
 import type { ThreadDeleteBridgeStatus } from "../api/threadDeleteClient";
+import type { AppSettingsCategory } from "./settings/AppSettingsDialog";
 
 interface DashboardHeaderProps {
   account: AccountInfo;
@@ -21,9 +22,8 @@ interface DashboardHeaderProps {
   onExportCsv: () => void;
   onExportPng: () => void;
   onOpenProviderRepair: () => void;
-  onOpenSettings: () => void;
+  onOpenSettings: (category?: AppSettingsCategory) => void;
   onRefresh: () => Promise<void>;
-  onReconnectThreadDelete: () => Promise<void>;
   onToggleAutostart: () => void;
   refreshing: boolean;
   appUpdateState: {
@@ -31,6 +31,7 @@ interface DashboardHeaderProps {
     message: string;
   };
   threadDeleteBridgeStatus: ThreadDeleteBridgeStatus;
+  autoResumeEnabled: boolean;
 }
 
 export function DashboardHeader({
@@ -48,32 +49,19 @@ export function DashboardHeader({
   onOpenProviderRepair,
   onOpenSettings,
   onRefresh,
-  onReconnectThreadDelete,
   onToggleAutostart,
   refreshing,
   appUpdateState,
   threadDeleteBridgeStatus,
+  autoResumeEnabled,
 }: DashboardHeaderProps) {
   const [editingPath, setEditingPath] = useState(false);
   const [editingDisplayName, setEditingDisplayName] = useState(false);
-  const [threadDeleteConfirmationOpen, setThreadDeleteConfirmationOpen] = useState(false);
-  const threadDeleteTriggerRef = useRef<HTMLButtonElement>(null);
-  const threadDeleteDialogRef = useRef<HTMLDivElement>(null);
-  const threadDeleteCancelRef = useRef<HTMLButtonElement>(null);
   const autostartHelpId = useId();
-  const threadDeleteHelpId = useId();
-  const threadDeleteDialogTitleId = useId();
-  const threadDeleteDialogDescriptionId = useId();
   const resolvedDisplayName = resolveAccountDisplayName(
     account.displayName,
     customAccountDisplayName,
   );
-  const threadDeleteActionLabel = threadDeleteBridgeStatus.connected
-    ? "侧栏删除已连接"
-    : threadDeleteBridgeStatus.debugPort === null ? "启用侧栏删除" : "重连侧栏删除";
-  const threadDeleteActionDescription = threadDeleteBridgeStatus.debugPort === null
-    ? "重启 Codex 并启用侧栏删除按钮"
-    : "重新连接 Codex 侧栏删除按钮";
   const [displayNameDraft, setDisplayNameDraft] = useState(resolvedDisplayName);
 
   useEffect(() => {
@@ -81,36 +69,6 @@ export function DashboardHeader({
       setDisplayNameDraft(resolvedDisplayName);
     }
   }, [editingDisplayName, resolvedDisplayName]);
-
-  useEffect(() => {
-    if (threadDeleteConfirmationOpen) {
-      threadDeleteCancelRef.current?.focus();
-    }
-  }, [threadDeleteConfirmationOpen]);
-
-  const closeThreadDeleteConfirmation = () => {
-    setThreadDeleteConfirmationOpen(false);
-    window.requestAnimationFrame(() => threadDeleteTriggerRef.current?.focus());
-  };
-
-  const handleThreadDeleteDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeThreadDeleteConfirmation();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const buttons = [...(threadDeleteDialogRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
-    if (buttons.length === 0) return;
-    const currentIndex = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    if (event.shiftKey && currentIndex <= 0) {
-      event.preventDefault();
-      buttons.at(-1)?.focus();
-    } else if (!event.shiftKey && currentIndex === buttons.length - 1) {
-      event.preventDefault();
-      buttons[0]?.focus();
-    }
-  };
 
   const timeLabel = new Intl.DateTimeFormat("zh-CN", {
     hour: "2-digit",
@@ -252,32 +210,30 @@ export function DashboardHeader({
               会话消失修复
             </button>
             <button
-              aria-describedby={threadDeleteHelpId}
-              aria-label={threadDeleteActionLabel}
+              aria-label="会话增强"
               className={threadDeleteBridgeStatus.connected
                 ? "toolbar-button thread-delete-action thread-delete-action--connected"
                 : "toolbar-button thread-delete-action"}
-              onClick={() => {
-                if (threadDeleteBridgeStatus.debugPort === null) {
-                  setThreadDeleteConfirmationOpen(true);
-                } else {
-                  void onReconnectThreadDelete();
-                }
-              }}
-              ref={threadDeleteTriggerRef}
+              onClick={() => onOpenSettings("session")}
               title={threadDeleteBridgeStatus.message}
               type="button"
             >
               <span aria-hidden="true" className="thread-delete-action-dot" />
-              {threadDeleteActionLabel}
+              会话增强
             </button>
-            <span className="visually-hidden" id={threadDeleteHelpId}>
-              {threadDeleteActionDescription}。{threadDeleteBridgeStatus.message}
-            </span>
+            <button
+              aria-pressed={autoResumeEnabled}
+              className={autoResumeEnabled ? "toolbar-button is-active" : "toolbar-button"}
+              onClick={() => onOpenSettings("automation")}
+              title={autoResumeEnabled ? "自动续跑已开启" : "管理定时、额度恢复和中断续跑"}
+              type="button"
+            >
+              自动续跑
+            </button>
           </span>
           <span aria-hidden="true" className="header-action-divider" />
           <span className="header-action-group header-action-group--export">
-            <button className="toolbar-button toolbar-button--settings" onClick={onOpenSettings} type="button">
+            <button className="toolbar-button toolbar-button--settings" onClick={() => onOpenSettings("general")} type="button">
               设置
             </button>
             <button className="toolbar-button" onClick={onExportCsv} type="button">
@@ -296,45 +252,6 @@ export function DashboardHeader({
           onCodexHomeReset={onCodexHomeReset}
           onDone={() => setEditingPath(false)}
         />
-      ) : null}
-      {threadDeleteConfirmationOpen ? (
-        <div
-          className="thread-delete-confirmation-overlay"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) closeThreadDeleteConfirmation();
-          }}
-        >
-          <div
-            aria-describedby={threadDeleteDialogDescriptionId}
-            aria-labelledby={threadDeleteDialogTitleId}
-            aria-modal="true"
-            className="thread-delete-confirmation-dialog"
-            onKeyDown={handleThreadDeleteDialogKeyDown}
-            ref={threadDeleteDialogRef}
-            role="alertdialog"
-          >
-            <h2 id={threadDeleteDialogTitleId}>重启 Codex 并启用侧栏删除按钮？</h2>
-            <p id={threadDeleteDialogDescriptionId}>
-              Codex 会关闭后立即以仅限本机的调试端口重新打开。当前任务不会被删除，但界面会短暂中断。
-            </p>
-            <div className="thread-delete-confirmation-actions">
-              <button onClick={closeThreadDeleteConfirmation} ref={threadDeleteCancelRef} type="button">
-                取消
-              </button>
-              <button
-                className="thread-delete-confirmation-primary"
-                onClick={() => {
-                  setThreadDeleteConfirmationOpen(false);
-                  window.requestAnimationFrame(() => threadDeleteTriggerRef.current?.focus());
-                  void onReconnectThreadDelete();
-                }}
-                type="button"
-              >
-                重启并启用
-              </button>
-            </div>
-          </div>
-        </div>
       ) : null}
     </header>
   );

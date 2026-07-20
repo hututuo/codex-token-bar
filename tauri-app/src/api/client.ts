@@ -38,6 +38,7 @@ export {
   saveFloatingPosition,
   saveFloatingSettings,
   saveQuotaRefreshIntervalMs,
+  saveSessionEnhancementSettings,
   saveSetupGuideCompleted,
   setAutostartEnabled,
 } from "./settingsClient";

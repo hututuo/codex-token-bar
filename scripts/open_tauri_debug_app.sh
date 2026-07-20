@@ -20,7 +20,7 @@ Usage: scripts/open_tauri_debug_app.sh [--build]
 Builds and/or opens the local Tauri debug .app for visual testing.
 
 Options:
-  --build   Run `npm run tauri -- build --debug --bundles app` before opening.
+  --build   Build the debug app without release updater artifacts, then open it.
 USAGE
 }
 
@@ -181,7 +181,8 @@ if [[ "$BUILD_FIRST" == "1" ]]; then
   stop_other_debug_apps
   wait_for_debug_apps_to_stop
   stop_legacy_built_app
-  (cd "$TAURI_DIR" && npm run tauri -- build --debug --bundles app)
+  (cd "$TAURI_DIR" && npm run tauri -- build --debug --bundles app \
+    --config '{"bundle":{"createUpdaterArtifacts":false}}')
   RUN_APP_PATH="$(stage_runnable_app)"
 else
   stop_other_debug_apps

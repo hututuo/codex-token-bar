@@ -105,6 +105,7 @@ function headerProps(overrides = {}) {
       displayName: "Official User",
       planLabel: "Pro",
     },
+    autoResumeEnabled: false,
     appUpdateState: {
       kind: "idle",
       message: "",
@@ -128,7 +129,6 @@ function headerProps(overrides = {}) {
     onExportCsv: () => {},
     onExportPng: () => {},
     onRefresh: async () => {},
-    onReconnectThreadDelete: async () => {},
     onToggleAutostart: () => {},
     refreshing: false,
     threadDeleteBridgeStatus: {

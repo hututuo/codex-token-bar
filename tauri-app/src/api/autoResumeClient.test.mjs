@@ -40,6 +40,7 @@ test("auto resume client uses the exact native command contract", async () => {
     read_auto_resume_status: status,
     run_auto_resume_now: { ...status, state: "running", isRunning: true, revision: 2 },
     cancel_auto_resume_run: { ...status, state: "ready", revision: 3 },
+    save_session_enhancement_settings: { sessionEnhancements: { markdownExport: true } },
   };
 
   Object.defineProperty(globalThis, "window", {
@@ -65,12 +66,14 @@ test("auto resume client uses the exact native command contract", async () => {
         readAutoResumeStatus,
         runAutoResumeNow,
         saveAutoResumeSettings,
+        saveSessionEnhancementSettings,
       } = await load("/src/api/settingsClient.ts");
       await saveAutoResumeSettings(settings);
       await listAutoResumeThreads();
       await readAutoResumeStatus();
       await runAutoResumeNow();
       await cancelAutoResumeRun();
+      await saveSessionEnhancementSettings({ markdownExport: true });
     });
 
     assert.deepEqual(calls, [
@@ -79,6 +82,7 @@ test("auto resume client uses the exact native command contract", async () => {
       { command: "read_auto_resume_status", args: {} },
       { command: "run_auto_resume_now", args: {} },
       { command: "cancel_auto_resume_run", args: {} },
+      { command: "save_session_enhancement_settings", args: { settings: { markdownExport: true } } },
     ]);
   } finally {
     if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);

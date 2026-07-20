@@ -83,6 +83,7 @@
     state.openMenuTrigger = null;
   }
   window[stateKey] = state;
+  window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS_RUNTIME_VERSION__ = runtimeVersion;
 
   function canonicalThreadId(value) {
     const match = /^(?:local:)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(String(value || "").trim());

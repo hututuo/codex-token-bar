@@ -43,9 +43,28 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), AtomicWr
     write_atomically_with_hook(path, bytes, |_, _| Ok(()))
 }
 
+pub(crate) fn write_atomically_streaming(
+    path: &Path,
+    write_content: impl FnMut(&mut File) -> Result<(), String>,
+) -> Result<(), AtomicWriteError> {
+    write_atomically_streaming_with_hook(path, write_content, |_, _| Ok(()))
+}
+
 pub(crate) fn write_atomically_with_hook(
     path: &Path,
     bytes: &[u8],
+    hook: impl FnMut(AtomicWriteStage, &Path) -> Result<(), String>,
+) -> Result<(), AtomicWriteError> {
+    write_atomically_streaming_with_hook(
+        path,
+        |file| file.write_all(bytes).map_err(|error| error.to_string()),
+        hook,
+    )
+}
+
+fn write_atomically_streaming_with_hook(
+    path: &Path,
+    mut write_content: impl FnMut(&mut File) -> Result<(), String>,
     mut hook: impl FnMut(AtomicWriteStage, &Path) -> Result<(), String>,
 ) -> Result<(), AtomicWriteError> {
     let parent = path
@@ -75,7 +94,7 @@ pub(crate) fn write_atomically_with_hook(
         let precommit = (|| {
             hook(AtomicWriteStage::Write, &temp)
                 .map_err(|error| diagnostic(AtomicWriteStage::Write, &temp, error))?;
-            file.write_all(bytes)
+            write_content(&mut file)
                 .map_err(|error| diagnostic(AtomicWriteStage::Write, &temp, error))?;
             hook(AtomicWriteStage::FileSync, &temp)
                 .map_err(|error| diagnostic(AtomicWriteStage::FileSync, &temp, error))?;

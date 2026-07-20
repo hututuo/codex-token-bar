@@ -22,12 +22,15 @@ of the following project:
   - `crates/codex-plus-data/src/markdown.rs`
   - `crates/codex-plus-data/src/storage.rs`
 
-Codex Token Bar modifies this work to use a Swift-native local CDP bridge,
-its existing official `codex delete --force` deletion path, its own settings
-UI, local rollout validation, atomic file replacement, and current Codex
-Desktop selectors. The adapted capabilities cover Markdown export, project
-movement, plain-text paste handling, thread-ID badges, centered conversation
-width, and per-thread scroll restoration.
+Codex Token Bar modifies this work to use native local CDP bridges in both the
+Swift and Tauri/Rust implementations, its existing official
+`codex delete --force` deletion path, its own settings UI, local rollout
+validation, atomic file replacement, and current Codex Desktop selectors.
+The adapted capabilities cover Markdown export, project movement, plain-text
+paste handling, thread-ID badges, centered conversation width, and per-thread
+scroll restoration. The Rust implementation streams Markdown reads and uses a
+SQLite transaction plus an atomic rollout replacement and rollback copy for
+project movement.
 
 The combined work on this branch is distributed under GNU AGPL version 3.
 The complete corresponding source is the source tree containing this notice.

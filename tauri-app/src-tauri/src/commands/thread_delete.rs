@@ -24,5 +24,5 @@ pub async fn enable_thread_delete_bridge(
     require_window_label(&window, "enable_thread_delete_bridge")?;
     tauri::async_runtime::spawn_blocking(thread_delete::enable_with_codex_restart)
         .await
-        .map_err(|error| format!("启用 Codex 删除按钮任务失败：{error}"))?
+        .map_err(|error| format!("启用 Codex 会话增强任务失败：{error}"))?
 }

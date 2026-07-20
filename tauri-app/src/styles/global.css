@@ -3260,6 +3260,9 @@ button.quota-side-card:hover {
 .app-setting-choice button,
 .app-settings-action,
 .app-settings-content-row button {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
   min-height: 30px;
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -3269,6 +3272,7 @@ button.quota-side-card:hover {
   font-size: 10.5px;
   font-weight: 680;
   padding: 0 10px;
+  text-decoration: none;
 }
 
 .app-setting-choice button.is-active {

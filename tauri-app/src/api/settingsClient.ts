@@ -7,6 +7,7 @@ import type {
   DisplaySurfaceSettings,
   FloatingWindowPosition,
   FloatingWindowSettings,
+  SessionEnhancementSettings,
 } from "../types/dashboard";
 import { fallbackAutostartStatus } from "./fallback";
 import { callCommand, callCommandOptional, callCommandStrict } from "./command";
@@ -41,6 +42,10 @@ export function saveSetupGuideCompleted(completed: boolean): Promise<AppSettings
 
 export function saveAutoResumeSettings(settings: AutoResumeSettings): Promise<AppSettingsSnapshot> {
   return callCommandStrict<AppSettingsSnapshot>("save_auto_resume_settings", { settings });
+}
+
+export function saveSessionEnhancementSettings(settings: SessionEnhancementSettings): Promise<AppSettingsSnapshot> {
+  return callCommandStrict<AppSettingsSnapshot>("save_session_enhancement_settings", { settings });
 }
 
 export function listAutoResumeThreads(): Promise<AutoResumeThreadOption[]> {

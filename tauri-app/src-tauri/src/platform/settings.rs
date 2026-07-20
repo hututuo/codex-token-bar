@@ -135,6 +135,14 @@ pub fn save_auto_resume_settings(
     })
 }
 
+pub fn save_session_enhancement_settings(
+    session_enhancements: crate::models::SessionEnhancementSettingsSnapshot,
+) -> Result<AppSettingsSnapshot, String> {
+    mutate_app_settings(|settings| {
+        settings.session_enhancements = sanitize_session_enhancement_settings(session_enhancements);
+    })
+}
+
 pub fn save_custom_account_display_name(
     custom_account_display_name: String,
 ) -> Result<AppSettingsSnapshot, String> {
@@ -2307,7 +2315,16 @@ fn sanitize_app_settings(mut settings: AppSettingsSnapshot) -> AppSettingsSnapsh
         sanitize_quota_refresh_interval_ms(settings.quota_refresh_interval_ms);
     settings.floating_window = sanitize_floating_settings(settings.floating_window);
     settings.floating_position = sanitize_floating_position(settings.floating_position);
+    settings.session_enhancements =
+        sanitize_session_enhancement_settings(settings.session_enhancements);
     settings.auto_resume = sanitize_auto_resume_settings(settings.auto_resume);
+    settings
+}
+
+fn sanitize_session_enhancement_settings(
+    mut settings: crate::models::SessionEnhancementSettingsSnapshot,
+) -> crate::models::SessionEnhancementSettingsSnapshot {
+    settings.conversation_view_max_width = settings.conversation_view_max_width.clamp(320, 4_000);
     settings
 }
 
@@ -2502,6 +2519,25 @@ mod tests {
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn session_enhancement_settings_keep_safe_defaults_and_clamp_width() {
+        let defaults: AppSettingsSnapshot = serde_json::from_str("{}").unwrap();
+        assert!(defaults.session_enhancements.session_delete);
+        assert!(defaults.session_enhancements.markdown_export);
+        assert!(defaults.session_enhancements.project_move);
+        assert!(defaults.session_enhancements.thread_scroll_restore);
+
+        let sanitized = sanitize_session_enhancement_settings(
+            crate::models::SessionEnhancementSettingsSnapshot {
+                paste_fix: true,
+                conversation_view_max_width: 99_999,
+                ..crate::models::SessionEnhancementSettingsSnapshot::default()
+            },
+        );
+        assert!(sanitized.paste_fix);
+        assert_eq!(sanitized.conversation_view_max_width, 4_000);
+    }
 
     #[test]
     fn auto_resume_settings_fail_closed_without_target_and_clamp_guards() {

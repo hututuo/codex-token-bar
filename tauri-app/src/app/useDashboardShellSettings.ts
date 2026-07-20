@@ -9,6 +9,7 @@ import {
   saveCustomAccountDisplayName,
   saveFloatingSettings,
   saveQuotaRefreshIntervalMs,
+  saveSessionEnhancementSettings,
   saveSetupGuideCompleted,
 } from "../api/client";
 import {
@@ -27,6 +28,7 @@ import type {
   FloatingUnreadEffect,
   FloatingWindowSettings,
   PlatformCapabilities,
+  SessionEnhancementSettings,
 } from "../types/dashboard";
 import {
   DEFAULT_QUOTA_REFRESH_INTERVAL_MS,
@@ -37,6 +39,10 @@ import {
   DEFAULT_AUTO_RESUME_STATUS,
   sanitizeAutoResumeSettings,
 } from "../settings/autoResume";
+import {
+  DEFAULT_SESSION_ENHANCEMENTS,
+  sanitizeSessionEnhancements,
+} from "../settings/sessionEnhancements";
 import { useAutostartSettings } from "./useAutostartSettings";
 import { useDisplaySurfaceSettings } from "./useDisplaySurfaceSettings";
 
@@ -55,6 +61,7 @@ export interface DashboardShellSettingsState {
   autoResumeSettings: AutoResumeSettings;
   autoResumeStatus: AutoResumeRuntimeStatus;
   autoResumeThreads: AutoResumeThreadOption[];
+  sessionEnhancements: SessionEnhancementSettings;
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
   floatingVisible: boolean;
@@ -66,6 +73,7 @@ export interface DashboardShellSettingsState {
   refreshAutoResume: () => Promise<void>;
   runAutoResume: () => Promise<void>;
   saveAutoResume: (settings: AutoResumeSettings) => Promise<void>;
+  saveSessionEnhancements: (settings: SessionEnhancementSettings) => Promise<void>;
   toggleAutostart: () => void;
   toggleLiveRate: () => void;
   toggleFloatingWindow: () => Promise<void>;
@@ -87,6 +95,7 @@ export function useDashboardShellSettings({
 }: DashboardShellSettingsOptions): DashboardShellSettingsState {
   const [floatingSettings, setFloatingSettings] = useState(DEFAULT_FLOATING_SETTINGS);
   const [autoResumeSettings, setAutoResumeSettings] = useState(DEFAULT_AUTO_RESUME_SETTINGS);
+  const [sessionEnhancements, setSessionEnhancements] = useState(DEFAULT_SESSION_ENHANCEMENTS);
   const [autoResumeStatus, setAutoResumeStatus] = useState(DEFAULT_AUTO_RESUME_STATUS);
   const [autoResumeThreads, setAutoResumeThreads] = useState<AutoResumeThreadOption[]>([]);
   const [autoResumeLoading, setAutoResumeLoading] = useState(false);
@@ -120,6 +129,7 @@ export function useDashboardShellSettings({
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
       setFloatingSettings(sanitizeFloatingSettings(settings.floatingWindow));
       setAutoResumeSettings(sanitizeAutoResumeSettings(settings.autoResume));
+      setSessionEnhancements(sanitizeSessionEnhancements(settings.sessionEnhancements));
       applyDisplaySurfaces(settings.displaySurfaces);
       setShowSetupGuide(!settings.setupGuideCompleted);
     });
@@ -186,7 +196,10 @@ export function useDashboardShellSettings({
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void desktopPlatform.onAppSettingsChanged((settings) => {
-      if (!disposed) setAutoResumeSettings(sanitizeAutoResumeSettings(settings.autoResume));
+      if (!disposed) {
+        setAutoResumeSettings(sanitizeAutoResumeSettings(settings.autoResume));
+        setSessionEnhancements(sanitizeSessionEnhancements(settings.sessionEnhancements));
+      }
     }).then((listener) => {
       if (disposed) listener();
       else unlisten = listener;
@@ -280,6 +293,20 @@ export function useDashboardShellSettings({
     }
   }
 
+  async function saveSessionEnhancements(settings: SessionEnhancementSettings) {
+    const next = sanitizeSessionEnhancements(settings);
+    setSessionEnhancements(next);
+    try {
+      const saved = await saveSessionEnhancementSettings(next);
+      setSessionEnhancements(sanitizeSessionEnhancements(saved.sessionEnhancements));
+      void desktopPlatform.publishAppSettings(saved);
+    } catch (error) {
+      const current = await readAppSettings().catch(() => null);
+      if (current) setSessionEnhancements(sanitizeSessionEnhancements(current.sessionEnhancements));
+      throw error;
+    }
+  }
+
   async function runAutoResume() {
     setAutoResumeRunning(true);
     setAutoResumeError(null);
@@ -318,6 +345,7 @@ export function useDashboardShellSettings({
     autoResumeSettings,
     autoResumeStatus,
     autoResumeThreads,
+    sessionEnhancements,
     displaySurfaces,
     floatingSettings,
     floatingVisible,
@@ -329,6 +357,7 @@ export function useDashboardShellSettings({
     refreshAutoResume,
     runAutoResume,
     saveAutoResume,
+    saveSessionEnhancements,
     toggleAutostart,
     toggleLiveRate,
     toggleFloatingWindow,

@@ -96,6 +96,11 @@ test("session more menu exports real Markdown through the native bridge", async 
   window.eval(renderedScript({ sessionDelete: false, projectMove: false }));
   const more = window.document.querySelector('[data-codex-token-bar-session-more="true"]');
   assert.ok(more);
+  assert.equal(
+    window.__codexTokenBarThreadDeleteHealth("swift", "codexTokenBarDeleteSwift")
+      .sessionEnhancementsInstalled,
+    true,
+  );
   more.click();
   const exportItem = [...window.document.querySelectorAll(".codex-token-bar-session-menu button")]
     .find((button) => button.textContent.includes("导出"));

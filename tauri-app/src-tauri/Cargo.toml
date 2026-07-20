@@ -3,6 +3,7 @@ name = "codex-token-bar"
 version = "0.7.3"
 description = "Cross-platform Codex Token Bar for Windows"
 authors = ["Codex Token Bar"]
+license = "AGPL-3.0-only"
 edition = "2021"
 
 [lib]

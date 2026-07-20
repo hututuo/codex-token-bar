@@ -41,7 +41,19 @@ export interface AppSettingsSnapshot {
   floatingPosition: FloatingWindowPosition | null;
   displaySurfaces: DisplaySurfaceSettings;
   setupGuideCompleted: boolean;
+  sessionEnhancements: SessionEnhancementSettings;
   autoResume: AutoResumeSettings;
+}
+
+export interface SessionEnhancementSettings {
+  sessionDelete: boolean;
+  markdownExport: boolean;
+  pasteFix: boolean;
+  projectMove: boolean;
+  threadIDBadge: boolean;
+  conversationView: boolean;
+  conversationViewMaxWidth: number;
+  threadScrollRestore: boolean;
 }
 
 export type AutoResumeScheduleMode = "off" | "interval" | "daily";

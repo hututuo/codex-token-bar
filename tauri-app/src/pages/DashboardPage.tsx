@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
-import { AppSettingsDialog } from "../components/settings/AppSettingsDialog";
+import { AppSettingsDialog, type AppSettingsCategory } from "../components/settings/AppSettingsDialog";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import type {
   AutostartStatus,
@@ -16,6 +16,7 @@ import type {
   LiveRateSnapshot,
   LiveThreadOption,
   PlatformCapabilities,
+  SessionEnhancementSettings,
   ProviderRepairSnapshot,
 } from "../types/dashboard";
 import { DashboardAnalyticsSection } from "./dashboard/DashboardAnalyticsSection";
@@ -41,6 +42,7 @@ interface DashboardPageProps {
   autoResumeSettings: AutoResumeSettings;
   autoResumeStatus: AutoResumeRuntimeStatus;
   autoResumeThreads: AutoResumeThreadOption[];
+  sessionEnhancements: SessionEnhancementSettings;
   codexHome: CodexHomeStatus;
   dashboard: DashboardSnapshot;
   displaySurfaces: DisplaySurfaceSettings;
@@ -76,6 +78,7 @@ interface DashboardPageProps {
   onRefreshAutoResume: () => Promise<void>;
   onRunAutoResume: () => Promise<void>;
   onSaveAutoResume: (settings: AutoResumeSettings) => Promise<void>;
+  onSaveSessionEnhancements: (settings: SessionEnhancementSettings) => Promise<void>;
   onReconnectThreadDelete: () => Promise<void>;
   onToggleAutostart: () => void;
   onToggleFloating: () => void;
@@ -102,6 +105,7 @@ export function DashboardPage({
   autoResumeSettings,
   autoResumeStatus,
   autoResumeThreads,
+  sessionEnhancements,
   codexHome,
   dashboard,
   displaySurfaces,
@@ -135,6 +139,7 @@ export function DashboardPage({
   onRefreshAutoResume,
   onRunAutoResume,
   onSaveAutoResume,
+  onSaveSessionEnhancements,
   onToggleLiveRate,
   onRefresh,
   onReconnectThreadDelete,
@@ -154,7 +159,12 @@ export function DashboardPage({
 }: DashboardPageProps) {
   const { analyticsReady, summaryReady } = useDashboardPageLifecycle();
   const [settingsOpen, setSettingsOpen] = useState(consumePendingSettingsRequest);
+  const [settingsCategory, setSettingsCategory] = useState<AppSettingsCategory>("general");
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const openSettings = useCallback((category: AppSettingsCategory = "general") => {
+    setSettingsCategory(category);
+    setSettingsOpen(true);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -162,7 +172,7 @@ export function DashboardPage({
     void desktopPlatform.onOpenAppSettings(() => {
       if (!disposed) {
         window.localStorage.removeItem("open-app-settings-requested");
-        setSettingsOpen(true);
+        openSettings("general");
       }
     }).then((handler) => {
       if (disposed) handler();
@@ -172,13 +182,14 @@ export function DashboardPage({
       disposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [openSettings]);
 
   return (
     <main className="app-shell">
       <section className="dashboard">
         <DashboardHeader
           account={dashboard.account}
+          autoResumeEnabled={autoResumeSettings.enabled}
           autostartStatus={autostartStatus}
           codexHome={codexHome}
           customAccountDisplayName={customAccountDisplayName}
@@ -192,9 +203,8 @@ export function DashboardPage({
             void downloadDashboardPng(dashboard);
           }}
           onOpenProviderRepair={onProviderRepairOpen}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={openSettings}
           onRefresh={onRefresh}
-          onReconnectThreadDelete={onReconnectThreadDelete}
           onToggleAutostart={onToggleAutostart}
           refreshing={refreshing}
           appUpdateState={appUpdateState}
@@ -213,7 +223,7 @@ export function DashboardPage({
               liveRate={liveRate}
               liveThreadOptions={liveThreadOptions}
               onTokenRateFullScaleChange={onTokenRateFullScaleChange}
-              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenSettings={() => openSettings("general")}
               onLiveRateReset={onLiveRateReset}
               onLiveRateRetry={onLiveRateRetry}
               onAcknowledgeUnread={onAcknowledgeUnread}
@@ -265,6 +275,7 @@ export function DashboardPage({
         codexHome={codexHome}
         displaySurfaces={displaySurfaces}
         floatingSettings={floatingSettings}
+        initialCategory={settingsCategory}
         liveRateEnabled={liveRateEnabled}
         onCheckForUpdate={onCheckForUpdate}
         onClose={closeSettings}
@@ -283,6 +294,7 @@ export function DashboardPage({
         onReconnectThreadDelete={onReconnectThreadDelete}
         onRunAutoResume={onRunAutoResume}
         onSaveAutoResume={onSaveAutoResume}
+        onSaveSessionEnhancements={onSaveSessionEnhancements}
         onTokenRateFullScaleChange={onTokenRateFullScaleChange}
         onToggleAutostart={onToggleAutostart}
         onToggleFloating={onToggleFloating}
@@ -291,6 +303,7 @@ export function DashboardPage({
         open={settingsOpen}
         platform={platform}
         quotaRefreshIntervalMs={quotaRefreshIntervalMs}
+        sessionEnhancements={sessionEnhancements}
         threadDeleteBridgeStatus={threadDeleteBridgeStatus}
       />
     </main>

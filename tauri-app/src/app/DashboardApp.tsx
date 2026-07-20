@@ -78,6 +78,7 @@ export function DashboardApp() {
         autoResumeSettings={shellSettings.autoResumeSettings}
         autoResumeStatus={shellSettings.autoResumeStatus}
         autoResumeThreads={shellSettings.autoResumeThreads}
+        sessionEnhancements={shellSettings.sessionEnhancements}
         codexHome={readyState.codexHome}
         dashboard={readyState.dashboard}
         displaySurfaces={shellSettings.displaySurfaces}
@@ -92,6 +93,7 @@ export function DashboardApp() {
         onRefreshAutoResume={shellSettings.refreshAutoResume}
         onRunAutoResume={shellSettings.runAutoResume}
         onSaveAutoResume={shellSettings.saveAutoResume}
+        onSaveSessionEnhancements={shellSettings.saveSessionEnhancements}
         usageCacheInitializing={usageCacheInitializing}
         radarRefreshGeneration={radarRefreshGeneration}
         onFloatingOpacityChange={shellSettings.updateFloatingOpacity}

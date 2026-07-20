@@ -2,6 +2,7 @@
   "name": "codex-token-bar-tauri",
   "private": true,
   "version": "0.7.3",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",

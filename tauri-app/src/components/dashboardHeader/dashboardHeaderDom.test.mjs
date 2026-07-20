@@ -12,7 +12,8 @@ test("DashboardHeader exposes every primary action without a secondary menu", as
       "开机自启：关",
       "更改目录",
       "会话消失修复",
-      "启用侧栏删除",
+      "会话增强",
+      "自动续跑",
       "设置",
       "导出 CSV",
       "导出 PNG",
@@ -23,7 +24,10 @@ test("DashboardHeader exposes every primary action without a secondary menu", as
     await click(act, buttonByName(container, "检查更新"), window);
     assert.equal(calls.update, 1);
     await click(act, buttonByName(container, "设置"), window);
-    assert.equal(calls.settings, 1);
+    assert.deepEqual(calls.settings, ["general"]);
+    await click(act, buttonByName(container, "会话增强"), window);
+    await click(act, buttonByName(container, "自动续跑"), window);
+    assert.deepEqual(calls.settings, ["general", "session", "automation"]);
     await click(act, buttonByName(container, "导出 CSV"), window);
     await click(act, buttonByName(container, "导出 PNG"), window);
     assert.equal(calls.csv, 1);
@@ -32,28 +36,7 @@ test("DashboardHeader exposes every primary action without a secondary menu", as
     await render({ appUpdateState: { kind: "available", message: "发现新版本 v0.7.4" } });
     assert.equal(buttonByName(container, "安装更新").title, "发现新版本 v0.7.4");
 
-    const reconnect = buttonByName(container, "启用侧栏删除");
-    assert.equal(reconnect.title, "等待 Codex 调试连接（需以调试模式启动 Codex）");
-    await click(act, reconnect, window);
-    assert.ok(container.querySelector('[role="alertdialog"]'));
-    assert.equal(document.activeElement.textContent.trim(), "取消");
-    assert.equal(calls.threadDeleteReconnect, 0);
-    await pressKey(act, document.activeElement, "Tab", window, { shiftKey: true });
-    assert.equal(document.activeElement.textContent.trim(), "重启并启用");
-    await pressKey(act, document.activeElement, "Tab", window);
-    assert.equal(document.activeElement.textContent.trim(), "取消");
-    await pressKey(act, document.activeElement, "Escape", window);
-    assert.equal(container.querySelector('[role="alertdialog"]'), null);
-    assert.equal(document.activeElement, reconnect);
-
-    await click(act, reconnect, window);
-    await click(act, buttonByName(container, "取消"), window);
-    assert.equal(container.querySelector('[role="alertdialog"]'), null);
-    assert.equal(document.activeElement, reconnect);
-
-    await click(act, reconnect, window);
-    await click(act, buttonByName(container, "重启并启用"), window);
-    assert.equal(calls.threadDeleteReconnect, 1);
+    assert.equal(buttonByName(container, "会话增强").title, "等待 Codex 调试连接（需以调试模式启动 Codex）");
     assert.equal(container.querySelector('[role="alertdialog"]'), null);
   });
 });
@@ -87,7 +70,7 @@ async function withMountedHeader(run, initialOverrides = {}) {
       after.textContent = "after header";
       window.document.body.append(before, container, after);
       const root = createRoot(container);
-      const calls = { autostart: 0, csv: 0, png: 0, settings: 0, threadDeleteReconnect: 0, update: 0 };
+      const calls = { autostart: 0, csv: 0, png: 0, settings: [], update: 0 };
       let overrides = initialOverrides;
       const render = async (nextOverrides = {}) => {
         overrides = { ...overrides, ...nextOverrides };
@@ -110,6 +93,7 @@ async function withMountedHeader(run, initialOverrides = {}) {
 function headerProps(calls, overrides) {
   return {
     account: { displayName: "Test User", planLabel: "Plus" },
+    autoResumeEnabled: false,
     appUpdateState: { kind: "idle", message: "" },
     autostartStatus: { available: true, enabled: false, message: "开机自启已关闭" },
     codexHome: { exists: true, path: "/Users/test/.codex", source: "auto" },
@@ -122,9 +106,8 @@ function headerProps(calls, overrides) {
     onExportCsv: () => { calls.csv += 1; },
     onExportPng: () => { calls.png += 1; },
     onOpenProviderRepair: () => {},
-    onOpenSettings: () => { calls.settings += 1; },
+    onOpenSettings: (category) => { calls.settings.push(category); },
     onRefresh: async () => {},
-    onReconnectThreadDelete: async () => { calls.threadDeleteReconnect += 1; },
     onToggleAutostart: () => { calls.autostart += 1; },
     refreshing: false,
     threadDeleteBridgeStatus: {

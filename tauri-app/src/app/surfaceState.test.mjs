@@ -474,6 +474,7 @@ test("debug launcher stages a runnable app and stops stale debug instances", asy
   assert.match(script, /stop_other_debug_apps\s*\n\s*wait_for_debug_apps_to_stop/);
   assert.equal(script.includes("stage_runnable_app"), true);
   assert.equal(script.includes("target/debug/run-bundle"), true);
+  assert.equal(script.includes('"createUpdaterArtifacts":false'), true);
   assert.equal(script.includes("CodexTokenBarTauri/startup-trace.log"), true);
   assert.equal(script.includes("CodexTokenBar/startup-trace.log"), false);
 });

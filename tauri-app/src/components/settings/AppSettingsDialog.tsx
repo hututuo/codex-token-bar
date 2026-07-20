@@ -4,6 +4,7 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
   type ReactNode,
 } from "react";
 import type { ThreadDeleteBridgeStatus } from "../../api/threadDeleteClient";
@@ -33,11 +34,14 @@ import type {
   FloatingPalettePatch,
   FloatingUnreadEffect,
   PlatformCapabilities,
+  SessionEnhancementSettings,
 } from "../../types/dashboard";
+import { sanitizeSessionEnhancements } from "../../settings/sessionEnhancements";
 import { CodexHomeEditor } from "../dashboardHeader/CodexHomeEditor";
 
-type SettingsCategory =
+export type AppSettingsCategory =
   | "general"
+  | "session"
   | "surfaces"
   | "monitoring"
   | "automation"
@@ -47,16 +51,17 @@ type SettingsCategory =
   | "data";
 
 interface SettingsCategoryDefinition {
-  id: SettingsCategory;
+  id: AppSettingsCategory;
   label: string;
   description: string;
 }
 
 const SETTINGS_CATEGORIES: SettingsCategoryDefinition[] = [
   { id: "general", label: "常规", description: "启动与基础偏好" },
+  { id: "session", label: "会话增强", description: "删除、导出、移动、输入与阅读体验" },
+  { id: "automation", label: "自动续跑", description: "定时与额度恢复后继续" },
   { id: "surfaces", label: "显示面", description: "主窗口、悬浮窗与状态栏" },
   { id: "monitoring", label: "监控与额度", description: "实时速率与额度刷新" },
-  { id: "automation", label: "自动续跑", description: "定时与额度恢复后继续" },
   { id: "floating", label: "悬浮窗", description: "尺寸、颜色与额度条" },
   { id: "content", label: "内容与排序", description: "显示项目与排列顺序" },
   { id: "alerts", label: "提醒与更新", description: "未读提示与版本更新" },
@@ -82,10 +87,12 @@ interface AppSettingsDialogProps {
   codexHome: CodexHomeStatus;
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
+  initialCategory?: AppSettingsCategory;
   liveRateEnabled: boolean;
   open: boolean;
   platform: PlatformCapabilities;
   quotaRefreshIntervalMs: number;
+  sessionEnhancements: SessionEnhancementSettings;
   threadDeleteBridgeStatus: ThreadDeleteBridgeStatus;
   onCheckForUpdate: () => Promise<void>;
   onClose: () => void;
@@ -104,6 +111,7 @@ interface AppSettingsDialogProps {
   onReconnectThreadDelete: () => Promise<void>;
   onRunAutoResume: () => Promise<void>;
   onSaveAutoResume: (settings: AutoResumeSettings) => Promise<void>;
+  onSaveSessionEnhancements: (settings: SessionEnhancementSettings) => Promise<void>;
   onTokenRateFullScaleChange: (fullScale: number) => void;
   onToggleAutostart: () => void;
   onToggleFloating: () => void;
@@ -125,10 +133,12 @@ export function AppSettingsDialog({
   codexHome,
   displaySurfaces,
   floatingSettings,
+  initialCategory = "general",
   liveRateEnabled,
   open,
   platform,
   quotaRefreshIntervalMs,
+  sessionEnhancements,
   threadDeleteBridgeStatus,
   onCheckForUpdate,
   onClose,
@@ -147,16 +157,22 @@ export function AppSettingsDialog({
   onReconnectThreadDelete,
   onRunAutoResume,
   onSaveAutoResume,
+  onSaveSessionEnhancements,
   onTokenRateFullScaleChange,
   onToggleAutostart,
   onToggleFloating,
   onToggleLiveRate,
   onToggleStatusTray,
 }: AppSettingsDialogProps) {
-  const [selectedCategory, setSelectedCategory] = useState<SettingsCategory>("general");
+  const [selectedCategory, setSelectedCategory] = useState<AppSettingsCategory>(initialCategory);
+  const [sessionEnableConfirmationOpen, setSessionEnableConfirmationOpen] = useState(false);
+  const sessionEnableConfirmationOpenRef = useRef(false);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  const sessionConnectionTriggerRef = useRef<HTMLButtonElement>(null);
+  const sessionConfirmationCancelRef = useRef<HTMLButtonElement>(null);
+  const sessionConfirmationDialogRef = useRef<HTMLDivElement>(null);
   const selectedDefinition = SETTINGS_CATEGORIES.find((category) => category.id === selectedCategory)
     ?? SETTINGS_CATEGORIES[0];
 
@@ -165,7 +181,13 @@ export function AppSettingsDialog({
     previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     closeButtonRef.current?.focus();
     const closeForEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key !== "Escape") return;
+      if (sessionEnableConfirmationOpenRef.current) {
+        setSessionEnableConfirmationOpen(false);
+        window.requestAnimationFrame(() => sessionConnectionTriggerRef.current?.focus());
+      } else {
+        onClose();
+      }
     };
     window.addEventListener("keydown", closeForEscape);
     return () => {
@@ -173,6 +195,19 @@ export function AppSettingsDialog({
       previousFocusRef.current?.focus();
     };
   }, [onClose, open]);
+
+  useEffect(() => {
+    if (!open) {
+      setSessionEnableConfirmationOpen(false);
+      return;
+    }
+    setSelectedCategory(initialCategory);
+  }, [initialCategory, open]);
+
+  useEffect(() => {
+    sessionEnableConfirmationOpenRef.current = sessionEnableConfirmationOpen;
+    if (sessionEnableConfirmationOpen) sessionConfirmationCancelRef.current?.focus();
+  }, [sessionEnableConfirmationOpen]);
 
   useEffect(() => {
     if (open && selectedCategory === "automation") {
@@ -202,6 +237,22 @@ export function AppSettingsDialog({
     });
   }
 
+  function handleSessionConfirmationKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Tab") return;
+    const buttons = [...(sessionConfirmationDialogRef.current?.querySelectorAll<HTMLButtonElement>(
+      "button:not(:disabled)",
+    ) ?? [])];
+    if (buttons.length === 0) return;
+    const currentIndex = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.shiftKey && currentIndex <= 0) {
+      event.preventDefault();
+      buttons.at(-1)?.focus();
+    } else if (!event.shiftKey && currentIndex === buttons.length - 1) {
+      event.preventDefault();
+      buttons[0]?.focus();
+    }
+  }
+
   return (
     <div
       className="app-settings-overlay"
@@ -216,7 +267,7 @@ export function AppSettingsDialog({
         onKeyDown={(event) => {
           if (event.key !== "Tab") return;
           const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>(
-            "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex=\"-1\"])",
+            "a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex=\"-1\"])",
           ) ?? [])];
           if (focusable.length === 0) return;
           const currentIndex = focusable.indexOf(document.activeElement as HTMLElement);
@@ -278,6 +329,21 @@ export function AppSettingsDialog({
                 <GeneralSettings
                   autostartStatus={autostartStatus}
                   onToggleAutostart={onToggleAutostart}
+                />
+              ) : null}
+              {selectedCategory === "session" ? (
+                <SessionEnhancementSettingsPanel
+                  onConnectionAction={() => {
+                    if (threadDeleteBridgeStatus.debugPort === null) {
+                      setSessionEnableConfirmationOpen(true);
+                    } else {
+                      void onReconnectThreadDelete();
+                    }
+                  }}
+                  onSaveSessionEnhancements={onSaveSessionEnhancements}
+                  sessionConnectionTriggerRef={sessionConnectionTriggerRef}
+                  sessionEnhancements={sessionEnhancements}
+                  threadDeleteBridgeStatus={threadDeleteBridgeStatus}
                 />
               ) : null}
               {selectedCategory === "surfaces" ? (
@@ -344,15 +410,161 @@ export function AppSettingsDialog({
                   onCodexHomeChange={onCodexHomeChange}
                   onCodexHomeReset={onCodexHomeReset}
                   onOpenProviderRepair={onOpenProviderRepair}
-                  onReconnectThreadDelete={onReconnectThreadDelete}
-                  threadDeleteBridgeStatus={threadDeleteBridgeStatus}
                 />
               ) : null}
             </div>
           </div>
         </div>
       </section>
+      {sessionEnableConfirmationOpen ? (
+        <div
+          className="thread-delete-confirmation-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setSessionEnableConfirmationOpen(false);
+              window.requestAnimationFrame(() => sessionConnectionTriggerRef.current?.focus());
+            }
+          }}
+        >
+          <div
+            aria-describedby="session-enhancement-confirmation-description"
+            aria-labelledby="session-enhancement-confirmation-title"
+            aria-modal="true"
+            className="thread-delete-confirmation-dialog"
+            onKeyDown={handleSessionConfirmationKeyDown}
+            ref={sessionConfirmationDialogRef}
+            role="alertdialog"
+          >
+            <h2 id="session-enhancement-confirmation-title">重启 Codex 并启用会话增强？</h2>
+            <p id="session-enhancement-confirmation-description">Codex 会关闭后立即以仅限本机的调试端口重新打开。当前任务不会被删除，但界面会短暂中断。</p>
+            <div className="thread-delete-confirmation-actions">
+              <button
+                onClick={() => {
+                  setSessionEnableConfirmationOpen(false);
+                  window.requestAnimationFrame(() => sessionConnectionTriggerRef.current?.focus());
+                }}
+                ref={sessionConfirmationCancelRef}
+                type="button"
+              >
+                取消
+              </button>
+              <button
+                className="thread-delete-confirmation-primary"
+                onClick={() => {
+                  setSessionEnableConfirmationOpen(false);
+                  window.requestAnimationFrame(() => sessionConnectionTriggerRef.current?.focus());
+                  void onReconnectThreadDelete();
+                }}
+                type="button"
+              >
+                重启并启用
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+function SessionEnhancementSettingsPanel({
+  onConnectionAction,
+  onSaveSessionEnhancements,
+  sessionConnectionTriggerRef,
+  sessionEnhancements,
+  threadDeleteBridgeStatus,
+}: Pick<AppSettingsDialogProps,
+  | "onSaveSessionEnhancements"
+  | "sessionEnhancements"
+  | "threadDeleteBridgeStatus"
+> & {
+  onConnectionAction: () => void;
+  sessionConnectionTriggerRef: RefObject<HTMLButtonElement | null>;
+}) {
+  const settings = sanitizeSessionEnhancements(sessionEnhancements);
+  const [widthDraft, setWidthDraft] = useState(settings.conversationViewMaxWidth);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => setWidthDraft(settings.conversationViewMaxWidth), [settings.conversationViewMaxWidth]);
+
+  async function save(patch: Partial<SessionEnhancementSettings>) {
+    setSaveError(null);
+    try {
+      await onSaveSessionEnhancements(sanitizeSessionEnhancements({ ...settings, ...patch }));
+    } catch (error) {
+      setSaveError(`保存会话增强失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  function toggle(key: "sessionDelete" | "markdownExport" | "pasteFix" | "projectMove" | "threadIDBadge" | "conversationView" | "threadScrollRestore") {
+    void save({ [key]: !settings[key] });
+  }
+
+  const connectionTitle = threadDeleteBridgeStatus.connected ? "会话增强已连接" : "会话增强未连接";
+  const connectionAction = threadDeleteBridgeStatus.debugPort === null ? "重启 Codex 并启用" : "重新连接";
+  return (
+    <>
+      <SettingsGroup title="Codex 页面连接" description="通过仅限本机的调试端口加载增强；功能开关变化后自动重连，无需重启 Codex。">
+        <SettingRow title={connectionTitle} description={threadDeleteBridgeStatus.message}>
+          <button
+            className="app-settings-action"
+            onClick={onConnectionAction}
+            ref={sessionConnectionTriggerRef}
+            type="button"
+          >
+            {connectionAction}
+          </button>
+        </SettingRow>
+      </SettingsGroup>
+      <SettingsGroup title="会话管理" description="在 Codex 侧栏为每个任务增加可靠的管理操作。">
+        <SettingRow title="会话删除" description="使用官方 Codex 删除命令永久删除所选会话。">
+          <ToggleButton active={settings.sessionDelete} label="会话删除" onClick={() => toggle("sessionDelete")} />
+        </SettingRow>
+        <SettingRow title="Markdown 导出" description="从真实 rollout 生成可保存的 Markdown。">
+          <ToggleButton active={settings.markdownExport} label="Markdown 导出" onClick={() => toggle("markdownExport")} />
+        </SettingRow>
+        <SettingRow title="会话项目移动" description="同步更新本地会话数据库与 rollout 项目目录。">
+          <ToggleButton active={settings.projectMove} label="会话项目移动" onClick={() => toggle("projectMove")} />
+        </SettingRow>
+        <SettingRow title="会话 ID 标识" description="在侧栏显示每个会话 ID 的短标识。">
+          <ToggleButton active={settings.threadIDBadge} label="会话 ID 标识" onClick={() => toggle("threadIDBadge")} />
+        </SettingRow>
+      </SettingsGroup>
+      <SettingsGroup title="输入与阅读" description="改善富文本粘贴、大屏阅读和多任务切换体验。">
+        <SettingRow title="粘贴修复" description="把富文本粘贴规范化为纯文本输入。">
+          <ToggleButton active={settings.pasteFix} label="粘贴修复" onClick={() => toggle("pasteFix")} />
+        </SettingRow>
+        <SettingRow title="对话居中宽度" description="限制正文和输入框最大宽度，提升大屏阅读体验。">
+          <ToggleButton active={settings.conversationView} label="对话居中宽度" onClick={() => toggle("conversationView")} />
+        </SettingRow>
+        {settings.conversationView ? (
+          <label className="app-setting-range">
+            <span><strong>最大宽度</strong><em>正文与输入框的最大显示宽度。</em></span>
+            <input
+              aria-label="对话居中最大宽度"
+              max="4000"
+              min="320"
+              onChange={(event) => setWidthDraft(Number(event.currentTarget.value))}
+              onKeyUp={(event) => void save({ conversationViewMaxWidth: Number(event.currentTarget.value) })}
+              onPointerUp={(event) => void save({ conversationViewMaxWidth: Number(event.currentTarget.value) })}
+              step="10"
+              type="range"
+              value={widthDraft}
+            />
+            <output>{widthDraft} px</output>
+          </label>
+        ) : null}
+        <SettingRow title="切换对话保留位置" description="回到会话时恢复上次滚动位置。">
+          <ToggleButton active={settings.threadScrollRestore} label="切换对话保留位置" onClick={() => toggle("threadScrollRestore")} />
+        </SettingRow>
+      </SettingsGroup>
+      <SettingsGroup title="开源归属" description="本页能力基于 Codex++ v1.2.41 的对话与输入实现迁入。">
+        <SettingRow title="Codex++ · AGPL-3.0" description="保留 BigPizzaV3/CodexPlusPlus 的版权、来源和 GNU AGPL v3 许可。">
+          <a className="app-settings-action" href="https://github.com/BigPizzaV3/CodexPlusPlus" rel="noreferrer" target="_blank">查看上游源码</a>
+        </SettingRow>
+      </SettingsGroup>
+      {saveError ? <div className="auto-resume-error" role="alert">{saveError}</div> : null}
+    </>
   );
 }
 
@@ -1062,23 +1274,14 @@ function DataAndMaintenanceSettings({
   onCodexHomeChange,
   onCodexHomeReset,
   onOpenProviderRepair,
-  onReconnectThreadDelete,
-  threadDeleteBridgeStatus,
 }: Pick<AppSettingsDialogProps,
   | "codexHome"
   | "onClose"
   | "onCodexHomeChange"
   | "onCodexHomeReset"
   | "onOpenProviderRepair"
-  | "onReconnectThreadDelete"
-  | "threadDeleteBridgeStatus"
 >) {
   const sourceLabel = codexHome.source === "manual" ? "手动目录" : codexHome.exists ? "自动发现" : "等待选择";
-  const canReconnectThreadDelete = threadDeleteBridgeStatus.debugPort !== null;
-  const threadDeleteTitle = threadDeleteBridgeStatus.connected ? "侧栏删除已连接" : "侧栏删除未连接";
-  const threadDeleteDescription = canReconnectThreadDelete
-    ? threadDeleteBridgeStatus.message
-    : `${threadDeleteBridgeStatus.message}。如需启用，请回到主界面顶部使用“启用侧栏删除”，那里会先说明重启影响。`;
   return (
     <>
       <SettingsGroup title="Codex 数据目录" description={`${sourceLabel} · ${codexHome.exists ? "目录可用" : "目录待读取"}`}>
@@ -1102,15 +1305,7 @@ function DataAndMaintenanceSettings({
             打开修复工具
           </button>
         </SettingRow>
-        <SettingRow title={threadDeleteTitle} description={threadDeleteDescription}>
-          {canReconnectThreadDelete ? (
-            <button className="app-settings-action" onClick={() => void onReconnectThreadDelete()} type="button">
-              重新连接
-            </button>
-          ) : (
-            <span className="app-settings-status">请回主界面启用</span>
-          )}
-        </SettingRow>
+        <div className="app-settings-note">Codex 页面连接和会话操作已归入独立的“会话增强”分类。</div>
       </SettingsGroup>
     </>
   );
