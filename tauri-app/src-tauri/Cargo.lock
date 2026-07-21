@@ -513,7 +513,7 @@ dependencies = [
 
 [[package]]
 name = "codex-token-bar"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "base64 0.22.1",
  "objc2-app-kit",
