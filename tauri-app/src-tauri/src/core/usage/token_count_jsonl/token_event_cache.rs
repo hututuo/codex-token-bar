@@ -733,7 +733,7 @@ fn process_is_alive(pid: u32) -> bool {
     }
     let mut exit_code = 0;
     let queried = unsafe { GetExitCodeProcess(process, &mut exit_code) } != 0;
-    let alive = !queried || exit_code == STILL_ACTIVE;
+    let alive = !queried || exit_code == STILL_ACTIVE as u32;
     unsafe {
         CloseHandle(process);
     }
