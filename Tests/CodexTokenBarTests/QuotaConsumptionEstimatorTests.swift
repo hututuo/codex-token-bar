@@ -827,6 +827,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(callbacks.last?.contentWidth, 420)
         XCTAssertEqual(callbacks.last?.revision, 2)
 
+        callbacks.removeAll()
         hostingView.rootView = HostedRecentChartScrollReaderHarness(
             viewportWidth: 120,
             contentWidth: 420,
@@ -838,6 +839,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         runMainLoopBriefly()
         let revisionThreeScrollView = try XCTUnwrap(firstScrollView(in: hostingView))
         XCTAssertTrue(revisionThreeScrollView === resizedScrollView)
+        XCTAssertTrue(callbacks.isEmpty, "Re-evaluating the same scroll view must not feed state back into SwiftUI")
         callbacks.removeAll()
         revisionThreeScrollView.contentView.scroll(to: NSPoint(x: 91.5, y: 0))
         revisionThreeScrollView.reflectScrolledClipView(revisionThreeScrollView.contentView)

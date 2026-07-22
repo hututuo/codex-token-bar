@@ -187,10 +187,10 @@ final class RecentChartScrollOffsetObserver: NSObject {
     var onOffsetChange: ((CGFloat) -> Void)?
 
     func attach(to scrollView: NSScrollView) {
-        guard self.scrollView !== scrollView else {
-            reportCurrentOffset()
-            return
-        }
+        // SwiftUI calls updateNSView while evaluating the view graph. Reporting the same
+        // scroll view synchronously from that callback mutates @State during the update and
+        // can create an endless redraw loop on a large dashboard snapshot.
+        guard self.scrollView !== scrollView else { return }
         detach()
         self.scrollView = scrollView
         scrollView.contentView.postsBoundsChangedNotifications = true
@@ -203,7 +203,10 @@ final class RecentChartScrollOffsetObserver: NSObject {
                 self?.reportCurrentOffset()
             }
         }
-        reportCurrentOffset()
+        DispatchQueue.main.async { [weak self, weak scrollView] in
+            guard let self, self.scrollView === scrollView else { return }
+            self.reportCurrentOffset()
+        }
     }
 
     func detach() {
