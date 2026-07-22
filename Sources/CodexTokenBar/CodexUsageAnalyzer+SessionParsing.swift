@@ -2,18 +2,18 @@ import Foundation
 
 private struct RecentUsageFingerprintBuffer {
     private let limit: Int
-    private var values: [[Int]] = []
+    private var values: [CodexUsageAnalyzer.UsageSnapshotFingerprint] = []
     private var nextReplacementIndex = 0
-    private var seen = Set<[Int]>()
+    private var seen = Set<CodexUsageAnalyzer.UsageSnapshotFingerprint>()
 
-    init(_ initialValues: [[Int]], limit: Int) {
+    init(_ initialValues: [CodexUsageAnalyzer.UsageSnapshotFingerprint], limit: Int) {
         self.limit = max(1, limit)
         for value in initialValues.suffix(limit) {
             _ = insertIfNew(value)
         }
     }
 
-    mutating func insertIfNew(_ value: [Int]) -> Bool {
+    mutating func insertIfNew(_ value: CodexUsageAnalyzer.UsageSnapshotFingerprint) -> Bool {
         guard seen.insert(value).inserted else { return false }
         if values.count < limit {
             values.append(value)
@@ -25,7 +25,7 @@ private struct RecentUsageFingerprintBuffer {
         return true
     }
 
-    var orderedValues: [[Int]] {
+    var orderedValues: [CodexUsageAnalyzer.UsageSnapshotFingerprint] {
         guard values.count == limit, nextReplacementIndex > 0 else { return values }
         return Array(values[nextReplacementIndex...]) + Array(values[..<nextReplacementIndex])
     }
@@ -333,9 +333,16 @@ extension CodexUsageAnalyzer {
         )
     }
 
-    func parseSession(file: URL, sessionID: String) -> [TokenEvent] {
+    func parseSession(
+        file: URL,
+        sessionID: String,
+        scanBudget: UsageScanBudget
+    ) throws -> [TokenEvent] {
         guard let cacheKey = sessionCacheKey(for: file) else {
-            return parseFullSession(file: file, sessionID: sessionID).events
+            throw CodexUsageDiscoveryError.traversalFailed(
+                path: file.path,
+                reason: "无法读取会话文件大小"
+            )
         }
         let cachePath = cacheKey.path
 
@@ -344,6 +351,10 @@ extension CodexUsageAnalyzer {
         }
 
         if let cached = Self.sessionEventCache.appendableSession(for: cachePath, currentKey: cacheKey) {
+            let appendedBytes = cacheKey.size > cached.lastOffset
+                ? cacheKey.size - cached.lastOffset
+                : 0
+            try scanBudget.reserve(bytes: appendedBytes, for: file)
             let trace = RefreshPerformanceProbe.begin("usageAnalyzer.session.incrementalParse", metadata: [
                 "file": file.lastPathComponent,
                 "size": String(cacheKey.size),
@@ -351,14 +362,16 @@ extension CodexUsageAnalyzer {
                 "lastOffset": String(cached.lastOffset),
                 "appendBytes": String(cacheKey.size > cached.lastOffset ? cacheKey.size - cached.lastOffset : 0)
             ])
-            let appended = parseSession(
+            let appended = try parseSession(
                 file: file,
                 sessionID: sessionID,
                 startingAt: cached.lastOffset,
                 previousTotal: cached.previousTotalTokens,
                 initialForkReplayActive: cached.forkReplayActive,
                 initialLastSkippedForkReplayTokenAt: cached.lastSkippedForkReplayTokenAt,
-                initialRecentUsageFingerprints: cached.recentUsageFingerprints
+                initialRecentUsageFingerprints: cached.recentUsageFingerprints,
+                maximumLineBytes: scanBudget.limits.maximumLineBytes,
+                maximumBytesToRead: appendedBytes
             )
             let events = cached.events + appended.events
             Self.sessionEventCache.recordIncrementalSessionParseForTesting()
@@ -390,7 +403,13 @@ extension CodexUsageAnalyzer {
             "file": file.lastPathComponent,
             "size": String(cacheKey.size)
         ])
-        let result = parseFullSession(file: file, sessionID: sessionID)
+        try scanBudget.reserve(bytes: cacheKey.size, for: file)
+        let result = try parseFullSession(
+            file: file,
+            sessionID: sessionID,
+            maximumLineBytes: scanBudget.limits.maximumLineBytes,
+            maximumBytesToRead: cacheKey.size
+        )
         Self.sessionEventCache.recordFullSessionParseForTesting()
         Self.sessionEventCache.store(
             Self.SessionEventCache.CachedSession(
@@ -414,8 +433,20 @@ extension CodexUsageAnalyzer {
         return result.events
     }
 
-    private func parseFullSession(file: URL, sessionID: String) -> SessionParseResult {
-        parseSession(file: file, sessionID: sessionID, startingAt: 0, previousTotal: nil)
+    private func parseFullSession(
+        file: URL,
+        sessionID: String,
+        maximumLineBytes: Int,
+        maximumBytesToRead: UInt64
+    ) throws -> SessionParseResult {
+        try parseSession(
+            file: file,
+            sessionID: sessionID,
+            startingAt: 0,
+            previousTotal: nil,
+            maximumLineBytes: maximumLineBytes,
+            maximumBytesToRead: maximumBytesToRead
+        )
     }
 
     private func parseSession(
@@ -425,8 +456,10 @@ extension CodexUsageAnalyzer {
         previousTotal initialPreviousTotal: Int?,
         initialForkReplayActive: Bool? = nil,
         initialLastSkippedForkReplayTokenAt: Date? = nil,
-        initialRecentUsageFingerprints: [[Int]] = []
-    ) -> SessionParseResult {
+        initialRecentUsageFingerprints: [UsageSnapshotFingerprint] = [],
+        maximumLineBytes: Int,
+        maximumBytesToRead: UInt64
+    ) throws -> SessionParseResult {
         var events: [TokenEvent] = []
         var previousTotal = initialPreviousTotal
         var recentUsageFingerprints = RecentUsageFingerprintBuffer(
@@ -434,77 +467,88 @@ extension CodexUsageAnalyzer {
             limit: Self.recentUsageFingerprintLimit
         )
         var currentUserPrompt = ""
-        var assistantFragments: [String] = []
+        var assistantExcerpt = ""
         let forkReplayStartedAt = forkedSessionReplayStartedAt(for: file)
         var isSkippingForkReplay = initialForkReplayActive ?? (forkReplayStartedAt != nil)
         var lastSkippedForkReplayTokenAt = initialLastSkippedForkReplayTokenAt
-        let stream = streamSessionLines(from: file, startingAt: offset) { lineString in
-            if let messageLine = parsePayloadMessageLine(lineString, expectedType: "user_message") {
-                if isSkippingForkReplay {
-                    guard let lastSkippedForkReplayTokenAt,
-                          messageLine.timestamp.timeIntervalSince(lastSkippedForkReplayTokenAt) >= Self.forkReplayExitGrace else {
-                        return
+        let stream = try streamSessionLines(
+            from: file,
+            startingAt: offset,
+            maximumLineBytes: maximumLineBytes,
+            maximumBytesToRead: maximumBytesToRead
+        ) { lineString in
+            autoreleasepool {
+                if let messageLine = parsePayloadMessageLine(lineString, expectedType: "user_message") {
+                    if isSkippingForkReplay {
+                        guard let lastSkippedForkReplayTokenAt,
+                              messageLine.timestamp.timeIntervalSince(lastSkippedForkReplayTokenAt) >= Self.forkReplayExitGrace else {
+                            return
+                        }
+                        isSkippingForkReplay = false
                     }
-                    isSkippingForkReplay = false
+                    currentUserPrompt = excerpt(messageLine.message, limit: 180)
+                    assistantExcerpt.removeAll(keepingCapacity: true)
+                    return
                 }
-                currentUserPrompt = messageLine.message
-                assistantFragments.removeAll(keepingCapacity: true)
-                return
+
+                if let messageLine = parsePayloadMessageLine(lineString, expectedType: "agent_message") {
+                    guard !isSkippingForkReplay else { return }
+                    assistantExcerpt = appendingExcerpt(
+                        assistantExcerpt,
+                        value: messageLine.message,
+                        limit: 220
+                    )
+                    return
+                }
+
+                guard let usageLine = parseTokenUsageLine(lineString) else {
+                    return
+                }
+
+                let totalTokens = usageLine.total?.totalTokens
+                let previousHighWater = previousTotal
+                // A single JSONL can interleave several cumulative counters after forks/subagents.
+                // A high-water mark keeps a lower stream from creating a false jump later.
+                if let totalTokens {
+                    previousTotal = max(previousTotal ?? totalTokens, totalTokens)
+                }
+                // Timestamp is intentionally excluded so replayed copies of the same usage snapshot
+                // remain duplicates even when Codex emits them at a later time.
+                let isNewSnapshot = usageSnapshotFingerprint(for: usageLine)
+                    .map { recentUsageFingerprints.insertIfNew($0) } ?? true
+                if isSkippingForkReplay {
+                    lastSkippedForkReplayTokenAt = usageLine.timestamp
+                    return
+                }
+
+                guard isNewSnapshot else { return }
+
+                let lastTokens = usageLine.last?.totalTokens
+                let delta: Int
+
+                if let lastTokens, lastTokens > 0 {
+                    delta = lastTokens
+                } else if let totalTokens {
+                    delta = previousHighWater.map { max(0, totalTokens - $0) } ?? totalTokens
+                } else {
+                    delta = 0
+                }
+
+                guard delta > 0 else { return }
+
+                events.append(TokenEvent(
+                    timestamp: usageLine.timestamp,
+                    sessionID: sessionID,
+                    tokens: delta,
+                    inputTokens: usageLine.last?.inputTokens ?? 0,
+                    cachedInputTokens: usageLine.last?.cachedInputTokens ?? 0,
+                    outputTokens: usageLine.last?.outputTokens ?? 0,
+                    reasoningOutputTokens: usageLine.last?.reasoningOutputTokens ?? 0,
+                    userPrompt: currentUserPrompt,
+                    assistantResponse: assistantExcerpt
+                ))
+                assistantExcerpt.removeAll(keepingCapacity: true)
             }
-
-            if let messageLine = parsePayloadMessageLine(lineString, expectedType: "agent_message") {
-                guard !isSkippingForkReplay else { return }
-                assistantFragments.append(messageLine.message)
-                return
-            }
-
-            guard let usageLine = parseTokenUsageLine(lineString) else {
-                return
-            }
-
-            let totalTokens = usageLine.total?.totalTokens
-            let previousHighWater = previousTotal
-            // A single JSONL can interleave several cumulative counters after forks/subagents.
-            // A high-water mark keeps a lower stream from creating a false jump later.
-            if let totalTokens {
-                previousTotal = max(previousTotal ?? totalTokens, totalTokens)
-            }
-            // Timestamp is intentionally excluded so replayed copies of the same usage snapshot
-            // remain duplicates even when Codex emits them at a later time.
-            let isNewSnapshot = usageSnapshotFingerprint(for: usageLine)
-                .map { recentUsageFingerprints.insertIfNew($0) } ?? true
-            if isSkippingForkReplay {
-                lastSkippedForkReplayTokenAt = usageLine.timestamp
-                return
-            }
-
-            guard isNewSnapshot else { return }
-
-            let lastTokens = usageLine.last?.totalTokens
-            let delta: Int
-
-            if let lastTokens, lastTokens > 0 {
-                delta = lastTokens
-            } else if let totalTokens {
-                delta = previousHighWater.map { max(0, totalTokens - $0) } ?? totalTokens
-            } else {
-                delta = 0
-            }
-
-            guard delta > 0 else { return }
-
-            events.append(TokenEvent(
-                timestamp: usageLine.timestamp,
-                sessionID: sessionID,
-                tokens: delta,
-                inputTokens: usageLine.last?.inputTokens ?? 0,
-                cachedInputTokens: usageLine.last?.cachedInputTokens ?? 0,
-                outputTokens: usageLine.last?.outputTokens ?? 0,
-                reasoningOutputTokens: usageLine.last?.reasoningOutputTokens ?? 0,
-                userPrompt: excerpt(currentUserPrompt, limit: 180),
-                assistantResponse: excerpt(assistantFragments.joined(separator: " "), limit: 220)
-            ))
-            assistantFragments.removeAll(keepingCapacity: true)
         }
 
         return SessionParseResult(
@@ -518,28 +562,9 @@ extension CodexUsageAnalyzer {
         )
     }
 
-    private func usageSnapshotFingerprint(for usageLine: ParsedTokenUsageLine) -> [Int]? {
+    private func usageSnapshotFingerprint(for usageLine: ParsedTokenUsageLine) -> UsageSnapshotFingerprint? {
         guard let total = usageLine.total else { return nil }
-        var fingerprint = [
-            total.inputTokens,
-            total.cachedInputTokens,
-            total.outputTokens,
-            total.reasoningOutputTokens,
-            total.totalTokens,
-            usageLine.last == nil ? 0 : 1
-        ]
-        if let last = usageLine.last {
-            fingerprint.append(contentsOf: [
-                last.inputTokens,
-                last.cachedInputTokens,
-                last.outputTokens,
-                last.reasoningOutputTokens,
-                last.totalTokens
-            ])
-        } else {
-            fingerprint.append(contentsOf: repeatElement(0, count: 5))
-        }
-        return fingerprint
+        return UsageSnapshotFingerprint(total: total, last: usageLine.last)
     }
 
     private func forkedSessionReplayStartedAt(for file: URL) -> Date? {
@@ -654,6 +679,16 @@ extension CodexUsageAnalyzer {
         return String(normalized[..<end]) + "..."
     }
 
+    private func appendingExcerpt(_ existing: String, value: String, limit: Int) -> String {
+        guard !value.isEmpty, existing.count < limit else { return existing }
+        let separator = existing.isEmpty ? "" : " "
+        let remaining = max(limit - existing.count - separator.count, 0)
+        guard remaining > 0 else { return existing }
+        let prefix = String(value.prefix(remaining))
+        let suffix = value.count > remaining ? "..." : ""
+        return existing + separator + prefix + suffix
+    }
+
     private func sessionCacheKey(for file: URL) -> SessionCacheKey? {
         guard let attributes = try? fileManager.attributesOfItem(atPath: file.path) else { return nil }
         let size = (attributes[.size] as? NSNumber)?.uint64Value
@@ -689,8 +724,10 @@ extension CodexUsageAnalyzer {
     private func streamSessionLines(
         from file: URL,
         startingAt offset: UInt64 = 0,
+        maximumLineBytes: Int,
+        maximumBytesToRead: UInt64,
         handleLine: (String) -> Void
-    ) -> SessionLineStreamResult {
+    ) throws -> SessionLineStreamResult {
         guard let handle = try? FileHandle(forReadingFrom: file) else {
             return SessionLineStreamResult(lastOffset: offset, endedWithNewline: true)
         }
@@ -706,9 +743,12 @@ extension CodexUsageAnalyzer {
         let userMessageNeedle = Data(#""user_message""#.utf8)
         let agentMessageNeedle = Data(#""agent_message""#.utf8)
 
-        while true {
-            let data = handle.readData(ofLength: 1_048_576)
+        var remainingBytes = maximumBytesToRead
+        while remainingBytes > 0 {
+            let requestedBytes = min(1_048_576, Int(min(remainingBytes, UInt64(Int.max))))
+            let data = handle.readData(ofLength: requestedBytes)
             if data.isEmpty { break }
+            remainingBytes -= UInt64(data.count)
             pending.append(data)
 
             var searchStart = pending.startIndex
@@ -716,6 +756,13 @@ extension CodexUsageAnalyzer {
             while let newlineRange = pending[searchStart...].range(of: newline) {
                 let lineRange = searchStart..<newlineRange.lowerBound
                 let lineData = pending[lineRange]
+                guard lineData.count <= maximumLineBytes else {
+                    throw UsageScanLimitError.lineReadLimit(
+                        path: file.path,
+                        bytes: lineData.count,
+                        limit: maximumLineBytes
+                    )
+                }
                 if lineData.range(of: tokenNeedle) != nil
                     || lineData.range(of: userMessageNeedle) != nil
                     || lineData.range(of: agentMessageNeedle) != nil {
@@ -730,12 +777,26 @@ extension CodexUsageAnalyzer {
                 pending.removeSubrange(pending.startIndex..<searchStart)
                 pendingStartOffset = consumedOffset
             }
+            guard pending.count <= maximumLineBytes else {
+                throw UsageScanLimitError.lineReadLimit(
+                    path: file.path,
+                    bytes: pending.count,
+                    limit: maximumLineBytes
+                )
+            }
         }
 
+        guard pending.count <= maximumLineBytes else {
+            throw UsageScanLimitError.lineReadLimit(
+                path: file.path,
+                bytes: pending.count,
+                limit: maximumLineBytes
+            )
+        }
         if !pending.isEmpty,
-           pending.range(of: tokenNeedle) != nil
+           (pending.range(of: tokenNeedle) != nil
             || pending.range(of: userMessageNeedle) != nil
-            || pending.range(of: agentMessageNeedle) != nil {
+            || pending.range(of: agentMessageNeedle) != nil) {
             handleLine(String(decoding: pending, as: UTF8.self))
         }
         if !pending.isEmpty {

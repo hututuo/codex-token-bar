@@ -1532,6 +1532,150 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.stats.mostUsedReasoning, "中 · 1")
     }
 
+    func testPreciseScanFallsBackToSafetyLimitedMetadataBeforeReadingOversizedSession() throws {
+        let codexHome = try makeCodexHome()
+        try seedStateDatabase(at: codexHome)
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-07-22-019faaaa-bbbb-cccc-dddd-scanlimit.jsonl")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        try tokenCountLine(
+            timestamp: now,
+            total: Usage(input: 1_200, cachedInput: 400, output: 120, reasoning: 0, total: 1_320),
+            last: Usage(input: 1_200, cachedInput: 400, output: 120, reasoning: 0, total: 1_320)
+        ).appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(
+            dataSource: dataSource(for: codexHome),
+            scanLimits: .init(
+                maximumBytesPerSession: 1,
+                maximumBytesPerRefresh: 4_096,
+                maximumLineBytes: 4_096
+            )
+        )
+        let snapshot = try analyzer.load()
+
+        XCTAssertEqual(snapshot.usagePrecision, .safetyLimited)
+        XCTAssertEqual(snapshot.stats.totalThreads, 2)
+        XCTAssertEqual(snapshot.stats.totalTokens, 0)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+    }
+
+    func testPreciseScanFallsBackToSafetyLimitedMetadataForAnOversizedJSONLLine() throws {
+        let codexHome = try makeCodexHome()
+        try seedStateDatabase(at: codexHome)
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-07-22-019faaaa-bbbb-cccc-dddd-linelimit.jsonl")
+        let oversizedLine = #"{"type":"event_msg","payload":{"type":"token_count","padding":""#
+            + String(repeating: "x", count: 1_024)
+            + #""}}"#
+        try oversizedLine.write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(
+            dataSource: dataSource(for: codexHome),
+            scanLimits: .init(
+                maximumBytesPerSession: 8_192,
+                maximumBytesPerRefresh: 8_192,
+                maximumLineBytes: 128
+            )
+        )
+        let snapshot = try analyzer.load()
+
+        XCTAssertEqual(snapshot.usagePrecision, .safetyLimited)
+        XCTAssertEqual(snapshot.stats.totalThreads, 2)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+    }
+
+    func testStreamingAggregationBoundsRetainedTurnCandidates() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019faaaa-bbbb-cccc-dddd-candidatebound"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-07-22-\(sessionID).jsonl")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let eventCount = 200
+        let lines = try (0..<eventCount).map { index in
+            let calls = index + 1
+            return try tokenCountLine(
+                timestamp: now.addingTimeInterval(TimeInterval(index - eventCount)),
+                total: Usage(
+                    input: 1_200 * calls,
+                    cachedInput: index.isMultiple(of: 2) ? 1_000 * calls : 0,
+                    output: 100 * calls,
+                    reasoning: 0,
+                    total: 1_300 * calls
+                ),
+                last: Usage(
+                    input: 1_200,
+                    cachedInput: index.isMultiple(of: 2) ? 1_000 : 0,
+                    output: 100,
+                    reasoning: 0,
+                    total: 1_300
+                )
+            )
+        }
+        try lines.joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertEqual(snapshot.stats.totalCalls, eventCount)
+        XCTAssertLessThan(snapshot.cacheUsage.turns.count, eventCount)
+        XCTAssertTrue(snapshot.cacheUsage.turns.contains { turn in
+            turn.turnIndexInSession == eventCount
+                && turn.timestamp == now.addingTimeInterval(-1)
+        })
+    }
+
+    func testLiveSessionCacheStripsConversationExcerptsAfterPreciseScan() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019faaaa-bbbb-cccc-dddd-livecacheprivacy"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-07-22-\(sessionID).jsonl")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let secretPrompt = "in-memory prompt must not stay cached"
+        let secretResponse = "in-memory response must not stay cached"
+        try [
+            messageLine(timestamp: now.addingTimeInterval(-3), type: "user_message", message: secretPrompt),
+            messageLine(timestamp: now.addingTimeInterval(-2), type: "agent_message", message: secretResponse),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-1),
+                total: Usage(input: 1_200, cachedInput: 200, output: 100, reasoning: 0, total: 1_300),
+                last: Usage(input: 1_200, cachedInput: 200, output: 100, reasoning: 0, total: 1_300)
+            )
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let initial = try analyzer.load()
+        XCTAssertTrue(initial.cacheUsage.turns.contains { $0.userPrompt == secretPrompt })
+        XCTAssertTrue(initial.cacheUsage.turns.contains { $0.assistantResponse == secretResponse })
+
+        let cachedEvents = try analyzer.parseSession(
+            file: sessionFile,
+            sessionID: sessionID,
+            scanBudget: .init(limits: .unrestrictedForTesting)
+        )
+        XCTAssertEqual(cachedEvents.first?.userPrompt, "")
+        XCTAssertEqual(cachedEvents.first?.assistantResponse, "")
+    }
+
+    func testUsageSnapshotFingerprintDecodesTheExistingArrayCacheShape() throws {
+        let fingerprint = try JSONDecoder().decode(
+            CodexUsageAnalyzer.UsageSnapshotFingerprint.self,
+            from: Data("[1200,400,120,10,1320,1,300,100,30,2,330]".utf8)
+        )
+
+        XCTAssertEqual(fingerprint.totalInputTokens, 1_200)
+        XCTAssertEqual(fingerprint.totalCachedInputTokens, 400)
+        XCTAssertEqual(fingerprint.totalTokens, 1_320)
+        XCTAssertTrue(fingerprint.hasLastUsage)
+        XCTAssertEqual(fingerprint.lastInputTokens, 300)
+        XCTAssertEqual(fingerprint.lastTokens, 330)
+    }
+
     private struct Usage {
         let input: Int
         let cachedInput: Int

@@ -1,7 +1,10 @@
 import Foundation
 
 extension CodexUsageAnalyzer {
-    func loadFromStateSQLite(includeTimeSeries: Bool = true) throws -> DashboardSnapshot {
+    func loadFromStateSQLite(
+        includeTimeSeries: Bool = true,
+        usagePrecision: DashboardUsagePrecision = .metadataOnly
+    ) throws -> DashboardSnapshot {
         let db = dataSource.stateDatabase.path
         guard fileManager.fileExists(atPath: db) else {
             throw NSError(domain: "CodexTokenBar", code: 1, userInfo: [NSLocalizedDescriptionKey: "\(dataSource.displayPath)/state_5.sqlite not found"])
@@ -70,7 +73,7 @@ extension CodexUsageAnalyzer {
             hourlyUsage: hourlyUsage,
             pluginUsage: Array(plugins),
             cacheUsage: .empty,
-            usagePrecision: .metadataOnly,
+            usagePrecision: usagePrecision,
             generatedAt: Date()
         )
     }

@@ -1,6 +1,134 @@
 import Foundation
 
 extension CodexUsageAnalyzer {
+    struct UsageScanLimits: Equatable {
+        let maximumBytesPerSession: UInt64
+        let maximumBytesPerRefresh: UInt64
+        let maximumLineBytes: Int
+
+        static let production = UsageScanLimits(
+            maximumBytesPerSession: 128 * 1024 * 1024,
+            maximumBytesPerRefresh: 512 * 1024 * 1024,
+            maximumLineBytes: 16 * 1024 * 1024
+        )
+
+        static let unrestrictedForTesting = UsageScanLimits(
+            maximumBytesPerSession: .max,
+            maximumBytesPerRefresh: .max,
+            maximumLineBytes: .max
+        )
+    }
+
+    enum UsageScanLimitError: LocalizedError {
+        case sessionReadLimit(path: String, bytes: UInt64, limit: UInt64)
+        case refreshReadLimit(path: String, requestedBytes: UInt64, consumedBytes: UInt64, limit: UInt64)
+        case lineReadLimit(path: String, bytes: Int, limit: Int)
+
+        var errorDescription: String? {
+            switch self {
+            case let .sessionReadLimit(path, bytes, limit):
+                return "为保护内存，未扫描过大的历史会话：\(path)（\(bytes) bytes，单会话上限 \(limit) bytes）"
+            case let .refreshReadLimit(path, requestedBytes, consumedBytes, limit):
+                return "为保护内存，精确统计达到本轮扫描上限：\(path)（本次还需 \(requestedBytes) bytes，已读取 \(consumedBytes) / \(limit) bytes）"
+            case let .lineReadLimit(path, bytes, limit):
+                return "为保护内存，跳过异常长的 JSONL 行：\(path)（\(bytes) bytes，行上限 \(limit) bytes）"
+            }
+        }
+    }
+
+    final class UsageScanBudget {
+        let limits: UsageScanLimits
+        private(set) var consumedBytes: UInt64 = 0
+
+        init(limits: UsageScanLimits) {
+            self.limits = limits
+        }
+
+        func reserve(bytes: UInt64, for file: URL) throws {
+            guard bytes <= limits.maximumBytesPerSession else {
+                throw UsageScanLimitError.sessionReadLimit(
+                    path: file.path,
+                    bytes: bytes,
+                    limit: limits.maximumBytesPerSession
+                )
+            }
+            guard consumedBytes <= limits.maximumBytesPerRefresh,
+                  bytes <= limits.maximumBytesPerRefresh - consumedBytes else {
+                throw UsageScanLimitError.refreshReadLimit(
+                    path: file.path,
+                    requestedBytes: bytes,
+                    consumedBytes: consumedBytes,
+                    limit: limits.maximumBytesPerRefresh
+                )
+            }
+            consumedBytes += bytes
+        }
+    }
+
+    struct UsageSnapshotFingerprint: Hashable, Codable {
+        let totalInputTokens: Int
+        let totalCachedInputTokens: Int
+        let totalOutputTokens: Int
+        let totalReasoningOutputTokens: Int
+        let totalTokens: Int
+        let hasLastUsage: Bool
+        let lastInputTokens: Int
+        let lastCachedInputTokens: Int
+        let lastOutputTokens: Int
+        let lastReasoningOutputTokens: Int
+        let lastTokens: Int
+
+        init(total: ParsedTokenUsage, last: ParsedTokenUsage?) {
+            totalInputTokens = total.inputTokens
+            totalCachedInputTokens = total.cachedInputTokens
+            totalOutputTokens = total.outputTokens
+            totalReasoningOutputTokens = total.reasoningOutputTokens
+            totalTokens = total.totalTokens
+            hasLastUsage = last != nil
+            lastInputTokens = last?.inputTokens ?? 0
+            lastCachedInputTokens = last?.cachedInputTokens ?? 0
+            lastOutputTokens = last?.outputTokens ?? 0
+            lastReasoningOutputTokens = last?.reasoningOutputTokens ?? 0
+            lastTokens = last?.totalTokens ?? 0
+        }
+
+        init(from decoder: Decoder) throws {
+            var values = try decoder.unkeyedContainer()
+            totalInputTokens = try values.decode(Int.self)
+            totalCachedInputTokens = try values.decode(Int.self)
+            totalOutputTokens = try values.decode(Int.self)
+            totalReasoningOutputTokens = try values.decode(Int.self)
+            totalTokens = try values.decode(Int.self)
+            hasLastUsage = try values.decode(Int.self) != 0
+            lastInputTokens = try values.decode(Int.self)
+            lastCachedInputTokens = try values.decode(Int.self)
+            lastOutputTokens = try values.decode(Int.self)
+            lastReasoningOutputTokens = try values.decode(Int.self)
+            lastTokens = try values.decode(Int.self)
+            guard values.isAtEnd else {
+                throw DecodingError.dataCorruptedError(
+                    in: values,
+                    debugDescription: "Token usage fingerprint has an unexpected length"
+                )
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var values = encoder.unkeyedContainer()
+            try values.encode(totalInputTokens)
+            try values.encode(totalCachedInputTokens)
+            try values.encode(totalOutputTokens)
+            try values.encode(totalReasoningOutputTokens)
+            try values.encode(totalTokens)
+            try values.encode(hasLastUsage ? 1 : 0)
+            try values.encode(lastInputTokens)
+            try values.encode(lastCachedInputTokens)
+            try values.encode(lastOutputTokens)
+            try values.encode(lastReasoningOutputTokens)
+            try values.encode(lastTokens)
+        }
+    }
+
     struct SessionCacheKey: Codable, Equatable {
         let path: String
         let size: UInt64
@@ -35,7 +163,7 @@ extension CodexUsageAnalyzer {
             let canIncrementFromOffset: Bool
             let forkReplayActive: Bool
             let lastSkippedForkReplayTokenAt: TimeInterval?
-            let recentUsageFingerprints: [[Int]]
+            let recentUsageFingerprints: [UsageSnapshotFingerprint]
             let eventCount: Int
         }
 
@@ -55,7 +183,7 @@ extension CodexUsageAnalyzer {
             let forkReplayActive: Bool
             let lastSkippedForkReplayTokenAt: TimeInterval?
             // Intentionally required: caches created before snapshot de-duplication must be rebuilt.
-            let recentUsageFingerprints: [[Int]]
+            let recentUsageFingerprints: [UsageSnapshotFingerprint]
             let events: [PersistentEvent]
         }
 
@@ -80,7 +208,7 @@ extension CodexUsageAnalyzer {
             let canIncrementFromOffset: Bool
             let forkReplayActive: Bool
             let lastSkippedForkReplayTokenAt: Date?
-            let recentUsageFingerprints: [[Int]]
+            let recentUsageFingerprints: [UsageSnapshotFingerprint]
             init(
                 key: SessionCacheKey,
                 events: [TokenEvent],
@@ -90,7 +218,7 @@ extension CodexUsageAnalyzer {
                 canIncrementFromOffset: Bool,
                 forkReplayActive: Bool,
                 lastSkippedForkReplayTokenAt: Date?,
-                recentUsageFingerprints: [[Int]] = []
+                recentUsageFingerprints: [UsageSnapshotFingerprint] = []
             ) {
                 self.key = key
                 self.events = events
@@ -101,6 +229,20 @@ extension CodexUsageAnalyzer {
                 self.forkReplayActive = forkReplayActive
                 self.lastSkippedForkReplayTokenAt = lastSkippedForkReplayTokenAt
                 self.recentUsageFingerprints = recentUsageFingerprints
+            }
+
+            func strippingConversationExcerpts() -> CachedSession {
+                CachedSession(
+                    key: key,
+                    events: events.map { $0.strippingConversationExcerpt() },
+                    lastOffset: lastOffset,
+                    endedWithNewline: endedWithNewline,
+                    previousTotalTokens: previousTotalTokens,
+                    canIncrementFromOffset: canIncrementFromOffset,
+                    forkReplayActive: forkReplayActive,
+                    lastSkippedForkReplayTokenAt: lastSkippedForkReplayTokenAt,
+                    recentUsageFingerprints: recentUsageFingerprints
+                )
             }
         }
 
@@ -154,6 +296,10 @@ extension CodexUsageAnalyzer {
             for path: String,
             appendingFromEventIndex: Int? = nil
         ) {
+            // The live cache must follow the same privacy and memory contract as
+            // the persisted cache. Snapshot candidates retain the few excerpts
+            // the ranking UI can actually display; historical cache entries do not.
+            let session = session.strippingConversationExcerpts()
             loadPersistentCacheIfNeeded()
             lock.lock()
             storage[path] = session
@@ -684,7 +830,10 @@ extension CodexUsageAnalyzer {
             var events: [PersistentEvent] = []
             events.reserveCapacity(expectedCount)
             for line in data.split(separator: 0x0A) {
-                guard let event = try? decoder.decode(PersistentEvent.self, from: Data(line)) else {
+                let event: PersistentEvent? = autoreleasepool {
+                    try? decoder.decode(PersistentEvent.self, from: Data(line))
+                }
+                guard let event else {
                     return nil
                 }
                 events.append(event)
@@ -702,9 +851,16 @@ extension CodexUsageAnalyzer {
                 cachedInputTokens: event.cachedInputTokens,
                 outputTokens: event.outputTokens,
                 reasoningOutputTokens: event.reasoningOutputTokens,
-                userPromptDigest: Self.digest(event.userPrompt),
-                assistantResponseDigest: Self.digest(event.assistantResponse)
+                // Keep the established non-content fields even after live
+                // excerpts are stripped, so old cache diagnostics retain a
+                // stable schema without retaining conversation text.
+                userPromptDigest: Self.redactedConversationDigest(for: event.userPrompt),
+                assistantResponseDigest: Self.redactedConversationDigest(for: event.assistantResponse)
             )
+        }
+
+        private static func redactedConversationDigest(for value: String) -> String? {
+            value.isEmpty ? "redacted" : Self.digest(value)
         }
 
         private static func tokenEvent(_ event: PersistentEvent) -> TokenEvent {
@@ -792,7 +948,7 @@ extension CodexUsageAnalyzer {
         let previousTotalTokens: Int?
         let forkReplayActive: Bool
         let lastSkippedForkReplayTokenAt: Date?
-        let recentUsageFingerprints: [[Int]]
+        let recentUsageFingerprints: [UsageSnapshotFingerprint]
     }
 
     struct SessionLineStreamResult {

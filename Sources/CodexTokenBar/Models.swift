@@ -13,6 +13,24 @@ struct TokenEvent: Identifiable {
     let assistantResponse: String
 }
 
+extension TokenEvent {
+    /// Session caches only need numeric usage. Keeping excerpts here multiplies
+    /// the live heap by every cached historical event after a precise scan.
+    func strippingConversationExcerpt() -> TokenEvent {
+        TokenEvent(
+            timestamp: timestamp,
+            sessionID: sessionID,
+            tokens: tokens,
+            inputTokens: inputTokens,
+            cachedInputTokens: cachedInputTokens,
+            outputTokens: outputTokens,
+            reasoningOutputTokens: reasoningOutputTokens,
+            userPrompt: "",
+            assistantResponse: ""
+        )
+    }
+}
+
 struct DayUsage: Codable, Identifiable, Equatable {
     var id: Date { date }
     let date: Date
@@ -240,9 +258,14 @@ extension DashboardStats {
 enum DashboardUsagePrecision: String, Codable, Equatable {
     case precise
     case metadataOnly
+    case safetyLimited
 
     var hasPreciseTokenUsage: Bool {
         self == .precise
+    }
+
+    var isSafetyLimited: Bool {
+        self == .safetyLimited
     }
 }
 

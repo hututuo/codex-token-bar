@@ -239,6 +239,16 @@ final class CodexUsageStore: ObservableObject {
                             "calls": String(loaded.stats.totalCalls),
                             "threads": String(loaded.stats.totalThreads)
                         ])
+                    } else if loaded.usagePrecision.isSafetyLimited {
+                        if !self.snapshot.hasPreciseTokenUsage {
+                            self.publish(loaded, sourceID: sourceID)
+                            self.status = self.safetyLimitedStatus(origin: source.originLabel)
+                        } else {
+                            self.status = self.staleSafetyLimitedStatus(origin: source.originLabel)
+                        }
+                        trace?.mark("preciseSnapshot.safetyLimited", metadata: [
+                            "threads": String(loaded.stats.totalThreads)
+                        ])
                     } else {
                         if !self.snapshot.hasPreciseTokenUsage {
                             self.publish(loaded, sourceID: sourceID)
@@ -320,6 +330,14 @@ final class CodexUsageStore: ObservableObject {
 
     private func staleMetadataOnlyStatus(origin: String) -> String {
         "\(origin) · 用量已陈旧 · 当前仅元数据，保留上次可信 token"
+    }
+
+    private func safetyLimitedStatus(origin: String) -> String {
+        "\(origin) · 精确历史扫描达到安全上限，当前仅显示会话元数据"
+    }
+
+    private func staleSafetyLimitedStatus(origin: String) -> String {
+        "\(origin) · 用量已陈旧 · 精确历史扫描达到安全上限，保留上次可信 token"
     }
 
     private func scheduleInitialPreciseRefresh() {

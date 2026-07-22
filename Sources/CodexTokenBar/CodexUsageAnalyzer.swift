@@ -4,6 +4,7 @@ final class CodexUsageAnalyzer {
     let fileManager = FileManager.default
     let calendar = Calendar.current
     let dataSource: CodexDataSource
+    let scanLimits: UsageScanLimits
     let fractionalDateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -15,8 +16,12 @@ final class CodexUsageAnalyzer {
         return formatter
     }()
 
-    init(dataSource: CodexDataSource) {
+    init(
+        dataSource: CodexDataSource,
+        scanLimits: UsageScanLimits = .production
+    ) {
         self.dataSource = dataSource
+        self.scanLimits = scanLimits
     }
 
     func load() throws -> DashboardSnapshot {
@@ -30,6 +35,9 @@ final class CodexUsageAnalyzer {
                 "calls": String(preciseSnapshot.stats.totalCalls)
             ])
             return preciseSnapshot
+        } catch let error as UsageScanLimitError {
+            trace?.end("precise-safety-limited", metadata: ["error": error.localizedDescription])
+            return try loadFromStateSQLite(usagePrecision: .safetyLimited)
         } catch let error as CodexUsageDiscoveryError {
             trace?.end("discovery-failed", metadata: ["error": error.localizedDescription])
             throw error
@@ -116,43 +124,54 @@ final class CodexUsageAnalyzer {
         Self.sessionEventCache.retainOnly(paths: Set(sessionFiles.map { $0.resolvingSymlinksInPath().path }))
         trace?.mark("retainOnly.end")
 
-        var events: [TokenEvent] = []
-        var sessionIDsWithEvents = Set<String>()
+        let aggregationNow = Date()
+        var aggregation = UsageAggregationBuilder(calendar: calendar, now: aggregationNow)
+        let scanBudget = UsageScanBudget(limits: scanLimits)
         trace?.mark("threadMetadata.begin")
         let metadata = loadThreadMetadata()
         trace?.mark("threadMetadata.end", metadata: ["plugins": String(metadata.plugins.count)])
 
         trace?.mark("parseSessions.begin")
-        for file in sessionFiles {
-            let sessionID = sessionID(from: file)
-            let sessionEvents = parseSession(file: file, sessionID: sessionID)
-            if !sessionEvents.isEmpty {
-                sessionIDsWithEvents.insert(sessionID)
-                events.append(contentsOf: sessionEvents)
+        do {
+            for file in sessionFiles {
+                try autoreleasepool {
+                    let sessionID = sessionID(from: file)
+                    let sessionEvents = try parseSession(
+                        file: file,
+                        sessionID: sessionID,
+                        scanBudget: scanBudget
+                    )
+                    aggregation.consume(sessionID: sessionID, events: sessionEvents)
+                }
             }
+        } catch {
+            // A safe partial cache is still useful on the next refresh. The
+            // snapshot itself is deliberately not stored until every session
+            // has completed.
+            Self.sessionEventCache.flushPersistentCache()
+            throw error
         }
         trace?.mark("parseSessions.end", metadata: [
-            "events": String(events.count),
-            "sessionsWithEvents": String(sessionIDsWithEvents.count)
+            "events": String(aggregation.totalEventCount),
+            "sessionsWithEvents": String(aggregation.totalSessionCount)
         ])
         trace?.mark("flushCache.begin")
         Self.sessionEventCache.flushPersistentCache()
         trace?.mark("flushCache.end")
 
-        guard !events.isEmpty else {
+        guard aggregation.totalEventCount > 0 else {
             trace?.end("no-token-events")
             throw NSError(domain: "CodexTokenBar", code: 6, userInfo: [NSLocalizedDescriptionKey: "No token_count events found in \(dataSource.displayPath)/sessions"])
         }
 
         trace?.mark("dailyUsage.begin")
-        let aggregationNow = Date()
-        let daily = dailyUsage(from: events, now: aggregationNow, calendar: calendar)
+        let daily = aggregation.dailyUsage()
         trace?.mark("dailyUsage.end", metadata: ["count": String(daily.count)])
         trace?.mark("recentBins.begin")
-        let recentBins = recentBins(from: events)
+        let recentBins = aggregation.recentBins()
         trace?.mark("recentBins.end", metadata: ["count": String(recentBins.count)])
         trace?.mark("hourlyUsage.begin")
-        let hourlyUsage = hourlyUsage(from: events)
+        let hourlyUsage = aggregation.hourlyUsage()
         trace?.mark("hourlyUsage.end", metadata: ["count": String(hourlyUsage.count)])
         trace?.mark("officialSummary.begin")
         let officialSummary = loadOfficialThreadSummary()
@@ -163,14 +182,14 @@ final class CodexUsageAnalyzer {
         let threadInfo = loadThreadInfo()
         trace?.mark("threadInfo.end", metadata: ["count": String(threadInfo.count)])
         trace?.mark("cacheUsage.begin")
-        let cacheUsage = cacheUsage(from: events, recentBins: recentBins, threadInfo: threadInfo)
+        let cacheUsage = aggregation.cacheUsage(recentBins: recentBins, threadInfo: threadInfo)
         trace?.mark("cacheUsage.end", metadata: [
             "sessions": String(cacheUsage.sessions.count),
             "turns": String(cacheUsage.turns.count)
         ])
-        let totalTokens = events.reduce(0) { $0 + $1.tokens }
+        let totalTokens = aggregation.totalTokens
         trace?.mark("stats.begin")
-        let peakThreadTokens = peakSessionTokens(from: events)
+        let peakThreadTokens = aggregation.peakSessionTokens
         let stats = DashboardStats(
             totalTokens: totalTokens,
             peakDayTokens: daily.map(\.tokens).max() ?? 0,
@@ -181,15 +200,15 @@ final class CodexUsageAnalyzer {
                 calendar: calendar
             ),
             longestStreakDays: longestStreakDays(from: daily),
-            totalCalls: events.count,
-            totalThreads: officialSummary?.totalThreads ?? sessionIDsWithEvents.count,
+            totalCalls: aggregation.totalCalls,
+            totalThreads: officialSummary?.totalThreads ?? aggregation.totalSessionCount,
             mostUsedReasoning: metadata.reasoning,
             skillsExplored: metadata.plugins.filter { $0.name.hasPrefix("$") }.count,
             totalSkillsUsed: metadata.plugins.count,
             totalInputTokens: cacheUsage.total.inputTokens,
             totalCachedInputTokens: cacheUsage.total.cachedInputTokens,
             totalOutputTokens: cacheUsage.total.outputTokens,
-            firstUsageAt: events.map(\.timestamp).min()
+            firstUsageAt: aggregation.firstEventAt
         )
         trace?.mark("stats.end", metadata: [
             "tokens": String(totalTokens),
@@ -214,7 +233,7 @@ final class CodexUsageAnalyzer {
         trace?.mark("flushCacheAfterSnapshot.end")
         trace?.end("ok", metadata: [
             "tokens": String(totalTokens),
-            "calls": String(events.count)
+            "calls": String(aggregation.totalCalls)
         ])
         return snapshot
     }

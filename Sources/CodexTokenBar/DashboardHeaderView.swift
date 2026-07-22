@@ -187,7 +187,25 @@ struct HeaderView: View {
     }
 
     private var headerPrecisionLabel: String {
-        snapshot.hasPreciseTokenUsage ? "精确统计" : "元数据"
+        switch snapshot.usagePrecision {
+        case .precise:
+            return "精确统计"
+        case .metadataOnly:
+            return "元数据"
+        case .safetyLimited:
+            return "安全受限"
+        }
+    }
+
+    private var headerPrecisionColor: Color {
+        switch snapshot.usagePrecision {
+        case .precise:
+            return AppTheme.accentGreen
+        case .safetyLimited:
+            return AppTheme.accentAmber
+        case .metadataOnly:
+            return .secondary
+        }
     }
 
     private var freshnessPresentation: DashboardHeaderFreshnessPresentation {
@@ -292,7 +310,7 @@ struct HeaderView: View {
                         DashboardHeaderRailDivider()
                         HStack(spacing: 7) {
                             Text(headerPrecisionLabel)
-                                .foregroundStyle(snapshot.hasPreciseTokenUsage ? AppTheme.accentGreen : .secondary)
+                                .foregroundStyle(headerPrecisionColor)
                             Text(freshnessPresentation.text)
                                 .foregroundStyle(freshnessPresentation.needsAttention ? AppTheme.accentRed : .secondary)
                                 .lineLimit(1)
@@ -539,7 +557,9 @@ struct StatStripStatusLinePresentation: Equatable {
         cacheStatus: String
     ) {
         let trimmedStatus = cacheStatus.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedStatus.hasPrefix("读取失败") || trimmedStatus.contains("用量已陈旧") {
+        if trimmedStatus.hasPrefix("读取失败")
+            || trimmedStatus.contains("用量已陈旧")
+            || trimmedStatus.contains("安全上限") {
             text = trimmedStatus
             showsProgress = false
             return
