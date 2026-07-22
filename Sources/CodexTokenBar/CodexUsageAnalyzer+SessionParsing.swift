@@ -1,5 +1,36 @@
 import Foundation
 
+private struct RecentUsageFingerprintBuffer {
+    private let limit: Int
+    private var values: [[Int]] = []
+    private var nextReplacementIndex = 0
+    private var seen = Set<[Int]>()
+
+    init(_ initialValues: [[Int]], limit: Int) {
+        self.limit = max(1, limit)
+        for value in initialValues.suffix(limit) {
+            _ = insertIfNew(value)
+        }
+    }
+
+    mutating func insertIfNew(_ value: [Int]) -> Bool {
+        guard seen.insert(value).inserted else { return false }
+        if values.count < limit {
+            values.append(value)
+        } else {
+            seen.remove(values[nextReplacementIndex])
+            values[nextReplacementIndex] = value
+            nextReplacementIndex = (nextReplacementIndex + 1) % limit
+        }
+        return true
+    }
+
+    var orderedValues: [[Int]] {
+        guard values.count == limit, nextReplacementIndex > 0 else { return values }
+        return Array(values[nextReplacementIndex...]) + Array(values[..<nextReplacementIndex])
+    }
+}
+
 enum CodexUsageDiscoveryError: LocalizedError {
     case selectedHomeUnavailable(path: String)
     case selectedHomeIdentityChanged(path: String)
@@ -25,6 +56,7 @@ enum CodexUsageDiscoveryError: LocalizedError {
 
 extension CodexUsageAnalyzer {
     private static let forkReplayExitGrace: TimeInterval = 2
+    private static let recentUsageFingerprintLimit = 4_096
     private static let maximumSessionTraversalDepth = 64
     private static let maximumSessionTraversalEntries = 200_000
 
@@ -325,7 +357,8 @@ extension CodexUsageAnalyzer {
                 startingAt: cached.lastOffset,
                 previousTotal: cached.previousTotalTokens,
                 initialForkReplayActive: cached.forkReplayActive,
-                initialLastSkippedForkReplayTokenAt: cached.lastSkippedForkReplayTokenAt
+                initialLastSkippedForkReplayTokenAt: cached.lastSkippedForkReplayTokenAt,
+                initialRecentUsageFingerprints: cached.recentUsageFingerprints
             )
             let events = cached.events + appended.events
             Self.sessionEventCache.recordIncrementalSessionParseForTesting()
@@ -338,7 +371,8 @@ extension CodexUsageAnalyzer {
                     previousTotalTokens: appended.previousTotalTokens,
                     canIncrementFromOffset: appended.endedWithNewline,
                     forkReplayActive: appended.forkReplayActive,
-                    lastSkippedForkReplayTokenAt: appended.lastSkippedForkReplayTokenAt
+                    lastSkippedForkReplayTokenAt: appended.lastSkippedForkReplayTokenAt,
+                    recentUsageFingerprints: appended.recentUsageFingerprints
                 ),
                 for: cachePath,
                 appendingFromEventIndex: cached.events.count
@@ -367,7 +401,8 @@ extension CodexUsageAnalyzer {
                 previousTotalTokens: result.previousTotalTokens,
                 canIncrementFromOffset: result.endedWithNewline,
                 forkReplayActive: result.forkReplayActive,
-                lastSkippedForkReplayTokenAt: result.lastSkippedForkReplayTokenAt
+                lastSkippedForkReplayTokenAt: result.lastSkippedForkReplayTokenAt,
+                recentUsageFingerprints: result.recentUsageFingerprints
             ),
             for: cachePath
         )
@@ -389,10 +424,15 @@ extension CodexUsageAnalyzer {
         startingAt offset: UInt64,
         previousTotal initialPreviousTotal: Int?,
         initialForkReplayActive: Bool? = nil,
-        initialLastSkippedForkReplayTokenAt: Date? = nil
+        initialLastSkippedForkReplayTokenAt: Date? = nil,
+        initialRecentUsageFingerprints: [[Int]] = []
     ) -> SessionParseResult {
         var events: [TokenEvent] = []
         var previousTotal = initialPreviousTotal
+        var recentUsageFingerprints = RecentUsageFingerprintBuffer(
+            initialRecentUsageFingerprints,
+            limit: Self.recentUsageFingerprintLimit
+        )
         var currentUserPrompt = ""
         var assistantFragments: [String] = []
         let forkReplayStartedAt = forkedSessionReplayStartedAt(for: file)
@@ -423,26 +463,32 @@ extension CodexUsageAnalyzer {
             }
 
             let totalTokens = usageLine.total?.totalTokens
+            let previousHighWater = previousTotal
+            // A single JSONL can interleave several cumulative counters after forks/subagents.
+            // A high-water mark keeps a lower stream from creating a false jump later.
+            if let totalTokens {
+                previousTotal = max(previousTotal ?? totalTokens, totalTokens)
+            }
+            // Timestamp is intentionally excluded so replayed copies of the same usage snapshot
+            // remain duplicates even when Codex emits them at a later time.
+            let isNewSnapshot = usageSnapshotFingerprint(for: usageLine)
+                .map { recentUsageFingerprints.insertIfNew($0) } ?? true
             if isSkippingForkReplay {
                 lastSkippedForkReplayTokenAt = usageLine.timestamp
-                if let totalTokens {
-                    previousTotal = totalTokens
-                }
                 return
             }
+
+            guard isNewSnapshot else { return }
 
             let lastTokens = usageLine.last?.totalTokens
             let delta: Int
 
-            if let totalTokens {
-                if let previousTotal, totalTokens >= previousTotal {
-                    delta = totalTokens - previousTotal
-                } else {
-                    delta = lastTokens ?? totalTokens
-                }
-                previousTotal = totalTokens
+            if let lastTokens, lastTokens > 0 {
+                delta = lastTokens
+            } else if let totalTokens {
+                delta = previousHighWater.map { max(0, totalTokens - $0) } ?? totalTokens
             } else {
-                delta = lastTokens ?? 0
+                delta = 0
             }
 
             guard delta > 0 else { return }
@@ -467,8 +513,33 @@ extension CodexUsageAnalyzer {
             endedWithNewline: stream.endedWithNewline,
             previousTotalTokens: previousTotal,
             forkReplayActive: isSkippingForkReplay,
-            lastSkippedForkReplayTokenAt: lastSkippedForkReplayTokenAt
+            lastSkippedForkReplayTokenAt: lastSkippedForkReplayTokenAt,
+            recentUsageFingerprints: recentUsageFingerprints.orderedValues
         )
+    }
+
+    private func usageSnapshotFingerprint(for usageLine: ParsedTokenUsageLine) -> [Int]? {
+        guard let total = usageLine.total else { return nil }
+        var fingerprint = [
+            total.inputTokens,
+            total.cachedInputTokens,
+            total.outputTokens,
+            total.reasoningOutputTokens,
+            total.totalTokens,
+            usageLine.last == nil ? 0 : 1
+        ]
+        if let last = usageLine.last {
+            fingerprint.append(contentsOf: [
+                last.inputTokens,
+                last.cachedInputTokens,
+                last.outputTokens,
+                last.reasoningOutputTokens,
+                last.totalTokens
+            ])
+        } else {
+            fingerprint.append(contentsOf: repeatElement(0, count: 5))
+        }
+        return fingerprint
     }
 
     private func forkedSessionReplayStartedAt(for file: URL) -> Date? {

@@ -1,7 +1,7 @@
 use super::{
     session_parser::{
         parse_session_file, parse_session_file_full_result, parse_session_file_range,
-        ForkReplayState,
+        ForkReplayState, UsageSnapshotFingerprint,
     },
     TokenEvent,
 };
@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use time::OffsetDateTime;
 
-const TOKEN_EVENT_CACHE_VERSION: u32 = 8;
+// Version 9 rebuilds events created by the old single-counter delta logic.
+const TOKEN_EVENT_CACHE_VERSION: u32 = 9;
 const STALE_TEMP_MIN_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const SHARD_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const SHARD_TARGET_DAILY_WRITE_BYTES: u64 = 256 * 1024 * 1024;
@@ -71,6 +72,8 @@ pub(super) struct CachedSessionFile {
     pub(super) fork_replay_active: bool,
     #[serde(default)]
     pub(super) last_skipped_fork_replay_token_at: Option<i64>,
+    #[serde(default)]
+    pub(super) recent_usage_fingerprints: Vec<UsageSnapshotFingerprint>,
     pub(super) events: Vec<CachedTokenEvent>,
 }
 
@@ -391,6 +394,7 @@ pub(super) fn parse_session_file_cached(
                 parsed_size,
                 previous_total_tokens,
                 entry.fork_replay_state(),
+                Some(&entry.recent_usage_fingerprints),
                 warnings,
             );
             if parsed.consumed_size > parsed_size || signature.size == parsed_size {
@@ -412,6 +416,7 @@ pub(super) fn parse_session_file_cached(
                     entry.last_skipped_fork_replay_token_at = parsed
                         .last_skipped_fork_replay_token_at
                         .map(|timestamp| timestamp.unix_timestamp());
+                    entry.recent_usage_fingerprints = parsed.recent_usage_fingerprints;
                     *cache_changed = true;
                     return entry.to_events(session_id);
                 }
@@ -454,6 +459,7 @@ fn reparse_session_file(
             last_skipped_fork_replay_token_at: parsed
                 .last_skipped_fork_replay_token_at
                 .map(|timestamp| timestamp.unix_timestamp()),
+            recent_usage_fingerprints: parsed.recent_usage_fingerprints,
             events: events.iter().map(CachedTokenEvent::from_event).collect(),
         },
     );

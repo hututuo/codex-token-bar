@@ -15,7 +15,8 @@ extension CodexUsageAnalyzer {
     }
 
     final class SessionEventCache: @unchecked Sendable {
-        private static let persistentCacheVersion = 9
+        // Version 10 invalidates token events produced by the old single-counter delta logic.
+        private static let persistentCacheVersion = 10
         private static let legacyPersistentCacheVersion = 8
         private static let appCacheDirectoryName = "CodexTokenBarSwift"
         static let cacheNamespace = "swift-usage-cache-2026-07-v4"
@@ -34,6 +35,7 @@ extension CodexUsageAnalyzer {
             let canIncrementFromOffset: Bool
             let forkReplayActive: Bool
             let lastSkippedForkReplayTokenAt: TimeInterval?
+            let recentUsageFingerprints: [[Int]]
             let eventCount: Int
         }
 
@@ -52,6 +54,8 @@ extension CodexUsageAnalyzer {
             let canIncrementFromOffset: Bool
             let forkReplayActive: Bool
             let lastSkippedForkReplayTokenAt: TimeInterval?
+            // Intentionally required: caches created before snapshot de-duplication must be rebuilt.
+            let recentUsageFingerprints: [[Int]]
             let events: [PersistentEvent]
         }
 
@@ -76,6 +80,7 @@ extension CodexUsageAnalyzer {
             let canIncrementFromOffset: Bool
             let forkReplayActive: Bool
             let lastSkippedForkReplayTokenAt: Date?
+            let recentUsageFingerprints: [[Int]]
             init(
                 key: SessionCacheKey,
                 events: [TokenEvent],
@@ -84,7 +89,8 @@ extension CodexUsageAnalyzer {
                 previousTotalTokens: Int?,
                 canIncrementFromOffset: Bool,
                 forkReplayActive: Bool,
-                lastSkippedForkReplayTokenAt: Date?
+                lastSkippedForkReplayTokenAt: Date?,
+                recentUsageFingerprints: [[Int]] = []
             ) {
                 self.key = key
                 self.events = events
@@ -94,6 +100,7 @@ extension CodexUsageAnalyzer {
                 self.canIncrementFromOffset = canIncrementFromOffset
                 self.forkReplayActive = forkReplayActive
                 self.lastSkippedForkReplayTokenAt = lastSkippedForkReplayTokenAt
+                self.recentUsageFingerprints = recentUsageFingerprints
             }
         }
 
@@ -338,6 +345,7 @@ extension CodexUsageAnalyzer {
                         canIncrementFromOffset: value.canIncrementFromOffset,
                         forkReplayActive: value.forkReplayActive,
                         lastSkippedForkReplayTokenAt: value.lastSkippedForkReplayTokenAt?.timeIntervalSince1970,
+                        recentUsageFingerprints: value.recentUsageFingerprints,
                         eventCount: value.events.count
                     )
                     writtenBytes += try Self.persist(
@@ -463,7 +471,8 @@ extension CodexUsageAnalyzer {
                     previousTotalTokens: metadata.previousTotalTokens,
                     canIncrementFromOffset: metadata.canIncrementFromOffset,
                     forkReplayActive: metadata.forkReplayActive,
-                    lastSkippedForkReplayTokenAt: metadata.lastSkippedForkReplayTokenAt.map(Date.init(timeIntervalSince1970:))
+                    lastSkippedForkReplayTokenAt: metadata.lastSkippedForkReplayTokenAt.map(Date.init(timeIntervalSince1970:)),
+                    recentUsageFingerprints: metadata.recentUsageFingerprints
                 )
             }
             return loaded
@@ -497,7 +506,8 @@ extension CodexUsageAnalyzer {
                     previousTotalTokens: entry.previousTotalTokens,
                     canIncrementFromOffset: entry.canIncrementFromOffset,
                     forkReplayActive: entry.forkReplayActive,
-                    lastSkippedForkReplayTokenAt: entry.lastSkippedForkReplayTokenAt.map(Date.init(timeIntervalSince1970:))
+                    lastSkippedForkReplayTokenAt: entry.lastSkippedForkReplayTokenAt.map(Date.init(timeIntervalSince1970:)),
+                    recentUsageFingerprints: entry.recentUsageFingerprints
                 )
             }
             return loaded
@@ -782,6 +792,7 @@ extension CodexUsageAnalyzer {
         let previousTotalTokens: Int?
         let forkReplayActive: Bool
         let lastSkippedForkReplayTokenAt: Date?
+        let recentUsageFingerprints: [[Int]]
     }
 
     struct SessionLineStreamResult {

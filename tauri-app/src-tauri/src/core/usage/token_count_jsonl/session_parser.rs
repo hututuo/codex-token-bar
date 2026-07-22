@@ -1,6 +1,7 @@
 use super::TokenEvent;
 use crate::models::LocalDataWarning;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
@@ -10,6 +11,8 @@ use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 
 const FORK_REPLAY_EXIT_GRACE: Duration = Duration::seconds(2);
+const RECENT_USAGE_FINGERPRINT_LIMIT: usize = 4_096;
+pub(super) type UsageSnapshotFingerprint = [u64; 9];
 
 #[cfg(test)]
 static SESSION_FULL_PARSE_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -42,6 +45,7 @@ pub(super) struct SessionParseResult {
     pub(super) ended_with_newline: bool,
     pub(super) fork_replay_active: bool,
     pub(super) last_skipped_fork_replay_token_at: Option<OffsetDateTime>,
+    pub(super) recent_usage_fingerprints: Vec<UsageSnapshotFingerprint>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -64,7 +68,7 @@ pub(super) fn parse_session_file_full_result(
     warnings: &mut Vec<LocalDataWarning>,
 ) -> SessionParseResult {
     record_full_parse_for_testing();
-    parse_session_file_range(file, session_id, 0, None, None, warnings)
+    parse_session_file_range(file, session_id, 0, None, None, None, warnings)
 }
 
 pub(super) fn parse_session_file_range(
@@ -73,6 +77,7 @@ pub(super) fn parse_session_file_range(
     start_offset: u64,
     initial_previous_total: Option<u64>,
     initial_fork_replay_state: Option<ForkReplayState>,
+    initial_recent_usage_fingerprints: Option<&[UsageSnapshotFingerprint]>,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> SessionParseResult {
     let handle = match fs::File::open(file) {
@@ -90,6 +95,9 @@ pub(super) fn parse_session_file_range(
                 ended_with_newline: true,
                 fork_replay_active: false,
                 last_skipped_fork_replay_token_at: None,
+                recent_usage_fingerprints: initial_recent_usage_fingerprints
+                    .unwrap_or_default()
+                    .to_vec(),
             };
         }
     };
@@ -108,6 +116,9 @@ pub(super) fn parse_session_file_range(
                 ended_with_newline: true,
                 fork_replay_active: false,
                 last_skipped_fork_replay_token_at: None,
+                recent_usage_fingerprints: initial_recent_usage_fingerprints
+                    .unwrap_or_default()
+                    .to_vec(),
             };
         }
     }
@@ -119,6 +130,8 @@ pub(super) fn parse_session_file_range(
     let mut last_skipped_fork_replay_token_at =
         initial_fork_replay_state.and_then(|state: ForkReplayState| state.last_skipped_token_at);
     let mut previous_total = initial_previous_total;
+    let mut recent_usage_fingerprints =
+        RecentUsageFingerprintBuffer::new(initial_recent_usage_fingerprints.unwrap_or_default());
     let mut current_user_prompt = String::new();
     let mut assistant_fragments = Vec::<String>::new();
     let mut events = Vec::new();
@@ -176,28 +189,40 @@ pub(super) fn parse_session_file_range(
             consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         };
+        let total_tokens = usage_line.total.as_ref().map(|usage| usage.total_tokens);
+        let previous_high_water = previous_total;
+        // Forks/subagents can interleave several cumulative counters in one JSONL. Keeping the
+        // high-water mark prevents a lower stream from creating a false jump when a higher one
+        // appears again.
+        if let Some(total_tokens) = total_tokens {
+            previous_total =
+                Some(previous_total.map_or(total_tokens, |previous| previous.max(total_tokens)));
+        }
+        // Timestamp is deliberately excluded so a replayed copy remains a duplicate even when
+        // Codex emits it at a later time.
+        let is_new_snapshot = usage_snapshot_fingerprint(&usage_line).map_or(true, |fingerprint| {
+            recent_usage_fingerprints.insert_if_new(fingerprint)
+        });
         if fork_replay_active {
             last_skipped_fork_replay_token_at = Some(usage_line.timestamp);
-            if let Some(total_tokens) = usage_line.total.as_ref().map(|usage| usage.total_tokens) {
-                previous_total = Some(total_tokens);
-            }
             consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         }
 
-        let total_tokens = usage_line.total.as_ref().map(|usage| usage.total_tokens);
+        if !is_new_snapshot {
+            consumed_size = consumed_size.saturating_add(bytes_read as u64);
+            continue;
+        }
+
         let last_tokens = usage_line.last.as_ref().map(|usage| usage.total_tokens);
-        let delta = if let Some(total_tokens) = total_tokens {
-            let delta = match previous_total {
-                Some(previous_total) if total_tokens >= previous_total => {
-                    total_tokens - previous_total
-                }
-                _ => last_tokens.unwrap_or(total_tokens),
-            };
-            previous_total = Some(total_tokens);
-            delta
+        let delta = if last_tokens.is_some_and(|tokens| tokens > 0) {
+            last_tokens.unwrap_or_default()
+        } else if let Some(total_tokens) = total_tokens {
+            previous_high_water.map_or(total_tokens, |previous| {
+                total_tokens.saturating_sub(previous)
+            })
         } else {
-            last_tokens.unwrap_or(0)
+            0
         };
 
         consumed_size = consumed_size.saturating_add(bytes_read as u64);
@@ -234,7 +259,80 @@ pub(super) fn parse_session_file_range(
         ended_with_newline,
         fork_replay_active,
         last_skipped_fork_replay_token_at,
+        recent_usage_fingerprints: recent_usage_fingerprints.ordered_values(),
     }
+}
+
+struct RecentUsageFingerprintBuffer {
+    values: Vec<UsageSnapshotFingerprint>,
+    next_replacement_index: usize,
+    seen: HashSet<UsageSnapshotFingerprint>,
+}
+
+impl RecentUsageFingerprintBuffer {
+    fn new(initial_values: &[UsageSnapshotFingerprint]) -> Self {
+        let mut buffer = Self {
+            values: Vec::new(),
+            next_replacement_index: 0,
+            seen: HashSet::new(),
+        };
+        for fingerprint in initial_values
+            .iter()
+            .rev()
+            .take(RECENT_USAGE_FINGERPRINT_LIMIT)
+            .rev()
+        {
+            buffer.insert_if_new(*fingerprint);
+        }
+        buffer
+    }
+
+    fn insert_if_new(&mut self, fingerprint: UsageSnapshotFingerprint) -> bool {
+        if !self.seen.insert(fingerprint) {
+            return false;
+        }
+        if self.values.len() < RECENT_USAGE_FINGERPRINT_LIMIT {
+            self.values.push(fingerprint);
+        } else {
+            self.seen.remove(&self.values[self.next_replacement_index]);
+            self.values[self.next_replacement_index] = fingerprint;
+            self.next_replacement_index =
+                (self.next_replacement_index + 1) % RECENT_USAGE_FINGERPRINT_LIMIT;
+        }
+        true
+    }
+
+    fn ordered_values(self) -> Vec<UsageSnapshotFingerprint> {
+        if self.values.len() < RECENT_USAGE_FINGERPRINT_LIMIT || self.next_replacement_index == 0 {
+            return self.values;
+        }
+        self.values[self.next_replacement_index..]
+            .iter()
+            .chain(self.values[..self.next_replacement_index].iter())
+            .copied()
+            .collect()
+    }
+}
+
+fn usage_snapshot_fingerprint(usage_line: &ParsedUsageLine) -> Option<UsageSnapshotFingerprint> {
+    let total = usage_line.total.as_ref()?;
+    let mut fingerprint = [0; 9];
+    fingerprint[..4].copy_from_slice(&[
+        total.input_tokens,
+        total.cached_input_tokens,
+        total.output_tokens,
+        total.total_tokens,
+    ]);
+    if let Some(last) = usage_line.last.as_ref() {
+        fingerprint[4] = 1;
+        fingerprint[5..].copy_from_slice(&[
+            last.input_tokens,
+            last.cached_input_tokens,
+            last.output_tokens,
+            last.total_tokens,
+        ]);
+    }
+    Some(fingerprint)
 }
 
 #[cfg(test)]

@@ -137,6 +137,123 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(Set(snapshot.cacheUsage.turns.map(\.userPrompt)), ["First question", "Second question"])
     }
 
+    func testInterleavedCumulativeStreamsUseUniqueLastUsageSnapshots() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019faaaa-bbbb-cccc-dddd-interleaved"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-07-22-\(sessionID).jsonl")
+        let now = Date()
+        let streamATotal = Usage(
+            input: 2_718_279_305,
+            cachedInput: 0,
+            output: 0,
+            reasoning: 0,
+            total: 2_718_279_305
+        )
+        let streamALast = Usage(input: 157_910, cachedInput: 0, output: 0, reasoning: 0, total: 157_910)
+        let lines = [
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-60),
+                total: streamATotal,
+                last: streamALast
+            ),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-50),
+                total: Usage(input: 2_583_955_090, cachedInput: 0, output: 0, reasoning: 0, total: 2_583_955_090),
+                last: Usage(input: 113_621, cachedInput: 0, output: 0, reasoning: 0, total: 113_621)
+            ),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-40),
+                total: streamATotal,
+                last: streamALast
+            ),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-30),
+                total: Usage(input: 2_584_078_056, cachedInput: 0, output: 0, reasoning: 0, total: 2_584_078_056),
+                last: Usage(input: 122_966, cachedInput: 0, output: 0, reasoning: 0, total: 122_966)
+            ),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-20),
+                total: Usage(input: 2_718_437_623, cachedInput: 0, output: 0, reasoning: 0, total: 2_718_437_623),
+                last: Usage(input: 158_318, cachedInput: 0, output: 0, reasoning: 0, total: 158_318)
+            ),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-10),
+                total: Usage(input: 2_718_437_623, cachedInput: 0, output: 0, reasoning: 0, total: 2_718_437_623),
+                last: Usage(input: 77_777, cachedInput: 0, output: 0, reasoning: 0, total: 77_777)
+            )
+        ]
+        try lines.joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertEqual(snapshot.stats.totalTokens, 630_592)
+        XCTAssertEqual(snapshot.stats.totalCalls, 5)
+        XCTAssertEqual(snapshot.cacheUsage.total.inputTokens, 630_592)
+    }
+
+    func testPersistentCacheKeepsInterleavedSnapshotDedupeAcrossRestart() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageInterleavedRestart")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019faaaa-bbbb-cccc-dddd-interleaved-cache"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-07-22-\(sessionID).jsonl")
+        let now = Date()
+        let streamAUsage = Usage(input: 100, cachedInput: 0, output: 0, reasoning: 0, total: 100)
+        try [
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-40),
+                total: Usage(input: 1_000, cachedInput: 0, output: 0, reasoning: 0, total: 1_000),
+                last: streamAUsage
+            ),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-30),
+                total: Usage(input: 900, cachedInput: 0, output: 0, reasoning: 0, total: 900),
+                last: Usage(input: 90, cachedInput: 0, output: 0, reasoning: 0, total: 90)
+            )
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(
+            try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load().stats.totalTokens,
+            190
+        )
+        CodexUsageAnalyzer.clearUsageCachesForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+
+        try appendLines([
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-20),
+                total: Usage(input: 1_000, cachedInput: 0, output: 0, reasoning: 0, total: 1_000),
+                last: streamAUsage
+            ),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-10),
+                total: Usage(input: 990, cachedInput: 0, output: 0, reasoning: 0, total: 990),
+                last: Usage(input: 90, cachedInput: 0, output: 0, reasoning: 0, total: 90)
+            )
+        ], to: sessionFile)
+
+        let reloaded = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertEqual(reloaded.stats.totalTokens, 280)
+        XCTAssertEqual(reloaded.stats.totalCalls, 3)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 1)
+    }
+
     func testRecentBinsKeepFiveMinuteHistoryForThirtyDays() throws {
         let codexHome = try makeCodexHome()
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
@@ -1217,7 +1334,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
     }
 
-    func testPersistentV9MigratesPreviousNamespaceWithoutFullSessionParse() throws {
+    func testPersistentCacheRebuildsPreviousNamespaceAfterCountingRuleChange() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV9Migration")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -1282,10 +1399,12 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         XCTAssertEqual(snapshot.stats.totalTokens, 120)
         XCTAssertEqual(snapshot.stats.totalCalls, 1)
-        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
         let v9Directory = swiftUsageCacheRoot(in: cacheRoot)
             .appendingPathComponent("session-token-events-v9", isDirectory: true)
-        XCTAssertTrue(try cacheTextContents(under: v9Directory).contains(#""eventCount":1"#))
+        let rebuiltCache = try cacheTextContents(under: v9Directory)
+        XCTAssertTrue(rebuiltCache.contains(#""eventCount":1"#))
+        XCTAssertFalse(rebuiltCache.contains("legacy-prompt-digest"))
 
         UsageCacheLifecycle.markCurrentCachePrepared()
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacyNamespace.path))
