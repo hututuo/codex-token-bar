@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
@@ -155,6 +156,53 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
 }
 
 #[test]
+fn exact_index_prunes_superseded_file_versions_on_the_next_streaming_scan() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eversion-gc-0000-0000-0000-exact.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":101,"cached_input_tokens":20,"output_tokens":20,"total_tokens":121}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 121);
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    drop(connection);
+
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 121);
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1,
+        "obsolete file generations must not accumulate without bound"
+    );
+    drop(connection);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_scans_more_than_20_000_session_files_without_truncation() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
@@ -257,6 +305,187 @@ fn exact_index_commits_the_scan_start_prefix_while_the_active_file_appends() {
     let after_append = dashboard_snapshot(&root).unwrap();
     assert_eq!(after_append.stats.total_tokens, 170);
     assert_eq!(after_append.stats.total_calls, 2);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_cold_scan_resumes_committed_files_without_publishing_partial_totals() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019eresume-a-0000-0000-0000-exact.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    write_lines(
+        &session_dir.join("rollout-019eresume-b-0000-0000-0000-exact.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#,
+        ],
+    );
+
+    let committed_path = Arc::new(Mutex::new(None::<PathBuf>));
+    let committed_path_for_hook = Arc::clone(&committed_path);
+    ExactUsageIndex::set_after_file_commit_hook_for_testing(move |path| {
+        *committed_path_for_hook.lock().unwrap() = Some(path.to_path_buf());
+        Err("injected interruption after durable file commit".into())
+    });
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let initial_revision = index.revision().unwrap();
+    let error = index.sync(&root, &mut Vec::new()).unwrap_err();
+    assert!(error.contains("injected interruption"), "{error}");
+    drop(index);
+
+    let connection = Connection::open(&index_path).unwrap();
+    let building_generation = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'building_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE generation = ?1 AND deleted = 0",
+                [building_generation],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+        "the completed file must be durable before the full generation publishes"
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM published_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        0,
+        "cold-start readers must not see staged event rows"
+    );
+    drop(connection);
+
+    let index = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(index.revision().unwrap(), initial_revision);
+    assert!(index.is_empty().unwrap());
+    assert_eq!(
+        index
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        0
+    );
+    drop(index);
+    assert!(cached_dashboard_usage_summary(&root).is_none());
+
+    let resumed_parse = Arc::new(Mutex::new(None::<PathBuf>));
+    let resumed_parse_for_hook = Arc::clone(&resumed_parse);
+    ExactUsageIndex::set_after_prefix_scan_hook_for_testing(move |path| {
+        *resumed_parse_for_hook.lock().unwrap() = Some(path.to_path_buf());
+    });
+    let mut resumed = ExactUsageIndex::open(&root).unwrap();
+    let completed_revision = resumed.sync(&root, &mut Vec::new()).unwrap();
+    assert!(completed_revision > initial_revision);
+    assert_eq!(
+        resumed
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        150
+    );
+    assert!(resumed_parse.lock().unwrap().is_some());
+    assert!(committed_path.lock().unwrap().is_some());
+    assert_ne!(
+        resumed_parse.lock().unwrap().as_ref(),
+        committed_path.lock().unwrap().as_ref(),
+        "resume must skip the file whose current signature was already committed"
+    );
+    let connection = Connection::open(&index_path).unwrap();
+    assert!(connection
+        .query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM metadata WHERE key = 'building_generation')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap());
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM published_files", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        2
+    );
+    drop(connection);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_interrupted_refresh_keeps_the_previous_complete_revision_and_aggregate() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let original_file = session_dir.join("rollout-019epublished-a-0000-0000-0000-exact.jsonl");
+    write_lines(
+        &original_file,
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let published_revision = ExactUsageIndex::open(&root).unwrap().revision().unwrap();
+
+    write_lines(
+        &original_file,
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":101,"cached_input_tokens":20,"output_tokens":20,"total_tokens":121}}}}"#,
+        ],
+    );
+    write_lines(
+        &session_dir.join("rollout-019epublished-b-0000-0000-0000-exact.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#,
+        ],
+    );
+    ExactUsageIndex::set_after_file_commit_hook_for_testing(|_| {
+        Err("injected interruption with a published generation".into())
+    });
+    let mut interrupted = ExactUsageIndex::open(&root).unwrap();
+    assert!(interrupted.sync(&root, &mut Vec::new()).is_err());
+    assert_eq!(interrupted.revision().unwrap(), published_revision);
+    assert_eq!(
+        interrupted
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        120,
+        "staged rows must never pollute the prior published total"
+    );
+    assert_eq!(
+        cached_dashboard_usage_summary(&root).unwrap().total_tokens,
+        120,
+        "the UI-facing aggregate must remain on the last complete revision"
+    );
+
+    let completed_revision = interrupted.sync(&root, &mut Vec::new()).unwrap();
+    assert!(completed_revision > published_revision);
+    assert_eq!(
+        interrupted
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        151
+    );
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -377,7 +606,7 @@ fn exact_index_quick_check_recovers_a_corrupt_database_by_rebuilding() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "3"
+        "4"
     );
 
     fs::remove_dir_all(root).unwrap();

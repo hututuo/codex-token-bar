@@ -27,7 +27,7 @@ use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
 
-const INDEX_SCHEMA_VERSION: i64 = 3;
+const INDEX_SCHEMA_VERSION: i64 = 4;
 const HOURLY_INTERVAL_SECONDS: i64 = 60 * 60;
 const SEVEN_DAY_POINT_COUNT: i64 = 7 * 24;
 const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
@@ -77,10 +77,13 @@ struct IndexedTurnCandidate {
 
 #[cfg(test)]
 type AfterPrefixScanHook = Box<dyn FnOnce(&Path)>;
+#[cfg(test)]
+type AfterFileCommitHook = Box<dyn FnOnce(&Path) -> Result<(), String>>;
 
 #[cfg(test)]
 thread_local! {
     static AFTER_PREFIX_SCAN_HOOK: RefCell<Option<AfterPrefixScanHook>> = RefCell::new(None);
+    static AFTER_FILE_COMMIT_HOOK: RefCell<Option<AfterFileCommitHook>> = RefCell::new(None);
 }
 
 impl ExactUsageIndex {
@@ -120,6 +123,16 @@ impl ExactUsageIndex {
                 &INDEX_SCHEMA_VERSION.to_string(),
             )?;
             set_metadata(&connection, "revision", &fresh_revision_seed().to_string())?;
+            set_metadata(&connection, "published_generation", "0")?;
+            connection
+                .execute(
+                    "DELETE FROM metadata WHERE key IN ('building_generation', 'building_changed')",
+                    [],
+                )
+                .map_err(|error| format!("无法初始化精确 token 同步状态：{error}"))?;
+        }
+        if metadata_i64(&connection, "published_generation")?.is_none() {
+            set_metadata(&connection, "published_generation", "0")?;
         }
 
         let identity = codex_home_identity(codex_home);
@@ -130,11 +143,14 @@ impl ExactUsageIndex {
                     DELETE FROM events;
                     DELETE FROM files;
                     DELETE FROM session_metadata;
+                    DELETE FROM metadata
+                    WHERE key NOT IN ('schema_version');
                     "#,
                 )
                 .map_err(|error| format!("无法切换精确 token 索引数据源：{error}"))?;
             set_metadata(&connection, "codex_home_identity", &identity)?;
             set_metadata(&connection, "revision", &fresh_revision_seed().to_string())?;
+            set_metadata(&connection, "published_generation", "0")?;
         }
 
         Ok(Self { connection })
@@ -147,79 +163,32 @@ impl ExactUsageIndex {
         });
     }
 
+    #[cfg(test)]
+    pub(super) fn set_after_file_commit_hook_for_testing(
+        hook: impl FnOnce(&Path) -> Result<(), String> + 'static,
+    ) {
+        AFTER_FILE_COMMIT_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(hook));
+        });
+    }
+
     pub(super) fn sync(
         &mut self,
         codex_home: &Path,
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<u64, String> {
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| format!("无法开始精确 token 索引事务：{error}"))?;
-        transaction
-            .execute_batch(
-                r#"
-                CREATE TEMP TABLE IF NOT EXISTS exact_seen_files (
-                    path TEXT PRIMARY KEY
-                ) WITHOUT ROWID;
-                CREATE TEMP TABLE IF NOT EXISTS exact_seen_directories (
-                    path TEXT PRIMARY KEY
-                ) WITHOUT ROWID;
-                CREATE TEMP TABLE IF NOT EXISTS exact_fingerprints (
-                    fingerprint BLOB PRIMARY KEY
-                ) WITHOUT ROWID;
-                DELETE FROM exact_seen_files;
-                DELETE FROM exact_seen_directories;
-                DELETE FROM exact_fingerprints;
-                "#,
-            )
-            .map_err(|error| format!("无法准备精确 token 索引临时表：{error}"))?;
-
-        let mut changed = false;
+        prune_published_tombstone_versions(&self.connection)?;
+        prepare_scan_temp_tables(&self.connection)?;
+        let generation = begin_or_resume_generation(&mut self.connection)?;
         visit_session_files(
-            &transaction,
+            &mut self.connection,
             codex_home,
             warnings,
-            |transaction, file, warnings| {
-                if process_session_file(transaction, codex_home, file, warnings)? {
-                    changed = true;
-                }
-                Ok(())
+            |connection, file, warnings| {
+                process_session_file(connection, generation, codex_home, file, warnings)
             },
         )?;
-
-        let deleted = transaction
-            .query_row(
-                "SELECT COUNT(*) FROM files WHERE path NOT IN (SELECT path FROM exact_seen_files)",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|error| format!("无法检查已删除的会话文件：{error}"))?;
-        if deleted > 0 {
-            transaction
-                .execute(
-                    "DELETE FROM files WHERE path NOT IN (SELECT path FROM exact_seen_files)",
-                    [],
-                )
-                .map_err(|error| format!("无法移除已删除会话的精确 token 索引：{error}"))?;
-            changed = true;
-        }
-
-        if sync_thread_metadata(&transaction, codex_home, warnings)? {
-            changed = true;
-        }
-
-        let current_revision = metadata_i64(&transaction, "revision")?.unwrap_or(0);
-        let revision = if changed {
-            current_revision.saturating_add(1)
-        } else {
-            current_revision
-        };
-        set_metadata(&transaction, "revision", &revision.to_string())?;
-        transaction
-            .commit()
-            .map_err(|error| format!("无法提交精确 token 索引：{error}"))?;
-        Ok(u64::try_from(revision).unwrap_or(0))
+        finalize_generation(&mut self.connection, generation, codex_home, warnings)
     }
 
     pub(super) fn revision(&self) -> Result<u64, String> {
@@ -231,36 +200,22 @@ impl ExactUsageIndex {
         codex_home: &Path,
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<bool, String> {
-        let transaction = self
-            .connection
-            .transaction()
-            .map_err(|error| format!("无法开始精确 token 变更检查：{error}"))?;
-        transaction
-            .execute_batch(
-                r#"
-                CREATE TEMP TABLE IF NOT EXISTS exact_seen_files (
-                    path TEXT PRIMARY KEY
-                ) WITHOUT ROWID;
-                CREATE TEMP TABLE IF NOT EXISTS exact_seen_directories (
-                    path TEXT PRIMARY KEY
-                ) WITHOUT ROWID;
-                DELETE FROM exact_seen_files;
-                DELETE FROM exact_seen_directories;
-                "#,
-            )
-            .map_err(|error| format!("无法准备精确 token 变更检查：{error}"))?;
+        if metadata_i64(&self.connection, "building_generation")?.is_some() {
+            return Ok(true);
+        }
+        prepare_scan_temp_tables(&self.connection)?;
         let mut changed = false;
         visit_session_files(
-            &transaction,
+            &mut self.connection,
             codex_home,
             warnings,
-            |transaction, file, _warnings| {
+            |connection, file, _warnings| {
                 let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
                 let path = canonical.to_string_lossy().into_owned();
-                let newly_seen = transaction
+                let newly_seen = connection
                     .execute(
                         "INSERT OR IGNORE INTO exact_seen_files(path) VALUES (?1)",
-                        params![path],
+                        params![&path],
                     )
                     .map_err(|error| format!("无法记录会话文件变更检查：{error}"))?
                     > 0;
@@ -268,10 +223,10 @@ impl ExactUsageIndex {
                     return Ok(());
                 }
                 let signature = file_signature(file)?;
-                let unchanged = transaction
+                let unchanged = connection
                     .query_row(
-                        "SELECT size, modified_ns, device_id, file_id, changed_ns FROM files WHERE path = ?1",
-                        params![path],
+                        "SELECT size, modified_ns, device_id, file_id, changed_ns FROM published_files WHERE path = ?1",
+                        params![&path],
                         |row| {
                             Ok((
                                 row.get::<_, i64>(0)?,
@@ -299,9 +254,10 @@ impl ExactUsageIndex {
                 Ok(())
             },
         )?;
-        let deleted = transaction
+        let deleted = self
+            .connection
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM files WHERE path NOT IN (SELECT path FROM exact_seen_files))",
+                "SELECT EXISTS(SELECT 1 FROM published_files WHERE path NOT IN (SELECT path FROM exact_seen_files))",
                 [],
                 |row| row.get::<_, bool>(0),
             )
@@ -312,7 +268,7 @@ impl ExactUsageIndex {
     pub(super) fn is_empty(&self) -> Result<bool, String> {
         self.connection
             .query_row(
-                "SELECT NOT EXISTS(SELECT 1 FROM events LIMIT 1)",
+                "SELECT NOT EXISTS(SELECT 1 FROM published_events LIMIT 1)",
                 [],
                 |row| row.get::<_, bool>(0),
             )
@@ -334,7 +290,7 @@ impl ExactUsageIndex {
                     COALESCE(SUM(tokens), 0),
                     COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN tokens ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN 1 ELSE 0 END), 0)
-                FROM events
+                FROM published_events
                 "#,
                 params![start, end],
                 |row| {
@@ -417,7 +373,7 @@ impl ExactUsageIndex {
                     COUNT(*),
                     COALESCE(SUM(input_tokens), 0),
                     COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0)
-                FROM events
+                FROM published_events
                 WHERE timestamp >= ?2 AND timestamp < ?3
                 GROUP BY 1
                 "#,
@@ -475,7 +431,7 @@ impl ExactUsageIndex {
                     COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
                     COALESCE(SUM(output_tokens), 0),
                     MIN(timestamp)
-                FROM events
+                FROM published_events
                 "#,
                 [],
                 |row| {
@@ -498,7 +454,7 @@ impl ExactUsageIndex {
                 SELECT COALESCE(MAX(total), 0)
                 FROM (
                     SELECT SUM(tokens) AS total
-                    FROM events
+                    FROM published_events
                     GROUP BY session_id
                 )
                 "#,
@@ -550,7 +506,7 @@ impl ExactUsageIndex {
                     COALESCE(SUM(input_tokens), 0),
                     COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
                     COALESCE(SUM(output_tokens), 0)
-                FROM events
+                FROM published_events
                 WHERE timestamp >= ?2 AND timestamp < ?3
                 GROUP BY 1
                 "#,
@@ -615,7 +571,7 @@ impl ExactUsageIndex {
                     SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_tokens,
                     COALESCE(m.updated_at, MAX(e.timestamp)) AS updated_at,
                     COALESCE(NULLIF(TRIM(m.title), ''), '会话 ' || SUBSTR(e.session_id, 1, 8)) AS title
-                FROM events e
+                FROM published_events e
                 LEFT JOIN session_metadata m ON m.session_id = e.session_id
                 GROUP BY e.session_id
                 HAVING calls > 1 AND input_tokens >= ?1
@@ -714,7 +670,7 @@ impl ExactUsageIndex {
                     SUM(e.output_tokens) AS output_tokens,
                     COALESCE(m.updated_at, MAX(e.timestamp)) AS updated_at,
                     COALESCE(NULLIF(TRIM(m.title), ''), '会话 ' || SUBSTR(e.session_id, 1, 8)) AS title
-                FROM events e
+                FROM published_events e
                 LEFT JOIN session_metadata m ON m.session_id = e.session_id
                 GROUP BY e.session_id
             )
@@ -854,7 +810,7 @@ impl ExactUsageIndex {
                         PARTITION BY e.session_id
                         ORDER BY e.timestamp ASC, e.file_path ASC, e.ordinal ASC
                     ) AS turn_index_in_session
-                FROM events e
+                FROM published_events e
             ),
             turn_rows AS (
                 SELECT
@@ -884,11 +840,11 @@ impl ExactUsageIndex {
                 assistant_response_end,
                 turn_index_in_session,
                 title,
-                (SELECT size FROM files f WHERE f.path = turn_rows.file_path),
-                (SELECT modified_ns FROM files f WHERE f.path = turn_rows.file_path),
-                (SELECT device_id FROM files f WHERE f.path = turn_rows.file_path),
-                (SELECT file_id FROM files f WHERE f.path = turn_rows.file_path),
-                (SELECT changed_ns FROM files f WHERE f.path = turn_rows.file_path)
+                (SELECT size FROM published_files f WHERE f.path = turn_rows.file_path),
+                (SELECT modified_ns FROM published_files f WHERE f.path = turn_rows.file_path),
+                (SELECT device_id FROM published_files f WHERE f.path = turn_rows.file_path),
+                (SELECT file_id FROM published_files f WHERE f.path = turn_rows.file_path),
+                (SELECT changed_ns FROM published_files f WHERE f.path = turn_rows.file_path)
             FROM turn_rows
             WHERE input_tokens >= ?1 {turn_predicate}
             {ordering}
@@ -950,6 +906,7 @@ impl ExactUsageIndex {
 
 struct SqliteEventSink<'transaction> {
     transaction: &'transaction Transaction<'transaction>,
+    file_generation: i64,
     file_path: &'transaction str,
     ordinal: u64,
 }
@@ -1001,6 +958,7 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
             .execute(
                 r#"
                 INSERT INTO events(
+                    file_generation,
                     file_path,
                     ordinal,
                     timestamp,
@@ -1013,9 +971,10 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
                     user_prompt_end,
                     assistant_response_start,
                     assistant_response_end
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                 "#,
                 params![
+                    self.file_generation,
                     self.file_path,
                     checked_i64(self.ordinal, "事件序号")?,
                     event.timestamp.unix_timestamp(),
@@ -1035,68 +994,355 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
     }
 }
 
-fn process_session_file(
+fn prepare_scan_temp_tables(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            r#"
+            CREATE TEMP TABLE IF NOT EXISTS exact_seen_files (
+                path TEXT PRIMARY KEY
+            ) WITHOUT ROWID;
+            CREATE TEMP TABLE IF NOT EXISTS exact_seen_directories (
+                path TEXT PRIMARY KEY,
+                processed INTEGER NOT NULL
+            ) WITHOUT ROWID;
+            CREATE INDEX IF NOT EXISTS exact_seen_directories_processed_idx
+                ON exact_seen_directories(processed, path);
+            CREATE TEMP TABLE IF NOT EXISTS exact_fingerprints (
+                fingerprint BLOB PRIMARY KEY
+            ) WITHOUT ROWID;
+            DELETE FROM exact_seen_files;
+            DELETE FROM exact_seen_directories;
+            DELETE FROM exact_fingerprints;
+            "#,
+        )
+        .map_err(|error| format!("无法准备精确 token 索引外存临时表：{error}"))
+}
+
+fn prune_published_tombstone_versions(connection: &Connection) -> Result<(), String> {
+    loop {
+        let tombstone = connection
+            .query_row(
+                r#"
+                WITH latest AS (
+                    SELECT path, MAX(generation) AS generation
+                    FROM files
+                    WHERE generation <= COALESCE(
+                        (
+                            SELECT CAST(value AS INTEGER)
+                            FROM metadata
+                            WHERE key = 'published_generation'
+                        ),
+                        0
+                    )
+                    GROUP BY path
+                )
+                SELECT f.path, f.generation
+                FROM latest
+                JOIN files f
+                  ON f.path = latest.path
+                 AND f.generation = latest.generation
+                WHERE f.deleted = 1
+                LIMIT 1
+                "#,
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|error| format!("无法检查已发布的会话删除墓碑：{error}"))?;
+        let Some((path, tombstone_generation)) = tombstone else {
+            return Ok(());
+        };
+        connection
+            .execute(
+                "DELETE FROM files WHERE path = ?1 AND generation <= ?2",
+                params![path, tombstone_generation],
+            )
+            .map_err(|error| format!("无法清理已发布删除会话的旧索引版本：{error}"))?;
+    }
+}
+
+fn begin_or_resume_generation(connection: &mut Connection) -> Result<i64, String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("无法开始精确 token 同步状态事务：{error}"))?;
+    let published = metadata_i64(&transaction, "published_generation")?.unwrap_or(0);
+    if let Some(building) = metadata_i64(&transaction, "building_generation")? {
+        if building > published {
+            transaction
+                .commit()
+                .map_err(|error| format!("无法确认精确 token 续扫状态：{error}"))?;
+            return Ok(building);
+        }
+        transaction
+            .execute(
+                "DELETE FROM metadata WHERE key IN ('building_generation', 'building_changed')",
+                [],
+            )
+            .map_err(|error| format!("无法修复失效的精确 token 同步状态：{error}"))?;
+    }
+    let maximum_generation = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(generation), 0) FROM files",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("无法读取精确 token 文件代次：{error}"))?
+        .max(published);
+    let generation = maximum_generation
+        .checked_add(1)
+        .ok_or_else(|| "精确 token 文件代次已超出 SQLite 整数范围".to_string())?;
+    set_metadata(&transaction, "building_generation", &generation.to_string())?;
+    set_metadata(&transaction, "building_changed", "0")?;
+    transaction
+        .commit()
+        .map_err(|error| format!("无法持久化精确 token 同步状态：{error}"))?;
+    Ok(generation)
+}
+
+fn ensure_active_build_generation(
     transaction: &Transaction<'_>,
+    expected: i64,
+) -> Result<(), String> {
+    if metadata_i64(transaction, "building_generation")? == Some(expected) {
+        Ok(())
+    } else {
+        Err("精确 token 同步代次已由另一个扫描发布或替换".into())
+    }
+}
+
+fn finalize_generation(
+    connection: &mut Connection,
+    generation: i64,
+    codex_home: &Path,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Result<u64, String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("无法开始精确 token 发布事务：{error}"))?;
+    if metadata_i64(&transaction, "building_generation")? != Some(generation) {
+        let revision = metadata_i64(&transaction, "revision")?.unwrap_or(0);
+        transaction
+            .commit()
+            .map_err(|error| format!("无法结束已被替换的精确 token 扫描：{error}"))?;
+        return Ok(u64::try_from(revision).unwrap_or(0));
+    }
+
+    let missing_count = transaction
+        .query_row(
+            r#"
+            WITH latest AS (
+                SELECT path, MAX(generation) AS generation
+                FROM files
+                WHERE generation <= ?1
+                GROUP BY path
+            )
+            SELECT COUNT(*)
+            FROM latest
+            JOIN files f
+              ON f.path = latest.path
+             AND f.generation = latest.generation
+            WHERE f.deleted = 0
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM exact_seen_files seen
+                  WHERE seen.path = latest.path
+              )
+            "#,
+            params![generation],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("无法检查本轮已删除的会话文件：{error}"))?;
+    if missing_count > 0 {
+        transaction
+            .execute(
+                r#"
+                WITH latest AS (
+                    SELECT path, MAX(generation) AS generation
+                    FROM files
+                    WHERE generation <= ?1
+                    GROUP BY path
+                ),
+                missing AS (
+                    SELECT latest.path
+                    FROM latest
+                    JOIN files f
+                      ON f.path = latest.path
+                     AND f.generation = latest.generation
+                    WHERE f.deleted = 0
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM exact_seen_files seen
+                          WHERE seen.path = latest.path
+                      )
+                )
+                DELETE FROM events
+                WHERE file_generation = ?1
+                  AND file_path IN (SELECT path FROM missing)
+                "#,
+                params![generation],
+            )
+            .map_err(|error| format!("无法清理本轮已删除会话的暂存事件：{error}"))?;
+        transaction
+            .execute(
+                r#"
+                WITH latest AS (
+                    SELECT path, MAX(generation) AS generation
+                    FROM files
+                    WHERE generation <= ?1
+                    GROUP BY path
+                ),
+                missing AS (
+                    SELECT latest.path
+                    FROM latest
+                    JOIN files f
+                      ON f.path = latest.path
+                     AND f.generation = latest.generation
+                    WHERE f.deleted = 0
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM exact_seen_files seen
+                          WHERE seen.path = latest.path
+                      )
+                )
+                INSERT INTO files(
+                    generation,
+                    path,
+                    deleted,
+                    session_id,
+                    size,
+                    modified_ns,
+                    device_id,
+                    file_id,
+                    changed_ns,
+                    prefix_sha256
+                )
+                SELECT ?1, path, 1, '', 0, '0', '0', '0', '0', X''
+                FROM missing
+                WHERE true
+                ON CONFLICT(generation, path) DO UPDATE SET
+                    deleted = 1,
+                    session_id = '',
+                    size = 0,
+                    modified_ns = '0',
+                    device_id = '0',
+                    file_id = '0',
+                    changed_ns = '0',
+                    prefix_sha256 = X''
+                "#,
+                params![generation],
+            )
+            .map_err(|error| format!("无法登记本轮已删除的会话文件：{error}"))?;
+        set_metadata(&transaction, "building_changed", "1")?;
+    }
+
+    if sync_thread_metadata(&transaction, codex_home, warnings)? {
+        set_metadata(&transaction, "building_changed", "1")?;
+    }
+    let changed = metadata_i64(&transaction, "building_changed")?.unwrap_or(0) != 0;
+    let current_revision = metadata_i64(&transaction, "revision")?.unwrap_or(0);
+    let revision = if changed {
+        set_metadata(
+            &transaction,
+            "published_generation",
+            &generation.to_string(),
+        )?;
+        current_revision.saturating_add(1)
+    } else {
+        current_revision
+    };
+    set_metadata(&transaction, "revision", &revision.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM metadata WHERE key IN ('building_generation', 'building_changed')",
+            [],
+        )
+        .map_err(|error| format!("无法结束精确 token 同步状态：{error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("无法原子发布完整精确 token 代次：{error}"))?;
+    Ok(u64::try_from(revision).unwrap_or(0))
+}
+
+fn process_session_file(
+    connection: &mut Connection,
+    generation: i64,
     codex_home: &Path,
     file: &Path,
     warnings: &mut Vec<LocalDataWarning>,
-) -> Result<bool, String> {
+) -> Result<(), String> {
     let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let path = canonical.to_string_lossy().into_owned();
-    let newly_seen = transaction
+    let newly_seen = connection
         .execute(
             "INSERT OR IGNORE INTO exact_seen_files(path) VALUES (?1)",
-            params![path],
+            params![&path],
         )
         .map_err(|error| format!("无法记录会话文件扫描状态：{error}"))?
         > 0;
     if !newly_seen {
-        return Ok(false);
+        return Ok(());
     }
+    prune_obsolete_file_versions(connection, &path)?;
 
     let mut handle = fs::File::open(file)
         .map_err(|error| format!("读取会话文件失败：{}（{}）", file.display(), error))?;
     let signature = file_signature_from_handle(&handle, file)?;
-    let unchanged = transaction
+    let unchanged = connection
         .query_row(
-            "SELECT size, modified_ns, device_id, file_id, changed_ns FROM files WHERE path = ?1",
-            params![path],
+            r#"
+            SELECT deleted, size, modified_ns, device_id, file_id, changed_ns
+            FROM files
+            WHERE path = ?1 AND generation <= ?2
+            ORDER BY generation DESC
+            LIMIT 1
+            "#,
+            params![&path, generation],
             |row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
+                    row.get::<_, bool>(0)?,
+                    row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
                 ))
             },
         )
         .optional()
         .map_err(|error| format!("无法读取会话文件索引签名：{error}"))?
-        .is_some_and(|(size, modified_ns, device_id, file_id, changed_ns)| {
-            signature.matches_stored(
-                nonnegative_u64(size),
-                &modified_ns,
-                &device_id,
-                &file_id,
-                &changed_ns,
-            )
-        });
+        .is_some_and(
+            |(deleted, size, modified_ns, device_id, file_id, changed_ns)| {
+                !deleted
+                    && signature.matches_stored(
+                        nonnegative_u64(size),
+                        &modified_ns,
+                        &device_id,
+                        &file_id,
+                        &changed_ns,
+                    )
+            },
+        );
     if unchanged {
-        return Ok(false);
+        return Ok(());
     }
 
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("无法开始单文件精确 token 索引事务：{error}"))?;
+    ensure_active_build_generation(&transaction, generation)?;
     transaction
-        .execute("DELETE FROM events WHERE file_path = ?1", params![path])
-        .map_err(|error| format!("无法清理变更会话的旧 token 索引：{error}"))?;
-    transaction
-        .execute("DELETE FROM files WHERE path = ?1", params![path])
-        .map_err(|error| format!("无法清理变更会话的旧文件索引：{error}"))?;
+        .execute(
+            "DELETE FROM files WHERE generation = ?1 AND path = ?2",
+            params![generation, &path],
+        )
+        .map_err(|error| format!("无法清理本轮变更会话的旧文件版本：{error}"))?;
     transaction
         .execute(
             r#"
             INSERT INTO files(
+                generation,
                 path,
+                deleted,
                 session_id,
                 size,
                 modified_ns,
@@ -1104,10 +1350,11 @@ fn process_session_file(
                 file_id,
                 changed_ns,
                 prefix_sha256
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, X'')
+            ) VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, X'')
             "#,
             params![
-                path,
+                generation,
+                &path,
                 session_id_from_file(file),
                 checked_i64(signature.size, "会话文件大小")?,
                 signature.modified_ns.to_string(),
@@ -1123,7 +1370,8 @@ fn process_session_file(
 
     let session_id = session_id_from_file(file);
     let mut sink = SqliteEventSink {
-        transaction,
+        transaction: &transaction,
+        file_generation: generation,
         file_path: &path,
         ordinal: 0,
     };
@@ -1135,6 +1383,7 @@ fn process_session_file(
         &mut sink,
         warnings,
     )?;
+    drop(sink);
     debug_assert_eq!(parsed.bytes_read, signature.size);
 
     run_after_prefix_scan_hook_for_testing(file);
@@ -1149,8 +1398,8 @@ fn process_session_file(
     )?;
     transaction
         .execute(
-            "UPDATE files SET prefix_sha256 = ?2 WHERE path = ?1",
-            params![path, parsed.prefix_sha256.as_slice()],
+            "UPDATE files SET prefix_sha256 = ?3 WHERE generation = ?1 AND path = ?2",
+            params![generation, &path, parsed.prefix_sha256.as_slice()],
         )
         .map_err(|error| format!("无法保存会话文件前缀校验值：{error}"))?;
 
@@ -1160,51 +1409,99 @@ fn process_session_file(
             relative_display_path(codex_home, file)
         ));
     }
-    Ok(true)
+    set_metadata(&transaction, "building_changed", "1")?;
+    transaction
+        .commit()
+        .map_err(|error| format!("无法提交单文件精确 token 索引：{error}"))?;
+    run_after_file_commit_hook_for_testing(file)?;
+    Ok(())
+}
+
+fn prune_obsolete_file_versions(connection: &Connection, path: &str) -> Result<(), String> {
+    let has_obsolete = connection
+        .query_row(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM files candidate
+                WHERE candidate.path = ?1
+                  AND candidate.generation < (
+                      SELECT MAX(visible.generation)
+                      FROM files visible
+                      WHERE visible.path = ?1
+                        AND visible.generation <= COALESCE(
+                            (
+                                SELECT CAST(value AS INTEGER)
+                                FROM metadata
+                                WHERE key = 'published_generation'
+                            ),
+                            0
+                        )
+                  )
+            )
+            "#,
+            params![path],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法检查会话文件旧索引版本：{error}"))?;
+    if !has_obsolete {
+        return Ok(());
+    }
+    connection
+        .execute(
+            r#"
+            DELETE FROM files
+            WHERE path = ?1
+              AND generation < (
+                  SELECT MAX(visible.generation)
+                  FROM files visible
+                  WHERE visible.path = ?1
+                    AND visible.generation <= COALESCE(
+                        (
+                            SELECT CAST(value AS INTEGER)
+                            FROM metadata
+                            WHERE key = 'published_generation'
+                        ),
+                        0
+                    )
+              )
+            "#,
+            params![path],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("无法清理会话文件旧索引版本：{error}"))
 }
 
 fn visit_session_files(
-    transaction: &Transaction<'_>,
+    connection: &mut Connection,
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
-    mut visit: impl FnMut(&Transaction<'_>, &Path, &mut Vec<LocalDataWarning>) -> Result<(), String>,
+    mut visit: impl FnMut(&mut Connection, &Path, &mut Vec<LocalDataWarning>) -> Result<(), String>,
 ) -> Result<(), String> {
     super::record_dashboard_source_scan_for_testing();
     let canonical_home = canonical_codex_home(codex_home)?;
     let sessions_root = codex_home.join("sessions");
     if sessions_root.exists() {
-        let mut directories = vec![sessions_root];
-        while let Some(directory) = directories.pop() {
-            let canonical = match fs::canonicalize(&directory) {
-                Ok(canonical) if canonical.starts_with(&canonical_home) => canonical,
-                Ok(canonical) => {
-                    warnings.push(scan_warning(format!(
-                        "拒绝读取 Codex Home 外的会话目录：{} -> {}",
-                        directory.display(),
-                        canonical.display()
-                    )));
-                    continue;
-                }
-                Err(error) => {
-                    warnings.push(scan_warning(format!(
-                        "无法确认会话目录边界：{}（{}）",
-                        directory.display(),
-                        error
-                    )));
-                    continue;
-                }
-            };
-            let directory_key = canonical.to_string_lossy();
-            let newly_seen = transaction
-                .execute(
-                    "INSERT OR IGNORE INTO exact_seen_directories(path) VALUES (?1)",
-                    params![directory_key.as_ref()],
+        enqueue_directory(connection, &canonical_home, &sessions_root, warnings)?;
+        loop {
+            let directory = connection
+                .query_row(
+                    "SELECT path FROM exact_seen_directories WHERE processed = 0 ORDER BY path LIMIT 1",
+                    [],
+                    |row| row.get::<_, String>(0),
                 )
-                .map_err(|error| format!("无法记录会话目录扫描状态：{error}"))?
-                > 0;
-            if !newly_seen {
-                continue;
-            }
+                .optional()
+                .map_err(|error| format!("无法读取会话目录外存队列：{error}"))?;
+            let Some(directory) = directory else {
+                break;
+            };
+            connection
+                .execute(
+                    "UPDATE exact_seen_directories SET processed = 1 WHERE path = ?1",
+                    params![&directory],
+                )
+                .map_err(|error| format!("无法推进会话目录外存队列：{error}"))?;
+            let directory = PathBuf::from(directory);
             let entries = fs::read_dir(&directory).map_err(|error| {
                 let message = format!("读取会话目录失败：{}（{}）", directory.display(), error);
                 warnings.push(scan_warning(message.clone()));
@@ -1225,7 +1522,7 @@ fn visit_session_files(
                     message
                 })?;
                 if metadata.file_type().is_dir() {
-                    directories.push(path);
+                    enqueue_directory(connection, &canonical_home, &path, warnings)?;
                 } else if path
                     .extension()
                     .is_some_and(|extension| extension == "jsonl")
@@ -1233,7 +1530,7 @@ fn visit_session_files(
                     if let Some(file) =
                         resolve_file_within_codex_home(&canonical_home, &path, "会话目录", warnings)
                     {
-                        visit(transaction, &file, warnings)?;
+                        visit(connection, &file, warnings)?;
                     }
                 }
             }
@@ -1245,22 +1542,56 @@ fn visit_session_files(
         )));
     }
 
-    visit_active_rollouts(transaction, codex_home, &canonical_home, warnings, visit)
+    visit_active_rollouts(connection, codex_home, &canonical_home, warnings, visit)
+}
+
+fn enqueue_directory(
+    connection: &Connection,
+    canonical_home: &Path,
+    directory: &Path,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Result<(), String> {
+    let canonical = match fs::canonicalize(directory) {
+        Ok(canonical) if canonical.starts_with(canonical_home) => canonical,
+        Ok(canonical) => {
+            warnings.push(scan_warning(format!(
+                "拒绝读取 Codex Home 外的会话目录：{} -> {}",
+                directory.display(),
+                canonical.display()
+            )));
+            return Ok(());
+        }
+        Err(error) => {
+            warnings.push(scan_warning(format!(
+                "无法确认会话目录边界：{}（{}）",
+                directory.display(),
+                error
+            )));
+            return Ok(());
+        }
+    };
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO exact_seen_directories(path, processed) VALUES (?1, 0)",
+            params![canonical.to_string_lossy().as_ref()],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("无法写入会话目录外存队列：{error}"))
 }
 
 fn visit_active_rollouts(
-    transaction: &Transaction<'_>,
+    index_connection: &mut Connection,
     codex_home: &Path,
     canonical_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
-    mut visit: impl FnMut(&Transaction<'_>, &Path, &mut Vec<LocalDataWarning>) -> Result<(), String>,
+    mut visit: impl FnMut(&mut Connection, &Path, &mut Vec<LocalDataWarning>) -> Result<(), String>,
 ) -> Result<(), String> {
     let database = codex_home.join("state_5.sqlite");
     if !database.exists() {
         return Ok(());
     }
-    let connection =
-        sqlite::open_read_only(&database, StdDuration::from_millis(100)).map_err(|error| {
+    let state_connection = sqlite::open_read_only(&database, StdDuration::from_millis(100))
+        .map_err(|error| {
             let message = format!(
                 "读取 active rollout 索引失败：{}（{}）",
                 database.display(),
@@ -1269,10 +1600,10 @@ fn visit_active_rollouts(
             warnings.push(scan_warning(message.clone()));
             message
         })?;
-    if !column_exists(&connection, "threads", "rollout_path") {
+    if !column_exists(&state_connection, "threads", "rollout_path") {
         return Ok(());
     }
-    let archived_filter = if column_exists(&connection, "threads", "archived") {
+    let archived_filter = if column_exists(&state_connection, "threads", "archived") {
         "COALESCE(archived, 0) = 0"
     } else {
         "1 = 1"
@@ -1280,7 +1611,7 @@ fn visit_active_rollouts(
     let sql = format!(
         "SELECT rollout_path FROM threads WHERE {archived_filter} AND rollout_path IS NOT NULL AND rollout_path <> ''"
     );
-    let mut statement = connection
+    let mut statement = state_connection
         .prepare(&sql)
         .map_err(|error| format!("读取 active rollout 路径失败：{error}"))?;
     let rows = statement
@@ -1303,7 +1634,7 @@ fn visit_active_rollouts(
             if let Some(file) =
                 resolve_file_within_codex_home(canonical_home, &path, "active rollout", warnings)
             {
-                visit(transaction, &file, warnings)?;
+                visit(index_connection, &file, warnings)?;
             }
         }
     }
@@ -1487,19 +1818,23 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
         .execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS files (
-                path TEXT PRIMARY KEY,
+                generation INTEGER NOT NULL,
+                path TEXT NOT NULL,
+                deleted INTEGER NOT NULL,
                 session_id TEXT NOT NULL,
                 size INTEGER NOT NULL,
                 modified_ns TEXT NOT NULL,
                 device_id TEXT NOT NULL,
                 file_id TEXT NOT NULL,
                 changed_ns TEXT NOT NULL,
-                prefix_sha256 BLOB NOT NULL
+                prefix_sha256 BLOB NOT NULL,
+                PRIMARY KEY(generation, path)
             ) WITHOUT ROWID;
 
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY,
-                file_path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
+                file_generation INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
                 ordinal INTEGER NOT NULL,
                 timestamp INTEGER NOT NULL,
                 session_id TEXT NOT NULL,
@@ -1511,19 +1846,52 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 user_prompt_end INTEGER,
                 assistant_response_start INTEGER,
                 assistant_response_end INTEGER,
-                UNIQUE(file_path, ordinal)
+                UNIQUE(file_generation, file_path, ordinal),
+                FOREIGN KEY(file_generation, file_path)
+                    REFERENCES files(generation, path)
+                    ON DELETE CASCADE
             );
 
+            CREATE INDEX IF NOT EXISTS files_path_generation_idx
+                ON files(path, generation DESC);
             CREATE INDEX IF NOT EXISTS events_timestamp_idx
                 ON events(timestamp);
             CREATE INDEX IF NOT EXISTS events_session_idx
-                ON events(session_id, timestamp, file_path, ordinal);
+                ON events(session_id, timestamp, file_generation, file_path, ordinal);
 
             CREATE TABLE IF NOT EXISTS session_metadata (
                 session_id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 updated_at INTEGER
             ) WITHOUT ROWID;
+
+            CREATE VIEW IF NOT EXISTS published_files AS
+            WITH latest AS (
+                SELECT path, MAX(generation) AS generation
+                FROM files
+                WHERE generation <= COALESCE(
+                    (
+                        SELECT CAST(value AS INTEGER)
+                        FROM metadata
+                        WHERE key = 'published_generation'
+                    ),
+                    0
+                )
+                GROUP BY path
+            )
+            SELECT f.*
+            FROM files f
+            JOIN latest
+              ON latest.path = f.path
+             AND latest.generation = f.generation
+            WHERE f.deleted = 0;
+
+            CREATE VIEW IF NOT EXISTS published_events AS
+            SELECT e.*
+            FROM events e
+            JOIN published_files f
+              ON f.generation = e.file_generation
+             AND f.path = e.file_path;
             "#,
         )
         .map_err(|error| format!("无法初始化精确 token 索引结构：{error}"))
@@ -1880,6 +2248,20 @@ fn run_after_prefix_scan_hook_for_testing(path: &Path) {
 
 #[cfg(not(test))]
 fn run_after_prefix_scan_hook_for_testing(_path: &Path) {}
+
+#[cfg(test)]
+fn run_after_file_commit_hook_for_testing(path: &Path) -> Result<(), String> {
+    let hook = AFTER_FILE_COMMIT_HOOK.with(|slot| slot.borrow_mut().take());
+    match hook {
+        Some(hook) => hook(path),
+        None => Ok(()),
+    }
+}
+
+#[cfg(not(test))]
+fn run_after_file_commit_hook_for_testing(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
 
 fn fresh_revision_seed() -> i64 {
     let nanos = SystemTime::now()
