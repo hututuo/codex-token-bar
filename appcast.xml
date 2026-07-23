@@ -4,7 +4,7 @@
         <title>Codex Token Bar</title>
         <item>
             <title>0.8.0</title>
-            <pubDate>Tue, 21 Jul 2026 20:59:02 +0800</pubDate>
+            <pubDate>Thu, 23 Jul 2026 22:46:10 +0800</pubDate>
             <sparkle:version>800</sparkle:version>
             <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
@@ -65,7 +65,7 @@ v0.8.0 advances Codex Token Bar from a usage dashboard into a local-first Codex 
 - The macOS build is ad-hoc signed and not Apple notarized. Windows installers do not use a commercial code-signing certificate. Download only from the official Release and verify SHA256; the operating system may show an unidentified-developer or unknown-publisher warning.
 - Live rate and lifetime savings are local estimates. Local usage, conversations, quota, reset-credit, and Radar data are not uploaded as telemetry.
 ]]></description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.8.0/CodexTokenBar-v0.8.0-macos-arm64.app.zip" length="7583462" type="application/octet-stream" sparkle:edSignature="iKaYH4mqImFvPCpNoxoMyVQRb5o8joFZ/cRONo842EqrwUM0TSfGFtLPOocnx+mndhnBowq3+58ePUGNLG+1BA=="/>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.8.0/CodexTokenBar-v0.8.0-macos-arm64.app.zip" length="7604402" type="application/octet-stream" sparkle:edSignature="9sIfHcHPDSJgg2FXPWySCHhCLsLulfa3Y+hTI/fy5f1uwuFVTLzcrLvHUTkLJ7ppyfjjMr62Vsy+R6ummIRaDg=="/>
         </item>
         <item>
             <title>0.7.3</title>
