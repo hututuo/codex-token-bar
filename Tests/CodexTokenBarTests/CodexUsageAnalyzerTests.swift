@@ -1209,6 +1209,136 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(refreshedTotal, 230)
     }
 
+    func testExactHistoryIndexSerializesConcurrentGenerationThroughAggregationAndRefreshesActiveAppend() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerConcurrentGeneration")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionsRoot = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        let firstSessionID = "019eaaaa-bbbb-cccc-dddd-concurrent1"
+        let secondSessionID = "019eaaaa-bbbb-cccc-dddd-concurrent2"
+        let firstFile = sessionsRoot.appendingPathComponent("2026-06-17-\(firstSessionID).jsonl")
+        let secondFile = sessionsRoot.appendingPathComponent("2026-06-17-\(secondSessionID).jsonl")
+        let now = Date()
+        try tokenCountLine(
+            timestamp: now.addingTimeInterval(-60),
+            total: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120),
+            last: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120)
+        ).appending("\n").write(to: firstFile, atomically: true, encoding: .utf8)
+        try tokenCountLine(
+            timestamp: now.addingTimeInterval(-50),
+            total: Usage(input: 50, cachedInput: 0, output: 10, reasoning: 0, total: 60),
+            last: Usage(input: 50, cachedInput: 0, output: 10, reasoning: 0, total: 60)
+        ).appending("\n").write(to: secondFile, atomically: true, encoding: .utf8)
+
+        let files = [firstFile, secondFile]
+        let firstWorker = try ConcurrentUsageIndexWorker(codexHome: codexHome, files: files)
+        let secondWorker = try ConcurrentUsageIndexWorker(codexHome: codexHome, files: files)
+        let parserReachedSecondFile = DispatchSemaphore(value: 0)
+        let releaseParser = DispatchSemaphore(value: 0)
+        let firstSynchronizationFinished = DispatchSemaphore(value: 0)
+        let releaseFirstAggregation = DispatchSemaphore(value: 0)
+        let secondAttemptedExclusiveAccess = DispatchSemaphore(value: 0)
+        let secondEnteredExclusiveAccess = DispatchSemaphore(value: 0)
+        let firstCompleted = DispatchSemaphore(value: 0)
+        let secondCompleted = DispatchSemaphore(value: 0)
+        let firstResult = ConcurrentUsageIndexResultBox()
+        let secondResult = ConcurrentUsageIndexResultBox()
+        defer {
+            releaseParser.signal()
+            releaseFirstAggregation.signal()
+        }
+
+        DispatchQueue(label: "CodexUsageAnalyzerTests.concurrentGeneration.first").async {
+            firstResult.set(Result {
+                try firstWorker.synchronizeAndReadTotal(
+                    parserGateFile: secondFile,
+                    parserReachedGate: parserReachedSecondFile,
+                    releaseParser: releaseParser,
+                    synchronizationFinished: firstSynchronizationFinished,
+                    releaseAggregation: releaseFirstAggregation
+                )
+            })
+            firstCompleted.signal()
+        }
+
+        XCTAssertEqual(parserReachedSecondFile.wait(timeout: .now() + 5), .success)
+        try appendLines([
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-10),
+                total: Usage(input: 190, cachedInput: 20, output: 40, reasoning: 0, total: 230),
+                last: Usage(input: 90, cachedInput: 20, output: 20, reasoning: 0, total: 110)
+            )
+        ], to: firstFile)
+        releaseParser.signal()
+        XCTAssertEqual(firstSynchronizationFinished.wait(timeout: .now() + 5), .success)
+
+        DispatchQueue(label: "CodexUsageAnalyzerTests.concurrentGeneration.second").async {
+            secondAttemptedExclusiveAccess.signal()
+            secondResult.set(Result {
+                try secondWorker.synchronizeAndReadTotal(
+                    exclusiveAccessEntered: secondEnteredExclusiveAccess
+                )
+            })
+            secondCompleted.signal()
+        }
+
+        XCTAssertEqual(secondAttemptedExclusiveAccess.wait(timeout: .now() + 5), .success)
+        XCTAssertTrue(
+            CodexUsageHistoryIndex.waitForExclusiveAccessWaiterForTesting(
+                codexHome: codexHome,
+                timeout: 5
+            ),
+            "The second refresh never reached the per-index single-flight gate"
+        )
+        XCTAssertEqual(secondEnteredExclusiveAccess.wait(timeout: .now()), .timedOut)
+
+        releaseFirstAggregation.signal()
+        XCTAssertEqual(firstCompleted.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(secondEnteredExclusiveAccess.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(secondCompleted.wait(timeout: .now() + 5), .success)
+
+        let firstObservation = try XCTUnwrap(firstResult.get()).get()
+        let secondObservation = try XCTUnwrap(secondResult.get()).get()
+        XCTAssertEqual(firstObservation.totalTokens, 180)
+        XCTAssertEqual(firstObservation.synchronization.changedFiles, 2)
+        XCTAssertEqual(secondObservation.totalTokens, 290)
+        XCTAssertEqual(secondObservation.synchronization.changedFiles, 1)
+        XCTAssertEqual(secondObservation.synchronization.unchangedFiles, 1)
+
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        let finalState = try XCTUnwrap(
+            database.readRows(
+                """
+                SELECT
+                    COUNT(*),
+                    COUNT(DISTINCT last_seen_generation),
+                    (SELECT COUNT(*) FROM events),
+                    (SELECT SUM(tokens) FROM events)
+                FROM sources;
+                """
+            ) {
+                (
+                    sourceCount: $0.int(0),
+                    generationCount: $0.int(1),
+                    eventCount: $0.int(2),
+                    totalTokens: $0.int(3)
+                )
+            }.first
+        )
+        XCTAssertEqual(finalState.sourceCount, 2)
+        XCTAssertEqual(finalState.generationCount, 1)
+        XCTAssertEqual(finalState.eventCount, 3)
+        XCTAssertEqual(finalState.totalTokens, 290)
+    }
+
     func testPreciseJSONLScanUpdatesTotalsForNewAndDeletedSessions() throws {
         let codexHome = try makeCodexHome()
         let sessionsRoot = codexHome.appendingPathComponent("sessions", isDirectory: true)
@@ -2167,5 +2297,96 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
     private func iso8601String(from date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
+    }
+}
+
+private struct ConcurrentUsageIndexObservation {
+    let synchronization: CodexUsageHistoryIndex.SynchronizationResult
+    let totalTokens: Int
+}
+
+private final class ConcurrentUsageIndexWorker: @unchecked Sendable {
+    private let index: CodexUsageHistoryIndex
+    private let analyzer: CodexUsageAnalyzer
+    private let files: [URL]
+
+    init(codexHome: URL, files: [URL]) throws {
+        index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        analyzer = CodexUsageAnalyzer(
+            dataSource: CodexDataSource(codexHome: codexHome, origin: .userSelected)
+        )
+        self.files = files
+    }
+
+    func synchronizeAndReadTotal(
+        exclusiveAccessEntered: DispatchSemaphore? = nil,
+        parserGateFile: URL? = nil,
+        parserReachedGate: DispatchSemaphore? = nil,
+        releaseParser: DispatchSemaphore? = nil,
+        synchronizationFinished: DispatchSemaphore? = nil,
+        releaseAggregation: DispatchSemaphore? = nil
+    ) throws -> ConcurrentUsageIndexObservation {
+        try index.withExclusiveAccess {
+            exclusiveAccessEntered?.signal()
+            var didGateParser = false
+            let synchronization = try index.synchronize(
+                files: files,
+                sessionID: analyzer.sessionID(from:)
+            ) { [analyzer] file, sessionID, endOffset, insertFingerprint, emit in
+                if !didGateParser,
+                   let parserGateFile,
+                   file.resolvingSymlinksInPath().path
+                    == parserGateFile.resolvingSymlinksInPath().path {
+                    didGateParser = true
+                    parserReachedGate?.signal()
+                    guard releaseParser?.wait(timeout: .now() + 5) != .timedOut else {
+                        throw NSError(
+                            domain: "CodexUsageAnalyzerTests.ConcurrentUsageIndexWorker",
+                            code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting to release parser gate"]
+                        )
+                    }
+                }
+                return try analyzer.parseSessionIntoHistoryIndex(
+                    file: file,
+                    sessionID: sessionID,
+                    endingAt: endOffset,
+                    insertFingerprint: insertFingerprint,
+                    emit: emit
+                )
+            }
+            synchronizationFinished?.signal()
+            if let releaseAggregation,
+               releaseAggregation.wait(timeout: .now() + 5) == .timedOut {
+                throw NSError(
+                    domain: "CodexUsageAnalyzerTests.ConcurrentUsageIndexWorker",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Timed out waiting to release aggregation gate"]
+                )
+            }
+            var totalTokens = 0
+            try index.forEachStoredEvent { totalTokens += $0.event.tokens }
+            return ConcurrentUsageIndexObservation(
+                synchronization: synchronization,
+                totalTokens: totalTokens
+            )
+        }
+    }
+}
+
+private final class ConcurrentUsageIndexResultBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<ConcurrentUsageIndexObservation, Error>?
+
+    func set(_ result: Result<ConcurrentUsageIndexObservation, Error>) {
+        lock.lock()
+        self.result = result
+        lock.unlock()
+    }
+
+    func get() -> Result<ConcurrentUsageIndexObservation, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return result
     }
 }

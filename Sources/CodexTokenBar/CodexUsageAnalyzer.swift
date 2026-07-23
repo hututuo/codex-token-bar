@@ -83,6 +83,15 @@ final class CodexUsageAnalyzer {
     }
 
     private func loadFromTokenCountJSONL() throws -> DashboardSnapshot {
+        // Keep discovery, generation synchronization, event aggregation, excerpt lookup, and
+        // snapshot publication in one per-index scope. Releasing between synchronize and the
+        // reads would let another refresh delete or replace the generation being aggregated.
+        try CodexUsageHistoryIndex.withExclusiveAccess(codexHome: dataSource.codexHome) {
+            try loadFromTokenCountJSONLExclusively()
+        }
+    }
+
+    private func loadFromTokenCountJSONLExclusively() throws -> DashboardSnapshot {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.preciseJSONL", metadata: [
             "sessionsRoot": dataSource.sessionsRoot.path
         ])

@@ -36,7 +36,7 @@ extension CodexUsageAnalyzer {
     }
 }
 
-final class CodexUsageHistoryIndex {
+final class CodexUsageHistoryIndex: @unchecked Sendable {
     struct StoredEvent {
         let stableID: String
         let event: TokenEvent
@@ -86,35 +86,70 @@ final class CodexUsageHistoryIndex {
     private static let indexNamespace = "exact-usage-history-v1"
     private static let cacheDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_DIR"
     private static let disabledCacheEnvironmentKey = "CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE"
+    private static let operationLocks = CodexUsageHistoryIndexOperationLockRegistry()
     private static let ephemeralRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("CodexTokenBarSwift-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
         .appendingPathComponent(indexNamespace, isDirectory: true)
 
     private let driver: SQLiteDatabaseDriver
     private let fileManager: FileManager
+    private let operationGate: CodexUsageHistoryIndexOperationGate
 
     init(codexHome: URL, fileManager: FileManager = .default) throws {
+        let databaseURL = Self.databaseURL(for: codexHome)
         self.fileManager = fileManager
+        operationGate = Self.operationGate(for: databaseURL)
         driver = SQLiteDatabaseDriver(
-            url: Self.databaseURL(for: codexHome),
+            url: databaseURL,
             busyTimeoutMilliseconds: 30_000,
             enableWAL: true,
             fileManager: fileManager
         )
-        do {
-            try prepareSchema()
-            try validateIntegrity()
-        } catch let error as SQLiteDatabaseError
-            where Self.isRebuildableCorruption(error) {
-            try? fileManager.removeItem(at: driver.url)
-            try? fileManager.removeItem(atPath: driver.url.path + "-wal")
-            try? fileManager.removeItem(atPath: driver.url.path + "-shm")
-            try prepareSchema()
-            try validateIntegrity()
+        try withExclusiveAccess {
+            do {
+                try prepareSchema()
+                try validateIntegrity()
+            } catch let error as SQLiteDatabaseError
+                where Self.isRebuildableCorruption(error) {
+                try? fileManager.removeItem(at: driver.url)
+                try? fileManager.removeItem(atPath: driver.url.path + "-wal")
+                try? fileManager.removeItem(atPath: driver.url.path + "-shm")
+                try prepareSchema()
+                try validateIntegrity()
+            }
         }
     }
 
+    static func withExclusiveAccess<T>(
+        codexHome: URL,
+        _ body: () throws -> T
+    ) rethrows -> T {
+        try operationGate(for: databaseURL(for: codexHome)).withLock(body)
+    }
+
+    func withExclusiveAccess<T>(_ body: () throws -> T) rethrows -> T {
+        try operationGate.withLock(body)
+    }
+
+    static func waitForExclusiveAccessWaiterForTesting(
+        codexHome: URL,
+        timeout: TimeInterval
+    ) -> Bool {
+        operationGate(for: databaseURL(for: codexHome))
+            .waitForPendingAcquisition(timeout: timeout)
+    }
+
     func synchronize(
+        files: [URL],
+        sessionID: (URL) -> String,
+        parser: SessionParser
+    ) throws -> SynchronizationResult {
+        try withExclusiveAccess {
+            try synchronizeExclusively(files: files, sessionID: sessionID, parser: parser)
+        }
+    }
+
+    private func synchronizeExclusively(
         files: [URL],
         sessionID: (URL) -> String,
         parser: SessionParser
@@ -174,6 +209,14 @@ final class CodexUsageHistoryIndex {
     }
 
     func forEachStoredEvent(_ body: (StoredEvent) throws -> Void) throws {
+        try withExclusiveAccess {
+            try forEachStoredEventExclusively(body)
+        }
+    }
+
+    private func forEachStoredEventExclusively(
+        _ body: (StoredEvent) throws -> Void
+    ) throws {
         try driver.forEachRow(
             """
             SELECT
@@ -226,6 +269,14 @@ final class CodexUsageHistoryIndex {
     }
 
     func turnSourceReferences(for stableIDs: [String]) throws -> [String: TurnSourceReference] {
+        try withExclusiveAccess {
+            try turnSourceReferencesExclusively(for: stableIDs)
+        }
+    }
+
+    private func turnSourceReferencesExclusively(
+        for stableIDs: [String]
+    ) throws -> [String: TurnSourceReference] {
         var references: [String: TurnSourceReference] = [:]
         try driver.withConnection { connection in
             for stableID in stableIDs {
@@ -681,6 +732,14 @@ final class CodexUsageHistoryIndex {
         return root.appendingPathComponent("\(digest).sqlite")
     }
 
+    private static func operationGate(
+        for databaseURL: URL
+    ) -> CodexUsageHistoryIndexOperationGate {
+        operationLocks.lock(
+            for: databaseURL.standardizedFileURL.resolvingSymlinksInPath().path
+        )
+    }
+
     private static func stableID(sourceID: Int64, sourceOffset: UInt64) -> String {
         "usage-index:\(sourceID):\(sourceOffset)"
     }
@@ -694,6 +753,61 @@ final class CodexUsageHistoryIndex {
             return nil
         }
         return (sourceID, sourceOffset)
+    }
+}
+
+private final class CodexUsageHistoryIndexOperationLockRegistry: @unchecked Sendable {
+    private let registryLock = NSLock()
+    private var locks: [String: CodexUsageHistoryIndexOperationGate] = [:]
+
+    func lock(for path: String) -> CodexUsageHistoryIndexOperationGate {
+        registryLock.lock()
+        defer { registryLock.unlock() }
+        if let existing = locks[path] {
+            return existing
+        }
+        let created = CodexUsageHistoryIndexOperationGate(name: path)
+        locks[path] = created
+        return created
+    }
+}
+
+private final class CodexUsageHistoryIndexOperationGate: @unchecked Sendable {
+    private let recursiveLock = NSRecursiveLock()
+    private let state = NSCondition()
+    private var pendingAcquisitions = 0
+
+    init(name: String) {
+        recursiveLock.name = "CodexUsageHistoryIndex.\(name)"
+    }
+
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        state.lock()
+        pendingAcquisitions += 1
+        state.broadcast()
+        state.unlock()
+
+        recursiveLock.lock()
+
+        state.lock()
+        pendingAcquisitions -= 1
+        state.broadcast()
+        state.unlock()
+
+        defer { recursiveLock.unlock() }
+        return try body()
+    }
+
+    func waitForPendingAcquisition(timeout: TimeInterval) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        state.lock()
+        defer { state.unlock() }
+        while pendingAcquisitions == 0 {
+            guard state.wait(until: deadline) else {
+                return false
+            }
+        }
+        return true
     }
 }
 
