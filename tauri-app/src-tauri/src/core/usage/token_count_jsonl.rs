@@ -42,8 +42,29 @@ static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLo
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_SCAN_SIGNATURE_COUNT: AtomicUsize = AtomicUsize::new(0);
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 14;
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 15;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
+pub(super) const MAX_SESSION_READ_BYTES: u64 = 128 * 1024 * 1024;
+pub(super) const MAX_REFRESH_READ_BYTES: u64 = 512 * 1024 * 1024;
+pub(super) const MAX_JSONL_LINE_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MAX_REFRESH_EVENT_COUNT: usize = 200_000;
+
+#[derive(Clone, Debug)]
+pub(super) struct UsageScanLimitError {
+    message: String,
+}
+
+impl UsageScanLimitError {
+    pub(super) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    fn user_message(&self) -> String {
+        format!("精确 token 历史扫描已为保护内存安全停止：{}。当前仅显示会话元数据，请缩小历史范围或等待缓存可用。", self.message)
+    }
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,7 +92,10 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut warnings = Vec::new();
-    let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings);
+    let session_files = match jsonl_files_for_codex_home(codex_home, &mut warnings) {
+        Ok(files) => files,
+        Err(error) => return safety_limited_dashboard_snapshot(codex_home, error),
+    };
     let signature = dashboard_scan_signature(codex_home, &session_files);
     if let Some(mut snapshot) = cached_dashboard_snapshot(&signature) {
         let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
@@ -79,12 +103,14 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         return Ok(snapshot_with_generated_at(snapshot));
     }
 
-    let mut events = Vec::new();
-    events.extend(load_token_events_from_files(
+    let events = match load_token_events_from_files(
         codex_home,
         session_files,
         &mut warnings,
-    ));
+    ) {
+        Ok(events) => events,
+        Err(error) => return safety_limited_dashboard_snapshot(codex_home, error),
+    };
 
     if events.is_empty() {
         return Err(no_token_events_error(&warnings));
@@ -141,6 +167,19 @@ fn merge_usage_cache_marker_warning(snapshot: &mut DashboardSnapshot) {
     }
 }
 
+fn safety_limited_dashboard_snapshot(
+    codex_home: &Path,
+    error: UsageScanLimitError,
+) -> Result<DashboardSnapshot, String> {
+    let mut snapshot = super::state_sqlite::dashboard_snapshot(codex_home)
+        .map_err(|state_error| format!("精确扫描受限（{}）；元数据快照读取失败：{}", error.user_message(), state_error))?;
+    snapshot.warnings = vec![LocalDataWarning {
+        source: "usage_precision".into(),
+        message: error.user_message(),
+    }];
+    Ok(snapshot_with_generated_at(snapshot))
+}
+
 fn activity_days_and_stats_at(
     events: &[TokenEvent],
     now_utc: OffsetDateTime,
@@ -158,7 +197,8 @@ fn activity_days_and_stats_at(
 pub fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
     let mut events = Vec::new();
     let mut warnings = Vec::new();
-    let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings);
+    let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings)
+        .map_err(|error| error.user_message())?;
     let signature = dashboard_scan_signature(codex_home, &session_files);
     if let Some(summary) = cached_usage_summary(&signature) {
         return Ok(summary);
@@ -168,7 +208,8 @@ pub fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
         codex_home,
         session_files,
         &mut warnings,
-    ));
+    )
+    .map_err(|error| error.user_message())?);
 
     if events.is_empty() {
         return Err(no_token_events_error(&warnings));
@@ -193,7 +234,13 @@ pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, S
 
 pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, String> {
     let mut warnings = Vec::new();
-    let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings);
+    let session_files = match jsonl_files_for_codex_home(codex_home, &mut warnings) {
+        Ok(files) => files,
+        Err(_) => {
+            return cached_dashboard_usage_summary(codex_home)
+                .ok_or_else(|| "精确 token summary 受安全边界限制，正在等待可用缓存".into())
+        }
+    };
     let signature = dashboard_scan_signature(codex_home, &session_files);
     if let Some(cached) = cached_dashboard_aggregate(&signature) {
         return Ok(cached.summary);
@@ -213,7 +260,7 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
     codex_home: &Path,
 ) -> Option<DashboardSnapshot> {
     let mut warnings = Vec::new();
-    let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings);
+    let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings).ok()?;
     let signature = dashboard_scan_signature(codex_home, &session_files);
     cached_dashboard_startup_snapshot(&signature).map(snapshot_with_generated_at)
 }

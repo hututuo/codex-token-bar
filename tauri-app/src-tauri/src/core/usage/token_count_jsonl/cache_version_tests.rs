@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn dashboard_aggregate_version_thirteen_is_rejected_after_token_dedupe_change() {
+fn dashboard_aggregate_version_thirteen_is_rejected_after_scan_safety_change() {
     let old_cache = PersistentDashboardAggregateCache {
         version: 13,
         signature: DashboardScanSignature {
@@ -14,7 +14,7 @@ fn dashboard_aggregate_version_thirteen_is_rejected_after_token_dedupe_change() 
         summary: TokenUsageSummary::default(),
     };
 
-    assert_eq!(DASHBOARD_AGGREGATE_CACHE_VERSION, 14);
+    assert_eq!(DASHBOARD_AGGREGATE_CACHE_VERSION, 15);
     assert_ne!(old_cache.version, DASHBOARD_AGGREGATE_CACHE_VERSION);
     let encoded = serde_json::to_vec(&old_cache).unwrap();
     assert!(decode_persistent_dashboard_aggregate(&encoded).is_none());

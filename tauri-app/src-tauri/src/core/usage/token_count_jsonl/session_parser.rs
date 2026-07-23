@@ -3,7 +3,7 @@ use crate::models::LocalDataWarning;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,7 +11,7 @@ use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 
 const FORK_REPLAY_EXIT_GRACE: Duration = Duration::seconds(2);
-const RECENT_USAGE_FINGERPRINT_LIMIT: usize = 4_096;
+pub(super) const RECENT_USAGE_FINGERPRINT_LIMIT: usize = 4_096;
 pub(super) type UsageSnapshotFingerprint = [u64; 9];
 
 #[cfg(test)]
@@ -40,6 +40,7 @@ struct ParsedMessageLine {
 
 pub(super) struct SessionParseResult {
     pub(super) events: Vec<TokenEvent>,
+    pub(super) limit_exceeded: Option<String>,
     pub(super) previous_total_tokens: Option<u64>,
     pub(super) consumed_size: u64,
     pub(super) ended_with_newline: bool,
@@ -54,42 +55,68 @@ pub(super) struct ForkReplayState {
     pub(super) last_skipped_token_at: Option<OffsetDateTime>,
 }
 
-pub(super) fn parse_session_file(
-    file: &Path,
-    session_id: &str,
-    warnings: &mut Vec<LocalDataWarning>,
-) -> Vec<TokenEvent> {
-    parse_session_file_full_result(file, session_id, warnings).events
-}
-
 pub(super) fn parse_session_file_full_result(
     file: &Path,
     session_id: &str,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> SessionParseResult {
-    record_full_parse_for_testing();
-    parse_session_file_range(file, session_id, 0, None, None, None, warnings)
+    parse_session_file_full_result_limited(
+        file,
+        session_id,
+        u64::MAX,
+        usize::MAX,
+        usize::MAX,
+        warnings,
+    )
 }
 
-pub(super) fn parse_session_file_range(
+pub(super) fn parse_session_file_full_result_limited(
+    file: &Path,
+    session_id: &str,
+    source_read_limit: u64,
+    line_limit: usize,
+    event_limit: usize,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> SessionParseResult {
+    record_full_parse_for_testing();
+    parse_session_file_range_limited(
+        file,
+        session_id,
+        0,
+        None,
+        None,
+        None,
+        source_read_limit,
+        line_limit,
+        event_limit,
+        warnings,
+    )
+}
+
+pub(super) fn parse_session_file_range_limited(
     file: &Path,
     session_id: &str,
     start_offset: u64,
     initial_previous_total: Option<u64>,
     initial_fork_replay_state: Option<ForkReplayState>,
     initial_recent_usage_fingerprints: Option<&[UsageSnapshotFingerprint]>,
+    source_read_limit: u64,
+    line_limit: usize,
+    event_limit: usize,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> SessionParseResult {
     let handle = match fs::File::open(file) {
         Ok(handle) => handle,
         Err(error) => {
-            warnings.push(jsonl_file_warning(format!(
+            let message = format!(
                 "读取会话文件失败：{}（{}）",
                 file.display(),
                 error
-            )));
+            );
+            warnings.push(jsonl_file_warning(message.clone()));
             return SessionParseResult {
                 events: Vec::new(),
+                limit_exceeded: Some(message),
                 previous_total_tokens: initial_previous_total,
                 consumed_size: start_offset,
                 ended_with_newline: true,
@@ -104,13 +131,15 @@ pub(super) fn parse_session_file_range(
     let mut handle = handle;
     if start_offset > 0 {
         if let Err(error) = handle.seek(SeekFrom::Start(start_offset)) {
-            warnings.push(jsonl_file_warning(format!(
+            let message = format!(
                 "定位会话文件失败：{}（{}）",
                 file.display(),
                 error
-            )));
+            );
+            warnings.push(jsonl_file_warning(message.clone()));
             return SessionParseResult {
                 events: Vec::new(),
+                limit_exceeded: Some(message),
                 previous_total_tokens: initial_previous_total,
                 consumed_size: start_offset,
                 ended_with_newline: true,
@@ -122,45 +151,77 @@ pub(super) fn parse_session_file_range(
             };
         }
     }
-    let reader = BufReader::new(handle);
-    let fork_replay_started_at = forked_session_replay_started_at(file);
+    let reader = BufReader::new(handle.take(source_read_limit));
+    let mut fork_replay_started_at = None;
     let mut fork_replay_active = initial_fork_replay_state
         .map(|state: ForkReplayState| state.active)
-        .unwrap_or_else(|| fork_replay_started_at.is_some());
+        .unwrap_or(false);
     let mut last_skipped_fork_replay_token_at =
         initial_fork_replay_state.and_then(|state: ForkReplayState| state.last_skipped_token_at);
     let mut previous_total = initial_previous_total;
     let mut recent_usage_fingerprints =
         RecentUsageFingerprintBuffer::new(initial_recent_usage_fingerprints.unwrap_or_default());
     let mut current_user_prompt = String::new();
-    let mut assistant_fragments = Vec::<String>::new();
+    let mut assistant_excerpt = String::new();
     let mut events = Vec::new();
     let mut consumed_size = start_offset;
     let mut ended_with_newline = true;
+    let mut limit_exceeded = None;
 
     let mut reader = reader;
+    let mut line_bytes = Vec::new();
     loop {
-        let mut line = String::new();
-        let bytes_read = match reader.read_line(&mut line) {
+        let bytes_read = match read_bounded_line(&mut reader, &mut line_bytes, line_limit) {
             Ok(0) => break,
             Ok(bytes_read) => bytes_read,
-            Err(error) => {
-                warnings.push(jsonl_file_warning(format!(
+            Err(BoundedLineReadError::TooLong) => {
+                let message = format!(
+                    "会话 JSONL 单行超过 {} MiB：{}",
+                    line_limit / 1024 / 1024,
+                    file.display()
+                );
+                warnings.push(jsonl_file_warning(message.clone()));
+                limit_exceeded = Some(message);
+                break;
+            }
+            Err(BoundedLineReadError::Io(error)) => {
+                let message = format!(
                     "读取会话文件中断：{}（{}）",
                     file.display(),
                     error
-                )));
+                );
+                warnings.push(jsonl_file_warning(message.clone()));
+                limit_exceeded = Some(message);
                 break;
             }
         };
-        let line_ended_with_newline = line.ends_with('\n');
+        let line_ended_with_newline = line_bytes.last().is_some_and(|byte| *byte == b'\n');
+        let line = match std::str::from_utf8(&line_bytes) {
+            Ok(line) => line,
+            Err(error) => {
+                let message = format!(
+                    "会话 JSONL 不是 UTF-8：{}（{}）",
+                    file.display(),
+                    error
+                );
+                warnings.push(jsonl_file_warning(message.clone()));
+                limit_exceeded = Some(message);
+                break;
+            }
+        };
         if !line_ended_with_newline && !is_complete_json_line(&line) {
             ended_with_newline = false;
             break;
         }
         ended_with_newline = line_ended_with_newline;
         let line = line.trim_end_matches(['\r', '\n']);
-        if let Some(message_line) = parse_payload_message_line(line, "user_message") {
+        if start_offset == 0 && fork_replay_started_at.is_none() {
+            if let Some(timestamp) = forked_session_replay_started_at_line(line) {
+                fork_replay_started_at = Some(timestamp);
+                fork_replay_active = true;
+            }
+        }
+        if let Some(message_line) = parse_payload_message_line(line, "user_message", 180) {
             if fork_replay_active {
                 let replay_reference = last_skipped_fork_replay_token_at.or(fork_replay_started_at);
                 if replay_reference.is_some_and(|reference| {
@@ -170,13 +231,13 @@ pub(super) fn parse_session_file_range(
                 }
             }
             current_user_prompt = message_line.message;
-            assistant_fragments.clear();
+            assistant_excerpt.clear();
             consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         }
 
-        if let Some(message_line) = parse_payload_message_line(line, "agent_message") {
-            assistant_fragments.push(message_line.message);
+        if let Some(message_line) = parse_payload_message_line(line, "agent_message", 220) {
+            append_excerpt(&mut assistant_excerpt, &message_line.message, 220);
             consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         }
@@ -230,6 +291,16 @@ pub(super) fn parse_session_file_range(
             continue;
         }
 
+        if events.len() >= event_limit {
+            let message = format!(
+                "会话 token 事件超过本次刷新安全上限（{} 条）：{}",
+                event_limit,
+                file.display()
+            );
+            warnings.push(jsonl_file_warning(message.clone()));
+            limit_exceeded = Some(message);
+            break;
+        }
         events.push(TokenEvent {
             timestamp: usage_line.timestamp,
             session_id: session_id.to_string(),
@@ -246,14 +317,15 @@ pub(super) fn parse_session_file_range(
                 .last
                 .as_ref()
                 .map_or(0, |usage| usage.output_tokens),
-            user_prompt: excerpt(&current_user_prompt, 180),
-            assistant_response: excerpt(&assistant_fragments.join(" "), 220),
+            user_prompt: current_user_prompt.clone(),
+            assistant_response: assistant_excerpt.clone(),
         });
-        assistant_fragments.clear();
+        assistant_excerpt.clear();
     }
 
     SessionParseResult {
         events,
+        limit_exceeded,
         previous_total_tokens: previous_total,
         consumed_size,
         ended_with_newline,
@@ -357,7 +429,40 @@ fn is_complete_json_line(line: &str) -> bool {
     serde_json::from_str::<Value>(line).is_ok()
 }
 
-fn parse_payload_message_line(line: &str, expected_type: &str) -> Option<ParsedMessageLine> {
+enum BoundedLineReadError {
+    Io(std::io::Error),
+    TooLong,
+}
+
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+    limit: usize,
+) -> Result<usize, BoundedLineReadError> {
+    line.clear();
+    loop {
+        let available = reader.fill_buf().map_err(BoundedLineReadError::Io)?;
+        if available.is_empty() {
+            return Ok(line.len());
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(available.len(), |index| index.saturating_add(1));
+        if line.len().saturating_add(consumed) > limit {
+            return Err(BoundedLineReadError::TooLong);
+        }
+        line.extend_from_slice(&available[..consumed]);
+        reader.consume(consumed);
+        if newline.is_some() {
+            return Ok(line.len());
+        }
+    }
+}
+
+fn parse_payload_message_line(
+    line: &str,
+    expected_type: &str,
+    excerpt_limit: usize,
+) -> Option<ParsedMessageLine> {
     if !line.contains("\"payload\"") || !line.contains(expected_type) {
         return None;
     }
@@ -367,7 +472,7 @@ fn parse_payload_message_line(line: &str, expected_type: &str) -> Option<ParsedM
     if payload.get("type")?.as_str()? != expected_type {
         return None;
     }
-    let normalized = normalize_excerpt_text(payload.get("message")?.as_str()?);
+    let normalized = excerpt(payload.get("message")?.as_str()?, excerpt_limit);
     if normalized.is_empty() {
         None
     } else {
@@ -379,40 +484,50 @@ fn parse_payload_message_line(line: &str, expected_type: &str) -> Option<ParsedM
 }
 
 fn excerpt(value: &str, limit: usize) -> String {
-    let normalized = normalize_excerpt_text(value);
-    if normalized.chars().count() <= limit {
-        return normalized;
+    let mut text = String::new();
+    let mut pending_space = false;
+    let mut count = 0;
+    for character in value.chars() {
+        if character.is_whitespace() {
+            pending_space = !text.is_empty();
+            continue;
+        }
+        if count >= limit {
+            text.push('…');
+            break;
+        }
+        if pending_space {
+            text.push(' ');
+            pending_space = false;
+        }
+        text.push(character);
+        count = count.saturating_add(1);
     }
-    let mut text = normalized.chars().take(limit).collect::<String>();
-    text.push('…');
     text
 }
 
-fn normalize_excerpt_text(value: &str) -> String {
-    value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim()
-        .to_string()
+fn append_excerpt(target: &mut String, next: &str, limit: usize) {
+    if target.is_empty() {
+        *target = excerpt(next, limit);
+        return;
+    }
+    if target.chars().count() >= limit {
+        return;
+    }
+    let remaining = limit.saturating_sub(target.chars().count());
+    let suffix = excerpt(next, remaining);
+    if suffix.is_empty() {
+        return;
+    }
+    target.push(' ');
+    target.push_str(&suffix);
 }
 
-fn forked_session_replay_started_at(file: &Path) -> Option<OffsetDateTime> {
-    let Some(handle) = fs::File::open(file).ok() else {
-        return None;
-    };
-    let mut reader = BufReader::new(handle);
-    let mut first_line = String::new();
-    let Some(bytes_read) = reader.read_line(&mut first_line).ok() else {
-        return None;
-    };
-    if bytes_read == 0 {
+fn forked_session_replay_started_at_line(line: &str) -> Option<OffsetDateTime> {
+    if !line.contains("session_meta") || !line.contains("forked_from_id") {
         return None;
     }
-    if !first_line.contains("session_meta") || !first_line.contains("forked_from_id") {
-        return None;
-    }
-    let Some(value) = serde_json::from_str::<Value>(&first_line).ok() else {
+    let Some(value) = serde_json::from_str::<Value>(line).ok() else {
         return None;
     };
     if value.get("type").and_then(Value::as_str) != Some("session_meta") {

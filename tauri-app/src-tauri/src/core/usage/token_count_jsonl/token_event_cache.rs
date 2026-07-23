@@ -1,9 +1,9 @@
 use super::{
     session_parser::{
-        parse_session_file, parse_session_file_full_result, parse_session_file_range,
-        ForkReplayState, UsageSnapshotFingerprint,
+        parse_session_file_full_result_limited, parse_session_file_range_limited,
+        ForkReplayState, UsageSnapshotFingerprint, RECENT_USAGE_FINGERPRINT_LIMIT,
     },
-    TokenEvent,
+    TokenEvent, UsageScanLimitError, MAX_REFRESH_EVENT_COUNT,
 };
 use crate::core::app_paths;
 use crate::core::atomic_file;
@@ -16,11 +16,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use time::OffsetDateTime;
 
-// Version 9 rebuilds events created by the old single-counter delta logic.
-const TOKEN_EVENT_CACHE_VERSION: u32 = 9;
+// Version 11 invalidates shards written before bounded fingerprint retention.
+const TOKEN_EVENT_CACHE_VERSION: u32 = 11;
 const STALE_TEMP_MIN_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const SHARD_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const SHARD_TARGET_DAILY_WRITE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_CACHE_SHARD_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_CACHE_SHARD_COUNT: usize = 10_000;
+const MAX_CACHE_FINGERPRINT_COUNT: usize = MAX_REFRESH_EVENT_COUNT;
 
 pub(super) type SessionShardKey = (String, String);
 
@@ -150,6 +153,14 @@ impl TokenEventCache {
         Self::default()
     }
 
+    pub(super) fn load_for_home(codex_home: &Path, warnings: &mut Vec<LocalDataWarning>) -> Self {
+        if let Some(cache) = Self::load_sharded_for_home(codex_home, warnings) {
+            return cache;
+        }
+
+        Self::default()
+    }
+
     pub(super) fn save(&self) -> Result<(), String> {
         if let Some(directory) = app_paths::token_event_cache_directory() {
             let dirty = self
@@ -193,14 +204,61 @@ impl TokenEventCache {
 
     fn load_sharded(warnings: &mut Vec<LocalDataWarning>) -> Option<Self> {
         let directory = app_paths::token_event_cache_directory()?;
+        Self::load_sharded_from(&directory, None, warnings)
+    }
+
+    fn load_sharded_for_home(codex_home: &Path, warnings: &mut Vec<LocalDataWarning>) -> Option<Self> {
+        let directory = app_paths::token_event_cache_directory()?;
+        let home_key = codex_home_cache_key(codex_home);
+        Self::load_sharded_from(&directory, Some(&home_key), warnings)
+    }
+
+    fn load_sharded_from(
+        directory: &Path,
+        home_key_filter: Option<&str>,
+        warnings: &mut Vec<LocalDataWarning>,
+    ) -> Option<Self> {
+        let root = home_key_filter
+            .map(|home_key| directory.join(home_key))
+            .unwrap_or_else(|| directory.to_path_buf());
         let mut shards = Vec::new();
-        collect_json_files(&directory, &mut shards);
+        if !collect_json_files_bounded(&root, &mut shards, MAX_CACHE_SHARD_COUNT) {
+            warnings.push(token_cache_warning(format!(
+                "精确 token 分片缓存数量超过安全上限（{} 个），本次忽略缓存并重新建立",
+                MAX_CACHE_SHARD_COUNT
+            )));
+            return Some(Self::default());
+        }
         if shards.is_empty() {
             return None;
         }
 
         let mut cache = Self::default();
+        let mut cached_event_count = 0usize;
+        let mut cached_fingerprint_count = 0usize;
         for shard in shards {
+            let metadata = match fs::metadata(&shard) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    warnings.push(token_cache_warning(format!(
+                        "读取精确 token 分片缓存元数据失败：{}（{}）",
+                        shard.display(),
+                        error
+                    )));
+                    continue;
+                }
+            };
+            if metadata.len() > MAX_CACHE_SHARD_BYTES {
+                warnings.push(token_cache_warning(format!(
+                    "精确 token 分片缓存超过单分片安全上限（{} MiB）：{}，已忽略",
+                    MAX_CACHE_SHARD_BYTES / 1024 / 1024,
+                    shard.display()
+                )));
+                continue;
+            }
+            if !shard_file_has_current_version(&shard) {
+                continue;
+            }
             let data = match fs::read(&shard) {
                 Ok(data) => data,
                 Err(error) => {
@@ -224,6 +282,33 @@ impl TokenEventCache {
                     continue;
                 }
             };
+            if home_key_filter.is_some_and(|home_key| shard.home_key != home_key) {
+                continue;
+            }
+            let shard_event_count = shard.session.events.len();
+            let next_event_count = cached_event_count.saturating_add(shard_event_count);
+            if next_event_count > MAX_REFRESH_EVENT_COUNT {
+                warnings.push(token_cache_warning(format!(
+                    "精确 token 分片缓存超过事件保留上限（{} 条），本次忽略缓存并重新建立",
+                    MAX_REFRESH_EVENT_COUNT
+                )));
+                return Some(Self::default());
+            }
+            cached_event_count = next_event_count;
+            let shard_fingerprint_count = shard.session.recent_usage_fingerprints.len();
+            let next_fingerprint_count =
+                cached_fingerprint_count.saturating_add(shard_fingerprint_count);
+            if shard_fingerprint_count > RECENT_USAGE_FINGERPRINT_LIMIT
+                || next_fingerprint_count > MAX_CACHE_FINGERPRINT_COUNT
+            {
+                warnings.push(token_cache_warning(format!(
+                    "精确 token 分片缓存超过指纹保留上限（单会话 {} 条、总计 {} 条），本次忽略缓存并重新建立",
+                    RECENT_USAGE_FINGERPRINT_LIMIT,
+                    MAX_CACHE_FINGERPRINT_COUNT
+                )));
+                return Some(Self::default());
+            }
+            cached_fingerprint_count = next_fingerprint_count;
             let home = cache
                 .homes
                 .entry(shard.home_key)
@@ -307,9 +392,17 @@ impl TokenEventCache {
 
     fn persisted_shards_missing_from_memory(&self, directory: &Path) -> HashSet<SessionShardKey> {
         let mut shard_paths = Vec::new();
-        collect_json_files(directory, &mut shard_paths);
+        if !collect_json_files_bounded(directory, &mut shard_paths, MAX_CACHE_SHARD_COUNT) {
+            return HashSet::new();
+        }
         shard_paths
             .into_iter()
+            .filter(|path| {
+                fs::metadata(path)
+                    .map(|metadata| metadata.len() <= MAX_CACHE_SHARD_BYTES)
+                    .unwrap_or(false)
+            })
+            .filter(|path| shard_file_has_current_version(path))
             .filter_map(|path| fs::read(path).ok())
             .filter_map(|data| serde_json::from_slice::<PersistentSessionShard>(&data).ok())
             .filter(|shard| shard.version == TOKEN_EVENT_CACHE_VERSION)
@@ -368,36 +461,79 @@ pub(super) fn parse_session_file_cached(
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Vec<TokenEvent> {
+    parse_session_file_cached_limited(
+        file,
+        session_id,
+        files,
+        cache_changed,
+        codex_home,
+        match file_signature(file) {
+            Some(signature) => signature,
+            None => {
+                warnings.push(token_cache_warning(format!(
+                    "无法确认会话文件大小：{}",
+                    file.display()
+                )));
+                return Vec::new();
+            }
+        },
+        u64::MAX,
+        usize::MAX,
+        usize::MAX,
+        warnings,
+    )
+    .unwrap_or_else(|error| {
+        warnings.push(token_cache_warning(error.message));
+        Vec::new()
+    })
+}
+
+pub(super) fn parse_session_file_cached_limited(
+    file: &Path,
+    session_id: &str,
+    files: &mut HashMap<String, CachedSessionFile>,
+    cache_changed: &mut bool,
+    codex_home: &Path,
+    expected_signature: CachedFileSignature,
+    source_read_limit: u64,
+    line_limit: usize,
+    event_limit: usize,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Result<Vec<TokenEvent>, UsageScanLimitError> {
     let cache_key = file_cache_key(codex_home, file);
-    let Some(signature) = file_signature(file) else {
-        return parse_session_file(file, session_id, warnings);
-    };
 
     if let Some(entry) = files.get(&cache_key) {
-        if entry.signature == signature && entry.is_complete_and_safe_to_reuse() {
-            return entry.to_events(session_id);
+        if entry.signature == expected_signature && entry.is_complete_and_safe_to_reuse() {
+            return Ok(entry.to_events(session_id));
         }
     }
 
     if let Some(entry) = files.get_mut(&cache_key) {
         let parsed_size = entry.effective_parsed_size();
-        if signature.size >= parsed_size
-            && signature.size >= entry.signature.size
+        if expected_signature.size >= parsed_size
+            && expected_signature.size >= entry.signature.size
             && parsed_size > 0
             && entry.ended_with_newline
             && entry.has_plausible_token_events()
         {
             let previous_total_tokens = entry.effective_previous_total_tokens();
-            let parsed = parse_session_file_range(
+            let parsed = parse_session_file_range_limited(
                 file,
                 session_id,
                 parsed_size,
                 previous_total_tokens,
                 entry.fork_replay_state(),
                 Some(&entry.recent_usage_fingerprints),
+                source_read_limit,
+                line_limit,
+                event_limit,
                 warnings,
             );
-            if parsed.consumed_size > parsed_size || signature.size == parsed_size {
+            if let Some(error) = parsed.limit_exceeded {
+                return Err(UsageScanLimitError::new(error));
+            }
+            ensure_file_signature_matches(file, &expected_signature)?;
+            if parsed.consumed_size > parsed_size || expected_signature.size == parsed_size {
                 let overlaps_cached_events = parsed.events.first().is_some_and(|first| {
                     entry
                         .events
@@ -408,7 +544,7 @@ pub(super) fn parse_session_file_cached(
                     entry
                         .events
                         .extend(parsed.events.iter().map(CachedTokenEvent::from_event));
-                    entry.signature = signature;
+                    entry.signature = expected_signature;
                     entry.parsed_size = parsed.consumed_size;
                     entry.ended_with_newline = parsed.ended_with_newline;
                     entry.previous_total_tokens = parsed.previous_total_tokens;
@@ -418,10 +554,10 @@ pub(super) fn parse_session_file_cached(
                         .map(|timestamp| timestamp.unix_timestamp());
                     entry.recent_usage_fingerprints = parsed.recent_usage_fingerprints;
                     *cache_changed = true;
-                    return entry.to_events(session_id);
+                    return Ok(entry.to_events(session_id));
                 }
             } else if !parsed.ended_with_newline {
-                return entry.to_events(session_id);
+                return Ok(entry.to_events(session_id));
             }
         }
     }
@@ -431,8 +567,11 @@ pub(super) fn parse_session_file_cached(
         session_id,
         files,
         cache_key,
-        signature,
+        expected_signature,
         cache_changed,
+        source_read_limit,
+        line_limit,
+        event_limit,
         warnings,
     )
 }
@@ -444,9 +583,23 @@ fn reparse_session_file(
     cache_key: String,
     signature: CachedFileSignature,
     cache_changed: &mut bool,
+    source_read_limit: u64,
+    line_limit: usize,
+    event_limit: usize,
     warnings: &mut Vec<LocalDataWarning>,
-) -> Vec<TokenEvent> {
-    let parsed = parse_session_file_full_result(file, session_id, warnings);
+) -> Result<Vec<TokenEvent>, UsageScanLimitError> {
+    let parsed = parse_session_file_full_result_limited(
+        file,
+        session_id,
+        source_read_limit,
+        line_limit,
+        event_limit,
+        warnings,
+    );
+    if let Some(error) = parsed.limit_exceeded {
+        return Err(UsageScanLimitError::new(error));
+    }
+    ensure_file_signature_matches(file, &signature)?;
     let events = parsed.events;
     files.insert(
         cache_key,
@@ -464,10 +617,26 @@ fn reparse_session_file(
         },
     );
     *cache_changed = true;
-    events
+    Ok(events)
 }
 
 impl CachedSessionFile {
+    fn source_bytes_needed(&self, signature: CachedFileSignature) -> u64 {
+        if self.signature == signature && self.is_complete_and_safe_to_reuse() {
+            return 0;
+        }
+        let parsed_size = self.effective_parsed_size();
+        if signature.size >= parsed_size
+            && signature.size >= self.signature.size
+            && parsed_size > 0
+            && self.ended_with_newline
+            && self.has_plausible_token_events()
+        {
+            return signature.size.saturating_sub(parsed_size);
+        }
+        signature.size
+    }
+
     fn to_events(&self, session_id: &str) -> Vec<TokenEvent> {
         self.events
             .iter()
@@ -515,6 +684,41 @@ impl CachedSessionFile {
                 .iter()
                 .all(CachedTokenEvent::has_plausible_token_total)
     }
+}
+
+pub(super) fn cached_source_bytes_needed(
+    entry: Option<&CachedSessionFile>,
+    signature: CachedFileSignature,
+) -> u64 {
+    entry
+        .map(|entry| entry.source_bytes_needed(signature.clone()))
+        .unwrap_or(signature.size)
+}
+
+pub(super) fn cached_reusable_event_count(
+    entry: Option<&CachedSessionFile>,
+    signature: CachedFileSignature,
+) -> Option<usize> {
+    entry
+        .filter(|entry| entry.signature == signature && entry.is_complete_and_safe_to_reuse())
+        .map(|entry| entry.events.len())
+}
+
+pub(super) fn cached_event_count(entry: Option<&CachedSessionFile>) -> usize {
+    entry.map_or(0, |entry| entry.events.len())
+}
+
+fn ensure_file_signature_matches(
+    file: &Path,
+    expected_signature: &CachedFileSignature,
+) -> Result<(), UsageScanLimitError> {
+    if file_signature(file).as_ref() != Some(expected_signature) {
+        return Err(UsageScanLimitError::new(format!(
+            "会话文件在读取期间发生变化：{}",
+            file.display()
+        )));
+    }
+    Ok(())
 }
 
 impl CachedTokenEvent {
@@ -640,9 +844,26 @@ fn remove_shard_if_identity_matches(
     cache_key: &str,
 ) -> Result<(), String> {
     let path = shard_path(directory, home_key, cache_key);
+    let metadata = match fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "读取待删除精确 token 分片元数据失败：{}（{}）",
+                path.display(),
+                error
+            ))
+        }
+    };
+    if metadata.len() > MAX_CACHE_SHARD_BYTES {
+        return Err(format!(
+            "待删除精确 token 分片超过安全上限（{} MiB）：{}",
+            MAX_CACHE_SHARD_BYTES / 1024 / 1024,
+            path.display()
+        ));
+    }
     let data = match fs::read(&path) {
         Ok(data) => data,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             return Err(format!(
                 "读取待删除精确 token 分片失败：{}（{}）",
@@ -787,21 +1008,44 @@ fn lock_file_exclusive(_file: &File) -> std::io::Result<()> {
     Ok(())
 }
 
-fn collect_json_files(root: &Path, files: &mut Vec<PathBuf>) {
+fn collect_json_files_bounded(root: &Path, files: &mut Vec<PathBuf>, limit: usize) -> bool {
+    let mut visited_directories = HashSet::new();
+    collect_json_files_bounded_inner(root, files, limit, &mut visited_directories)
+}
+
+fn collect_json_files_bounded_inner(
+    root: &Path,
+    files: &mut Vec<PathBuf>,
+    limit: usize,
+    visited_directories: &mut HashSet<PathBuf>,
+) -> bool {
+    let directory_key = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if !visited_directories.insert(directory_key) {
+        return true;
+    }
     let Ok(entries) = fs::read_dir(root) else {
-        return;
+        return true;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            collect_json_files(&path, files);
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.file_type().is_dir() {
+            if !collect_json_files_bounded_inner(&path, files, limit, visited_directories) {
+                return false;
+            }
         } else if path
             .extension()
             .is_some_and(|extension| extension == "json")
         {
+            if files.len() >= limit {
+                return false;
+            }
             files.push(path);
         }
     }
+    true
 }
 
 fn default_true() -> bool {

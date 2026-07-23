@@ -1,10 +1,12 @@
 use super::session_parser::{
-    parse_session_file_full_result, reset_session_full_parse_count_for_testing,
+    parse_session_file_full_result, parse_session_file_full_result_limited,
+    reset_session_full_parse_count_for_testing,
     session_full_parse_count_for_testing,
 };
 use super::token_event_cache::{
-    codex_home_cache_key, parse_session_file_cached, CachedCodexHome, CachedFileSignature,
-    CachedSessionFile, CachedTokenEvent, TokenEventCache,
+    codex_home_cache_key, file_signature, parse_session_file_cached,
+    parse_session_file_cached_limited, CachedCodexHome, CachedFileSignature, CachedSessionFile,
+    CachedTokenEvent, TokenEventCache,
 };
 use super::*;
 use rusqlite::Connection;
@@ -18,6 +20,182 @@ use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn oversized_session_uses_safe_metadata_only_snapshot_before_reading() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eoversized-0000-0000-0000-safety.jsonl");
+    let handle = fs::File::create(&file).unwrap();
+    handle
+        .set_len(MAX_SESSION_READ_BYTES.saturating_add(1))
+        .unwrap();
+    create_state_database(&root, "low", "high");
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+
+    assert_eq!(snapshot.stats.total_tokens, 0);
+    assert!(snapshot.warnings.iter().any(|warning| {
+        warning.source == "usage_precision" && warning.message.contains("单会话上限")
+    }));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn oversized_unterminated_jsonl_line_uses_safe_metadata_only_snapshot() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eline-limit-0000-0000-0000-safety.jsonl");
+    let mut handle = fs::File::create(&file).unwrap();
+    handle
+        .write_all(&vec![b'x'; MAX_JSONL_LINE_BYTES.saturating_add(1)])
+        .unwrap();
+    create_state_database(&root, "low", "high");
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+
+    assert_eq!(snapshot.stats.total_tokens, 0);
+    assert!(snapshot.warnings.iter().any(|warning| {
+        warning.source == "usage_precision" && warning.message.contains("单行超过 16 MiB")
+    }));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn token_event_parser_stops_before_exceeding_the_event_limit() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("rollout-019eevent-limit-0000-0000-0000-safety.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":0,"total_tokens":1}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2,"cached_input_tokens":0,"output_tokens":0,"total_tokens":2}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":3,"cached_input_tokens":0,"output_tokens":0,"total_tokens":3}}}}"#,
+        ],
+    );
+
+    let mut warnings = Vec::new();
+    let parsed = parse_session_file_full_result_limited(
+        &file,
+        "019eevent-limit-0000-0000-0000-safety",
+        u64::MAX,
+        usize::MAX,
+        2,
+        &mut warnings,
+    );
+
+    assert_eq!(parsed.events.len(), 2);
+    assert!(parsed
+        .limit_exceeded
+        .is_some_and(|message| message.contains("2 条")));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn oversized_token_event_cache_shard_is_skipped_before_reading() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_dir = root.join("token-event-cache-shards");
+    let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
+    let home = root.join("codex-home");
+    let home_key = codex_home_cache_key(&home);
+    let shard_directory = cache_dir.join(home_key);
+    fs::create_dir_all(&shard_directory).unwrap();
+    let shard = shard_directory.join("oversized.json");
+    let handle = fs::File::create(&shard).unwrap();
+    handle.set_len(32 * 1024 * 1024 + 1).unwrap();
+
+    let mut warnings = Vec::new();
+    let cache = TokenEventCache::load_for_home(&home, &mut warnings);
+
+    assert!(cache.homes.is_empty());
+    assert!(warnings.iter().any(|warning| {
+        warning.source == "token_event_cache" && warning.message.contains("单分片安全上限")
+    }));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn oversized_token_event_cache_fingerprints_are_ignored() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_dir = root.join("token-event-cache-shards");
+    let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
+    let home = root.join("codex-home");
+    let home_key = codex_home_cache_key(&home);
+    let shard_directory = cache_dir.join(&home_key);
+    fs::create_dir_all(&shard_directory).unwrap();
+    let fingerprints = vec![vec![0u64; 9]; 4_097];
+    let shard_data = format!(
+        r#"{{"version":11,"homeKey":{},"codexHome":{},"cacheKey":"sessions/fingerprints.jsonl","session":{{"signature":{{"size":1,"modifiedMillis":1}},"parsedSize":1,"endedWithNewline":true,"previousTotalTokens":1,"forkReplayActive":false,"lastSkippedForkReplayTokenAt":null,"recentUsageFingerprints":{},"events":[]}}}}"#,
+        serde_json::to_string(&home_key).unwrap(),
+        serde_json::to_string(&home.to_string_lossy()).unwrap(),
+        serde_json::to_string(&fingerprints).unwrap(),
+    );
+    fs::write(
+        shard_directory.join("fingerprints.json"),
+        shard_data,
+    )
+    .unwrap();
+
+    let mut warnings = Vec::new();
+    let cache = TokenEventCache::load_for_home(&home, &mut warnings);
+
+    assert!(cache.homes.is_empty());
+    assert!(warnings.iter().any(|warning| {
+        warning.source == "token_event_cache" && warning.message.contains("指纹保留上限")
+    }));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn token_event_cache_rejects_a_file_that_changes_after_budgeting() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("rollout-019esignature-race-0000-0000-0000-safety.jsonl");
+    write_lines(
+        &file,
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":0,"total_tokens":1}}}}"#],
+    );
+    let expected_signature = file_signature(&file).unwrap();
+    let mut appended = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(
+        appended,
+        "{}",
+        r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2,"cached_input_tokens":0,"output_tokens":0,"total_tokens":2}}}}"#
+    )
+    .unwrap();
+    let mut files = HashMap::new();
+    let mut cache_changed = false;
+    let mut warnings = Vec::new();
+
+    let result = parse_session_file_cached_limited(
+        &file,
+        "019esignature-race-0000-0000-0000-safety",
+        &mut files,
+        &mut cache_changed,
+        &root,
+        expected_signature,
+        0,
+        usize::MAX,
+        usize::MAX,
+        &mut warnings,
+    );
+
+    assert!(result.is_err());
+    assert!(!cache_changed);
+    assert!(files.is_empty());
+    fs::remove_dir_all(root).unwrap();
+}
 
 #[test]
 fn parses_token_count_totals_as_deltas() {
@@ -944,14 +1122,14 @@ fn token_event_cache_reparses_pre_grace_window_version_seven_shard() {
 
     reset_session_full_parse_count_for_testing();
     let mut warnings = Vec::new();
-    let events = load_token_events_from_files(&root, vec![file.clone()], &mut warnings);
+    let events = load_token_events_from_files(&root, vec![file.clone()], &mut warnings).unwrap();
 
     assert_eq!(events.iter().map(|event| event.tokens).sum::<u64>(), 120);
     assert_eq!(session_full_parse_count_for_testing(), 1);
     assert!(json_files_under(&cache_dir)
         .iter()
         .filter_map(|path| fs::read_to_string(path).ok())
-        .any(|text| text.contains(r#""version":9"#) && text.contains(r#""tokens":120"#)));
+        .any(|text| text.contains(r#""version":11"#) && text.contains(r#""tokens":120"#)));
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1135,7 +1313,7 @@ fn dashboard_aggregate_persists_a_bounded_startup_snapshot_then_rebuilds_full_de
         persisted.len()
     );
     let json: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
-    assert_eq!(json["version"], 14);
+    assert_eq!(json["version"], 15);
     assert_eq!(
         json["snapshot"]["recentUsage24h"].as_array().unwrap().len(),
         0
@@ -1206,7 +1384,7 @@ fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
 }
 
 #[test]
-fn usage_summary_rejects_v11_and_reuses_rebuilt_v14_dashboard_aggregate() {
+fn usage_summary_rejects_v11_and_reuses_rebuilt_v15_dashboard_aggregate() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("token-aggregate-cache.json");
@@ -1243,7 +1421,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v14_dashboard_aggregate() {
     assert_eq!(summary.total_tokens, 120);
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""version":14"#));
+    assert!(aggregate_cache_text().contains(r#""version":15"#));
     assert!(aggregate_cache_text().contains(r#""totalTokens":120"#));
 
     reset_dashboard_aggregate_build_count_for_testing();
@@ -1252,7 +1430,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v14_dashboard_aggregate() {
     assert_eq!(
         dashboard_aggregate_build_count_for_testing(&root),
         0,
-        "current v14 aggregate should be reused after memory state is cleared"
+        "current v15 aggregate should be reused after memory state is cleared"
     );
 
     fs::remove_dir_all(root).unwrap();
@@ -1833,7 +2011,7 @@ fn token_event_cache_round_trips_fork_replay_state_before_incremental_append() {
     );
 
     let mut warnings = Vec::new();
-    let first = load_token_events_from_files(&root, vec![file.clone()], &mut warnings);
+    let first = load_token_events_from_files(&root, vec![file.clone()], &mut warnings).unwrap();
     assert_eq!(first.iter().map(|event| event.tokens).sum::<u64>(), 70);
 
     let mut loaded_warnings = Vec::new();
@@ -1858,7 +2036,7 @@ fn token_event_cache_round_trips_fork_replay_state_before_incremental_append() {
     }
 
     let mut append_warnings = Vec::new();
-    let second = load_token_events_from_files(&root, vec![file.clone()], &mut append_warnings);
+    let second = load_token_events_from_files(&root, vec![file.clone()], &mut append_warnings).unwrap();
     assert_eq!(second.iter().map(|event| event.tokens).sum::<u64>(), 170);
     assert_eq!(second.len(), 2);
 
