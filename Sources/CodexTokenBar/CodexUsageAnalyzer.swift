@@ -4,7 +4,6 @@ final class CodexUsageAnalyzer {
     let fileManager = FileManager.default
     let calendar = Calendar.current
     let dataSource: CodexDataSource
-    let scanLimits: UsageScanLimits
     let fractionalDateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -16,12 +15,8 @@ final class CodexUsageAnalyzer {
         return formatter
     }()
 
-    init(
-        dataSource: CodexDataSource,
-        scanLimits: UsageScanLimits = .production
-    ) {
+    init(dataSource: CodexDataSource) {
         self.dataSource = dataSource
-        self.scanLimits = scanLimits
     }
 
     func load() throws -> DashboardSnapshot {
@@ -35,9 +30,9 @@ final class CodexUsageAnalyzer {
                 "calls": String(preciseSnapshot.stats.totalCalls)
             ])
             return preciseSnapshot
-        } catch let error as UsageScanLimitError {
-            trace?.end("precise-safety-limited", metadata: ["error": error.localizedDescription])
-            return try loadFromStateSQLite(usagePrecision: .safetyLimited)
+        } catch let error as CodexUsageHistoryIndexError {
+            trace?.end("precise-index-failed", metadata: ["error": error.localizedDescription])
+            throw error
         } catch let error as CodexUsageDiscoveryError {
             trace?.end("discovery-failed", metadata: ["error": error.localizedDescription])
             throw error
@@ -120,45 +115,60 @@ final class CodexUsageAnalyzer {
             )
         }
         trace?.mark("snapshot-cache-miss")
-        trace?.mark("retainOnly.begin")
-        Self.sessionEventCache.retainOnly(paths: Set(sessionFiles.map { $0.resolvingSymlinksInPath().path }))
-        trace?.mark("retainOnly.end")
 
         let aggregationNow = Date()
         var aggregation = UsageAggregationBuilder(calendar: calendar, now: aggregationNow)
-        let scanBudget = UsageScanBudget(limits: scanLimits)
         trace?.mark("threadMetadata.begin")
         let metadata = loadThreadMetadata()
         trace?.mark("threadMetadata.end", metadata: ["plugins": String(metadata.plugins.count)])
 
         trace?.mark("parseSessions.begin")
+        let historyIndex: CodexUsageHistoryIndex
         do {
-            for file in sessionFiles {
-                try autoreleasepool {
-                    let sessionID = sessionID(from: file)
-                    let sessionEvents = try parseSession(
-                        file: file,
-                        sessionID: sessionID,
-                        scanBudget: scanBudget
-                    )
-                    aggregation.consume(sessionID: sessionID, events: sessionEvents)
+            historyIndex = try CodexUsageHistoryIndex(codexHome: dataSource.codexHome)
+            let synchronization = try historyIndex.synchronize(
+                files: sessionFiles,
+                sessionID: sessionID(from:)
+            ) { [self] file, sessionID, endOffset, insertFingerprint, emit in
+                try parseSessionIntoHistoryIndex(
+                    file: file,
+                    sessionID: sessionID,
+                    endingAt: endOffset,
+                    insertFingerprint: insertFingerprint,
+                    emit: emit
+                )
+            }
+            trace?.mark("historyIndex.synchronized", metadata: [
+                "changedFiles": String(synchronization.changedFiles),
+                "unchangedFiles": String(synchronization.unchangedFiles),
+                "indexedEvents": String(synchronization.indexedEvents)
+            ])
+            for _ in 0..<synchronization.changedFiles {
+                Self.sessionEventCache.recordFullSessionParseForTesting()
+            }
+
+            var currentSessionID: String?
+            var turnIndexInSession = 0
+            try historyIndex.forEachStoredEvent { stored in
+                if currentSessionID == stored.event.sessionID {
+                    turnIndexInSession += 1
+                } else {
+                    currentSessionID = stored.event.sessionID
+                    turnIndexInSession = 1
                 }
+                aggregation.consume(
+                    stored.event,
+                    stableID: stored.stableID,
+                    turnIndexInSession: turnIndexInSession
+                )
             }
         } catch {
-            // A safe partial cache is still useful on the next refresh. The
-            // snapshot itself is deliberately not stored until every session
-            // has completed.
-            Self.sessionEventCache.flushPersistentCache()
-            throw error
+            throw CodexUsageHistoryIndexError(operation: "同步或查询", underlying: error)
         }
         trace?.mark("parseSessions.end", metadata: [
             "events": String(aggregation.totalEventCount),
             "sessionsWithEvents": String(aggregation.totalSessionCount)
         ])
-        trace?.mark("flushCache.begin")
-        Self.sessionEventCache.flushPersistentCache()
-        trace?.mark("flushCache.end")
-
         guard aggregation.totalEventCount > 0 else {
             trace?.end("no-token-events")
             throw NSError(domain: "CodexTokenBar", code: 6, userInfo: [NSLocalizedDescriptionKey: "No token_count events found in \(dataSource.displayPath)/sessions"])
@@ -182,7 +192,10 @@ final class CodexUsageAnalyzer {
         let threadInfo = loadThreadInfo()
         trace?.mark("threadInfo.end", metadata: ["count": String(threadInfo.count)])
         trace?.mark("cacheUsage.begin")
-        let cacheUsage = aggregation.cacheUsage(recentBins: recentBins, threadInfo: threadInfo)
+        let cacheUsage = hydratingTurnExcerpts(
+            in: aggregation.cacheUsage(recentBins: recentBins, threadInfo: threadInfo),
+            from: historyIndex
+        )
         trace?.mark("cacheUsage.end", metadata: [
             "sessions": String(cacheUsage.sessions.count),
             "turns": String(cacheUsage.turns.count)
@@ -228,9 +241,6 @@ final class CodexUsageAnalyzer {
         trace?.mark("storeSnapshot.begin")
         Self.sessionEventCache.storeSnapshot(snapshot, for: dataSource.codexHome.path, signature: signature)
         trace?.mark("storeSnapshot.end")
-        trace?.mark("flushCacheAfterSnapshot.begin")
-        Self.sessionEventCache.flushPersistentCache()
-        trace?.mark("flushCacheAfterSnapshot.end")
         trace?.end("ok", metadata: [
             "tokens": String(totalTokens),
             "calls": String(aggregation.totalCalls)

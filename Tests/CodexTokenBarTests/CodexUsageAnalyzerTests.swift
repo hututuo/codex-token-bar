@@ -194,7 +194,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.cacheUsage.total.inputTokens, 630_592)
     }
 
-    func testPersistentCacheKeepsInterleavedSnapshotDedupeAcrossRestart() throws {
+    func testExactHistoryIndexKeepsInterleavedSnapshotDedupeAcrossWarmRestart() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageInterleavedRestart")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -230,8 +230,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load().stats.totalTokens,
             190
         )
-        CodexUsageAnalyzer.clearUsageCachesForTesting()
-        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
 
         try appendLines([
             try tokenCountLine(
@@ -250,8 +249,6 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         XCTAssertEqual(reloaded.stats.totalTokens, 280)
         XCTAssertEqual(reloaded.stats.totalCalls, 3)
-        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
-        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 1)
     }
 
     func testRecentBinsKeepFiveMinuteHistoryForThirtyDays() throws {
@@ -288,7 +285,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(bins.reduce(0) { $0 + $1.calls }, 1)
     }
 
-    func testPersistentSessionCacheDoesNotStoreConversationText() throws {
+    func testExactHistoryIndexIgnoresAndRemovesLegacyConversationCaches() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerCache")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -333,17 +330,13 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertTrue(snapshot.cacheUsage.turns.contains { $0.userPrompt == secretQuestion })
         XCTAssertTrue(snapshot.cacheUsage.turns.contains { $0.assistantResponse == secretAnswer })
 
-        let cacheDirectoryV9 = swiftUsageCacheRoot(in: cacheRoot)
-            .appendingPathComponent("session-token-events-v9", isDirectory: true)
-        let cacheText = try cacheTextContents(under: cacheDirectoryV9)
-        XCTAssertFalse(cacheText.contains(secretQuestion))
-        XCTAssertFalse(cacheText.contains(secretAnswer))
-        XCTAssertFalse(cacheText.contains("legacy secret question"))
-        XCTAssertFalse(cacheText.contains("legacy secret answer"))
-        XCTAssertFalse(cacheText.contains(#""userPrompt":"#))
-        XCTAssertFalse(cacheText.contains(#""assistantResponse":"#))
-        XCTAssertTrue(cacheText.contains("userPromptDigest"))
-        XCTAssertTrue(cacheText.contains("assistantResponseDigest"))
+        let cacheBytes = try cacheDataContents(under: swiftUsageCacheRoot(in: cacheRoot))
+        XCTAssertNil(cacheBytes.range(of: Data(secretQuestion.utf8)))
+        XCTAssertNil(cacheBytes.range(of: Data(secretAnswer.utf8)))
+        XCTAssertNil(cacheBytes.range(of: Data("legacy secret question".utf8)))
+        XCTAssertNil(cacheBytes.range(of: Data("legacy secret answer".utf8)))
+
+        UsageCacheLifecycle.markCurrentCachePrepared()
         XCTAssertTrue(legacyCaches.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
     }
 
@@ -625,19 +618,24 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
     }
 
-    func testTraversalDepthLimitThrowsDiscoveryFailure() throws {
+    func testDeepSessionHistoryIsDiscoveredWithoutATraversalDepthCeiling() throws {
         let codexHome = try makeCodexHome()
         var directory = codexHome.appendingPathComponent("sessions", isDirectory: true)
-        for index in 0..<65 {
+        for index in 0..<80 {
             directory.appendPathComponent("level-\(index)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         }
+        let sessionID = "019faaaa-bbbb-cccc-dddd-deep-history"
+        let sessionFile = directory.appendingPathComponent("2026-07-24-\(sessionID).jsonl")
+        try tokenCountLine(
+            timestamp: Date(timeIntervalSince1970: 1_800_000_000),
+            total: Usage(input: 321, cachedInput: 0, output: 0, reasoning: 0, total: 321),
+            last: Usage(input: 321, cachedInput: 0, output: 0, reasoning: 0, total: 321)
+        ).appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
 
-        XCTAssertThrowsError(
-            try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).usageJSONLFiles()
-        ) { error in
-            XCTAssertTrue(error.localizedDescription.contains("上限"), error.localizedDescription)
-        }
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertTrue(try analyzer.usageJSONLFiles().contains(sessionFile))
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 321)
     }
 
     func testPreciseJSONLScanDeduplicatesStateRolloutPathsAlreadyUnderSessions() throws {
@@ -1011,7 +1009,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(CodexUsageAnalyzer.preciseSnapshotBuildCountForTesting, buildCountAfterFirstLoad)
     }
 
-    func testPreciseJSONLScanParsesOnlyAppendedSessionLines() throws {
+    func testPreciseJSONLScanRebuildsAChangedSourceExactly() throws {
         let codexHome = try makeCodexHome()
         let sessionID = "019eaaaa-bbbb-cccc-dddd-appendonly"
         let sessionFile = codexHome
@@ -1033,9 +1031,6 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         let first = try analyzer.load()
         XCTAssertEqual(first.stats.totalTokens, 120)
-        let fullParsesAfterFirstLoad = CodexUsageAnalyzer.fullSessionParseCountForTesting
-        let incrementalParsesAfterFirstLoad = CodexUsageAnalyzer.incrementalSessionParseCountForTesting
-
         let appendedLines = [
             messageLine(timestamp: now.addingTimeInterval(-30), type: "user_message", message: "Second prompt"),
             messageLine(timestamp: now.addingTimeInterval(-20), type: "agent_message", message: "Second answer"),
@@ -1053,41 +1048,6 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(second.stats.totalCalls, 2)
         XCTAssertEqual(second.cacheUsage.total.inputTokens, 190)
         XCTAssertEqual(second.cacheUsage.total.cachedInputTokens, 50)
-        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, fullParsesAfterFirstLoad)
-        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, incrementalParsesAfterFirstLoad + 1)
-    }
-
-    func testSessionCacheRejectsAppendOffsetBeyondCurrentFileSize() {
-        let cache = CodexUsageAnalyzer.SessionEventCache()
-        let path = "/tmp/session-offset-beyond-eof.jsonl"
-        let staleKey = CodexUsageAnalyzer.SessionCacheKey(path: path, size: 80, modifiedAt: 1_000)
-        let currentKey = CodexUsageAnalyzer.SessionCacheKey(path: path, size: 120, modifiedAt: 1_100)
-        let cached = CodexUsageAnalyzer.SessionEventCache.CachedSession(
-            key: staleKey,
-            events: [
-                TokenEvent(
-                    timestamp: Date(timeIntervalSince1970: 1_000),
-                    sessionID: "session-offset-beyond-eof",
-                    tokens: 120,
-                    inputTokens: 100,
-                    cachedInputTokens: 0,
-                    outputTokens: 20,
-                    reasoningOutputTokens: 0,
-                    userPrompt: "",
-                    assistantResponse: ""
-                )
-            ],
-            lastOffset: 240,
-            endedWithNewline: true,
-            previousTotalTokens: 120,
-            canIncrementFromOffset: true,
-            forkReplayActive: false,
-            lastSkippedForkReplayTokenAt: nil
-        )
-
-        cache.store(cached, for: path)
-
-        XCTAssertNil(cache.appendableSession(for: path, currentKey: currentKey))
     }
 
     func testPreciseJSONLScanFallsBackToFullParseWhenSessionShrinks() throws {
@@ -1114,7 +1074,6 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         XCTAssertEqual(try analyzer.load().stats.totalTokens, 200)
-        let fullParsesAfterFirstLoad = CodexUsageAnalyzer.fullSessionParseCountForTesting
 
         let replacementLines = [
             try tokenCountLine(
@@ -1129,7 +1088,125 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         XCTAssertEqual(second.stats.totalTokens, 60)
         XCTAssertEqual(second.stats.totalCalls, 1)
-        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, fullParsesAfterFirstLoad + 1)
+    }
+
+    func testExactHistoryIndexRollsBackWhenSourceIsRewrittenDuringStreamingScan() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-changing"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date()
+        try tokenCountLine(
+            timestamp: now.addingTimeInterval(-60),
+            total: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120),
+            last: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120)
+        ).appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        _ = try index.synchronize(
+            files: [sessionFile],
+            sessionID: analyzer.sessionID(from:)
+        ) { file, parsedSessionID, endOffset, insertFingerprint, emit in
+            try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                endingAt: endOffset,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+
+        try tokenCountLine(
+            timestamp: now.addingTimeInterval(-30),
+            total: Usage(input: 50, cachedInput: 0, output: 10, reasoning: 0, total: 60),
+            last: Usage(input: 50, cachedInput: 0, output: 10, reasoning: 0, total: 60)
+        ).appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(
+            try index.synchronize(
+                files: [sessionFile],
+                sessionID: analyzer.sessionID(from:)
+            ) { file, parsedSessionID, endOffset, insertFingerprint, emit in
+                let result = try analyzer.parseSessionIntoHistoryIndex(
+                    file: file,
+                    sessionID: parsedSessionID,
+                    endingAt: endOffset,
+                    insertFingerprint: insertFingerprint,
+                    emit: emit
+                )
+                try tokenCountLine(
+                    timestamp: now.addingTimeInterval(-5),
+                    total: Usage(input: 80, cachedInput: 0, output: 10, reasoning: 0, total: 90),
+                    last: Usage(input: 80, cachedInput: 0, output: 10, reasoning: 0, total: 90)
+                ).appending("\n").write(to: file, atomically: true, encoding: .utf8)
+                return result
+            }
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("发生变化"), error.localizedDescription)
+        }
+
+        var retainedTotal = 0
+        try index.forEachStoredEvent { retainedTotal += $0.event.tokens }
+        XCTAssertEqual(retainedTotal, 120)
+    }
+
+    func testExactHistoryIndexCommitsObservedPrefixWhenActiveSourceAppendsDuringScan() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-appending"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date()
+        try tokenCountLine(
+            timestamp: now.addingTimeInterval(-60),
+            total: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120),
+            last: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120)
+        ).appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let appendedLine = try tokenCountLine(
+            timestamp: now.addingTimeInterval(-10),
+            total: Usage(input: 190, cachedInput: 20, output: 40, reasoning: 0, total: 230),
+            last: Usage(input: 90, cachedInput: 20, output: 20, reasoning: 0, total: 110)
+        )
+
+        _ = try index.synchronize(
+            files: [sessionFile],
+            sessionID: analyzer.sessionID(from:)
+        ) { file, parsedSessionID, endOffset, insertFingerprint, emit in
+            let result = try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                endingAt: endOffset,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+            try appendLines([appendedLine], to: file)
+            return result
+        }
+
+        var observedPrefixTotal = 0
+        try index.forEachStoredEvent { observedPrefixTotal += $0.event.tokens }
+        XCTAssertEqual(observedPrefixTotal, 120)
+
+        _ = try index.synchronize(
+            files: [sessionFile],
+            sessionID: analyzer.sessionID(from:)
+        ) { file, parsedSessionID, endOffset, insertFingerprint, emit in
+            try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                endingAt: endOffset,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+        var refreshedTotal = 0
+        try index.forEachStoredEvent { refreshedTotal += $0.event.tokens }
+        XCTAssertEqual(refreshedTotal, 230)
     }
 
     func testPreciseJSONLScanUpdatesTotalsForNewAndDeletedSessions() throws {
@@ -1169,7 +1246,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(afterDelete.cacheUsage.sessions.map(\.id), [secondID])
     }
 
-    func testPersistentV9SessionCacheDoesNotStoreConversationText() throws {
+    func testPersistentExactHistoryIndexDoesNotStoreConversationTextAndReusesUnchangedSources() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV9Cache")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -1181,13 +1258,13 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
 
         let codexHome = try makeCodexHome()
-        let sessionID = "019eaaaa-bbbb-cccc-dddd-v6privacy"
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-indexprivacy"
         let sessionFile = codexHome
             .appendingPathComponent("sessions", isDirectory: true)
             .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
         let now = Date()
-        let secretQuestion = "v6 secret prompt 821219"
-        let secretAnswer = "v6 secret answer 197705"
+        let secretQuestion = "index secret prompt 821219"
+        let secretAnswer = "index secret answer 197705"
         let lines = [
             messageLine(timestamp: now.addingTimeInterval(-80), type: "user_message", message: secretQuestion),
             messageLine(timestamp: now.addingTimeInterval(-70), type: "agent_message", message: secretAnswer),
@@ -1203,25 +1280,13 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         XCTAssertEqual(snapshot.stats.totalTokens, 140)
         let cacheDirectory = swiftUsageCacheRoot(in: cacheRoot)
-            .appendingPathComponent("session-token-events-v9", isDirectory: true)
-        let cacheText = try cacheTextContents(under: cacheDirectory)
-        XCTAssertFalse(cacheText.contains(secretQuestion))
-        XCTAssertFalse(cacheText.contains(secretAnswer))
-        XCTAssertFalse(cacheText.contains(#""userPrompt":"#))
-        XCTAssertFalse(cacheText.contains(#""assistantResponse":"#))
-        XCTAssertTrue(cacheText.contains("userPromptDigest"))
-        XCTAssertTrue(cacheText.contains("assistantResponseDigest"))
-        XCTAssertFalse(
-            FileManager.default.fileExists(
-                atPath: cacheRoot
-                    .appendingPathComponent(UsageCacheLifecycle.appDirectoryName, isDirectory: true)
-                    .appendingPathComponent(UsageCacheLifecycle.namespace, isDirectory: true)
-                    .appendingPathComponent("session-token-snapshots-v9.json")
-                    .path
-            )
-        )
+        let cacheBytes = try cacheDataContents(under: cacheDirectory)
+        XCTAssertNil(cacheBytes.range(of: Data(secretQuestion.utf8)))
+        XCTAssertNil(cacheBytes.range(of: Data(secretAnswer.utf8)))
+        XCTAssertNotNil(cacheBytes.range(of: Data("CREATE TABLE".utf8)))
 
-        CodexUsageAnalyzer.clearUsageCachesForTesting()
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
         let reloaded = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
 
         XCTAssertEqual(reloaded.stats.totalTokens, 140)
@@ -1229,7 +1294,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
     }
 
-    func testPersistentV9SessionCacheAppendsOnlyNewEventsAndSkipsNoOpWrites() throws {
+    func testPersistentExactHistoryIndexRebuildsChangedSourceAndSkipsUnchangedSource() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV9Append")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -1241,7 +1306,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
 
         let codexHome = try makeCodexHome()
-        let sessionID = "019eaaaa-bbbb-cccc-dddd-v9append"
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-indexupdate"
         let sessionFile = codexHome
             .appendingPathComponent("sessions", isDirectory: true)
             .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
@@ -1257,34 +1322,14 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
 
-        let cacheDirectory = swiftUsageCacheRoot(in: cacheRoot)
-            .appendingPathComponent("session-token-events-v9", isDirectory: true)
-        let cacheFiles = try FileManager.default.contentsOfDirectory(
-            at: cacheDirectory,
-            includingPropertiesForKeys: nil
-        )
-        let eventURL = try XCTUnwrap(cacheFiles.first { $0.lastPathComponent.hasSuffix(".events.jsonl") })
-        let metadataURL = try XCTUnwrap(cacheFiles.first { $0.lastPathComponent.hasSuffix(".meta.json") })
-        let initialEvents = try Data(contentsOf: eventURL)
-        let initialEventAttributes = try FileManager.default.attributesOfItem(atPath: eventURL.path)
-        let initialEventFileNumber = try XCTUnwrap(
-            (initialEventAttributes[.systemFileNumber] as? NSNumber)?.uint64Value
-        )
-        let initialMetadata = try Data(contentsOf: metadataURL)
-        let initialMetadataAttributes = try FileManager.default.attributesOfItem(atPath: metadataURL.path)
+        let databaseURL = try exactUsageDatabaseURL(in: cacheRoot)
+        let database = SQLiteDatabaseDriver(url: databaseURL)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), 1)
 
-        _ = try analyzer.load()
-
-        XCTAssertEqual(try Data(contentsOf: eventURL), initialEvents)
-        XCTAssertEqual(try Data(contentsOf: metadataURL), initialMetadata)
-        XCTAssertEqual(
-            try FileManager.default.attributesOfItem(atPath: eventURL.path)[.systemFileNumber] as? NSNumber,
-            initialEventAttributes[.systemFileNumber] as? NSNumber
-        )
-        XCTAssertEqual(
-            try FileManager.default.attributesOfItem(atPath: metadataURL.path)[.systemFileNumber] as? NSNumber,
-            initialMetadataAttributes[.systemFileNumber] as? NSNumber
-        )
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
 
         try appendLines([
             try tokenCountLine(
@@ -1294,47 +1339,134 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             )
         ], to: sessionFile)
 
-        let fullParses = CodexUsageAnalyzer.fullSessionParseCountForTesting
-        let incrementalParses = CodexUsageAnalyzer.incrementalSessionParseCountForTesting
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
         let updated = try analyzer.load()
-        let updatedEvents = try Data(contentsOf: eventURL)
-        let updatedEventAttributes = try FileManager.default.attributesOfItem(atPath: eventURL.path)
 
         XCTAssertEqual(updated.stats.totalTokens, 230)
         XCTAssertEqual(updated.stats.totalCalls, 2)
-        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, fullParses)
-        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, incrementalParses + 1)
-        XCTAssertEqual(
-            try XCTUnwrap((updatedEventAttributes[.systemFileNumber] as? NSNumber)?.uint64Value),
-            initialEventFileNumber,
-            "append-only persistence must not atomically replace the full event shard"
-        )
-        XCTAssertTrue(updatedEvents.starts(with: initialEvents))
-        XCTAssertGreaterThan(updatedEvents.count, initialEvents.count)
-        XCTAssertLessThan(updatedEvents.count - initialEvents.count, 2_048)
-        let metadataObject = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: Data(contentsOf: metadataURL)) as? [String: Any]
-        )
-        XCTAssertEqual((metadataObject["eventCount"] as? NSNumber)?.intValue, 2)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), 2)
 
-        let stableEventAttributes = try FileManager.default.attributesOfItem(atPath: eventURL.path)
-        let stableMetadataAttributes = try FileManager.default.attributesOfItem(atPath: metadataURL.path)
-        let stableEvents = try Data(contentsOf: eventURL)
-        let stableMetadata = try Data(contentsOf: metadataURL)
-        _ = try analyzer.load()
-        XCTAssertEqual(try Data(contentsOf: eventURL), stableEvents)
-        XCTAssertEqual(try Data(contentsOf: metadataURL), stableMetadata)
-        XCTAssertEqual(
-            try FileManager.default.attributesOfItem(atPath: eventURL.path)[.systemFileNumber] as? NSNumber,
-            stableEventAttributes[.systemFileNumber] as? NSNumber
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 230)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+    }
+
+    func testExactHistoryIndexDetectsSameSizeMiddleRewriteWithRestoredModificationDate() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerExactIdentity")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-samesize"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date()
+        let prefix = #"{"padding":""# + String(repeating: "a", count: 6_000) + #""}"#
+        let suffix = #"{"padding":""# + String(repeating: "z", count: 6_000) + #""}"#
+        let initial = Data(
+            try [
+                prefix,
+                tokenCountLine(
+                    timestamp: now.addingTimeInterval(-60),
+                    total: Usage(input: 100, cachedInput: 30, output: 20, reasoning: 0, total: 120),
+                    last: Usage(input: 100, cachedInput: 30, output: 20, reasoning: 0, total: 120)
+                ),
+                suffix
+            ].joined(separator: "\n").appending("\n").utf8
+        )
+        try initial.write(to: sessionFile)
+        let originalModificationDate = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: sessionFile.path)[.modificationDate] as? Date
+        )
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        let identityBefore = try XCTUnwrap(
+            database.readRows(
+                """
+                SELECT modified_at, content_probe, status_changed_seconds, status_changed_nanoseconds
+                FROM sources
+                LIMIT 1;
+                """
+            ) {
+                (
+                    modifiedAt: $0.double(0),
+                    contentProbe: $0.text(1),
+                    changedSeconds: $0.int64(2),
+                    changedNanoseconds: $0.int64(3)
+                )
+            }.first
+        )
+
+        let replacement = Data(
+            try [
+                prefix,
+                tokenCountLine(
+                    timestamp: now.addingTimeInterval(-60),
+                    total: Usage(input: 110, cachedInput: 30, output: 20, reasoning: 0, total: 130),
+                    last: Usage(input: 110, cachedInput: 30, output: 20, reasoning: 0, total: 130)
+                ),
+                suffix
+            ].joined(separator: "\n").appending("\n").utf8
+        )
+        XCTAssertEqual(replacement.count, initial.count)
+        let handle = try FileHandle(forWritingTo: sessionFile)
+        try handle.seek(toOffset: 0)
+        try handle.write(contentsOf: replacement)
+        try handle.truncate(atOffset: UInt64(replacement.count))
+        try handle.close()
+        try FileManager.default.setAttributes(
+            [.modificationDate: originalModificationDate],
+            ofItemAtPath: sessionFile.path
+        )
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        let updated = try analyzer.load()
+
+        XCTAssertEqual(updated.stats.totalTokens, 130)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
+        let identityAfter = try XCTUnwrap(
+            database.readRows(
+                """
+                SELECT modified_at, content_probe, status_changed_seconds, status_changed_nanoseconds
+                FROM sources
+                LIMIT 1;
+                """
+            ) {
+                (
+                    modifiedAt: $0.double(0),
+                    contentProbe: $0.text(1),
+                    changedSeconds: $0.int64(2),
+                    changedNanoseconds: $0.int64(3)
+                )
+            }.first
         )
         XCTAssertEqual(
-            try FileManager.default.attributesOfItem(atPath: metadataURL.path)[.systemFileNumber] as? NSNumber,
-            stableMetadataAttributes[.systemFileNumber] as? NSNumber
+            try XCTUnwrap(identityAfter.modifiedAt),
+            try XCTUnwrap(identityBefore.modifiedAt),
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(identityAfter.contentProbe, identityBefore.contentProbe)
+        XCTAssertNotEqual(
+            [identityAfter.changedSeconds, identityAfter.changedNanoseconds],
+            [identityBefore.changedSeconds, identityBefore.changedNanoseconds]
         )
     }
 
-    func testPersistentCacheRebuildsPreviousNamespaceAfterCountingRuleChange() throws {
+    func testExactHistoryIndexIgnoresAndCleansThePreviousBoundedCacheNamespace() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV9Migration")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -1346,7 +1478,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
 
         let codexHome = try makeCodexHome()
-        let sessionID = "019eaaaa-bbbb-cccc-dddd-v9migration"
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-exactmigration"
         let sessionFile = codexHome
             .appendingPathComponent("sessions", isDirectory: true)
             .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
@@ -1364,7 +1496,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let legacyNamespace = cacheRoot
             .appendingPathComponent(UsageCacheLifecycle.appDirectoryName, isDirectory: true)
-            .appendingPathComponent("swift-usage-cache-2026-07-v3", isDirectory: true)
+            .appendingPathComponent(
+                CodexUsageAnalyzer.SessionEventCache.previousCacheNamespace,
+                isDirectory: true
+            )
         let legacyDirectory = legacyNamespace
             .appendingPathComponent("session-token-events-v6", isDirectory: true)
         try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
@@ -1400,18 +1535,19 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.stats.totalTokens, 120)
         XCTAssertEqual(snapshot.stats.totalCalls, 1)
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
-        let v9Directory = swiftUsageCacheRoot(in: cacheRoot)
-            .appendingPathComponent("session-token-events-v9", isDirectory: true)
-        let rebuiltCache = try cacheTextContents(under: v9Directory)
-        XCTAssertTrue(rebuiltCache.contains(#""eventCount":1"#))
-        XCTAssertFalse(rebuiltCache.contains("legacy-prompt-digest"))
+        let exactDirectory = swiftUsageCacheRoot(in: cacheRoot)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try exactUsageDatabaseURL(in: cacheRoot).path))
+        XCTAssertNil(
+            try cacheDataContents(under: exactDirectory)
+                .range(of: Data("legacy-prompt-digest".utf8))
+        )
 
         UsageCacheLifecycle.markCurrentCachePrepared()
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacyNamespace.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: v9Directory.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exactDirectory.path))
     }
 
-    func testPersistentV9SessionCacheRebuildsAfterEventLogCorruption() throws {
+    func testPersistentExactHistoryIndexRebuildsFromRawHistoryAfterDatabaseCorruption() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV9Corrupt")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -1423,7 +1559,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
 
         let codexHome = try makeCodexHome()
-        let sessionID = "019eaaaa-bbbb-cccc-dddd-v9corrupt"
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-indexcorrupt"
         let sessionFile = codexHome
             .appendingPathComponent("sessions", isDirectory: true)
             .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
@@ -1438,26 +1574,25 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
-        let cacheDirectory = swiftUsageCacheRoot(in: cacheRoot)
-            .appendingPathComponent("session-token-events-v9", isDirectory: true)
-        let cacheFiles = try FileManager.default.contentsOfDirectory(
-            at: cacheDirectory,
-            includingPropertiesForKeys: nil
-        )
-        let eventURL = try XCTUnwrap(cacheFiles.first { $0.lastPathComponent.hasSuffix(".events.jsonl") })
-        try Data("corrupt-cache-line\n".utf8).write(to: eventURL, options: [.atomic])
+        let databaseURL = try exactUsageDatabaseURL(in: cacheRoot)
+        try? FileManager.default.removeItem(atPath: databaseURL.path + "-wal")
+        try? FileManager.default.removeItem(atPath: databaseURL.path + "-shm")
+        try Data("corrupt exact history index\n".utf8).write(to: databaseURL, options: [.atomic])
 
-        CodexUsageAnalyzer.clearUsageCachesForTesting()
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
         CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
         let rebuilt = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
 
         XCTAssertEqual(rebuilt.stats.totalTokens, 120)
         XCTAssertEqual(rebuilt.stats.totalCalls, 1)
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
-        XCTAssertFalse(try String(contentsOf: eventURL, encoding: .utf8).contains("corrupt-cache-line"))
+        XCTAssertEqual(
+            try scalarInt("SELECT COUNT(*) FROM events;", in: SQLiteDatabaseDriver(url: databaseURL)),
+            1
+        )
     }
 
-    func testOldDiscardableSessionCacheIsIgnoredAndRebuilt() throws {
+    func testOldDiscardableSessionCacheCannotOverrideTheExactRawHistoryIndex() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerDiscardLegacy")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -1497,8 +1632,8 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 "events": [[
                     "timestamp": now.addingTimeInterval(-60).timeIntervalSince1970,
                     "sessionID": sessionID,
-                    "tokens": 140,
-                    "inputTokens": 120,
+                    "tokens": 999_999,
+                    "inputTokens": 999_999,
                     "cachedInputTokens": 30,
                     "outputTokens": 20,
                     "reasoningOutputTokens": 0,
@@ -1515,12 +1650,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         XCTAssertEqual(snapshot.stats.totalTokens, 140)
         XCTAssertGreaterThanOrEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try exactUsageDatabaseURL(in: cacheRoot).path))
+
+        UsageCacheLifecycle.markCurrentCachePrepared()
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacyCache.path))
-        let v9Directory = swiftUsageCacheRoot(in: cacheRoot)
-            .appendingPathComponent("session-token-events-v9", isDirectory: true)
-        let rebuiltText = try cacheTextContents(under: v9Directory)
-        XCTAssertFalse(rebuiltText.contains("legacy-user"))
-        XCTAssertTrue(rebuiltText.contains("canIncrementFromOffset"))
     }
 
     func testSQLiteReasoningUsesExactReasoningEffortColumn() throws {
@@ -1532,59 +1665,78 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.stats.mostUsedReasoning, "中 · 1")
     }
 
-    func testPreciseScanFallsBackToSafetyLimitedMetadataBeforeReadingOversizedSession() throws {
+    func testPreciseScanCountsEveryEventAndDeduplicatesReplayBeyondFormerFingerprintWindow() throws {
         let codexHome = try makeCodexHome()
         try seedStateDatabase(at: codexHome)
         let sessionFile = codexHome
             .appendingPathComponent("sessions", isDirectory: true)
-            .appendingPathComponent("2026-07-22-019faaaa-bbbb-cccc-dddd-scanlimit.jsonl")
+            .appendingPathComponent("2026-07-22-019faaaa-bbbb-cccc-dddd-unbounded.jsonl")
         let now = Date(timeIntervalSince1970: 1_800_000_000)
-        try tokenCountLine(
-            timestamp: now,
-            total: Usage(input: 1_200, cachedInput: 400, output: 120, reasoning: 0, total: 1_320),
-            last: Usage(input: 1_200, cachedInput: 400, output: 120, reasoning: 0, total: 1_320)
-        ).appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
-
-        let analyzer = CodexUsageAnalyzer(
-            dataSource: dataSource(for: codexHome),
-            scanLimits: .init(
-                maximumBytesPerSession: 1,
-                maximumBytesPerRefresh: 4_096,
-                maximumLineBytes: 4_096
+        let eventCount = 5_000
+        var lines = try (0..<eventCount).map { index in
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(TimeInterval(index)),
+                total: Usage(
+                    input: index + 1,
+                    cachedInput: 0,
+                    output: 0,
+                    reasoning: 0,
+                    total: index + 1
+                ),
+                last: Usage(input: 1, cachedInput: 0, output: 0, reasoning: 0, total: 1)
+            )
+        }
+        lines.append(
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(TimeInterval(eventCount + 1)),
+                total: Usage(input: 1, cachedInput: 0, output: 0, reasoning: 0, total: 1),
+                last: Usage(input: 1, cachedInput: 0, output: 0, reasoning: 0, total: 1)
             )
         )
-        let snapshot = try analyzer.load()
+        try lines.joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
 
-        XCTAssertEqual(snapshot.usagePrecision, .safetyLimited)
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertEqual(snapshot.usagePrecision, .precise)
         XCTAssertEqual(snapshot.stats.totalThreads, 2)
-        XCTAssertEqual(snapshot.stats.totalTokens, 0)
-        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertEqual(snapshot.stats.totalTokens, eventCount)
+        XCTAssertEqual(snapshot.stats.totalCalls, eventCount)
     }
 
-    func testPreciseScanFallsBackToSafetyLimitedMetadataForAnOversizedJSONLLine() throws {
+    func testPreciseScanParsesJSONLLineBeyondFormerSixteenMiBLimitExactly() throws {
         let codexHome = try makeCodexHome()
         try seedStateDatabase(at: codexHome)
         let sessionFile = codexHome
             .appendingPathComponent("sessions", isDirectory: true)
-            .appendingPathComponent("2026-07-22-019faaaa-bbbb-cccc-dddd-linelimit.jsonl")
-        let oversizedLine = #"{"type":"event_msg","payload":{"type":"token_count","padding":""#
-            + String(repeating: "x", count: 1_024)
-            + #""}}"#
-        try oversizedLine.write(to: sessionFile, atomically: true, encoding: .utf8)
+            .appendingPathComponent("2026-07-22-019faaaa-bbbb-cccc-dddd-large-line.jsonl")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let oversizedLine = encodeLine([
+            "timestamp": iso8601String(from: now),
+            "type": "event_msg",
+            "payload": [
+                "type": "token_count",
+                "padding": String(repeating: "x", count: 17 * 1_024 * 1_024),
+                "info": [
+                    "total_token_usage": usageObject(
+                        Usage(input: 1_200, cachedInput: 400, output: 120, reasoning: 0, total: 1_320)
+                    ),
+                    "last_token_usage": usageObject(
+                        Usage(input: 1_200, cachedInput: 400, output: 120, reasoning: 0, total: 1_320)
+                    )
+                ]
+            ]
+        ])
+        XCTAssertGreaterThan(oversizedLine.utf8.count, 16 * 1_024 * 1_024)
+        try oversizedLine.appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
 
-        let analyzer = CodexUsageAnalyzer(
-            dataSource: dataSource(for: codexHome),
-            scanLimits: .init(
-                maximumBytesPerSession: 8_192,
-                maximumBytesPerRefresh: 8_192,
-                maximumLineBytes: 128
-            )
-        )
-        let snapshot = try analyzer.load()
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
 
-        XCTAssertEqual(snapshot.usagePrecision, .safetyLimited)
+        XCTAssertEqual(snapshot.usagePrecision, .precise)
         XCTAssertEqual(snapshot.stats.totalThreads, 2)
-        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertEqual(snapshot.stats.totalTokens, 1_320)
+        XCTAssertEqual(snapshot.stats.totalCalls, 1)
     }
 
     func testStreamingAggregationBoundsRetainedTurnCandidates() throws {
@@ -1628,7 +1780,16 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         })
     }
 
-    func testLiveSessionCacheStripsConversationExcerptsAfterPreciseScan() throws {
+    func testExactHistoryIndexStoresOffsetsButNotConversationText() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageExactIndexPrivacy")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
         let codexHome = try makeCodexHome()
         let sessionID = "019faaaa-bbbb-cccc-dddd-livecacheprivacy"
         let sessionFile = codexHome
@@ -1653,13 +1814,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertTrue(initial.cacheUsage.turns.contains { $0.userPrompt == secretPrompt })
         XCTAssertTrue(initial.cacheUsage.turns.contains { $0.assistantResponse == secretResponse })
 
-        let cachedEvents = try analyzer.parseSession(
-            file: sessionFile,
-            sessionID: sessionID,
-            scanBudget: .init(limits: .unrestrictedForTesting)
-        )
-        XCTAssertEqual(cachedEvents.first?.userPrompt, "")
-        XCTAssertEqual(cachedEvents.first?.assistantResponse, "")
+        let cacheBytes = try cacheDataContents(under: swiftUsageCacheRoot(in: cacheRoot))
+        XCTAssertNil(cacheBytes.range(of: Data(secretPrompt.utf8)))
+        XCTAssertNil(cacheBytes.range(of: Data(secretResponse.utf8)))
+        XCTAssertNotNil(cacheBytes.range(of: Data("user_prompt_offset".utf8)))
+        XCTAssertNotNil(cacheBytes.range(of: Data("assistant_start_offset".utf8)))
     }
 
     func testUsageSnapshotFingerprintDecodesTheExistingArrayCacheShape() throws {
@@ -1674,6 +1833,67 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertTrue(fingerprint.hasLastUsage)
         XCTAssertEqual(fingerprint.lastInputTokens, 300)
         XCTAssertEqual(fingerprint.lastTokens, 330)
+    }
+
+    func testLiveExactHistoryColdAndWarmScansWhenExplicitlyEnabled() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["CODEX_TOKEN_BAR_RUN_LIVE_EXACT_HISTORY_TEST"] == "1" else {
+            throw XCTSkip("Set CODEX_TOKEN_BAR_RUN_LIVE_EXACT_HISTORY_TEST=1 for the local full-history scan")
+        }
+        let codexHomePath = environment["CODEX_TOKEN_BAR_LIVE_CODEX_HOME"]
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".codex", isDirectory: true)
+                .path
+        let codexHome = URL(fileURLWithPath: codexHomePath, isDirectory: true)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: codexHome.path),
+            "Live Codex Home does not exist: \(codexHome.path)"
+        )
+
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        defer { setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1) }
+        let dataSource = dataSource(for: codexHome)
+
+        let coldStartedAt = Date()
+        let coldSnapshot = try CodexUsageAnalyzer(dataSource: dataSource).load()
+        let coldElapsed = Date().timeIntervalSince(coldStartedAt)
+        let coldFullParseCount = CodexUsageAnalyzer.fullSessionParseCountForTesting
+
+        XCTAssertEqual(coldSnapshot.usagePrecision, .precise)
+        XCTAssertGreaterThan(coldSnapshot.stats.totalTokens, 0)
+        XCTAssertGreaterThan(coldSnapshot.stats.totalCalls, 0)
+        XCTAssertGreaterThan(coldFullParseCount, 0)
+        print(
+            "LIVE_EXACT_HISTORY_COLD_RESULT"
+                + " elapsed_seconds=\(String(format: "%.3f", coldElapsed))"
+                + " full_parse_count=\(coldFullParseCount)"
+                + " total_tokens=\(coldSnapshot.stats.totalTokens)"
+                + " total_calls=\(coldSnapshot.stats.totalCalls)"
+                + " total_threads=\(coldSnapshot.stats.totalThreads)"
+        )
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        let warmStartedAt = Date()
+        let warmSnapshot = try CodexUsageAnalyzer(dataSource: dataSource).load()
+        let warmElapsed = Date().timeIntervalSince(warmStartedAt)
+
+        XCTAssertEqual(warmSnapshot.usagePrecision, .precise)
+        XCTAssertEqual(warmSnapshot.stats.totalTokens, coldSnapshot.stats.totalTokens)
+        XCTAssertEqual(warmSnapshot.stats.totalCalls, coldSnapshot.stats.totalCalls)
+        XCTAssertEqual(warmSnapshot.stats.totalThreads, coldSnapshot.stats.totalThreads)
+        XCTAssertEqual(
+            CodexUsageAnalyzer.fullSessionParseCountForTesting,
+            coldFullParseCount,
+            "Warm scan must reuse every unchanged source in the disk index"
+        )
+        print(
+            "LIVE_EXACT_HISTORY_WARM_RESULT"
+                + " elapsed_seconds=\(String(format: "%.3f", warmElapsed))"
+                + " additional_full_parse_count=0"
+                + " total_tokens=\(warmSnapshot.stats.totalTokens)"
+                + " total_calls=\(warmSnapshot.stats.totalCalls)"
+                + " total_threads=\(warmSnapshot.stats.totalThreads)"
+        )
     }
 
     private struct Usage {
@@ -1915,19 +2135,33 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try handle.close()
     }
 
-    private func cacheTextContents(under directory: URL) throws -> String {
+    private func exactUsageDatabaseURL(in cacheRoot: URL) throws -> URL {
+        let files = try FileManager.default.contentsOfDirectory(
+            at: swiftUsageCacheRoot(in: cacheRoot),
+            includingPropertiesForKeys: [.isRegularFileKey]
+        )
+        return try XCTUnwrap(files.first { $0.pathExtension == "sqlite" })
+    }
+
+    private func scalarInt(_ sql: String, in database: SQLiteDatabaseDriver) throws -> Int {
+        try XCTUnwrap(
+            database.readRows(sql) { $0.int(0) }.compactMap { $0 }.first
+        )
+    }
+
+    private func cacheDataContents(under directory: URL) throws -> Data {
         guard let enumerator = FileManager.default.enumerator(
             at: directory,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else {
-            return ""
+            return Data()
         }
-        return try enumerator.reduce(into: "") { partial, item in
+        return try enumerator.reduce(into: Data()) { partial, item in
             guard let url = item as? URL else { return }
             let values = try url.resourceValues(forKeys: [.isRegularFileKey])
             guard values.isRegularFile == true else { return }
-            partial += try String(contentsOf: url, encoding: .utf8)
+            partial.append(try Data(contentsOf: url))
         }
     }
 

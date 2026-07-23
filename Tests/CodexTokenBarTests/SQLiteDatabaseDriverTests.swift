@@ -55,6 +55,94 @@ final class SQLiteDatabaseDriverTests: XCTestCase {
         XCTAssertEqual(values, [1, 12, 13])
     }
 
+    func testForEachRowStreamsRowsAndPropagatesBodyErrors() throws {
+        enum TestError: Error {
+            case stop
+        }
+
+        let driver = SQLiteDatabaseDriver(url: try makeDatabaseURL())
+        try driver.execute("CREATE TABLE values_table (value INTEGER NOT NULL);")
+        try driver.execute(
+            """
+            WITH RECURSIVE sequence(value) AS (
+                SELECT 1
+                UNION ALL
+                SELECT value + 1 FROM sequence WHERE value < 1_000
+            )
+            INSERT INTO values_table (value)
+            SELECT value FROM sequence;
+            """
+        )
+
+        var count = 0
+        var sum = 0
+        try driver.forEachRow("SELECT value FROM values_table ORDER BY value;") { statement in
+            count += 1
+            sum += statement.int(0) ?? 0
+        }
+
+        XCTAssertEqual(count, 1_000)
+        XCTAssertEqual(sum, 500_500)
+
+        var visited: [Int] = []
+        XCTAssertThrowsError(
+            try driver.forEachRow("SELECT value FROM values_table ORDER BY value;") { statement in
+                let value = statement.int(0) ?? 0
+                visited.append(value)
+                if value == 3 {
+                    throw TestError.stop
+                }
+            }
+        )
+        XCTAssertEqual(visited, [1, 2, 3])
+    }
+
+    func testPreparedStatementCanBeReusedAfterFailedStepWithinTransaction() throws {
+        let driver = SQLiteDatabaseDriver(url: try makeDatabaseURL())
+        try driver.execute("CREATE TABLE items (name TEXT NOT NULL UNIQUE, value INTEGER NOT NULL);")
+
+        try driver.transaction { connection in
+            let insert = try connection.prepare("INSERT INTO items (name, value) VALUES (?, ?);")
+            XCTAssertEqual(try insert.execute([.text("alpha"), .int(1)]), 1)
+            XCTAssertThrowsError(try insert.execute([.text("alpha"), .int(2)]))
+            XCTAssertEqual(try insert.execute([.text("beta"), .int(3)]), 1)
+        }
+
+        let rows = try driver.readRows("SELECT name, value FROM items ORDER BY name;") {
+            ($0.text(0) ?? "", $0.int(1) ?? 0)
+        }
+        XCTAssertEqual(rows.map(\.0), ["alpha", "beta"])
+        XCTAssertEqual(rows.map(\.1), [1, 3])
+    }
+
+    func testPreparedStatementWritesRollBackWithTransaction() throws {
+        enum TestError: Error {
+            case rollback
+        }
+
+        let driver = SQLiteDatabaseDriver(url: try makeDatabaseURL())
+        try driver.execute("CREATE TABLE items (name TEXT NOT NULL);")
+
+        XCTAssertThrowsError(
+            try driver.transaction { connection in
+                let insert = try connection.prepare("INSERT INTO items (name) VALUES (?);")
+                XCTAssertEqual(try insert.execute([.text("one")]), 1)
+                XCTAssertEqual(try insert.execute([.text("two")]), 1)
+                throw TestError.rollback
+            }
+        )
+
+        let count = try driver.readRows("SELECT count(*) FROM items;") { $0.int(0) ?? -1 }.first
+        XCTAssertEqual(count, 0)
+
+        try driver.transaction { connection in
+            let insert = try connection.prepare("INSERT INTO items (name) VALUES (?);")
+            XCTAssertEqual(try insert.execute([.text("committed")]), 1)
+        }
+        let names = try driver.readRows("SELECT name FROM items;") { $0.text(0) ?? "" }
+        XCTAssertEqual(names, ["committed"])
+    }
+
     func testTransactionRollsBackOnError() throws {
         enum TestError: Error {
             case rollback

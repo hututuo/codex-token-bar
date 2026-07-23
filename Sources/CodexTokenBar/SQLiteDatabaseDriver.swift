@@ -103,6 +103,16 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         }
     }
 
+    func forEachRow(
+        _ sql: String,
+        bindings: [SQLiteBinding] = [],
+        _ body: (SQLiteStatement) throws -> Void
+    ) throws {
+        try withConnection { connection in
+            try connection.forEachRow(sql, bindings: bindings, body)
+        }
+    }
+
     func execute(_ sql: String, bindings: [SQLiteBinding] = []) throws {
         try withConnection { connection in
             try connection.execute(sql, bindings: bindings)
@@ -259,6 +269,32 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
         }
     }
 
+    func forEachRow(
+        _ sql: String,
+        bindings: [SQLiteBinding] = [],
+        _ body: (SQLiteStatement) throws -> Void
+    ) throws {
+        var statement: OpaquePointer?
+        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+        guard prepareStatus == SQLITE_OK else {
+            throw error(operation: "Prepare SQLite query", code: prepareStatus)
+        }
+        defer { sqlite3_finalize(statement) }
+
+        try bind(bindings, to: statement)
+
+        while true {
+            let stepStatus = sqlite3_step(statement)
+            if stepStatus == SQLITE_ROW {
+                try body(SQLiteStatement(raw: statement))
+            } else if stepStatus == SQLITE_DONE {
+                return
+            } else {
+                throw error(operation: "Step SQLite query", code: stepStatus)
+            }
+        }
+    }
+
     func execute(_ sql: String, bindings: [SQLiteBinding] = []) throws {
         if bindings.isEmpty {
             var rawError: UnsafeMutablePointer<Int8>?
@@ -322,7 +358,16 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
         }
     }
 
-    private func bind(_ bindings: [SQLiteBinding], to statement: OpaquePointer?) throws {
+    func prepare(_ sql: String) throws -> SQLitePreparedStatement {
+        var statement: OpaquePointer?
+        let status = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+        guard status == SQLITE_OK else {
+            throw error(operation: "Prepare SQLite statement", code: status)
+        }
+        return SQLitePreparedStatement(database: database, path: path, statement: statement)
+    }
+
+    fileprivate func bind(_ bindings: [SQLiteBinding], to statement: OpaquePointer?) throws {
         for (offset, binding) in bindings.enumerated() {
             let index = Int32(offset + 1)
             let status: Int32
@@ -354,6 +399,52 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
             message: SQLiteDatabaseDriver.message(from: database),
             path: path
         )
+    }
+}
+
+final class SQLitePreparedStatement {
+    private let database: OpaquePointer?
+    private let path: String?
+    private var statement: OpaquePointer?
+
+    fileprivate init(database: OpaquePointer?, path: String?, statement: OpaquePointer?) {
+        self.database = database
+        self.path = path
+        self.statement = statement
+    }
+
+    deinit {
+        sqlite3_finalize(statement)
+        statement = nil
+    }
+
+    @discardableResult
+    func execute(_ bindings: [SQLiteBinding] = []) throws -> Int {
+        guard let statement else {
+            throw SQLiteDatabaseError(
+                operation: "Execute prepared SQLite statement",
+                code: SQLITE_MISUSE,
+                message: "Prepared statement is no longer available",
+                path: path
+            )
+        }
+
+        sqlite3_reset(statement)
+        sqlite3_clear_bindings(statement)
+        let connection = SQLiteDatabaseConnection(database: database, path: path)
+        try connection.bind(bindings, to: statement)
+
+        let before = sqlite3_total_changes(database)
+        let status = sqlite3_step(statement)
+        guard status == SQLITE_DONE else {
+            throw SQLiteDatabaseError(
+                operation: "Execute prepared SQLite statement",
+                code: status,
+                message: SQLiteDatabaseDriver.message(from: database),
+                path: path
+            )
+        }
+        return Int(sqlite3_total_changes(database) - before)
     }
 }
 

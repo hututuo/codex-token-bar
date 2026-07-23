@@ -192,8 +192,6 @@ struct HeaderView: View {
             return "精确统计"
         case .metadataOnly:
             return "元数据"
-        case .safetyLimited:
-            return "安全受限"
         }
     }
 
@@ -201,8 +199,6 @@ struct HeaderView: View {
         switch snapshot.usagePrecision {
         case .precise:
             return AppTheme.accentGreen
-        case .safetyLimited:
-            return AppTheme.accentAmber
         case .metadataOnly:
             return .secondary
         }
@@ -558,8 +554,7 @@ struct StatStripStatusLinePresentation: Equatable {
     ) {
         let trimmedStatus = cacheStatus.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedStatus.hasPrefix("读取失败")
-            || trimmedStatus.contains("用量已陈旧")
-            || trimmedStatus.contains("安全上限") {
+            || trimmedStatus.contains("用量已陈旧") {
             text = trimmedStatus
             showsProgress = false
             return

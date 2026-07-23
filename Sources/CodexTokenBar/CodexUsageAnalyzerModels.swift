@@ -1,70 +1,6 @@
 import Foundation
 
 extension CodexUsageAnalyzer {
-    struct UsageScanLimits: Equatable {
-        let maximumBytesPerSession: UInt64
-        let maximumBytesPerRefresh: UInt64
-        let maximumLineBytes: Int
-
-        static let production = UsageScanLimits(
-            maximumBytesPerSession: 128 * 1024 * 1024,
-            maximumBytesPerRefresh: 512 * 1024 * 1024,
-            maximumLineBytes: 16 * 1024 * 1024
-        )
-
-        static let unrestrictedForTesting = UsageScanLimits(
-            maximumBytesPerSession: .max,
-            maximumBytesPerRefresh: .max,
-            maximumLineBytes: .max
-        )
-    }
-
-    enum UsageScanLimitError: LocalizedError {
-        case sessionReadLimit(path: String, bytes: UInt64, limit: UInt64)
-        case refreshReadLimit(path: String, requestedBytes: UInt64, consumedBytes: UInt64, limit: UInt64)
-        case lineReadLimit(path: String, bytes: Int, limit: Int)
-
-        var errorDescription: String? {
-            switch self {
-            case let .sessionReadLimit(path, bytes, limit):
-                return "为保护内存，未扫描过大的历史会话：\(path)（\(bytes) bytes，单会话上限 \(limit) bytes）"
-            case let .refreshReadLimit(path, requestedBytes, consumedBytes, limit):
-                return "为保护内存，精确统计达到本轮扫描上限：\(path)（本次还需 \(requestedBytes) bytes，已读取 \(consumedBytes) / \(limit) bytes）"
-            case let .lineReadLimit(path, bytes, limit):
-                return "为保护内存，跳过异常长的 JSONL 行：\(path)（\(bytes) bytes，行上限 \(limit) bytes）"
-            }
-        }
-    }
-
-    final class UsageScanBudget {
-        let limits: UsageScanLimits
-        private(set) var consumedBytes: UInt64 = 0
-
-        init(limits: UsageScanLimits) {
-            self.limits = limits
-        }
-
-        func reserve(bytes: UInt64, for file: URL) throws {
-            guard bytes <= limits.maximumBytesPerSession else {
-                throw UsageScanLimitError.sessionReadLimit(
-                    path: file.path,
-                    bytes: bytes,
-                    limit: limits.maximumBytesPerSession
-                )
-            }
-            guard consumedBytes <= limits.maximumBytesPerRefresh,
-                  bytes <= limits.maximumBytesPerRefresh - consumedBytes else {
-                throw UsageScanLimitError.refreshReadLimit(
-                    path: file.path,
-                    requestedBytes: bytes,
-                    consumedBytes: consumedBytes,
-                    limit: limits.maximumBytesPerRefresh
-                )
-            }
-            consumedBytes += bytes
-        }
-    }
-
     struct UsageSnapshotFingerprint: Hashable, Codable {
         let totalInputTokens: Int
         let totalCachedInputTokens: Int
@@ -147,8 +83,8 @@ extension CodexUsageAnalyzer {
         private static let persistentCacheVersion = 10
         private static let legacyPersistentCacheVersion = 8
         private static let appCacheDirectoryName = "CodexTokenBarSwift"
-        static let cacheNamespace = "swift-usage-cache-2026-07-v4"
-        static let previousCacheNamespace = "swift-usage-cache-2026-07-v3"
+        static let cacheNamespace = "exact-usage-history-v1"
+        static let previousCacheNamespace = "swift-usage-cache-2026-07-v4"
         private static let legacyMigrationMarkerName = ".v8-migration-complete"
         private static let cacheDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_DIR"
 
@@ -265,6 +201,7 @@ extension CodexUsageAnalyzer {
             case append(fromEventIndex: Int)
         }
 
+        @available(*, unavailable, message: "Exact history must use CodexUsageHistoryIndex")
         func cachedSession(for path: String, key: SessionCacheKey) -> CachedSession? {
             loadPersistentCacheIfNeeded()
             lock.lock()
@@ -275,6 +212,7 @@ extension CodexUsageAnalyzer {
             return cached
         }
 
+        @available(*, unavailable, message: "Exact history must use CodexUsageHistoryIndex")
         func appendableSession(for path: String, currentKey: SessionCacheKey) -> CachedSession? {
             loadPersistentCacheIfNeeded()
             lock.lock()
@@ -291,6 +229,7 @@ extension CodexUsageAnalyzer {
             return cached
         }
 
+        @available(*, unavailable, message: "Exact history must use CodexUsageHistoryIndex")
         func store(
             _ session: CachedSession,
             for path: String,
@@ -323,6 +262,7 @@ extension CodexUsageAnalyzer {
             lock.unlock()
         }
 
+        @available(*, unavailable, message: "Exact history must use CodexUsageHistoryIndex")
         func retainOnly(paths: Set<String>) {
             loadPersistentCacheIfNeeded()
             lock.lock()
@@ -336,7 +276,6 @@ extension CodexUsageAnalyzer {
         }
 
         func snapshot(for root: String, signature: SessionTreeSignature) -> DashboardSnapshot? {
-            loadPersistentCacheIfNeeded()
             lock.lock()
             defer { lock.unlock() }
             guard let cached = snapshotStorage[root], cached.signature == signature else {
@@ -412,6 +351,13 @@ extension CodexUsageAnalyzer {
             lock.unlock()
         }
 
+        func clearSnapshotsForTesting() {
+            lock.lock()
+            snapshotStorage.removeAll()
+            lock.unlock()
+        }
+
+        @available(*, unavailable, message: "Exact history must use CodexUsageHistoryIndex")
         func flushPersistentCache() {
             let trace = RefreshPerformanceProbe.begin("usageCache.flushPersistent")
             lock.lock()
@@ -914,6 +860,11 @@ extension CodexUsageAnalyzer {
 
     static func clearUsageCachesForTesting() {
         sessionEventCache.clearForTesting()
+        CodexUsageHistoryIndex.clearForTesting()
+    }
+
+    static func clearInMemoryUsageSnapshotsForTesting() {
+        sessionEventCache.clearSnapshotsForTesting()
     }
 
     struct OfficialThreadSummary {
@@ -954,6 +905,7 @@ extension CodexUsageAnalyzer {
     struct SessionLineStreamResult {
         let lastOffset: UInt64
         let endedWithNewline: Bool
+        let contentHash: String
     }
 
     struct TokenCacheAccumulator {

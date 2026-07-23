@@ -68,6 +68,19 @@ enum UsageCacheLifecycle {
         guard let cacheRoot = cacheRootURL else {
             return
         }
+        let legacySharedRoot = cacheRoot.appendingPathComponent("CodexTokenBar", isDirectory: true)
+        for name in [
+            "session-token-events-v2.json",
+            "session-token-events-v3.json",
+            "session-token-events-v4.json",
+            "session-token-events-v5.json",
+            "session-token-events-v6",
+            "session-token-snapshots-v6.json"
+        ] {
+            try? FileManager.default.removeItem(
+                at: legacySharedRoot.appendingPathComponent(name)
+            )
+        }
         let swiftCacheRoot = cacheRoot.appendingPathComponent(appDirectoryName, isDirectory: true)
         guard let children = try? FileManager.default.contentsOfDirectory(
             at: swiftCacheRoot,
@@ -75,12 +88,7 @@ enum UsageCacheLifecycle {
         ) else {
             return
         }
-        let preservePreviousNamespace = !CodexUsageAnalyzer.SessionEventCache.isLegacyV8MigrationComplete
         for child in children where child.lastPathComponent != namespace {
-            if preservePreviousNamespace,
-               child.lastPathComponent == CodexUsageAnalyzer.SessionEventCache.previousCacheNamespace {
-                continue
-            }
             try? FileManager.default.removeItem(at: child)
         }
     }

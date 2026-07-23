@@ -75,60 +75,6 @@ extension CodexUsageAnalyzer {
             guard !events.isEmpty else { return }
 
             let globalEventOffset = eventCount
-            sessionIDsWithEvents.insert(sessionID)
-            for event in events {
-                total.add(event)
-                firstUsageAt = min(firstUsageAt ?? event.timestamp, event.timestamp)
-
-                if let dailyStart, event.timestamp >= dailyStart {
-                    let day = calendar.startOfDay(for: event.timestamp)
-                    let current = dailyUsageByDate[day] ?? (0, 0)
-                    dailyUsageByDate[day] = (current.tokens + event.tokens, current.calls + 1)
-                }
-
-                if let recentStart,
-                   event.timestamp >= recentStart,
-                   event.timestamp <= now {
-                    let offset = floor(event.timestamp.timeIntervalSince(recentStart) / Self.recentBinInterval)
-                    let start = recentStart.addingTimeInterval(offset * Self.recentBinInterval)
-                    let current = recentUsageByStart[start] ?? (0, 0)
-                    recentUsageByStart[start] = (current.tokens + event.tokens, current.calls + 1)
-                }
-
-                if let hourlyStart,
-                   event.timestamp >= hourlyStart,
-                   event.timestamp <= now,
-                   let hour = calendar.dateInterval(of: .hour, for: event.timestamp)?.start {
-                    let current = hourlyUsageByStart[hour] ?? (0, 0)
-                    hourlyUsageByStart[hour] = (current.tokens + event.tokens, current.calls + 1)
-                }
-
-                let cacheDay = calendar.startOfDay(for: event.timestamp)
-                cacheDailyByDate[cacheDay, default: TokenCacheAccumulator()].add(event)
-
-                if let hour = calendar.dateInterval(of: .hour, for: event.timestamp)?.start {
-                    cacheHourlyByStart[hour, default: TokenCacheAccumulator()].add(event)
-                }
-
-                if let recentStart {
-                    let recentEnd = recentStart.addingTimeInterval(
-                        Double(Self.recentBinCount) * Self.recentBinInterval
-                    )
-                    if event.timestamp >= recentStart, event.timestamp <= recentEnd {
-                        let offset = floor(event.timestamp.timeIntervalSince(recentStart) / Self.recentBinInterval)
-                        let start = recentStart.addingTimeInterval(offset * Self.recentBinInterval)
-                        cacheRecentByStart[start, default: TokenCacheAccumulator()].add(event)
-                    }
-                }
-
-                cacheBySession[event.sessionID, default: TokenCacheAccumulator()].add(event)
-                if let current = sessionLastUpdated[event.sessionID] {
-                    sessionLastUpdated[event.sessionID] = max(current, event.timestamp)
-                } else {
-                    sessionLastUpdated[event.sessionID] = event.timestamp
-                }
-            }
-
             var turnIndex = 0
             for localIndex in events.indices.sorted(by: { lhs, rhs in
                 let left = events[lhs]
@@ -140,28 +86,92 @@ extension CodexUsageAnalyzer {
             }) {
                 turnIndex += 1
                 let event = events[localIndex]
-                let breakdown = TokenCacheBreakdown(
-                    inputTokens: event.inputTokens,
-                    cachedInputTokens: min(event.cachedInputTokens, event.inputTokens),
-                    outputTokens: event.outputTokens,
-                    reasoningOutputTokens: event.reasoningOutputTokens,
-                    totalTokens: event.tokens,
-                    calls: 1
-                )
-                turnCandidates.consider(
-                    TurnCacheUsage(
-                        id: "\(event.sessionID)-\(Int(event.timestamp.timeIntervalSince1970))-\(globalEventOffset + localIndex)",
-                        sessionID: event.sessionID,
-                        sessionTitle: event.sessionID,
-                        timestamp: event.timestamp,
-                        turnIndexInSession: turnIndex,
-                        userPrompt: event.userPrompt,
-                        assistantResponse: event.assistantResponse,
-                        breakdown: breakdown
-                    )
+                consume(
+                    event,
+                    stableID: "\(event.sessionID)-\(Int(event.timestamp.timeIntervalSince1970))-\(globalEventOffset + localIndex)",
+                    turnIndexInSession: turnIndex
                 )
             }
-            eventCount += events.count
+        }
+
+        mutating func consume(
+            _ event: TokenEvent,
+            stableID: String,
+            turnIndexInSession: Int
+        ) {
+            sessionIDsWithEvents.insert(event.sessionID)
+            total.add(event)
+            firstUsageAt = min(firstUsageAt ?? event.timestamp, event.timestamp)
+
+            if let dailyStart, event.timestamp >= dailyStart {
+                let day = calendar.startOfDay(for: event.timestamp)
+                let current = dailyUsageByDate[day] ?? (0, 0)
+                dailyUsageByDate[day] = (current.tokens + event.tokens, current.calls + 1)
+            }
+
+            if let recentStart,
+               event.timestamp >= recentStart,
+               event.timestamp <= now {
+                let offset = floor(event.timestamp.timeIntervalSince(recentStart) / Self.recentBinInterval)
+                let start = recentStart.addingTimeInterval(offset * Self.recentBinInterval)
+                let current = recentUsageByStart[start] ?? (0, 0)
+                recentUsageByStart[start] = (current.tokens + event.tokens, current.calls + 1)
+            }
+
+            if let hourlyStart,
+               event.timestamp >= hourlyStart,
+               event.timestamp <= now,
+               let hour = calendar.dateInterval(of: .hour, for: event.timestamp)?.start {
+                let current = hourlyUsageByStart[hour] ?? (0, 0)
+                hourlyUsageByStart[hour] = (current.tokens + event.tokens, current.calls + 1)
+            }
+
+            let cacheDay = calendar.startOfDay(for: event.timestamp)
+            cacheDailyByDate[cacheDay, default: TokenCacheAccumulator()].add(event)
+
+            if let hour = calendar.dateInterval(of: .hour, for: event.timestamp)?.start {
+                cacheHourlyByStart[hour, default: TokenCacheAccumulator()].add(event)
+            }
+
+            if let recentStart {
+                let recentEnd = recentStart.addingTimeInterval(
+                    Double(Self.recentBinCount) * Self.recentBinInterval
+                )
+                if event.timestamp >= recentStart, event.timestamp <= recentEnd {
+                    let offset = floor(event.timestamp.timeIntervalSince(recentStart) / Self.recentBinInterval)
+                    let start = recentStart.addingTimeInterval(offset * Self.recentBinInterval)
+                    cacheRecentByStart[start, default: TokenCacheAccumulator()].add(event)
+                }
+            }
+
+            cacheBySession[event.sessionID, default: TokenCacheAccumulator()].add(event)
+            if let current = sessionLastUpdated[event.sessionID] {
+                sessionLastUpdated[event.sessionID] = max(current, event.timestamp)
+            } else {
+                sessionLastUpdated[event.sessionID] = event.timestamp
+            }
+
+            let breakdown = TokenCacheBreakdown(
+                inputTokens: event.inputTokens,
+                cachedInputTokens: min(event.cachedInputTokens, event.inputTokens),
+                outputTokens: event.outputTokens,
+                reasoningOutputTokens: event.reasoningOutputTokens,
+                totalTokens: event.tokens,
+                calls: 1
+            )
+            turnCandidates.consider(
+                TurnCacheUsage(
+                    id: stableID,
+                    sessionID: event.sessionID,
+                    sessionTitle: event.sessionID,
+                    timestamp: event.timestamp,
+                    turnIndexInSession: turnIndexInSession,
+                    userPrompt: event.userPrompt,
+                    assistantResponse: event.assistantResponse,
+                    breakdown: breakdown
+                )
+            )
+            eventCount += 1
         }
 
         func dailyUsage() -> [DayUsage] {

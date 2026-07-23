@@ -286,8 +286,6 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
         ]
         if snapshot.metadataOnlyStatusText == "仅会话元数据" {
             parts.append("当前仅显示会话元数据，精确 token 仍在读取")
-        } else if snapshot.metadataOnlyStatusText == "历史扫描受限" {
-            parts.append("历史精确统计因安全上限暂未完成")
         }
         if unreadThreadCount > 0 {
             parts.append("未读会话 \(unreadThreadCount) 个")

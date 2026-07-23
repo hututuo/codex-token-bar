@@ -258,14 +258,9 @@ extension DashboardStats {
 enum DashboardUsagePrecision: String, Codable, Equatable {
     case precise
     case metadataOnly
-    case safetyLimited
 
     var hasPreciseTokenUsage: Bool {
         self == .precise
-    }
-
-    var isSafetyLimited: Bool {
-        self == .safetyLimited
     }
 }
 

@@ -267,9 +267,6 @@ struct TokenDisplaySnapshot {
     }
 
     private var usageReadDiagnostic: String? {
-        if usagePrecision.isSafetyLimited || usageReadStatus.contains("安全上限") {
-            return "历史扫描受限"
-        }
         if usageReadStatus.contains("当前显示已陈旧") || usageReadStatus.contains("用量已陈旧") {
             return "用量已陈旧"
         }

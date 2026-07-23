@@ -322,19 +322,19 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertFalse(UsageCacheLifecycle.isCurrentCachePrepared)
     }
 
-    func testSafetyLimitedPreciseResultExplainsTheGuardInsteadOfShowingAnInfiniteLoadingState() async {
+    func testPreciseResultNeverUsesAHistoryGuardStatus() async {
         let source = CodexDataSource(
-            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/safety-limited/.codex"),
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/unbounded-precise/.codex"),
             origin: .userSelected
         )
-        let safetyLimitedSnapshot = makeSnapshot(
-            totalTokens: 0,
-            dayTokens: 0,
-            usagePrecision: .safetyLimited
+        let preciseSnapshot = makeSnapshot(
+            totalTokens: 12_345,
+            dayTokens: 678,
+            usagePrecision: .precise
         )
         let loader = SequentialDashboardSnapshotLoader(
-            fastResults: [.success(safetyLimitedSnapshot)],
-            preciseResults: [.success(safetyLimitedSnapshot)]
+            fastResults: [.success(preciseSnapshot)],
+            preciseResults: [.success(preciseSnapshot)]
         )
         let store = CodexUsageStore(
             resolver: StaticCodexDataSourceResolver(source: source),
@@ -343,26 +343,15 @@ final class CodexUsageStoreTests: XCTestCase {
         )
 
         store.refresh()
-        await waitUntil("safety-limited usage refresh") {
-            store.snapshot.usagePrecision == .safetyLimited && !store.isRefreshing
+        await waitUntil("unbounded precise usage refresh") {
+            store.snapshot.usagePrecision == .precise && !store.isRefreshing
         }
 
-        XCTAssertTrue(store.status.contains("安全上限"), store.status)
+        XCTAssertTrue(store.snapshot.hasPreciseTokenUsage)
+        XCTAssertEqual(store.snapshot.stats.totalTokens, 12_345)
+        XCTAssertFalse(store.status.contains("安全上限"), store.status)
+        XCTAssertFalse(store.status.contains("扫描受限"), store.status)
         XCTAssertFalse(store.status.contains("精确 token 仍在读取"), store.status)
-        let display = TokenDisplaySnapshot.make(
-            store: store,
-            monitor: LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: false),
-            quota: AccountQuotaStore(observesUserDefaults: false)
-        )
-        XCTAssertEqual(display.metadataOnlyStatusText, "历史扫描受限")
-        XCTAssertEqual(display.standaloneUsageStatus, "历史扫描受限")
-        let footer = StatStripStatusLinePresentation(
-            hasPreciseTokenUsage: store.snapshot.hasPreciseTokenUsage,
-            isPreparingUsageCache: false,
-            cacheStatus: store.status
-        )
-        XCTAssertTrue(footer?.text.contains("安全上限") ?? false)
-        XCTAssertFalse(footer?.showsProgress ?? true)
     }
 
     func testSameSourceMetadataOnlyRefreshRetainsPreciseValuesAndMarksThemStale() async {
