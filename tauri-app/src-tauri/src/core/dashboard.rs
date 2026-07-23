@@ -76,16 +76,10 @@ mod tests {
     #[test]
     fn fast_dashboard_prefers_precise_cache_over_state_sqlite_token_sums() {
         let root = temp_root();
-        let _test_state = crate::core::app_paths::app_path_test_env_guard(&[
-            (
-                "CODEX_TOKEN_BAR_AGGREGATE_CACHE_PATH",
-                root.join("cache").join("aggregate.json"),
-            ),
-            (
-                "CODEX_TOKEN_BAR_EVENT_CACHE_DIR",
-                root.join("cache").join("events"),
-            ),
-        ]);
+        let _test_state = crate::core::app_paths::app_path_test_env_guard(&[(
+            "CODEX_TOKEN_BAR_AGGREGATE_CACHE_PATH",
+            root.join("cache").join("aggregate.json"),
+        )]);
         let session_dir = root.join("sessions");
         fs::create_dir_all(&session_dir).unwrap();
         write_lines(

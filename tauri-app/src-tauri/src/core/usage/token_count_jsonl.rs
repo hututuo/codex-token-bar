@@ -16,22 +16,19 @@ use std::time::{Duration as StdDuration, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
+#[cfg(test)]
 mod aggregates;
 #[cfg(test)]
 mod cache_version_tests;
-mod event_loader;
-mod ranking;
+mod exact_usage_index;
 mod session_files;
 mod session_parser;
 #[cfg(test)]
 mod tests;
-mod token_event_cache;
 
-use aggregates::{activity_days_at, recent_usage, recent_usage_30d, recent_usage_7d, stats_at};
-use event_loader::load_token_events_from_files;
-use ranking::{cache_hit_ranking, cache_usage};
-use session_files::jsonl_files_for_codex_home;
-use token_event_cache::{file_cache_key, file_signature, CachedFileSignature};
+#[cfg(test)]
+use aggregates::{activity_days_at, stats_at};
+use exact_usage_index::ExactUsageIndex;
 
 static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<DashboardAggregateCacheState>> = OnceLock::new();
 static DASHBOARD_BUILD_GATE: OnceLock<Mutex<()>> = OnceLock::new();
@@ -42,29 +39,8 @@ static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLo
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_SCAN_SIGNATURE_COUNT: AtomicUsize = AtomicUsize::new(0);
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 15;
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 16;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
-pub(super) const MAX_SESSION_READ_BYTES: u64 = 128 * 1024 * 1024;
-pub(super) const MAX_REFRESH_READ_BYTES: u64 = 512 * 1024 * 1024;
-pub(super) const MAX_JSONL_LINE_BYTES: usize = 16 * 1024 * 1024;
-pub(super) const MAX_REFRESH_EVENT_COUNT: usize = 200_000;
-
-#[derive(Clone, Debug)]
-pub(super) struct UsageScanLimitError {
-    message: String,
-}
-
-impl UsageScanLimitError {
-    pub(super) fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-
-    fn user_message(&self) -> String {
-        format!("精确 token 历史扫描已为保护内存安全停止：{}。当前仅显示会话元数据，请缩小历史范围或等待缓存可用。", self.message)
-    }
-}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -74,6 +50,7 @@ pub struct TokenUsageSummary {
     pub today_requests: u32,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 struct TokenEvent {
     timestamp: OffsetDateTime,
@@ -92,43 +69,25 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut warnings = Vec::new();
-    let session_files = match jsonl_files_for_codex_home(codex_home, &mut warnings) {
-        Ok(files) => files,
-        Err(error) => return safety_limited_dashboard_snapshot(codex_home, error),
-    };
-    let signature = dashboard_scan_signature(codex_home, &session_files);
+    let mut index = ExactUsageIndex::open(codex_home)?;
+    let revision = index.sync(codex_home, &mut warnings)?;
+    let signature = dashboard_index_signature(codex_home, revision);
     if let Some(mut snapshot) = cached_dashboard_snapshot(&signature) {
         let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
         merge_usage_cache_marker_warning(&mut snapshot);
         return Ok(snapshot_with_generated_at(snapshot));
     }
-
-    let events = match load_token_events_from_files(
-        codex_home,
-        session_files,
-        &mut warnings,
-    ) {
-        Ok(events) => events,
-        Err(error) => return safety_limited_dashboard_snapshot(codex_home, error),
-    };
-
-    if events.is_empty() {
+    if index.is_empty()? {
         return Err(no_token_events_error(&warnings));
     }
 
     record_dashboard_aggregate_build_for_testing(codex_home);
     let now_utc = OffsetDateTime::now_utc();
     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-    let summary = usage_summary_from_events_at(&events, now_utc, local_offset);
+    let data = index.dashboard_data(codex_home, now_utc, local_offset, &mut warnings)?;
     let generated_at = now_utc
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
-    let (activity_days, stats) = activity_days_and_stats_at(&events, now_utc, local_offset);
-    let recent_usage_24h = recent_usage(&events, local_offset);
-    let recent_usage_7d = recent_usage_7d(&events, local_offset);
-    let recent_usage_30d = recent_usage_30d(&events, local_offset);
-    let cache_hit_ranking = cache_hit_ranking(&events, codex_home, local_offset, &mut warnings);
-    let cache_usage = cache_usage(&events, codex_home, local_offset, &mut warnings);
 
     let mut snapshot = DashboardSnapshot {
         generated_at,
@@ -136,18 +95,20 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
             display_name: "账户待读取".into(),
             plan_label: "计划待读取".into(),
         },
-        stats,
+        stats: data.stats,
         quota: placeholder_quota(),
-        activity_days,
-        recent_usage_24h,
-        recent_usage_7d,
-        recent_usage_30d,
-        cache_hit_ranking,
-        cache_usage,
+        activity_days: data.activity_days,
+        recent_usage_24h: data.recent_usage_24h,
+        recent_usage_7d: data.recent_usage_7d,
+        recent_usage_30d: data.recent_usage_30d,
+        cache_hit_ranking: data.cache_hit_ranking,
+        cache_usage: data.cache_usage,
         warnings,
         diagnostics: Vec::new(),
     };
-    if let Some(warning) = store_dashboard_aggregate(signature, Some(snapshot.clone()), summary) {
+    if let Some(warning) =
+        store_dashboard_aggregate(signature, Some(snapshot.clone()), data.summary)
+    {
         snapshot.warnings.push(warning);
     }
     let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
@@ -167,19 +128,7 @@ fn merge_usage_cache_marker_warning(snapshot: &mut DashboardSnapshot) {
     }
 }
 
-fn safety_limited_dashboard_snapshot(
-    codex_home: &Path,
-    error: UsageScanLimitError,
-) -> Result<DashboardSnapshot, String> {
-    let mut snapshot = super::state_sqlite::dashboard_snapshot(codex_home)
-        .map_err(|state_error| format!("精确扫描受限（{}）；元数据快照读取失败：{}", error.user_message(), state_error))?;
-    snapshot.warnings = vec![LocalDataWarning {
-        source: "usage_precision".into(),
-        message: error.user_message(),
-    }];
-    Ok(snapshot_with_generated_at(snapshot))
-}
-
+#[cfg(test)]
 fn activity_days_and_stats_at(
     events: &[TokenEvent],
     now_utc: OffsetDateTime,
@@ -195,28 +144,19 @@ fn activity_days_and_stats_at(
 
 #[cfg(test)]
 pub fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
-    let mut events = Vec::new();
     let mut warnings = Vec::new();
-    let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings)
-        .map_err(|error| error.user_message())?;
-    let signature = dashboard_scan_signature(codex_home, &session_files);
+    let mut index = ExactUsageIndex::open(codex_home)?;
+    let revision = index.sync(codex_home, &mut warnings)?;
+    let signature = dashboard_index_signature(codex_home, revision);
     if let Some(summary) = cached_usage_summary(&signature) {
         return Ok(summary);
     }
-
-    events.extend(load_token_events_from_files(
-        codex_home,
-        session_files,
-        &mut warnings,
-    )
-    .map_err(|error| error.user_message())?);
-
-    if events.is_empty() {
+    if index.is_empty()? {
         return Err(no_token_events_error(&warnings));
     }
 
     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-    let summary = usage_summary_from_events(&events, local_offset);
+    let summary = index.summary(OffsetDateTime::now_utc(), local_offset)?;
     store_usage_summary(signature, summary.clone());
 
     Ok(summary)
@@ -233,35 +173,44 @@ pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, S
 }
 
 pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, String> {
+    let mut index = ExactUsageIndex::open(codex_home)?;
+    let signature = dashboard_index_signature(codex_home, index.revision()?);
     let mut warnings = Vec::new();
-    let session_files = match jsonl_files_for_codex_home(codex_home, &mut warnings) {
-        Ok(files) => files,
-        Err(_) => {
-            return cached_dashboard_usage_summary(codex_home)
-                .ok_or_else(|| "精确 token summary 受安全边界限制，正在等待可用缓存".into())
-        }
-    };
-    let signature = dashboard_scan_signature(codex_home, &session_files);
+    let changed = index.sources_changed(codex_home, &mut warnings)?;
+    if changed {
+        schedule_usage_summary_refresh(codex_home);
+    }
     if let Some(cached) = cached_dashboard_aggregate(&signature) {
         return Ok(cached.summary);
     }
 
-    let last_trusted = cached_dashboard_usage_summary(codex_home);
-    schedule_usage_summary_refresh(codex_home);
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let last_trusted = if index.is_empty()? {
+        None
+    } else {
+        index.summary(OffsetDateTime::now_utc(), local_offset).ok()
+    };
     last_trusted.ok_or_else(|| "精确 token summary 尚未就绪，正在后台初始化".into())
 }
 
 pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-    cached_dashboard_usage_summary_at(codex_home, OffsetDateTime::now_utc(), local_offset)
+    cached_dashboard_usage_summary_at(codex_home, OffsetDateTime::now_utc(), local_offset).or_else(
+        || {
+            let index = ExactUsageIndex::open(codex_home).ok()?;
+            if index.is_empty().ok()? {
+                return None;
+            }
+            index.summary(OffsetDateTime::now_utc(), local_offset).ok()
+        },
+    )
 }
 
 pub(crate) fn cached_dashboard_snapshot_for_startup(
     codex_home: &Path,
 ) -> Option<DashboardSnapshot> {
-    let mut warnings = Vec::new();
-    let session_files = jsonl_files_for_codex_home(codex_home, &mut warnings).ok()?;
-    let signature = dashboard_scan_signature(codex_home, &session_files);
+    let index = ExactUsageIndex::open(codex_home).ok()?;
+    let signature = dashboard_index_signature(codex_home, index.revision().ok()?);
     cached_dashboard_startup_snapshot(&signature).map(snapshot_with_generated_at)
 }
 
@@ -270,6 +219,7 @@ fn usage_summary_from_events(events: &[TokenEvent], local_offset: UtcOffset) -> 
     usage_summary_from_events_at(events, OffsetDateTime::now_utc(), local_offset)
 }
 
+#[cfg(test)]
 fn usage_summary_from_events_at(
     events: &[TokenEvent],
     now_utc: OffsetDateTime,
@@ -382,28 +332,19 @@ struct DashboardScanSignature {
     codex_home: PathBuf,
     local_date: String,
     utc_offset_seconds: i32,
-    session_files: Vec<SessionFileSignature>,
+    #[serde(default)]
+    index_revision: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct SessionFileSignature {
-    cache_key: String,
-    signature: CachedFileSignature,
-}
-
-fn dashboard_scan_signature(
-    codex_home: &Path,
-    session_files: &[PathBuf],
-) -> DashboardScanSignature {
-    #[cfg(test)]
-    DASHBOARD_SCAN_SIGNATURE_COUNT.fetch_add(1, Ordering::Relaxed);
+fn dashboard_index_signature(codex_home: &Path, index_revision: u64) -> DashboardScanSignature {
     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-    dashboard_scan_signature_at(
-        codex_home,
-        session_files,
-        OffsetDateTime::now_utc(),
-        local_offset,
-    )
+    let now_utc = OffsetDateTime::now_utc();
+    DashboardScanSignature {
+        codex_home: codex_home.to_path_buf(),
+        local_date: local_date_string(now_utc.to_offset(local_offset)),
+        utc_offset_seconds: local_offset.whole_seconds(),
+        index_revision,
+    }
 }
 
 fn dashboard_usage_scope_at(
@@ -445,28 +386,18 @@ impl DashboardScanSignature {
     }
 }
 
+#[cfg(test)]
 fn dashboard_scan_signature_at(
     codex_home: &Path,
-    session_files: &[PathBuf],
+    index_revision: u64,
     now_utc: OffsetDateTime,
     local_offset: UtcOffset,
 ) -> DashboardScanSignature {
-    let mut file_signatures = session_files
-        .iter()
-        .filter_map(|file| {
-            Some(SessionFileSignature {
-                cache_key: file_cache_key(codex_home, file),
-                signature: file_signature(file)?,
-            })
-        })
-        .collect::<Vec<_>>();
-    file_signatures.sort_by(|left, right| left.cache_key.cmp(&right.cache_key));
-
     DashboardScanSignature {
         codex_home: codex_home.to_path_buf(),
         local_date: local_date_string(now_utc.to_offset(local_offset)),
         utc_offset_seconds: local_offset.whole_seconds(),
-        session_files: file_signatures,
+        index_revision,
     }
 }
 
@@ -747,6 +678,11 @@ fn record_dashboard_aggregate_build_for_testing(_codex_home: &Path) {
             *counts.entry(_codex_home.to_path_buf()).or_default() += 1;
         }
     }
+}
+
+fn record_dashboard_source_scan_for_testing() {
+    #[cfg(test)]
+    DASHBOARD_SCAN_SIGNATURE_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(test)]

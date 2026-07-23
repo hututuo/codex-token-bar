@@ -1,21 +1,41 @@
+#[cfg(test)]
 use super::TokenEvent;
 use crate::models::LocalDataWarning;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
-#[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 
 const FORK_REPLAY_EXIT_GRACE: Duration = Duration::seconds(2);
-pub(super) const RECENT_USAGE_FINGERPRINT_LIMIT: usize = 4_096;
 pub(super) type UsageSnapshotFingerprint = [u64; 9];
 
-#[cfg(test)]
-static SESSION_FULL_PARSE_COUNT: AtomicU64 = AtomicU64::new(0);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct SourceByteRange {
+    pub(super) start: u64,
+    pub(super) end: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct ExactEventSourceOffsets {
+    pub(super) user_prompt: Option<SourceByteRange>,
+    pub(super) assistant_response: Option<SourceByteRange>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ExactTokenEvent {
+    pub(super) timestamp: OffsetDateTime,
+    pub(super) session_id: String,
+    pub(super) tokens: u64,
+    pub(super) input_tokens: u64,
+    pub(super) cached_input_tokens: u64,
+    pub(super) output_tokens: u64,
+    pub(super) source_offsets: ExactEventSourceOffsets,
+}
 
 #[derive(Clone, Debug)]
 struct ParsedUsage {
@@ -38,184 +58,88 @@ struct ParsedMessageLine {
     message: String,
 }
 
+#[cfg(test)]
 pub(super) struct SessionParseResult {
     pub(super) events: Vec<TokenEvent>,
-    pub(super) limit_exceeded: Option<String>,
     pub(super) previous_total_tokens: Option<u64>,
-    pub(super) consumed_size: u64,
-    pub(super) ended_with_newline: bool,
     pub(super) fork_replay_active: bool,
-    pub(super) last_skipped_fork_replay_token_at: Option<OffsetDateTime>,
-    pub(super) recent_usage_fingerprints: Vec<UsageSnapshotFingerprint>,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct ForkReplayState {
-    pub(super) active: bool,
-    pub(super) last_skipped_token_at: Option<OffsetDateTime>,
+pub(super) struct ExactSessionParseResult {
+    pub(super) prefix_sha256: [u8; 32],
+    pub(super) bytes_read: u64,
+    #[cfg(test)]
+    pub(super) event_count: u64,
+    #[cfg(test)]
+    pub(super) previous_total_tokens: Option<u64>,
+    #[cfg(test)]
+    pub(super) fork_replay_active: bool,
 }
 
-pub(super) fn parse_session_file_full_result(
-    file: &Path,
-    session_id: &str,
-    warnings: &mut Vec<LocalDataWarning>,
-) -> SessionParseResult {
-    parse_session_file_full_result_limited(
-        file,
-        session_id,
-        u64::MAX,
-        usize::MAX,
-        usize::MAX,
-        warnings,
-    )
+pub(super) trait ExactSessionEventSink {
+    fn insert_fingerprint(
+        &mut self,
+        fingerprint: &UsageSnapshotFingerprint,
+    ) -> Result<bool, String>;
+
+    fn insert_event(&mut self, event: &ExactTokenEvent) -> Result<(), String>;
 }
 
-pub(super) fn parse_session_file_full_result_limited(
+pub(super) fn stream_session_file_exact(
     file: &Path,
+    handle: &mut fs::File,
+    prefix_size: u64,
     session_id: &str,
-    source_read_limit: u64,
-    line_limit: usize,
-    event_limit: usize,
+    sink: &mut impl ExactSessionEventSink,
     warnings: &mut Vec<LocalDataWarning>,
-) -> SessionParseResult {
-    record_full_parse_for_testing();
-    parse_session_file_range_limited(
-        file,
-        session_id,
-        0,
-        None,
-        None,
-        None,
-        source_read_limit,
-        line_limit,
-        event_limit,
-        warnings,
-    )
-}
-
-pub(super) fn parse_session_file_range_limited(
-    file: &Path,
-    session_id: &str,
-    start_offset: u64,
-    initial_previous_total: Option<u64>,
-    initial_fork_replay_state: Option<ForkReplayState>,
-    initial_recent_usage_fingerprints: Option<&[UsageSnapshotFingerprint]>,
-    source_read_limit: u64,
-    line_limit: usize,
-    event_limit: usize,
-    warnings: &mut Vec<LocalDataWarning>,
-) -> SessionParseResult {
-    let handle = match fs::File::open(file) {
-        Ok(handle) => handle,
-        Err(error) => {
-            let message = format!(
-                "读取会话文件失败：{}（{}）",
-                file.display(),
-                error
-            );
-            warnings.push(jsonl_file_warning(message.clone()));
-            return SessionParseResult {
-                events: Vec::new(),
-                limit_exceeded: Some(message),
-                previous_total_tokens: initial_previous_total,
-                consumed_size: start_offset,
-                ended_with_newline: true,
-                fork_replay_active: false,
-                last_skipped_fork_replay_token_at: None,
-                recent_usage_fingerprints: initial_recent_usage_fingerprints
-                    .unwrap_or_default()
-                    .to_vec(),
-            };
-        }
-    };
-    let mut handle = handle;
-    if start_offset > 0 {
-        if let Err(error) = handle.seek(SeekFrom::Start(start_offset)) {
-            let message = format!(
-                "定位会话文件失败：{}（{}）",
-                file.display(),
-                error
-            );
-            warnings.push(jsonl_file_warning(message.clone()));
-            return SessionParseResult {
-                events: Vec::new(),
-                limit_exceeded: Some(message),
-                previous_total_tokens: initial_previous_total,
-                consumed_size: start_offset,
-                ended_with_newline: true,
-                fork_replay_active: false,
-                last_skipped_fork_replay_token_at: None,
-                recent_usage_fingerprints: initial_recent_usage_fingerprints
-                    .unwrap_or_default()
-                    .to_vec(),
-            };
-        }
-    }
-    let reader = BufReader::new(handle.take(source_read_limit));
-    let mut fork_replay_started_at = None;
-    let mut fork_replay_active = initial_fork_replay_state
-        .map(|state: ForkReplayState| state.active)
-        .unwrap_or(false);
-    let mut last_skipped_fork_replay_token_at =
-        initial_fork_replay_state.and_then(|state: ForkReplayState| state.last_skipped_token_at);
-    let mut previous_total = initial_previous_total;
-    let mut recent_usage_fingerprints =
-        RecentUsageFingerprintBuffer::new(initial_recent_usage_fingerprints.unwrap_or_default());
-    let mut current_user_prompt = String::new();
-    let mut assistant_excerpt = String::new();
-    let mut events = Vec::new();
-    let mut consumed_size = start_offset;
-    let mut ended_with_newline = true;
-    let mut limit_exceeded = None;
-
-    let mut reader = reader;
+) -> Result<ExactSessionParseResult, String> {
+    handle.seek(SeekFrom::Start(0)).map_err(|error| {
+        let message = format!("定位会话文件失败：{}（{}）", file.display(), error);
+        warnings.push(jsonl_file_warning(message.clone()));
+        message
+    })?;
+    let mut reader = BufReader::new(PrefixHashingReader::new(handle.take(prefix_size)));
     let mut line_bytes = Vec::new();
+    let mut fork_replay_started_at = None;
+    let mut fork_replay_active = false;
+    let mut last_skipped_fork_replay_token_at = None;
+    let mut previous_total = None;
+    let mut current_user_prompt = None;
+    let mut assistant_response: Option<SourceByteRange> = None;
+    #[cfg(test)]
+    let mut event_count = 0_u64;
+    let mut source_offset = 0_u64;
+
     loop {
-        let bytes_read = match read_bounded_line(&mut reader, &mut line_bytes, line_limit) {
-            Ok(0) => break,
-            Ok(bytes_read) => bytes_read,
-            Err(BoundedLineReadError::TooLong) => {
-                let message = format!(
-                    "会话 JSONL 单行超过 {} MiB：{}",
-                    line_limit / 1024 / 1024,
-                    file.display()
-                );
-                warnings.push(jsonl_file_warning(message.clone()));
-                limit_exceeded = Some(message);
-                break;
-            }
-            Err(BoundedLineReadError::Io(error)) => {
-                let message = format!(
-                    "读取会话文件中断：{}（{}）",
-                    file.display(),
-                    error
-                );
-                warnings.push(jsonl_file_warning(message.clone()));
-                limit_exceeded = Some(message);
-                break;
-            }
-        };
-        let line_ended_with_newline = line_bytes.last().is_some_and(|byte| *byte == b'\n');
-        let line = match std::str::from_utf8(&line_bytes) {
-            Ok(line) => line,
-            Err(error) => {
-                let message = format!(
-                    "会话 JSONL 不是 UTF-8：{}（{}）",
-                    file.display(),
-                    error
-                );
-                warnings.push(jsonl_file_warning(message.clone()));
-                limit_exceeded = Some(message);
-                break;
-            }
-        };
-        if !line_ended_with_newline && !is_complete_json_line(&line) {
-            ended_with_newline = false;
+        line_bytes.clear();
+        let line_start = source_offset;
+        let bytes_read = reader.read_until(b'\n', &mut line_bytes).map_err(|error| {
+            let message = format!("读取会话文件中断：{}（{}）", file.display(), error);
+            warnings.push(jsonl_file_warning(message.clone()));
+            message
+        })?;
+        if bytes_read == 0 {
             break;
         }
-        ended_with_newline = line_ended_with_newline;
+        source_offset = source_offset.saturating_add(bytes_read as u64);
+        let line_range = SourceByteRange {
+            start: line_start,
+            end: source_offset,
+        };
+
+        let line_ended_with_newline = line_bytes.last().is_some_and(|byte| *byte == b'\n');
+        let line = std::str::from_utf8(&line_bytes).map_err(|error| {
+            let message = format!("会话 JSONL 不是 UTF-8：{}（{}）", file.display(), error);
+            warnings.push(jsonl_file_warning(message.clone()));
+            message
+        })?;
+        if !line_ended_with_newline && !is_complete_json_line(line) {
+            break;
+        }
         let line = line.trim_end_matches(['\r', '\n']);
-        if start_offset == 0 && fork_replay_started_at.is_none() {
+
+        if fork_replay_started_at.is_none() {
             if let Some(timestamp) = forked_session_replay_started_at_line(line) {
                 fork_replay_started_at = Some(timestamp);
                 fork_replay_active = true;
@@ -230,48 +154,43 @@ pub(super) fn parse_session_file_range_limited(
                     fork_replay_active = false;
                 }
             }
-            current_user_prompt = message_line.message;
-            assistant_excerpt.clear();
-            consumed_size = consumed_size.saturating_add(bytes_read as u64);
+            current_user_prompt = Some(line_range);
+            assistant_response = None;
             continue;
         }
-
-        if let Some(message_line) = parse_payload_message_line(line, "agent_message", 220) {
-            append_excerpt(&mut assistant_excerpt, &message_line.message, 220);
-            consumed_size = consumed_size.saturating_add(bytes_read as u64);
+        if parse_payload_message_line(line, "agent_message", 220).is_some() {
+            assistant_response = Some(match assistant_response {
+                Some(existing) => SourceByteRange {
+                    start: existing.start,
+                    end: line_range.end,
+                },
+                None => line_range,
+            });
             continue;
         }
-
         if !line.contains("\"token_count\"") {
-            consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         }
         let Some(usage_line) = parse_usage_line(line) else {
-            consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         };
+
         let total_tokens = usage_line.total.as_ref().map(|usage| usage.total_tokens);
         let previous_high_water = previous_total;
-        // Forks/subagents can interleave several cumulative counters in one JSONL. Keeping the
-        // high-water mark prevents a lower stream from creating a false jump when a higher one
-        // appears again.
         if let Some(total_tokens) = total_tokens {
-            previous_total =
-                Some(previous_total.map_or(total_tokens, |previous| previous.max(total_tokens)));
+            previous_total = Some(
+                previous_total.map_or(total_tokens, |previous: u64| previous.max(total_tokens)),
+            );
         }
-        // Timestamp is deliberately excluded so a replayed copy remains a duplicate even when
-        // Codex emits it at a later time.
-        let is_new_snapshot = usage_snapshot_fingerprint(&usage_line).map_or(true, |fingerprint| {
-            recent_usage_fingerprints.insert_if_new(fingerprint)
-        });
+        let is_new_snapshot = match usage_snapshot_fingerprint(&usage_line) {
+            Some(fingerprint) => sink.insert_fingerprint(&fingerprint)?,
+            None => true,
+        };
         if fork_replay_active {
             last_skipped_fork_replay_token_at = Some(usage_line.timestamp);
-            consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         }
-
         if !is_new_snapshot {
-            consumed_size = consumed_size.saturating_add(bytes_read as u64);
             continue;
         }
 
@@ -285,23 +204,11 @@ pub(super) fn parse_session_file_range_limited(
         } else {
             0
         };
-
-        consumed_size = consumed_size.saturating_add(bytes_read as u64);
         if delta == 0 {
             continue;
         }
 
-        if events.len() >= event_limit {
-            let message = format!(
-                "会话 token 事件超过本次刷新安全上限（{} 条）：{}",
-                event_limit,
-                file.display()
-            );
-            warnings.push(jsonl_file_warning(message.clone()));
-            limit_exceeded = Some(message);
-            break;
-        }
-        events.push(TokenEvent {
+        sink.insert_event(&ExactTokenEvent {
             timestamp: usage_line.timestamp,
             session_id: session_id.to_string(),
             tokens: delta,
@@ -317,72 +224,234 @@ pub(super) fn parse_session_file_range_limited(
                 .last
                 .as_ref()
                 .map_or(0, |usage| usage.output_tokens),
-            user_prompt: current_user_prompt.clone(),
-            assistant_response: assistant_excerpt.clone(),
-        });
-        assistant_excerpt.clear();
+            source_offsets: ExactEventSourceOffsets {
+                user_prompt: current_user_prompt,
+                assistant_response,
+            },
+        })?;
+        #[cfg(test)]
+        {
+            event_count = event_count.saturating_add(1);
+        }
+        assistant_response = None;
     }
 
+    let hashing_reader = reader.into_inner();
+    let bytes_read = hashing_reader.bytes_read;
+    let prefix_sha256 = hashing_reader.finish();
+    if bytes_read != prefix_size {
+        let message = format!(
+            "会话文件在固定前缀扫描期间缩短：{}（预期 {} 字节，实际读取 {} 字节）",
+            file.display(),
+            prefix_size,
+            bytes_read
+        );
+        warnings.push(jsonl_file_warning(message.clone()));
+        return Err(message);
+    }
+
+    Ok(ExactSessionParseResult {
+        prefix_sha256,
+        bytes_read,
+        #[cfg(test)]
+        event_count,
+        #[cfg(test)]
+        previous_total_tokens: previous_total,
+        #[cfg(test)]
+        fork_replay_active,
+    })
+}
+
+struct PrefixHashingReader<R> {
+    inner: R,
+    hasher: Sha256,
+    bytes_read: u64,
+}
+
+impl<R> PrefixHashingReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hasher: Sha256::new(),
+            bytes_read: 0,
+        }
+    }
+
+    fn finish(self) -> [u8; 32] {
+        self.hasher.finalize().into()
+    }
+}
+
+impl<R: Read> Read for PrefixHashingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let bytes_read = self.inner.read(buffer)?;
+        self.hasher.update(&buffer[..bytes_read]);
+        self.bytes_read = self.bytes_read.saturating_add(bytes_read as u64);
+        Ok(bytes_read)
+    }
+}
+
+pub(super) fn read_event_excerpts(
+    file: &Path,
+    source_offsets: ExactEventSourceOffsets,
+) -> Result<(String, String), String> {
+    let user_prompt = match source_offsets.user_prompt {
+        Some(range) => {
+            let mut latest = String::new();
+            visit_source_range_lines(file, range, |line| {
+                if let Some(message) = parse_payload_message_line(line, "user_message", 180) {
+                    latest = message.message;
+                }
+            })?;
+            latest
+        }
+        None => String::new(),
+    };
+    let assistant_response = match source_offsets.assistant_response {
+        Some(range) => {
+            let mut combined = String::new();
+            visit_source_range_lines(file, range, |line| {
+                if let Some(message) = parse_payload_message_line(line, "agent_message", 220) {
+                    append_excerpt(&mut combined, &message.message, 220);
+                }
+            })?;
+            combined
+        }
+        None => String::new(),
+    };
+    Ok((user_prompt, assistant_response))
+}
+
+fn visit_source_range_lines(
+    file: &Path,
+    range: SourceByteRange,
+    mut visit: impl FnMut(&str),
+) -> Result<(), String> {
+    let byte_count = range
+        .end
+        .checked_sub(range.start)
+        .ok_or_else(|| format!("会话摘录字节区间无效：{}", file.display()))?;
+    let mut handle = fs::File::open(file)
+        .map_err(|error| format!("打开会话摘录源文件失败：{}（{}）", file.display(), error))?;
+    handle
+        .seek(SeekFrom::Start(range.start))
+        .map_err(|error| format!("定位会话摘录源文件失败：{}（{}）", file.display(), error))?;
+    let mut reader = BufReader::new(handle.take(byte_count));
+    let mut line_bytes = Vec::new();
+    let mut consumed = 0_u64;
+    loop {
+        line_bytes.clear();
+        let bytes_read = reader
+            .read_until(b'\n', &mut line_bytes)
+            .map_err(|error| format!("读取会话摘录失败：{}（{}）", file.display(), error))?;
+        if bytes_read == 0 {
+            break;
+        }
+        consumed = consumed.saturating_add(bytes_read as u64);
+        let line = std::str::from_utf8(&line_bytes)
+            .map_err(|error| format!("会话摘录不是 UTF-8：{}（{}）", file.display(), error))?
+            .trim_end_matches(['\r', '\n']);
+        visit(line);
+    }
+    if consumed != byte_count {
+        return Err(format!(
+            "会话摘录源文件已变化：{}（预期 {} 字节，读取 {} 字节）",
+            file.display(),
+            byte_count,
+            consumed
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn parse_session_file_full_result(
+    file: &Path,
+    session_id: &str,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> SessionParseResult {
+    let mut sink = TestExactSessionSink::default();
+    let mut handle = match fs::File::open(file) {
+        Ok(handle) => handle,
+        Err(error) => {
+            warnings.push(jsonl_file_warning(format!(
+                "读取会话文件失败：{}（{}）",
+                file.display(),
+                error
+            )));
+            return SessionParseResult {
+                events: Vec::new(),
+                previous_total_tokens: None,
+                fork_replay_active: false,
+            };
+        }
+    };
+    let prefix_size = handle
+        .metadata()
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let parsed = match stream_session_file_exact(
+        file,
+        &mut handle,
+        prefix_size,
+        session_id,
+        &mut sink,
+        warnings,
+    ) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            return SessionParseResult {
+                events: Vec::new(),
+                previous_total_tokens: None,
+                fork_replay_active: false,
+            };
+        }
+    };
+    debug_assert_eq!(parsed.event_count as usize, sink.events.len());
+    let events = sink
+        .events
+        .into_iter()
+        .map(|event| {
+            let (user_prompt, assistant_response) =
+                read_event_excerpts(file, event.source_offsets).unwrap_or_default();
+            TokenEvent {
+                timestamp: event.timestamp,
+                session_id: event.session_id,
+                tokens: event.tokens,
+                input_tokens: event.input_tokens,
+                cached_input_tokens: event.cached_input_tokens,
+                output_tokens: event.output_tokens,
+                user_prompt,
+                assistant_response,
+            }
+        })
+        .collect();
     SessionParseResult {
         events,
-        limit_exceeded,
-        previous_total_tokens: previous_total,
-        consumed_size,
-        ended_with_newline,
-        fork_replay_active,
-        last_skipped_fork_replay_token_at,
-        recent_usage_fingerprints: recent_usage_fingerprints.ordered_values(),
+        previous_total_tokens: parsed.previous_total_tokens,
+        fork_replay_active: parsed.fork_replay_active,
     }
 }
 
-struct RecentUsageFingerprintBuffer {
-    values: Vec<UsageSnapshotFingerprint>,
-    next_replacement_index: usize,
-    seen: HashSet<UsageSnapshotFingerprint>,
+#[cfg(test)]
+#[derive(Default)]
+struct TestExactSessionSink {
+    fingerprints: HashSet<UsageSnapshotFingerprint>,
+    events: Vec<ExactTokenEvent>,
 }
 
-impl RecentUsageFingerprintBuffer {
-    fn new(initial_values: &[UsageSnapshotFingerprint]) -> Self {
-        let mut buffer = Self {
-            values: Vec::new(),
-            next_replacement_index: 0,
-            seen: HashSet::new(),
-        };
-        for fingerprint in initial_values
-            .iter()
-            .rev()
-            .take(RECENT_USAGE_FINGERPRINT_LIMIT)
-            .rev()
-        {
-            buffer.insert_if_new(*fingerprint);
-        }
-        buffer
+#[cfg(test)]
+impl ExactSessionEventSink for TestExactSessionSink {
+    fn insert_fingerprint(
+        &mut self,
+        fingerprint: &UsageSnapshotFingerprint,
+    ) -> Result<bool, String> {
+        Ok(self.fingerprints.insert(*fingerprint))
     }
 
-    fn insert_if_new(&mut self, fingerprint: UsageSnapshotFingerprint) -> bool {
-        if !self.seen.insert(fingerprint) {
-            return false;
-        }
-        if self.values.len() < RECENT_USAGE_FINGERPRINT_LIMIT {
-            self.values.push(fingerprint);
-        } else {
-            self.seen.remove(&self.values[self.next_replacement_index]);
-            self.values[self.next_replacement_index] = fingerprint;
-            self.next_replacement_index =
-                (self.next_replacement_index + 1) % RECENT_USAGE_FINGERPRINT_LIMIT;
-        }
-        true
-    }
-
-    fn ordered_values(self) -> Vec<UsageSnapshotFingerprint> {
-        if self.values.len() < RECENT_USAGE_FINGERPRINT_LIMIT || self.next_replacement_index == 0 {
-            return self.values;
-        }
-        self.values[self.next_replacement_index..]
-            .iter()
-            .chain(self.values[..self.next_replacement_index].iter())
-            .copied()
-            .collect()
+    fn insert_event(&mut self, event: &ExactTokenEvent) -> Result<(), String> {
+        self.events.push(event.clone());
+        Ok(())
     }
 }
 
@@ -407,55 +476,8 @@ fn usage_snapshot_fingerprint(usage_line: &ParsedUsageLine) -> Option<UsageSnaps
     Some(fingerprint)
 }
 
-#[cfg(test)]
-pub(super) fn reset_session_full_parse_count_for_testing() {
-    SESSION_FULL_PARSE_COUNT.store(0, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-pub(super) fn session_full_parse_count_for_testing() -> u64 {
-    SESSION_FULL_PARSE_COUNT.load(Ordering::Relaxed)
-}
-
-#[cfg(test)]
-fn record_full_parse_for_testing() {
-    SESSION_FULL_PARSE_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(not(test))]
-fn record_full_parse_for_testing() {}
-
 fn is_complete_json_line(line: &str) -> bool {
     serde_json::from_str::<Value>(line).is_ok()
-}
-
-enum BoundedLineReadError {
-    Io(std::io::Error),
-    TooLong,
-}
-
-fn read_bounded_line<R: BufRead>(
-    reader: &mut R,
-    line: &mut Vec<u8>,
-    limit: usize,
-) -> Result<usize, BoundedLineReadError> {
-    line.clear();
-    loop {
-        let available = reader.fill_buf().map_err(BoundedLineReadError::Io)?;
-        if available.is_empty() {
-            return Ok(line.len());
-        }
-        let newline = available.iter().position(|byte| *byte == b'\n');
-        let consumed = newline.map_or(available.len(), |index| index.saturating_add(1));
-        if line.len().saturating_add(consumed) > limit {
-            return Err(BoundedLineReadError::TooLong);
-        }
-        line.extend_from_slice(&available[..consumed]);
-        reader.consume(consumed);
-        if newline.is_some() {
-            return Ok(line.len());
-        }
-    }
 }
 
 fn parse_payload_message_line(

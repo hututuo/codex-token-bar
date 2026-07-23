@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 const APP_DIRECTORY_NAME: &str = "CodexTokenBar";
 const TAURI_DIRECTORY_NAME: &str = "CodexTokenBarTauri";
-// The v6 namespace isolates the incremental/locked shard layout from older
-// binaries that replaced the entire v5 directory without taking the new lock.
+// Keep the established namespace so existing aggregate-cache cleanup and
+// migration behavior remain stable across this release.
 pub const TAURI_USAGE_CACHE_NAMESPACE: &str = "tauri-usage-cache-2026-07-v6";
 const HISTORY_REPAIR_DIRECTORY_NAME: &str = "CodexHistoryRepair";
 
@@ -36,30 +36,6 @@ pub fn unread_acknowledgement_path() -> Option<PathBuf> {
 
 pub fn auto_resume_state_path() -> Option<PathBuf> {
     tauri_app_support_dir().map(|path| path.join("auto-resume-state.json"))
-}
-
-pub fn token_event_cache_path() -> Option<PathBuf> {
-    #[cfg(test)]
-    {
-        std::env::var_os("CODEX_TOKEN_BAR_EVENT_CACHE_LEGACY_PATH").map(PathBuf::from)
-    }
-
-    #[cfg(not(test))]
-    {
-        tauri_usage_cache_dir().map(|path| path.join("token-events-cache-legacy.json"))
-    }
-}
-
-pub fn token_event_cache_directory() -> Option<PathBuf> {
-    #[cfg(test)]
-    {
-        std::env::var_os("CODEX_TOKEN_BAR_EVENT_CACHE_DIR").map(PathBuf::from)
-    }
-
-    #[cfg(not(test))]
-    {
-        tauri_usage_cache_dir().map(|path| path.join("session-token-events"))
-    }
 }
 
 pub fn token_aggregate_cache_path() -> Option<PathBuf> {

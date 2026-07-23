@@ -1,18 +1,8 @@
-use super::session_parser::{
-    parse_session_file_full_result, parse_session_file_full_result_limited,
-    reset_session_full_parse_count_for_testing,
-    session_full_parse_count_for_testing,
-};
-use super::token_event_cache::{
-    codex_home_cache_key, file_signature, parse_session_file_cached,
-    parse_session_file_cached_limited, CachedCodexHome, CachedFileSignature, CachedSessionFile,
-    CachedTokenEvent, TokenEventCache,
-};
+use super::session_parser::parse_session_file_full_result;
 use super::*;
 use rusqlite::Connection;
-use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration as StdDuration, SystemTime};
@@ -22,179 +12,561 @@ use time::{OffsetDateTime, UtcOffset};
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
-fn oversized_session_uses_safe_metadata_only_snapshot_before_reading() {
+fn exact_index_deduplicates_a_replay_after_more_than_4096_unique_snapshots() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019eoversized-0000-0000-0000-safety.jsonl");
-    let handle = fs::File::create(&file).unwrap();
-    handle
-        .set_len(MAX_SESSION_READ_BYTES.saturating_add(1))
-        .unwrap();
-    create_state_database(&root, "low", "high");
+    let file = session_dir.join("rollout-019eexact-dedupe-0000-0000-0000-index.jsonl");
+    let mut handle = std::io::BufWriter::new(fs::File::create(&file).unwrap());
+    for tokens in 1_u64..=4_097 {
+        let line = serde_json::json!({
+            "timestamp": "2026-07-20T01:00:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": tokens,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": tokens
+                    },
+                    "last_token_usage": {
+                        "input_tokens": tokens,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": tokens
+                    }
+                }
+            }
+        });
+        writeln!(handle, "{line}").unwrap();
+    }
+    let replay = serde_json::json!({
+        "timestamp": "2026-07-21T01:00:00Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "token_count",
+            "info": {
+                "total_token_usage": {
+                    "input_tokens": 1,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 1
+                },
+                "last_token_usage": {
+                    "input_tokens": 1,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 1
+                }
+            }
+        }
+    });
+    writeln!(handle, "{replay}").unwrap();
+    handle.flush().unwrap();
 
     let snapshot = dashboard_snapshot(&root).unwrap();
 
-    assert_eq!(snapshot.stats.total_tokens, 0);
-    assert!(snapshot.warnings.iter().any(|warning| {
-        warning.source == "usage_precision" && warning.message.contains("单会话上限")
-    }));
+    assert_eq!(snapshot.stats.total_tokens, (1_u64..=4_097).sum::<u64>());
+    assert_eq!(snapshot.stats.total_calls, 4_097);
 
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn oversized_unterminated_jsonl_line_uses_safe_metadata_only_snapshot() {
+fn exact_index_parses_a_valid_jsonl_line_larger_than_the_old_16_mib_limit() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019eline-limit-0000-0000-0000-safety.jsonl");
-    let mut handle = fs::File::create(&file).unwrap();
+    let file = session_dir.join("rollout-019eline-unbounded-0000-0000-0000-index.jsonl");
+    let mut handle = std::io::BufWriter::new(fs::File::create(&file).unwrap());
+    handle.write_all(br#"{"padding":""#).unwrap();
+    let chunk = vec![b'x'; 1024 * 1024];
+    for _ in 0..17 {
+        handle.write_all(&chunk).unwrap();
+    }
     handle
-        .write_all(&vec![b'x'; MAX_JSONL_LINE_BYTES.saturating_add(1)])
+        .write_all(
+            br#"","timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        )
         .unwrap();
-    create_state_database(&root, "low", "high");
+    handle.write_all(b"\n").unwrap();
+    handle.flush().unwrap();
 
     let snapshot = dashboard_snapshot(&root).unwrap();
 
-    assert_eq!(snapshot.stats.total_tokens, 0);
-    assert!(snapshot.warnings.iter().any(|warning| {
-        warning.source == "usage_precision" && warning.message.contains("单行超过 16 MiB")
-    }));
+    assert_eq!(snapshot.stats.total_tokens, 120);
+    assert_eq!(snapshot.stats.total_calls, 1);
+    assert!(!snapshot
+        .warnings
+        .iter()
+        .any(|warning| warning.source == "usage_precision"));
 
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn token_event_parser_stops_before_exceeding_the_event_limit() {
+fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
-    fs::create_dir_all(&root).unwrap();
-    let file = root.join("rollout-019eevent-limit-0000-0000-0000-safety.jsonl");
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let changed_file = session_dir.join("rollout-019eexact-change-0000-0000-0000-index.jsonl");
+    let deleted_file = session_dir.join("rollout-019eexact-delete-0000-0000-0000-index.jsonl");
     write_lines(
-        &file,
+        &changed_file,
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":0,"total_tokens":1}}}}"#,
-            r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2,"cached_input_tokens":0,"output_tokens":0,"total_tokens":2}}}}"#,
-            r#"{"timestamp":"2026-07-20T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":3,"cached_input_tokens":0,"output_tokens":0,"total_tokens":3}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    write_lines(
+        &deleted_file,
+        &[
+            r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#,
         ],
     );
 
-    let mut warnings = Vec::new();
-    let parsed = parse_session_file_full_result_limited(
-        &file,
-        "019eevent-limit-0000-0000-0000-safety",
-        u64::MAX,
-        usize::MAX,
-        2,
-        &mut warnings,
+    let initial = dashboard_snapshot(&root).unwrap();
+    assert_eq!(initial.stats.total_tokens, 150);
+    assert_eq!(initial.stats.total_calls, 2);
+    assert_eq!(initial.stats.total_threads, 2);
+
+    write_lines(
+        &changed_file,
+        &[
+            r#"{"timestamp":"2026-07-20T02:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":50,"cached_input_tokens":10,"output_tokens":15,"total_tokens":75}}}}"#,
+        ],
+    );
+    let rebuilt = dashboard_snapshot(&root).unwrap();
+    assert_eq!(rebuilt.stats.total_tokens, 105);
+    assert_eq!(rebuilt.stats.total_calls, 2);
+    assert_eq!(rebuilt.stats.total_threads, 2);
+
+    fs::remove_file(&deleted_file).unwrap();
+    let after_delete = dashboard_snapshot(&root).unwrap();
+    assert_eq!(after_delete.stats.total_tokens, 75);
+    assert_eq!(after_delete.stats.total_calls, 1);
+    assert_eq!(after_delete.stats.total_threads, 1);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_scans_more_than_20_000_session_files_without_truncation() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    for index in 0..20_000 {
+        fs::File::create(session_dir.join(format!("empty-{index:05}.jsonl"))).unwrap();
+    }
+    write_lines(
+        &session_dir.join("rollout-019efile-count-0000-0000-0000-exact.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
     );
 
-    assert_eq!(parsed.events.len(), 2);
-    assert!(parsed
-        .limit_exceeded
-        .is_some_and(|message| message.contains("2 条")));
+    let summary = usage_summary(&root).unwrap();
+
+    assert_eq!(summary.total_tokens, 120);
+    assert_eq!(summary.today_requests, 0);
+
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn oversized_token_event_cache_shard_is_skipped_before_reading() {
+fn exact_index_retries_an_incomplete_tail_after_the_jsonl_line_is_completed() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
-    let cache_dir = root.join("token-event-cache-shards");
-    let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
-    let home = root.join("codex-home");
-    let home_key = codex_home_cache_key(&home);
-    let shard_directory = cache_dir.join(home_key);
-    fs::create_dir_all(&shard_directory).unwrap();
-    let shard = shard_directory.join("oversized.json");
-    let handle = fs::File::create(&shard).unwrap();
-    handle.set_len(32 * 1024 * 1024 + 1).unwrap();
-
-    let mut warnings = Vec::new();
-    let cache = TokenEventCache::load_for_home(&home, &mut warnings);
-
-    assert!(cache.homes.is_empty());
-    assert!(warnings.iter().any(|warning| {
-        warning.source == "token_event_cache" && warning.message.contains("单分片安全上限")
-    }));
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn oversized_token_event_cache_fingerprints_are_ignored() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let cache_dir = root.join("token-event-cache-shards");
-    let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
-    let home = root.join("codex-home");
-    let home_key = codex_home_cache_key(&home);
-    let shard_directory = cache_dir.join(&home_key);
-    fs::create_dir_all(&shard_directory).unwrap();
-    let fingerprints = vec![vec![0u64; 9]; 4_097];
-    let shard_data = format!(
-        r#"{{"version":11,"homeKey":{},"codexHome":{},"cacheKey":"sessions/fingerprints.jsonl","session":{{"signature":{{"size":1,"modifiedMillis":1}},"parsedSize":1,"endedWithNewline":true,"previousTotalTokens":1,"forkReplayActive":false,"lastSkippedForkReplayTokenAt":null,"recentUsageFingerprints":{},"events":[]}}}}"#,
-        serde_json::to_string(&home_key).unwrap(),
-        serde_json::to_string(&home.to_string_lossy()).unwrap(),
-        serde_json::to_string(&fingerprints).unwrap(),
-    );
-    fs::write(
-        shard_directory.join("fingerprints.json"),
-        shard_data,
-    )
-    .unwrap();
-
-    let mut warnings = Vec::new();
-    let cache = TokenEventCache::load_for_home(&home, &mut warnings);
-
-    assert!(cache.homes.is_empty());
-    assert!(warnings.iter().any(|warning| {
-        warning.source == "token_event_cache" && warning.message.contains("指纹保留上限")
-    }));
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_rejects_a_file_that_changes_after_budgeting() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    fs::create_dir_all(&root).unwrap();
-    let file = root.join("rollout-019esignature-race-0000-0000-0000-safety.jsonl");
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019epartial-0000-0000-0000-exact.jsonl");
     write_lines(
         &file,
-        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":0,"total_tokens":1}}}}"#],
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
     );
-    let expected_signature = file_signature(&file).unwrap();
-    let mut appended = fs::OpenOptions::new().append(true).open(&file).unwrap();
-    writeln!(
-        appended,
-        "{}",
-        r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2,"cached_input_tokens":0,"output_tokens":0,"total_tokens":2}}}}"#
-    )
-    .unwrap();
-    let mut files = HashMap::new();
-    let mut cache_changed = false;
-    let mut warnings = Vec::new();
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        write!(
+            handle,
+            "{}",
+            r#"{"timestamp":"2026-07-20T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":40"#
+        )
+        .unwrap();
+    }
 
-    let result = parse_session_file_cached_limited(
-        &file,
-        "019esignature-race-0000-0000-0000-safety",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        expected_signature,
-        0,
-        usize::MAX,
-        usize::MAX,
-        &mut warnings,
-    );
+    let incomplete = dashboard_snapshot(&root).unwrap();
+    assert_eq!(incomplete.stats.total_tokens, 120);
+    assert_eq!(incomplete.stats.total_calls, 1);
 
-    assert!(result.is_err());
-    assert!(!cache_changed);
-    assert!(files.is_empty());
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(
+            handle,
+            "{}",
+            r#","cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}"#
+        )
+        .unwrap();
+    }
+    let completed = dashboard_snapshot(&root).unwrap();
+    assert_eq!(completed.stats.total_tokens, 170);
+    assert_eq!(completed.stats.total_calls, 2);
+
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_commits_the_scan_start_prefix_while_the_active_file_appends() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eappend-prefix-0000-0000-0000-exact.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    let expected_file = fs::canonicalize(&file).unwrap();
+    ExactUsageIndex::set_after_prefix_scan_hook_for_testing(move |scanned_file| {
+        assert_eq!(scanned_file, expected_file);
+        let mut handle = fs::OpenOptions::new()
+            .append(true)
+            .open(scanned_file)
+            .unwrap();
+        writeln!(
+            handle,
+            "{}",
+            r#"{"timestamp":"2026-07-20T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}"#
+        )
+        .unwrap();
+        handle.flush().unwrap();
+    });
+
+    let old_timepoint = dashboard_snapshot(&root).unwrap();
+    assert_eq!(old_timepoint.stats.total_tokens, 120);
+    assert_eq!(old_timepoint.stats.total_calls, 1);
+
+    let after_append = dashboard_snapshot(&root).unwrap();
+    assert_eq!(after_append.stats.total_tokens, 170);
+    assert_eq!(after_append.stats.total_calls, 2);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_rolls_back_when_the_scanned_prefix_is_rewritten() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019erewrite-prefix-0000-0000-0000-exact.jsonl");
+    let original = r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
+    let appended = r#"{"timestamp":"2026-07-20T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#;
+    write_lines(&file, &[original]);
+    let initial = dashboard_snapshot(&root).unwrap();
+    assert_eq!(initial.stats.total_tokens, 120);
+    let before_revision = ExactUsageIndex::open(&root).unwrap().revision().unwrap();
+
+    write_lines(&file, &[original, appended]);
+    ExactUsageIndex::set_after_prefix_scan_hook_for_testing(|scanned_file| {
+        let before = fs::read_to_string(scanned_file).unwrap();
+        let after = before.replacen("\"total_tokens\":30", "\"total_tokens\":31", 1);
+        assert_eq!(before.len(), after.len());
+        fs::write(scanned_file, after).unwrap();
+    });
+
+    let error = dashboard_snapshot(&root).unwrap_err();
+    assert!(error.contains("非追加变化"), "{error}");
+    assert!(error.contains("既有字节被改写"), "{error}");
+    let index = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(index.revision().unwrap(), before_revision);
+    assert_eq!(
+        index
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        120
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_detects_an_equal_length_rewrite_after_mtime_is_restored() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019ectime-rewrite-0000-0000-0000-exact.jsonl");
+    let original = r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
+    let rewritten = r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":101,"cached_input_tokens":20,"output_tokens":20,"total_tokens":121}}}}"#;
+    assert_eq!(original.len(), rewritten.len());
+    write_lines(&file, &[original]);
+    let initial = dashboard_snapshot(&root).unwrap();
+    assert_eq!(initial.stats.total_tokens, 120);
+    let original_modified = fs::metadata(&file).unwrap().modified().unwrap();
+
+    write_lines(&file, &[rewritten]);
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(original_modified))
+        .unwrap();
+    assert_eq!(
+        fs::metadata(&file).unwrap().modified().unwrap(),
+        original_modified
+    );
+
+    let rebuilt = dashboard_snapshot(&root).unwrap();
+    assert_eq!(rebuilt.stats.total_tokens, 121);
+    assert_eq!(rebuilt.stats.total_calls, 1);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_quick_check_recovers_a_corrupt_database_by_rebuilding() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019ecorrupt-index-0000-0000-0000-exact.jsonl");
+    let original = r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
+    let rewritten = r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":101,"cached_input_tokens":20,"output_tokens":20,"total_tokens":121}}}}"#;
+    write_lines(&file, &[original]);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+
+    write_lines(&file, &[rewritten]);
+    let index_size = fs::metadata(&index_path).unwrap().len();
+    let mut index_file = fs::OpenOptions::new()
+        .write(true)
+        .open(&index_path)
+        .unwrap();
+    index_file.seek(SeekFrom::Start(100)).unwrap();
+    index_file.write_all(&[0]).unwrap();
+    index_file.flush().unwrap();
+    drop(index_file);
+    assert_eq!(fs::metadata(&index_path).unwrap().len(), index_size);
+
+    let rebuilt = dashboard_snapshot(&root).unwrap();
+    assert_eq!(rebuilt.stats.total_tokens, 121);
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "3"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_replaces_plaintext_v1_storage_and_keeps_only_source_offsets() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_dir = root.join(".codex-token-bar-test-cache");
+    let index_path = index_dir.join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    fs::create_dir_all(&index_dir).unwrap();
+
+    let secret_question = "SECRET_PROMPT_EXACT_INDEX_MUST_NOT_PERSIST_7E2B";
+    let secret_answer = "SECRET_ANSWER_EXACT_INDEX_MUST_NOT_PERSIST_91FC";
+    {
+        let legacy = Connection::open(&index_path).unwrap();
+        legacy
+            .execute_batch(
+                r#"
+                PRAGMA journal_mode = WAL;
+                CREATE TABLE metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                ) WITHOUT ROWID;
+                INSERT INTO metadata(key, value) VALUES ('schema_version', '1');
+                CREATE TABLE legacy_events (
+                    user_prompt TEXT NOT NULL,
+                    assistant_response TEXT NOT NULL
+                );
+                "#,
+            )
+            .unwrap();
+        legacy
+            .execute(
+                "INSERT INTO legacy_events(user_prompt, assistant_response) VALUES (?1, ?2)",
+                rusqlite::params![secret_question, secret_answer],
+            )
+            .unwrap();
+    }
+
+    let user_line = format!(
+        r#"{{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{{"type":"user_message","message":"{secret_question}"}}}}"#
+    );
+    let assistant_line = format!(
+        r#"{{"timestamp":"2026-07-20T01:00:20Z","type":"event_msg","payload":{{"type":"agent_message","message":"{secret_answer}"}}}}"#
+    );
+    write_lines(
+        &session_dir.join("rollout-019eprivacy-0000-0000-0000-offsets.jsonl"),
+        &[
+            user_line.as_str(),
+            assistant_line.as_str(),
+            r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200,"cached_input_tokens":100,"output_tokens":50,"total_tokens":1250}}}}"#,
+        ],
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    assert_eq!(snapshot.cache_usage.turns[0].user_prompt, secret_question);
+    assert_eq!(
+        snapshot.cache_usage.turns[0].assistant_response,
+        secret_answer
+    );
+
+    let connection = Connection::open(&index_path).unwrap();
+    let columns = connection
+        .prepare("PRAGMA table_info(events)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(!columns.iter().any(|column| column == "user_prompt"));
+    assert!(!columns.iter().any(|column| column == "assistant_response"));
+    assert!(columns.iter().any(|column| column == "user_prompt_start"));
+    assert!(columns
+        .iter()
+        .any(|column| column == "assistant_response_end"));
+    connection
+        .execute_batch(
+            r#"
+            PRAGMA journal_mode = WAL;
+            PRAGMA wal_autocheckpoint = 0;
+            INSERT OR REPLACE INTO metadata(key, value) VALUES ('privacy_test_probe', '1');
+            "#,
+        )
+        .unwrap();
+
+    for path in [
+        index_path.clone(),
+        PathBuf::from(format!("{}-wal", index_path.display())),
+        PathBuf::from(format!("{}-shm", index_path.display())),
+    ] {
+        let bytes = fs::read(&path)
+            .unwrap_or_else(|error| panic!("failed to scan {}: {error}", path.display()));
+        assert!(
+            !bytes
+                .windows(secret_question.len())
+                .any(|window| window == secret_question.as_bytes()),
+            "{} retained the prompt plaintext",
+            path.display()
+        );
+        assert!(
+            !bytes
+                .windows(secret_answer.len())
+                .any(|window| window == secret_answer.as_bytes()),
+            "{} retained the answer plaintext",
+            path.display()
+        );
+    }
+    drop(connection);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn exact_index_rejects_a_session_symlink_that_escapes_selected_codex_home() {
+    use std::os::unix::fs::symlink;
+
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let outside_root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    fs::create_dir_all(&outside_root).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019eboundary-valid-0000-0000-0000-home.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    let outside_file = outside_root.join("rollout-019eboundary-outside.jsonl");
+    write_lines(
+        &outside_file,
+        &[
+            r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900,"cached_input_tokens":0,"output_tokens":99,"total_tokens":999}}}}"#,
+        ],
+    );
+    symlink(&outside_file, session_dir.join("escaped-session.jsonl")).unwrap();
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+
+    assert_eq!(snapshot.stats.total_tokens, 120);
+    assert!(snapshot.warnings.iter().any(|warning| {
+        warning.source == "jsonl_scan" && warning.message.contains("Codex Home 外")
+    }));
+
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside_root).unwrap();
+}
+
+#[test]
+fn exact_index_rejects_an_absolute_state_rollout_outside_selected_codex_home() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let outside_root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    fs::create_dir_all(&outside_root).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019estate-valid-0000-0000-0000-home.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    let outside_file = outside_root.join("rollout-019estate-outside.jsonl");
+    write_lines(
+        &outside_file,
+        &[
+            r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900,"cached_input_tokens":0,"output_tokens":99,"total_tokens":999}}}}"#,
+        ],
+    );
+    create_state_database_with_rollout(
+        &root,
+        "019estate-outside-0000-0000-0000-rollout",
+        &outside_file,
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+
+    assert_eq!(snapshot.stats.total_tokens, 120);
+    assert!(snapshot.warnings.iter().any(|warning| {
+        warning.source == "jsonl_scan" && warning.message.contains("Codex Home 外")
+    }));
+
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(outside_root).unwrap();
 }
 
 #[test]
@@ -301,61 +673,6 @@ fn interleaved_cumulative_streams_use_unique_last_usage_snapshots() {
         630_592
     );
     assert_eq!(parsed.previous_total_tokens, Some(2_718_437_623));
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn cached_interleaved_snapshot_dedupe_survives_serialized_restart() {
-    let root = temp_root();
-    let session_dir = root.join("sessions");
-    fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019finterleaved-cache-0000-eeeeffffffff.jsonl");
-    let session_id = "019finterleaved-cache-0000-eeeeffffffff";
-    write_lines(
-        &file,
-        &[
-            r#"{"timestamp":"2026-07-22T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":0,"total_tokens":1000},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
-            r#"{"timestamp":"2026-07-22T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":900,"cached_input_tokens":0,"output_tokens":0,"total_tokens":900},"last_token_usage":{"input_tokens":90,"cached_input_tokens":0,"output_tokens":0,"total_tokens":90}}}}"#,
-        ],
-    );
-
-    let mut files = HashMap::new();
-    let mut cache_changed = false;
-    let mut warnings = Vec::new();
-    let first = parse_session_file_cached(
-        &file,
-        session_id,
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-    assert_eq!(first.iter().map(|event| event.tokens).sum::<u64>(), 190);
-    let serialized = serde_json::to_vec(&files).unwrap();
-    let mut restored: HashMap<String, CachedSessionFile> =
-        serde_json::from_slice(&serialized).unwrap();
-
-    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
-    writeln!(handle, "{}", r#"{"timestamp":"2026-07-22T01:00:20Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":0,"total_tokens":1000},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#).unwrap();
-    writeln!(handle, "{}", r#"{"timestamp":"2026-07-22T01:00:30Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":990,"cached_input_tokens":0,"output_tokens":0,"total_tokens":990},"last_token_usage":{"input_tokens":90,"cached_input_tokens":0,"output_tokens":0,"total_tokens":90}}}}"#).unwrap();
-    drop(handle);
-
-    reset_session_full_parse_count_for_testing();
-    cache_changed = false;
-    let reloaded = parse_session_file_cached(
-        &file,
-        session_id,
-        &mut restored,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-
-    assert_eq!(reloaded.len(), 3);
-    assert_eq!(reloaded.iter().map(|event| event.tokens).sum::<u64>(), 280);
-    assert_eq!(session_full_parse_count_for_testing(), 0);
-    assert!(cache_changed);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -658,22 +975,13 @@ fn dashboard_usage_summary_matches_dashboard_snapshot_metrics() {
 #[test]
 fn dashboard_scan_signature_changes_when_local_date_changes() {
     let root = temp_root();
-    let session_dir = root.join("sessions");
-    fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019edate-0000-0000-0000-signature.jsonl");
-    write_lines(
-        &file,
-        &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
-        ],
-    );
-    let files = vec![file];
+    fs::create_dir_all(&root).unwrap();
     let offset = UtcOffset::from_hms(8, 0, 0).unwrap();
     let before_midnight = OffsetDateTime::parse("2026-06-18T15:59:59Z", &Rfc3339).unwrap();
     let after_midnight = OffsetDateTime::parse("2026-06-18T16:00:01Z", &Rfc3339).unwrap();
 
-    let before = dashboard_scan_signature_at(&root, &files, before_midnight, offset);
-    let after = dashboard_scan_signature_at(&root, &files, after_midnight, offset);
+    let before = dashboard_scan_signature_at(&root, 42, before_midnight, offset);
+    let after = dashboard_scan_signature_at(&root, 42, after_midnight, offset);
 
     assert_ne!(before, after);
     assert_eq!(before.local_date, "2026-06-18");
@@ -898,7 +1206,7 @@ fn dashboard_snapshot_reuses_cached_aggregate_when_session_signatures_are_unchan
 }
 
 #[test]
-fn dashboard_snapshot_cache_ignores_state_database_churn() {
+fn dashboard_snapshot_refreshes_after_thread_metadata_changes() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -931,324 +1239,10 @@ fn dashboard_snapshot_cache_ignores_state_database_churn() {
     assert!(build_count_after_first_load >= 1);
     assert_eq!(
         dashboard_aggregate_build_count_for_testing(&root),
-        build_count_after_first_load
+        build_count_after_first_load + 1
     );
 
     fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_serializes_only_usage_summary() {
-    let mut cache = TokenEventCache::default();
-    cache.homes.insert(
-        "home-a".into(),
-        CachedCodexHome {
-            codex_home: "/tmp/codex-a".into(),
-            files: HashMap::new(),
-        },
-    );
-    cache.homes.get_mut("home-a").unwrap().files.insert(
-        "/tmp/session.jsonl".into(),
-        CachedSessionFile {
-            signature: CachedFileSignature {
-                size: 128,
-                modified_millis: 1_781_715_600_000,
-            },
-            parsed_size: 128,
-            ended_with_newline: true,
-            previous_total_tokens: Some(42),
-            fork_replay_active: false,
-            last_skipped_fork_replay_token_at: None,
-            recent_usage_fingerprints: Vec::new(),
-            events: vec![CachedTokenEvent {
-                timestamp_unix: 1_781_715_600,
-                tokens: 42,
-                input_tokens: 40,
-                cached_input_tokens: 30,
-                output_tokens: 2,
-            }],
-        },
-    );
-
-    let serialized = serde_json::to_string(&cache).unwrap();
-    assert!(serialized.contains("cachedInputTokens"));
-    assert!(!serialized.contains("userPrompt"));
-    assert!(!serialized.contains("assistantResponse"));
-    assert!(!serialized.contains("用户问题"));
-    assert!(!serialized.contains("模型回答"));
-}
-
-#[test]
-fn token_event_cache_persists_sessions_as_sharded_files() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let cache_dir = root.join("token-event-cache-shards");
-    let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
-    let mut cache = TokenEventCache::default();
-    let home_a = root.join("codex-a");
-    let home_b = root.join("codex-b");
-    fs::create_dir_all(&home_a).unwrap();
-    fs::create_dir_all(&home_b).unwrap();
-
-    let key_a = codex_home_cache_key(&home_a);
-    let key_b = codex_home_cache_key(&home_b);
-    cache
-        .home_cache_mut(&key_a, &home_a)
-        .files
-        .insert("sessions/a.jsonl".into(), cached_file_with_one_event(10));
-    cache
-        .home_cache_mut(&key_b, &home_b)
-        .files
-        .insert("sessions/b.jsonl".into(), cached_file_with_one_event(20));
-
-    cache.save().unwrap();
-
-    let shard_files = json_files_under(&cache_dir);
-    assert_eq!(shard_files.len(), 2);
-    assert!(shard_files.iter().all(|path| path.starts_with(&cache_dir)));
-    assert!(shard_files.iter().all(|path| {
-        path.file_name()
-            .and_then(|value| value.to_str())
-            .is_some_and(|name| name.ends_with(".json") && name != "token-events-cache-v2.json")
-    }));
-
-    let mut warnings = Vec::new();
-    let loaded = TokenEventCache::load(&mut warnings);
-    assert!(warnings.is_empty());
-    assert_eq!(loaded.homes.get(&key_a).unwrap().files.len(), 1);
-    assert_eq!(loaded.homes.get(&key_b).unwrap().files.len(), 1);
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[cfg(any(unix, windows))]
-#[test]
-fn token_event_cache_cross_process_lock_is_non_blocking_when_busy() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let _cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
-    let first = TokenEventCache::acquire_io_lock().unwrap().unwrap();
-    let started = std::time::Instant::now();
-    let second = TokenEventCache::acquire_io_lock();
-
-    assert!(second.is_err());
-    assert!(started.elapsed() < StdDuration::from_secs(1));
-    drop(first);
-    assert!(TokenEventCache::acquire_io_lock().unwrap().is_some());
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_ignores_previous_shard_versions() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let cache_dir = root.join("token-event-cache-shards");
-    let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
-    let home = root.join("codex-home");
-    fs::create_dir_all(cache_dir.join("home-a")).unwrap();
-    fs::create_dir_all(&home).unwrap();
-    fs::write(
-        cache_dir.join("home-a").join("old.json"),
-        serde_json::json!({
-            "version": 4,
-            "homeKey": "home-a",
-            "codexHome": home.to_string_lossy(),
-            "cacheKey": "sessions/old.jsonl",
-            "session": cached_file_with_one_event(20),
-        })
-        .to_string(),
-    )
-    .unwrap();
-
-    let mut warnings = Vec::new();
-    let loaded = TokenEventCache::load(&mut warnings);
-
-    assert!(warnings.is_empty());
-    assert!(loaded.homes.is_empty());
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_reparses_pre_grace_window_version_seven_shard() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let cache_dir = root.join("token-event-cache-shards");
-    let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
-    let session_dir = root.join("sessions");
-    fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019efork-stale-v7-cache.jsonl");
-    write_lines(
-        &file,
-        &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
-            r#"{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":400,"cached_input_tokens":0,"output_tokens":100,"total_tokens":500},"last_token_usage":{"input_tokens":400,"cached_input_tokens":0,"output_tokens":100,"total_tokens":500}}}}"#,
-            r#"{"timestamp":"2026-06-18T01:10:00Z","type":"event_msg","payload":{"type":"user_message","message":"新分支问题"}}"#,
-            r#"{"timestamp":"2026-06-18T01:11:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":120,"total_tokens":620},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120}}}}"#,
-        ],
-    );
-
-    let signature = super::token_event_cache::file_signature(&file).unwrap();
-    let home_key = codex_home_cache_key(&root);
-    let cache_key = super::token_event_cache::file_cache_key(&root, &file);
-    fs::create_dir_all(cache_dir.join(&home_key)).unwrap();
-    fs::write(
-        cache_dir.join(&home_key).join("stale-v7.json"),
-        serde_json::json!({
-            "version": 7,
-            "homeKey": home_key,
-            "codexHome": root.to_string_lossy(),
-            "cacheKey": cache_key,
-            "session": {
-                "signature": signature,
-                "parsedSize": signature.size,
-                "endedWithNewline": true,
-                "previousTotalTokens": 620,
-                "forkReplayActive": false,
-                "lastSkippedForkReplayTokenAt": null,
-                "events": [{
-                    "timestampUnix": 1_781_716_260,
-                    "tokens": 620,
-                    "inputTokens": 500,
-                    "cachedInputTokens": 0,
-                    "outputTokens": 120
-                }]
-            }
-        })
-        .to_string(),
-    )
-    .unwrap();
-
-    reset_session_full_parse_count_for_testing();
-    let mut warnings = Vec::new();
-    let events = load_token_events_from_files(&root, vec![file.clone()], &mut warnings).unwrap();
-
-    assert_eq!(events.iter().map(|event| event.tokens).sum::<u64>(), 120);
-    assert_eq!(session_full_parse_count_for_testing(), 1);
-    assert!(json_files_under(&cache_dir)
-        .iter()
-        .filter_map(|path| fs::read_to_string(path).ok())
-        .any(|text| text.contains(r#""version":11"#) && text.contains(r#""tokens":120"#)));
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_removes_deleted_session_shards() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let cache_dir = root.join("token-event-cache-shards");
-    let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
-    let home = root.join("codex-home");
-    fs::create_dir_all(&home).unwrap();
-    let home_key = codex_home_cache_key(&home);
-    let mut cache = TokenEventCache::default();
-    {
-        let home_cache = cache.home_cache_mut(&home_key, &home);
-        home_cache
-            .files
-            .insert("sessions/a.jsonl".into(), cached_file_with_one_event(10));
-        home_cache
-            .files
-            .insert("sessions/b.jsonl".into(), cached_file_with_one_event(20));
-    }
-    cache.save().unwrap();
-    assert_eq!(json_files_under(&cache_dir).len(), 2);
-
-    let mut seen = HashSet::new();
-    seen.insert("sessions/a.jsonl".into());
-    assert!(cache.home_cache_mut(&home_key, &home).retain_seen(&seen));
-    cache.save().unwrap();
-
-    let shard_files = json_files_under(&cache_dir);
-    assert_eq!(shard_files.len(), 1);
-    let shard_text = fs::read_to_string(&shard_files[0]).unwrap();
-    assert!(shard_text.contains("sessions/a.jsonl"));
-    assert!(!shard_text.contains("sessions/b.jsonl"));
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_updates_only_dirty_shards_without_replacing_the_directory() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let cache_dir = root.join("token-event-cache-shards");
-    let _cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
-    let home = root.join("codex-home");
-    fs::create_dir_all(&home).unwrap();
-    let home_key = codex_home_cache_key(&home);
-    let mut cache = TokenEventCache::default();
-    {
-        let home_cache = cache.home_cache_mut(&home_key, &home);
-        home_cache
-            .files
-            .insert("sessions/a.jsonl".into(), cached_file_with_one_event(10));
-        home_cache
-            .files
-            .insert("sessions/b.jsonl".into(), cached_file_with_one_event(20));
-    }
-    cache.save().unwrap();
-    let marker = cache_dir.join("directory-owner-marker");
-    fs::write(&marker, b"must survive incremental save").unwrap();
-    let before = json_files_under(&cache_dir)
-        .into_iter()
-        .map(|path| (path.clone(), fs::read(path).unwrap()))
-        .collect::<HashMap<_, _>>();
-
-    cache
-        .home_cache_mut(&home_key, &home)
-        .files
-        .insert("sessions/a.jsonl".into(), cached_file_with_one_event(30));
-    let dirty = HashSet::from([(home_key.clone(), "sessions/a.jsonl".to_string())]);
-    cache.save_changes(&dirty, &HashSet::new()).unwrap();
-
-    let throttled = json_files_under(&cache_dir)
-        .into_iter()
-        .map(|path| (path.clone(), fs::read(path).unwrap()))
-        .collect::<HashMap<_, _>>();
-    assert_eq!(
-        before, throttled,
-        "a fresh active shard must wait for its checkpoint"
-    );
-    for path in json_files_under(&cache_dir) {
-        age_file(&path, StdDuration::from_secs(16 * 60));
-    }
-    cache.save_changes(&dirty, &HashSet::new()).unwrap();
-
-    assert_eq!(fs::read(&marker).unwrap(), b"must survive incremental save");
-    let after = json_files_under(&cache_dir)
-        .into_iter()
-        .map(|path| (path.clone(), fs::read(path).unwrap()))
-        .collect::<HashMap<_, _>>();
-    assert_eq!(before.len(), after.len());
-    assert_eq!(
-        before
-            .values()
-            .filter(|bytes| after.values().any(|other| other == *bytes))
-            .count(),
-        1,
-        "exactly one untouched shard should remain byte-identical"
-    );
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_adapts_checkpoint_interval_to_bound_large_shard_writes() {
-    assert_eq!(
-        super::token_event_cache::shard_checkpoint_interval(1024 * 1024),
-        StdDuration::from_secs(15 * 60)
-    );
-    assert_eq!(
-        super::token_event_cache::shard_checkpoint_interval(16 * 1024 * 1024),
-        StdDuration::from_secs(90 * 60)
-    );
-    assert_eq!(
-        super::token_event_cache::shard_checkpoint_interval(256 * 1024 * 1024),
-        StdDuration::from_secs(24 * 60 * 60)
-    );
 }
 
 #[test]
@@ -1286,12 +1280,11 @@ fn dashboard_aggregate_cache_does_not_persist_conversation_text() {
 }
 
 #[test]
-fn dashboard_aggregate_persists_a_bounded_startup_snapshot_then_rebuilds_full_details() {
+fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_details() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("dashboard-aggregate.json");
     let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
-    let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
     write_lines(
@@ -1313,7 +1306,7 @@ fn dashboard_aggregate_persists_a_bounded_startup_snapshot_then_rebuilds_full_de
         persisted.len()
     );
     let json: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
-    assert_eq!(json["version"], 15);
+    assert_eq!(json["version"], 16);
     assert_eq!(
         json["snapshot"]["recentUsage24h"].as_array().unwrap().len(),
         0
@@ -1384,12 +1377,11 @@ fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
 }
 
 #[test]
-fn usage_summary_rejects_v11_and_reuses_rebuilt_v15_dashboard_aggregate() {
+fn usage_summary_rejects_v11_and_reuses_rebuilt_v16_dashboard_aggregate() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("token-aggregate-cache.json");
     let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
-    let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
     let file = session_dir.join("rollout-019eaggregate-stale-v11-cache.jsonl");
@@ -1399,7 +1391,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v15_dashboard_aggregate() {
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
         ],
     );
-    let signature = dashboard_scan_signature(&root, &[file]);
+    let signature = dashboard_index_signature(&root, 0);
     fs::write(
         &cache_path,
         serde_json::json!({
@@ -1421,7 +1413,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v15_dashboard_aggregate() {
     assert_eq!(summary.total_tokens, 120);
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""version":15"#));
+    assert!(aggregate_cache_text().contains(r#""version":16"#));
     assert!(aggregate_cache_text().contains(r#""totalTokens":120"#));
 
     reset_dashboard_aggregate_build_count_for_testing();
@@ -1430,7 +1422,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v15_dashboard_aggregate() {
     assert_eq!(
         dashboard_aggregate_build_count_for_testing(&root),
         0,
-        "current v15 aggregate should be reused after memory state is cleared"
+        "current v16 aggregate should be reused after memory state is cleared"
     );
 
     fs::remove_dir_all(root).unwrap();
@@ -1441,7 +1433,6 @@ fn cached_usage_summary_is_scoped_to_codex_home() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
-    let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
     let home_a = root.join("codex-a");
     let home_b = root.join("codex-b");
     let session_dir_a = home_a.join("sessions");
@@ -1493,7 +1484,7 @@ fn cached_usage_summary_scope_rejects_date_and_offset_changes() {
     let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
     let now = OffsetDateTime::from_unix_timestamp(1_781_715_600).unwrap();
     let offset = UtcOffset::from_hms(8, 0, 0).unwrap();
-    let signature = dashboard_scan_signature_at(&root, &[], now, offset);
+    let signature = dashboard_scan_signature_at(&root, 0, now, offset);
     store_dashboard_aggregate(
         signature,
         None,
@@ -1527,7 +1518,6 @@ fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
-    let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
     let active_dir = root.join("active-rollouts");
     fs::create_dir_all(&active_dir).unwrap();
     let rollout_path = active_dir.join("rollout-019efork-active-0000-0000-cache.jsonl");
@@ -1601,7 +1591,7 @@ fn dashboard_aggregate_cache_save_does_not_clobber_existing_temp_file() {
     fs::write(&legacy_temp_path, "other save").unwrap();
     let signature = dashboard_scan_signature_at(
         &root,
-        &[],
+        0,
         OffsetDateTime::from_unix_timestamp(1_781_715_600).unwrap(),
         UtcOffset::UTC,
     );
@@ -1652,14 +1642,8 @@ fn dashboard_aggregate_checkpoints_active_signature_changes_at_most_every_fiftee
     let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
     fs::create_dir_all(&root).unwrap();
     let now = OffsetDateTime::from_unix_timestamp(1_781_715_600).unwrap();
-    let mut first_signature = dashboard_scan_signature_at(&root, &[], now, UtcOffset::UTC);
-    first_signature.session_files.push(SessionFileSignature {
-        cache_key: "active.jsonl".into(),
-        signature: CachedFileSignature {
-            size: 100,
-            modified_millis: 1,
-        },
-    });
+    let mut first_signature = dashboard_scan_signature_at(&root, 0, now, UtcOffset::UTC);
+    first_signature.index_revision = 100;
     store_dashboard_aggregate(
         first_signature.clone(),
         None,
@@ -1679,8 +1663,7 @@ fn dashboard_aggregate_checkpoints_active_signature_changes_at_most_every_fiftee
     ));
 
     let mut active_signature = first_signature;
-    active_signature.session_files[0].signature.size = 110;
-    active_signature.session_files[0].signature.modified_millis = 2;
+    active_signature.index_revision = 110;
     age_file(&cache_path, StdDuration::from_secs(30));
     store_dashboard_aggregate(
         active_signature.clone(),
@@ -1815,7 +1798,6 @@ fn usage_summary_snapshot_cache_miss_schedules_one_background_build() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
-    let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
     write_lines(
@@ -1826,673 +1808,22 @@ fn usage_summary_snapshot_cache_miss_schedules_one_background_build() {
     );
 
     reset_dashboard_aggregate_build_count_for_testing();
-    assert!(usage_summary_snapshot(&root).is_err());
-    assert!(usage_summary_snapshot(&root).is_err());
-    assert!(usage_summary_snapshot(&root).is_err());
+    let _ = usage_summary_snapshot(&root);
+    let _ = usage_summary_snapshot(&root);
+    let _ = usage_summary_snapshot(&root);
 
     for _ in 0..100 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         if let Ok(summary) = usage_summary_snapshot(&root) {
             assert_eq!(summary.total_tokens, 120);
             assert_eq!(dashboard_aggregate_build_count_for_testing(&root), 1);
+            wait_for_usage_summary_refreshes_for_testing();
             fs::remove_dir_all(root).unwrap();
             return;
         }
     }
 
     panic!("usage summary background build did not finish");
-}
-
-#[test]
-fn token_event_cache_partitions_entries_by_codex_home() {
-    let root = temp_root();
-    let home_a = root.join("codex-a");
-    let home_b = root.join("codex-b");
-    fs::create_dir_all(&home_a).unwrap();
-    fs::create_dir_all(&home_b).unwrap();
-
-    let key_a = codex_home_cache_key(&home_a);
-    let key_b = codex_home_cache_key(&home_b);
-    let mut cache = TokenEventCache::default();
-
-    cache
-        .home_cache_mut(&key_a, &home_a)
-        .files
-        .insert("sessions/a.jsonl".into(), cached_file_with_one_event(10));
-    cache
-        .home_cache_mut(&key_b, &home_b)
-        .files
-        .insert("sessions/b.jsonl".into(), cached_file_with_one_event(20));
-
-    let mut seen = HashSet::new();
-    seen.insert("sessions/a.jsonl".into());
-    assert!(!cache.home_cache_mut(&key_a, &home_a).retain_seen(&seen));
-
-    assert_eq!(cache.homes.get(&key_a).unwrap().files.len(), 1);
-    assert_eq!(cache.homes.get(&key_b).unwrap().files.len(), 1);
-    assert!(cache
-        .homes
-        .get(&key_b)
-        .unwrap()
-        .files
-        .contains_key("sessions/b.jsonl"));
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_reads_only_appended_session_bytes() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let session_dir = root.join("sessions");
-    fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019eappend-0000-0000-0000-cache.jsonl");
-    write_lines(
-        &file,
-        &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
-        ],
-    );
-
-    let mut warnings = Vec::new();
-    let mut files = HashMap::new();
-    let mut cache_changed = false;
-    reset_session_full_parse_count_for_testing();
-
-    let first = parse_session_file_cached(
-        &file,
-        "019eappend-0000-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-    let full_parses_after_first = session_full_parse_count_for_testing();
-
-    {
-        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
-        writeln!(
-            handle,
-            r#"{{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170}},"last_token_usage":{{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}}}}}"#
-        )
-        .unwrap();
-    }
-
-    let second = parse_session_file_cached(
-        &file,
-        "019eappend-0000-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-
-    assert_eq!(first.iter().map(|event| event.tokens).sum::<u64>(), 120);
-    assert_eq!(second.iter().map(|event| event.tokens).sum::<u64>(), 170);
-    assert_eq!(full_parses_after_first, 1);
-    assert_eq!(
-        session_full_parse_count_for_testing(),
-        full_parses_after_first
-    );
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_counts_incremental_append_after_fork_replay_ended() {
-    let root = temp_root();
-    let session_dir = root.join("sessions");
-    fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019efork-append-0000-0000-cache.jsonl");
-    write_lines(
-        &file,
-        &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"父会话复制问题"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120}}}}"#,
-            r#"{"timestamp":"2026-06-18T01:10:00Z","type":"event_msg","payload":{"type":"user_message","message":"新分支问题"}}"#,
-            r#"{"timestamp":"2026-06-18T01:11:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":180,"cached_input_tokens":10,"output_tokens":30,"total_tokens":200},"last_token_usage":{"input_tokens":80,"cached_input_tokens":10,"output_tokens":10,"total_tokens":80}}}}"#,
-        ],
-    );
-
-    let mut warnings = Vec::new();
-    let mut files = HashMap::new();
-    let mut cache_changed = false;
-
-    let first = parse_session_file_cached(
-        &file,
-        "019efork-append-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-
-    {
-        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
-        writeln!(
-            handle,
-            r#"{{"timestamp":"2026-06-18T01:12:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":250,"cached_input_tokens":20,"output_tokens":50,"total_tokens":300}},"last_token_usage":{{"input_tokens":70,"cached_input_tokens":10,"output_tokens":20,"total_tokens":100}}}}}}}}"#
-        )
-        .unwrap();
-    }
-
-    let second = parse_session_file_cached(
-        &file,
-        "019efork-append-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-
-    assert_eq!(first.iter().map(|event| event.tokens).sum::<u64>(), 80);
-    assert_eq!(second.iter().map(|event| event.tokens).sum::<u64>(), 180);
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_round_trips_fork_replay_state_before_incremental_append() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let _event_cache_env = TokenEventCacheEnvGuard::new(&root.join("event-cache"));
-    let session_dir = root.join("sessions");
-    fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019efork-roundtrip-0000-cache.jsonl");
-    write_lines(
-        &file,
-        &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120}}}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:13Z","type":"event_msg","payload":{"type":"user_message","message":"新分支问题"}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:14Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":10,"output_tokens":30,"total_tokens":190},"last_token_usage":{"input_tokens":60,"cached_input_tokens":10,"output_tokens":10,"total_tokens":70}}}}"#,
-        ],
-    );
-
-    let mut warnings = Vec::new();
-    let first = load_token_events_from_files(&root, vec![file.clone()], &mut warnings).unwrap();
-    assert_eq!(first.iter().map(|event| event.tokens).sum::<u64>(), 70);
-
-    let mut loaded_warnings = Vec::new();
-    let loaded_cache = TokenEventCache::load(&mut loaded_warnings);
-    let home_key = codex_home_cache_key(&root);
-    let cache_key = super::token_event_cache::file_cache_key(&root, &file);
-    let cached = loaded_cache
-        .homes
-        .get(&home_key)
-        .and_then(|home| home.files.get(&cache_key))
-        .expect("first parse should save a fork replay cache shard");
-    assert!(!cached.fork_replay_active);
-    assert_eq!(cached.previous_total_tokens, Some(190));
-
-    {
-        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
-        writeln!(
-            handle,
-            r#"{{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":240,"cached_input_tokens":20,"output_tokens":50,"total_tokens":290}},"last_token_usage":{{"input_tokens":80,"cached_input_tokens":10,"output_tokens":20,"total_tokens":100}}}}}}}}"#
-        )
-        .unwrap();
-    }
-
-    let mut append_warnings = Vec::new();
-    let second = load_token_events_from_files(&root, vec![file.clone()], &mut append_warnings).unwrap();
-    assert_eq!(second.iter().map(|event| event.tokens).sum::<u64>(), 170);
-    assert_eq!(second.len(), 2);
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_save_does_not_remove_existing_in_flight_temp_directory() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let cache_dir = root.join("event-cache");
-    let _event_cache_env = TokenEventCacheEnvGuard::new(&cache_dir);
-    let legacy_temp_dir = cache_dir.with_extension("tmp");
-    fs::create_dir_all(&legacy_temp_dir).unwrap();
-    let marker = legacy_temp_dir.join("other-save-marker");
-    fs::write(&marker, "do not remove").unwrap();
-
-    let mut cache = TokenEventCache::default();
-    let home = root.join("codex-home");
-    fs::create_dir_all(&home).unwrap();
-    let home_key = codex_home_cache_key(&home);
-    cache
-        .home_cache_mut(&home_key, &home)
-        .files
-        .insert("sessions/a.jsonl".into(), cached_file_with_one_event(10));
-
-    cache.save().unwrap();
-
-    assert!(
-        marker.exists(),
-        "cache save must use a unique temp path instead of deleting another in-flight temp dir"
-    );
-    assert!(!json_files_under(&cache_dir).is_empty());
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_reparses_legacy_entries_without_parsed_size() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let session_dir = root.join("sessions");
-    fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019elegacy-0000-0000-0000-cache.jsonl");
-    write_lines(
-        &file,
-        &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
-        ],
-    );
-    {
-        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
-        writeln!(
-            handle,
-            r#"{{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170}},"last_token_usage":{{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}}}}}"#
-        )
-        .unwrap();
-    }
-
-    let full_signature = super::token_event_cache::file_signature(&file).unwrap();
-    let cache_key = super::token_event_cache::file_cache_key(&root, &file);
-    let mut files = HashMap::new();
-    files.insert(
-        cache_key,
-        CachedSessionFile {
-            signature: full_signature,
-            parsed_size: 0,
-            ended_with_newline: true,
-            previous_total_tokens: None,
-            fork_replay_active: false,
-            last_skipped_fork_replay_token_at: None,
-            recent_usage_fingerprints: Vec::new(),
-            events: vec![CachedTokenEvent {
-                timestamp_unix: 1_781_715_600,
-                tokens: 120,
-                input_tokens: 100,
-                cached_input_tokens: 20,
-                output_tokens: 20,
-            }],
-        },
-    );
-
-    let mut warnings = Vec::new();
-    let mut cache_changed = false;
-    reset_session_full_parse_count_for_testing();
-    let events = parse_session_file_cached(
-        &file,
-        "019elegacy-0000-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-
-    assert_eq!(events.iter().map(|event| event.tokens).sum::<u64>(), 170);
-    assert_eq!(session_full_parse_count_for_testing(), 1);
-    assert!(cache_changed);
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_reads_tail_when_signature_matches_but_parsed_size_lags() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let session_dir = root.join("sessions");
-    fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019elagging-0000-0000-0000-cache.jsonl");
-    let first_line = r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
-    let second_line = r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170},"last_token_usage":{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}"#;
-    write_lines(&file, &[first_line, second_line]);
-
-    let full_signature = super::token_event_cache::file_signature(&file).unwrap();
-    let parsed_size = (first_line.len() + 1) as u64;
-    let cache_key = super::token_event_cache::file_cache_key(&root, &file);
-    let first_timestamp = OffsetDateTime::parse("2026-06-18T01:00:00Z", &Rfc3339)
-        .unwrap()
-        .unix_timestamp();
-    let mut files = HashMap::new();
-    files.insert(
-        cache_key.clone(),
-        CachedSessionFile {
-            signature: full_signature,
-            parsed_size,
-            ended_with_newline: true,
-            previous_total_tokens: Some(120),
-            fork_replay_active: false,
-            last_skipped_fork_replay_token_at: None,
-            recent_usage_fingerprints: Vec::new(),
-            events: vec![CachedTokenEvent {
-                timestamp_unix: first_timestamp,
-                tokens: 120,
-                input_tokens: 100,
-                cached_input_tokens: 20,
-                output_tokens: 20,
-            }],
-        },
-    );
-
-    let mut warnings = Vec::new();
-    let mut cache_changed = false;
-    reset_session_full_parse_count_for_testing();
-    let events = parse_session_file_cached(
-        &file,
-        "019elagging-0000-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-
-    assert_eq!(events.iter().map(|event| event.tokens).sum::<u64>(), 170);
-    assert_eq!(session_full_parse_count_for_testing(), 0);
-    assert!(cache_changed);
-    let updated = files.get(&cache_key).unwrap();
-    assert_eq!(updated.parsed_size, fs::metadata(&file).unwrap().len());
-    assert_eq!(updated.events.len(), 2);
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_advances_offset_past_zero_delta_lines() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let session_dir = root.join("sessions");
-    fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019ezero-0000-0000-0000-cache.jsonl");
-    let first_line = r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
-    let zero_line = r#"{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"total_tokens":0}}}}"#;
-    let second_line = r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170},"last_token_usage":{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}"#;
-    write_lines(&file, &[first_line, zero_line]);
-
-    let mut warnings = Vec::new();
-    let mut files = HashMap::new();
-    let mut cache_changed = false;
-    reset_session_full_parse_count_for_testing();
-    let first = parse_session_file_cached(
-        &file,
-        "019ezero-0000-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-    assert_eq!(first.iter().map(|event| event.tokens).sum::<u64>(), 120);
-    let cache_key = super::token_event_cache::file_cache_key(&root, &file);
-    let parsed_size_after_zero = files.get(&cache_key).unwrap().parsed_size;
-    assert_eq!(parsed_size_after_zero, fs::metadata(&file).unwrap().len());
-
-    {
-        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
-        writeln!(handle, "{second_line}").unwrap();
-    }
-    let second = parse_session_file_cached(
-        &file,
-        "019ezero-0000-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-
-    assert_eq!(second.iter().map(|event| event.tokens).sum::<u64>(), 170);
-    assert_eq!(session_full_parse_count_for_testing(), 1);
-    assert_eq!(files.get(&cache_key).unwrap().events.len(), 2);
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_reparses_implausible_cached_event_even_when_signature_matches() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let session_dir = root.join("sessions");
-    fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019eimplausible-0000-0000-0000-cache.jsonl");
-    write_lines(
-        &file,
-        &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
-            r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170},"last_token_usage":{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}"#,
-        ],
-    );
-    let signature = super::token_event_cache::file_signature(&file).unwrap();
-    let cache_key = super::token_event_cache::file_cache_key(&root, &file);
-    let first_timestamp = OffsetDateTime::parse("2026-06-18T01:00:00Z", &Rfc3339)
-        .unwrap()
-        .unix_timestamp();
-    let mut files = HashMap::new();
-    files.insert(
-        cache_key,
-        CachedSessionFile {
-            signature,
-            parsed_size: fs::metadata(&file).unwrap().len(),
-            ended_with_newline: true,
-            previous_total_tokens: Some(170),
-            fork_replay_active: false,
-            last_skipped_fork_replay_token_at: None,
-            recent_usage_fingerprints: Vec::new(),
-            events: vec![CachedTokenEvent {
-                timestamp_unix: first_timestamp,
-                tokens: 605_109_263,
-                input_tokens: 155_979,
-                cached_input_tokens: 141_184,
-                output_tokens: 806,
-            }],
-        },
-    );
-
-    let mut warnings = Vec::new();
-    let mut cache_changed = false;
-    reset_session_full_parse_count_for_testing();
-    let events = parse_session_file_cached(
-        &file,
-        "019eimplausible-0000-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-
-    assert_eq!(events.iter().map(|event| event.tokens).sum::<u64>(), 170);
-    assert_eq!(session_full_parse_count_for_testing(), 1);
-    assert!(cache_changed);
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_reparses_when_incremental_range_overlaps_cached_events() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let session_dir = root.join("sessions");
-    fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019eoverlap-0000-0000-0000-cache.jsonl");
-    let first_line = r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
-    let second_line = r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170},"last_token_usage":{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}"#;
-    write_lines(&file, &[first_line]);
-    let first_signature = super::token_event_cache::file_signature(&file).unwrap();
-    let first_size = first_signature.size;
-    {
-        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
-        writeln!(handle, "{second_line}").unwrap();
-    }
-    let cache_key = super::token_event_cache::file_cache_key(&root, &file);
-    let first_timestamp = OffsetDateTime::parse("2026-06-18T01:00:00Z", &Rfc3339)
-        .unwrap()
-        .unix_timestamp();
-    let second_timestamp = OffsetDateTime::parse("2026-06-18T01:05:00Z", &Rfc3339)
-        .unwrap()
-        .unix_timestamp();
-    let mut files = HashMap::new();
-    files.insert(
-        cache_key,
-        CachedSessionFile {
-            signature: first_signature,
-            parsed_size: first_size,
-            ended_with_newline: true,
-            previous_total_tokens: Some(120),
-            fork_replay_active: false,
-            last_skipped_fork_replay_token_at: None,
-            recent_usage_fingerprints: Vec::new(),
-            events: vec![
-                CachedTokenEvent {
-                    timestamp_unix: first_timestamp,
-                    tokens: 120,
-                    input_tokens: 100,
-                    cached_input_tokens: 20,
-                    output_tokens: 20,
-                },
-                CachedTokenEvent {
-                    timestamp_unix: second_timestamp,
-                    tokens: 50,
-                    input_tokens: 40,
-                    cached_input_tokens: 20,
-                    output_tokens: 10,
-                },
-            ],
-        },
-    );
-
-    let mut warnings = Vec::new();
-    let mut cache_changed = false;
-    reset_session_full_parse_count_for_testing();
-    let events = parse_session_file_cached(
-        &file,
-        "019eoverlap-0000-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-
-    assert_eq!(events.iter().map(|event| event.tokens).sum::<u64>(), 170);
-    assert_eq!(session_full_parse_count_for_testing(), 1);
-    assert!(cache_changed);
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_keeps_incomplete_appended_line_unconsumed() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let session_dir = root.join("sessions");
-    fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019epartial-0000-0000-0000-cache.jsonl");
-    write_lines(
-        &file,
-        &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
-        ],
-    );
-
-    let mut warnings = Vec::new();
-    let mut files = HashMap::new();
-    let mut cache_changed = false;
-    reset_session_full_parse_count_for_testing();
-    let _ = parse_session_file_cached(
-        &file,
-        "019epartial-0000-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-
-    {
-        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
-        write!(
-            handle,
-            r#"{{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":140,"cached_input_tokens":40"#
-        )
-        .unwrap();
-    }
-    let unchanged = parse_session_file_cached(
-        &file,
-        "019epartial-0000-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-    assert_eq!(unchanged.iter().map(|event| event.tokens).sum::<u64>(), 120);
-
-    {
-        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
-        writeln!(
-            handle,
-            r#","output_tokens":30,"total_tokens":170}},"last_token_usage":{{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}}}}}"#
-        )
-        .unwrap();
-    }
-    let completed = parse_session_file_cached(
-        &file,
-        "019epartial-0000-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-
-    assert_eq!(completed.iter().map(|event| event.tokens).sum::<u64>(), 170);
-    assert_eq!(session_full_parse_count_for_testing(), 1);
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn token_event_cache_reparses_truncated_session_file() {
-    let _test_state = app_paths::app_path_test_env_guard(&[]);
-    let root = temp_root();
-    let session_dir = root.join("sessions");
-    fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019etruncate-0000-0000-0000-cache.jsonl");
-    write_lines(
-        &file,
-        &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
-            r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":140,"cached_input_tokens":40,"output_tokens":30,"total_tokens":170},"last_token_usage":{"input_tokens":40,"cached_input_tokens":20,"output_tokens":10,"total_tokens":50}}}}"#,
-        ],
-    );
-
-    let mut warnings = Vec::new();
-    let mut files = HashMap::new();
-    let mut cache_changed = false;
-    reset_session_full_parse_count_for_testing();
-    let first = parse_session_file_cached(
-        &file,
-        "019etruncate-0000-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-    write_lines(
-        &file,
-        &[
-            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":70,"cached_input_tokens":10,"output_tokens":20,"total_tokens":90}}}}"#,
-        ],
-    );
-    let second = parse_session_file_cached(
-        &file,
-        "019etruncate-0000-0000-0000-cache",
-        &mut files,
-        &mut cache_changed,
-        &root,
-        &mut warnings,
-    );
-
-    assert_eq!(first.iter().map(|event| event.tokens).sum::<u64>(), 170);
-    assert_eq!(second.iter().map(|event| event.tokens).sum::<u64>(), 90);
-    assert_eq!(session_full_parse_count_for_testing(), 2);
-
-    fs::remove_dir_all(root).unwrap();
 }
 
 fn temp_root() -> PathBuf {
@@ -2545,56 +1876,10 @@ impl Drop for AggregateCacheEnvGuard {
     }
 }
 
-struct TokenEventCacheEnvGuard {
-    original: Option<std::ffi::OsString>,
-}
-
-impl TokenEventCacheEnvGuard {
-    fn new(path: &Path) -> Self {
-        let _ = fs::remove_dir_all(path);
-        let original = std::env::var_os("CODEX_TOKEN_BAR_EVENT_CACHE_DIR");
-        std::env::set_var("CODEX_TOKEN_BAR_EVENT_CACHE_DIR", path);
-        Self { original }
-    }
-}
-
-impl Drop for TokenEventCacheEnvGuard {
-    fn drop(&mut self) {
-        match &self.original {
-            Some(value) => std::env::set_var("CODEX_TOKEN_BAR_EVENT_CACHE_DIR", value),
-            None => std::env::remove_var("CODEX_TOKEN_BAR_EVENT_CACHE_DIR"),
-        }
-    }
-}
-
 fn aggregate_cache_text() -> String {
     app_paths::token_aggregate_cache_path()
         .and_then(|path| fs::read_to_string(path).ok())
         .unwrap_or_default()
-}
-
-fn json_files_under(root: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    collect_json_files(root, &mut files);
-    files.sort();
-    files
-}
-
-fn collect_json_files(root: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_json_files(&path, files);
-        } else if path
-            .extension()
-            .is_some_and(|extension| extension == "json")
-        {
-            files.push(path);
-        }
-    }
 }
 
 fn create_state_database(root: &Path, low_id: &str, high_id: &str) {
@@ -2663,26 +1948,4 @@ fn create_state_database_with_rollout_source(
             rusqlite::params![thread_id, rollout_path.to_string_lossy(), thread_source],
         )
         .unwrap();
-}
-
-fn cached_file_with_one_event(tokens: u64) -> CachedSessionFile {
-    CachedSessionFile {
-        signature: CachedFileSignature {
-            size: tokens,
-            modified_millis: 1_781_715_600_000,
-        },
-        parsed_size: tokens,
-        ended_with_newline: true,
-        previous_total_tokens: Some(tokens),
-        fork_replay_active: false,
-        last_skipped_fork_replay_token_at: None,
-        recent_usage_fingerprints: Vec::new(),
-        events: vec![CachedTokenEvent {
-            timestamp_unix: 1_781_715_600,
-            tokens,
-            input_tokens: tokens,
-            cached_input_tokens: tokens / 2,
-            output_tokens: 0,
-        }],
-    }
 }
