@@ -881,6 +881,7 @@ fn exact_index_cold_scan_resumes_committed_files_without_publishing_partial_tota
         2
     );
     drop(connection);
+    drop(resumed);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -942,6 +943,7 @@ fn exact_index_interrupted_refresh_keeps_the_previous_complete_revision_and_aggr
             .total_tokens,
         151
     );
+    drop(interrupted);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -980,6 +982,7 @@ fn exact_index_rolls_back_when_the_scanned_prefix_is_rewritten() {
             .total_tokens,
         120
     );
+    drop(index);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1064,6 +1067,7 @@ fn exact_index_quick_check_recovers_a_corrupt_database_by_rebuilding() {
             .unwrap(),
         "5"
     );
+    drop(connection);
 
     fs::remove_dir_all(root).unwrap();
 }
