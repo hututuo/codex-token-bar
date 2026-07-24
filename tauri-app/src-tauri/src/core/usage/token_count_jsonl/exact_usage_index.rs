@@ -55,7 +55,7 @@ struct ManagedIndexConnection {
 }
 
 impl ManagedIndexConnection {
-    fn new(connection: Connection, path: PathBuf) -> Self {
+    fn from_registered(connection: Connection, path: PathBuf) -> Self {
         Self {
             connection: Some(connection),
             path,
@@ -83,8 +83,12 @@ impl DerefMut for ManagedIndexConnection {
 
 impl Drop for ManagedIndexConnection {
     fn drop(&mut self) {
+        let states = index_integrity_states();
+        let mut states = states
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         drop(self.connection.take());
-        record_index_integrity_signature(&self.path);
+        finish_index_connection(&mut states, &self.path);
     }
 }
 
@@ -117,6 +121,12 @@ struct FileSignature {
 struct IndexStorageSignature {
     database: FileSignature,
     wal: Option<FileSignature>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct IndexIntegrityState {
+    signature: IndexStorageSignature,
+    active_connections: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -189,9 +199,8 @@ static STAGE_PEAK_WORKERS: AtomicUsize = AtomicUsize::new(0);
 static STAGE_DELAY_MILLISECONDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static QUICK_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
-static INDEX_INTEGRITY_SIGNATURES: OnceLock<
-    Mutex<HashMap<PathBuf, IndexStorageSignature>>,
-> = OnceLock::new();
+static INDEX_INTEGRITY_STATES: OnceLock<Mutex<HashMap<PathBuf, IndexIntegrityState>>> =
+    OnceLock::new();
 
 impl ExactUsageIndex {
     pub(super) fn open(codex_home: &Path) -> Result<Self, String> {
@@ -220,7 +229,7 @@ impl ExactUsageIndex {
             // plaintext from schema v1.
             drop(connection);
             remove_index_storage(&path)?;
-            connection = open_index_connection(&path)?;
+            connection = managed_index_connection(&path, open_index_connection(&path)?)?;
             schema_version = None;
         }
         initialize_index_schema(&connection)?;
@@ -272,9 +281,7 @@ impl ExactUsageIndex {
             set_metadata(&connection, "published_generation", "0")?;
         }
 
-        Ok(Self {
-            connection: ManagedIndexConnection::new(connection, path),
-        })
+        Ok(Self { connection })
     }
 
     #[cfg(test)]
@@ -3639,25 +3646,33 @@ fn existing_regular_index(path: &Path) -> Result<bool, String> {
 fn open_index_connection_with_recovery(
     path: &Path,
     existed_before: bool,
-) -> Result<(Connection, bool), String> {
+) -> Result<(ManagedIndexConnection, bool), String> {
     if !existed_before {
-        return open_index_connection(path).map(|connection| (connection, false));
+        let connection = open_index_connection(path)?;
+        return managed_index_connection(path, connection)
+            .map(|connection| (connection, false));
     }
 
-    let signatures = index_integrity_signatures();
-    let mut signatures = signatures
+    let states = index_integrity_states();
+    let mut states = states
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let signature_before_open = index_storage_signature(path)?;
-    let signature_is_verified = signatures.get(path) == Some(&signature_before_open);
+    let signature_is_verified = states.get(path).is_some_and(|state| {
+        state.active_connections > 0 || state.signature == signature_before_open
+    });
     let integrity_failure = match open_index_connection(path) {
         Ok(connection) if signature_is_verified => {
-            update_index_integrity_signature(&mut signatures, path);
+            let signature = index_storage_signature(path)?;
+            let connection =
+                register_index_connection(&mut states, path, connection, signature);
             return Ok((connection, false));
         }
         Ok(connection) => match quick_check_index(&connection) {
             Ok(()) => {
-                update_index_integrity_signature(&mut signatures, path);
+                let signature = index_storage_signature(path)?;
+                let connection =
+                    register_index_connection(&mut states, path, connection, signature);
                 return Ok((connection, false));
             }
             Err(error) => {
@@ -3667,15 +3682,20 @@ fn open_index_connection_with_recovery(
         },
         Err(error) => error,
     };
-    signatures.remove(path);
-    drop(signatures);
+    states.remove(path);
+    drop(states);
 
     remove_index_storage(path).map_err(|rebuild_error| {
         format!(
             "精确 token 索引完整性检查失败，且无法移除损坏索引：{integrity_failure}；{rebuild_error}"
         )
     })?;
-    open_index_connection(path)
+    let connection = open_index_connection(path).map_err(|rebuild_error| {
+        format!(
+            "精确 token 索引完整性检查失败，自动重建也失败：{integrity_failure}；{rebuild_error}"
+        )
+    })?;
+    managed_index_connection(path, connection)
         .map(|connection| (connection, true))
         .map_err(|rebuild_error| {
             format!(
@@ -3697,8 +3717,8 @@ fn quick_check_index(connection: &Connection) -> Result<(), String> {
     }
 }
 
-fn index_integrity_signatures() -> &'static Mutex<HashMap<PathBuf, IndexStorageSignature>> {
-    INDEX_INTEGRITY_SIGNATURES.get_or_init(|| Mutex::new(HashMap::new()))
+fn index_integrity_states() -> &'static Mutex<HashMap<PathBuf, IndexIntegrityState>> {
+    INDEX_INTEGRITY_STATES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn index_storage_signature(path: &Path) -> Result<IndexStorageSignature, String> {
@@ -3728,34 +3748,79 @@ fn optional_index_sidecar_signature(path: &Path) -> Result<Option<FileSignature>
     }
 }
 
-fn update_index_integrity_signature(
-    signatures: &mut HashMap<PathBuf, IndexStorageSignature>,
+fn managed_index_connection(
+    path: &Path,
+    connection: Connection,
+) -> Result<ManagedIndexConnection, String> {
+    let states = index_integrity_states();
+    let mut states = states
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let signature = index_storage_signature(path)?;
+    Ok(register_index_connection(
+        &mut states,
+        path,
+        connection,
+        signature,
+    ))
+}
+
+fn register_index_connection(
+    states: &mut HashMap<PathBuf, IndexIntegrityState>,
+    path: &Path,
+    connection: Connection,
+    signature: IndexStorageSignature,
+) -> ManagedIndexConnection {
+    let active_connections = states
+        .get(path)
+        .map(|state| state.active_connections)
+        .unwrap_or(0)
+        .saturating_add(1);
+    states.insert(
+        path.to_path_buf(),
+        IndexIntegrityState {
+            signature,
+            active_connections,
+        },
+    );
+    ManagedIndexConnection::from_registered(connection, path.to_path_buf())
+}
+
+fn finish_index_connection(
+    states: &mut HashMap<PathBuf, IndexIntegrityState>,
     path: &Path,
 ) {
+    let remaining_connections = states
+        .get(path)
+        .map(|state| state.active_connections.saturating_sub(1))
+        .unwrap_or(0);
     match index_storage_signature(path) {
         Ok(signature) => {
-            signatures.insert(path.to_path_buf(), signature);
+            states.insert(
+                path.to_path_buf(),
+                IndexIntegrityState {
+                    signature,
+                    active_connections: remaining_connections,
+                },
+            );
+        }
+        Err(_) if remaining_connections == 0 => {
+            states.remove(path);
         }
         Err(_) => {
-            signatures.remove(path);
+            if let Some(state) = states.get_mut(path) {
+                state.active_connections = remaining_connections;
+            }
         }
     }
 }
 
-fn record_index_integrity_signature(path: &Path) {
-    let signatures = index_integrity_signatures();
-    let mut signatures = signatures
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    update_index_integrity_signature(&mut signatures, path);
-}
-
 fn invalidate_index_integrity_signature(path: &Path) {
-    let signatures = index_integrity_signatures();
-    let mut signatures = signatures
+    let states = index_integrity_states();
+    let mut states = states
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    signatures.remove(path);
+    states.remove(path);
 }
 
 fn open_index_connection(path: &Path) -> Result<Connection, String> {

@@ -2553,6 +2553,7 @@ fn exact_index_integrity_check_is_reused_and_trusted_sync_refreshes_its_signatur
     drop(ExactUsageIndex::open(&root).unwrap());
     assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 1);
 
+    let mut active_index = ExactUsageIndex::open(&root).unwrap();
     {
         let mut handle = fs::OpenOptions::new().append(true).open(&session).unwrap();
         writeln!(
@@ -2561,7 +2562,11 @@ fn exact_index_integrity_check_is_reused_and_trusted_sync_refreshes_its_signatur
         )
         .unwrap();
     }
-    dashboard_snapshot(&root).unwrap();
+    let mut warnings = Vec::new();
+    active_index.sync(&root, &mut warnings).unwrap();
+    drop(ExactUsageIndex::open(&root).unwrap());
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 1);
+    drop(active_index);
     drop(ExactUsageIndex::open(&root).unwrap());
     assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 1);
 
