@@ -333,64 +333,37 @@ impl ExactUsageIndex {
         }
         prepare_scan_temp_tables(&self.connection)?;
         self.prepare_source_change_snapshot()?;
+        let published_files = self.source_change_snapshot_signatures()?;
+        let mut seen_files = HashSet::with_capacity(published_files.len());
         let mut changed = false;
         visit_session_files(
             &mut self.connection,
             codex_home,
             warnings,
-            |connection, file, _warnings| {
-                let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
-                let path = canonical.to_string_lossy().into_owned();
-                let newly_seen = connection
-                    .execute(
-                        "INSERT OR IGNORE INTO exact_seen_files(path) VALUES (?1)",
-                        params![&path],
-                    )
-                    .map_err(|error| format!("无法记录会话文件变更检查：{error}"))?
-                    > 0;
-                if !newly_seen {
+            |_connection, file, _warnings| {
+                let path = file.to_string_lossy().into_owned();
+                if !seen_files.insert(path.clone()) {
                     return Ok(());
                 }
                 let signature = file_signature(file)?;
-                let unchanged = connection
-                    .query_row(
-                        "SELECT size, modified_ns, device_id, file_id, changed_ns FROM published_files WHERE path = ?1",
-                        params![&path],
-                        |row| {
-                            Ok((
-                                row.get::<_, i64>(0)?,
-                                row.get::<_, String>(1)?,
-                                row.get::<_, String>(2)?,
-                                row.get::<_, String>(3)?,
-                                row.get::<_, String>(4)?,
-                            ))
-                        },
-                    )
-                    .optional()
-                    .map_err(|error| format!("无法读取会话文件变更签名：{error}"))?
-                    .is_some_and(
-                        |(size, modified_ns, device_id, file_id, changed_ns)| {
-                            signature.matches_stored(
-                                nonnegative_u64(size),
-                                &modified_ns,
-                                &device_id,
-                                &file_id,
-                                &changed_ns,
-                            )
-                        },
-                    );
+                let unchanged = published_files.get(&path).is_some_and(
+                    |(size, modified_ns, device_id, file_id, changed_ns)| {
+                        signature.matches_stored(
+                            *size,
+                            modified_ns,
+                            device_id,
+                            file_id,
+                            changed_ns,
+                        )
+                    },
+                );
                 changed |= !unchanged;
                 Ok(())
             },
         )?;
-        let deleted = self
-            .connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM published_files WHERE path NOT IN (SELECT path FROM exact_seen_files))",
-                [],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(|error| format!("无法检查已删除的会话文件：{error}"))?;
+        let deleted = published_files
+            .keys()
+            .any(|path| !seen_files.contains(path));
         Ok(changed || deleted)
     }
 
@@ -407,6 +380,38 @@ impl ExactUsageIndex {
                 "#,
             )
             .map_err(|error| format!("无法建立精确 token 源文件快照：{error}"))
+    }
+
+    fn source_change_snapshot_signatures(
+        &self,
+    ) -> Result<HashMap<String, (u64, String, String, String, String)>, String> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT path, size, modified_ns, device_id, file_id, changed_ns FROM temp.published_files",
+            )
+            .map_err(|error| format!("无法读取精确 token 源文件快照：{error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (
+                        nonnegative_u64(row.get::<_, i64>(1)?),
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ),
+                ))
+            })
+            .map_err(|error| format!("无法遍历精确 token 源文件快照：{error}"))?;
+        let mut signatures = HashMap::new();
+        for row in rows {
+            let (path, signature) =
+                row.map_err(|error| format!("无法解析精确 token 源文件快照：{error}"))?;
+            signatures.insert(path, signature);
+        }
+        Ok(signatures)
     }
 
     pub(super) fn is_empty(&self) -> Result<bool, String> {
