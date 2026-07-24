@@ -102,6 +102,54 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     @MainActor
+    func testRecentUsageChartEquatableBoundaryTracksEveryExternalInput() {
+        let baseline = RecentUsageChart(
+            bins: [],
+            hourlyBins: [],
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: [],
+            currentFiveHourQuotaPresent: true,
+            currentSevenDayQuotaPresent: true
+        )
+        let identical = RecentUsageChart(
+            bins: [],
+            hourlyBins: [],
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: [],
+            currentFiveHourQuotaPresent: true,
+            currentSevenDayQuotaPresent: true
+        )
+        let changedUsage = RecentUsageChart(
+            bins: [BinUsage(start: Date(timeIntervalSince1970: 1_800), tokens: 1, calls: 1)],
+            hourlyBins: [],
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: [],
+            currentFiveHourQuotaPresent: true,
+            currentSevenDayQuotaPresent: true
+        )
+        let changedQuotaAvailability = RecentUsageChart(
+            bins: [],
+            hourlyBins: [],
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: [],
+            currentFiveHourQuotaPresent: false,
+            currentSevenDayQuotaPresent: true
+        )
+
+        XCTAssertEqual(baseline, identical)
+        XCTAssertNotEqual(baseline, changedUsage)
+        XCTAssertNotEqual(baseline, changedQuotaAvailability)
+    }
+
+    @MainActor
     func testPreparedDataKeepsLowActivityCacheGapsUnknownInsteadOfCarryingStaleRates() throws {
         let start = Date(timeIntervalSince1970: 1_800)
         let bins = [

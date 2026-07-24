@@ -446,7 +446,7 @@ struct RecentChartQuotaEstimateVisibility: Equatable {
     }
 }
 
-struct RecentUsageChart: View {
+struct RecentUsageChart: View, Equatable {
     let bins: [BinUsage]
     let hourlyBins: [BinUsage]
     let cacheRecentBins: [TokenCacheBucket]
@@ -488,6 +488,17 @@ struct RecentUsageChart: View {
         self.currentFiveHourQuotaPresent = currentFiveHourQuotaPresent
         self.currentSevenDayQuotaPresent = currentSevenDayQuotaPresent
         _preparedData = State(initialValue: .empty)
+    }
+
+    nonisolated static func == (lhs: RecentUsageChart, rhs: RecentUsageChart) -> Bool {
+        lhs.bins == rhs.bins
+            && lhs.hourlyBins == rhs.hourlyBins
+            && lhs.cacheRecentBins == rhs.cacheRecentBins
+            && lhs.cacheHourlyBins == rhs.cacheHourlyBins
+            && lhs.quotaRecentBins == rhs.quotaRecentBins
+            && lhs.quotaHourlyBins == rhs.quotaHourlyBins
+            && lhs.currentFiveHourQuotaPresent == rhs.currentFiveHourQuotaPresent
+            && lhs.currentSevenDayQuotaPresent == rhs.currentSevenDayQuotaPresent
     }
 
     private var quotaSeriesVisibility: RecentChartQuotaSeriesVisibility {

@@ -544,6 +544,9 @@ struct DashboardView: View {
                 currentFiveHourQuotaPresent: quotaStore.snapshot.fiveHour != nil,
                 currentSevenDayQuotaPresent: quotaStore.snapshot.sevenDay != nil
             )
+            // Live-rate publications invalidate DashboardView frequently. Keep an
+            // unchanged historical chart out of those unrelated render passes.
+            .equatable()
 
             CacheHitRankingSection(cacheUsage: store.snapshot.cacheUsage)
         }
