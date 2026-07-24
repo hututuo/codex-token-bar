@@ -1,8 +1,11 @@
 #[cfg(test)]
 use super::TokenEvent;
 use crate::models::LocalDataWarning;
+use serde::Deserialize;
+use serde_json::value::RawValue;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 #[cfg(test)]
 use std::collections::HashSet;
 use std::fs;
@@ -12,6 +15,7 @@ use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 
 const FORK_REPLAY_EXIT_GRACE: Duration = Duration::seconds(2);
+const RETAINED_JSONL_LINE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const EXACT_INDEX_CHUNK_SIZE: u64 = 4 * 1024 * 1024;
 pub(super) type UsageSnapshotFingerprint = [u64; 9];
 
@@ -55,8 +59,23 @@ struct ParsedUsageLine {
 
 #[derive(Clone, Debug)]
 struct ParsedMessageLine {
-    timestamp: OffsetDateTime,
     message: String,
+}
+
+#[derive(Deserialize)]
+struct BorrowedMessageLine<'a> {
+    #[serde(borrow)]
+    timestamp: Cow<'a, str>,
+    #[serde(borrow)]
+    payload: BorrowedMessagePayload<'a>,
+}
+
+#[derive(Deserialize)]
+struct BorrowedMessagePayload<'a> {
+    #[serde(rename = "type", borrow)]
+    kind: Cow<'a, str>,
+    #[serde(borrow)]
+    message: &'a RawValue,
 }
 
 #[cfg(test)]
@@ -205,7 +224,7 @@ pub(super) fn stream_session_file_exact_from(
     let mut resume_offset = parsing_start_offset;
 
     loop {
-        line_bytes.clear();
+        reset_line_buffer(&mut line_bytes);
         let line_start = source_offset;
         let bytes_read = reader.read_until(b'\n', &mut line_bytes).map_err(|error| {
             let message = format!("读取会话文件中断：{}（{}）", file.display(), error);
@@ -239,12 +258,12 @@ pub(super) fn stream_session_file_exact_from(
                 fork_replay_active = true;
             }
         }
-        if let Some(message_line) = parse_payload_message_line(line, "user_message", 180) {
+        if let Some(timestamp) = parse_payload_message_marker(line, "user_message") {
             if fork_replay_active {
                 let replay_reference = last_skipped_fork_replay_token_at.or(fork_replay_started_at);
-                if replay_reference.is_some_and(|reference| {
-                    message_line.timestamp - reference > FORK_REPLAY_EXIT_GRACE
-                }) {
+                if replay_reference
+                    .is_some_and(|reference| timestamp - reference > FORK_REPLAY_EXIT_GRACE)
+                {
                     fork_replay_active = false;
                 }
             }
@@ -252,7 +271,7 @@ pub(super) fn stream_session_file_exact_from(
             assistant_response = None;
             continue;
         }
-        if parse_payload_message_line(line, "agent_message", 220).is_some() {
+        if parse_payload_message_marker(line, "agent_message").is_some() {
             assistant_response = Some(match assistant_response {
                 Some(existing) => SourceByteRange {
                     start: existing.start,
@@ -529,7 +548,7 @@ fn visit_source_range_lines(
     let mut line_bytes = Vec::new();
     let mut consumed = 0_u64;
     loop {
-        line_bytes.clear();
+        reset_line_buffer(&mut line_bytes);
         let bytes_read = reader
             .read_until(b'\n', &mut line_bytes)
             .map_err(|error| format!("读取会话摘录失败：{}（{}）", file.display(), error))?;
@@ -674,23 +693,123 @@ fn parse_payload_message_line(
     expected_type: &str,
     excerpt_limit: usize,
 ) -> Option<ParsedMessageLine> {
-    if !line.contains("\"payload\"") || !line.contains(expected_type) {
-        return None;
-    }
-    let value: Value = serde_json::from_str(line).ok()?;
-    let timestamp = parse_timestamp(value.get("timestamp")?.as_str()?)?;
-    let payload = value.get("payload")?;
-    if payload.get("type")?.as_str()? != expected_type {
-        return None;
-    }
-    let normalized = excerpt(payload.get("message")?.as_str()?, excerpt_limit);
+    let value = borrowed_payload_message(line, expected_type)?;
+    let message: Cow<'_, str> = serde_json::from_str(value.payload.message.get()).ok()?;
+    let normalized = excerpt(message.as_ref(), excerpt_limit);
     if normalized.is_empty() {
         None
     } else {
+        parse_timestamp(value.timestamp.as_ref())?;
         Some(ParsedMessageLine {
-            timestamp,
             message: normalized,
         })
+    }
+}
+
+fn parse_payload_message_marker(line: &str, expected_type: &str) -> Option<OffsetDateTime> {
+    let value = borrowed_payload_message(line, expected_type)?;
+    raw_json_string_has_non_whitespace(value.payload.message)
+        .then(|| parse_timestamp(value.timestamp.as_ref()))
+        .flatten()
+}
+
+fn borrowed_payload_message<'a>(
+    line: &'a str,
+    expected_type: &str,
+) -> Option<BorrowedMessageLine<'a>> {
+    if !line.contains("\"payload\"") || !line.contains(expected_type) {
+        return None;
+    }
+    let value: BorrowedMessageLine<'_> = serde_json::from_str(line).ok()?;
+    (value.payload.kind == expected_type).then_some(value)
+}
+
+fn raw_json_string_has_non_whitespace(value: &RawValue) -> bool {
+    let encoded = value.get().as_bytes();
+    if encoded.len() < 2 || encoded.first() != Some(&b'"') || encoded.last() != Some(&b'"') {
+        return false;
+    }
+    let mut index = 1_usize;
+    let end = encoded.len() - 1;
+    while index < end {
+        if encoded[index] != b'\\' {
+            let segment_start = index;
+            while index < end && encoded[index] != b'\\' {
+                index += 1;
+            }
+            let Ok(segment) = std::str::from_utf8(&encoded[segment_start..index]) else {
+                return false;
+            };
+            if segment.chars().any(|character| !character.is_whitespace()) {
+                return true;
+            }
+            continue;
+        }
+        index += 1;
+        let Some(escaped) = encoded.get(index).copied() else {
+            return false;
+        };
+        index += 1;
+        let character = match escaped {
+            b'"' => '"',
+            b'\\' => '\\',
+            b'/' => '/',
+            b'b' => '\u{0008}',
+            b'f' => '\u{000C}',
+            b'n' => '\n',
+            b'r' => '\r',
+            b't' => '\t',
+            b'u' => {
+                let Some((first, next_index)) = decode_json_u16(encoded, index, end) else {
+                    return false;
+                };
+                index = next_index;
+                let scalar = if (0xD800..=0xDBFF).contains(&first) {
+                    if encoded.get(index..index + 2) != Some(&[b'\\', b'u']) {
+                        return false;
+                    }
+                    let Some((second, next_index)) = decode_json_u16(encoded, index + 2, end)
+                    else {
+                        return false;
+                    };
+                    if !(0xDC00..=0xDFFF).contains(&second) {
+                        return false;
+                    }
+                    index = next_index;
+                    0x1_0000 + ((u32::from(first) - 0xD800) << 10) + (u32::from(second) - 0xDC00)
+                } else if (0xDC00..=0xDFFF).contains(&first) {
+                    return false;
+                } else {
+                    u32::from(first)
+                };
+                let Some(character) = char::from_u32(scalar) else {
+                    return false;
+                };
+                character
+            }
+            _ => return false,
+        };
+        if !character.is_whitespace() {
+            return true;
+        }
+    }
+    false
+}
+
+fn decode_json_u16(encoded: &[u8], start: usize, end: usize) -> Option<(u16, usize)> {
+    let next = start.checked_add(4)?;
+    if next > end {
+        return None;
+    }
+    let digits = std::str::from_utf8(&encoded[start..next]).ok()?;
+    Some((u16::from_str_radix(digits, 16).ok()?, next))
+}
+
+fn reset_line_buffer(buffer: &mut Vec<u8>) {
+    if buffer.capacity() > RETAINED_JSONL_LINE_BUFFER_BYTES {
+        *buffer = Vec::new();
+    } else {
+        buffer.clear();
     }
 }
 
@@ -804,5 +923,20 @@ fn jsonl_file_warning(message: String) -> LocalDataWarning {
     LocalDataWarning {
         source: "jsonl_file".into(),
         message,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_payload_message_marker;
+
+    #[test]
+    fn borrowed_message_marker_checks_escaped_content_without_materializing_the_message() {
+        let whitespace = r#"{"timestamp":"2026-07-24T01:00:00Z","payload":{"type":"user_message","message":" \n\t\u3000"}}"#;
+        let content = r#"{"timestamp":"2026-07-24T01:00:00Z","payload":{"type":"user_message","message":"\uD83D\uDE80"}}"#;
+
+        assert!(parse_payload_message_marker(whitespace, "user_message").is_none());
+        assert!(parse_payload_message_marker(content, "user_message").is_some());
+        assert!(parse_payload_message_marker(content, "agent_message").is_none());
     }
 }

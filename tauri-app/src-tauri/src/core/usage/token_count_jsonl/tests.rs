@@ -6,7 +6,7 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration as StdDuration, SystemTime};
+use std::time::{Duration as StdDuration, Instant, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
@@ -612,6 +612,69 @@ fn exact_index_reuses_private_staging_after_an_interrupted_import() {
     );
     drop(resumed);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[ignore = "set CODEX_TOKEN_BAR_RUN_LIVE_EXACT_HISTORY_TEST=1 for the local full-history scan"]
+fn live_exact_index_cold_and_warm_scans_when_explicitly_enabled() {
+    assert_eq!(
+        std::env::var("CODEX_TOKEN_BAR_RUN_LIVE_EXACT_HISTORY_TEST").as_deref(),
+        Ok("1"),
+        "set CODEX_TOKEN_BAR_RUN_LIVE_EXACT_HISTORY_TEST=1"
+    );
+    let root = PathBuf::from(
+        std::env::var("CODEX_TOKEN_BAR_LIVE_CODEX_HOME")
+            .expect("CODEX_TOKEN_BAR_LIVE_CODEX_HOME must point to the frozen snapshot"),
+    );
+    assert!(root.join("sessions").is_dir(), "{}", root.display());
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+
+    let cold_started = Instant::now();
+    let mut cold_index = ExactUsageIndex::open(&root).unwrap();
+    let cold_revision = cold_index.sync(&root, &mut Vec::new()).unwrap();
+    let cold = cold_index
+        .dashboard_data(
+            &root,
+            OffsetDateTime::now_utc(),
+            UtcOffset::UTC,
+            &mut Vec::new(),
+        )
+        .unwrap();
+    let cold_elapsed = cold_started.elapsed();
+    println!(
+        "LIVE_EXACT_INDEX_COLD_RESULT elapsed_seconds={:.3} revision={} total_tokens={} total_calls={} total_threads={}",
+        cold_elapsed.as_secs_f64(),
+        cold_revision,
+        cold.stats.total_tokens,
+        cold.stats.total_calls,
+        cold.stats.total_threads
+    );
+    drop(cold_index);
+
+    let warm_started = Instant::now();
+    let mut warm_index = ExactUsageIndex::open(&root).unwrap();
+    let warm_revision = warm_index.sync(&root, &mut Vec::new()).unwrap();
+    let warm = warm_index
+        .dashboard_data(
+            &root,
+            OffsetDateTime::now_utc(),
+            UtcOffset::UTC,
+            &mut Vec::new(),
+        )
+        .unwrap();
+    let warm_elapsed = warm_started.elapsed();
+    assert_eq!(warm_revision, cold_revision);
+    assert_eq!(warm.stats.total_tokens, cold.stats.total_tokens);
+    assert_eq!(warm.stats.total_calls, cold.stats.total_calls);
+    assert_eq!(warm.stats.total_threads, cold.stats.total_threads);
+    println!(
+        "LIVE_EXACT_INDEX_WARM_RESULT elapsed_seconds={:.3} revision={} total_tokens={} total_calls={} total_threads={}",
+        warm_elapsed.as_secs_f64(),
+        warm_revision,
+        warm.stats.total_tokens,
+        warm.stats.total_calls,
+        warm.stats.total_threads
+    );
 }
 
 #[test]
@@ -1710,8 +1773,8 @@ fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"第一轮问题"}}"#,
             r#"{"timestamp":"2026-06-18T01:00:20Z","type":"event_msg","payload":{"type":"agent_message","message":"第一轮回答"}}"#,
             r#"{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200,"cached_input_tokens":100,"output_tokens":50,"total_tokens":1250}}}}"#,
-            r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"user_message","message":"第二轮问题"}}"#,
-            r#"{"timestamp":"2026-06-18T01:05:20Z","type":"event_msg","payload":{"type":"agent_message","message":"第二轮回答"}}"#,
+            r#"{"timestamp":"2026-06-18T01:05:00Z","type":"event_msg","payload":{"type":"user_message","message":"第二轮\n问题"}}"#,
+            r#"{"timestamp":"2026-06-18T01:05:20Z","type":"event_msg","payload":{"type":"agent_message","message":"第二轮回答\t补充"}}"#,
             r#"{"timestamp":"2026-06-18T01:06:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1300,"cached_input_tokens":600,"output_tokens":80,"total_tokens":1380}}}}"#,
         ],
     );
@@ -1726,8 +1789,8 @@ fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
         .iter()
         .find(|turn| turn.turn_index_in_session == 2)
         .unwrap();
-    assert_eq!(second_turn.user_prompt, "第二轮问题");
-    assert_eq!(second_turn.assistant_response, "第二轮回答");
+    assert_eq!(second_turn.user_prompt, "第二轮 问题");
+    assert_eq!(second_turn.assistant_response, "第二轮回答 补充");
     assert_eq!(second_turn.breakdown.input_tokens, 1300);
 
     fs::remove_dir_all(root).unwrap();

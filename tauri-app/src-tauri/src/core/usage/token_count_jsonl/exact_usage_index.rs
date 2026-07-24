@@ -42,6 +42,7 @@ const THIRTY_DAY_POINT_COUNT: i64 = 30 * 4;
 const CACHE_USAGE_MIN_INPUT_TOKENS: i64 = 1_000;
 const CACHE_USAGE_CANDIDATE_LIMIT: i64 = 40;
 const PARALLEL_STAGING_MIN_BYTES: u64 = EXACT_INDEX_CHUNK_SIZE;
+const PARALLEL_HEAVY_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
 pub(super) struct ExactUsageIndex {
     connection: Connection,
@@ -1292,46 +1293,51 @@ fn stage_full_rebuilds(
     });
 
     let mut results = if ordered_jobs.len() == 1 {
-        let mut local_warnings = Vec::new();
-        vec![StagedFullRebuildResult {
-            order: 0,
-            result: stage_or_reuse_full_rebuild(
-                &ordered_jobs[0],
-                index_path,
-                codex_home,
-                None,
-                &mut local_warnings,
-            ),
-            warnings: local_warnings,
-        }]
+        vec![stage_full_rebuild_result(
+            0,
+            &ordered_jobs[0],
+            index_path,
+            codex_home,
+        )]
     } else {
-        let next_job = AtomicUsize::new(0);
+        let indexed_jobs = ordered_jobs.iter().enumerate().collect::<Vec<_>>();
+        let (heavy_jobs, light_jobs): (Vec<_>, Vec<_>) = indexed_jobs
+            .into_iter()
+            .partition(|(_, job)| job.signature.size >= PARALLEL_HEAVY_FILE_BYTES);
+        let has_heavy_jobs = !heavy_jobs.is_empty();
+        let next_light_job = AtomicUsize::new(0);
         let collected = Mutex::new(Vec::with_capacity(ordered_jobs.len()));
-        let heavy_file_gate = Mutex::new(());
         let worker_count = cold_build_worker_count(ordered_jobs.len());
         thread::scope(|scope| {
-            for _ in 0..worker_count {
+            if has_heavy_jobs {
+                scope.spawn(|| {
+                    for (order, job) in heavy_jobs {
+                        let result = stage_full_rebuild_result(order, job, index_path, codex_home);
+                        collected
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .push(result);
+                    }
+                });
+            }
+            let light_worker_count = if light_jobs.is_empty() {
+                0
+            } else if has_heavy_jobs {
+                worker_count.saturating_sub(1).max(1)
+            } else {
+                worker_count
+            };
+            for _ in 0..light_worker_count {
                 scope.spawn(|| loop {
-                    let order = next_job.fetch_add(1, Ordering::SeqCst);
-                    let Some(job) = ordered_jobs.get(order) else {
+                    let light_index = next_light_job.fetch_add(1, Ordering::SeqCst);
+                    let Some((order, job)) = light_jobs.get(light_index).copied() else {
                         break;
                     };
-                    let mut local_warnings = Vec::new();
-                    let result = stage_or_reuse_full_rebuild(
-                        job,
-                        index_path,
-                        codex_home,
-                        Some(&heavy_file_gate),
-                        &mut local_warnings,
-                    );
+                    let result = stage_full_rebuild_result(order, job, index_path, codex_home);
                     collected
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .push(StagedFullRebuildResult {
-                            order,
-                            result,
-                            warnings: local_warnings,
-                        });
+                        .push(result);
                 });
             }
         });
@@ -1359,6 +1365,21 @@ fn stage_full_rebuilds(
     Ok(staged)
 }
 
+fn stage_full_rebuild_result(
+    order: usize,
+    job: &FullRebuildJob,
+    index_path: &Path,
+    codex_home: &Path,
+) -> StagedFullRebuildResult {
+    let mut warnings = Vec::new();
+    let result = stage_or_reuse_full_rebuild(job, index_path, codex_home, &mut warnings);
+    StagedFullRebuildResult {
+        order,
+        result,
+        warnings,
+    }
+}
+
 fn cold_build_worker_count(job_count: usize) -> usize {
     if job_count <= 1 {
         return 1;
@@ -1366,7 +1387,11 @@ fn cold_build_worker_count(job_count: usize) -> usize {
     let available = thread::available_parallelism()
         .map(|parallelism| parallelism.get())
         .unwrap_or(2);
-    let resource_cap = if available >= 8 {
+    let resource_cap = if available >= 10 {
+        6
+    } else if available >= 8 {
+        5
+    } else if available >= 6 {
         4
     } else if available >= 4 {
         3
@@ -1380,20 +1405,12 @@ fn stage_or_reuse_full_rebuild(
     job: &FullRebuildJob,
     index_path: &Path,
     codex_home: &Path,
-    heavy_file_gate: Option<&Mutex<()>>,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Result<StagedFullRebuild, String> {
     let database_path = staging_database_path(index_path, &job.path);
     if let Some(staged) = reusable_staged_full_rebuild(&database_path, job)? {
         return Ok(staged);
     }
-
-    const HEAVY_FILE_BYTES: u64 = 512 * 1024 * 1024;
-    let _heavy_guard = if job.signature.size >= HEAVY_FILE_BYTES {
-        heavy_file_gate.map(|gate| gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
-    } else {
-        None
-    };
     build_staged_full_rebuild(job, database_path, codex_home, warnings)
 }
 
@@ -1825,117 +1842,77 @@ fn import_staged_full_rebuild(
     generation: i64,
     staged: &StagedFullRebuild,
 ) -> Result<(), String> {
-    let stage = sqlite::open_read_only(&staged.database_path, StdDuration::from_secs(1))
-        .map_err(|error| format!("无法只读打开待导入的精确 token 暂存：{error}"))?;
-    let validated = validated_staged_full_rebuild(&stage, &staged.database_path, &staged.job)?
-        .ok_or_else(|| "精确 token 单文件暂存在导入前失效".to_string())?;
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| format!("无法开始精确 token 暂存导入事务：{error}"))?;
-    ensure_active_build_generation(&transaction, generation)?;
-    transaction
-        .execute(
-            "DELETE FROM files WHERE generation = ?1 AND path = ?2",
-            params![generation, &validated.job.path],
+    let validated = {
+        let stage = sqlite::open_read_only(&staged.database_path, StdDuration::from_secs(1))
+            .map_err(|error| format!("无法只读打开待导入的精确 token 暂存：{error}"))?;
+        validated_staged_full_rebuild(&stage, &staged.database_path, &staged.job)?
+            .ok_or_else(|| "精确 token 单文件暂存在导入前失效".to_string())?
+    };
+    let stage_path = staged.database_path.to_str().ok_or_else(|| {
+        format!(
+            "精确 token 暂存路径不是有效 UTF-8：{}",
+            staged.database_path.display()
         )
-        .map_err(|error| format!("无法清理本轮待重建会话版本：{error}"))?;
-    transaction
+    })?;
+    connection
         .execute(
-            r#"
-            INSERT INTO files(
-                generation,
-                path,
-                deleted,
-                session_id,
-                size,
-                modified_ns,
-                device_id,
-                file_id,
-                changed_ns,
-                prefix_sha256
-            ) VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-            "#,
-            params![
-                generation,
-                &validated.job.path,
-                &validated.job.session_id,
-                checked_i64(validated.job.signature.size, "导入会话文件大小")?,
-                validated.job.signature.modified_ns.to_string(),
-                validated.job.signature.identity.device_id.to_string(),
-                validated.job.signature.identity.file_id.to_string(),
-                validated.job.signature.changed_ns.to_string(),
-                validated.prefix_sha256.as_slice(),
-            ],
+            "ATTACH DATABASE ?1 AS exact_stage_import",
+            params![stage_path],
         )
-        .map_err(|error| format!("无法登记待导入的精确 token 会话：{error}"))?;
+        .map_err(|error| format!("无法附加待导入的精确 token 暂存：{error}"))?;
 
-    {
-        let mut select = stage
-            .prepare("SELECT fingerprint FROM fingerprints ORDER BY fingerprint")
-            .map_err(|error| format!("无法读取精确 token 暂存去重状态：{error}"))?;
-        let rows = select
-            .query_map([], |row| row.get::<_, Vec<u8>>(0))
-            .map_err(|error| format!("无法遍历精确 token 暂存去重状态：{error}"))?;
-        let mut insert = transaction
-            .prepare(
-                r#"
-                INSERT INTO file_fingerprints(file_generation, file_path, fingerprint)
-                VALUES (?1, ?2, ?3)
-                "#,
+    let import_result = (|| {
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("无法开始精确 token 暂存导入事务：{error}"))?;
+        ensure_active_build_generation(&transaction, generation)?;
+        transaction
+            .execute(
+                "DELETE FROM files WHERE generation = ?1 AND path = ?2",
+                params![generation, &validated.job.path],
             )
-            .map_err(|error| format!("无法准备精确 token 去重导入：{error}"))?;
-        for row in rows {
-            let fingerprint =
-                row.map_err(|error| format!("无法解码精确 token 暂存去重状态：{error}"))?;
-            insert
-                .execute(params![
+            .map_err(|error| format!("无法清理本轮待重建会话版本：{error}"))?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO files(
+                    generation,
+                    path,
+                    deleted,
+                    session_id,
+                    size,
+                    modified_ns,
+                    device_id,
+                    file_id,
+                    changed_ns,
+                    prefix_sha256
+                ) VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                "#,
+                params![
                     generation,
                     &validated.job.path,
-                    fingerprint.as_slice()
-                ])
-                .map_err(|error| format!("无法导入精确 token 去重状态：{error}"))?;
-        }
-    }
-
-    let mut imported_events = 0_u64;
-    {
-        let mut select = stage
-            .prepare(
-                r#"
-                SELECT
-                    ordinal,
-                    timestamp,
-                    tokens,
-                    input_tokens,
-                    cached_input_tokens,
-                    output_tokens,
-                    user_prompt_start,
-                    user_prompt_end,
-                    assistant_response_start,
-                    assistant_response_end
-                FROM events
-                ORDER BY ordinal
-                "#,
+                    &validated.job.session_id,
+                    checked_i64(validated.job.signature.size, "导入会话文件大小")?,
+                    validated.job.signature.modified_ns.to_string(),
+                    validated.job.signature.identity.device_id.to_string(),
+                    validated.job.signature.identity.file_id.to_string(),
+                    validated.job.signature.changed_ns.to_string(),
+                    validated.prefix_sha256.as_slice(),
+                ],
             )
-            .map_err(|error| format!("无法读取精确 token 暂存事件：{error}"))?;
-        let rows = select
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
-                    row.get::<_, Option<i64>>(8)?,
-                    row.get::<_, Option<i64>>(9)?,
-                ))
-            })
-            .map_err(|error| format!("无法遍历精确 token 暂存事件：{error}"))?;
-        let mut insert = transaction
-            .prepare(
+            .map_err(|error| format!("无法登记待导入的精确 token 会话：{error}"))?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO file_fingerprints(file_generation, file_path, fingerprint)
+                SELECT ?1, ?2, fingerprint
+                FROM exact_stage_import.fingerprints
+                "#,
+                params![generation, &validated.job.path],
+            )
+            .map_err(|error| format!("无法批量导入精确 token 去重状态：{error}"))?;
+        let imported_events = transaction
+            .execute(
                 r#"
                 INSERT INTO events(
                     file_generation,
@@ -1951,30 +1928,13 @@ fn import_staged_full_rebuild(
                     user_prompt_end,
                     assistant_response_start,
                     assistant_response_end
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-                "#,
-            )
-            .map_err(|error| format!("无法准备精确 token 暂存事件导入：{error}"))?;
-        for row in rows {
-            let (
-                ordinal,
-                timestamp,
-                tokens,
-                input_tokens,
-                cached_input_tokens,
-                output_tokens,
-                user_prompt_start,
-                user_prompt_end,
-                assistant_response_start,
-                assistant_response_end,
-            ) = row.map_err(|error| format!("无法解码精确 token 暂存事件：{error}"))?;
-            insert
-                .execute(params![
-                    generation,
-                    &validated.job.path,
+                )
+                SELECT
+                    ?1,
+                    ?2,
                     ordinal,
                     timestamp,
-                    &validated.job.session_id,
+                    ?3,
                     tokens,
                     input_tokens,
                     cached_input_tokens,
@@ -1982,34 +1942,23 @@ fn import_staged_full_rebuild(
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
-                    assistant_response_end,
-                ])
-                .map_err(|error| format!("无法导入精确 token 暂存事件：{error}"))?;
-            imported_events = imported_events.saturating_add(1);
+                    assistant_response_end
+                FROM exact_stage_import.events
+                ORDER BY ordinal
+                "#,
+                params![generation, &validated.job.path, &validated.job.session_id],
+            )
+            .map_err(|error| format!("无法批量导入精确 token 暂存事件：{error}"))?;
+        let imported_events = u64::try_from(imported_events)
+            .map_err(|_| "精确 token 暂存事件导入数量超出支持范围".to_string())?;
+        if imported_events != validated.event_count {
+            return Err(format!(
+                "精确 token 暂存事件导入数量不一致：预期 {}，实际 {}",
+                validated.event_count, imported_events
+            ));
         }
-    }
-    if imported_events != validated.event_count {
-        return Err(format!(
-            "精确 token 暂存事件导入数量不一致：预期 {}，实际 {}",
-            validated.event_count, imported_events
-        ));
-    }
-
-    {
-        let mut select = stage
-            .prepare("SELECT chunk_index, byte_count, sha256 FROM chunks ORDER BY chunk_index")
-            .map_err(|error| format!("无法读取精确 token 暂存分块：{error}"))?;
-        let rows = select
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                ))
-            })
-            .map_err(|error| format!("无法遍历精确 token 暂存分块：{error}"))?;
-        let mut insert = transaction
-            .prepare(
+        transaction
+            .execute(
                 r#"
                 INSERT INTO file_chunks(
                     file_generation,
@@ -2017,37 +1966,36 @@ fn import_staged_full_rebuild(
                     chunk_index,
                     byte_count,
                     sha256
-                ) VALUES (?1, ?2, ?3, ?4, ?5)
+                )
+                SELECT ?1, ?2, chunk_index, byte_count, sha256
+                FROM exact_stage_import.chunks
                 "#,
+                params![generation, &validated.job.path],
             )
-            .map_err(|error| format!("无法准备精确 token 暂存分块导入：{error}"))?;
-        for row in rows {
-            let (chunk_index, byte_count, sha256) =
-                row.map_err(|error| format!("无法解码精确 token 暂存分块：{error}"))?;
-            insert
-                .execute(params![
-                    generation,
-                    &validated.job.path,
-                    chunk_index,
-                    byte_count,
-                    sha256.as_slice(),
-                ])
-                .map_err(|error| format!("无法导入精确 token 暂存分块：{error}"))?;
-        }
+            .map_err(|error| format!("无法批量导入精确 token 暂存分块：{error}"))?;
+        save_file_checkpoint(
+            &transaction,
+            generation,
+            &validated.job.path,
+            validated.job.signature,
+            validated.resume_offset,
+            validated.parser_state,
+            0,
+        )?;
+        set_metadata(&transaction, "building_changed", "1")?;
+        transaction
+            .commit()
+            .map_err(|error| format!("无法提交精确 token 单文件暂存导入：{error}"))
+    })();
+
+    let detach_result = connection
+        .execute_batch("DETACH DATABASE exact_stage_import")
+        .map_err(|error| format!("无法卸载已导入的精确 token 暂存：{error}"));
+    match (import_result, detach_result) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
     }
-    save_file_checkpoint(
-        &transaction,
-        generation,
-        &validated.job.path,
-        validated.job.signature,
-        validated.resume_offset,
-        validated.parser_state,
-        0,
-    )?;
-    set_metadata(&transaction, "building_changed", "1")?;
-    transaction
-        .commit()
-        .map_err(|error| format!("无法提交精确 token 单文件暂存导入：{error}"))
 }
 
 fn ensure_staging_directory(index_path: &Path) -> Result<(), String> {
@@ -3614,7 +3562,7 @@ fn open_index_connection(path: &Path) -> Result<Connection, String> {
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;
             PRAGMA temp_store = FILE;
-            PRAGMA cache_size = -8192;
+            PRAGMA cache_size = -16384;
             PRAGMA foreign_keys = ON;
 
             CREATE TABLE IF NOT EXISTS metadata (
