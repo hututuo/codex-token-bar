@@ -2515,6 +2515,15 @@ fn usage_summary_snapshot_cache_miss_schedules_one_lightweight_background_refres
                 "compact summary refresh must not build rankings, charts, or excerpts"
             );
             wait_for_usage_summary_refreshes_for_testing();
+            let completed_scans = dashboard_scan_signature_count_for_testing();
+            let _ = usage_summary_snapshot(&root);
+            let _ = usage_summary_snapshot(&root);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert_eq!(
+                dashboard_scan_signature_count_for_testing(),
+                completed_scans,
+                "compact surfaces inside one refresh window must reuse the same background sync"
+            );
             fs::remove_dir_all(root).unwrap();
             return;
         }

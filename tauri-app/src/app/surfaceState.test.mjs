@@ -131,7 +131,7 @@ test("dashboard precise data refreshes every three minutes when visible and five
   assert.equal(dashboardData.includes("setLoadGeneration((current) => current + 1)"), true);
 });
 
-test("live activity temporarily accelerates usage refresh cadence", async () => {
+test("live activity accelerates compact summaries without rebuilding the full dashboard", async () => {
   const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
   const compactSnapshot = await readFile(new URL("../surfaces/useCompactPanelSnapshot.ts", import.meta.url), "utf8");
   const cadence = await readFile(new URL("../utils/usageRefreshCadence.ts", import.meta.url), "utf8");
@@ -140,8 +140,12 @@ test("live activity temporarily accelerates usage refresh cadence", async () => 
   assert.equal(cadence.includes("LIVE_USAGE_ACTIVITY_HOLD_MS = 31_000"), true);
   assert.equal(cadence.includes("liveRateHasUsageRefreshActivity"), true);
   assert.equal(cadence.includes("usageRefreshIntervalMs"), true);
-  assert.equal(dashboardData.includes("markLiveUsageActivity(liveRate)"), true);
-  assert.equal(dashboardData.includes("usageRefreshIntervalMs({"), true);
+  assert.equal(dashboardData.includes("markLiveUsageActivity(liveRate)"), false);
+  assert.equal(dashboardData.includes("usageRefreshIntervalMs({"), false);
+  assert.match(
+    dashboardData,
+    /window\.setInterval\(\(\) => \{\s*setLoadGeneration\(\(current\) => current \+ 1\);\s*\}, baselineIntervalMs\)/,
+  );
   assert.equal(compactSnapshot.includes("smoothLiveRateSnapshot(liveRate"), true);
   assert.equal(compactSnapshot.includes("markLiveUsageActivity(smoothed)"), true);
   assert.equal(compactSnapshot.includes("usageRefreshIntervalMs({"), true);

@@ -54,11 +54,6 @@ import { useDashboardActions } from "./useDashboardActions";
 import { useDeferredDashboardLoads } from "./useDeferredDashboardLoads";
 import { useLiveRateFeed } from "./useLiveRateFeed";
 import { nextQuotaResetRefreshDelayMs } from "../utils/quotaRefresh";
-import {
-  LIVE_USAGE_ACTIVITY_HOLD_MS,
-  liveRateHasUsageRefreshActivity,
-  usageRefreshIntervalMs,
-} from "../utils/usageRefreshCadence";
 import { useWakeRefresh } from "../utils/useWakeRefresh";
 
 const DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
@@ -104,7 +99,6 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const [dashboardVisible, setDashboardVisible] = useState(dashboardIsVisible);
   const [refreshTaskCount, setRefreshTaskCount] = useState(0);
   const [usageCacheInitializing, setUsageCacheInitializing] = useState(false);
-  const [lastLiveActivityAtMs, setLastLiveActivityAtMs] = useState(0);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const [sourceToken, setSourceToken] = useState<DashboardSourceToken | null>(null);
   const [sourceLoadGeneration, setSourceLoadGeneration] = useState(0);
@@ -112,7 +106,6 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const sourceTransitionRef = useRef(createDashboardSourceTransition());
   const sourceReconcileRequestRef = useRef(0);
   const sourceReconcileInFlightRef = useRef<Promise<CodexHomeSourceEnvelope | null> | null>(null);
-  const lastLiveActivityAtMsRef = useRef(0);
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
 
   const captureSourceToken = useCallback(
@@ -159,8 +152,6 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     setForceNextQuotaLoad(false);
     setRefreshTaskCount(0);
     setUsageCacheInitializing(false);
-    lastLiveActivityAtMsRef.current = 0;
-    setLastLiveActivityAtMs(0);
 
     if (result.sourceChanged) {
       setLoadGeneration((current) => current + 1);
@@ -252,30 +243,14 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     });
   }, [isSourceTokenCurrent, markRenderCommit, sourceToken]);
 
-  const markLiveUsageActivity = useCallback((liveRate: LiveRateSnapshot) => {
-    if (!liveRateHasUsageRefreshActivity(liveRate)) {
-      return;
-    }
-
-    const nowMs = Date.now();
-    lastLiveActivityAtMsRef.current = nowMs;
-    setLastLiveActivityAtMs((current) => {
-      if (current > 0 && nowMs - current < LIVE_USAGE_ACTIVITY_HOLD_MS) {
-        return current;
-      }
-      return nowMs;
-    });
-  }, []);
-
   const mergeLiveRateSnapshot = useCallback((liveRate: LiveRateSnapshot) => {
     if (!isSourceTokenCurrent(sourceToken)) {
       return;
     }
-    markLiveUsageActivity(liveRate);
     setState((current) => isSourceTokenCurrent(sourceToken)
       ? mergeLiveRate(current, liveRate)
       : current);
-  }, [isSourceTokenCurrent, markLiveUsageActivity, sourceToken]);
+  }, [isSourceTokenCurrent, sourceToken]);
 
   const mergeThreadOptions = useCallback((liveThreadOptions: LiveThreadOption[]) => {
     if (!isSourceTokenCurrent(sourceToken)) {
@@ -527,42 +502,14 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     const baselineIntervalMs = dashboardVisible
       ? DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS
       : DASHBOARD_BACKGROUND_AUTO_REFRESH_INTERVAL_MS;
-    const intervalMs = usageRefreshIntervalMs({
-      baselineIntervalMs,
-      lastLiveActivityAtMs,
-    });
     const interval = window.setInterval(() => {
       setLoadGeneration((current) => current + 1);
-    }, intervalMs);
+    }, baselineIntervalMs);
 
     return () => {
       window.clearInterval(interval);
     };
-  }, [dashboardReady, dashboardVisible, fastSnapshotLoaded, lastLiveActivityAtMs, state.loading]);
-
-  useEffect(() => {
-    if (lastLiveActivityAtMs <= 0) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      const latestActivityAtMs = lastLiveActivityAtMsRef.current;
-      if (
-        latestActivityAtMs > 0
-        && Date.now() - latestActivityAtMs < LIVE_USAGE_ACTIVITY_HOLD_MS
-      ) {
-        setLastLiveActivityAtMs(latestActivityAtMs);
-        return;
-      }
-
-      lastLiveActivityAtMsRef.current = 0;
-      setLastLiveActivityAtMs(0);
-    }, LIVE_USAGE_ACTIVITY_HOLD_MS);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [lastLiveActivityAtMs]);
+  }, [dashboardReady, dashboardVisible, fastSnapshotLoaded, state.loading]);
 
   const quotaAutoRefreshPlan = useMemo(
     () => makeQuotaAutoRefreshPlan({
@@ -669,8 +616,6 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     if (liveRateEnabled || !isSourceTokenCurrent(sourceToken)) {
       return;
     }
-    lastLiveActivityAtMsRef.current = 0;
-    setLastLiveActivityAtMs(0);
     setState((current) => isSourceTokenCurrent(sourceToken)
       ? mergeLiveRate(current, disabledLiveRateSnapshot(selectedLiveThreadId))
       : current);
