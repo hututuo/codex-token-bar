@@ -1,7 +1,8 @@
 use super::session_files::session_id_from_file;
 use super::session_parser::{
-    read_event_excerpts, stream_session_file_exact, ExactEventSourceOffsets, ExactSessionEventSink,
-    ExactTokenEvent, SourceByteRange, UsageSnapshotFingerprint,
+    read_event_excerpts, stream_session_file_exact, stream_session_file_exact_from, ExactChunkHash,
+    ExactEventSourceOffsets, ExactSessionEventSink, ExactSessionParserState, ExactTokenEvent,
+    SourceByteRange, UsageSnapshotFingerprint, EXACT_INDEX_CHUNK_SIZE,
 };
 use super::TokenUsageSummary;
 #[cfg(not(test))]
@@ -27,7 +28,8 @@ use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
 
-const INDEX_SCHEMA_VERSION: i64 = 4;
+const INDEX_SCHEMA_VERSION: i64 = 5;
+const LEGACY_APPEND_MIGRATION_SCHEMA_VERSION: i64 = 4;
 const HOURLY_INTERVAL_SECONDS: i64 = 60 * 60;
 const SEVEN_DAY_POINT_COUNT: i64 = 7 * 24;
 const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
@@ -64,6 +66,16 @@ struct FileSignature {
     changed_ns: i128,
 }
 
+#[derive(Clone, Debug)]
+struct IndexedFileCheckpoint {
+    generation: i64,
+    size: u64,
+    identity: FileIdentity,
+    resume_offset: u64,
+    parser_state: ExactSessionParserState,
+    audit_chunk_index: u64,
+}
+
 struct IndexedTurnCandidate {
     usage: TurnCacheUsage,
     file_path: PathBuf,
@@ -85,6 +97,8 @@ thread_local! {
     static AFTER_PREFIX_SCAN_HOOK: RefCell<Option<AfterPrefixScanHook>> = RefCell::new(None);
     static AFTER_FILE_COMMIT_HOOK: RefCell<Option<AfterFileCommitHook>> = RefCell::new(None);
     static PREFIX_REHASH_COUNT: Cell<u64> = const { Cell::new(0) };
+    static FULL_SCAN_BYTES: Cell<u64> = const { Cell::new(0) };
+    static APPEND_SCAN_BYTES: Cell<u64> = const { Cell::new(0) };
 }
 
 impl ExactUsageIndex {
@@ -106,6 +120,7 @@ impl ExactUsageIndex {
         if existed_before
             && !recovered_corrupt_index
             && schema_version != Some(INDEX_SCHEMA_VERSION)
+            && schema_version != Some(LEGACY_APPEND_MIGRATION_SCHEMA_VERSION)
         {
             // The index is fully rebuildable. Replacing an obsolete database,
             // rather than dropping its text columns in place, guarantees that
@@ -117,6 +132,15 @@ impl ExactUsageIndex {
             schema_version = None;
         }
         initialize_index_schema(&connection)?;
+        if schema_version == Some(LEGACY_APPEND_MIGRATION_SCHEMA_VERSION) {
+            migrate_v4_index_for_append(&connection)?;
+            set_metadata(
+                &connection,
+                "schema_version",
+                &INDEX_SCHEMA_VERSION.to_string(),
+            )?;
+            schema_version = Some(INDEX_SCHEMA_VERSION);
+        }
         if schema_version != Some(INDEX_SCHEMA_VERSION) {
             set_metadata(
                 &connection,
@@ -142,6 +166,8 @@ impl ExactUsageIndex {
                 .execute_batch(
                     r#"
                     DELETE FROM events;
+                    DELETE FROM file_fingerprints;
+                    DELETE FROM file_chunks;
                     DELETE FROM files;
                     DELETE FROM session_metadata;
                     DELETE FROM metadata
@@ -181,6 +207,20 @@ impl ExactUsageIndex {
     #[cfg(test)]
     pub(super) fn prefix_rehash_count_for_testing() -> u64 {
         PREFIX_REHASH_COUNT.with(Cell::get)
+    }
+
+    #[cfg(test)]
+    pub(super) fn reset_scan_bytes_for_testing() {
+        FULL_SCAN_BYTES.with(|bytes| bytes.set(0));
+        APPEND_SCAN_BYTES.with(|bytes| bytes.set(0));
+    }
+
+    #[cfg(test)]
+    pub(super) fn scan_bytes_for_testing() -> (u64, u64) {
+        (
+            FULL_SCAN_BYTES.with(Cell::get),
+            APPEND_SCAN_BYTES.with(Cell::get),
+        )
     }
 
     pub(super) fn sync(
@@ -927,18 +967,30 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
         &mut self,
         fingerprint: &UsageSnapshotFingerprint,
     ) -> Result<bool, String> {
-        let mut encoded = [0_u8; 9 * 8];
-        for (index, value) in fingerprint.iter().enumerate() {
-            let start = index * 8;
-            encoded[start..start + 8].copy_from_slice(&value.to_le_bytes());
-        }
-        self.transaction
+        let encoded = encode_fingerprint(fingerprint);
+        let inserted = self
+            .transaction
             .execute(
                 "INSERT OR IGNORE INTO exact_fingerprints(fingerprint) VALUES (?1)",
                 params![encoded.as_slice()],
             )
-            .map(|changed| changed > 0)
-            .map_err(|error| format!("无法写入精确 token 去重索引：{error}"))
+            .map_err(|error| format!("无法写入精确 token 去重索引：{error}"))?
+            > 0;
+        if inserted {
+            self.transaction
+                .execute(
+                    r#"
+                    INSERT OR IGNORE INTO file_fingerprints(
+                        file_generation,
+                        file_path,
+                        fingerprint
+                    ) VALUES (?1, ?2, ?3)
+                    "#,
+                    params![self.file_generation, self.file_path, encoded.as_slice()],
+                )
+                .map_err(|error| format!("无法持久化精确 token 去重状态：{error}"))?;
+        }
+        Ok(inserted)
     }
 
     fn insert_event(&mut self, event: &ExactTokenEvent) -> Result<(), String> {
@@ -1003,6 +1055,15 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
             .map_err(|error| format!("无法写入精确 token 事件索引：{error}"))?;
         Ok(())
     }
+}
+
+fn encode_fingerprint(fingerprint: &UsageSnapshotFingerprint) -> [u8; 9 * 8] {
+    let mut encoded = [0_u8; 9 * 8];
+    for (index, value) in fingerprint.iter().enumerate() {
+        let start = index * 8;
+        encoded[start..start + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    encoded
 }
 
 fn prepare_scan_temp_tables(connection: &Connection) -> Result<(), String> {
@@ -1337,6 +1398,25 @@ fn process_session_file(
         return Ok(());
     }
 
+    if let Some(checkpoint) = indexed_file_checkpoint(connection, &path, generation)? {
+        if signature.size > checkpoint.size
+            && signature.identity == checkpoint.identity
+            && append_session_file(
+                connection,
+                generation,
+                codex_home,
+                file,
+                &path,
+                &mut handle,
+                signature,
+                &checkpoint,
+                warnings,
+            )?
+        {
+            return Ok(());
+        }
+    }
+
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("无法开始单文件精确 token 索引事务：{error}"))?;
@@ -1394,6 +1474,8 @@ fn process_session_file(
         &mut sink,
         warnings,
     )?;
+    #[cfg(test)]
+    FULL_SCAN_BYTES.with(|bytes| bytes.set(bytes.get().saturating_add(signature.size)));
     drop(sink);
     debug_assert_eq!(parsed.bytes_read, signature.size);
 
@@ -1413,6 +1495,16 @@ fn process_session_file(
             params![generation, &path, parsed.prefix_sha256.as_slice()],
         )
         .map_err(|error| format!("无法保存会话文件前缀校验值：{error}"))?;
+    replace_file_chunks(&transaction, generation, &path, 0, &parsed.chunk_hashes)?;
+    save_file_checkpoint(
+        &transaction,
+        generation,
+        &path,
+        signature,
+        parsed.resume_offset,
+        parsed.state,
+        0,
+    )?;
 
     if parsed.bytes_read != signature.size {
         return Err(format!(
@@ -1426,6 +1518,618 @@ fn process_session_file(
         .map_err(|error| format!("无法提交单文件精确 token 索引：{error}"))?;
     run_after_file_commit_hook_for_testing(file)?;
     Ok(())
+}
+
+fn indexed_file_checkpoint(
+    connection: &Connection,
+    path: &str,
+    generation: i64,
+) -> Result<Option<IndexedFileCheckpoint>, String> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                generation,
+                size,
+                device_id,
+                file_id,
+                resume_offset,
+                previous_total_tokens,
+                fork_replay_started_ns,
+                fork_replay_active,
+                last_skipped_fork_replay_token_ns,
+                current_user_prompt_start,
+                current_user_prompt_end,
+                assistant_response_start,
+                assistant_response_end,
+                audit_chunk_index
+            FROM files
+            WHERE path = ?1
+              AND generation <= ?2
+              AND deleted = 0
+              AND append_ready = 1
+              AND resume_offset IS NOT NULL
+            ORDER BY generation DESC
+            LIMIT 1
+            "#,
+            params![path, generation],
+            |row| {
+                let size = nonnegative_u64(row.get::<_, i64>(1)?);
+                let device_id = row.get::<_, String>(2)?.parse::<u64>().unwrap_or_default();
+                let file_id = row.get::<_, String>(3)?.parse::<u64>().unwrap_or_default();
+                let resume_offset = nonnegative_u64(row.get::<_, i64>(4)?);
+                let previous_total_tokens = row.get::<_, Option<i64>>(5)?.map(nonnegative_u64);
+                let fork_replay_started_at = parse_timestamp_ns(row.get::<_, Option<String>>(6)?);
+                let fork_replay_active = row.get::<_, bool>(7)?;
+                let last_skipped_fork_replay_token_at =
+                    parse_timestamp_ns(row.get::<_, Option<String>>(8)?);
+                let current_user_prompt = source_range_from_columns(
+                    row.get::<_, Option<i64>>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                );
+                let assistant_response = source_range_from_columns(
+                    row.get::<_, Option<i64>>(11)?,
+                    row.get::<_, Option<i64>>(12)?,
+                );
+                Ok(IndexedFileCheckpoint {
+                    generation: row.get(0)?,
+                    size,
+                    identity: FileIdentity { device_id, file_id },
+                    resume_offset,
+                    parser_state: ExactSessionParserState {
+                        previous_total_tokens,
+                        fork_replay_started_at,
+                        fork_replay_active,
+                        last_skipped_fork_replay_token_at,
+                        current_user_prompt,
+                        assistant_response,
+                    },
+                    audit_chunk_index: nonnegative_u64(row.get::<_, i64>(13)?),
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| format!("无法读取会话文件追加检查点：{error}"))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_session_file(
+    connection: &mut Connection,
+    generation: i64,
+    codex_home: &Path,
+    file: &Path,
+    path: &str,
+    handle: &mut fs::File,
+    signature: FileSignature,
+    checkpoint: &IndexedFileCheckpoint,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Result<bool, String> {
+    if checkpoint.resume_offset > checkpoint.size
+        || !audit_checkpoint_chunk(connection, handle, file, path, checkpoint)?
+    {
+        return Ok(false);
+    }
+
+    let tail_chunk_index = checkpoint
+        .size
+        .checked_sub(1)
+        .map(|offset| offset / EXACT_INDEX_CHUNK_SIZE);
+    let stored_tail = match tail_chunk_index {
+        Some(index) => stored_file_chunk(connection, checkpoint.generation, path, index)?,
+        None => None,
+    };
+    if checkpoint.size > 0 && stored_tail.is_none() {
+        return Ok(false);
+    }
+    let hashing_start_offset = tail_chunk_index
+        .unwrap_or(0)
+        .saturating_mul(EXACT_INDEX_CHUNK_SIZE);
+
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("无法开始单文件追加索引事务：{error}"))?;
+    ensure_active_build_generation(&transaction, generation)?;
+    transaction
+        .execute(
+            "DELETE FROM files WHERE generation = ?1 AND path = ?2",
+            params![generation, path],
+        )
+        .map_err(|error| format!("无法清理本轮追加会话的旧文件版本：{error}"))?;
+    let copied = transaction
+        .execute(
+            r#"
+            INSERT INTO files(
+                generation,
+                path,
+                deleted,
+                session_id,
+                size,
+                modified_ns,
+                device_id,
+                file_id,
+                changed_ns,
+                prefix_sha256,
+                append_ready,
+                resume_offset,
+                previous_total_tokens,
+                fork_replay_started_ns,
+                fork_replay_active,
+                last_skipped_fork_replay_token_ns,
+                current_user_prompt_start,
+                current_user_prompt_end,
+                assistant_response_start,
+                assistant_response_end,
+                audit_chunk_index
+            )
+            SELECT
+                ?1,
+                path,
+                0,
+                session_id,
+                size,
+                modified_ns,
+                device_id,
+                file_id,
+                changed_ns,
+                prefix_sha256,
+                append_ready,
+                resume_offset,
+                previous_total_tokens,
+                fork_replay_started_ns,
+                fork_replay_active,
+                last_skipped_fork_replay_token_ns,
+                current_user_prompt_start,
+                current_user_prompt_end,
+                assistant_response_start,
+                assistant_response_end,
+                audit_chunk_index
+            FROM files
+            WHERE generation = ?2 AND path = ?3
+            "#,
+            params![generation, checkpoint.generation, path],
+        )
+        .map_err(|error| format!("无法复制会话文件追加检查点：{error}"))?;
+    if copied != 1 {
+        return Ok(false);
+    }
+    transaction
+        .execute(
+            r#"
+            INSERT INTO events(
+                file_generation,
+                file_path,
+                ordinal,
+                timestamp,
+                session_id,
+                tokens,
+                input_tokens,
+                cached_input_tokens,
+                output_tokens,
+                user_prompt_start,
+                user_prompt_end,
+                assistant_response_start,
+                assistant_response_end
+            )
+            SELECT
+                ?1,
+                file_path,
+                ordinal,
+                timestamp,
+                session_id,
+                tokens,
+                input_tokens,
+                cached_input_tokens,
+                output_tokens,
+                user_prompt_start,
+                user_prompt_end,
+                assistant_response_start,
+                assistant_response_end
+            FROM events
+            WHERE file_generation = ?2 AND file_path = ?3
+            "#,
+            params![generation, checkpoint.generation, path],
+        )
+        .map_err(|error| format!("无法复制会话文件既有 token 事件：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO file_fingerprints(file_generation, file_path, fingerprint)
+            SELECT ?1, file_path, fingerprint
+            FROM file_fingerprints
+            WHERE file_generation = ?2 AND file_path = ?3
+            "#,
+            params![generation, checkpoint.generation, path],
+        )
+        .map_err(|error| format!("无法复制会话文件去重状态：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO file_chunks(
+                file_generation,
+                file_path,
+                chunk_index,
+                byte_count,
+                sha256
+            )
+            SELECT ?1, file_path, chunk_index, byte_count, sha256
+            FROM file_chunks
+            WHERE file_generation = ?2 AND file_path = ?3
+            "#,
+            params![generation, checkpoint.generation, path],
+        )
+        .map_err(|error| format!("无法复制会话文件分块校验状态：{error}"))?;
+    transaction
+        .execute("DELETE FROM exact_fingerprints", [])
+        .map_err(|error| format!("无法重置会话 token 去重表：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT OR IGNORE INTO exact_fingerprints(fingerprint)
+            SELECT fingerprint
+            FROM file_fingerprints
+            WHERE file_generation = ?1 AND file_path = ?2
+            "#,
+            params![generation, path],
+        )
+        .map_err(|error| format!("无法恢复会话 token 去重检查点：{error}"))?;
+    let ordinal = transaction
+        .query_row(
+            r#"
+            SELECT COALESCE(MAX(ordinal), 0)
+            FROM events
+            WHERE file_generation = ?1 AND file_path = ?2
+            "#,
+            params![generation, path],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(nonnegative_u64)
+        .map_err(|error| format!("无法读取会话文件追加事件序号：{error}"))?;
+
+    let session_id = session_id_from_file(file);
+    let mut sink = SqliteEventSink {
+        transaction: &transaction,
+        file_generation: generation,
+        file_path: path,
+        ordinal,
+    };
+    let parsed = stream_session_file_exact_from(
+        file,
+        handle,
+        hashing_start_offset,
+        checkpoint.resume_offset,
+        signature.size,
+        Some(checkpoint.size),
+        checkpoint.parser_state,
+        &session_id,
+        &mut sink,
+        warnings,
+    )?;
+    #[cfg(test)]
+    APPEND_SCAN_BYTES.with(|bytes| {
+        bytes.set(
+            bytes
+                .get()
+                .saturating_add(signature.size.saturating_sub(hashing_start_offset)),
+        )
+    });
+    drop(sink);
+    run_after_prefix_scan_hook_for_testing(file);
+
+    if checkpoint.size > 0 && parsed.validation_chunk_hash.as_ref() != stored_tail.as_ref() {
+        return Ok(false);
+    }
+    if parsed.bytes_read != signature.size {
+        return Err(format!(
+            "会话文件追加前缀未完整扫描，将在下一次刷新重试：{}",
+            relative_display_path(codex_home, file)
+        ));
+    }
+    validate_append_scan_prefix(file, handle, signature, &parsed.chunk_hashes).map_err(
+        |reason| {
+            format!(
+                "会话文件在追加扫描期间发生非追加变化，将在下一次刷新重试：{}（{}）",
+                relative_display_path(codex_home, file),
+                reason
+            )
+        },
+    )?;
+
+    replace_file_chunks(
+        &transaction,
+        generation,
+        path,
+        tail_chunk_index.unwrap_or(0),
+        &parsed.chunk_hashes,
+    )?;
+    let old_chunk_count = checkpoint
+        .size
+        .checked_sub(1)
+        .map_or(0, |offset| offset / EXACT_INDEX_CHUNK_SIZE + 1);
+    let next_audit_chunk = if old_chunk_count == 0 {
+        0
+    } else {
+        checkpoint.audit_chunk_index.saturating_add(1) % old_chunk_count
+    };
+    save_file_checkpoint(
+        &transaction,
+        generation,
+        path,
+        signature,
+        parsed.resume_offset,
+        parsed.state,
+        next_audit_chunk,
+    )?;
+    set_metadata(&transaction, "building_changed", "1")?;
+    transaction
+        .commit()
+        .map_err(|error| format!("无法提交单文件追加 token 索引：{error}"))?;
+    run_after_file_commit_hook_for_testing(file)?;
+    Ok(true)
+}
+
+fn audit_checkpoint_chunk(
+    connection: &Connection,
+    handle: &mut fs::File,
+    file: &Path,
+    path: &str,
+    checkpoint: &IndexedFileCheckpoint,
+) -> Result<bool, String> {
+    let chunk_count = checkpoint
+        .size
+        .checked_sub(1)
+        .map_or(0, |offset| offset / EXACT_INDEX_CHUNK_SIZE + 1);
+    if chunk_count == 0 {
+        return Ok(true);
+    }
+    let tail_index = (checkpoint.size - 1) / EXACT_INDEX_CHUNK_SIZE;
+    let audit_index = checkpoint.audit_chunk_index % chunk_count;
+    if audit_index == tail_index {
+        return Ok(true);
+    }
+    let Some(stored) = stored_file_chunk(connection, checkpoint.generation, path, audit_index)?
+    else {
+        return Ok(false);
+    };
+    let current = hash_file_chunk(handle, file, stored.index, stored.byte_count)?;
+    Ok(current == stored)
+}
+
+fn stored_file_chunk(
+    connection: &Connection,
+    generation: i64,
+    path: &str,
+    chunk_index: u64,
+) -> Result<Option<ExactChunkHash>, String> {
+    connection
+        .query_row(
+            r#"
+            SELECT byte_count, sha256
+            FROM file_chunks
+            WHERE file_generation = ?1
+              AND file_path = ?2
+              AND chunk_index = ?3
+            "#,
+            params![generation, path, checked_i64(chunk_index, "分块序号")?],
+            |row| {
+                let bytes = row.get::<_, Vec<u8>>(1)?;
+                let mut sha256 = [0_u8; 32];
+                if bytes.len() == sha256.len() {
+                    sha256.copy_from_slice(&bytes);
+                }
+                Ok(ExactChunkHash {
+                    index: chunk_index,
+                    byte_count: nonnegative_u64(row.get::<_, i64>(0)?),
+                    sha256,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| format!("无法读取会话文件分块校验值：{error}"))
+}
+
+fn hash_file_chunk(
+    handle: &mut fs::File,
+    path: &Path,
+    chunk_index: u64,
+    byte_count: u64,
+) -> Result<ExactChunkHash, String> {
+    let offset = chunk_index
+        .checked_mul(EXACT_INDEX_CHUNK_SIZE)
+        .ok_or_else(|| format!("会话文件分块位置溢出：{}", path.display()))?;
+    handle.seek(SeekFrom::Start(offset)).map_err(|error| {
+        format!(
+            "无法定位会话文件分块以完成一致性校验：{}（{}）",
+            path.display(),
+            error
+        )
+    })?;
+    let mut remaining = byte_count;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    while remaining > 0 {
+        let requested = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
+        let bytes_read = handle
+            .read(&mut buffer[..requested])
+            .map_err(|error| format!("复核会话文件分块失败：{}（{}）", path.display(), error))?;
+        if bytes_read == 0 {
+            return Err(format!(
+                "复核会话文件分块时提前到达结尾：{}",
+                path.display()
+            ));
+        }
+        hasher.update(&buffer[..bytes_read]);
+        remaining = remaining.saturating_sub(bytes_read as u64);
+    }
+    Ok(ExactChunkHash {
+        index: chunk_index,
+        byte_count,
+        sha256: hasher.finalize().into(),
+    })
+}
+
+fn validate_append_scan_prefix(
+    path: &Path,
+    handle: &mut fs::File,
+    start_signature: FileSignature,
+    chunk_hashes: &[ExactChunkHash],
+) -> Result<(), String> {
+    let handle_after = file_signature_from_handle(handle, path)?;
+    let path_after = file_signature(path)?;
+    validate_prefix_identity(start_signature, handle_after, path_after)?;
+    if handle_after == start_signature && path_after == start_signature {
+        return Ok(());
+    }
+    let tail_index = start_signature
+        .size
+        .checked_sub(1)
+        .map(|offset| offset / EXACT_INDEX_CHUNK_SIZE);
+    let Some(tail_index) = tail_index else {
+        return Ok(());
+    };
+    let Some(scanned_tail) = chunk_hashes.iter().find(|chunk| chunk.index == tail_index) else {
+        return Err("追加扫描缺少末块校验值".into());
+    };
+    let prefix_byte_count = start_signature
+        .size
+        .saturating_sub(tail_index.saturating_mul(EXACT_INDEX_CHUNK_SIZE));
+    let current_tail = hash_file_chunk(handle, path, tail_index, prefix_byte_count)?;
+    if current_tail.sha256 != scanned_tail.sha256
+        || current_tail.byte_count != scanned_tail.byte_count
+    {
+        return Err("扫描起点末块内的既有字节被改写".into());
+    }
+    if handle_after.size == start_signature.size || path_after.size == start_signature.size {
+        return Err("扫描期间文件元数据变化但没有保持纯追加形态".into());
+    }
+    Ok(())
+}
+
+fn replace_file_chunks(
+    transaction: &Transaction<'_>,
+    generation: i64,
+    path: &str,
+    starting_at: u64,
+    chunks: &[ExactChunkHash],
+) -> Result<(), String> {
+    transaction
+        .execute(
+            r#"
+            DELETE FROM file_chunks
+            WHERE file_generation = ?1
+              AND file_path = ?2
+              AND chunk_index >= ?3
+            "#,
+            params![generation, path, checked_i64(starting_at, "分块起始序号")?],
+        )
+        .map_err(|error| format!("无法清理会话文件待更新分块：{error}"))?;
+    let mut statement = transaction
+        .prepare(
+            r#"
+            INSERT INTO file_chunks(
+                file_generation,
+                file_path,
+                chunk_index,
+                byte_count,
+                sha256
+            ) VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .map_err(|error| format!("无法准备会话文件分块写入：{error}"))?;
+    for chunk in chunks {
+        statement
+            .execute(params![
+                generation,
+                path,
+                checked_i64(chunk.index, "分块序号")?,
+                checked_i64(chunk.byte_count, "分块字节数")?,
+                chunk.sha256.as_slice(),
+            ])
+            .map_err(|error| format!("无法写入会话文件分块校验值：{error}"))?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn save_file_checkpoint(
+    transaction: &Transaction<'_>,
+    generation: i64,
+    path: &str,
+    signature: FileSignature,
+    resume_offset: u64,
+    state: ExactSessionParserState,
+    audit_chunk_index: u64,
+) -> Result<(), String> {
+    let current_user_prompt_start = checked_optional_i64(
+        state.current_user_prompt.map(|range| range.start),
+        "检查点用户问题起始位置",
+    )?;
+    let current_user_prompt_end = checked_optional_i64(
+        state.current_user_prompt.map(|range| range.end),
+        "检查点用户问题结束位置",
+    )?;
+    let assistant_response_start = checked_optional_i64(
+        state.assistant_response.map(|range| range.start),
+        "检查点回答起始位置",
+    )?;
+    let assistant_response_end = checked_optional_i64(
+        state.assistant_response.map(|range| range.end),
+        "检查点回答结束位置",
+    )?;
+    transaction
+        .execute(
+            r#"
+            UPDATE files
+            SET
+                size = ?3,
+                modified_ns = ?4,
+                device_id = ?5,
+                file_id = ?6,
+                changed_ns = ?7,
+                append_ready = 1,
+                resume_offset = ?8,
+                previous_total_tokens = ?9,
+                fork_replay_started_ns = ?10,
+                fork_replay_active = ?11,
+                last_skipped_fork_replay_token_ns = ?12,
+                current_user_prompt_start = ?13,
+                current_user_prompt_end = ?14,
+                assistant_response_start = ?15,
+                assistant_response_end = ?16,
+                audit_chunk_index = ?17
+            WHERE generation = ?1 AND path = ?2
+            "#,
+            params![
+                generation,
+                path,
+                checked_i64(signature.size, "会话文件大小")?,
+                signature.modified_ns.to_string(),
+                signature.identity.device_id.to_string(),
+                signature.identity.file_id.to_string(),
+                signature.changed_ns.to_string(),
+                checked_i64(resume_offset, "会话文件续扫位置")?,
+                checked_optional_i64(state.previous_total_tokens, "检查点累计 token")?,
+                timestamp_ns_text(state.fork_replay_started_at),
+                state.fork_replay_active,
+                timestamp_ns_text(state.last_skipped_fork_replay_token_at),
+                current_user_prompt_start,
+                current_user_prompt_end,
+                assistant_response_start,
+                assistant_response_end,
+                checked_i64(audit_chunk_index, "滚动审计分块序号")?,
+            ],
+        )
+        .map_err(|error| format!("无法保存会话文件追加检查点：{error}"))?;
+    Ok(())
+}
+
+fn timestamp_ns_text(value: Option<OffsetDateTime>) -> Option<String> {
+    value.map(|timestamp| timestamp.unix_timestamp_nanos().to_string())
+}
+
+fn parse_timestamp_ns(value: Option<String>) -> Option<OffsetDateTime> {
+    value
+        .and_then(|raw| raw.parse::<i128>().ok())
+        .and_then(|nanoseconds| OffsetDateTime::from_unix_timestamp_nanos(nanoseconds).ok())
 }
 
 fn prune_obsolete_file_versions(connection: &Connection, path: &str) -> Result<(), String> {
@@ -1839,6 +2543,17 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 file_id TEXT NOT NULL,
                 changed_ns TEXT NOT NULL,
                 prefix_sha256 BLOB NOT NULL,
+                append_ready INTEGER NOT NULL DEFAULT 0,
+                resume_offset INTEGER,
+                previous_total_tokens INTEGER,
+                fork_replay_started_ns TEXT,
+                fork_replay_active INTEGER NOT NULL DEFAULT 0,
+                last_skipped_fork_replay_token_ns TEXT,
+                current_user_prompt_start INTEGER,
+                current_user_prompt_end INTEGER,
+                assistant_response_start INTEGER,
+                assistant_response_end INTEGER,
+                audit_chunk_index INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(generation, path)
             ) WITHOUT ROWID;
 
@@ -1869,6 +2584,28 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 ON events(timestamp);
             CREATE INDEX IF NOT EXISTS events_session_idx
                 ON events(session_id, timestamp, file_generation, file_path, ordinal);
+
+            CREATE TABLE IF NOT EXISTS file_fingerprints (
+                file_generation INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                fingerprint BLOB NOT NULL,
+                PRIMARY KEY(file_generation, file_path, fingerprint),
+                FOREIGN KEY(file_generation, file_path)
+                    REFERENCES files(generation, path)
+                    ON DELETE CASCADE
+            ) WITHOUT ROWID;
+
+            CREATE TABLE IF NOT EXISTS file_chunks (
+                file_generation INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                byte_count INTEGER NOT NULL,
+                sha256 BLOB NOT NULL,
+                PRIMARY KEY(file_generation, file_path, chunk_index),
+                FOREIGN KEY(file_generation, file_path)
+                    REFERENCES files(generation, path)
+                    ON DELETE CASCADE
+            ) WITHOUT ROWID;
 
             CREATE TABLE IF NOT EXISTS session_metadata (
                 session_id TEXT PRIMARY KEY,
@@ -1906,6 +2643,34 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
             "#,
         )
         .map_err(|error| format!("无法初始化精确 token 索引结构：{error}"))
+}
+
+fn migrate_v4_index_for_append(connection: &Connection) -> Result<(), String> {
+    let additions = [
+        ("append_ready", "INTEGER NOT NULL DEFAULT 0"),
+        ("resume_offset", "INTEGER"),
+        ("previous_total_tokens", "INTEGER"),
+        ("fork_replay_started_ns", "TEXT"),
+        ("fork_replay_active", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_skipped_fork_replay_token_ns", "TEXT"),
+        ("current_user_prompt_start", "INTEGER"),
+        ("current_user_prompt_end", "INTEGER"),
+        ("assistant_response_start", "INTEGER"),
+        ("assistant_response_end", "INTEGER"),
+        ("audit_chunk_index", "INTEGER NOT NULL DEFAULT 0"),
+    ];
+    for (column, definition) in additions {
+        if column_exists(connection, "files", column) {
+            continue;
+        }
+        connection
+            .execute(
+                &format!("ALTER TABLE files ADD COLUMN {column} {definition}"),
+                [],
+            )
+            .map_err(|error| format!("无法增量迁移精确 token 追加索引字段 {column}：{error}"))?;
+    }
+    Ok(())
 }
 
 fn remove_index_storage(path: &Path) -> Result<(), String> {

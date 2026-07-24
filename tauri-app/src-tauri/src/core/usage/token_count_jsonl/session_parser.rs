@@ -12,6 +12,7 @@ use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 
 const FORK_REPLAY_EXIT_GRACE: Duration = Duration::seconds(2);
+pub(super) const EXACT_INDEX_CHUNK_SIZE: u64 = 4 * 1024 * 1024;
 pub(super) type UsageSnapshotFingerprint = [u64; 9];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,16 +66,37 @@ pub(super) struct SessionParseResult {
     pub(super) fork_replay_active: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct ExactSessionParseResult {
     pub(super) prefix_sha256: [u8; 32],
     pub(super) bytes_read: u64,
+    pub(super) resume_offset: u64,
+    pub(super) state: ExactSessionParserState,
+    pub(super) chunk_hashes: Vec<ExactChunkHash>,
+    pub(super) validation_chunk_hash: Option<ExactChunkHash>,
     #[cfg(test)]
     pub(super) event_count: u64,
     #[cfg(test)]
     pub(super) previous_total_tokens: Option<u64>,
     #[cfg(test)]
     pub(super) fork_replay_active: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct ExactSessionParserState {
+    pub(super) previous_total_tokens: Option<u64>,
+    pub(super) fork_replay_started_at: Option<OffsetDateTime>,
+    pub(super) fork_replay_active: bool,
+    pub(super) last_skipped_fork_replay_token_at: Option<OffsetDateTime>,
+    pub(super) current_user_prompt: Option<SourceByteRange>,
+    pub(super) assistant_response: Option<SourceByteRange>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ExactChunkHash {
+    pub(super) index: u64,
+    pub(super) byte_count: u64,
+    pub(super) sha256: [u8; 32],
 }
 
 pub(super) trait ExactSessionEventSink {
@@ -94,22 +116,93 @@ pub(super) fn stream_session_file_exact(
     sink: &mut impl ExactSessionEventSink,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Result<ExactSessionParseResult, String> {
-    handle.seek(SeekFrom::Start(0)).map_err(|error| {
-        let message = format!("定位会话文件失败：{}（{}）", file.display(), error);
-        warnings.push(jsonl_file_warning(message.clone()));
-        message
-    })?;
-    let mut reader = BufReader::new(PrefixHashingReader::new(handle.take(prefix_size)));
+    stream_session_file_exact_from(
+        file,
+        handle,
+        0,
+        0,
+        prefix_size,
+        None,
+        ExactSessionParserState::default(),
+        session_id,
+        sink,
+        warnings,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stream_session_file_exact_from(
+    file: &Path,
+    handle: &mut fs::File,
+    hashing_start_offset: u64,
+    parsing_start_offset: u64,
+    prefix_size: u64,
+    validation_boundary: Option<u64>,
+    initial_state: ExactSessionParserState,
+    session_id: &str,
+    sink: &mut impl ExactSessionEventSink,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Result<ExactSessionParseResult, String> {
+    if hashing_start_offset > parsing_start_offset || parsing_start_offset > prefix_size {
+        return Err(format!(
+            "会话 JSONL 续扫边界无效：{}（hash={}，parse={}，end={}）",
+            file.display(),
+            hashing_start_offset,
+            parsing_start_offset,
+            prefix_size
+        ));
+    }
+    if validation_boundary
+        .is_some_and(|boundary| boundary < hashing_start_offset || boundary > prefix_size)
+    {
+        return Err(format!("会话 JSONL 校验边界无效：{}", file.display()));
+    }
+
+    handle
+        .seek(SeekFrom::Start(hashing_start_offset))
+        .map_err(|error| {
+            let message = format!("定位会话文件失败：{}（{}）", file.display(), error);
+            warnings.push(jsonl_file_warning(message.clone()));
+            message
+        })?;
+    let byte_count = prefix_size.saturating_sub(hashing_start_offset);
+    let mut hashing_reader = PrefixHashingReader::new(
+        handle.take(byte_count),
+        hashing_start_offset,
+        validation_boundary,
+    );
+    let mut skipped = parsing_start_offset.saturating_sub(hashing_start_offset);
+    let mut skip_buffer = [0_u8; 64 * 1024];
+    while skipped > 0 {
+        let requested =
+            usize::try_from(skipped.min(skip_buffer.len() as u64)).unwrap_or(skip_buffer.len());
+        let bytes_read = hashing_reader
+            .read(&mut skip_buffer[..requested])
+            .map_err(|error| {
+                let message = format!("读取会话文件续扫前缀失败：{}（{}）", file.display(), error);
+                warnings.push(jsonl_file_warning(message.clone()));
+                message
+            })?;
+        if bytes_read == 0 {
+            let message = format!("会话文件在续扫边界之前缩短：{}", file.display());
+            warnings.push(jsonl_file_warning(message.clone()));
+            return Err(message);
+        }
+        skipped = skipped.saturating_sub(bytes_read as u64);
+    }
+
+    let mut reader = BufReader::new(hashing_reader);
     let mut line_bytes = Vec::new();
-    let mut fork_replay_started_at = None;
-    let mut fork_replay_active = false;
-    let mut last_skipped_fork_replay_token_at = None;
-    let mut previous_total = None;
-    let mut current_user_prompt = None;
-    let mut assistant_response: Option<SourceByteRange> = None;
+    let mut fork_replay_started_at = initial_state.fork_replay_started_at;
+    let mut fork_replay_active = initial_state.fork_replay_active;
+    let mut last_skipped_fork_replay_token_at = initial_state.last_skipped_fork_replay_token_at;
+    let mut previous_total = initial_state.previous_total_tokens;
+    let mut current_user_prompt = initial_state.current_user_prompt;
+    let mut assistant_response = initial_state.assistant_response;
     #[cfg(test)]
     let mut event_count = 0_u64;
-    let mut source_offset = 0_u64;
+    let mut source_offset = parsing_start_offset;
+    let mut resume_offset = parsing_start_offset;
 
     loop {
         line_bytes.clear();
@@ -137,6 +230,7 @@ pub(super) fn stream_session_file_exact(
         if !line_ended_with_newline && !is_complete_json_line(line) {
             break;
         }
+        resume_offset = source_offset;
         let line = line.trim_end_matches(['\r', '\n']);
 
         if fork_replay_started_at.is_none() {
@@ -237,8 +331,9 @@ pub(super) fn stream_session_file_exact(
     }
 
     let hashing_reader = reader.into_inner();
-    let bytes_read = hashing_reader.bytes_read;
-    let prefix_sha256 = hashing_reader.finish();
+    let range_bytes_read = hashing_reader.bytes_read;
+    let (prefix_sha256, chunk_hashes, validation_chunk_hash) = hashing_reader.finish();
+    let bytes_read = hashing_start_offset.saturating_add(range_bytes_read);
     if bytes_read != prefix_size {
         let message = format!(
             "会话文件在固定前缀扫描期间缩短：{}（预期 {} 字节，实际读取 {} 字节）",
@@ -253,6 +348,17 @@ pub(super) fn stream_session_file_exact(
     Ok(ExactSessionParseResult {
         prefix_sha256,
         bytes_read,
+        resume_offset,
+        state: ExactSessionParserState {
+            previous_total_tokens: previous_total,
+            fork_replay_started_at,
+            fork_replay_active,
+            last_skipped_fork_replay_token_at,
+            current_user_prompt,
+            assistant_response,
+        },
+        chunk_hashes,
+        validation_chunk_hash,
         #[cfg(test)]
         event_count,
         #[cfg(test)]
@@ -266,19 +372,75 @@ struct PrefixHashingReader<R> {
     inner: R,
     hasher: Sha256,
     bytes_read: u64,
+    absolute_offset: u64,
+    chunk_index: u64,
+    chunk_byte_count: u64,
+    chunk_hasher: Sha256,
+    chunk_hashes: Vec<ExactChunkHash>,
+    validation_boundary: Option<u64>,
+    validation_chunk_hash: Option<ExactChunkHash>,
 }
 
 impl<R> PrefixHashingReader<R> {
-    fn new(inner: R) -> Self {
+    fn new(inner: R, absolute_offset: u64, validation_boundary: Option<u64>) -> Self {
+        debug_assert_eq!(absolute_offset % EXACT_INDEX_CHUNK_SIZE, 0);
         Self {
             inner,
             hasher: Sha256::new(),
             bytes_read: 0,
+            absolute_offset,
+            chunk_index: absolute_offset / EXACT_INDEX_CHUNK_SIZE,
+            chunk_byte_count: 0,
+            chunk_hasher: Sha256::new(),
+            chunk_hashes: Vec::new(),
+            validation_boundary,
+            validation_chunk_hash: None,
         }
     }
 
-    fn finish(self) -> [u8; 32] {
-        self.hasher.finalize().into()
+    fn finish(mut self) -> ([u8; 32], Vec<ExactChunkHash>, Option<ExactChunkHash>) {
+        if self.chunk_byte_count > 0 {
+            self.finish_chunk();
+        }
+        (
+            self.hasher.finalize().into(),
+            self.chunk_hashes,
+            self.validation_chunk_hash,
+        )
+    }
+
+    fn finish_chunk(&mut self) {
+        if self.chunk_byte_count == 0 {
+            return;
+        }
+        let hash = ExactChunkHash {
+            index: self.chunk_index,
+            byte_count: self.chunk_byte_count,
+            sha256: self.chunk_hasher.clone().finalize().into(),
+        };
+        self.chunk_hashes.push(hash);
+        self.chunk_index = self.chunk_index.saturating_add(1);
+        self.chunk_byte_count = 0;
+        self.chunk_hasher = Sha256::new();
+    }
+
+    fn capture_validation_hash(&mut self) {
+        let Some(boundary) = self.validation_boundary else {
+            return;
+        };
+        if self.absolute_offset != boundary || self.validation_chunk_hash.is_some() || boundary == 0
+        {
+            return;
+        }
+        if self.chunk_byte_count == 0 {
+            self.validation_chunk_hash = self.chunk_hashes.last().copied();
+        } else {
+            self.validation_chunk_hash = Some(ExactChunkHash {
+                index: self.chunk_index,
+                byte_count: self.chunk_byte_count,
+                sha256: self.chunk_hasher.clone().finalize().into(),
+            });
+        }
     }
 }
 
@@ -287,6 +449,33 @@ impl<R: Read> Read for PrefixHashingReader<R> {
         let bytes_read = self.inner.read(buffer)?;
         self.hasher.update(&buffer[..bytes_read]);
         self.bytes_read = self.bytes_read.saturating_add(bytes_read as u64);
+        let mut consumed = 0_usize;
+        while consumed < bytes_read {
+            let chunk_remaining = EXACT_INDEX_CHUNK_SIZE.saturating_sub(self.chunk_byte_count);
+            let validation_remaining = self
+                .validation_boundary
+                .filter(|boundary| *boundary > self.absolute_offset)
+                .map(|boundary| boundary.saturating_sub(self.absolute_offset))
+                .unwrap_or(u64::MAX);
+            let take = usize::try_from(
+                ((bytes_read - consumed) as u64)
+                    .min(chunk_remaining)
+                    .min(validation_remaining),
+            )
+            .unwrap_or(bytes_read - consumed);
+            if take == 0 {
+                self.capture_validation_hash();
+                continue;
+            }
+            self.chunk_hasher.update(&buffer[consumed..consumed + take]);
+            self.chunk_byte_count = self.chunk_byte_count.saturating_add(take as u64);
+            self.absolute_offset = self.absolute_offset.saturating_add(take as u64);
+            consumed += take;
+            if self.chunk_byte_count == EXACT_INDEX_CHUNK_SIZE {
+                self.finish_chunk();
+            }
+            self.capture_validation_hash();
+        }
         Ok(bytes_read)
     }
 }

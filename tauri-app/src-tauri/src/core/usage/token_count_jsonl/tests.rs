@@ -1,4 +1,4 @@
-use super::session_parser::parse_session_file_full_result;
+use super::session_parser::{parse_session_file_full_result, EXACT_INDEX_CHUNK_SIZE};
 use super::*;
 use rusqlite::Connection;
 use std::fs;
@@ -321,6 +321,109 @@ fn exact_index_commits_the_scan_start_prefix_while_the_active_file_appends() {
 }
 
 #[test]
+fn exact_index_append_scan_reads_only_the_tail_chunk_and_new_suffix() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eappend-bytes-0000-0000-0000-exact.jsonl");
+    let mut handle = std::io::BufWriter::new(fs::File::create(&file).unwrap());
+    handle.write_all(br#"{"padding":""#).unwrap();
+    let padding = vec![b'x'; 1024 * 1024];
+    for _ in 0..12 {
+        handle.write_all(&padding).unwrap();
+    }
+    handle.write_all(b"\"}\n").unwrap();
+    handle
+        .write_all(
+            br#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        )
+        .unwrap();
+    handle.write_all(b"\n").unwrap();
+    handle.flush().unwrap();
+    drop(handle);
+    let initial_size = fs::metadata(&file).unwrap().len();
+
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let (cold_bytes, append_bytes_before) = ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(cold_bytes, initial_size);
+    assert_eq!(append_bytes_before, 0);
+
+    let appended = br#"{"timestamp":"2026-07-20T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#;
+    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    handle.write_all(appended).unwrap();
+    handle.write_all(b"\n").unwrap();
+    handle.flush().unwrap();
+    drop(handle);
+
+    let refreshed = dashboard_snapshot(&root).unwrap();
+    assert_eq!(refreshed.stats.total_tokens, 150);
+    assert_eq!(refreshed.stats.total_calls, 2);
+    let (full_bytes_after, append_bytes_after) = ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(
+        full_bytes_after, cold_bytes,
+        "a pure append must not trigger another complete source parse"
+    );
+    assert!(
+        append_bytes_after <= EXACT_INDEX_CHUNK_SIZE + appended.len() as u64 + 1,
+        "append parser read {append_bytes_after} bytes instead of one tail chunk plus the suffix"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_rolling_audit_falls_back_to_full_rebuild_after_middle_rewrite_and_append() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eaudit-rewrite-0000-0000-0000-exact.jsonl");
+    let original = r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
+    let mut handle = std::io::BufWriter::new(fs::File::create(&file).unwrap());
+    writeln!(handle, "{original}").unwrap();
+    handle.write_all(br#"{"padding":""#).unwrap();
+    let padding = vec![b'z'; 1024 * 1024];
+    for _ in 0..9 {
+        handle.write_all(&padding).unwrap();
+    }
+    handle.write_all(b"\"}\n").unwrap();
+    handle.flush().unwrap();
+    drop(handle);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+
+    let before = fs::read_to_string(&file).unwrap();
+    let rewritten = before.replacen("\"total_tokens\":120", "\"total_tokens\":121", 1);
+    assert_eq!(before.len(), rewritten.len());
+    fs::write(&file, rewritten).unwrap();
+    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(
+        handle,
+        "{}",
+        r#"{"timestamp":"2026-07-20T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#
+    )
+    .unwrap();
+    handle.flush().unwrap();
+    drop(handle);
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+
+    let refreshed = dashboard_snapshot(&root).unwrap();
+
+    assert_eq!(refreshed.stats.total_tokens, 151);
+    assert_eq!(refreshed.stats.total_calls, 2);
+    let (full_bytes, append_bytes) = ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(full_bytes, fs::metadata(&file).unwrap().len());
+    assert_eq!(
+        append_bytes, 0,
+        "the rolling audit must reject the append checkpoint before suffix parsing"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_stable_cold_scan_does_not_read_the_complete_prefix_twice() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     ExactUsageIndex::reset_prefix_rehash_count_for_testing();
@@ -342,6 +445,94 @@ fn exact_index_stable_cold_scan_does_not_read_the_complete_prefix_twice() {
         0,
         "stable files should trust the hash produced by the parsing pass"
     );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_migrates_v4_without_discarding_published_events() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019emigrate-v4-0000-0000-0000-exact.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let before = ExactUsageIndex::open(&root).unwrap();
+    let revision = before.revision().unwrap();
+    drop(before);
+
+    let connection = Connection::open(&index_path).unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = '4' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE files SET append_ready = 0, resume_offset = NULL",
+            [],
+        )
+        .unwrap();
+    connection.execute("DROP TABLE file_chunks", []).unwrap();
+    connection
+        .execute("DROP TABLE file_fingerprints", [])
+        .unwrap();
+    drop(connection);
+
+    let migrated = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(migrated.revision().unwrap(), revision);
+    assert_eq!(
+        migrated
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        120
+    );
+    drop(migrated);
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "5"
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    drop(connection);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(
+        handle,
+        "{}",
+        r#"{"timestamp":"2026-07-20T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#
+    )
+    .unwrap();
+    handle.flush().unwrap();
+    drop(handle);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
+    let (full_bytes, append_bytes) = ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(full_bytes, fs::metadata(&file).unwrap().len());
+    assert_eq!(append_bytes, 0);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -643,7 +834,7 @@ fn exact_index_quick_check_recovers_a_corrupt_database_by_rebuilding() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "4"
+        "5"
     );
 
     fs::remove_dir_all(root).unwrap();
