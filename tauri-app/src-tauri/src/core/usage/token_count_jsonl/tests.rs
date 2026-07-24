@@ -2256,7 +2256,11 @@ fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
     for _ in 0..100 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         if usage_summary_snapshot(&root).is_ok_and(|summary| summary.total_tokens == 260) {
-            assert_eq!(dashboard_aggregate_build_count_for_testing(&root), 1);
+            assert_eq!(
+                dashboard_aggregate_build_count_for_testing(&root),
+                0,
+                "compact summary refresh must not rebuild the full dashboard aggregate"
+            );
             fs::remove_dir_all(root).unwrap();
             return;
         }
@@ -2479,7 +2483,7 @@ fn marker_failure_warning_is_deduplicated_for_fresh_and_cached_snapshots() {
 }
 
 #[test]
-fn usage_summary_snapshot_cache_miss_schedules_one_background_build() {
+fn usage_summary_snapshot_cache_miss_schedules_one_lightweight_background_refresh() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
@@ -2501,7 +2505,11 @@ fn usage_summary_snapshot_cache_miss_schedules_one_background_build() {
         std::thread::sleep(std::time::Duration::from_millis(20));
         if let Ok(summary) = usage_summary_snapshot(&root) {
             assert_eq!(summary.total_tokens, 120);
-            assert_eq!(dashboard_aggregate_build_count_for_testing(&root), 1);
+            assert_eq!(
+                dashboard_aggregate_build_count_for_testing(&root),
+                0,
+                "compact summary refresh must not build rankings, charts, or excerpts"
+            );
             wait_for_usage_summary_refreshes_for_testing();
             fs::remove_dir_all(root).unwrap();
             return;

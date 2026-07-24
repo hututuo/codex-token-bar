@@ -33,7 +33,6 @@ use exact_usage_index::ExactUsageIndex;
 static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<DashboardAggregateCacheState>> = OnceLock::new();
 static DASHBOARD_BUILD_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 static USAGE_SUMMARY_REFRESH_IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
-#[cfg(test)]
 static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
@@ -142,8 +141,11 @@ fn activity_days_and_stats_at(
     (days, stats)
 }
 
-#[cfg(test)]
-pub fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
+fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
+    let build_gate = DASHBOARD_BUILD_GATE.get_or_init(|| Mutex::new(()));
+    let _build_guard = build_gate
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut warnings = Vec::new();
     let mut index = ExactUsageIndex::open(codex_home)?;
     let revision = index.sync(codex_home, &mut warnings)?;
@@ -163,13 +165,7 @@ pub fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
 }
 
 pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
-    let snapshot = dashboard_snapshot(codex_home)?;
-    let today = snapshot.activity_days.last();
-    Ok(TokenUsageSummary {
-        total_tokens: snapshot.stats.total_tokens,
-        today_tokens: today.map_or(0, |day| day.tokens),
-        today_requests: today.map_or(0, |day| day.calls),
-    })
+    usage_summary(codex_home)
 }
 
 pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, String> {
@@ -179,6 +175,9 @@ pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, St
     let changed = index.sources_changed(codex_home, &mut warnings)?;
     if changed {
         schedule_usage_summary_refresh(codex_home);
+    }
+    if let Some(summary) = cached_usage_summary(&signature) {
+        return Ok(summary);
     }
     if let Some(cached) = cached_dashboard_aggregate(&signature) {
         return Ok(cached.summary);
@@ -190,6 +189,9 @@ pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, St
     } else {
         index.summary(OffsetDateTime::now_utc(), local_offset).ok()
     };
+    if let Some(summary) = last_trusted.as_ref() {
+        store_usage_summary_cache(signature, summary.clone());
+    }
     last_trusted.ok_or_else(|| "精确 token summary 尚未就绪，正在后台初始化".into())
 }
 
@@ -251,7 +253,7 @@ fn schedule_usage_summary_refresh(codex_home: &Path) {
     }
 
     std::thread::spawn(move || {
-        let _ = dashboard_usage_summary(&key);
+        let _ = usage_summary(&key);
         if let Some(in_flight) = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get() {
             if let Ok(mut guard) = in_flight.lock() {
                 guard.remove(&key);
@@ -320,7 +322,6 @@ struct DashboardUsageScope {
     utc_offset_seconds: i32,
 }
 
-#[cfg(test)]
 #[derive(Clone, Debug)]
 struct CachedUsageSummary {
     signature: DashboardScanSignature,
@@ -366,6 +367,16 @@ fn cached_dashboard_usage_summary_at(
 ) -> Option<TokenUsageSummary> {
     hydrate_dashboard_aggregate_cache_once();
     let expected_scope = dashboard_usage_scope_at(codex_home, now_utc, local_offset);
+    let summary_cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
+    if let Some(summary) = summary_cache
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .filter(|cached| cached.signature.usage_scope() == expected_scope)
+        .map(|cached| cached.summary)
+    {
+        return Some(summary);
+    }
     let cache = DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()));
     cache
@@ -476,6 +487,7 @@ fn store_dashboard_aggregate(
     snapshot: Option<DashboardSnapshot>,
     summary: TokenUsageSummary,
 ) -> Option<LocalDataWarning> {
+    store_usage_summary_cache(signature.clone(), summary.clone());
     let cache = DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()));
     let mut aggregate = CachedDashboardAggregate {
@@ -506,7 +518,6 @@ fn store_dashboard_aggregate(
     warning
 }
 
-#[cfg(test)]
 fn cached_usage_summary(signature: &DashboardScanSignature) -> Option<TokenUsageSummary> {
     let cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(guard) = cache.lock() {
@@ -519,11 +530,7 @@ fn cached_usage_summary(signature: &DashboardScanSignature) -> Option<TokenUsage
 
     if let Some(cached) = load_persistent_dashboard_aggregate() {
         if &cached.signature == signature {
-            let _ = store_dashboard_aggregate(
-                cached.signature.clone(),
-                cached.snapshot.clone(),
-                cached.summary.clone(),
-            );
+            store_usage_summary_cache(cached.signature.clone(), cached.summary.clone());
             return Some(cached.summary);
         }
     }
@@ -531,15 +538,8 @@ fn cached_usage_summary(signature: &DashboardScanSignature) -> Option<TokenUsage
     None
 }
 
-#[cfg(test)]
 fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSummary) {
-    let cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(mut guard) = cache.lock() {
-        *guard = Some(CachedUsageSummary {
-            signature: signature.clone(),
-            summary: summary.clone(),
-        });
-    }
+    store_usage_summary_cache(signature.clone(), summary.clone());
 
     let memory_snapshot = DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
@@ -560,6 +560,13 @@ fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSum
 
     if let Some(snapshot) = persistent_snapshot {
         let _ = store_dashboard_aggregate(signature, Some(snapshot), summary);
+    }
+}
+
+fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUsageSummary) {
+    let cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(CachedUsageSummary { signature, summary });
     }
 }
 

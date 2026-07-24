@@ -332,6 +332,7 @@ impl ExactUsageIndex {
             return Ok(true);
         }
         prepare_scan_temp_tables(&self.connection)?;
+        self.prepare_source_change_snapshot()?;
         let mut changed = false;
         visit_session_files(
             &mut self.connection,
@@ -393,6 +394,21 @@ impl ExactUsageIndex {
         Ok(changed || deleted)
     }
 
+    fn prepare_source_change_snapshot(&self) -> Result<(), String> {
+        self.connection
+            .execute_batch(
+                r#"
+                DROP TABLE IF EXISTS temp.published_files;
+                CREATE TEMP TABLE published_files AS
+                SELECT *
+                FROM main.published_files;
+                CREATE UNIQUE INDEX published_files_path_snapshot_idx
+                    ON published_files(path);
+                "#,
+            )
+            .map_err(|error| format!("无法建立精确 token 源文件快照：{error}"))
+    }
+
     pub(super) fn is_empty(&self) -> Result<bool, String> {
         self.connection
             .query_row(
@@ -444,6 +460,7 @@ impl ExactUsageIndex {
         local_offset: UtcOffset,
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<ExactDashboardData, String> {
+        self.prepare_dashboard_event_snapshot()?;
         let activity_days = self.activity_days(now_utc, local_offset)?;
         let stats = self.stats(&activity_days, now_utc, local_offset)?;
         let summary = self.summary(now_utc, local_offset)?;
@@ -478,6 +495,57 @@ impl ExactUsageIndex {
             cache_hit_ranking,
             cache_usage,
         })
+    }
+
+    fn prepare_dashboard_event_snapshot(&self) -> Result<(), String> {
+        self.connection
+            .execute_batch(
+                r#"
+                DROP TABLE IF EXISTS temp.dashboard_turn_positions;
+                DROP TABLE IF EXISTS temp.dashboard_session_rows;
+                DROP TABLE IF EXISTS temp.published_events;
+                DROP TABLE IF EXISTS temp.published_files;
+                CREATE TEMP TABLE published_events AS
+                SELECT *
+                FROM main.published_events;
+                CREATE TEMP TABLE dashboard_turn_positions AS
+                SELECT
+                    id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY session_id
+                        ORDER BY timestamp ASC, file_path ASC, ordinal ASC
+                    ) AS turn_index_in_session
+                FROM published_events;
+                CREATE TEMP TABLE published_files AS
+                SELECT *
+                FROM main.published_files;
+                CREATE INDEX published_events_timestamp_snapshot_idx
+                    ON published_events(timestamp);
+                CREATE INDEX published_events_session_snapshot_idx
+                    ON published_events(session_id, timestamp, file_path, ordinal);
+                CREATE UNIQUE INDEX dashboard_turn_positions_id_idx
+                    ON dashboard_turn_positions(id);
+                CREATE UNIQUE INDEX published_files_path_snapshot_idx
+                    ON published_files(path);
+                CREATE TEMP TABLE dashboard_session_rows AS
+                SELECT
+                    e.session_id,
+                    COUNT(*) AS calls,
+                    SUM(e.tokens) AS total_tokens,
+                    SUM(e.input_tokens) AS input_tokens,
+                    SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_tokens,
+                    SUM(e.output_tokens) AS output_tokens,
+                    COALESCE(m.updated_at, MAX(e.timestamp)) AS updated_at,
+                    COALESCE(
+                        NULLIF(TRIM(m.title), ''),
+                        '会话 ' || SUBSTR(e.session_id, 1, 8)
+                    ) AS title
+                FROM published_events e
+                LEFT JOIN session_metadata m ON m.session_id = e.session_id
+                GROUP BY e.session_id;
+                "#,
+            )
+            .map_err(|error| format!("无法建立精确 token 聚合快照：{error}"))
     }
 
     fn activity_days(
@@ -693,16 +761,14 @@ impl ExactUsageIndex {
             .prepare(
                 r#"
                 SELECT
-                    e.session_id,
-                    COUNT(*) AS calls,
-                    SUM(e.input_tokens) AS input_tokens,
-                    SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_tokens,
-                    COALESCE(m.updated_at, MAX(e.timestamp)) AS updated_at,
-                    COALESCE(NULLIF(TRIM(m.title), ''), '会话 ' || SUBSTR(e.session_id, 1, 8)) AS title
-                FROM published_events e
-                LEFT JOIN session_metadata m ON m.session_id = e.session_id
-                GROUP BY e.session_id
-                HAVING calls > 1 AND input_tokens >= ?1
+                    session_id,
+                    calls,
+                    input_tokens,
+                    cached_tokens,
+                    updated_at,
+                    title
+                FROM dashboard_session_rows
+                WHERE calls > 1 AND input_tokens >= ?1
                 ORDER BY
                     (cached_tokens * 1.0 / input_tokens) ASC,
                     (input_tokens - cached_tokens) DESC,
@@ -788,20 +854,6 @@ impl ExactUsageIndex {
         };
         let sql = format!(
             r#"
-            WITH session_rows AS (
-                SELECT
-                    e.session_id,
-                    COUNT(*) AS calls,
-                    SUM(e.tokens) AS total_tokens,
-                    SUM(e.input_tokens) AS input_tokens,
-                    SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_tokens,
-                    SUM(e.output_tokens) AS output_tokens,
-                    COALESCE(m.updated_at, MAX(e.timestamp)) AS updated_at,
-                    COALESCE(NULLIF(TRIM(m.title), ''), '会话 ' || SUBSTR(e.session_id, 1, 8)) AS title
-                FROM published_events e
-                LEFT JOIN session_metadata m ON m.session_id = e.session_id
-                GROUP BY e.session_id
-            )
             SELECT
                 session_id,
                 calls,
@@ -813,7 +865,7 @@ impl ExactUsageIndex {
                 title,
                 CASE WHEN input_tokens > 0 THEN cached_tokens * 1.0 / input_tokens ELSE 0 END AS hit_rate,
                 input_tokens - cached_tokens AS uncached
-            FROM session_rows
+            FROM dashboard_session_rows
             WHERE calls > 0 AND input_tokens >= ?1 {turn_predicate}
             {ordering}
             LIMIT ?2
@@ -931,52 +983,49 @@ impl ExactUsageIndex {
         };
         let sql = format!(
             r#"
-            WITH ordered_turns AS (
+            WITH selected_turns AS (
                 SELECT
                     e.*,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY e.session_id
-                        ORDER BY e.timestamp ASC, e.file_path ASC, e.ordinal ASC
-                    ) AS turn_index_in_session
-                FROM published_events e
-            ),
-            turn_rows AS (
-                SELECT
-                    t.*,
-                    COALESCE(NULLIF(TRIM(m.title), ''), '会话 ' || SUBSTR(t.session_id, 1, 8)) AS title,
-                    CASE WHEN t.input_tokens > 0
-                        THEN MIN(t.cached_input_tokens, t.input_tokens) * 1.0 / t.input_tokens
+                    p.turn_index_in_session,
+                    CASE WHEN e.input_tokens > 0
+                        THEN MIN(e.cached_input_tokens, e.input_tokens) * 1.0 / e.input_tokens
                         ELSE 0
                     END AS hit_rate,
-                    t.input_tokens - MIN(t.cached_input_tokens, t.input_tokens) AS uncached
-                FROM ordered_turns t
-                LEFT JOIN session_metadata m ON m.session_id = t.session_id
+                    e.input_tokens - MIN(e.cached_input_tokens, e.input_tokens) AS uncached
+                FROM published_events e
+                JOIN dashboard_turn_positions p ON p.id = e.id
+                WHERE e.input_tokens >= ?1 {turn_predicate}
+                {ordering}
+                LIMIT ?2
             )
             SELECT
-                id,
-                file_path,
-                ordinal,
-                timestamp,
-                session_id,
-                tokens,
-                input_tokens,
-                MIN(cached_input_tokens, input_tokens),
-                output_tokens,
-                user_prompt_start,
-                user_prompt_end,
-                assistant_response_start,
-                assistant_response_end,
-                turn_index_in_session,
-                title,
-                (SELECT size FROM published_files f WHERE f.path = turn_rows.file_path),
-                (SELECT modified_ns FROM published_files f WHERE f.path = turn_rows.file_path),
-                (SELECT device_id FROM published_files f WHERE f.path = turn_rows.file_path),
-                (SELECT file_id FROM published_files f WHERE f.path = turn_rows.file_path),
-                (SELECT changed_ns FROM published_files f WHERE f.path = turn_rows.file_path)
-            FROM turn_rows
-            WHERE input_tokens >= ?1 {turn_predicate}
+                turn_rows.id,
+                turn_rows.file_path,
+                turn_rows.ordinal,
+                turn_rows.timestamp,
+                turn_rows.session_id,
+                turn_rows.tokens,
+                turn_rows.input_tokens,
+                MIN(turn_rows.cached_input_tokens, turn_rows.input_tokens),
+                turn_rows.output_tokens,
+                turn_rows.user_prompt_start,
+                turn_rows.user_prompt_end,
+                turn_rows.assistant_response_start,
+                turn_rows.assistant_response_end,
+                turn_rows.turn_index_in_session,
+                COALESCE(
+                    NULLIF(TRIM(m.title), ''),
+                    '会话 ' || SUBSTR(turn_rows.session_id, 1, 8)
+                ) AS title,
+                f.size,
+                f.modified_ns,
+                f.device_id,
+                f.file_id,
+                f.changed_ns
+            FROM selected_turns AS turn_rows
+            LEFT JOIN session_metadata m ON m.session_id = turn_rows.session_id
+            JOIN published_files f ON f.path = turn_rows.file_path
             {ordering}
-            LIMIT ?2
             "#
         );
         let mut statement = self
