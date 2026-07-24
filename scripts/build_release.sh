@@ -13,6 +13,7 @@ SPARKLE_KEY_ACCOUNT="${SPARKLE_KEY_ACCOUNT:-local.codex.token-bar}"
 SPARKLE_KEY_SOURCE="${SPARKLE_KEY_SOURCE:-auto}"
 PRIVATE_KEY_FILE="${SPARKLE_PRIVATE_KEY_FILE:-$HOME/.config/codex-token-bar/sparkle-ed25519-private.key}"
 RELEASE_NOTES_FILE="${RELEASE_NOTES_FILE:-$ROOT_DIR/release-notes/v$VERSION.md}"
+DMG_LAYOUT_TEMPLATE="${DMG_LAYOUT_TEMPLATE:-$ROOT_DIR/Resources/DMGLayout.dsstore}"
 NOTARIZE_RELEASE="${NOTARIZE_RELEASE:-auto}"
 RELEASE_SECURITY_STRICT="${RELEASE_SECURITY_STRICT:-1}"
 ENABLE_HARDENED_RUNTIME_WAS_SET=0
@@ -384,18 +385,31 @@ APPLESCRIPT
 }
 
 FINDER_STYLE_PERSISTED=0
-for attempt in 1 2 3; do
-  if ! apply_finder_dmg_style; then
-    echo "Finder DMG styling attempt $attempt failed; retrying." >&2
-  fi
-  if [[ -f "$DMG_MOUNT/.DS_Store" ]] && finder_background_is_persisted "$DMG_MOUNT/.DS_Store"; then
+if [[ -f "$DMG_LAYOUT_TEMPLATE" ]]; then
+  cp "$DMG_LAYOUT_TEMPLATE" "$DMG_MOUNT/.DS_Store"
+  sync
+  if finder_background_is_persisted "$DMG_MOUNT/.DS_Store"; then
     FINDER_STYLE_PERSISTED=1
-    break
+  else
+    echo "DMG layout template does not reference the packaged background; falling back to Finder." >&2
+    rm -f "$DMG_MOUNT/.DS_Store"
   fi
-  if [[ "$attempt" != "3" ]]; then
-    echo "Finder did not persist the DMG background on attempt $attempt; retrying." >&2
-  fi
-done
+fi
+
+if [[ "$FINDER_STYLE_PERSISTED" != "1" ]]; then
+  for attempt in 1 2 3; do
+    if ! apply_finder_dmg_style; then
+      echo "Finder DMG styling attempt $attempt failed; retrying." >&2
+    fi
+    if [[ -f "$DMG_MOUNT/.DS_Store" ]] && finder_background_is_persisted "$DMG_MOUNT/.DS_Store"; then
+      FINDER_STYLE_PERSISTED=1
+      break
+    fi
+    if [[ "$attempt" != "3" ]]; then
+      echo "Finder did not persist the DMG background on attempt $attempt; retrying." >&2
+    fi
+  done
+fi
 
 if [[ ! -f "$DMG_MOUNT/.DS_Store" ]]; then
   echo "Finder DMG styling did not create .DS_Store; refusing to ship an unstyled DMG." >&2
