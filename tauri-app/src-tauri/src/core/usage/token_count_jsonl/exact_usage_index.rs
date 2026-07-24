@@ -22,11 +22,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration as StdDuration, SystemTime};
 use time::format_description::well_known::Rfc3339;
@@ -45,7 +46,46 @@ const PARALLEL_STAGING_MIN_BYTES: u64 = EXACT_INDEX_CHUNK_SIZE;
 const PARALLEL_HEAVY_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
 pub(super) struct ExactUsageIndex {
-    connection: Connection,
+    connection: ManagedIndexConnection,
+}
+
+struct ManagedIndexConnection {
+    connection: Option<Connection>,
+    path: PathBuf,
+}
+
+impl ManagedIndexConnection {
+    fn new(connection: Connection, path: PathBuf) -> Self {
+        Self {
+            connection: Some(connection),
+            path,
+        }
+    }
+}
+
+impl Deref for ManagedIndexConnection {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        self.connection
+            .as_ref()
+            .expect("managed exact index connection is available before drop")
+    }
+}
+
+impl DerefMut for ManagedIndexConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.connection
+            .as_mut()
+            .expect("managed exact index connection is available before drop")
+    }
+}
+
+impl Drop for ManagedIndexConnection {
+    fn drop(&mut self) {
+        drop(self.connection.take());
+        record_index_integrity_signature(&self.path);
+    }
 }
 
 pub(super) struct ExactDashboardData {
@@ -71,6 +111,12 @@ struct FileSignature {
     modified_ns: u128,
     identity: FileIdentity,
     changed_ns: i128,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct IndexStorageSignature {
+    database: FileSignature,
+    wal: Option<FileSignature>,
 }
 
 #[derive(Clone, Debug)]
@@ -141,6 +187,11 @@ static STAGE_ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 static STAGE_PEAK_WORKERS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static STAGE_DELAY_MILLISECONDS: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static QUICK_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
+static INDEX_INTEGRITY_SIGNATURES: OnceLock<
+    Mutex<HashMap<PathBuf, IndexStorageSignature>>,
+> = OnceLock::new();
 
 impl ExactUsageIndex {
     pub(super) fn open(codex_home: &Path) -> Result<Self, String> {
@@ -221,7 +272,9 @@ impl ExactUsageIndex {
             set_metadata(&connection, "published_generation", "0")?;
         }
 
-        Ok(Self { connection })
+        Ok(Self {
+            connection: ManagedIndexConnection::new(connection, path),
+        })
     }
 
     #[cfg(test)]
@@ -279,6 +332,23 @@ impl ExactUsageIndex {
     #[cfg(test)]
     pub(super) fn stage_peak_concurrency_for_testing() -> usize {
         STAGE_PEAK_WORKERS.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(super) fn clear_integrity_signature_for_testing(codex_home: &Path) {
+        if let Ok(path) = database_path(codex_home) {
+            invalidate_index_integrity_signature(&path);
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn reset_quick_check_count_for_testing() {
+        QUICK_CHECK_COUNT.store(0, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(super) fn quick_check_count_for_testing() -> u64 {
+        QUICK_CHECK_COUNT.load(Ordering::SeqCst)
     }
 
     pub(super) fn sync(
@@ -3574,9 +3644,22 @@ fn open_index_connection_with_recovery(
         return open_index_connection(path).map(|connection| (connection, false));
     }
 
+    let signatures = index_integrity_signatures();
+    let mut signatures = signatures
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let signature_before_open = index_storage_signature(path)?;
+    let signature_is_verified = signatures.get(path) == Some(&signature_before_open);
     let integrity_failure = match open_index_connection(path) {
+        Ok(connection) if signature_is_verified => {
+            update_index_integrity_signature(&mut signatures, path);
+            return Ok((connection, false));
+        }
         Ok(connection) => match quick_check_index(&connection) {
-            Ok(()) => return Ok((connection, false)),
+            Ok(()) => {
+                update_index_integrity_signature(&mut signatures, path);
+                return Ok((connection, false));
+            }
             Err(error) => {
                 drop(connection);
                 error
@@ -3584,6 +3667,8 @@ fn open_index_connection_with_recovery(
         },
         Err(error) => error,
     };
+    signatures.remove(path);
+    drop(signatures);
 
     remove_index_storage(path).map_err(|rebuild_error| {
         format!(
@@ -3600,6 +3685,8 @@ fn open_index_connection_with_recovery(
 }
 
 fn quick_check_index(connection: &Connection) -> Result<(), String> {
+    #[cfg(test)]
+    QUICK_CHECK_COUNT.fetch_add(1, Ordering::SeqCst);
     let result = connection
         .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
         .map_err(|error| format!("无法完成 SQLite quick_check：{error}"))?;
@@ -3608,6 +3695,67 @@ fn quick_check_index(connection: &Connection) -> Result<(), String> {
     } else {
         Err(format!("SQLite quick_check 报告损坏：{result}"))
     }
+}
+
+fn index_integrity_signatures() -> &'static Mutex<HashMap<PathBuf, IndexStorageSignature>> {
+    INDEX_INTEGRITY_SIGNATURES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn index_storage_signature(path: &Path) -> Result<IndexStorageSignature, String> {
+    Ok(IndexStorageSignature {
+        database: file_signature(path)?,
+        wal: optional_index_sidecar_signature(&sqlite_sidecar_path(path, "-wal"))?,
+    })
+}
+
+fn optional_index_sidecar_signature(path: &Path) -> Result<Option<FileSignature>, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
+            "拒绝读取符号链接形式的精确 token 索引侧写文件：{}",
+            path.display()
+        )),
+        Ok(metadata) if !metadata.is_file() => Err(format!(
+            "精确 token 索引侧写路径不是普通文件：{}",
+            path.display()
+        )),
+        Ok(_) => file_signature(path).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "无法检查精确 token 索引侧写路径 {}：{}",
+            path.display(),
+            error
+        )),
+    }
+}
+
+fn update_index_integrity_signature(
+    signatures: &mut HashMap<PathBuf, IndexStorageSignature>,
+    path: &Path,
+) {
+    match index_storage_signature(path) {
+        Ok(signature) => {
+            signatures.insert(path.to_path_buf(), signature);
+        }
+        Err(_) => {
+            signatures.remove(path);
+        }
+    }
+}
+
+fn record_index_integrity_signature(path: &Path) {
+    let signatures = index_integrity_signatures();
+    let mut signatures = signatures
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    update_index_integrity_signature(&mut signatures, path);
+}
+
+fn invalidate_index_integrity_signature(path: &Path) {
+    let signatures = index_integrity_signatures();
+    let mut signatures = signatures
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    signatures.remove(path);
 }
 
 fn open_index_connection(path: &Path) -> Result<Connection, String> {
@@ -3781,6 +3929,7 @@ fn migrate_v4_index_for_append(connection: &Connection) -> Result<(), String> {
 }
 
 fn remove_index_storage(path: &Path) -> Result<(), String> {
+    invalidate_index_integrity_signature(path);
     let mut existing = Vec::new();
     for candidate in [
         path.to_path_buf(),

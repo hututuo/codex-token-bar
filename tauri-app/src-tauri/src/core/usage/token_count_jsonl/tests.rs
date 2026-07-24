@@ -2527,6 +2527,48 @@ fn exact_index_source_change_check_detects_append_and_delete() {
 }
 
 #[test]
+fn exact_index_integrity_check_is_reused_and_trusted_sync_refreshes_its_signature() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let session = session_dir.join("rollout-019eintegrity-cache-0000-0000-fast.jsonl");
+    write_lines(
+        &session,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    dashboard_snapshot(&root).unwrap();
+
+    ExactUsageIndex::clear_integrity_signature_for_testing(&root);
+    ExactUsageIndex::reset_quick_check_count_for_testing();
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| drop(ExactUsageIndex::open(&root).unwrap()));
+        let second = scope.spawn(|| drop(ExactUsageIndex::open(&root).unwrap()));
+        first.join().unwrap();
+        second.join().unwrap();
+    });
+    drop(ExactUsageIndex::open(&root).unwrap());
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 1);
+
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(&session).unwrap();
+        writeln!(
+            handle,
+            r#"{{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}}}}}"#
+        )
+        .unwrap();
+    }
+    dashboard_snapshot(&root).unwrap();
+    drop(ExactUsageIndex::open(&root).unwrap());
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 1);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn usage_summary_snapshot_cache_miss_schedules_one_lightweight_background_refresh() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
